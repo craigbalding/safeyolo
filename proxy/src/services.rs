@@ -788,6 +788,29 @@ impl GatewaySnapshot {
         &self.canonical_timestamps
     }
 
+    /// Select only a saved token for this exact adopted check dependency.
+    /// Normal selection still verifies its current route, host and authority.
+    pub(crate) fn capability_token(
+        &self,
+        agent: &str,
+        service: &str,
+        capability: &str,
+    ) -> Option<Secret> {
+        self.tokens
+            .iter()
+            .zip(&self.token_timestamps)
+            .find(|(binding, typed)| {
+                !typed.token
+                    && !typed.agent
+                    && !typed.service
+                    && !typed.capability
+                    && binding.agent == agent
+                    && binding.service == service
+                    && binding.capability == capability
+            })
+            .map(|(binding, _)| binding.token.clone())
+    }
+
     /// Exact per-agent provisioning map (service -> active token). This reads
     /// source agent_env, including supplied IAM data, without minting tokens.
     pub fn agent_environment_json(&self, agent: &str) -> Result<Secret, Error> {

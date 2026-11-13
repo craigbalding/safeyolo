@@ -450,6 +450,7 @@ pub(super) async fn run(
     interrupt: &mut Signal,
     terminate: &mut Signal,
     cleanup_failed: &mut bool,
+    cancel: &mut Option<tokio::sync::watch::Receiver<bool>>,
 ) -> Result<(Value, Option<Outcome>, Output, Output, Option<String>), Error> {
     let public = stage(root, directory, host, guest, spec, generation, environment).await?;
     if spec.network {
@@ -504,8 +505,11 @@ pub(super) async fn run(
             _ = terminate.recv() => Outcome::Interrupted { signal:libc::SIGTERM },
         };
         Ok((artifacts, Some(outcome), None, None))
-    }
-    .await;
+    };
+    let work = tokio::select! {
+        result = work => result,
+        _ = super::check_cancelled(cancel) => Err("policy check job cancelled".into()),
+    };
     if let Err(error) = host_platform::stop_sandbox(name).await {
         *cleanup_failed = true;
         return Err(super::cleanup_error(&work, error, root));

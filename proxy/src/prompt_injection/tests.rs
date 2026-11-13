@@ -353,6 +353,7 @@ async fn reusable_producer_does_not_require_a_prompt_sensor_or_request() {
     let runtime = proxy.runtime.read().unwrap().clone();
     let identity = ConnectionIdentity {
         authorization_principal: None,
+        policy_checks: Vec::new(),
         ingress_binding: None,
         agent_id: "alice".into(),
         source_id: Some("192.0.2.30".into()),

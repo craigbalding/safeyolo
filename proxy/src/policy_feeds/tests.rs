@@ -66,6 +66,346 @@ fn decide(policy: &Policy, host: &str, at: u64) -> Effect {
         .effect
 }
 
+/// Shared native admission fixture: use the same snapshot producer as feed controls.
+pub(crate) fn write_check_feed(root: &Path, version: &str, member: &str, max_age: u64) {
+    let mut config = source();
+    config.max_age_seconds = max_age;
+    setup(root, &config);
+    atomic(
+        &directory(root, "test").join("state.json"),
+        &State {
+            config_identity: config.adoption_identity(),
+            next_refresh: now() + 86400,
+            ..State::default()
+        },
+    )
+    .unwrap();
+    atomic(
+        &snapshot_path(root, "test").unwrap(),
+        &accepted(&config, version, member, now() - 1),
+    )
+    .unwrap();
+}
+
+fn named_policy(root: &Path, negated: bool) -> Policy {
+    let condition = if negated {
+        "{op='not',condition={op='finding',check='threat'}}"
+    } else {
+        "{op='finding',check='threat'}"
+    };
+    let path = root.join("nondefault.toml");
+    fs::write(
+        &path,
+        format!(
+            r#"
+[hosts.'*']
+egress='allow'
+[checks.threat]
+source_id='selected-threats'
+meaning='positive means membership in the selected threat list'
+subject='hostname'
+result_type='finding'
+influences=['hard_exclusion']
+implementation_version='feed-membership-1'
+configuration_version='test-1'
+max_age_seconds=60
+source={{kind='feed',name='test'}}
+[[check_rules]]
+name='threat-exclusion'
+host='*'
+stage='connect'
+influence='hard_exclusion'
+priority=0
+required=true
+when={condition}
+on_match='deny'
+on_unavailable='approval'
+"#
+        ),
+    )
+    .unwrap();
+    let mut policy = Policy::from_native_path(&path).unwrap();
+    policy.observe_baseline_files(None).unwrap();
+    policy
+}
+
+fn named_request(host: &str) -> crate::policy::checks::Request<'_> {
+    crate::policy::checks::Request {
+        agent: Some("alice"),
+        host,
+        port: 443,
+        scheme: "https",
+        method: "CONNECT",
+        path: None,
+        ip: None,
+        value: None,
+    }
+}
+
+#[tokio::test]
+async fn named_feed_binds_membership_provenance_reuse_and_true_age_deadline() {
+    use crate::policy::checks::{Action, Finding, Stage, Truth};
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let mut source = source();
+    source.max_age_seconds = 20;
+    source.on_stale = Stale::Retain;
+    setup(root, &source);
+    let at = now() - 5;
+    let snapshot = accepted(&source, "local-A", "bad.example", at);
+    atomic(&snapshot_path(root, "test").unwrap(), &snapshot).unwrap();
+    let original = fs::read(snapshot_path(root, "test").unwrap()).unwrap();
+    let policy = named_policy(root, false);
+    let checks = policy.named_checks();
+    let deadline = (at + source.max_age_seconds) * 1000;
+    for (host, positive) in [
+        ("BAD.EXAMPLE.", true),
+        ("other.example", false),
+        ("sub.bad.example", false),
+    ] {
+        let request = named_request(host);
+        let gathered = checks.collect(&request, Stage::Connect).await.unwrap();
+        assert!(checks.versions_current(&gathered).await);
+        let entry = &gathered["threat"];
+        let result = entry.result.as_ref().unwrap();
+        assert_eq!(
+            result.subject,
+            crate::policy::checks::Subject::Hostname {
+                hostname: host.trim_end_matches('.').to_ascii_lowercase()
+            }
+        );
+        assert!(matches!(result.finding, Finding::Finding {positive:p} if p == positive));
+        assert_eq!(result.valid_until_ms, Some(deadline));
+        assert_eq!(result.source.source_revision, None);
+        assert_eq!(result.source.source_observed_at_ms, None);
+        assert_eq!(result.source.content_digest.as_deref(), Some("local-A"));
+        assert_eq!(
+            entry
+                .feed_version
+                .as_ref()
+                .unwrap()
+                .snapshot_version
+                .as_deref(),
+            Some("local-A")
+        );
+        let reused = checks.collect(&request, Stage::Connect).await.unwrap();
+        assert_eq!(reused["threat"].acquisition, "reused_managed_feed_snapshot");
+        assert_eq!(
+            reused["threat"].result.as_ref().unwrap().collected_at_ms,
+            result.collected_at_ms
+        );
+        for (time, expected) in [
+            (
+                deadline - 1,
+                if positive {
+                    Action::Deny
+                } else {
+                    Action::Allow
+                },
+            ),
+            (deadline, Action::Approval),
+            (deadline + 1, Action::Approval),
+        ] {
+            let evaluation = checks.evaluate(&request, Stage::Connect, reused.clone(), time);
+            assert_eq!(evaluation.action, expected);
+            if time >= deadline {
+                assert_eq!(evaluation.rules[0].truth, Truth::Unavailable);
+            }
+        }
+    }
+    assert_eq!(
+        fs::read(snapshot_path(root, "test").unwrap()).unwrap(),
+        original
+    );
+}
+
+#[tokio::test]
+async fn named_feed_missing_and_unsupported_remain_unavailable_under_negation() {
+    use crate::policy::checks::{Action, Stage, Truth};
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let mut source = source();
+    source.scope = Scope::DomainSuffix;
+    setup(root, &source);
+    let missing = named_policy(root, true);
+    let request = named_request("bad.example");
+    let gathered = missing
+        .named_checks()
+        .collect(&request, Stage::Connect)
+        .await
+        .unwrap();
+    let result = missing.named_checks().evaluate(
+        &request,
+        Stage::Connect,
+        gathered.clone(),
+        now() * 1000 + 999,
+    );
+    assert_eq!(result.rules[0].truth, Truth::Unavailable);
+    assert_eq!(result.action, Action::Approval);
+    let mut snapshot = accepted(&source, "suffix-A", "*.bad.example", now() - 2);
+    snapshot.provider_observed_at = Some(now() - 10);
+    snapshot.provider_version = Some("actual-provider-42".into());
+    atomic(&snapshot_path(root, "test").unwrap(), &snapshot).unwrap();
+    assert!(!missing.named_checks().versions_current(&gathered).await);
+    assert!(missing.baseline_files_changed().unwrap());
+    let policy = named_policy(root, false);
+    for (host, action) in [
+        ("bad.example", Action::Deny),
+        ("sub.bad.example", Action::Deny),
+        ("bad.example.other", Action::Allow),
+        ("192.0.2.1", Action::Approval),
+    ] {
+        let request = named_request(host);
+        let gathered = policy
+            .named_checks()
+            .collect(&request, Stage::Connect)
+            .await
+            .unwrap();
+        assert!(policy.named_checks().versions_current(&gathered).await);
+        if let Some(record) = &gathered["threat"].result {
+            assert_eq!(
+                record.source.source_revision.as_deref(),
+                Some("actual-provider-42")
+            );
+            assert_eq!(
+                record.source.source_observed_at_ms,
+                snapshot.provider_observed_at.map(|t| t * 1000)
+            );
+        }
+        assert_eq!(
+            policy
+                .named_checks()
+                .evaluate(
+                    &request,
+                    Stage::Connect,
+                    gathered,
+                    crate::policy::current_time_ms() as u64
+                )
+                .action,
+            action
+        );
+    }
+}
+
+#[tokio::test]
+async fn named_feed_replacement_rollback_and_configuration_invalidate_held_reused_evidence() {
+    use crate::policy::checks::{Action, Stage};
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let mut source = source();
+    setup(root, &source);
+    let a = accepted(&source, "local-A", "a.example", now() - 2);
+    let b = accepted(&source, "local-B", "b.example", now() - 1);
+    let path = snapshot_path(root, "test").unwrap();
+    for (previous, next) in [(&a, &b), (&b, &a)] {
+        atomic(&path, previous).unwrap();
+        let policy = named_policy(root, false);
+        let request = named_request(&next.entries[0]);
+        let first = policy
+            .named_checks()
+            .collect(&request, Stage::Connect)
+            .await
+            .unwrap();
+        assert_eq!(
+            policy
+                .named_checks()
+                .evaluate(
+                    &request,
+                    Stage::Connect,
+                    first,
+                    crate::policy::current_time_ms() as u64
+                )
+                .action,
+            Action::Allow
+        );
+        let held = policy
+            .named_checks()
+            .collect(&request, Stage::Connect)
+            .await
+            .unwrap();
+        assert_eq!(held["threat"].acquisition, "reused_managed_feed_snapshot");
+        atomic(&path, next).unwrap();
+        assert!(!policy.named_checks().versions_current(&held).await);
+        assert!(policy.baseline_files_changed().unwrap());
+        let reloaded = named_policy(root, false);
+        for (host, action) in [
+            (&previous.entries[0], Action::Allow),
+            (&next.entries[0], Action::Deny),
+        ] {
+            let request = named_request(host);
+            let gathered = reloaded
+                .named_checks()
+                .collect(&request, Stage::Connect)
+                .await
+                .unwrap();
+            assert!(reloaded.named_checks().versions_current(&gathered).await);
+            let result = reloaded.named_checks().evaluate(
+                &request,
+                Stage::Connect,
+                gathered,
+                crate::policy::current_time_ms() as u64,
+            );
+            assert_eq!(result.action, action);
+            assert_eq!(
+                result.evidence["threat"]
+                    .feed_version
+                    .as_ref()
+                    .unwrap()
+                    .snapshot_version
+                    .as_ref(),
+                Some(&next.version)
+            );
+            assert_eq!(
+                result.evidence["threat"]
+                    .result
+                    .as_ref()
+                    .unwrap()
+                    .source
+                    .content_digest
+                    .as_ref(),
+                Some(&next.source_sha256)
+            );
+        }
+    }
+    let policy = named_policy(root, false);
+    let held = policy
+        .named_checks()
+        .collect(&named_request("b.example"), Stage::Connect)
+        .await
+        .unwrap();
+    source.max_age_seconds = 1;
+    setup(root, &source);
+    assert!(!policy.named_checks().versions_current(&held).await);
+    assert!(policy.baseline_files_changed().unwrap());
+    let expired = named_policy(root, false);
+    for host in ["a.example", "b.example"] {
+        let request = named_request(host);
+        for _ in 0..2 {
+            let evidence = expired
+                .named_checks()
+                .collect(&request, Stage::Connect)
+                .await
+                .unwrap();
+            assert_eq!(
+                evidence["threat"].acquisition, "managed_feed_snapshot",
+                "expired findings must not be reused"
+            );
+            assert_eq!(
+                expired
+                    .named_checks()
+                    .evaluate(
+                        &request,
+                        Stage::Connect,
+                        evidence,
+                        crate::policy::current_time_ms() as u64
+                    )
+                    .action,
+                Action::Approval
+            );
+        }
+    }
+}
+
 #[test]
 fn parsers_keep_declared_format_and_match_scope() {
     let mut config = source();

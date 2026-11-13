@@ -319,6 +319,7 @@ impl CredentialActivation {
 pub(crate) struct ConnectionIdentity {
     agent_id: String,
     authorization_principal: Option<String>,
+    policy_checks: Vec<String>,
     run: Option<host_runs::AgentRun>,
     connection_id: String,
     source_id: Option<String>,
@@ -453,6 +454,8 @@ pub(crate) struct Runtime {
     /// Serialize project admission through durable effect recording. This is
     /// process-local; Docker's other administrators retain their own access.
     docker_projects: Arc<tokio::sync::Mutex<()>>,
+    /// Keep cancelled check cleanup joined across policy reload and shutdown.
+    check_tasks: Arc<std::sync::Mutex<tokio::task::JoinSet<()>>>,
     credential_guard: Option<credential_guard::CredentialGuard>,
     credential_key_empty: bool,
     tasks: tasks::Registry,
@@ -854,6 +857,9 @@ impl Runtime {
                 credential_activation,
                 operator_modes,
                 gateway_grants,
+                check_tasks: previous
+                    .map(|runtime| runtime.check_tasks.clone())
+                    .unwrap_or_default(),
                 docker_projects: previous
                     .map(|runtime| runtime.docker_projects.clone())
                     .unwrap_or_default(),
@@ -1222,12 +1228,17 @@ pub(crate) fn native_policy_status(state: &RuntimeState) -> Result<Value, Error>
     let list_files = policy.native_list_file_status();
     let lists_match = list_files
         .values()
-        .all(|status| status["saved_matches_active"] == true);
+        .all(|status| status["saved_matches_active"] == true)
+        && policy.named_checks().feeds_current();
     let list_unreadable = list_files
         .values()
         .any(|status| status["status"] == "saved_unreadable");
     if !list_files.is_empty() {
         result["list_files"] = Value::Object(list_files);
+    }
+    let feed_sources = policy.named_checks().feed_status();
+    if !feed_sources.is_empty() {
+        result["feed_sources"] = json!(feed_sources);
     }
     match std::fs::read_to_string(&path) {
         Ok(saved) => {
@@ -1753,6 +1764,7 @@ async fn accept_agents(
                         ingress_binding: pending.as_ref().map(|peer| peer.binding.clone()),
                         agent_id: target.agent_id.clone(),
                         authorization_principal: job.as_ref().map(|job| job.principal.clone()),
+                        policy_checks: job.as_ref().map(|job| job.checks.clone()).unwrap_or_default(),
                         run: job.as_ref().map(|job| job.run.clone()).or_else(|| runtime.read().ok().and_then(|runtime| {
                             if external { None } else { runtime.policy.as_ref()?.agent_run(&target.agent_id) }
                         })),
@@ -2525,6 +2537,25 @@ impl Proxy {
         if let Some(capture) = self.capture.take() {
             capture.stop().await;
         }
+        let check_tasks = self
+            .runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .check_tasks
+            .clone();
+        while let Some(result) = std::future::poll_fn(|cx| {
+            check_tasks
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .poll_join_next(cx)
+        })
+        .await
+        {
+            if let Err(error) = result {
+                eprintln!("policy check cleanup task failed: {error}");
+            }
+        }
+
         service_mutations.drain().await;
         let coord = self
             .runtime

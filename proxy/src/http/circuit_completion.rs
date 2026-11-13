@@ -568,6 +568,7 @@ mod tests {
                 self.state.clone(),
                 ConnectionIdentity {
                     authorization_principal: None,
+                    policy_checks: Vec::new(),
                     ingress_binding: None,
                     run: None,
                     agent_id: "alice".into(),
@@ -665,6 +666,7 @@ mod tests {
             }
             let identity = ConnectionIdentity {
                 authorization_principal: None,
+        policy_checks: Vec::new(),
                 ingress_binding: None,
                 run: None,
                 agent_id: "alice".into(), connection_id: "owned-connection".into(), source_id: None,
@@ -833,6 +835,7 @@ mod tests {
             fixture.state.clone(),
             ConnectionIdentity {
                 authorization_principal: None,
+                policy_checks: Vec::new(),
                 ingress_binding: None,
                 run: None,
                 agent_id: "alice".into(),
@@ -1272,6 +1275,7 @@ mod tests {
             fixture.state.clone(),
             ConnectionIdentity {
                 authorization_principal: None,
+                policy_checks: Vec::new(),
                 ingress_binding: None,
                 run: None,
                 agent_id: "alice".into(),

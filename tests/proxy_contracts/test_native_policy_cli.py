@@ -1,13 +1,17 @@
-"""#816 uses installed native commands, two trusted listeners and owned origins.
+"""Native policy commands use owned origins and captured evidence.
 
-Only this test driver uses Python. Commands execute from outside the checkout,
-with a PATH containing only the installed native binaries. Existing fixture
-deadlines are 15 seconds for readiness, 5 for HTTP and 4 for watcher publication.
+The #816 cases use installed commands and two trusted listeners. Those commands
+execute outside the checkout with a PATH containing only installed native
+binaries. Candidate evaluation uses the selected native CLI without starting an
+instance. Only the test driver uses Python. Existing fixture deadlines are 15
+seconds for readiness, 5 for HTTP and 4 for watcher publication.
 """
 
 from __future__ import annotations
 
 import base64
+import errno
+import hashlib
 import http.client
 import json
 import os
@@ -19,6 +23,7 @@ import time
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -43,6 +48,292 @@ def native_inputs():
     host = Path(os.environ.get("SAFEYOLO_NATIVE_ARTIFACTS", REPO / "proxy/target" / directory))
     guest = Path(os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", REPO / "guest/command/target" / directory))
     return host, guest, profile
+
+
+def test_candidate_evaluation_reports_actions_without_destination_contact(tmp_path):
+    """Use the native CLI and fresh captured evidence against an owned listener."""
+    executable = native_inputs()[0] / "safeyolo"
+    root = tmp_path / "selected-instance"
+    root.mkdir()
+    policy = tmp_path / "candidate.toml"
+    request_file = tmp_path / "request.json"
+    evidence_file = tmp_path / "evidence.json"
+    with socket.socket() as destination:
+        destination.bind(("127.0.0.2", 0))
+        destination.listen()
+        destination.setblocking(False)
+        host, port = destination.getsockname()
+        subject = {"kind": "ip", "address": host}
+        # Match Check::input_digest's field order with serde_json preserve_order.
+        input_digest = hashlib.sha256(json.dumps(
+            {"subject": subject, "inputs": {}}, separators=(",", ":"),
+        ).encode()).hexdigest()
+        request_file.write_text(json.dumps({
+            "agent": "alice", "host": host, "port": port, "scheme": "http",
+            "method": "GET", "path": "/report", "ip": host,
+        }))
+        for finding, fallback, expected in [
+            ({"kind": "finding", "positive": True}, "unresolved", "deny"),
+            ({"kind": "finding", "positive": False}, "unresolved", "allow"),
+            ({"kind": "unknown", "reason": "fixture coverage unavailable"}, "unresolved", "unresolved"),
+            ({"kind": "failure", "reason": "fixture provider failed"}, "approval", "approval"),
+        ]:
+            source = {
+                "hosts": {"*": {"egress": "allow"}},
+                "controls": {"network": {"homoglyph": False}},
+                "checks": {"threat": {
+                    "source_id": "cli-fixture", "meaning": "controlled IP threat membership",
+                    "subject": "ip", "result_type": "finding", "influences": ["hard_exclusion"],
+                    "implementation_version": "fixture-1", "configuration_version": "selected-1",
+                    "max_age_seconds": 60, "source": {"kind": "recorded", "path": evidence_file.name},
+                }},
+                "check_rules": [{
+                    "name": "never-visit", "host": "*", "stage": "connect", "required": True,
+                    "influence": "hard_exclusion", "priority": 0,
+                    "when": {"op": "finding", "check": "threat"},
+                    "on_match": "deny", "on_unavailable": fallback,
+                }],
+            }
+            policy.write_text(tomlkit.dumps(source))
+            evidence_file.write_text(json.dumps([{
+                "subject": subject, "input_digest": input_digest,
+                "implementation_version": "fixture-1", "configuration_version": "selected-1",
+                "collected_at_ms": time.time_ns() // 1_000_000, "valid_until_ms": None,
+                "source": {"source_id": "cli-fixture", "source_revision": None,
+                           "content_digest": None, "source_observed_at_ms": None},
+                "finding": finding,
+            }]))
+            checked = subprocess.run(
+                [str(executable), "--root", str(root), "policy", "check", str(policy)],
+                capture_output=True, text=True, timeout=15,
+            )
+            assert checked.returncode == 0, checked.stderr
+            evaluated = subprocess.run(
+                [str(executable), "--root", str(root), "policy", "evaluate", str(policy), str(request_file)],
+                capture_output=True, text=True, timeout=15,
+            )
+            assert evaluated.returncode == 0, evaluated.stderr
+            result = json.loads(evaluated.stdout)["result"]
+            assert result["action"] == expected, result
+            assert result["stages"][0]["rules"][0]["rule"] == "never-visit"
+            assert result["stages"][0]["evidence"]["threat"]["result"]["finding"] == finding
+            assert result["evidence_mode"] == "recorded_offline"
+            assert result["destination_contact"] is False
+            assert result["dependency_calls"] == []
+            assert result["live_budgets_consumed"] is False
+            with pytest.raises(BlockingIOError):
+                destination.accept()
+
+
+def test_candidate_evaluation_preserves_captured_scores(tmp_path):
+    """Read decimal scores and confidence through the native captured-file path."""
+    executable = native_inputs()[0] / "safeyolo"
+    root = tmp_path / "selected-instance"
+    root.mkdir()
+    policy = tmp_path / "candidate.toml"
+    request_file = tmp_path / "request.json"
+    evidence_file = tmp_path / "scores.json"
+    with socket.socket() as destination:
+        destination.bind(("127.0.0.2", 0))
+        destination.listen()
+        destination.setblocking(False)
+        host, port = destination.getsockname()
+        subject = {"kind": "ip", "address": host}
+        input_digest = hashlib.sha256(json.dumps(
+            {"subject": subject, "inputs": {}}, separators=(",", ":"),
+        ).encode()).hexdigest()
+        request_file.write_text(json.dumps({
+            "agent": "alice", "host": host, "port": port, "scheme": "http",
+            "method": "GET", "path": "/report", "ip": host,
+        }))
+        checks = {name: {
+            "source_id": name, "meaning": "controlled provider score",
+            "subject": "ip", "result_type": "score", "influences": ["hard_exclusion"],
+            "implementation_version": "fixture-1", "configuration_version": "selected-1",
+            "max_age_seconds": 60, "source": {"kind": "recorded", "path": evidence_file.name},
+            "scale": {"name": "fixture-score", "minimum": 0, "maximum": 100,
+                      "direction": "higher", "confidence_meaning": "provider-defined confidence"},
+        } for name in ["a", "b"]}
+        for values, confidence, aggregate, threshold, expected, unavailable in [
+            ([51, 1], None, False, 50, "deny", None),
+            ([51.0, 1], None, False, 50, "deny", None),
+            ([51.5, 1], 0.8, False, 50, "deny", None),
+            ([0.1, 1], 0.8, False, 50, "allow", None),
+            ([49.9, 1], 0.8, False, 49.9, "deny", None),
+            ([49.89999999999999, 1], 0.8, False, 49.9, "allow", None),
+            ([40.25, 59.75], 0.8, True, 49.9, "deny", None),
+            ([40.25, 59.5], 0.8, True, 49.9, "allow", None),
+            ([0.0, 100.0], 0.8, True, 50, "deny", None),
+            ([100.1, 50], 0.8, True, 50, "unresolved", "score outside its declared scale"),
+            ([-0.1, 50], 0.8, False, 50, "unresolved", "score outside its declared scale"),
+            (["51.0", 1], 0.8, False, 50, "unresolved", "malformed evidence file"),
+            ([True, 1], 0.8, False, 50, "unresolved", "malformed evidence file"),
+            ([None, 1], 0.8, False, 50, "unresolved", "malformed evidence file"),
+            ([float("inf"), 1], 0.8, False, 50, "unresolved", "malformed evidence file"),
+            ([float("nan"), 1], 0.8, False, 50, "unresolved", "malformed evidence file"),
+            ([51, 1], "0.8", False, 50, "unresolved", "malformed evidence file"),
+            ([51, 1], float("inf"), False, 50, "unresolved", "malformed evidence file"),
+        ]:
+            condition = {"op": "score", "check": "a", "comparison": "ge", "threshold": threshold}
+            if aggregate:
+                condition = {"op": "aggregate", "checks": ["a", "b"], "method": "mean",
+                             "comparison": "ge", "threshold": threshold}
+            source = {
+                "hosts": {"*": {"egress": "allow"}},
+                "agents": {"alice": {"hosts": {host: {"egress": "allow"}}}},
+                "controls": {"network": {"homoglyph": False}}, "checks": checks,
+                "check_rules": [{"name": "score-threshold", "host": "*", "stage": "connect",
+                                 "required": True, "influence": "hard_exclusion", "priority": 0,
+                                 "when": condition, "on_match": "deny", "on_unavailable": "unresolved"}],
+            }
+            policy.write_text(tomlkit.dumps(source))
+            records = [{
+                "subject": subject, "input_digest": input_digest,
+                "implementation_version": "fixture-1", "configuration_version": "selected-1",
+                "collected_at_ms": time.time_ns() // 1_000_000, "valid_until_ms": None,
+                "source": {"source_id": name, "source_revision": None,
+                           "content_digest": None, "source_observed_at_ms": None},
+                "finding": {"kind": "score", "value": value, "confidence": confidence},
+            } for name, value in zip(checks, values, strict=True)]
+            # 1e400 is valid JSON syntax but cannot represent a finite f64.
+            evidence_file.write_text(json.dumps(records).replace("Infinity", "1e400"))
+            evaluated = subprocess.run(
+                [str(executable), "--root", str(root), "policy", "evaluate", str(policy), str(request_file)],
+                capture_output=True, text=True, timeout=15,
+            )
+            assert evaluated.returncode == 0, evaluated.stderr
+            result = json.loads(evaluated.stdout)["result"]
+            assert result["action"] == expected, result
+            evidence = result["stages"][0]["evidence"]["a"]
+            if unavailable:
+                assert evidence["unavailable"] == unavailable, result
+            else:
+                assert evidence["result"]["finding"] == records[0]["finding"]
+                assert result["stages"][0]["rules"][0]["condition"] == condition
+            assert result["evidence_mode"] == "recorded_offline"
+            assert result["destination_contact"] is False
+            assert result["dependency_calls"] == []
+            assert result["live_budgets_consumed"] is False
+            with pytest.raises(BlockingIOError):
+                destination.accept()
+
+
+@pytest.mark.parametrize("case", ["connect_expiry", "request_expiry", "registration_age", "host_expiry"])
+def test_candidate_evaluation_uses_time_after_all_evidence_reads(tmp_path, case):
+    """Hold the real request-stage reader across an expiry or age transition."""
+    executable = native_inputs()[0] / "safeyolo"
+    root = tmp_path / "selected-instance"
+    root.mkdir()
+    policy = tmp_path / "candidate.toml"
+    request_file = tmp_path / "request.json"
+    held_file = tmp_path / "request-evidence.json"
+    with socket.socket() as destination:
+        destination.bind(("127.0.0.2", 0))
+        destination.listen()
+        destination.setblocking(False)
+        host, port = destination.getsockname()
+        subject = {"kind": "ip", "address": host}
+        input_digest = hashlib.sha256(json.dumps(
+            {"subject": subject, "inputs": {}}, separators=(",", ":"),
+        ).encode()).hexdigest()
+        request_file.write_text(json.dumps({
+            "agent": "alice", "host": host, "port": port, "scheme": "http",
+            "method": "GET", "path": "/report", "ip": host,
+        }))
+        collected_at = time.time_ns() // 1_000_000
+        boundary = collected_at + 2000
+        checks, rules, records = {}, [], {}
+        for stage in ["connect", "request"]:
+            registration = case == "registration_age" and stage == "connect"
+            path = tmp_path / f"{stage}-evidence.json"
+            checks[stage] = {
+                "source_id": stage, "meaning": "controlled timestamp or negative IP finding",
+                "subject": "ip", "result_type": "timestamp" if registration else "finding",
+                "influences": ["hard_exclusion"], "implementation_version": "fixture-1",
+                "configuration_version": "selected-1",
+                "max_age_seconds": 2 if case == f"{stage}_expiry" else 60,
+                "source": {"kind": "recorded", "path": path.name},
+            }
+            condition = {"op": "age", "check": stage, "comparison": "lt", "seconds": 30} if registration else {
+                "op": "finding", "check": stage,
+            }
+            rules.append({
+                "name": stage, "host": "*", "stage": stage, "required": True,
+                "influence": "hard_exclusion", "priority": 0, "when": condition,
+                "on_match": "deny", "on_unavailable": "unresolved",
+            })
+            records[stage] = [{
+                "subject": subject, "input_digest": input_digest,
+                "implementation_version": "fixture-1", "configuration_version": "selected-1",
+                "collected_at_ms": collected_at, "valid_until_ms": None,
+                "source": {"source_id": stage, "source_revision": None,
+                           "content_digest": None, "source_observed_at_ms": None},
+                "finding": {"kind": "timestamp", "unix_ms": boundary - 30_000} if registration else {
+                    "kind": "finding", "positive": False,
+                },
+            }]
+            path.write_text(json.dumps(records[stage]))
+        hosts = {"*": {"egress": "allow"}}
+        if case == "host_expiry":
+            hosts = {"*": {"egress": "deny"}, host: {
+                "egress": "allow", "expires": datetime.fromtimestamp(boundary / 1000, UTC).isoformat(),
+            }}
+        policy.write_text(tomlkit.dumps({
+            "hosts": hosts, "controls": {"network": {"homoglyph": False}},
+            "checks": checks, "check_rules": rules,
+        }))
+        command = [str(executable), "--root", str(root), "policy", "evaluate", str(policy), str(request_file)]
+        control = subprocess.run(command, capture_output=True, text=True, timeout=15)
+        assert control.returncode == 0, control.stderr
+        initial = json.loads(control.stdout)["result"]
+        assert initial["action"] == ("deny" if case == "registration_age" else "allow"), initial
+        assert initial["stages"][0]["decision_time_ms"] < boundary, initial
+        held_file.unlink()
+        os.mkfifo(held_file)
+        held_metadata = held_file.stat()
+        with child_process(command, tmp_path, os.environ.copy()) as process:
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    descriptor = os.open(held_file, os.O_WRONLY | os.O_NONBLOCK)
+                except OSError as error:
+                    if error.errno != errno.ENXIO:
+                        raise
+                    # ENXIO means the CLI has not opened its evidence reader yet.
+                    assert process.poll() is None, (tmp_path / "process.log").read_text()
+                    assert time.monotonic() < deadline, "CLI did not reach the held evidence read"
+                    time.sleep(0.01)
+                else:
+                    break
+            with os.fdopen(descriptor, "w") as writer:
+                assert time.time_ns() // 1_000_000 < boundary, "fixture missed the pre-transition read"
+                time.sleep(max(0, (boundary + 100) / 1000 - time.time()))
+                json.dump(records["request"], writer)
+                writer.flush()
+                # Native FIFO writes can change mtime. These captured bytes are
+                # fixed: keep their selected version stable before EOF, as an
+                # immutable evidence file would be. Preserve the real reader's
+                # before/after metadata guard and all post-read clock checks.
+                os.utime(held_file, ns=(held_metadata.st_atime_ns, held_metadata.st_mtime_ns))
+            assert process.wait(timeout=10) == 0, (tmp_path / "process.log").read_text()
+        result = json.loads((tmp_path / "process.log").read_text())["result"]
+        expected = "allow" if case == "registration_age" else "deny" if case == "host_expiry" else "unresolved"
+        assert result["action"] == expected, result
+        times = {stage["decision_time_ms"] for stage in result["stages"]}
+        assert len(times) == 1 and times.pop() >= boundary + 100, result
+        if case.endswith("_expiry") and case != "host_expiry":
+            stage = result["stages"][0 if case == "connect_expiry" else 1]
+            assert stage["evidence"][stage["stage"]]["unavailable"] == "stale evidence", result
+        if case == "registration_age":
+            assert result["stages"][0]["rules"][0]["truth"] == "false", result
+        if case == "host_expiry":
+            assert result["network_policy"]["effect"] == "deny", result
+        assert result["evidence_mode"] == "recorded_offline"
+        assert result["destination_contact"] is False
+        assert result["dependency_calls"] == []
+        assert result["live_budgets_consumed"] is False
+        with pytest.raises(BlockingIOError):
+            destination.accept()
 
 
 class NativeInstance:

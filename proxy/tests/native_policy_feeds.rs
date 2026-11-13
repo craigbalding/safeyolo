@@ -753,6 +753,230 @@ fn installed_first_start_failure_recovers_automatically_without_approvals() {
 }
 
 #[test]
+fn installed_named_feed_only_fallback_refresh_preview_restart_and_rollback() {
+    let origin = Origin::new();
+    let temporary = tempfile::tempdir().unwrap();
+    let instance = Instance::new(&temporary.path().join("i"), &origin);
+    let policy_root = instance.root.join("selected-policy");
+    fs::create_dir(&policy_root).unwrap();
+    fs::rename(
+        instance.root.join("policy.toml"),
+        policy_root.join("active.toml"),
+    )
+    .unwrap();
+    let config = instance.root.join("config.toml");
+    fs::write(
+        &config,
+        format!(
+            "policy_file='selected-policy/active.toml'\n{}",
+            fs::read_to_string(&config).unwrap()
+        ),
+    )
+    .unwrap();
+    assert!(
+        !instance
+            .configure(json!({"on_stale":"retain","max_age_seconds":60}))
+            .status
+            .success()
+    );
+    instance.json(&["start"]);
+    // This external candidate resolves its adopted feed in the selected policy
+    // directory, while preserving existing candidate-relative file semantics.
+    let candidate = temporary.path().join("named-candidate.toml");
+    fs::write(
+        &candidate,
+        r#"
+[hosts.'*']
+egress='allow'
+unknown_creds='allow'
+[checks.threat]
+source_id='selected-threats'
+meaning='positive means membership in this selected threat list'
+subject='hostname'
+result_type='finding'
+influences=['advisory']
+implementation_version='feed-membership-1'
+configuration_version='test-1'
+max_age_seconds=60
+source={kind='feed',name='test'}
+[[check_rules]]
+name='research-warning'
+host='*.test'
+stage='request'
+influence='advisory'
+priority=0
+required=true
+when={op='finding',check='threat'}
+on_match='deny'
+on_unavailable='approval'
+"#,
+    )
+    .unwrap();
+    successful(&instance.cli(&["policy", "check", candidate.to_str().unwrap()]));
+    successful(&instance.cli(&["policy", "apply", candidate.to_str().unwrap()]));
+    for _ in 0..3 {
+        assert_eq!(instance.request("a.test"), 428);
+    }
+    assert_eq!(instance.request("outside.invalid"), 200);
+    assert!(
+        !instance
+            .json(&["approvals", "list", "--json"])
+            .to_string()
+            .contains("pending")
+    );
+    origin.feed(FIRST, "\"named-A\"");
+    instance.wait_for("named-only first snapshot recovery", || {
+        instance.request("a.test") == 403 && instance.request("e.test") == 200
+    });
+    let first = instance.source_status()["snapshot"].clone();
+    assert!(
+        instance.json(&["policy", "show"])["list_files"]
+            .as_object()
+            .is_none_or(|lists| lists.is_empty())
+    );
+    // Reuse both membership outcomes before automatic replacement.
+    for host in ["a.test", "e.test"] {
+        assert_eq!(
+            instance.request(host),
+            if host == "a.test" { 403 } else { 200 }
+        );
+    }
+    origin.feed(SECOND, "\"named-B\"");
+    instance.wait_for("named-only automatic A to B replacement", || {
+        instance.request("a.test") == 200 && instance.request("e.test") == 403
+    });
+    successful(
+        &instance
+            .configure(json!({"on_stale":"retain","cadence_seconds":86400,"max_age_seconds":60})),
+    );
+    let second = fs::read(policy_root.join("data/policy-feeds/test/accepted.json")).unwrap();
+    instance.wait_for("named source configuration activated", || {
+        instance.json(&["policy", "show"])["feed_sources"]["test"]["saved_matches_active"] == true
+    });
+    let active = instance.json(&["policy", "show"]);
+    assert_eq!(
+        active["feed_sources"]["test"]["active_snapshot"],
+        instance.source_status()["snapshot"]
+    );
+    assert_eq!(active["feed_sources"]["test"]["saved_matches_active"], true);
+    let mut last_preview = Value::Null;
+    for (host, action, status) in [("a.test", "allow", 200), ("e.test", "deny", 403)] {
+        let request = instance.root.join("request.json");
+        fs::write(&request,serde_json::to_vec(&json!({"agent":"alice","host":host,"port":80,"scheme":"http","method":"GET","path":"/"})).unwrap()).unwrap();
+        let before = origin.requests.lock().unwrap().len();
+        let preview = instance.json(&[
+            "policy",
+            "evaluate",
+            candidate.to_str().unwrap(),
+            request.to_str().unwrap(),
+        ]);
+        assert_eq!(preview["result"]["action"], action, "{preview}");
+        let evidence = &preview["result"]["stages"][1]["evidence"]["threat"];
+        assert_eq!(
+            evidence["result"]["source"]["source_observed_at_ms"],
+            Value::Null
+        );
+        assert_eq!(
+            evidence["feed_version"]["snapshot_version"],
+            instance.source_status()["snapshot"]["version"]
+        );
+        assert_eq!(
+            origin.requests.lock().unwrap().len(),
+            before,
+            "offline preview contacted a source or destination"
+        );
+        assert_eq!(instance.request(host), status);
+        if status == 403 {
+            let requests = origin.requests.lock().unwrap();
+            let additional = &requests[before..];
+            assert!(
+                !additional
+                    .iter()
+                    .any(|request| request.starts_with(&format!("GET http://{host}/ "))),
+                "denied HTTP operation reached upstream: {additional:?}"
+            );
+            println!(
+                "denied request observation: {} parent transport records, {} HTTP requests",
+                additional.len(),
+                additional
+                    .iter()
+                    .filter(|request| !request.is_empty())
+                    .count()
+            );
+        }
+        last_preview = preview;
+    }
+
+    origin.reply(
+        ENDPOINT,
+        response(200, "text/html", b"<html>sign in</html>\n", ""),
+    );
+    assert!(
+        !instance
+            .cli(&["policy", "feeds", "refresh", "test"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        fs::read(policy_root.join("data/policy-feeds/test/accepted.json")).unwrap(),
+        second
+    );
+    assert_eq!(instance.request("a.test"), 200);
+    assert_eq!(instance.request("e.test"), 403);
+    let retry = instance.source_status()["next_refresh"].clone();
+    instance.json(&["stop"]);
+    instance.json(&["start"]);
+    assert_eq!(instance.source_status()["next_refresh"], retry);
+    assert_eq!(instance.request("e.test"), 403);
+    instance.json(&["policy", "feeds", "rollback", "test"]);
+    instance.wait_for("named-only rollback", || {
+        instance.request("a.test") == 403 && instance.request("e.test") == 200
+    });
+    assert_eq!(instance.source_status()["snapshot"], first);
+    assert!(
+        !instance
+            .configure(json!({"on_stale":"retain","cadence_seconds":86400,"max_age_seconds":1}))
+            .status
+            .success()
+    );
+    instance.wait_for(
+        "named fallback overrides local-list retain semantics",
+        || instance.request("a.test") == 428 && instance.request("e.test") == 428,
+    );
+    assert_eq!(instance.request("outside.invalid"), 200);
+    assert_eq!(instance.source_status()["stale"], true);
+    instance.json(&["stop"]);
+    instance.json(&["start"]);
+    assert_eq!(instance.request("a.test"), 428);
+    assert_eq!(instance.request("e.test"), 428);
+    origin.feed(b"b.test\nc.test\nd.test\nf.test\n", "\"named-C\"");
+    successful(
+        &instance
+            .configure(json!({"on_stale":"retain","cadence_seconds":86400,"max_age_seconds":60})),
+    );
+    instance.wait_for("named-only recovery", || {
+        instance.request("f.test") == 403 && instance.request("a.test") == 200
+    });
+    assert!(
+        !instance
+            .json(&["approvals", "list", "--json"])
+            .to_string()
+            .contains("pending")
+    );
+    for output in [
+        last_preview.to_string(),
+        instance.json(&["policy", "show"]).to_string(),
+        fs::read_to_string(instance.root.join("logs/proxy.log")).unwrap(),
+    ] {
+        assert!(!output.contains("private-test-key"));
+        assert!(!output.contains("synthetic-query-secret"));
+    }
+    println!(
+        "installed named-only feed: selected policy context, first failure/recovery, automatic A/B change, cache replacement, offline preview/live agreement, rejection retention, restart, rollback, expiry fallback, no approval storm, recovery and upstream effects passed"
+    );
+}
+
+#[test]
 fn pending_acquisition_rechecks_source_adoption_and_retains_interrupted_schedule() {
     let origin = Origin::new();
     origin.feed(FIRST, "\"one\"");

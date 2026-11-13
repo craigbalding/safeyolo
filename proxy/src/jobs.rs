@@ -63,7 +63,7 @@ pub struct JobSpec {
 }
 
 impl JobSpec {
-    fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         if self.gate_id.is_empty()
             || self.argv.is_empty()
             || self.argv[0].is_empty()
@@ -416,6 +416,26 @@ async fn spawn(name: &str, directory: &Path) -> Result<tokio::process::Child, Er
 
 /// This entry point is host-only. The Agent API does not expose job creation.
 pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<JobResult, Error> {
+    run_inner(config, spec, input, None, &[]).await
+}
+
+pub(crate) async fn run_check(
+    config: &Path,
+    spec: &JobSpec,
+    input: &Path,
+    cancel: tokio::sync::watch::Receiver<bool>,
+    checks: &[String],
+) -> Result<JobResult, Error> {
+    run_inner(config, spec, Some(input), Some(cancel), checks).await
+}
+
+async fn run_inner(
+    config: &Path,
+    spec: &JobSpec,
+    input: Option<&Path>,
+    mut cancel: Option<tokio::sync::watch::Receiver<bool>>,
+    checks: &[String],
+) -> Result<JobResult, Error> {
     spec.validate()?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -471,7 +491,10 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
     let directory = root.join("agents").join(&name);
     fs::create_dir_all(&directory)?;
     let delegation = if spec.network {
-        Some(network::Client::connect(&config, &directory, spec, &generation).await?)
+        Some(
+            network::Client::connect_with_checks(&config, &directory, spec, &generation, checks)
+                .await?,
+        )
     } else {
         None
     };
@@ -519,7 +542,10 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
                 };
                 Ok::<_, Error>((rootfs, outcome))
             };
-            let result = work.await;
+            let result = tokio::select! {
+                result = work => result,
+                _ = check_cancelled(&mut cancel) => Err("policy check job cancelled".into()),
+            };
             let cleanup = host_platform::stop_sandbox(&name).await;
             if let Err(error) = cleanup {
                 cleanup_failed = true;
@@ -543,7 +569,7 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
         #[cfg(target_os = "macos")]
         {
             macos::run(&name, &root, &directory, &host, &guest, spec, &generation,
-                &environment, installation, &mut interrupt, &mut terminate, &mut cleanup_failed).await
+                &environment, installation, &mut interrupt, &mut terminate, &mut cleanup_failed, &mut cancel).await
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         { let _ = (host, guest); Err::<(Value, Option<Outcome>, Output, Output, Option<String>), Error>("jobs require Linux or macOS".into()) }
@@ -598,6 +624,17 @@ pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<
         stdout,
         stderr,
     })
+}
+
+pub(super) async fn check_cancelled(cancel: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    match cancel {
+        Some(cancel) => {
+            if !*cancel.borrow() {
+                let _ = cancel.changed().await;
+            }
+        }
+        None => std::future::pending().await,
+    }
 }
 
 pub async fn command(config: &Path, args: &[String]) -> Result<i32, Error> {

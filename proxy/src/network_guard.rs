@@ -105,13 +105,20 @@ impl Default for Options {
 /// retains the policy snapshot so the preceding addon-enable query is unchanged.
 pub enum Pdp<'a> {
     Ready(&'a Policy),
+    /// Read-only candidate evaluation uses the same guard without quota charge.
+    Preview(&'a Policy),
     Unconfigured,
-    Failed { policy: &'a Policy, reason: &'a str },
+    Failed {
+        policy: &'a Policy,
+        reason: &'a str,
+    },
 }
 impl Pdp<'_> {
     fn policy(&self) -> Option<&Policy> {
         match self {
-            Self::Ready(policy) | Self::Failed { policy, .. } => Some(policy),
+            Self::Ready(policy) | Self::Preview(policy) | Self::Failed { policy, .. } => {
+                Some(policy)
+            }
             Self::Unconfigured => None,
         }
     }
@@ -422,7 +429,8 @@ impl NetworkGuard {
                 query_string: query,
             });
             let decision = match pdp {
-                Pdp::Ready(policy) => evaluate_policy(policy, request, now_ms),
+                Pdp::Ready(policy) => evaluate_policy(policy, request, now_ms, true),
+                Pdp::Preview(policy) => evaluate_policy(policy, request, now_ms, false),
                 Pdp::Failed { reason, .. } => pdp_error(reason.into()),
                 Pdp::Unconfigured => unreachable!(),
             };
@@ -658,7 +666,12 @@ fn hostname_violation(request: Request<'_>, enabled: bool) -> Option<Violation> 
     dangerous_domain(domain).then_some(Violation::Homoglyph)
 }
 
-fn evaluate_policy(policy: &Policy, request: Request<'_>, now_ms: f64) -> PdpDecision {
+fn evaluate_policy(
+    policy: &Policy,
+    request: Request<'_>,
+    now_ms: f64,
+    consume: bool,
+) -> PdpDecision {
     // Source and native policy both treat one DNS root dot as the same local probe.
     if crate::is_probe_host(request.host) {
         return PdpDecision {
@@ -672,7 +685,7 @@ fn evaluate_policy(policy: &Policy, request: Request<'_>, now_ms: f64) -> PdpDec
     let decision = match policy.evaluate_for_run(
         request.policy_request(),
         now_ms,
-        true,
+        consume,
         request.identity.run(),
     ) {
         Ok(decision) => decision,

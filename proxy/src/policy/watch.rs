@@ -61,7 +61,10 @@ impl Policy {
         }
         let lists = lists_max_mtime(path)?;
         let feeds = modified(&path.with_file_name("policy-feeds.toml")).unwrap_or(0.);
-        Ok(changed || lists > previous.lists || feeds != previous.feeds)
+        Ok(changed
+            || lists > previous.lists
+            || feeds != previous.feeds
+            || !self.named_checks().feeds_current())
     }
 
     /// Capture the watermark before reading source content. A later write must

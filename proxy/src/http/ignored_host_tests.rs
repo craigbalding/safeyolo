@@ -444,6 +444,7 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
         let runtime = proxy.runtime.read().unwrap().clone();
         let identity = ConnectionIdentity {
             authorization_principal: None,
+            policy_checks: Vec::new(),
             ingress_binding: None,
             run: None,
             agent_id: "alice".into(),
@@ -474,6 +475,7 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
             open_egress_for_flow(
                 &runtime,
                 &AllowedRequest {
+                    state: Some(&proxy.runtime),
                     recording: None,
                     tasks: &crate::connection_tasks::ConnectionTasks::new(
                         tokio::sync::watch::channel(false).1,
@@ -630,6 +632,7 @@ fn pending_guard_drop_or_explicit_error_consumes_terminal_ownership_once() {
     ));
     let identity = ConnectionIdentity {
         authorization_principal: None,
+        policy_checks: Vec::new(),
         ingress_binding: None,
         run: None,
         agent_id: "alice".into(),

@@ -9,9 +9,9 @@ accepted data.
 Sources supply membership evidence. Rules in `policy.toml` assign the effect.
 No source is enabled by default. In particular, ad and tracker blocking is an
 optional workload choice. Absence from a list does not establish that a host is
-safe. This interface supports local-list membership; it does not supply the
-shared named-check result and composition interface tracked in
-[#1543](https://github.com/craigbalding/safeyolo/issues/1543).
+safe. Accepted snapshots support both local-list host rules and the shared
+[named-check evaluator](policy-checks.md). The downloader assigns no rule
+precedence.
 
 ## Configure a source
 
@@ -21,9 +21,10 @@ working directory and the installed `safeyolo` and `curl` commands. The acquisit
 inherits the host's proxy and certificate authority settings.
 
 The optional HaGeZi example selects threat-oriented DNS suffix data. Its
-unavailable and stale behavior denies network requests governed by a policy
-that references it. Review the [source choices](#source-choices) before selecting
-one. The following command only writes an example to the current directory:
+local-list unavailable and stale behavior denies governed network requests.
+Named checks use their rule's explicit fallback. Review the
+[source choices](#source-choices) before selecting one. The following command
+only writes an example to the current directory:
 
 ```sh
 safeyolo policy feeds example hagezi > sources.toml
@@ -84,6 +85,30 @@ activate through the policy watcher. Local filename lists remain usable, for
 example `registries = "lists/registries.txt"` with a `$registries` host rule.
 Compilation and candidate checking never download a source or visit its members.
 
+## Use a source in named rules
+
+After configuring a source, a hostname check can select its accepted snapshot
+with `source = { kind = "feed", name = "hagezi" }`. Define the check and its
+rules through [named checks](policy-checks.md#use-managed-feed-evidence).
+Positive means membership in that source's declared hostname or suffix scope.
+Absence from the list does not establish safety.
+
+No `[lists]` entry or `$list` host rule is needed. This lets an advisory rule
+apply only to its selected host, agent and stage. Adding a local-list reference
+also activates that path's independent failure behavior.
+
+Named evidence uses the source's true evidence deadline and the check's age
+limits. Missing or expired evidence selects the named rule's `on_unavailable`,
+including when the source uses local-list `on_stale = "retain"`. An outage
+preserves usable accepted evidence until expiry. Repeated reads, HTTP 304,
+rejected refreshes, restart and rollback cannot extend the source deadline.
+
+`policy show` reports named sources under `feed_sources`, including the captured
+snapshot, stale status, local binding and whether saved inputs still match.
+The [named-check contract](policy-checks.md#use-managed-feed-evidence) defines
+truthful provenance, version invalidation and offline preview. The existing
+watcher observes sources referenced only by checks.
+
 ## Source choices
 
 These examples were researched against the primary provider documentation on
@@ -121,7 +146,7 @@ fields. Names use 1–80 ASCII letters, digits, underscores or hyphens.
 | `max_change_percent` | Allowed additions/removals as a percentage of the union of previous and new members, from 0 to 100. A complete replacement is 100 percent. The first snapshot still requires all other validation. |
 | `timeout_seconds` | Total acquisition deadline, including redirects. Response headers are capped at 64 KiB per request. One worker refreshes sources sequentially. |
 | `retry_seconds`, `max_retry_seconds` | Initial and maximum exponential retry delay after failure. A retry reservation is saved before I/O so interruption and restart cannot reset the schedule. Conditional requests use accepted ETag/Last-Modified validators only at the same acquisition endpoint. |
-| `on_unavailable`, `on_stale` | `on_unavailable = "deny"` blocks governed network requests until a first snapshot is available. `on_stale = "deny"` also blocks them at expiry. Explicit `on_stale = "retain"` keeps the old membership rules and ordinary non-member policy; status still reports the stale evidence. Retain never turns a missing first snapshot into an empty accepted list. |
+| `on_unavailable`, `on_stale` | For local-list host rules, `on_unavailable = "deny"` blocks governed network requests until a first snapshot is available. `on_stale = "deny"` also blocks them at expiry. Explicit `on_stale = "retain"` keeps the old membership rules and ordinary non-member policy; status still reports the stale evidence. Retain never turns a missing first snapshot into an empty accepted list. Named checks instead select their rule's `on_unavailable` when evidence is missing or expired. |
 
 Changing cadence, validation limits or stale behavior preserves accepted
 content. Changing the endpoint, adopted redirect destinations, format, scope or

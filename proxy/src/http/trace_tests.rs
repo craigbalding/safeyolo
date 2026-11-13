@@ -241,6 +241,7 @@ fn append_guard_trace(
     };
     let identity_for_trace = ConnectionIdentity {
         authorization_principal: None,
+        policy_checks: Vec::new(),
         ingress_binding: None,
         run: None,
         agent_id,
@@ -402,6 +403,7 @@ fn credential_trace_store_failure_does_not_change_guard_outcome() {
     let policy = trace_guard_policy("allow", true);
     let identity = ConnectionIdentity {
         authorization_principal: None,
+        policy_checks: Vec::new(),
         ingress_binding: None,
         run: None,
         agent_id: "alice".into(),
@@ -686,6 +688,7 @@ async fn failed_network_audit_retains_only_reached_trace_steps() {
         runtime.audit.poison_for_test();
         let identity = ConnectionIdentity {
             authorization_principal: None,
+            policy_checks: Vec::new(),
             ingress_binding: None,
             run: None,
             agent_id: "alice".into(),
@@ -757,6 +760,7 @@ async fn trace_store_failure_does_not_change_guard_decision_or_counts() {
         }));
         let identity = ConnectionIdentity {
             authorization_principal: None,
+            policy_checks: Vec::new(),
             ingress_binding: None,
             run: None,
             agent_id: "alice".into(),

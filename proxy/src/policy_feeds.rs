@@ -1,10 +1,11 @@
 //! Trusted host acquisition for native named lists. The existing proxy control
 //! loop drives refresh; this module does not assign policy effects to members.
 
+pub mod checks;
 mod download;
 mod parse;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use crate::Error;
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,7 @@ use std::{
 };
 use zeroize::Zeroizing;
 
-pub const HELP: &str = "safeyolo policy feeds example hagezi|stevenblack\nsafeyolo [--root ROOT] policy feeds configure FILE\nsafeyolo [--root ROOT] policy feeds status\nsafeyolo [--root ROOT] policy feeds refresh NAME\nsafeyolo [--root ROOT] policy feeds rollback NAME\n\nconfigure validates and saves private host source configuration, then attempts the first due refresh. A failed acquisition keeps the configuration and retry schedule. The running proxy refreshes sources automatically through its policy control loop; restart resumes persisted deadlines and accepted snapshots. No proxy means no automatic refresh.\nstatus reports retained data and schedule, not proof of live activation. Use policy show for the running policy.\nrefresh explicitly attempts one source now. rollback selects its previous accepted snapshot without changing its evidence age. Policy watchers activate changed snapshots; source configuration never grants network access.\nReference a source in policy.toml with [lists] name = { feed = 'SOURCE' }, then [hosts.'$name'] egress = 'deny' (or another explicit policy effect). Local list filenames remain supported.\nSee docs/policy-feeds.md for formats, limits, failure behavior and researched examples. Endpoints belong in private host configuration, never guest policy or command arguments.";
+pub const HELP: &str = "safeyolo policy feeds example hagezi|stevenblack\nsafeyolo [--root ROOT] policy feeds configure FILE\nsafeyolo [--root ROOT] policy feeds status\nsafeyolo [--root ROOT] policy feeds refresh NAME\nsafeyolo [--root ROOT] policy feeds rollback NAME\n\nconfigure validates and saves private host source configuration, then attempts the first due refresh. A failed acquisition keeps the configuration and retry schedule. The running proxy refreshes sources automatically through its policy control loop; restart resumes persisted deadlines and accepted snapshots. No proxy means no automatic refresh.\nstatus reports retained data and schedule, not proof of live activation. Use policy show for the running policy.\nrefresh explicitly attempts one source now. rollback selects its previous accepted snapshot without changing its evidence age. Policy watchers activate changed snapshots; source configuration never grants network access.\nReference a source in policy.toml with [lists] name = { feed = 'SOURCE' }, then [hosts.'$name'] egress = 'deny' (or another explicit policy effect). Local list filenames remain supported. For a named hostname check use source = { kind = 'feed', name = 'SOURCE' }; its rule selects the unavailable fallback.\nSee docs/policy-feeds.md for formats, limits, failure behavior and researched examples. Endpoints belong in private host configuration, never guest policy or command arguments.";
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

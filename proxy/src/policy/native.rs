@@ -332,6 +332,35 @@ impl Policy {
                 }
             }
         }
+        if let Some(checks) = document
+            .get_mut("checks")
+            .and_then(toml_edit::Item::as_table_like_mut)
+        {
+            for (_, check) in checks.iter_mut() {
+                if let Some(source) = check.get_mut("source")
+                    && source
+                        .get("kind")
+                        .and_then(toml_edit::Item::as_str)
+                        .is_some_and(|kind| matches!(kind, "recorded" | "job"))
+                    && let field =
+                        if source.get("kind").and_then(toml_edit::Item::as_str) == Some("job") {
+                            "spec"
+                        } else {
+                            "path"
+                        }
+                    && let Some(path) = source.get(field).and_then(toml_edit::Item::as_str)
+                {
+                    let path = Path::new(path);
+                    if path.is_relative() {
+                        let path = parent.join(path);
+                        source[field] = toml_edit::value(
+                            path.to_str()
+                                .ok_or_else(|| invalid("check evidence path must be Unicode"))?,
+                        );
+                    }
+                }
+            }
+        }
         Ok(Zeroizing::new(super::restore_large_toml_integers(
             &document.to_string(),
             &context,
@@ -498,11 +527,20 @@ impl Policy {
     }
 
     pub(crate) fn reload_native_source(&self, source: &str, path: &Path) -> Result<Self> {
+        self.reload_native_source_at(source, path, super::current_time_ms())
+    }
+
+    pub(crate) fn reload_native_source_at(
+        &self,
+        source: &str,
+        path: &Path,
+        now_ms: f64,
+    ) -> Result<Self> {
         let (mut replacement, _) = Self::native_source_with_expired_hosts(
             source,
             path,
             self.gateway().and_then(|gateway| gateway.registry()),
-            super::current_time_ms(),
+            now_ms,
             Some(self),
         )?;
         replacement.budgets = self.budgets.clone();

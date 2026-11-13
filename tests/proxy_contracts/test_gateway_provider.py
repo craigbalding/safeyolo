@@ -8,7 +8,8 @@ import stat
 import subprocess
 import sys
 import time
-from contextlib import contextmanager
+import uuid
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,8 @@ agent_id = "ag-trusted-alice"
 capability = "assessment"
 [agents.bob]
 agent_id = "ag-trusted-bob"
+[agents."gate:proof".services.proofspot]
+capability = "assessment"
 [agents.proofspot]
 agent_id = "ag-provider"
 '''
@@ -285,10 +288,11 @@ def _provider_run(directory, monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Fake runsc provider fixture requires Linux")
-@pytest.mark.parametrize("parent_enabled,hosts", [
-    (False, None), (True, None), (True, ["proofspot.safeyolo.internal"]), (True, ["unmatched.invalid"]),
-], ids=["direct", "parent", "selected-host", "unselected-host"])
-def test_gateway_routes_only_authorized_calls_to_provider_stream(tmp_path, monkeypatch, parent_enabled, hosts):
+@pytest.mark.parametrize("parent_enabled,hosts,transient", [
+    (False, None, False), (True, None, False), (True, ["proofspot.safeyolo.internal"], False),
+    (True, ["unmatched.invalid"], False), (False, None, True),
+], ids=["direct", "parent", "selected-host", "unselected-host", "transient-gate"])
+def test_gateway_routes_only_authorized_calls_to_provider_stream(tmp_path, monkeypatch, parent_enabled, hosts, transient):
     directory = tmp_path / "provider"
     directory.mkdir()
     (directory / "builtin").mkdir()
@@ -320,6 +324,8 @@ case "$3" in
 esac
 ''')
     runsc.chmod(runsc.stat().st_mode | stat.S_IXUSR)
+    admin_token = directory / "admin-token"
+    admin_token.write_text("fixture-host-delegation-token")
     stopped = directory / "provider-stopped"
     closed = directory / "provider-port-closed"
     with _origin("127.0.0.1") as origin, _origin("127.0.0.1") as parent, _provider_run(directory, monkeypatch):
@@ -333,10 +339,10 @@ esac
             gateway_services_dir=directory / "services",
             gateway_builtin_services_dir=directory / "builtin",
             agents=("alice", "bob"), network_guard_enabled=True,
-            network_guard_block=True,
+            network_guard_block=True, admin_port=0, admin_api_token_file=admin_token,
             parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}" if parent_enabled else None,
             parent_proxy_hosts=hosts,
-        ) as proxy:
+        ) as proxy, ExitStack() as cleanup:
             status, _, body = request(
                 proxy.paths["alice"], AGENT_API + "/gateway/services",
                 headers={"Authorization": "Bearer fixture-provider-agent-api-token"},
@@ -344,6 +350,39 @@ esac
             assert status == 200, body
             token = json.loads(body)["authorized"]["proofspot"]["token"]
             assert token.startswith("sgw_")
+            expected_id, expected_name = "ag-trusted-alice", "alice"
+            original_policy = (directory / "policy.toml").read_bytes()
+            if transient:
+                generation = uuid.uuid4().hex
+                expected_id, expected_name = f"job-{generation}", "gate:proof"
+                delegated = directory / "gate.sock"
+                port = json.loads(proxy.readiness_file.read_text())["admin_port"]
+                control = socket.create_connection(("127.0.0.1", port), timeout=5)
+                cleanup.callback(control.close)
+                payload = json.dumps({"gate_id": "proof", "run_id": generation,
+                                      "socket_path": str(delegated)}).encode()
+                control.sendall((
+                    "POST /admin/jobs/delegate HTTP/1.1\r\nHost: fixture\r\n"
+                    "Authorization: Bearer fixture-host-delegation-token\r\n"
+                    "Connection: upgrade\r\nUpgrade: safeyolo-job\r\n"
+                    f"Content-Length: {len(payload)}\r\n\r\n"
+                ).encode() + payload)
+                header = bytearray()
+                while not header.endswith(b"\r\n\r\n"):
+                    part = control.recv(1)
+                    assert part, "job delegation closed before upgrade"
+                    header.extend(part)
+                assert header.startswith(b"HTTP/1.1 101"), header
+                def exact(size):
+                    data = bytearray()
+                    while len(data) < size:
+                        part = control.recv(size - len(data))
+                        assert part, "job delegation closed before token delivery"
+                        data.extend(part)
+                    return bytes(data)
+                tokens = json.loads(exact(int.from_bytes(exact(8), "big")))
+                token = tokens["proofspot"]
+                proxy.paths["alice"] = str(delegated)
             url = "http://proofspot.safeyolo.internal:8088/api/v1/allowed?sig=%252F&tag=a&tag=b"
 
             for agent, headers, target in [
@@ -383,11 +422,13 @@ esac
             assert _header_values(wire, b"host") == [b"proofspot.safeyolo.internal:8088"]
             assert _header_values(wire, b"authorization") == []
             assert _header_values(wire, b"x-safeyolo-agent") == []
-            assert _header_values(wire, b"x-safeyolo-agent-id") == [b"ag-trusted-alice"]
-            assert _header_values(wire, b"x-safeyolo-agent-name") == [b"alice"]
+            assert _header_values(wire, b"x-safeyolo-agent-id") == [expected_id.encode()]
+            assert _header_values(wire, b"x-safeyolo-agent-name") == [expected_name.encode()]
             assert token.encode() not in wire
             assert wire.split(b"\r\n\r\n", 1)[1] == b"provider-request-body"
             assert not proxy.events("traffic.egress")
+            assert (directory / "policy.toml").read_bytes() == original_policy
+            assert not (directory / "agents" / expected_id).exists()
 
             closed.touch()
             status, _, _ = request(
