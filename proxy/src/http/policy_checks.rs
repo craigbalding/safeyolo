@@ -162,8 +162,9 @@ fn test_policy(
     // is a JSON format contract, not a TOML integer representation.
     let checks: checks::Checks =
         serde_json::from_value(json!({"checks":checks,"check_rules":rules})).unwrap();
+    // Root fields such as work_bindings must precede the policy tables.
     let source = format!(
-        "[hosts.'*']\negress='allow'\n[agents.alice.hosts.'*']\negress='allow'\n[controls.network]\nhomoglyph=false\n[controls.circuits]\nenabled=false\n{}",
+        "{}\n[hosts.'*']\negress='allow'\n[agents.alice.hosts.'*']\negress='allow'\n[controls.network]\nhomoglyph=false\n[controls.circuits]\nenabled=false\n",
         toml::to_string(&checks).unwrap()
     );
     std::fs::write(directory.join("policy.toml"), source).unwrap();
@@ -260,7 +261,10 @@ mod tests {
         Arc<AtomicUsize>,
         tokio::task::JoinHandle<()>,
     ) {
-        let (listener, address) = crate::test_owned_endpoint::bind_on(ip.parse().unwrap()).await;
+        // These tests disable circuits and exercise named checks on both
+        // standard loopback families. They do not need loopback aliases.
+        let listener = tokio::net::TcpListener::bind((ip, 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
         let contacts = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(AtomicUsize::new(0));
         let accepted = contacts.clone();
@@ -432,7 +436,7 @@ mod tests {
         }
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
-        let (address, contacts, requests, origin) = origin("127.0.0.2").await;
+        let (address, contacts, requests, origin) = origin("127.0.0.1").await;
         let ip_file = root.join("ip.json");
         let path_file = root.join("path.json");
         let ip = check(&ip_file, "ip");
@@ -476,10 +480,11 @@ mod tests {
             "IP denial precedes the actual connect"
         );
         let active = proxy.runtime.read().unwrap().policy.clone().unwrap();
+        let host = address.ip().to_string();
         let preview = active
             .evaluate_candidate(&checks::Request {
                 agent: Some("alice"),
-                host: "127.0.0.2",
+                host: &host,
                 port: address.port(),
                 scheme: "http",
                 method: "GET",
@@ -547,7 +552,7 @@ mod tests {
         }
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
-        let (parent, contacts, _, origin) = origin("127.0.0.2").await;
+        let (parent, contacts, _, origin) = origin("127.0.0.1").await;
         let file = root.join("ip.json");
         let ip = check(&file, "ip");
         write_records(
@@ -587,7 +592,7 @@ mod tests {
         use std::{ffi::CString, os::unix::fs::OpenOptionsExt};
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
-        let (address, contacts, _, origin) = origin("127.0.0.2").await;
+        let (address, contacts, _, origin) = origin("127.0.0.1").await;
         let file = root.join("held-provider.json");
         let name = CString::new(file.to_str().unwrap()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
@@ -671,10 +676,14 @@ mod redirect_tests {
         }
         let root = tempfile::tempdir().unwrap();
         let root = root.path();
-        let (first, address) =
-            crate::test_owned_endpoint::bind_on("127.0.0.2".parse().unwrap()).await;
-        let (blocked, other) =
-            crate::test_owned_endpoint::bind_on("127.0.0.3".parse().unwrap()).await;
+        // Distinct standard loopback IPs keep the redirected IP evidence
+        // independent on hosts without additional IPv4 loopback aliases.
+        let first = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = first.local_addr().unwrap();
+        let (blocked, other) = crate::test_owned_endpoint::bind_on("::1".parse().unwrap()).await;
+        assert_ne!(address.ip(), other.ip());
         let file = root.join("results.json");
         let definition = json!({"source_id":"redirect-fixture","meaning":"controlled IP exclusion","subject":"ip","result_type":"finding","influences":["hard_exclusion"],"implementation_version":"fixture-1","configuration_version":"config-1","max_age_seconds":60,"source":{"kind":"recorded","path":file}});
         let check: Check = serde_json::from_value(definition.clone()).unwrap();

@@ -194,9 +194,15 @@ async fn held_response_cleanup(shutdown: bool) {
     };
     // Listener teardown gives accepted transports a ten-second grace before
     // cancelling and joining them. Wait for that existing cleanup contract.
-    tokio::time::timeout(Duration::from_secs(12), client.revoked())
-        .await
-        .unwrap();
+    let delegated_listener = client.service_access().unwrap().0;
+    let revoked = tokio::time::timeout(Duration::from_secs(12), client.revoked()).await;
+    assert!(
+        revoked.is_ok(),
+        "delegation cleanup exceeded twelve seconds: shutdown={shutdown}, shutdown_finished={:?}, request_finished={}, delegated_listener_exists={}",
+        shutdown_task.as_ref().map(|task| task.is_finished()),
+        pending.is_finished(),
+        delegated_listener.exists(),
+    );
     // The provider's delayed successful bytes cannot restore the old listener.
     let _ = stream
         .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
