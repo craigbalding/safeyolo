@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -180,6 +181,28 @@ def test_shell_normalization_preserves_argument_boundaries_and_literals():
         changes.shell_definition("echo 'unterminated\n")
 
 
+@pytest.mark.parametrize("path", ["scripts/guest_probe.sh", "tests/blackbox/test_probe.py"])
+def test_interpreter_changes_are_material(sources, path):
+    body = "exit 1\n" if path.endswith(".sh") else "raise SystemExit(1)\n"
+    interpreter = "#!/bin/sh\n" if path.endswith(".sh") else "#!/usr/bin/env python3\n"
+    files = sources | {path: interpreter + body}
+    if path.endswith(".sh"):
+        files[TEST] += f'\nPROBE = "{path}"\n'
+    report = compare(files, {path: "#!/bin/true\n" + body})
+    assert report["delta_id"]
+    assert report["changes"][0]["status"] == "material"
+    assert compare(files, {path: interpreter + "# explanatory comment\n" + body})["delta_id"] is None
+
+
+@pytest.mark.parametrize("path", ["proxy/tests/new_denial.rs", "proxy/tests/new_denial/main.rs"])
+def test_new_automatic_rust_test_targets_are_material(sources, path):
+    report = compare(sources, {path: '#[test]\nfn denied() { assert_eq!(origin_count(), 0); }\n'})
+    assert report["delta_id"]
+    assert report["changes"][0]["status"] == "material"
+    # A new, unreferenced nested helper is not an automatic Cargo target.
+    assert compare(sources, {"proxy/tests/helpers/unused.rs": "fn unused() {}\n"})["delta_id"] is None
+
+
 def test_explicit_outside_catalogue_and_unrelated_workflow_helpers_stay_visible(sources):
     path = "tests/proxy_contracts/test_event_log_reader.py"
     files = sources | {path: "def test_display():\n    assert True\n"}
@@ -260,6 +283,8 @@ class GitHub:
         self.posts = []
         self.associated = []
         self.head = HEAD
+        self.merged_at = None
+        self.merge_commit = None
 
     def api(self, endpoint, payload=None):
         path = endpoint.split("?", 1)[0]
@@ -270,7 +295,8 @@ class GitHub:
             self.posts.append((path, comment))
             return comment
         if path == "pulls/123":
-            return {"head": {"sha": self.head}}
+            return {"head": {"sha": self.head}, "merged_at": self.merged_at,
+                    "merge_commit_sha": self.merge_commit}
         if path.endswith("/pulls"):
             return self.associated
         return self.comments.get(path, [])
@@ -280,6 +306,7 @@ class GitHub:
 def github(monkeypatch):
     fake = GitHub()
     monkeypatch.setattr(notices, "api", fake.api)
+    monkeypatch.setenv("GITHUB_RUN_ID", "100")
     return fake
 
 
@@ -296,6 +323,17 @@ def test_craig_authored_draft_fork_later_revision_retry_and_merge(sources, githu
     assert len(github.posts) == 2
 
 
+def test_routine_revision_and_rebase_keep_the_latest_pr_notice(sources, github):
+    report = compare(sources, {TEST: ORIGINAL.replace("== 0", "== 1")})
+    assert notices.publish(report, event(), "pull_request_target")["status"] == "published"
+    updated = event()
+    updated["pull_request"]["head"]["sha"] = github.head = "c" * 40
+    updated["pull_request"]["base"]["sha"] = "d" * 40
+    report = report | {"base": "d" * 40, "trusted_base": "d" * 40, "head": github.head}
+    assert notices.publish(report, updated, "pull_request_target")["status"] == "duplicate"
+    assert len(github.posts) == 1
+
+
 def test_direct_default_change_and_reverse_publication_order(sources, github):
     report = compare(sources, {RUST: sources[RUST].replace(", 1", ", 2")})
     result = notices.publish(report, event("push"), "push")
@@ -303,8 +341,53 @@ def test_direct_default_change_and_reverse_publication_order(sources, github):
     assert github.posts[0][0] == "issues/1557/comments"
     body = github.posts[0][1]["body"]
     assert "BB-10" in body and f"/compare/{BASE}..{HEAD}" in body and "Direct default-branch change" in body
+    github.merged_at, github.merge_commit = "now", HEAD
     assert notices.publish(report, event(), "pull_request_target")["status"] == "duplicate"
     assert notices.publish(report, event("push"), "push")["status"] == "duplicate"
+
+
+def test_recurring_direct_changes_notify_but_each_event_retry_stays_quiet(sources, github, monkeypatch):
+    files = sources
+    for number, expected in enumerate((1, 0, 1), start=1):
+        base, head = f"{number:040x}", f"{number + 1:040x}"
+        updated = files | {TEST: ORIGINAL.replace("== 0", f"== {expected}")}
+        report = changes.compare(Source(files, base), Source(updated, head))
+        push = event("push") | {"before": base, "after": head}
+        monkeypatch.setenv("GITHUB_RUN_ID", str(number))
+        assert notices.publish(report, push, "push")["status"] == "published"
+        assert notices.publish(report, push, "push")["status"] == "duplicate"
+        files = updated
+    assert len(github.posts) == 3
+
+
+def test_pr_returning_to_an_earlier_notified_delta_receives_a_fresh_notice(sources, github):
+    for expected in (1, 2, 1):
+        report = compare(sources, {TEST: ORIGINAL.replace("== 0", f"== {expected}")})
+        assert notices.publish(report, event(), "pull_request_target")["status"] == "published"
+        assert notices.publish(report, event(), "pull_request_target")["status"] == "duplicate"
+    assert len(github.posts) == 3
+
+
+def test_unrelated_pr_and_direct_change_do_not_suppress_each_other(sources, github, monkeypatch):
+    report = compare(sources, {TEST: ORIGINAL.replace("== 0", "== 1")})
+    assert notices.publish(report, event("push"), "push")["status"] == "published"
+    assert notices.publish(report, event(), "pull_request_target")["status"] == "published"
+    monkeypatch.setenv("GITHUB_RUN_ID", "101")
+    assert notices.publish(report, event("push"), "push")["status"] == "published"
+    assert len(github.posts) == 3
+
+
+def test_merge_matches_only_the_latest_pr_delta(sources, github, monkeypatch):
+    earlier = compare(sources, {TEST: ORIGINAL.replace("== 0", "== 1")})
+    latest = compare(sources, {TEST: ORIGINAL.replace("== 0", "== 2")})
+    assert notices.publish(earlier, event(), "pull_request_target")["status"] == "published"
+    assert notices.publish(latest, event(), "pull_request_target")["status"] == "published"
+    github.associated = [{"merged_at": "now", "number": 123, "base": {"repo": {"full_name": notices.REPOSITORY}}}]
+    merged = "c" * 40
+    push = event("push") | {"after": merged}
+    assert notices.publish(latest | {"head": merged}, push, "push")["status"] == "duplicate"
+    monkeypatch.setenv("GITHUB_RUN_ID", "101")
+    assert notices.publish(earlier | {"head": merged}, push, "push")["status"] == "published"
 
 
 def test_quiet_sequence_never_reads_or_writes_comments_then_material_notifies(sources, github):
@@ -368,7 +451,8 @@ def test_workflow_does_not_execute_candidate_with_publication_token():
     assert "head.repo" not in steps and "head.ref" not in steps
 
 
-def test_candidate_git_blobs_are_bounded_and_never_executed(tmp_path, sources):
+@pytest.fixture
+def git_sources(tmp_path, sources):
     root = tmp_path / "repo"
     root.mkdir()
 
@@ -384,6 +468,95 @@ def test_candidate_git_blobs_are_bounded_and_never_executed(tmp_path, sources):
         path.write_text(content)
     git("add", ".")
     git("commit", "-qm", "base")
+    return root, git
+
+
+def analyze_cli(root, base, head, output):
+    report, markdown = output / "report.json", output / "report.md"
+    result = subprocess.run([sys.executable, "-I", str(ROOT / changes.SELF), "--repository", str(root),
+                             "--base", base, "--head", head, "--json", str(report), "--markdown", str(markdown)],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return json.loads(report.read_text())
+
+
+def test_interpreter_and_new_cargo_target_reach_analyzer_cli(tmp_path, git_sources):
+    root, git = git_sources
+    script = root / "tests/blackbox/guest_probe.sh"
+    script.write_text("#!/bin/sh\nexit 1\n")
+    script.chmod(0o755)
+    manifest = root / "proxy/Cargo.toml"
+    manifest.write_text('[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2021"\n')
+    (root / "proxy/src").mkdir()
+    (root / "proxy/src/lib.rs").write_text("")
+    git("add", ".")
+    git("commit", "-qm", "executable fixture")
+    base = git("rev-parse", "HEAD")
+    assert subprocess.run([str(script)], check=False).returncode == 1
+    script.write_text("#!/bin/true\nexit 1\n")
+    assert subprocess.run([str(script)], check=False).returncode == 0
+    (root / "proxy/tests/new_denial.rs").write_text("#[test]\nfn denied() { assert!(true); }\n")
+    metadata = subprocess.check_output(["cargo", "metadata", "--offline", "--no-deps", "--format-version", "1",
+                                        "--manifest-path", str(manifest)], text=True)
+    assert any(target["name"] == "new_denial" and "test" in target["kind"]
+               for target in json.loads(metadata)["packages"][0]["targets"])
+    git("add", ".")
+    git("commit", "-qm", "changed interpreter and new test")
+    report = analyze_cli(root, base, git("rev-parse", "HEAD"), tmp_path)
+    assert {row["path"] for row in report["changes"] if row["status"] == "material"} == {
+        "tests/blackbox/guest_probe.sh", "proxy/tests/new_denial.rs"}
+
+
+def test_recurring_git_changes_through_both_clis(tmp_path, git_sources):
+    root, git = git_sources
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    state = tmp_path / "comments.json"
+    fake_gh.write_text(f"#!{sys.executable}\n" + '''import json, pathlib, sys
+state = pathlib.Path(''' + repr(str(state)) + ''')
+rows = json.loads(state.read_text()) if state.exists() else []
+endpoint = sys.argv[2].split('?', 1)[0]
+if '--method' in sys.argv:
+    body = json.load(sys.stdin)['body']
+    comment = {'id': len(rows) + 1, 'body': body, 'user': {'login': 'github-actions[bot]', 'type': 'Bot'},
+               'html_url': 'https://github.com/fixture/comment'}
+    rows.append(comment)
+    state.write_text(json.dumps(rows))
+    print(json.dumps(comment))
+else:
+    print(json.dumps(rows if endpoint.endswith('/comments') else []))
+''')
+    fake_gh.chmod(0o755)
+    event_path, result_path = tmp_path / "event.json", tmp_path / "result.json"
+    publisher_env = os.environ | {"PATH": str(fake_bin) + ":" + str(Path(sys.executable).parent),
+                                 "GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "push",
+                                 "GITHUB_EVENT_PATH": str(event_path)}
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        publisher_env.pop(name, None)
+    for number, expected in enumerate((1, 0, 1), start=1):
+        base = git("rev-parse", "HEAD")
+        (root / TEST).write_text(ORIGINAL.replace("== 0", f"== {expected}"))
+        git("add", ".")
+        git("commit", "-qm", f"oracle {expected}")
+        head = git("rev-parse", "HEAD")
+        report = analyze_cli(root, base, head, tmp_path)
+        assert report["delta_id"]
+        event_path.write_text(json.dumps(event("push") | {"before": base, "after": head}))
+        publisher_env["GITHUB_RUN_ID"] = str(number)
+        for expected_status in ("published", "duplicate"):
+            result = subprocess.run([sys.executable, "-I", str(ROOT / changes.PUBLISHER),
+                                     "--report", str(tmp_path / "report.json"), "--result", str(result_path)],
+                                    env=publisher_env, capture_output=True, text=True)
+            assert result.returncode == 0, result.stderr + result.stdout
+            assert json.loads(result_path.read_text())["status"] == expected_status
+    comments = json.loads(state.read_text())
+    assert len(comments) == 3
+    assert all(comment["body"].count("@craigbalding") == 1 for comment in comments)
+
+
+def test_candidate_git_blobs_are_bounded_and_never_executed(tmp_path, git_sources):
+    root, git = git_sources
     base = git("rev-parse", "HEAD")
     marker = tmp_path / "must-not-exist"
     path = root / TEST
@@ -392,12 +565,7 @@ def test_candidate_git_blobs_are_bounded_and_never_executed(tmp_path, sources):
     git("commit", "-qm", "untrusted head")
     head = git("rev-parse", "HEAD")
     git("checkout", "--detach", base)
-    report, markdown = tmp_path / "report.json", tmp_path / "report.md"
-    result = subprocess.run([sys.executable, "-I", str(ROOT / changes.SELF), "--repository", str(root),
-                             "--base", base, "--head", head, "--json", str(report), "--markdown", str(markdown)],
-                            capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-    assert json.loads(report.read_text())["delta_id"]
+    assert analyze_cli(root, base, head, tmp_path)["delta_id"]
     assert not marker.exists()
     path.unlink()
     path.symlink_to(marker)
@@ -406,6 +574,7 @@ def test_candidate_git_blobs_are_bounded_and_never_executed(tmp_path, sources):
     revision = changes.Revision(root, git("rev-parse", "HEAD"))
     with pytest.raises(ValueError, match="non-regular"):
         revision.read(TEST)
+    report, markdown = tmp_path / "report.json", tmp_path / "report.md"
     failed = subprocess.run([sys.executable, "-I", str(ROOT / changes.SELF), "--repository", str(root),
                              "--base", base, "--head", revision.sha, "--json", str(report), "--markdown", str(markdown)],
                             capture_output=True, text=True)
@@ -440,6 +609,7 @@ def test_report_cannot_inject_another_mention(sources):
     report = compare(sources, {TEST: ORIGINAL.replace("== 0", "== 1")})
     report = copy.deepcopy(report)
     report["changes"][0]["path"] = "bad](@someone)/@craigbalding\n`x`.py"
-    body = notices.notice_body(report, notices.event_context(event(), "pull_request_target"), report["changes"])
+    context = notices.event_context(event(), "pull_request_target") | {"run_id": "100"}
+    body = notices.notice_body(report, context, report["changes"])
     assert body.count("@craigbalding") == 1
     assert "@someone" not in body

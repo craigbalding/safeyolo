@@ -14,7 +14,7 @@ from urllib.parse import quote
 
 REPOSITORY = "craigbalding/safeyolo"
 BOT = "github-actions[bot]"
-MARKER = re.compile(r"<!-- safeyolo-bb-delta:([0-9a-f]{64}) -->")
+MARKER = re.compile(r"<!-- safeyolo-bb-notice:(pr-[1-9][0-9]*|push):([1-9][0-9]*):([0-9a-f]{40}):([0-9a-f]{40}):([0-9a-f]{64}) -->")
 SHA = re.compile(r"[0-9a-f]{40}")
 MAX_REPORT = 1024 * 1024
 
@@ -103,10 +103,42 @@ def validate_report(report: dict, context: dict) -> list[dict]:
     return material
 
 
-def notices(comments: list[dict]) -> set[str]:
-    return {match[1] for comment in comments
+def notices(comments: list[dict]) -> list[dict]:
+    return [{"target": match[1], "run_id": match[2], "base": match[3], "head": match[4], "delta_id": match[5]}
+            for comment in comments
             if comment.get("user", {}).get("login") == BOT and comment["user"].get("type") == "Bot"
-            for match in MARKER.finditer(comment.get("body", ""))}
+            for match in MARKER.finditer(comment.get("body", ""))]
+
+
+def latest_pr_delta(number: int) -> str | None:
+    history = [row for row in notices(pages(f"issues/{number}/comments")) if row["target"] == f"pr-{number}"]
+    return history[-1]["delta_id"] if history else None
+
+
+def already_notified(context: dict, delta: str, current_pr: dict) -> bool:
+    if context["pr"]:
+        # Only the latest material PR notice describes its current assurance.
+        # Returning to an earlier delta after another notice is a fresh change.
+        if latest_pr_delta(context["pr"]) == delta:
+            return True
+        if not current_pr.get("merged_at"):
+            return False
+        # A merge publisher can finish before the delayed PR publisher. Limit
+        # this cross-event match to that PR's actual merge, not epic history.
+        return any(row["target"] == "push" and row["head"] == current_pr["merge_commit_sha"] and row["delta_id"] == delta
+                   for row in notices(pages("issues/1557/comments")))
+    # GITHUB_RUN_ID survives an Actions retry but changes for another push,
+    # including a later recurrence with identical before/after commit bytes.
+    if any(row["target"] == "push" and row["run_id"] == context["run_id"] and row["delta_id"] == delta
+           for row in notices(pages("issues/1557/comments"))):
+        return True
+    # Suppress a merge already notified through its PR, including squash and
+    # rebase merges. A historical PR notice for a different delta cannot hide it.
+    for pr in pages(f"commits/{context['head']}/pulls"):
+        if (pr.get("merged_at") and pr["base"]["repo"]["full_name"] == REPOSITORY
+                and latest_pr_delta(int(pr["number"])) == delta):
+            return True
+    return False
 
 
 def notice_body(report: dict, context: dict, material: list[dict]) -> str:
@@ -129,7 +161,8 @@ def notice_body(report: dict, context: dict, material: list[dict]) -> str:
               f"[head {context['head'][:12]}]({prefix}/commit/{context['head']}) · "
               f"[exact diff]({prefix}/compare/{context['base']}{separator}{context['head']})", "",
               "Change awareness only; this notice requests no approval.",
-              f"<!-- safeyolo-bb-delta:{report['delta_id']} -->"]
+              f"<!-- safeyolo-bb-notice:{'pr-' + str(context['pr']) if context['pr'] else 'push'}:"
+              f"{context['run_id']}:{context['base']}:{context['head']}:{report['delta_id']} -->"]
     return "\n".join(lines)
 
 
@@ -139,25 +172,22 @@ def publish(report: dict, event: dict, kind: str) -> dict:
     context = context | {"base": report["base"]}
     if not material:
         return {"status": "quiet", "reason": "no material assurance delta"}
+    context["run_id"] = os.environ["GITHUB_RUN_ID"]
+    if not re.fullmatch(r"[1-9][0-9]*", context["run_id"]):
+        raise ValueError("invalid Actions run identity")
     delta = report["delta_id"]
+    current = {}
     if context["pr"]:
         # A delayed event must not publish obsolete assurance as the current PR.
         current = api(f"pulls/{context['pr']}")
         if current["head"]["sha"] != context["head"]:
             return {"status": "superseded", "reason": "PR head advanced before publication"}
         endpoint = f"issues/{context['pr']}/comments"
-        known = notices(pages(endpoint)) | notices(pages("issues/1557/comments"))
     else:
         # Use the existing assurance epic rather than granting contents:write
         # solely to create commit comments. Exact commits and diff remain linked.
         endpoint = "issues/1557/comments"
-        known = notices(pages(endpoint))
-        # Suppress a merge already notified through its PR, including squash and
-        # rebase merges. A direct change without a matching notice still publishes.
-        for pr in pages(f"commits/{context['head']}/pulls"):
-            if pr.get("merged_at") and pr["base"]["repo"]["full_name"] == REPOSITORY:
-                known.update(notices(pages(f"issues/{int(pr['number'])}/comments")))
-    if delta in known:
+    if already_notified(context, delta, current):
         return {"status": "duplicate", "delta_id": delta}
     body = notice_body(report, context, material)
     # No automatic POST retry: after an ambiguous response, the next invocation

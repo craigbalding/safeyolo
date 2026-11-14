@@ -185,6 +185,8 @@ change the rules used to analyze that same candidate.
 witnesses and the assurance map's test references. It also discovers Python,
 Rust and shell evidence under `tests/blackbox`, `tests/proxy_contracts` and
 `proxy/tests`, test files under `proxy/src`, and fixtures in those test trees.
+New Cargo integration targets at `proxy/tests/NAME.rs` or
+`proxy/tests/NAME/main.rs` are discovered even before the catalogue names them.
 It follows static local Python imports, parent `conftest.py` files and literal
 test/script references. That includes shared helpers, origin observers,
 positive controls, installed procedures and embedded guest probes. Mapped
@@ -193,15 +195,16 @@ blackbox directory. Workflows, test configuration, catalogue and guard code
 are comparison inputs. Other changed paths remain visible as context or
 unclassified inputs. Path membership selects analysis; a changed path alone
 does not select a mention.
-An unreferenced new helper or fixture and witnesses explicitly outside the
-trusted catalogue remain unclassified. A linked fixture's parsed data changes
-are part of the oracle comparison.
+An unreferenced new helper or fixture that is not automatically collected, and
+witnesses explicitly outside the trusted catalogue, remain unclassified. A
+linked fixture's parsed data changes are part of the oracle comparison.
 
 The comparison has these bounded rules:
 
 | Input or change | Result |
 |---|---|
 | Python assertion, parameter, decorator, fixture, helper or executable statement changes | Material; report added, removed or changed definitions. |
+| Python or shell script interpreter (`#!` line) changes | Material; a changed interpreter can change execution even when the body is identical. |
 | Rust test/helper tokens or inline test module changes | Material; retain literals, attributes, oracle and failure-handling tokens. Production code outside an inline test module remains context. |
 | Selected runner command, skip/filter, backend, user/root phase, dependency between jobs, required trigger or cadence changes | Material. Jobs that contain assurance commands and their prerequisite jobs are compared. |
 | Catalogue witness mapping, effective pytest/Cargo test configuration, analyzer or publisher logic changes | Material. Candidate-authored labels or impact claims cannot suppress the result. |
@@ -227,14 +230,21 @@ control IDs and reasons before constructing the comment. It does not copy
 candidate explanations into a mention.
 
 The delta identity contains normalized assurance changes rather than commit
-IDs, timestamps or explanatory prose. Bot-authored comment markers are the
-deduplication record. Publication of the same delta is serialized across PR,
-retry and merge events. An ordinary commit or rebase with the same delta does
-not repeat its mention. A merge checks its associated PR's notices. Direct
-change notices on the epic also suppress a delayed duplicate PR notice. A later
-different delta creates a new comment and a fresh mention; the publisher does
-not assume that editing an old comment sends a notification. Nightly execution
-is not an event for this workflow.
+IDs, timestamps or explanatory prose. Bot-authored comment markers record the
+delta, PR or push target, Actions run ID and exact commits. Publication of the
+same normalized delta is serialized across PR, retry and merge events.
+
+A PR compares its latest material notice. An ordinary commit or rebase with
+the same delta does not repeat its mention. A later different delta creates a
+new comment, including a return to an earlier delta after another notified
+change. A direct push uses its Actions run ID: retrying that event stays quiet,
+while a later occurrence receives a fresh mention even if its normalized delta
+matches an older one. A merge checks the latest notice on each associated PR.
+If the merge publisher finishes first, its exact merge commit binds the epic
+notice to the delayed PR event. An unrelated historical PR or epic notice
+cannot suppress a new occurrence. The publisher does not assume that editing
+an old comment sends a notification. Nightly execution is not an event for
+this workflow.
 
 For diagnosis, open the exact **Blackbox assurance changes** Actions run. Read
 its analysis summary and the `blackbox-changes-RUN_ID-ATTEMPT` artifact. A

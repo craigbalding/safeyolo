@@ -94,6 +94,8 @@ def python_definition(source: str) -> dict:
     units, order = {}, []
     python_scope(tree.body, "", units, order)
     units["<order>"] = order
+    if source.startswith("#!"):
+        units["<interpreter>"] = source.splitlines()[0]
     return units
 
 
@@ -235,6 +237,9 @@ def shell_definition(source: str) -> list[str]:
     # distinction between "$word" and $word. Neither can suppress these edits.
     pattern = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"|\\[\s\S]|[ \t\r]+|\n|[^ \t\r\n'\"\\]+")
     pieces, offset = [], 0
+    if source.startswith("#!"):
+        interpreter, _, source = source.partition("\n")
+        pieces = [interpreter, "\n"]
     while offset < len(source):
         match = pattern.match(source, offset)
         if match is None:
@@ -385,6 +390,10 @@ def discovered_input(name: str, base: Revision) -> bool:
     return (name in CATALOGUE_CODE
             or name.startswith(EVIDENCE_DIRS) and name.endswith(".py") and (path.name.startswith("test_") or path.name == "conftest.py")
             or name.startswith(EVIDENCE_DIRS) and name.endswith((".rs", ".sh")) and name in base.files
+            # Cargo discovers both tests/name.rs and tests/name/main.rs, even
+            # when the trusted catalogue predates the new integration target.
+            or name.endswith(".rs") and (path.parent == PurePosixPath("proxy/tests")
+                                        or path.name == "main.rs" and path.parent.parent == PurePosixPath("proxy/tests"))
             or name.startswith("proxy/src/") and name.endswith(".rs") and "test" in path.stem
             or name.startswith(".github/workflows/") and name.endswith((".yml", ".yaml")))
 
