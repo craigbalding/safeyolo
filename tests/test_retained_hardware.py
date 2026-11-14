@@ -17,8 +17,10 @@ from pathlib import Path
 
 import pytest
 
+from tests.blackbox.execution_receipt import phase_functions
 from tests.blackbox.hardware import publish_results as hardware
 from tests.blackbox.harness import macos_process_argv as macos
+from tests.blackbox.selections import PROCEDURES, PYTEST_PHASES, SECTION_DRIVERS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -31,17 +33,35 @@ def hardware_reports(tmp_path):
     descriptor = {"digest": "sha256:" + "b" * 64, "size": 10}
     selection = {"platform": "linux-amd64", "controller_revision": "d" * 40, "selected_at": "2026-10-17T08:00:00+00:00",
                  "host": {"source_revision": "c" * 40, "executables_sha256": files},
-                 "guest": dict.fromkeys(("index", "child", "archive"), descriptor)}
+                 "guest": {**dict.fromkeys(("index", "child", "archive"), descriptor), "source_revision": "e" * 40}}
     run = {"lane": "kvm", "started_at": "2026-10-17T09:00:00+00:00", "finished_at": "2026-10-17T10:00:00+00:00", "exit": 0,
            "controller_revision": "d" * 40, "controller_dirty": False,
            "host_system": "Linux", "host_architecture": "x86_64"}
     installed = {"host_source_revision": "c" * 40, "profile": "production", "platform": "linux-amd64",
                  "guest": dict.fromkeys(("index", "manifest", "archive"), descriptor), "installed_files_sha256": copy.deepcopy(files)}
-    sections = {"lane": "kvm", "source_revision": "c" * 40, "preparation": {"exit": 0},
+    sections = {"lane": "kvm", "source_revision": "c" * 40, "run_id": "selected-run", "preparation": {"exit": 0},
                 "sections": [{"section": name, "exit": 0, "result": "passed", "cleanup": "stopped"}
                              for name in hardware.SECTIONS["kvm"]]}
     data = {"selection.json": selection, "retained-run.json": run, "installed-inputs.json": installed,
             "guest/installed-sections.json": sections}
+    for section in hardware.SECTIONS["kvm"]:
+        (reports / "guest" / section).mkdir()
+        context = {"platform": "kvm", "agent": "bbtest", "pid": 123, "start_token": "birth"}
+        data[f"guest/{section}/platform.json"] = context
+        for phase in SECTION_DRIVERS[section]:
+            if phase in PYTEST_PHASES:
+                nodes = phase_functions(phase)
+                identity = PYTEST_PHASES[phase][0]
+                report = {"phase": phase, "lane": "kvm", "identity": identity,
+                          "run_id": "selected-run", "guest": context, "uid": 0 if identity == "guest-root" else 1000,
+                          "finished": True, "exit": 0, "collected": nodes.copy(), "selected": nodes.copy(),
+                          "tests": {node: dict.fromkeys(("setup", "call", "teardown"), "passed") for node in nodes}}
+                name = f"pytest-{phase}.json"
+            else:
+                report = {"section": phase, "run_id": "selected-run", "guest": context, "finished": True,
+                          "checkpoints": list(PROCEDURES[phase][1])}
+                name = "procedure.json"
+            data[f"guest/{section}/{name}"] = report
 
     def save():
         for name, value in data.items():
@@ -77,6 +97,42 @@ def test_public_projection_preserves_failures_and_artifact_attribution(hardware_
         result = hardware.installed_result(reports, "kvm", selection)
         assert result["complete"] == (defect in {None, "private"})
         assert "private-marker" not in json.dumps(result)
+        assert result["product_revision"] == "c" * 40
+        assert result["controller_revision"] == "d" * 40
+        assert result["guest_revision"] == "e" * 40
+
+
+@pytest.mark.parametrize("defect", ["missing-report", "parameter-case", "skip", "root-uid", "partial-procedure", "wrong-run", "wrong-guest", "wrong-backend", "setup", "teardown"])
+def test_hardware_cannot_publish_complete_from_section_exit_alone(hardware_reports, defect):
+    reports, selection, data, save = hardware_reports
+    name = "guest/isolation/pytest-guest-root.json"
+    report = data[name]
+    node = report["collected"][0]
+    if defect == "missing-report":
+        del data[name]
+        (reports / name).unlink()
+    elif defect == "parameter-case":
+        # Collection retained this exact parameter; its outcome is missing.
+        report["collected"].append(node + "[missing-case]")
+        report["selected"].append(node + "[missing-case]")
+    elif defect == "skip":
+        report["tests"][node]["call"] = "skipped"
+    elif defect == "root-uid":
+        report["uid"] = 1000
+    elif defect == "partial-procedure":
+        data["guest/workloads/procedure.json"]["checkpoints"].remove("sse")
+    elif defect == "wrong-guest":
+        report["guest"] = {**report["guest"], "start_token": "another-lifetime"}
+    elif defect == "wrong-backend":
+        data["guest/isolation/platform.json"]["platform"] = "systrap"
+    elif defect == "wrong-run":
+        report["run_id"] = "different"
+    else:
+        report["tests"][node][defect] = "failed"
+    save()
+    result = hardware.installed_result(reports, "kvm", selection)
+    assert not result["complete"]
+    assert any(not section["complete"] for section in result["execution"].values())
 
 
 @pytest.mark.parametrize("kind", ["symlink", "fifo", "oversized"])

@@ -1259,8 +1259,8 @@ def test_runner_cleanup_only_reclaims_owned_sinkhole_processes():
     assert 'SINKHOLE_ARGV_FILE="$SAFEYOLO_CONFIG_DIR/sinkhole.argv"' in runner
     assert 'printf \'%s\\n%s\\n\' "$SINKHOLE_PID" "$SINKHOLE_START_ID" > "$SINKHOLE_PID_FILE"' in runner
     assert 'kill "$HOST_LISTENER_PID"' in runner
-    assert "printf -v quoted_arg '%q' \"$forwarded_arg\"" in runner
-    assert 'pytest${PYTEST_FORWARD_SHELL}' in runner
+    assert "run_pytest_phase" in runner
+    assert '--pytest-phase guest-root' in runner
 
 
 def test_vz_fixture_shares_http_origin_parent_and_control_without_losing_capture(tmp_path):
@@ -1500,42 +1500,36 @@ def test_cleanup_probe_reaps_term_ignoring_child_after_failed_bootstrap(tmp_path
 @pytest.mark.parametrize("forwarded", [False, True])
 def test_runner_vm_forwarding_preserves_arguments_without_shell_execution(tmp_path, forwarded):
     """Empty and supplied VM arguments work with the host's /bin/bash."""
-    runner = (Path(__file__).parent / "blackbox" / "run-tests.sh").read_text()
-    start = runner.index('PYTEST_FORWARD_SHELL=""')
-    end = runner.index("\n\n# The focused", start)
-    quoting = runner[start:end]
-    output = tmp_path / "forwarded.json"
+    from tests.blackbox.guest_exec import run_guest_pytest
+
     sentinel = tmp_path / "injected"
-    probe = tmp_path / "forwarding.sh"
-    probe.write_text(
-        "#!/usr/bin/env bash\n"
-        "set -euo pipefail\n"
-        "output=\"$1\"\n"
-        "shift\n"
-        "PYTEST_FORWARD_ARGS=(\"$@\")\n"
-        + quoting
-        + "\n"
-        "printf -v code '%q' 'import json,sys; print(json.dumps(sys.argv[1:]))'\n"
-        "bash -lc \"python3 -c $code${PYTEST_FORWARD_SHELL}\" > \"$output\"\n"
+    fake_python = tmp_path / "guest-python.py"
+    fake_python.write_text(
+        f"#!{sys.executable}\nimport json,sys\n"
+        f"sys.path.insert(0, {str(ROOT)!r})\n"
+        "from tests.blackbox.execution_receipt import phase_functions\n"
+        "from tests.blackbox.selections import PYTEST_PHASES\n"
+        "from pathlib import Path\n"
+        "phase = sys.argv[sys.argv.index('--phase')+1]\n"
+        "nodes = phase_functions(phase)\n"
+        "Path(sys.argv[sys.argv.index('--output')+1]).write_text(json.dumps({\n"
+        " 'phase': phase, 'lane': 'kvm', 'identity': PYTEST_PHASES[phase][0], 'uid':1000,\n"
+        " 'run_id':sys.argv[sys.argv.index('--run-id')+1], 'finished':True,'exit':0,\n"
+        " 'collected':nodes,'selected':nodes,\n"
+        " 'tests':{node:dict.fromkeys(('setup','call','teardown'),'passed') for node in nodes}}))\n"
+        "print(json.dumps(sys.argv[sys.argv.index('--')+1:]))\n"
     )
-    probe.chmod(0o755)
-    arguments = [
-        "--marker",
-        "value with spaces",
-        f"$(touch {sentinel})",
-        f"semi;touch {sentinel}",
-        "*",
-        "quote\"single'",
-        "line1\nline2",
-    ] if forwarded else []
-    result = subprocess.run(
-        ["/bin/bash", str(probe), str(output), *arguments],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    fake_python.chmod(0o755)
+    cli = tmp_path / "native-cli"
+    cli.write_text(f"#!{sys.executable}\nimport subprocess,sys\n"
+                   f"command=sys.argv[-1].replace('/usr/bin/python3', {shlex.quote(str(fake_python))!r})\n"
+                   "sys.exit(subprocess.run(['/bin/bash','-c',command]).returncode)\n")
+    cli.chmod(0o755)
+    arguments = ["--marker", "value with spaces", f"$(touch {sentinel})", f"semi;touch {sentinel}",
+                 "*", "quote\"single'", "line1\nline2"] if forwarded else []
+    result = run_guest_pytest(str(cli), "bbtest", "guest-agent", "kvm", tmp_path / "receipt.json", arguments)
     assert result.returncode == 0, result.stderr
-    assert json.loads(output.read_text()) == arguments
+    assert json.loads(result.stdout) == arguments
     assert not sentinel.exists()
 
 
@@ -1625,7 +1619,7 @@ if __name__ == '__main__':
         + 'export SAFEYOLO_CONFIG_DIR="$REPO_ROOT"\n'
         + f'export PATH="$SCRIPT_DIR:{shlex.quote(str(Path(sys.executable).parent))}:$PATH"\n'
         + 'REVISION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
-        + f'python3() {{ if [[ "$1" != -m ]]; then {shlex.quote(sys.executable)} "$@"; fi; }}\n'
+        + f'python3() {{ if [[ "$1" != -m && "$1" != */execution_receipt.py ]]; then {shlex.quote(sys.executable)} "$@"; fi; }}\n'
         + runner[runner.index('python3 - "$SAFEYOLO_CONFIG_DIR/config.toml"'):]
     )
     archive = tmp_path / "host.tar.gz"
@@ -1920,8 +1914,15 @@ def test_selected_runner_classifies_pytest_exit_codes(tmp_path, pytest_exit, exp
     fake_pytest = tmp_path / "pytest"
     fake_pytest.write_text(f"#!/bin/sh\nexit {pytest_exit}\n")
     fake_pytest.chmod(fake_pytest.stat().st_mode | stat.S_IXUSR)
+    python = tmp_path / "python3"
+    python.write_text(f"#!{sys.executable}\nimport os,sys\n"
+                      "if sys.argv[1].endswith('/execution_receipt.py'):\n"
+                      f"    os.execv({str(fake_pytest)!r}, [{str(fake_pytest)!r}, *sys.argv[2:]])\n"
+                      f"os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])\n")
+    python.chmod(0o755)
     env = {
         **os.environ,
+        "BASH_ENV": "/dev/null",
         "PATH": f"{tmp_path}:{os.environ['PATH']}",
         "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(tmp_path / "artifacts"),
     }
@@ -1967,7 +1968,8 @@ AGENT_NAME=bbtest
 INSTALLED_CLI=fixture-package-cli
 VERBOSE=
 PYTEST_FORWARD_ARGS=()
-PYTEST_FORWARD_SHELL=
+EXPECTED_PLATFORM=systrap
+ARTIFACTS_DIR="$SCRIPT_DIR/reports"
 
 fixture_suite_exit() {
     printf '%s\n' "$1" >> "$SCRIPT_DIR/suites.log"
@@ -1975,12 +1977,12 @@ fixture_suite_exit() {
     return "${!variable:-0}"
 }
 
-pytest() {
-    case "$*" in
-        *native/) fixture_suite_exit PROXY ;;
-        *security/) fixture_suite_exit FIREWALL ;;
-        *identity/) fixture_suite_exit IDENTITY ;;
-        *lifecycle/|*lifecycle/test_host_listener.py*lifecycle/test_token_lifecycle.py*) fixture_suite_exit LIFECYCLE ;;
+run_pytest_phase() {
+    case "$1" in
+        native) fixture_suite_exit PROXY ;;
+        security) fixture_suite_exit FIREWALL ;;
+        identity) fixture_suite_exit IDENTITY ;;
+        host-lifecycle|listener-restart) fixture_suite_exit LIFECYCLE ;;
         *) return 99 ;;
     esac
 }
@@ -1991,7 +1993,7 @@ python3() {
         return
     fi
     case "$*" in
-        *"--user root"*) fixture_suite_exit ROOT_ISOLATION ;;
+        *"--pytest-phase guest-root"*) fixture_suite_exit ROOT_ISOLATION ;;
         *) fixture_suite_exit ISOLATION ;;
     esac
 }
@@ -2054,8 +2056,15 @@ def test_selected_runner_classifies_readiness_failure_as_infrastructure(tmp_path
     )
     fake_pytest.chmod(fake_pytest.stat().st_mode | stat.S_IXUSR)
     artifacts = tmp_path / "artifacts"
+    python = tmp_path / "python3"
+    python.write_text(f"#!{sys.executable}\nimport os,sys\n"
+                      "if sys.argv[1].endswith('/execution_receipt.py'):\n"
+                      f"    os.execv({str(fake_pytest)!r}, [{str(fake_pytest)!r}, *sys.argv[2:]])\n"
+                      f"os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])\n")
+    python.chmod(0o755)
     env = {
         **os.environ,
+        "BASH_ENV": "/dev/null",
         "PATH": f"{tmp_path}:{os.environ['PATH']}",
         "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(artifacts),
     }
@@ -2557,6 +2566,34 @@ def installed_section_commands(tmp_path, monkeypatch):
         "    if actual != 'kvm': sys.exit(2)\n"
         "if root.name == 'isolation': sys.exit(int(os.environ.get('FAIL_SECTION', '0')))\n"
     )
+    # The fixture emits named execution reports as the real driver now does.
+    # Keep real test identities available to the stdlib-only receipt reader.
+    for name in ("execution_receipt.py", "selections.py"):
+        shutil.copy2(ROOT / "tests/blackbox" / name, scripts / name)
+    receipt_script = """
+from execution_receipt import phase_functions
+from selections import SECTION_DRIVERS, PYTEST_PHASES, PROCEDURES
+artifacts = pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR'])
+context = {'platform':sys.argv[sys.argv.index('--expect-platform')+1], 'agent':'bbtest', 'pid':123, 'start_token':'birth'}
+(artifacts / 'platform.json').write_text(json.dumps(context))
+phases = ('listener-restart',) if '--listener-restart' in sys.argv else SECTION_DRIVERS[root.name]
+for phase in phases:
+    report = {'run_id': os.environ['SAFEYOLO_BLACKBOX_RUN_ID'], 'guest':context}
+    if phase in PYTEST_PHASES:
+        nodes = phase_functions(phase, pathlib.Path(TRUSTED_ROOT))
+        report.update(phase=phase, lane=sys.argv[sys.argv.index('--expect-platform')+1],
+                      identity=PYTEST_PHASES[phase][0], uid=0 if phase == 'guest-root' else 1000,
+                      finished=True, exit=0, collected=nodes, selected=nodes,
+                      tests={node: dict.fromkeys(('setup','call','teardown'),'passed') for node in nodes})
+        name = 'pytest-' + phase + '.json'
+    else:
+        report.update(section=phase, finished=True, checkpoints=list(PROCEDURES[phase][1]))
+        name = 'procedure.json'
+    (artifacts / name).write_text(json.dumps(report))
+""".replace("TRUSTED_ROOT", repr(str(ROOT)))
+    body = section.read_text()
+    body = body.replace("if root.name == 'isolation': sys.exit", receipt_script + "\nif root.name == 'isolation': sys.exit")
+    section.write_text(body)
     prepare.chmod(0o755)
     section.chmod(0o755)
     monkeypatch.setattr(installed_sections, "REPOSITORY", repository)
@@ -2674,7 +2711,7 @@ def test_installed_section_host_collection_uses_prepared_runtime(
     guard = (ROOT / "tests/blackbox/conftest.py").read_text()
     (scripts / "conftest.py").write_text(guard.replace("sys.platform", repr("linux")))
     host = scripts / "host"
-    host.mkdir()
+    host.mkdir(exist_ok=True)
     (host / "test_runtime.py").write_text('''import os, shutil, subprocess
 def test_selected_runtime():
     assert shutil.which('runsc') == os.environ['SELECTED_RUNSC']
@@ -2690,10 +2727,11 @@ def test_selected_runtime():
     directory, artifacts = tmp_path / "sections", tmp_path / "reports"
     assert installed_sections.run_sections(
         "systrap", ("isolation",), repository, "a" * 40, directory, artifacts, prepared_config=source,
-    ) == (0 if runtime_present else 2)
+    ) == 2
     row = json.loads((artifacts / "installed-sections.json").read_text())["sections"][0]
-    assert row["exit"] == (0 if runtime_present else 5)
-    assert row["result"] == ("passed" if runtime_present else "preparation_failure")
+    assert row["exit"] == (2 if runtime_present else 5)
+    assert row["result"] == ("incomplete" if runtime_present else "preparation_failure")
+    assert not row["execution"]["complete"]
     assert row["cleanup"] == "stopped" and not row["cleanup_failures"]
 
 
@@ -2747,6 +2785,10 @@ def test_installed_continuity_passes_only_vz_fixed_ports(
         "root = pathlib.Path(args['--config-dir'])\n"
         "root.mkdir(parents=True)\n"
         "(root / 'selection.json').write_text(json.dumps(args))\n"
+        "from execution_receipt import ProcedureReceipt\n"
+        "from selections import PROCEDURES\n"
+        "receipt = ProcedureReceipt('continuity', pathlib.Path(args['--output']))\n"
+        "for name in PROCEDURES['continuity'][1]: receipt.checkpoint(name)\n"
     )
     directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
     assert installed_sections.run_sections(
@@ -3073,6 +3115,7 @@ if marker.exists():
     section = scripts / "run-tests.sh"
     first_section = "lifecycle" if owner else "isolation"
     owned_root = '"${SAFEYOLO_CONFIG_DIR%/*}/lifecycle-owner"' if owner else '"$SAFEYOLO_CONFIG_DIR"'
+    access_receipt = "from pathlib import Path; import os,json; from tests.blackbox.execution_receipt import ProcedureReceipt; from tests.blackbox.selections import PROCEDURES; context={'platform':'systrap','agent':'bbtest','pid':123,'start_token':'birth'}; os.environ['SAFEYOLO_BLACKBOX_GUEST_IDENTITY']=json.dumps(context); output=Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR']); (output/'platform.json').write_text(json.dumps(context)); receipt=ProcedureReceipt('access',output/'installed-access.json'); [receipt.checkpoint(name) for name in PROCEDURES['access'][1]]"
     section.write_text(
         "#!/bin/bash\nset -euo pipefail\n"
         "export SAFEYOLO_CONFIG_DIR=\"$SAFEYOLO_TEST_CONFIG_DIR\"\n"
@@ -3080,7 +3123,8 @@ if marker.exists():
         "touch \"$SAFEYOLO_CONFIG_DIR/config.toml\"\n"
         "if [ \"${SAFEYOLO_CONFIG_DIR##*/}\" = access ]; then\n"
         "    touch \"$SAFEYOLO_CONFIG_DIR/access-started\"\n"
-        "    exit 0\n"
+        + f"    {shlex.quote(sys.executable)} -c {shlex.quote(access_receipt)}\n"
+        + "    exit 0\n"
         "fi\n"
         f"SCRIPT_DIR={str(ROOT / 'tests/blackbox')!r}\n"
         f"STARTED_VM=false\nSTARTED_PROXY={'false' if owner else 'true'}\n"
@@ -3166,7 +3210,7 @@ def test_installed_sections_start_and_clean_up_without_an_installed_python_packa
     """A clean-shell parent must inspect cleanup and save each section result."""
     repository = installed_section_commands
     scripts = repository / "tests/blackbox"
-    for name in ("run-installed.sh", "installed_sections.py", "installed_host_smoke.py"):
+    for name in ("run-installed.sh", "installed_sections.py", "installed_host_smoke.py", "execution_receipt.py", "selections.py"):
         shutil.copy2(ROOT / "tests/blackbox" / name, scripts / name)
     (scripts / 'harness').mkdir(exist_ok=True)
     shutil.copy2(ROOT / 'tests/blackbox/harness/process_identity.py', scripts / 'harness/process_identity.py')
@@ -3174,6 +3218,11 @@ def test_installed_sections_start_and_clean_up_without_an_installed_python_packa
     package.mkdir(parents=True)
     for name in ("__init__.py", "runtime_identity.py"):
         shutil.copy2(ROOT / "tests/reference/safeyolo" / name, package / name)
+    for test_source in (ROOT / "tests/blackbox").rglob("test_*.py"):
+        destination = scripts / test_source.relative_to(ROOT / "tests/blackbox")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(test_source, destination)
+    (repository / ".gitignore").write_text("__pycache__/\n")
     for command in (
         ["git", "init", "--quiet"],
         ["git", "add", "."],

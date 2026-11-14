@@ -30,12 +30,14 @@ import uuid
 from pathlib import Path
 
 if __package__:
+    from .execution_receipt import ProcedureReceipt
     from .guest_exec import guest_command_args, prepare_guest_tests
     from .host.sinkhole_client import SinkholeClient
     from .installed_host_smoke import _agent_listeners, _native_config, _sha256
     from .installed_ingress import installed_identity, runsc_identity
     from .installed_workloads import control
 else:
+    from execution_receipt import ProcedureReceipt
     from guest_exec import guest_command_args, prepare_guest_tests
     from host.sinkhole_client import SinkholeClient
     from installed_host_smoke import _agent_listeners, _native_config, _sha256
@@ -476,6 +478,7 @@ def main() -> None:
     parser.add_argument("--operator-journey", action="store_true",
                         help="Observe terminal, desktop and restart in this systrap or VZ access instance")
     args = parser.parse_args()
+    receipt = ProcedureReceipt('access', args.output)
     config_dir = args.config_dir.resolve()
     selected_checkout = os.environ.get("SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT")
     install_checkout = Path(selected_checkout).resolve() if selected_checkout else None
@@ -500,6 +503,7 @@ def main() -> None:
     else:
         bridge = {"platform": "vz", "host_listener": listener["path"], "guest_forwarder": "vsock:2:1080"}
     cli = identity["cli"]["path"]
+    receipt.checkpoint('identity')
     admin = AdminAPI(
         base_url=f"http://127.0.0.1:{runtime['runtime']['readiness']['admin_port']}", token=(config_dir / "data/admin_token").read_text().strip()
     )
@@ -540,6 +544,7 @@ def main() -> None:
         with os.fdopen(descriptor, "w") as secret_file:
             secret_file.write(token + "\n")
         peer_denial = guest(cli, PEER, args.platform, marker, "peer-denial")
+        receipt.checkpoint('service')
         stolen_token_file.unlink()
         prompt = guest(cli, args.agent, args.platform, marker, "contract-prompt")
         assert not any(row.path == "/p3/write" for row in sinkhole.get_requests())
@@ -549,6 +554,7 @@ def main() -> None:
         assert isinstance(grant_id, str) and grant_id
         contract = guest(cli, args.agent, args.platform, marker, "contract-effect")
         assert all(row.get("grant_id") != grant_id for row in admin.list_gateway_grants()["grants"])
+        receipt.checkpoint('contract')
         context = guest(cli, args.agent, args.platform, marker, "context")
         owned_flows = {
             agent: guest(cli, agent, args.platform, marker, "flow-seed")
@@ -566,9 +572,11 @@ def main() -> None:
                 flow_id=foreign["flow_id"], message=foreign["request_id"],
             ))
         coord_backing = setup_coord(cli, config_dir, args.agent, PEER)
+        receipt.checkpoint('flow-ownership')
         coord = run_coord(cli, args.agent, args.platform, marker)
         assert coord["room_id"] == coord_backing["room_id"]
         collaboration = run_collaboration_and_event(admin, cli, config_dir, args.agent, args.platform, marker, admin.token)
+        receipt.checkpoint('coord')
         ws = guest(cli, args.agent, args.platform, marker, "websocket")
         assert ws["server"] == "server:p2-" + marker[3:]
         ws_state = control("GET", "/p2/state/p2-" + marker[3:])["websockets"]
@@ -576,6 +584,7 @@ def main() -> None:
         assert ws_state[0]["client"] == ws["client"], ws_state
         origin = check_origin(sinkhole, fixture["credential"], marker)
         inspector = inspect_traffic(admin, args.output, args.agent, marker)
+        receipt.checkpoint('origin')
         report = {
             "status": "journeys_passed",
             "source_revision": args.install_commit,
@@ -627,6 +636,7 @@ def main() -> None:
         if peer_added:
             checked([cli, "agent", "stop", PEER], timeout=30)
             assert not (config_dir / "agents" / PEER / "container.pid").exists(), "disposable peer guest did not stop"
+    receipt.checkpoint('finished')
 
 
 if __name__ == "__main__":

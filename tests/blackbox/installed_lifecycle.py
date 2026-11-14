@@ -24,6 +24,7 @@ import uuid
 from pathlib import Path
 
 if __package__:
+    from .execution_receipt import ProcedureReceipt
     from .guest_exec import guest_command_args, prepare_guest_tests
     from .host.sinkhole_client import SinkholeClient
     from .installed_host_smoke import (
@@ -37,6 +38,7 @@ if __package__:
     from .installed_ingress import installed_identity, runsc_identity
     from .installed_workloads import control
 else:
+    from execution_receipt import ProcedureReceipt
     from guest_exec import guest_command_args, prepare_guest_tests
     from host.sinkhole_client import SinkholeClient
     from installed_host_smoke import (
@@ -398,6 +400,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--install-commit", required=True)
     args = parser.parse_args()
+    receipt = ProcedureReceipt('lifecycle', args.output)
     os.environ["SAFEYOLO_BLACKBOX_PLATFORM"] = args.platform
     config_dir = args.config_dir.resolve()
     selected_checkout = os.environ.get("SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT")
@@ -425,6 +428,7 @@ def main() -> None:
         else {"platform": "vz", "host_listener": first_listener["path"], "guest_forwarder": "vsock:2:1080"}
     )
     cli = first_identity["cli"]["path"]
+    receipt.checkpoint('identity')
     from safeyolo.api import AdminAPI
     admin = AdminAPI(base_url=f"http://127.0.0.1:{first_identity['runtime']['readiness']['admin_port']}",
                      token=(config_dir / "data/admin_token").read_text().strip())
@@ -493,6 +497,7 @@ def main() -> None:
         allowed_load = wait_policy_load(audit_path, denied_load)
         allowed = guest(cli, args.agent, "echo", marker)
         assert allowed["status"] == 200, allowed
+        receipt.checkpoint('listener')
 
         passthrough_before = sum(
             row.get("event") == "traffic.passthrough_start" for row in event_rows(Path(native["audit_log_path"]))
@@ -533,6 +538,7 @@ def main() -> None:
         )
 
         ca_before = _sha256(Path(native["tls_ca_file"]))
+        receipt.checkpoint('tls')
         trust_before = _sha256(Path(native["upstream_ca_file"]))
         policy_before = _sha256(config_dir / "policy.toml")
         checked([cli, "stop"], timeout=40)
@@ -554,6 +560,7 @@ def main() -> None:
         assert _sha256(Path(native["upstream_ca_file"])) == trust_before
         assert _sha256(config_dir / "policy.toml") == policy_before
         first_recovery = recovery_controls(cli, args.agent, sinkhole)
+        receipt.checkpoint('restart')
         assert guest(cli, args.agent, "self-signed", marker)["status"] == 502
         assert (
             len([row for row in sinkhole.get_requests(host="self-signed.test") if row.path == f"/p4/tls/{marker}"]) == 1
@@ -580,6 +587,7 @@ def main() -> None:
         assert control("GET", f"/p2/state/{drain_sse_marker}")["finished"]
         assert_proxy_stopped(config_dir, second_listener, second_identity["runtime"])
         ownership = assert_shutdown_ownership(config_dir, args.agent, drain_marker)
+        receipt.checkpoint('drain')
         stop_guest(cli, config_dir, args.agent)
         owner_checks.append(
             owner_controls(cli, owner_dir, owner_listener, owner, owner_env, "p4-" + uuid.uuid4().hex, sinkhole)
@@ -606,6 +614,7 @@ def main() -> None:
         checked([cli, "stop"], timeout=40, env=owner_env)
         assert_proxy_stopped(owner_dir, owner_listener, owner["runtime"])
         assert not (owner_dir / "agents/bbowner/container.pid").exists()
+        receipt.checkpoint('recovery')
         report = {
             "status": "selected_checks_passed",
             "source_revision": args.install_commit,
@@ -669,6 +678,7 @@ def main() -> None:
         if peer_added:
             checked([cli, "agent", "cleanup", PEER], timeout=60)
 
+    receipt.checkpoint("finished")
 
 if __name__ == "__main__":
     main()

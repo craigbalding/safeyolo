@@ -39,6 +39,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 if __package__:
+    from .execution_receipt import ProcedureReceipt
     from .harness.sinkhole_parent import Request as ParentRequest
     from .installed_access import setup_coord
     from .installed_host_smoke import (
@@ -51,6 +52,7 @@ if __package__:
     from .installed_sections import copy_prepared_nats, owned_processes, prepare_native_instance, surviving_processes
     from .native_credentials import native_cli, store_credential
 else:
+    from execution_receipt import ProcedureReceipt
     from harness.sinkhole_parent import Request as ParentRequest
     from installed_access import setup_coord
     from installed_host_smoke import (
@@ -517,6 +519,7 @@ def main() -> None:
     parser.add_argument("--nats-monitor-port", type=int, help="Native Coord monitor listener port")
     parser.add_argument("--native-cli", type=Path, help="Matching native credential CLI (defaults to installed bin/safeyolo)")
     args = parser.parse_args()
+    receipt = ProcedureReceipt('continuity', args.output or args.state_parent / "installed-continuity.json")
     origin_bind = args.origin_bind or args.origin_host
     task_policy = {"permissions": [{"action": "network:request", "resource": f"{args.origin_host}/*",
                                     "effect": "deny", "condition": {"agent": "alice"}}]}
@@ -758,6 +761,7 @@ print(json.dumps({'policy':'created'}))
         nats_identity = ensure_nats(args.cli, env, args.nats_client_port, args.nats_monitor_port)
         print(json.dumps({"nats": nats_identity}), flush=True)
         active = args.cli
+        receipt.checkpoint('initial')
         stages.append(start(active, root, env, args.rust_revision))
         native = _native_config(root / "config.toml", root)["raw"]
         check(Path(native["circuit_state_file"]) == root / "data/circuit_breaker_state.json",
@@ -1012,6 +1016,7 @@ print(json.dumps({'test_context':'removed_after_flow'}))
         active = None
         ensure_nats(args.cli, env, args.nats_client_port, args.nats_monitor_port)
         active = args.cli
+        receipt.checkpoint('restart')
         stages.append(start(active, root, env, args.rust_revision))
         check(ca_files(root) == ca_snapshot and sha(hmac) == initial_state["hmac_sha256"]
               and key_fingerprint(hmac) == initial_state["hmac_fingerprint"],
@@ -1190,6 +1195,7 @@ print(json.dumps({'native_grant_read':True,
         active = None
         ensure_nats(args.cli, env, args.nats_client_port, args.nats_monitor_port)
         active = args.cli
+        receipt.checkpoint('replacement')
         stages.append(start(active, root, env, args.rust_revision))
         check(stages[-1]["pid"] != stages[1]["pid"], "return reused the first Rust process")
         task_status, _ = admin(root, "GET", f"/admin/policy/task/{TASK_ID}")
@@ -1297,6 +1303,7 @@ print(json.dumps({'native_grant_read':True,
         nats_started = False
         check(len({stage["runtime"]["receipt"]["start_token"] for stage in stages}) == 4,
               "native replacement reused a prior process identity")
+        receipt.checkpoint('return')
     finally:
         cleanup_errors = []
         if active is not None:
@@ -1326,6 +1333,7 @@ print(json.dumps({'native_grant_read':True,
             cleanup_errors.append("owned runtime marker remains")
         if cleanup_errors:
             raise PreparationError("owned cleanup failed: " + "; ".join(cleanup_errors))
+    receipt.checkpoint("cleanup")
     report = {
         "result": "installed_native_continuity_passed", "source_revision": args.rust_revision,
         "fixture_bindings": {"http": list(origin.server_address), "https": list(tls_origin.server_address),
@@ -1352,6 +1360,7 @@ print(json.dumps({'native_grant_read':True,
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report), flush=True)
+    receipt.checkpoint('finished')
 
 
 if __name__ == "__main__":

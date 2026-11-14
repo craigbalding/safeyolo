@@ -162,8 +162,9 @@ python3 "$SCRIPT_DIR/installed_host_smoke.py" --mode smoke ${smoke_ports[@]+"${s
 # The full platform contract suite runs once overnight. These existing nodes
 # check only the additional installed native HTTPS package claim.
 if [[ $LANE != vz ]]; then
-    SAFEYOLO_RUST_PROXY="$INSTALLED_BINARY" python3 -m pytest -q \
-        "$REPO_ROOT/tests/proxy_contracts/test_https_contract.py::test_https_origin_verification" \
+    SAFEYOLO_RUST_PROXY="$INSTALLED_BINARY" python3 "$SCRIPT_DIR/execution_receipt.py" \
+        --phase package-tls --lane package --output "$ARTIFACTS/pytest-package-tls.json" \
+        --run-id "$(python3 -c 'import uuid; print(uuid.uuid4().hex)')" -- -q \
         --proxy-backend rust --junitxml="$ARTIFACTS/packaged-https.xml"
 else
     # Physical VZ uses assigned fixture ports. The maintained lifecycle and

@@ -18,11 +18,13 @@ import uuid
 from pathlib import Path
 
 if __package__:
+    from .execution_receipt import ProcedureReceipt
     from .guest_exec import guest_command_args
     from .host.sinkhole_client import SinkholeClient
     from .installed_host_smoke import _native_config, _sha256
     from .isolation.installed_ingress import is_mounted_forwarder
 else:
+    from execution_receipt import ProcedureReceipt
     from guest_exec import guest_command_args
     from host.sinkhole_client import SinkholeClient
     from installed_host_smoke import _native_config, _sha256
@@ -198,6 +200,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--install-commit", required=True)
     args = parser.parse_args()
+    receipt = ProcedureReceipt('ingress', args.output)
     config_dir = args.config_dir.resolve()
     selected_checkout = os.environ.get("SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT")
     install_checkout = Path(selected_checkout).resolve() if selected_checkout else None
@@ -223,6 +226,7 @@ def main() -> None:
         for item in runtime["runtime"]["listeners"]
     )
     gvisor = runsc_identity(config_dir, args.agent, Path(listener["path"]))
+    receipt.checkpoint('identity')
 
     policy = read_native_policy(identity["cli"]["path"], config_dir)
     marker = "p1-" + uuid.uuid4().hex
@@ -244,18 +248,22 @@ def main() -> None:
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     network = check_ingress_policy(policy)
     report["runtime_config"]["network_guard_block"] = network["action"] == "block"
+    receipt.checkpoint('policy')
 
     with_sinkhole = SinkholeClient("http://127.0.0.1:19999")
     try:
         with_sinkhole.wait_for_receiver_ready(timeout=10)
         guest = guest_observation(identity["cli"]["path"], args.agent, marker)
+        receipt.checkpoint('guest')
         report["guest"] = guest
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         report["origin"] = check_guest_and_origin(guest, with_sinkhole, marker, args.agent)
+        receipt.checkpoint('origin')
     finally:
         with_sinkhole.close()
 
     report["status"] = "ingress_passed"
+    receipt.checkpoint('finished')
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(
         f"KVM ingress: selected package, authenticated native runtime, real KVM guest, "

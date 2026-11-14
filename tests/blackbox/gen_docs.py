@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
-"""Generate docs/blackbox-coverage.md from maintained runner selections.
+"""Generate the BB control catalogue and maintained test descriptions.
 
-Extract pytest Title/What/Why and the selected installed procedure docstrings.
-Completed migration receipts are historical observations, not current native
-coverage. This inventory follows the maintained selectors and procedure owners.
-
-The goal is an operator-facing answer to "what does SafeYolo's blackbox
-suite actually verify?" — no drift, because the docstrings are the
-source of truth and the lint (tests/blackbox/_docstring_lint.py)
-rejects missing structure at test-collection time.
-
-Run manually or via pre-commit when blackbox tests change.
+Authored metadata supplies control meaning, conformance and remaining work.
+Source discovery supplies exact identities, source links and runner selection.
+Execution receipts remain separate from this source inventory.
 """
 from __future__ import annotations
 
@@ -21,9 +14,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 if __package__:
-    from .installed_sections import SECTIONS
+    from .catalogue import render as render_catalogue
+    from .selections import PYTEST_PHASES, SECTIONS
 else:
-    from installed_sections import SECTIONS
+    from catalogue import render as render_catalogue
+    from selections import PYTEST_PHASES, SECTIONS
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 BB_DIR = REPO_ROOT / "tests" / "blackbox"
@@ -121,10 +116,29 @@ def _render(suites: list[tuple[str, list[tuple[Path, list[TestClass]]]]]) -> str
     out: list[str] = []
     out.append("# SafeYolo Blackbox Test Coverage")
     out.append("")
-    out.append(
-        "Generated from native pytest selections and installed procedures in `tests/blackbox/`. "
-        "Do not edit by hand — run `python3 tests/blackbox/gen_docs.py`."
-    )
+    out.append("Generated from authored control metadata, maintained Python/Rust witnesses and installed runner selections. Do not edit this document by hand.")
+    out.append("")
+    out.append("## Regenerate and check")
+    out.append("")
+    out.append("From the repository root with the frozen development environment, run:")
+    out.append("")
+    out.append("```sh\nuv run --frozen python tests/blackbox/gen_docs.py\nuv run --frozen python tests/blackbox/gen_docs.py --check\nuv run --frozen python tests/blackbox/_docstring_lint.py\nuv run --frozen python scripts/check_blackbox_cadence.py\n```")
+    out.append("")
+    out.append("The checks reject unresolved identities, unclassified assurance tests, unwired selectors and stale output. "
+               "Installed runs retain `pytest-PHASE.json` and `procedure.json` beside section reports. "
+               "Each pytest report records the collected and selected parameter cases, numeric UID/GID, observed guest/backend lifetime, run identity and setup/call/teardown outcomes. "
+               "The section and hardware readers recompute completeness against the maintained selections. "
+               "Missing reports, missing or deselected required cases, required skips, failed preparation, partial procedures and failed cleanup remain incomplete. "
+               "Named platform exclusions retain their reasons. Existing opt-in checks retain their explicit selection; a selected opt-in check must pass. Arbitrary skips are not exclusions. "
+               "Product source, controller source and selected guest artifact identity remain separate. "
+               "A source inventory does not establish deployed cadence or a passing installed run. "
+               "[#1559](https://github.com/craigbalding/safeyolo/issues/1559) owns material assertion-change notification; "
+               "[#889](https://github.com/craigbalding/safeyolo/issues/889) owns hardware deployment; "
+               "[#838](https://github.com/craigbalding/safeyolo/issues/838) owns protected acceptance.")
+    out.append("")
+    out.append(render_catalogue(REPO_ROOT))
+    out.append("")
+    out.append("## Maintained guest and host pytest descriptions")
     out.append("")
     out.append(
         "Each entry states the security property the test asserts and the "
@@ -210,10 +224,9 @@ Without `--lane`, `installed_host_smoke.py` observes the native installed
 launcher, authenticated runtime identity, owned HTTP allow/deny authorities and
 verified stop. That host-only result boots no guest and proves no guest isolation.
 Without `--package`, the wrapper retains the existing source-based proxy witness.""")
-    package_runner = (BB_DIR / "run-installed-package.sh").read_text()
-    for selected in re.findall(r"tests/(proxy_contracts/[^\s\"]+::\w+)", package_runner):
+    for selected in PYTEST_PHASES["package-tls"][1]:
         out.append("")
-        out.append(f"The host witness also selects `tests/{selected}` against its packaged executable. "
+        out.append(f"The host witness also selects `{selected}` against its packaged executable. "
                    "Those ephemeral-port controls run on Linux and the hosted Mac; physical VZ uses the fixed-port probes described above.")
     out.append("")
     out.append(
@@ -264,7 +277,11 @@ def main() -> int:
                 files.append((path, classes))
         suites.append((label, files))
 
-    rendered = _render(suites)
+    try:
+        rendered = _render(suites)
+    except (OSError, ValueError) as exc:
+        print(f"blackbox catalogue: {exc}", file=sys.stderr)
+        return 1
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     # --check mode: fail if the on-disk doc is stale.
