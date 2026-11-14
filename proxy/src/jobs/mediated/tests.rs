@@ -128,13 +128,24 @@ async fn complete_large_evidence_is_chunked_and_off_scope_calls_are_denied() {
 
 #[tokio::test]
 async fn policy_revocation_closes_a_held_response_and_discards_late_evidence() {
+    held_response_cleanup(false).await;
+}
+
+#[tokio::test]
+async fn shutdown_closes_a_held_response_and_discards_late_evidence() {
+    held_response_cleanup(true).await;
+}
+
+async fn held_response_cleanup(shutdown: bool) {
     let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
     let origin = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let port = origin.local_addr().unwrap().port();
     let config = network::tests::config(root.path(), port);
-    let mut proxy = crate::Proxy::start(crate::native_config::read(&config).unwrap())
-        .await
-        .unwrap();
+    let mut proxy = Some(
+        crate::Proxy::start(crate::native_config::read(&config).unwrap())
+            .await
+            .unwrap(),
+    );
     let mut client = network::Client::connect_mediated(
         &config,
         root.path(),
@@ -165,10 +176,22 @@ async fn policy_revocation_closes_a_held_response_and_discards_late_evidence() {
     while !header.ends_with(b"\r\n\r\n") {
         header.push(stream.read_u8().await.unwrap());
     }
-    let policy = root.path().join("policy.toml");
-    let source = std::fs::read_to_string(&policy).unwrap();
-    std::fs::write(&policy, source.replace("[agents.\"gate:proof\".services.simple]\ncapability = \"reader\"\ntoken = \"job-secret\"", "")).unwrap();
-    assert!(proxy.reload_policy_if_changed().await.unwrap());
+    let shutdown_task = if shutdown {
+        Some(tokio::spawn(proxy.take().unwrap().shutdown()))
+    } else {
+        let policy = root.path().join("policy.toml");
+        let source = std::fs::read_to_string(&policy).unwrap();
+        std::fs::write(&policy, source.replace("[agents.\"gate:proof\".services.simple]\ncapability = \"reader\"\ntoken = \"job-secret\"", "")).unwrap();
+        assert!(
+            proxy
+                .as_mut()
+                .unwrap()
+                .reload_policy_if_changed()
+                .await
+                .unwrap()
+        );
+        None
+    };
     // Listener teardown gives accepted transports a ten-second grace before
     // cancelling and joining them. Wait for that existing cleanup contract.
     tokio::time::timeout(Duration::from_secs(12), client.revoked())
@@ -191,19 +214,26 @@ async fn policy_revocation_closes_a_held_response_and_discards_late_evidence() {
     assert!(records[0].request_started);
     assert!(records[0].error.is_some());
     assert!(records[0].response_sha256.is_none());
-    // The unchanged call under a fresh delegation has no saved grant now.
-    let next = network::Client::connect_mediated(
-        &config,
-        root.path(),
-        &selected_spec(),
-        &"3".repeat(32),
-        &[],
-    )
-    .await
-    .unwrap();
-    assert!(next.service_access().unwrap().1.is_empty());
-    next.close().await.unwrap();
-    proxy.shutdown().await;
+    if let Some(shutdown_task) = shutdown_task {
+        tokio::time::timeout(Duration::from_secs(5), shutdown_task)
+            .await
+            .unwrap()
+            .unwrap();
+    } else {
+        // The unchanged call under a fresh delegation has no saved grant now.
+        let next = network::Client::connect_mediated(
+            &config,
+            root.path(),
+            &selected_spec(),
+            &"3".repeat(32),
+            &[],
+        )
+        .await
+        .unwrap();
+        assert!(next.service_access().unwrap().1.is_empty());
+        next.close().await.unwrap();
+        proxy.unwrap().shutdown().await;
+    }
 }
 
 #[test]

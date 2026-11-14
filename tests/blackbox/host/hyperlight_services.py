@@ -48,6 +48,24 @@ def stop(child):
         raise
 
 
+def job_result(prefix, engine, mode):
+    """Keep command failures and their retained files ahead of JSON parsing."""
+    status_path = prefix.with_suffix(".status.json")
+    stdout_path = prefix.with_suffix(".stdout")
+    stderr_path = prefix.with_suffix(".stderr")
+    status = json.loads(status_path.read_bytes())
+    stderr = stderr_path.read_text(errors="replace")
+    context = (f"{engine}/{mode}: command exit {status['returncode']}; "
+               f"status={status_path}; stdout={stdout_path}; stderr={stderr_path}; "
+               f"diagnostic: {stderr}")
+    if status["returncode"] != 0:
+        raise RuntimeError(context)
+    try:
+        return json.loads(stdout_path.read_bytes())
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise RuntimeError(f"{context}; invalid job result JSON: {error}") from error
+
+
 class Instance:
     def __init__(self, args):
         self.args = args
@@ -188,7 +206,7 @@ class Instance:
     def run_job(self, engine, request, **options):
         with self.job(engine, request, **options) as (child, prefix):
             child.wait(timeout=60)
-        return json.loads(prefix.with_suffix(".stdout").read_bytes())
+        return job_result(prefix, engine, "run_job")
 
 
 def output(result):
@@ -306,12 +324,14 @@ def held_lifetimes(instance, engine, origin, port):
             child.wait(timeout=45)
             # Deliver late success only after the owning helper has terminated.
             origin.release.set()
-        result = json.loads(prefix.with_suffix(".stdout").read_bytes())
+        result = job_result(prefix, engine, mode)
         save(prefix.with_suffix(".result.json"), result)
         assert result["outcome"] != {"kind": "exit", "code": 0}, result
         assert not result["service_evidence"] or all(row["response_sha256"] is None
                                                     for row in result["service_evidence"]), result
-        assert not list((instance.root / "data").glob("job-hyperlight-*")), "owned VM runtime remains"
+        assert not list((instance.root / "data").glob("job-hyperlight-*")), (
+            "unexpected retained runtime after a successful command; inspect its diagnostics; "
+            "directory presence alone does not establish a live VM")
         if mode == "revoke":
             instance.policy["agents"]["gate:hyperlight-service-check"]["services"]["held"] = grant
             instance.apply()

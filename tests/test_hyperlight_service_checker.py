@@ -1,10 +1,12 @@
 """Both guests' predicate uses the existing authoritative GitHub capture."""
 
 import base64
+import contextlib
 import copy
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -118,6 +120,57 @@ def host_driver(monkeypatch):
     driver = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(driver)
     return driver
+
+
+@pytest.mark.parametrize("entrypoint", ["job_result", "run_job"])
+def test_driver_preserves_job33_failure_before_decoding_stdout(host_driver, tmp_path, monkeypatch, entrypoint):
+    prefix = tmp_path / "job-33"
+    stderr = ("safeyolo: job cleanup failed: delegated listener cleanup acknowledgment is unavailable; "
+              "runtime preserved at /home/agent/hl1550-a706de61/data/job-hyperlight-sP769u\n")
+    assert len(stderr.encode()) == 164
+    prefix.with_suffix(".stdout").write_bytes(b"")
+    prefix.with_suffix(".stderr").write_text(stderr)
+    prefix.with_suffix(".status.json").write_text('{"returncode": 1}\n')
+    diagnostic = tmp_path / "job-hyperlight-sP769u" / "service-evidence.json"
+    diagnostic.parent.mkdir()
+    diagnostic.write_text("retained diagnostic\n")
+
+    @contextlib.contextmanager
+    def completed_job(_engine, _request, **_options):
+        yield SimpleNamespace(wait=lambda timeout: 1), prefix
+
+    instance = host_driver.Instance(SimpleNamespace(root=tmp_path, scratch=tmp_path))
+    monkeypatch.setattr(instance, "job", completed_job)
+    with pytest.raises(RuntimeError) as failed:
+        if entrypoint == "job_result":
+            host_driver.job_result(prefix, "hyperlight", "shutdown")
+        else:
+            instance.run_job("hyperlight", {})
+    message = str(failed.value)
+    mode = "shutdown" if entrypoint == "job_result" else "run_job"
+    assert f"hyperlight/{mode}" in message and "command exit 1" in message
+    assert stderr in message
+    for suffix in (".status.json", ".stdout", ".stderr"):
+        assert str(prefix.with_suffix(suffix)) in message
+    assert diagnostic.read_text() == "retained diagnostic\n"
+    assert prefix.with_suffix(".stdout").read_bytes() == b""
+    assert json.loads(prefix.with_suffix(".status.json").read_bytes()) == {"returncode": 1}
+
+
+def test_driver_cannot_accept_json_from_a_failed_command(host_driver, tmp_path):
+    prefix = tmp_path / "job"
+    prefix.with_suffix(".stdout").write_text('{"outcome": {"kind": "exit", "code": 0}}')
+    prefix.with_suffix(".stderr").write_text("cleanup failed")
+    prefix.with_suffix(".status.json").write_text('{"returncode": 1}')
+    with pytest.raises(RuntimeError, match="command exit 1.*cleanup failed"):
+        host_driver.job_result(prefix, "hyperlight-unikraft", "shutdown")
+    prefix.with_suffix(".status.json").write_text('{"returncode": 0}')
+    assert host_driver.job_result(prefix, "hyperlight-unikraft", "run_job") == {
+        "outcome": {"kind": "exit", "code": 0}}
+    for malformed in (b"malformed", b"\xff"):
+        prefix.with_suffix(".stdout").write_bytes(malformed)
+        with pytest.raises(RuntimeError, match="invalid job result JSON"):
+            host_driver.job_result(prefix, "hyperlight-unikraft", "run_job")
 
 
 @pytest.fixture
