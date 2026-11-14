@@ -19,16 +19,43 @@ SHA = re.compile(r"[0-9a-f]{40}")
 MAX_REPORT = 1024 * 1024
 
 
+def api_failure(headers: str, body: str, returncode: int) -> str:
+    """Keep only bounded diagnostic fields from an unsuccessful GitHub response."""
+    status = re.match(r"HTTP/\S+ ([1-5][0-9]{2})(?: |$)", headers)
+    request = re.search(r"(?im)^x-github-request-id:[ \t]*([A-Za-z0-9:-]{1,128})[ \t]*$", headers)
+    message = "unavailable"
+    try:
+        response = json.loads(body)
+    except json.JSONDecodeError:
+        # Transport and non-JSON failures have no safe structured message.
+        response = None
+    if isinstance(response, dict) and isinstance(response.get("message"), str):
+        message = response["message"]
+        for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+            token = os.environ.get(name)
+            if token:
+                message = message.replace(token, "[redacted]")
+        message = " ".join(message.split())[:240]
+    return (f"gh exit {returncode}; HTTP {status[1] if status else 'unavailable'}; "
+            f"request ID {request[1] if request else 'unavailable'}; message: {message}")
+
+
 def api(endpoint: str, payload: dict | None = None):
     """Use the provisioned GitHub CLI; never put its token in arguments."""
-    command = ["gh", "api", f"repos/{REPOSITORY}/{endpoint}"]
+    command = ["gh", "api", "--include", f"repos/{REPOSITORY}/{endpoint}"]
     if payload is not None:
         command.extend(["--method", "POST", "--input", "-"])
     result = subprocess.run(command, input=json.dumps(payload) if payload is not None else None,
-                            capture_output=True, text=True, check=True, timeout=120)
+                            capture_output=True, text=True, check=False, timeout=120)
     if len(result.stdout) > 8 * MAX_REPORT:
         raise ValueError("GitHub response exceeds byte bound")
-    return json.loads(result.stdout)
+    headers, separator, body = result.stdout.partition("\n\n")
+    if result.returncode:
+        diagnostic = api_failure(headers if separator else "", body if separator else "", result.returncode)
+        raise ValueError(f"GitHub API {'POST' if payload is not None else 'GET'} {endpoint} failed: {diagnostic}")
+    if not separator:
+        raise ValueError("GitHub response headers are missing")
+    return json.loads(body)
 
 
 def pages(endpoint: str) -> list[dict]:
