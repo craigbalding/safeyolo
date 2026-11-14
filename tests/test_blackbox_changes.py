@@ -520,6 +520,7 @@ def test_trusted_workflow_bootstrap_runs_selected_interpreters(tmp_path, git_sou
                                      "ref": "refs/heads/master", "before": base, "after": base}))
     env = {key: value for key, value in os.environ.items()
            if key not in {"UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV", "GH_TOKEN", "GITHUB_TOKEN"}}
+    env["PATH"] = str(Path(sys.base_prefix) / "bin") + os.pathsep + env["PATH"]
     env.update(RUNNER_TEMP=str(output), NOTICE_BASE=base, NOTICE_HEAD=base,
                GITHUB_ACTIONS="true", GITHUB_EVENT_NAME="push", GITHUB_EVENT_PATH=str(event_path),
                GITHUB_STEP_SUMMARY=str(tmp_path / "summary.md"))
@@ -540,6 +541,8 @@ def test_trusted_workflow_bootstrap_runs_selected_interpreters(tmp_path, git_sou
     (output / "analysis/blackbox-changes.json").write_bytes(report.read_bytes())
     # The publisher's actual system-Python command uses only the standard
     # library. A quiet report returns before any GitHub API operation.
+    result = run("python3 -I -c 'import sys; assert sys.prefix == sys.base_prefix'")
+    assert result.returncode == 0, result.stderr
     result = run(publish_step)
     assert result.returncode == 0, result.stderr
     assert json.loads((output / "blackbox-notice.json").read_text())["status"] == "quiet"
