@@ -481,6 +481,70 @@ def analyze_cli(root, base, head, output):
     return json.loads(report.read_text())
 
 
+@pytest.mark.parametrize(("setting", "target", "source"), [
+    ("autolib", "fixture", "src/lib.rs"),
+    ("autobins", "credential_check", "src/bin/credential_check.rs"),
+    ("autoexamples", "credential_check", "examples/credential_check.rs"),
+    ("autotests", "credential_check", "tests/credential_check.rs"),
+    ("autobenches", "credential_check", "benches/credential_check.rs"),
+])
+def test_cargo_automatic_target_selection_reaches_analyzer_cli(tmp_path, git_sources, setting, target, source):
+    root, git = git_sources
+    manifest = root / "proxy/Cargo.toml"
+    original = '[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2024"\n'
+    # Keep one explicit target so disabling automatic library discovery remains
+    # a valid package, while the selected implicit target actually disappears.
+    original += '\n[[test]]\nname = "explicit"\npath = "explicit.rs"\n'
+    manifest.write_text(original)
+    (manifest.parent / "explicit.rs").write_text("#[test]\nfn explicit() { assert!(true); }\n")
+    witness = manifest.parent / source
+    witness.parent.mkdir(parents=True, exist_ok=True)
+    witness.write_text("fn main() {}\n#[test]\nfn denied() { assert!(true); }\n")
+    catalogue = root / changes.CATALOGUE
+    catalogue.write_text(catalogue.read_text() + f'[[witnesses]]\npaths = ["proxy/{source}"]\ncontrols = ["BB-01"]\nkind = "cargo"\n')
+
+    def targets():
+        metadata = subprocess.check_output(["cargo", "metadata", "--offline", "--no-deps", "--format-version", "1",
+                                            "--manifest-path", str(manifest)], text=True)
+        return {row["name"] for row in json.loads(metadata)["packages"][0]["targets"]}
+
+    git("add", ".")
+    git("commit", "-qm", "automatic Cargo target")
+    base = git("rev-parse", "HEAD")
+    before = targets()
+    assert target in before
+    manifest.write_text(original.replace('[package]\n', f'[package]\n{setting} = false\n'))
+    assert targets() == before - {target}
+    git("add", ".")
+    git("commit", "-qm", "disable automatic Cargo target")
+    report = analyze_cli(root, base, git("rev-parse", "HEAD"), tmp_path)
+    assert report["delta_id"]
+    assert [(row["path"], row["status"]) for row in report["changes"]] == [("proxy/Cargo.toml", "material")]
+
+
+@pytest.mark.parametrize("edition", ["2015", "2024"])
+def test_cargo_dependency_and_explicit_discovery_defaults_stay_quiet(sources, edition):
+    manifest = f'[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "{edition}"\n'
+    manifest += '\n[[test]]\nname = "explicit"\npath = "explicit.rs"\n\n[dependencies]\nhttp = "1"\n'
+    files = sources | {"proxy/Cargo.toml": manifest}
+    assert compare(files, {"proxy/Cargo.toml": manifest.replace('http = "1"', 'http = "2"')})["delta_id"] is None
+    default = "false" if edition == "2015" else "true"
+    explicit_default = manifest.replace('[package]\n', f'[package]\nautotests = {default}\n')
+    assert compare(files, {"proxy/Cargo.toml": explicit_default})["delta_id"] is None
+    changed = explicit_default.replace(f'autotests = {default}', f'autotests = {"true" if default == "false" else "false"}')
+    assert compare(files, {"proxy/Cargo.toml": changed})["delta_id"]
+
+
+@pytest.mark.parametrize("table", ["[lib]", "[[bin]]", "[[example]]", "[[test]]", "[[bench]]"])
+def test_cargo_explicit_target_selection_is_material(sources, table):
+    manifest = '[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2024"\n'
+    manifest += f'\n{table}\nname = "denial"\npath = "denial.rs"\ntest = true\n'
+    files = sources | {"proxy/Cargo.toml": manifest}
+    report = compare(files, {"proxy/Cargo.toml": manifest.replace("test = true", "test = false")})
+    assert report["delta_id"]
+    assert report["changes"][0]["status"] == "material"
+
+
 def test_interpreter_and_new_cargo_target_reach_analyzer_cli(tmp_path, git_sources):
     root, git = git_sources
     script = root / "tests/blackbox/guest_probe.sh"

@@ -442,9 +442,17 @@ def toml_definition(name: str, source: str) -> object:
     if PurePosixPath(name).name == "pyproject.toml":
         return data.get("tool", {}).get("pytest")
     if PurePosixPath(name).name == "Cargo.toml":
+        package = data.get("package", {})
+        # Cargo 2015 disables inference for an explicitly listed target kind;
+        # later editions default to discovery. Explicit defaults stay quiet.
+        automatic = {option: package.get(option,
+                     kind == "lib" or kind not in data or package.get("edition", "2015") != "2015")
+                     for kind, option in (("lib", "autolib"), ("bin", "autobins"), ("example", "autoexamples"),
+                                          ("test", "autotests"), ("bench", "autobenches"))}
         profiles = {profile: {key: settings[key] for key in ("debug-assertions", "panic") if key in settings}
                     for profile, settings in data.get("profile", {}).items()}
-        return {key: data[key] for key in ("test", "features") if key in data} | {
+        return {key: data[key] for key in ("lib", "bin", "example", "test", "bench", "features") if key in data} | {
+            "automatic-targets": automatic,
             "profile": {profile: settings for profile, settings in profiles.items() if settings}}
     return data
 
