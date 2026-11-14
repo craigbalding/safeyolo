@@ -77,6 +77,7 @@ jobs:
         if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         run: |
           uv run --frozen pytest -q tests/test_blackbox_harness.py tests/test_blackbox_sinkhole.py \
+            tests/test_blackbox_containment.py \
             tests/test_blackbox_catalogue.py tests/test_blackbox_execution_receipt.py \
             tests/test_blackbox_guest_exec.py tests/test_blackbox_listener_restart.py tests/test_retained_hardware.py \
             tests/test_claude_smoke.py \

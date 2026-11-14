@@ -59,6 +59,8 @@ SINKHOLE_FUTURE_PORT = int(os.environ.get("SAFEYOLO_SINKHOLE_FUTURE_PORT", "1845
 # Only redirect these hostnames — must match sinkhole cert SANs.
 # All other traffic passes through to real upstreams.
 SINKHOLE_HOSTS = {
+    "auth.openai.com",
+    "chatgpt.com",
     "api.openai.com",
     "api.anthropic.com",
     "api.github.com",
