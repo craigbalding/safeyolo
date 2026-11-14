@@ -401,8 +401,9 @@ def test_quiet_sequence_never_reads_or_writes_comments_then_material_notifies(so
 
 def test_forged_human_marker_cannot_suppress_a_notice(sources, github):
     report = compare(sources, {TEST: ORIGINAL.replace("== 0", "== 1")})
+    context = notices.event_context(event(), "pull_request_target") | {"run_id": "100"}
     github.comments["issues/123/comments"] = [{"user": {"login": "craigbalding", "type": "User"},
-                                               "body": f"<!-- safeyolo-bb-delta:{report['delta_id']} -->"}]
+                                               "body": notices.notice_body(report, context, report["changes"])}]
     assert notices.publish(report, event(), "pull_request_target")["status"] == "published"
 
 

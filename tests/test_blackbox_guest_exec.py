@@ -63,10 +63,10 @@ def test_guest_dispatcher_does_not_import_an_ambient_package_or_select_path_deco
     assert not marker.exists()
 
 
-def test_runner_readiness_and_both_isolation_invocations_reach_native_shell(tmp_path):
+def test_runner_readiness_and_preparation_reach_native_shell(tmp_path):
     source = Path('tests/blackbox/run-tests.sh').read_text().splitlines()
-    selected = [line.strip() for line in source if '"$SCRIPT_DIR/guest_exec.py"' in line]
-    assert len(selected) == 5
+    selected = [line.strip() for line in source if '"$SCRIPT_DIR/guest_exec.py"' in line and "--pytest-phase" not in line]
+    assert len(selected) == 3
     cli = tmp_path / 'safeyolo'
     record = tmp_path / 'calls'
     cli.write_text(f'#!{sys.executable}\nimport json,sys\n'
@@ -87,7 +87,7 @@ def test_runner_readiness_and_both_isolation_invocations_reach_native_shell(tmp_
                                 input='runner stdin', capture_output=True, text=True, timeout=10)
         assert result.returncode == 0, result.stderr
         calls.append(json.loads(record.read_text().splitlines()[-1]))
-    readiness, prepare_primary, prepare_peer, ordinary, root_login = calls
+    readiness, prepare_primary, prepare_peer = calls
     prefix = ['--root', str(root), 'agent', 'shell']
     primary = [*prefix, 'marker', '-c']
     assert readiness == [*primary, 'true']
@@ -97,9 +97,6 @@ def test_runner_readiness_and_both_isolation_invocations_reach_native_shell(tmp_
             'exec', 'sudo', '-n', '/bin/bash', '-lc',
             'bash /workspace/tests/blackbox/prepare-guest-tests.sh',
         ]
-    assert ordinary == [*primary, 'printf literal']
-    assert root_login[:-1] == primary
-    assert shlex.split(root_login[-1]) == ['exec', 'sudo', '-n', '/bin/bash', '-lc', 'printf literal']
 
 
 @pytest.mark.parametrize('mise_present', [False, True])
@@ -120,6 +117,17 @@ if sys.argv[1] == '-c':
           'pytest 9.0.3\\nhttpx 0.28.1\\npytest-timeout 2.4.0')
 elif sys.argv[1:3] == ['-m', 'pytest']:
     print('pytest 9.0.3')
+elif sys.argv[1].endswith('/execution_receipt.py'):
+    import pathlib
+    sys.path.insert(0, {str(Path.cwd())!r})
+    from tests.blackbox.execution_receipt import phase_functions
+    from tests.blackbox.selections import PYTEST_PHASES
+    phase=sys.argv[sys.argv.index('--phase')+1]
+    nodes=phase_functions(phase)
+    pathlib.Path(sys.argv[sys.argv.index('--output')+1]).write_text(json.dumps(dict(
+        phase=phase,lane='systrap',identity=PYTEST_PHASES[phase][0],uid=0 if phase=='guest-root' else 1000,
+        run_id=sys.argv[sys.argv.index('--run-id')+1],finished=True,exit=0,collected=nodes,selected=nodes,
+        tests={{node:dict.fromkeys(('setup','call','teardown'),'passed') for node in nodes}})))
 else:
     assert sys.argv[1:4] == ['-m', 'pip', 'install']
 ''')
@@ -147,22 +155,22 @@ sys.exit(subprocess.run(['/bin/bash', '-c', command], env=environment).returncod
 ''')
     cli.chmod(0o755)
     environment = dict(os.environ, **system_python_stub, SCRIPT_DIR=str(Path('tests/blackbox').resolve()),
-                       INSTALLED_CLI=str(cli), AGENT_NAME='bbtest', PYTEST_FORWARD_SHELL='')
+                       INSTALLED_CLI=str(cli), AGENT_NAME='bbtest', EXPECTED_PLATFORM='systrap',
+                       ARTIFACTS_DIR=str(tmp_path / 'reports'))
     environment.pop('SAFEYOLO_GUEST_TEST_INPUTS', None)
     guest_exec.prepare_guest_tests(str(cli), 'bbtest', env=environment)
     lines = Path('tests/blackbox/run-tests.sh').read_text().splitlines()
     index = next(i for i, line in enumerate(lines) if '"$SCRIPT_DIR/guest_exec.py"' in line and
-                 ('--user root -c' in line if guest_root else line.rstrip().endswith('"$AGENT_NAME" -c \\')))
-    invocation = '\n'.join(lines[index:index + 2])
+                 ('--pytest-phase guest-root' in line if guest_root else '--pytest-phase guest-agent' in line))
+    invocation = '\n'.join(lines[index:index + 3])
     result = subprocess.run(['/bin/bash', '-c', invocation], env=environment,
                             capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
     calls = [json.loads(line) for line in record.read_text().splitlines()]
     assert any(call[:3] == ['-m', 'pip', 'install'] for call in calls)
     assert ['-m', 'pytest', '--version'] in calls
-    assert calls[-1][:2] == ['-m', 'pytest'] and '--timeout=60' in calls[-1]
-    assert ('test_root_containment.py' in calls[-1]) == guest_root
-    assert '--ignore=test_root_containment.py' in calls[-1] or guest_root
+    assert calls[-1][0].endswith('/execution_receipt.py') and '--timeout=60' in calls[-1]
+    assert calls[-1][calls[-1].index('--phase')+1] == ('guest-root' if guest_root else 'guest-agent')
     assert all(decoy.read_text().endswith('exit 61\n') for directory in (mise, pentest) for decoy in directory.iterdir())
 
 

@@ -13,12 +13,9 @@ from urllib.parse import urlsplit
 import pytest
 
 from tests.blackbox import installed_host_smoke
+from tests.blackbox.execution_receipt import phase_functions
+from tests.blackbox.selections import PYTEST_PHASES
 from tests.test_blackbox_sinkhole import _load_sinkhole_server
-
-NODES = (
-    "test_vm_isolation.py::TestHostAdjacentReachability::test_host_listener_unreachable",
-    "test_vm_isolation.py::TestNetworkEscape::test_proxy_reachable",
-)
 
 
 @pytest.fixture
@@ -50,14 +47,24 @@ def listener_probe(tmp_path, monkeypatch):
         calls.append(args)
         if "status" in args:
             return SimpleNamespace(returncode=0, stdout=json.dumps(status), stderr="")
-        assert args[-2] == "-c" and "test_host_listener_unreachable" in args[-1]
-        assert "/usr/bin/python3 -m pytest" in args[-1]
-        assert "test_proxy_reachable" in args[-1]
+        if args[-1].startswith("cat "):
+            return SimpleNamespace(args=args, returncode=0, stdout=json.dumps(failure["receipt"]), stderr="")
+        assert args[-2] == "-c" and "/usr/bin/python3 /workspace/tests/blackbox/execution_receipt.py" in args[-1]
+        tokens = shlex.split(args[-1])
+        phase = tokens[tokens.index("--phase") + 1]
+        nodes = phase_functions(phase)
+        tests = {node: dict.fromkeys(("setup", "call", "teardown"), "passed") for node in nodes}
+        if "skipped" in failure.get("result", ""):
+            tests[nodes[0]]["call"] = "skipped"
+        failure["receipt"] = {"phase": phase, "lane": tokens[tokens.index("--lane") + 1],
+                              "identity": PYTEST_PHASES[phase][0], "uid": 1000,
+                              "run_id": tokens[tokens.index("--run-id") + 1], "finished": True, "exit": 0,
+                              "collected": nodes, "selected": nodes, "tests": tests}
         if failure.get("dead-after"):
             listener.close()
         refusal = {"host": host, "port": port, "uid": 1000, "connected": False, "error": "refused"}
         refusal.update(failure.get("refusal", {}))
-        return SimpleNamespace(returncode=failure.get("exit", 0), stderr="",
+        return SimpleNamespace(args=args, returncode=failure.get("exit", 0), stderr="",
                                stdout="HOST_LISTENER_REFUSAL=" + json.dumps(refusal) + "\n" +
                                failure.get("result", "2 passed"))
 
@@ -70,7 +77,7 @@ def listener_probe(tmp_path, monkeypatch):
 
 def test_listener_observer_records_same_endpoint_and_live_controls(listener_probe):
     consumer, _, _, _, artifacts, host, port = listener_probe
-    consumer.TestLiveHostListener().test_live_host_listener_refused("ordinary", False, NODES)
+    consumer.TestLiveHostListener().test_live_host_listener_refused("ordinary", False)
     report = json.loads((artifacts / "host-listener-ordinary.json").read_text())
     assert report["passed"] and report["guest_before"] == report["guest_after"]
     assert report["endpoint"] == {"host": host, "port": port}
@@ -95,7 +102,7 @@ def test_listener_observer_refuses_false_isolation_claims(listener_probe, defect
     else:
         failure["exit"] = 1
     with pytest.raises((AssertionError, OSError)):
-        consumer.TestLiveHostListener().test_live_host_listener_refused("ordinary", False, NODES)
+        consumer.TestLiveHostListener().test_live_host_listener_refused("ordinary", False)
     report = json.loads((artifacts / "host-listener-ordinary.json").read_text())
     assert "passed" not in report and report["endpoint"]["port"] == port
     if defect == "dead-before":

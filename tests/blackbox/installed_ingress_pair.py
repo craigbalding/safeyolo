@@ -21,6 +21,7 @@ import uuid
 from pathlib import Path
 
 if __package__:
+    from .execution_receipt import ProcedureReceipt
     from .guest_exec import guest_command_args
     from .host.sinkhole_client import SinkholeClient
     from .installed_host_smoke import _agent_listeners, _native_config, _process_start_token
@@ -41,6 +42,7 @@ if __package__:
     )
     from .installed_sections import surviving_processes
 else:
+    from execution_receipt import ProcedureReceipt
     from guest_exec import guest_command_args
     from host.sinkhole_client import SinkholeClient
     from installed_host_smoke import _agent_listeners, _native_config, _process_start_token
@@ -114,6 +116,7 @@ def main() -> None:
     parser.add_argument("--install-commit", required=True)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
+    receipt = ProcedureReceipt('ingress-pair', args.output)
     config_dir = args.config_dir.resolve()
     os.environ["SAFEYOLO_CONFIG_DIR"] = str(config_dir)
     os.environ["SAFEYOLO_BLACKBOX_PLATFORM"] = "systrap"
@@ -121,6 +124,7 @@ def main() -> None:
     assert Path(raw["instance"]["config_dir"]).resolve() == config_dir
     identity = installed_identity(raw, None, expected_revision=args.install_commit)
     cli = identity["cli"]["path"]
+    receipt.checkpoint('identity')
     active_runtime = identity["runtime"]
     native = _native_config(config_dir / "config.toml", config_dir)["raw"]
     listeners = {row["agent_id"]: row for row in _agent_listeners(config_dir)}
@@ -184,6 +188,7 @@ def main() -> None:
         report["stopped"] = {"guests": {agent: live_guest(cli, config_dir, agent) for agent in AGENTS}, "refusals": {}}
         save()
         assert report["stopped"]["guests"] == before, "proxy stop replaced a guest generation"
+        receipt.checkpoint('user-and-root')
         for agent in AGENTS:
             path = Path(listeners[agent]["path"])
             assert_proxy_stopped(config_dir, path, identity["runtime"])
@@ -204,6 +209,7 @@ def main() -> None:
         assert report["restarted"]["guests"] == before, "proxy restart replaced a guest generation"
         assert {row["agent_id"]: row for row in _agent_listeners(config_dir)} == listeners
         observe("recovery")
+        receipt.checkpoint('restart')
         report["status"] = "ingress_pair_checks_passed"
         save()
     finally:
@@ -224,6 +230,7 @@ def main() -> None:
         save()
         assert not report["cleanup_failures"], report["cleanup_failures"]
     report["status"] = "ingress_pair_passed"
+    receipt.checkpoint('finished')
     save()
     print(f"Two-agent systrap ingress, forged claims, refusal/recovery and cleanup verified ({args.output})")
 

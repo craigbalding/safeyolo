@@ -306,16 +306,18 @@ if [ -n "$RUST_BIN" ] && [[ "$RUST_BIN" != /* ]] && [[ "$RUST_BIN" != "~/"* ]]; 
     RUST_BIN="$CALLER_DIR/$RUST_BIN"
 fi
 
-# The VM lane accepts a command string, so quote forwarded
-# pytest arguments before embedding them in that string.  Host-side pytest
-# calls below continue to use the original array directly.
-PYTEST_FORWARD_SHELL=""
-# macOS /bin/bash 3.2 treats an empty array expansion as unbound under -u.
-# The + form expands to zero arguments for an empty array on both host shells.
-for forwarded_arg in "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}"; do
-    printf -v quoted_arg '%q' "$forwarded_arg"
-    PYTEST_FORWARD_SHELL+=" $quoted_arg"
-done
+# Preserve each exact pytest argument through the phase runner.
+ARTIFACTS_DIR="${SAFEYOLO_BLACKBOX_ARTIFACTS_DIR:-$SCRIPT_DIR/artifacts}"
+mkdir -p "$ARTIFACTS_DIR"
+ARTIFACTS_DIR="$(cd "$ARTIFACTS_DIR" && pwd -P)"
+export SAFEYOLO_BLACKBOX_RUN_ID="${SAFEYOLO_BLACKBOX_RUN_ID:-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')}"
+run_pytest_phase() {
+    local phase="$1"
+    shift
+    python3 "$SCRIPT_DIR/execution_receipt.py" --phase "$phase" --lane "$EXPECTED_PLATFORM" \
+        --output "$ARTIFACTS_DIR/pytest-$phase.json" --run-id "$SAFEYOLO_BLACKBOX_RUN_ID" -- \
+        "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" "$@"
+}
 
 # The focused native contract harness owns explicit proxy-only runs. It
 # launches a new process for each fixture. A VM lane below instead uses one
@@ -356,8 +358,9 @@ if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ]; then
         exit 2
     fi
     set +e
-    pytest "${PYTEST_ARGS[@]}" --junitxml="$junit" \
-        "$REPO_ROOT/tests/proxy_contracts" --proxy-backend rust
+    python3 "$SCRIPT_DIR/execution_receipt.py" --phase proxy --lane proxy \
+        --output "$ARTIFACTS_DIR/pytest-proxy.json" --run-id "$SAFEYOLO_BLACKBOX_RUN_ID" -- \
+        "${PYTEST_ARGS[@]}" --junitxml="$junit" --proxy-backend rust
     backend_result=$?
     set -e
     case "$backend_result" in
@@ -1131,6 +1134,11 @@ if [ -n "$EXPECTED_PLATFORM" ]; then
     fi
 fi
 
+if [ -n "$EXPECTED_PLATFORM" ]; then
+    SAFEYOLO_BLACKBOX_GUEST_IDENTITY="$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print(json.dumps({key:p[key] for key in ("platform","agent","pid","start_token")}))' "$ARTIFACTS_DIR/platform.json")"
+    export SAFEYOLO_BLACKBOX_GUEST_IDENTITY
+fi
+
 if [ "$PROXY_IMPL" = "rust" ] && [ "$RUN_ISOLATION" = true ]; then
     ARTIFACTS_DIR="${SAFEYOLO_BLACKBOX_ARTIFACTS_DIR:-$SCRIPT_DIR/artifacts}"
     mkdir -p "$ARTIFACTS_DIR"
@@ -1205,14 +1213,14 @@ if [ "$RUN_PROXY" = true ]; then
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=60 native/
+    run_pytest_phase native $VERBOSE --tb=short --timeout=60
     PROXY_RESULT=$?
 
     # Process security tests (host-side)
     echo ""
     echo "=== Process Security Tests (host-side) ==="
     echo ""
-    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=60 security/
+    run_pytest_phase security $VERBOSE --tb=short --timeout=60
     FIREWALL_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"
@@ -1222,8 +1230,7 @@ fi
 if [ "$LISTENER_RESTART" = true ]; then
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" -v -s --tb=short --timeout=120 \
-        lifecycle/test_host_listener.py lifecycle/test_token_lifecycle.py
+    run_pytest_phase listener-restart -v -s --tb=short --timeout=120
     LISTENER_RESTART_RESULT=$?
     set -e
     case "$LISTENER_RESTART_RESULT" in
@@ -1240,7 +1247,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=30 identity/
+    run_pytest_phase identity $VERBOSE --tb=short --timeout=30
     IDENTITY_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"
@@ -1249,8 +1256,9 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo "=== VM Isolation Tests (in-VM) ==="
     echo ""
     set +e
-    python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" "$AGENT_NAME" -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 /usr/bin/python3 -m pytest${PYTEST_FORWARD_SHELL} -v -rs --tb=short --timeout=60 --ignore=test_root_containment.py"
+    python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" --pytest-phase guest-agent \
+        --lane "$EXPECTED_PLATFORM" --output "$ARTIFACTS_DIR/pytest-guest-agent.json" "$AGENT_NAME" -- \
+        "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" -v -rs --tb=short --timeout=60
     ISOLATION_RESULT=$?
     set -e
     echo ""
@@ -1258,8 +1266,9 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo "=== Guest-Root Capability and Containment Tests (in-VM) ==="
     echo ""
     set +e
-    python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" "$AGENT_NAME" --user root -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 /usr/bin/python3 -m pytest${PYTEST_FORWARD_SHELL} -v -rs --tb=short --timeout=60 test_root_containment.py test_key_isolation.py::TestPrivateKeyAbsent"
+    python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" --pytest-phase guest-root \
+        --lane "$EXPECTED_PLATFORM" --output "$ARTIFACTS_DIR/pytest-guest-root.json" "$AGENT_NAME" -- \
+        "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" -v -rs --tb=short --timeout=60
     ROOT_ISOLATION_RESULT=$?
     set -e
     echo ""
@@ -1272,7 +1281,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" -v -rs --tb=short --timeout=120 lifecycle/
+    run_pytest_phase host-lifecycle -v -rs --tb=short --timeout=120
     LIFECYCLE_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"

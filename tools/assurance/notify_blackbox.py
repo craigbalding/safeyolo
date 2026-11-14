@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish one new bot mention per material assurance delta, using trusted reports."""
+"""Publish trusted bot notices for material assurance changes."""
 
 from __future__ import annotations
 

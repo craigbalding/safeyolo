@@ -10,10 +10,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import socket
-import stat
 import subprocess
 import sys
 import uuid
@@ -23,29 +21,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 if __name__ == "__main__":
     sys.path.insert(0, str(ROOT))
-    from tests.blackbox.installed_sections import SECTIONS
+    from tests.blackbox.execution_receipt import MAX_REPORT_BYTES as MAX_REPORT_BYTES
+    from tests.blackbox.execution_receipt import read_json, section_execution
+    from tests.blackbox.selections import SECTIONS
 else:
-    from ..installed_sections import SECTIONS
+    from ..execution_receipt import MAX_REPORT_BYTES as MAX_REPORT_BYTES
+    from ..execution_receipt import read_json, section_execution
+    from ..selections import SECTIONS
 
 REPOSITORY = "craigbalding/safeyolo"
 ISSUE = 889
-MAX_REPORT_BYTES = 8 * 1024 * 1024
-
-
-def read_json(path: Path) -> dict:
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(descriptor, "rb") as stream:
-        info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_REPORT_BYTES:
-            raise ValueError("report must be a bounded regular file")
-        data = stream.read(MAX_REPORT_BYTES + 1)
-    if len(data) > MAX_REPORT_BYTES:
-        raise ValueError("report grew beyond the read bound")
-    document = json.loads(data)
-    if not isinstance(document, dict):
-        raise ValueError("report must contain a JSON mapping")
-    return document
-
 
 def check_ports() -> None:
     """Reuse #889's read-only fixture-port probe; never signal another owner."""
@@ -178,12 +163,30 @@ def installed_result(reports: Path, lane: str, selection: dict) -> dict:
         "arm64", "aarch64", "x86_64",
     }:
         raise ValueError("hardware report has invalid host identity")
-    complete = (run["exit"] == 0 and sections["preparation"]["exit"] == 0 and names == list(SECTIONS[lane])
+    execution = {name: section_execution(reports / "guest" / name, name, lane, sections.get("run_id", ""))
+                 for name in SECTIONS[lane]}
+    complete = (bool(sections.get("run_id")) and all(row["complete"] for row in execution.values())
+                and run["exit"] == 0 and sections["preparation"]["exit"] == 0 and names == list(SECTIONS[lane])
                 and all(row == {"section": row["section"], "exit": 0, "result": "passed", "cleanup": "stopped"} for row in rows))
     return {"complete": complete, "sections": rows,
             "unexecuted_sections": [name for name in SECTIONS[lane] if name not in names],
-            "skipped_assertions": None, "installed_files_sha256": identities,
+            "execution": {name: public_execution(result) for name, result in execution.items()},
+            "installed_files_sha256": identities,
+            "product_revision": installed["host_source_revision"],
+            "controller_revision": run["controller_revision"],
+            "guest_revision": selection["guest"]["source_revision"],
+            "guest": selection["guest"],
             "host_system": run["host_system"], "host_architecture": run["host_architecture"]}
+
+
+def public_execution(result: dict) -> dict:
+    """Keep arbitrary candidate strings in private reports, as before."""
+    return {"complete": result["complete"], "phases": [
+        {"phase": row["phase"], "complete": row["complete"],
+         "problems": sorted({problem.split(":", 1)[0] for problem in row["problems"]}),
+         "failed_stages": row.get("failed_stages", []),
+         "platform_exclusions": len(row.get("exclusions", {}))}
+        for row in result["phases"]]}
 
 
 def section_rows(sections: list[dict], lane: str) -> list[dict]:
@@ -191,7 +194,7 @@ def section_rows(sections: list[dict], lane: str) -> list[dict]:
     for row in rows:
         if (type(row["exit"]) is not int or not 0 <= row["exit"] <= 255
                 or row["cleanup"] not in {"stopped", "failed"}
-                or row["result"] not in {"passed", "assertion_failure", "preparation_failure", "cleanup_failure"}):
+                or row["result"] not in {"passed", "assertion_failure", "preparation_failure", "cleanup_failure", "incomplete"}):
             raise ValueError("hardware section has invalid result fields")
     names = [row["section"] for row in rows]
     if len(set(names)) != len(names) or set(names) - set(SECTIONS[lane]):

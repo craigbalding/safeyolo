@@ -86,7 +86,7 @@ def invocation(tmp_path, monkeypatch):
     for function in (installed_binaries, retained_inputs.sha256, retained_inputs.selected, retained_inputs.verify_installed):
         definitions += inspect.getsource(function) + "\n"
     (controller / "tests/blackbox/retained_inputs.py").write_text(definitions + child)
-    for name in ("claude_smoke.py", "installed_sections.py", "installed_host_smoke.py"):
+    for name in ("claude_smoke.py", "installed_sections.py", "installed_host_smoke.py", "execution_receipt.py", "selections.py"):
         shutil.copy2(Path(retained_inputs.__file__).with_name(name), controller / "tests/blackbox" / name)
     provision = controller / "provision host binding"
     provision.write_text("#!/bin/sh\nset -eu\n"
@@ -534,6 +534,11 @@ def prepared_invocation(retained_invocation):
     (instruments / 'controlled-claude.py').write_text((instruments / 'retained_inputs.py').read_text().replace(
         'directory.mkdir(parents=True)', 'directory.mkdir(parents=True, exist_ok=True)'))
     (instruments / 'retained_inputs.py').write_bytes(Path(retained_inputs.__file__).read_bytes())
+    # The real receipt reader resolves required names without importing tests.
+    # Keep those source identities in the staged controller as on a real checkout.
+    for directory in ('host/native', 'host/security', 'host/identity', 'host/lifecycle', 'isolation'):
+        shutil.copytree(Path(retained_inputs.__file__).parent / directory, instruments / directory,
+                        ignore=shutil.ignore_patterns('__pycache__'))
     with (controller / 'scripts/select_blackbox_artifacts.py').open('a') as output:
         output.write('\n' + inspect.getsource(installed_binaries))
     # The installed CLI's native identity and the real sections are qualified
@@ -571,12 +576,31 @@ def prepared_invocation(retained_invocation):
         root = pathlib.Path.cwd()
         sys.path.insert(0, str(root))
         from tests.blackbox.installed_host_smoke import _base_report, _substrate_identity
+        from tests.blackbox.execution_receipt import ProcedureReceipt, phase_functions, save
+        from tests.blackbox.selections import PROCEDURES, PYTEST_PHASES, SECTION_DRIVERS
         instance = pathlib.Path(os.environ['SAFEYOLO_TEST_CONFIG_DIR'])
         instance.mkdir()
         source = pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR'])
         (instance/'config.toml').write_bytes((source/'config.toml').read_bytes())
         with (root/'events').open('a') as output:
             output.write(json.dumps({'stage':instance.name, 'instance':str(instance), 'umask':os.umask(0o022)})+'\\n')
+        artifacts = pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR'])
+        context = {'platform':'systrap', 'agent':'bbtest', 'pid':123, 'start_token':'controlled-birth'}
+        save(artifacts/'platform.json', context)
+        os.environ['SAFEYOLO_BLACKBOX_GUEST_IDENTITY'] = json.dumps(context)
+        for phase in SECTION_DRIVERS[instance.name]:
+            if phase in PYTEST_PHASES:
+                nodes = phase_functions(phase, root)
+                save(artifacts/f'pytest-{phase}.json', {
+                    'phase':phase, 'lane':'systrap', 'identity':PYTEST_PHASES[phase][0],
+                    'uid':0 if phase == 'guest-root' else 1000, 'guest':context,
+                    'run_id':os.environ['SAFEYOLO_BLACKBOX_RUN_ID'], 'finished':True,
+                    'exit':int(os.environ.get('FAIL_READINESS', '0')), 'collected':nodes, 'selected':nodes,
+                    'tests':{node:dict.fromkeys(('setup','call','teardown'), 'passed') for node in nodes}})
+            else:
+                receipt = ProcedureReceipt(phase, artifacts/'procedure.json')
+                for checkpoint in PROCEDURES[phase][1]:
+                    receipt.checkpoint(checkpoint)
         if instance.name == 'isolation':
             # This Ubuntu caller fixture supplies Linux doctor/runsc inputs.
             # Select that branch only for substrate discovery on any test host.
@@ -584,7 +608,6 @@ def prepared_invocation(retained_invocation):
                 substrate = _substrate_identity(source)
             report = _base_report({'source_revision':'a'*40}, {}, substrate)
             report['status'] = 'attached_ready'
-            artifacts = pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR'])
             (artifacts/'installed-rust-runtime.json').write_text(json.dumps(report))
         if instance.name == 'continuity':
             if os.environ.get('ADMISSION_HOME'):
