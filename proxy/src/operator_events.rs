@@ -45,7 +45,7 @@ impl Feed {
     pub(crate) async fn start(
         runtime: RuntimeState,
         stop: watch::Receiver<bool>,
-        tasks: &crate::admin_listener::EventTasks,
+        tasks: &crate::admin_listener::ListenerTasks,
     ) -> Arc<Self> {
         let (records, _) = broadcast::channel(64);
         let (state, _) = watch::channel(State {
@@ -70,7 +70,7 @@ impl Feed {
         .flatten();
         let owner = feed.clone();
         let mut stopped = stop.clone();
-        crate::admin_listener::spawn_event_task(tasks, async move {
+        crate::admin_listener::spawn_listener_task(tasks, async move {
             let Some(mut follower) = follower else { return };
             loop {
                 let result = tokio::task::spawn_blocking(move || {
@@ -112,7 +112,7 @@ impl Feed {
         .await;
         let owner = feed.clone();
         let mut stopped = stop;
-        crate::admin_listener::spawn_event_task(tasks, async move {
+        crate::admin_listener::spawn_listener_task(tasks, async move {
             loop {
                 // One local read for all viewers. No client timer or broker is
                 // involved. Retained watch versions reach each observer even

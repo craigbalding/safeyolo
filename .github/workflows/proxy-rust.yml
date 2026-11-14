@@ -22,6 +22,8 @@ on:
     paths:
       - "cli/tests/test_rust_proxy.py"
       - "proxy/**"
+      - "jobs/**"
+      - "scripts/build_hyperlight_jobs.py"
       - "site/**"
       - ".github/workflows/dispatch-publication.yml"
       - ".github/workflows/pages.yml"
@@ -144,7 +146,7 @@ jobs:
             BASE=HEAD~1
           fi
           git diff --name-only "$BASE" HEAD > "$RUNNER_TEMP/changed-paths"
-          if grep -Eq '^(proxy/|tests/proxy_contracts/test_(native_policy_cli|first_agent_launch)\.py$|tests/test_proxy_rust_coord_fixture\.py$|scripts/(cargo_with_space|rust_cache_command)\.sh$|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$)' "$RUNNER_TEMP/changed-paths"; then
+          if grep -Eq '^(proxy/|jobs/|scripts/build_hyperlight_jobs\.py$|tests/proxy_contracts/test_(native_policy_cli|first_agent_launch)\.py$|tests/test_proxy_rust_coord_fixture\.py$|scripts/(cargo_with_space|rust_cache_command)\.sh$|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$)' "$RUNNER_TEMP/changed-paths"; then
             echo 'rust=true' >> "$GITHUB_OUTPUT"
           elif [ "$?" -ne 1 ]; then
             echo 'ERROR: changed-path matcher failed' >&2
@@ -162,7 +164,7 @@ jobs:
             echo 'ERROR: changed-path matcher failed' >&2
             exit 2
           fi
-          if grep -Eq '^(scripts/rust_cache_command\.sh$|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$|vm/|proxy/src/(host_platform|desktop_|provider_stream)|tests/reference/safeyolo/(vm|runtime_identity|platform/(darwin|__init__))|cli/tests/test_vm_(control|diagnostics))' "$RUNNER_TEMP/changed-paths"; then
+          if grep -Eq '^(jobs/|scripts/rust_cache_command\.sh$|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$|vm/|proxy/src/(jobs|host_platform|desktop_|provider_stream)|tests/reference/safeyolo/(vm|runtime_identity|platform/(darwin|__init__))|cli/tests/test_vm_(control|diagnostics))' "$RUNNER_TEMP/changed-paths"; then
             echo 'macos=true' >> "$GITHUB_OUTPUT"
           elif [ "$?" -ne 1 ]; then
             echo 'ERROR: changed-path matcher failed' >&2
@@ -295,6 +297,13 @@ jobs:
           df -Pk .
           ../scripts/cargo_with_space.sh fmt --all -- --check
           ../scripts/cargo_with_space.sh clippy --release --locked --all-targets -- -D warnings
+
+      - name: Check the Hyperlight host adapter
+        if: steps.changes.outputs.rust == 'true'
+        run: |
+          scripts/cargo_with_space.sh fmt --manifest-path jobs/hyperlight-host/Cargo.toml -- --check
+          scripts/cargo_with_space.sh clippy --locked --all-targets --manifest-path jobs/hyperlight-host/Cargo.toml -- -D warnings
+          scripts/cargo_with_space.sh test --locked --manifest-path jobs/hyperlight-host/Cargo.toml
 
       # Native Cargo tests write the default release binary. Run them before
       # staging musl helpers and their checksums for the native installer.
@@ -539,6 +548,11 @@ jobs:
           runner_target="$(printf '%s' "$host_target" | tr '[:lower:]-' '[:upper:]_')"
           printf 'CARGO_TARGET_%s_RUNNER=%s/proxy/tests/coord_test_runner.sh\n' "$runner_target" "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
           ../scripts/cargo_with_space.sh clippy --release --locked --all-targets -- -D warnings
+
+      - name: Compile the Hyperlight host adapter on the selected host
+        run: |
+          scripts/cargo_with_space.sh fmt --manifest-path jobs/hyperlight-host/Cargo.toml -- --check
+          scripts/cargo_with_space.sh clippy --locked --all-targets --manifest-path jobs/hyperlight-host/Cargo.toml -- -D warnings
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -855,6 +869,12 @@ jobs:
         if: needs.focused-pr.outputs.rust == 'true'
         working-directory: proxy
         run: ../scripts/cargo_with_space.sh test --release --locked --test native_runtime_dependency --test native_host_cli --test native_host_identity
+      - name: Compile the Hyperlight host adapter on macOS
+        if: needs.focused-pr.outputs.rust == 'true'
+        run: |
+          scripts/cargo_with_space.sh fmt --manifest-path jobs/hyperlight-host/Cargo.toml -- --check
+          scripts/cargo_with_space.sh clippy --locked --all-targets --manifest-path jobs/hyperlight-host/Cargo.toml -- -D warnings
+          scripts/cargo_with_space.sh test --locked --manifest-path jobs/hyperlight-host/Cargo.toml
       - name: Build and save master debug release runtimes
         if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.focused-pr.outputs.rust == 'true'
         run: |

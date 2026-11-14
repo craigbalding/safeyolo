@@ -70,6 +70,10 @@ triggered while a guest is stopped, use the separate
 
 ## Run a disposable sandbox job
 
+The default engine uses gVisor on Linux and Virtualization.framework (VZ) on
+macOS. For the core Hyperlight and Hyperlight-Unikraft choices, use the
+[engine prerequisites, pinned bundles and semantics](hyperlight-jobs.md).
+
 On the host, use the account that owns the installed instance and its prepared
 shared Trixie guest. Write a trusted job definition to `check.json`:
 

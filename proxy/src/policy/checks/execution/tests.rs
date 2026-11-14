@@ -1,5 +1,34 @@
 use super::*;
 
+#[test]
+fn returned_job_metadata_does_not_disclose_host_retained_dependency_bodies() {
+    let mut evidence: Evidence = serde_json::from_value(json!({
+        "check":"author","source_id":"adopted","meaning":"issue author","scale":null,
+        "subject":{"kind":"value","value":"123"},"input_digest":"bound-input","acquisition":"live",
+        "file_digest":null,"file_version":null,"result":null,"unavailable":null,"expires_at_ms":null,
+        "feed_version":null,"execution":{"kind":"job","run_id":"job-owned",
+        "service_evidence":[{"id":"capture","response_sha256":"bound-evidence","retained_base64":"private-response","request_body_base64":"private-input"}]}
+    })).unwrap();
+    let retained = evidence.clone();
+    redact_captured_bodies(&mut evidence);
+    let capture = &evidence.execution.as_ref().unwrap()["service_evidence"][0];
+    assert_eq!(capture["id"], "capture");
+    assert_eq!(capture["response_sha256"], "bound-evidence");
+    assert!(capture.get("retained_base64").is_none());
+    assert!(capture.get("request_body_base64").is_none());
+    assert_eq!(
+        retained.execution.as_ref().unwrap()["service_evidence"][0]["retained_base64"],
+        "private-response"
+    );
+    // A service producer has a separate response schema; do not rewrite it by
+    // matching a field name that happens to occur in the job capture schema.
+    let mut service = retained;
+    service.execution.as_mut().unwrap()["kind"] = json!("service");
+    let original = service.execution.clone();
+    redact_captured_bodies(&mut service);
+    assert_eq!(service.execution, original);
+}
+
 const CAPTURE: &[u8] = include_bytes!("../../../../tests/fixtures/policy-check-github-issue.json");
 
 #[test]

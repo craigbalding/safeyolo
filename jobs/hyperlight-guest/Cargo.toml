@@ -1,0 +1,13 @@
+[package]
+name = "safeyolo-checker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license-file = "../../LICENSE"
+
+[dependencies]
+base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
+serde_json = { version = "=1.0.154", default-features = false, features = ["alloc"] }
+
+[target.'cfg(target_os = "none")'.dependencies]
+hyperlight-guest-bin = "=0.19.0"

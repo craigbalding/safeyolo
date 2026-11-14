@@ -282,6 +282,9 @@ pub struct Check {
     /// Policy-owned extra inputs, such as an expected GitHub issue author.
     #[serde(default)]
     pub inputs: BTreeMap<String, String>,
+    /// Agents permitted to request this adopted definition with a subject.
+    #[serde(default)]
+    pub invokers: Vec<String>,
     pub source: EvidenceSource,
 }
 impl Check {
@@ -614,6 +617,7 @@ impl Checks {
                 || check.implementation_version.is_empty()
                 || check.configuration_version.is_empty()
                 || check.max_age_seconds == 0
+                || check.invokers.iter().any(String::is_empty)
             {
                 return Err(invalid(
                     "named checks require names, versions and a positive maximum age",

@@ -9,6 +9,20 @@
 # phrases over generic ones ("2048 MiB" beats "MiB").
 
 [[assertion]]
+name = "hyperlight-guest-abi"
+source = "jobs/hyperlight-guest/Cargo.toml"
+pattern = 'hyperlight-guest-bin = "=(?P<version>[0-9.]+)"'
+docs = ["docs/hyperlight-jobs.md"]
+must_contain = "Hyperlight {version} guest ABI"
+
+[[assertion]]
+name = "hyperlight-unikraft-release"
+source = "jobs/hyperlight-host/Cargo.toml"
+pattern = 'hyperlight-unikraft = \{ version = "=(?P<version>[0-9.]+)"'
+docs = ["docs/hyperlight-jobs.md"]
+must_contain = "Unikraft integration {version}"
+
+[[assertion]]
 name = "support-authority-owner-budget"
 source = "proxy/src/peer_support/authority.rs"
 pattern = 'MAX_OWNERS: usize = (?P<owners>\d+)'

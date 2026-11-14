@@ -923,6 +923,35 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
             assert stream.extractfile(path).read() == notice.read_bytes()
 
 
+@pytest.mark.parametrize("notices", [True, False])
+def test_hyperlight_runtime_is_packaged_with_pinned_definitions_and_notices(package_inputs, tmp_path, notices):
+    runtime = tmp_path / "hyperlight"
+    runtime.mkdir()
+    shutil.copy2(package_inputs[1] / "safeyolo-proxy", runtime / "safeyolo-hyperlight")
+    for name in ("runtime.json", "python.cpio", "core.elf", "checker.py", "hyperlight.json", "hyperlight-unikraft.json"):
+        (runtime / name).write_text("controlled runtime fixture\n")
+    if notices:
+        (runtime / "licenses").mkdir()
+        (runtime / "licenses/NOTICE").write_text("runtime notice\n")
+    output = tmp_path / "output"
+    result = run(*package_inputs[4], "--output", str(output), "--hyperlight-artifacts", str(runtime))
+    if not notices:
+        assert result.returncode != 0
+        assert "license notices are missing" in result.stderr
+        return
+    assert result.returncode == 0, result.stderr
+    archive, = (path for path in output.glob("*.tar.gz") if not path.name.endswith("-guest-download.tar.gz"))
+    with tarfile.open(archive) as stream:
+        prefix = archive.name.removesuffix(".tar.gz")
+        checksums = stream.extractfile(prefix + "/SHA256SUMS").read().decode()
+        for path in runtime.rglob("*"):
+            if not path.is_file():
+                continue
+            relative = "assets/hyperlight/" + str(path.relative_to(runtime))
+            assert stream.extractfile(prefix + "/" + relative).read() == path.read_bytes()
+            assert f"{hashlib.sha256(path.read_bytes()).hexdigest()}  ./{relative}\n" in checksums
+
+
 def test_native_bundle_metadata_records_guest_discovery_without_pinning_an_archive(package_inputs, tmp_path):
     bundle = build_bundle(package_inputs, tmp_path)
     fields = dict(line.split("=", 1) for line in (bundle / "package-info").read_text().splitlines())
