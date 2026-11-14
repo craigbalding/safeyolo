@@ -52,7 +52,7 @@ gVisor or VZ. Selected scratch sizes (16 MiB for the small core example and
 
 ### Installed offline observations
 
-On 14 November 2026, fifteen successful installed jobs ran the same offline
+On 14 November 2026, eighteen successful installed jobs ran the same offline
 byte-count workload over 4096 bytes, with networking disabled and bounded
 stream retention. Wall time covers command invocation through job completion
 and cleanup. Build, installation, input preparation and `job validate` are
@@ -65,10 +65,15 @@ and the packaged gVisor runtime. Its debug native executables came from
 [`b8272ea8`](https://github.com/craigbalding/safeyolo/commit/b8272ea837a62240fec92a8f4e9263c2a650bbcd),
 with example preparation at
 [`c6dd3b8b`](https://github.com/craigbalding/safeyolo/commit/c6dd3b8bfef1a2e5f49e1fbc273c4b2ac2b46a52).
-The physical Apple-silicon host ran macOS 26.6.2 with Hypervisor.framework
-and the c6dd3b8b debug package. These are different hosts, architectures and
-native revisions; compare engines within each host, not performance between
-hosts.
+The physical Apple-silicon host ran macOS 26.6.2 with the c6dd3b8b debug
+package. Hyperlight used Hypervisor.framework; VZ used Virtualization.framework
+and a separately prepared standard Trixie Linux guest. These are different
+hosts, architectures and native revisions; compare engines within each host,
+not performance between hosts.
+
+The gVisor payload used Python. VZ used the existing `/bin/sh` and
+`/usr/bin/wc` for the same byte-count output contract. The complete-job timings
+include that payload implementation difference.
 
 | Host and engine | First job (ms) | Fresh job 2 (ms) | Fresh job 3 (ms) | Maximum individual RSS range (MiB) |
 |---|---:|---:|---:|---:|
@@ -77,6 +82,7 @@ hosts.
 | Linux: gVisor | 29396.281 | 12384.282 | 7788.608 | 38.250–38.316 |
 | macOS: core Hyperlight | 347.138 | 238.601 | 264.875 | 22.656–22.672 |
 | macOS: Hyperlight-Unikraft | 393.703 | 473.134 | 536.391 | 74.813–74.859 |
+| macOS: VZ | 8273.385 | 8265.408 | 8242.752 | 33.719–33.797 |
 
 Resident set size (RSS) comes from the host's `/usr/bin/time`. The reported
 maximum includes waited descendants as individual processes; it is not their
@@ -90,25 +96,30 @@ VZ boot assets can be reused while each job gets disposable writable state;
 that asset reuse is separate from preserving a running guest. No cold-cache
 or warm-restore latency or aggregate-memory measurement is established here.
 
-The macOS VZ comparison has no successful sample. Its first job exited 127
-before the byte-count payload, reporting `/usr/sbin/pivot_root: No such file
-or directory`. Subsequent read-only inspection confirmed that executable was
-absent from the selected retained Kali Rolling 2026.1 rootfs. That fixture was
-not an input from the current Trixie guest producer. Keep VZ latency and memory
-unknown rather than treating that failed job as a comparable run or evidence
-of a current producer defect.
+The first macOS VZ attempt exited 127 before the byte-count payload, reporting
+`/usr/sbin/pivot_root: No such file or directory`. Read-only inspection
+confirmed that executable was absent from the selected retained Kali Rolling
+2026.1 rootfs, which was not an input from the current Trixie guest producer.
+The standard Trixie replacement reached the payload but exited 127 because
+the measurement fixture selected an absent `/usr/bin/python3`. That was a
+fixture requirement, not a product dependency. Using the existing shell and
+`wc` produced the three successful VZ samples without installing tools or
+changing the image. Both failed attempts are excluded from the table; neither
+establishes a current producer defect.
 The Linux gVisor samples followed repair of an instance runtime binding;
 its earlier setup failures are also excluded from successful-job timings.
 
 The retained [#1552 observation records](https://github.com/craigbalding/safeyolo/issues/1552#issuecomment-6870450206)
 identify each input, specification, runtime, native executable and job, with
 the original observations in `installed-operator-15980.json`,
-`linux-comparison-15980.json` and `physical-mac-16006.json`. The table rounds
-those observations to three decimal places. The later fixture diagnosis is in
-`installed-authoring-and-vz-input-16013.json`. The measurements establish no universal
-latency or memory bound, production-profile result, or result for an unmeasured
-host/engine combination. Measure live service checks separately so network
-and provider latency retain their meaning.
+`linux-comparison-15980.json` and `physical-mac-16006.json`. The fixture diagnosis
+is in `installed-authoring-and-vz-input-16013.json`; `vz-corrected-16014.json`
+adds the Trixie payload failure and three VZ successes with their retained
+outputs. The table rounds all eighteen observations to three decimal places.
+The measurements establish no universal latency or memory bound,
+production-profile result, or result for an unmeasured host/engine combination.
+Measure live service checks separately so network and provider latency retain
+their meaning.
 
 Pinned upstream references explain the
 [core guest ABI](https://github.com/hyperlight-dev/hyperlight/blob/a03088470d822b538d2525ef9a5ae9e29daea1e8/docs/how-to-build-a-hyperlight-guest-binary.md),
