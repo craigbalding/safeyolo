@@ -822,7 +822,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/installed_tailnet.py::main](../tests/blackbox/installed_tailnet.py#L504) — Manual two-host tailnet journey; real status, native CLI/Coord and unchanged source proxy/guest identities. Evidence: Fresh observer forwards to owned real NATS, brackets fixed phases on the source clock and forces an active reconnect. Destination verifies canonical effects, refused non-delivery and cleanup. Faults require authorized isolated contexts; no executed live-tailnet or scheduled coverage inferred.
+- [tests/blackbox/installed_tailnet.py::main](../tests/blackbox/installed_tailnet.py#L510) — Manual two-host tailnet journey; real status, native CLI/Coord and unchanged source proxy/guest identities. Evidence: Fresh observer forwards to owned real NATS, brackets fixed phases on the source clock and forces an active reconnect. Destination verifies canonical effects, refused non-delivery and cleanup. Faults require authorized isolated contexts; no executed live-tailnet or scheduled coverage inferred.
   Selection: manual; no recurring selector resolved.
 - [proxy/src/coord_rooms/federation/tailscale.rs](../proxy/src/coord_rooms/federation/tailscale.rs#L162) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Unit fixtures for node/interface/route validation; not a live tailnet witness.
   Exact identities: [source inventory](#witness-proxy-src-coord-rooms-federation-tailscale-rs).

@@ -167,9 +167,11 @@ def observe_federation(bind: str, source: str, forward_port: int, duration: floa
                             row.update(control=True, phase=phase)
                             count = 0
                             if phase == "lost-interface":
-                                count = len(active)
+                                # Only the live initial-delivery connection proves cached-connection loss.
+                                count = sum(current[2].get("connect") and current[2].get("phase") == "initial" and
+                                    "initial" in current[2]["markers"] for current in active)
                                 for current in active:
-                                    current[2]["forced_disconnect"] = True
+                                    current[2]["forced_disconnect"] = phase
                                     disconnect(current[:2])
                             mark = {"phase": phase, "source_sent_ns": int(parts[3]),
                                 "observed_at": datetime.now(UTC).isoformat(), "disconnected": count}
@@ -177,8 +179,9 @@ def observe_federation(bind: str, source: str, forward_port: int, duration: floa
                         else:
                             row.update(phase=report["phase_marks"][-1]["phase"] if expected else None,
                                        received_bytes=len(first), connect=first.startswith(b"CONNECT "))
-                            pair = (connection, upstream, row)
-                            active.append(pair)
+                            if first:
+                                pair = (connection, upstream, row)
+                                active.append(pair)
                         report["connections"].append(row)
                         retain()
                     if row["control"]:
@@ -267,9 +270,12 @@ def observer_problems(report: dict) -> list[str]:
             problems.append("incomplete or unordered source-clock probe bounds")
             break
         previous = received
-    if not any(row["phase"] == "lost-interface" and row["disconnected"] > 0 for row in report["phase_marks"]):
-        problems.append("no active connection was disconnected for interface loss")
     product = [row for row in report["connections"] if not row["control"]]
+    disconnected = [row for row in product if row.get("phase") == "initial" and row.get("connect") and
+        "initial" in row.get("markers", []) and row.get("forced_disconnect") == "lost-interface" and row.get("closed")]
+    if not disconnected or not any(row["phase"] == "lost-interface" and row["disconnected"] == len(disconnected)
+                                   for row in report["phase_marks"]):
+        problems.append("initial authenticated delivery connection was not disconnected for interface loss")
     if any(row.get("error") or row["source"] != report["source"] for row in report["connections"]):
         problems.append("observer error or unexpected source")
     if any(row.get("received_bytes", 0) and row.get("phase") not in {"initial", "restored"} for row in product):

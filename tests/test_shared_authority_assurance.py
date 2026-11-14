@@ -22,7 +22,8 @@ from tests.blackbox import catalogue, guest_exec, installed_tailnet, native_auth
 from tests.blackbox.selections import NATIVE_AUTHORITY
 
 
-@pytest.mark.parametrize("defect", [None, "refused-bytes", "no-active-connection", "delayed-refused-marker"])
+@pytest.mark.parametrize("defect", [None, "refused-bytes", "no-active-connection", "unrelated-active-connection",
+    "delayed-refused-marker"])
 def test_tailnet_forwarding_observer_counts_real_frames_and_forces_reconnect(tmp_path, defect):
     received, errors = [], []
 
@@ -70,6 +71,8 @@ def test_tailnet_forwarding_observer_counts_real_frames_and_forces_reconnect(tmp
             authentication = b'CONNECT {"user":"peer","pass":"private-credential-sentinel"}\r\n'
             client.sendall(authentication)
             assert installed_tailnet.protocol_line(client) == b"+OK\r\n"
+            if phase is None:
+                return client
             marker = f"bb26-{ready['nonce']}-{phase}".encode()
             head = f"PUB request {len(marker)}\r\n".encode()
             split = len(marker) // 2
@@ -87,7 +90,7 @@ def test_tailnet_forwarding_observer_counts_real_frames_and_forces_reconnect(tmp
 
         mark("initial")
         initial = authenticate("initial")
-        if defect == "no-active-connection":
+        if defect in {"no-active-connection", "unrelated-active-connection"}:
             initial.shutdown(socket.SHUT_RDWR)
             initial.close()
             while True:
@@ -96,6 +99,8 @@ def test_tailnet_forwarding_observer_counts_real_frames_and_forces_reconnect(tmp
                     break
                 assert time.monotonic() < deadline
                 time.sleep(.01)
+            if defect == "unrelated-active-connection":
+                authenticate(None)
         mark("wrong-node")
         mark("wrong-route")
         if defect == "refused-bytes":
@@ -105,7 +110,7 @@ def test_tailnet_forwarding_observer_counts_real_frames_and_forces_reconnect(tmp
         with socket.create_connection(("127.0.0.1", ready["port"]), timeout=2) as silent:
             assert installed_tailnet.protocol_line(silent).startswith(b"INFO ")
         mark("lost-interface")
-        if defect != "no-active-connection":
+        if defect not in {"no-active-connection", "unrelated-active-connection"}:
             assert initial.recv(1) == b""
         mark("restored")
         restored = authenticate("restored")
@@ -119,10 +124,14 @@ def test_tailnet_forwarding_observer_counts_real_frames_and_forces_reconnect(tmp
         text = (output / "result.json").read_text()
         report = json.loads(text)
         assert report["closed"] is True and report["status"] == ("failed" if defect else "passed")
+        lost = next(row for row in report["phase_marks"] if row["phase"] == "lost-interface")
+        assert lost["disconnected"] == int(defect not in {"no-active-connection", "unrelated-active-connection"})
+        assert all(not row.get("forced_disconnect") for row in report["connections"]
+                   if not row.get("received_bytes"))
         assert bool(errors) is bool(defect)
         assert "private-credential-sentinel" not in text
         assert all(line.startswith(b"CONNECT ") for line in received)
-        assert len(received) == (3 if defect == "refused-bytes" else 2)
+        assert len(received) == (3 if defect in {"refused-bytes", "unrelated-active-connection"} else 2)
     finally:
         for client in clients:
             client.close()
@@ -231,7 +240,8 @@ def test_tailnet_phase_rejects_changed_context_and_retains_uncertain_submission(
 
 
 @pytest.mark.parametrize("defect", [None, "refused-effect", "wrong-principal", "source-restarted",
-    "wrong-refusal", "missing-case", "unrelated-observer", "source-cleanup", "destination-cleanup", "false-lost-pass", "outside-window", "different-binary"])
+    "wrong-refusal", "missing-case", "unrelated-observer", "source-cleanup", "destination-cleanup", "false-lost-pass",
+    "outside-window", "different-binary", "no-active-disconnect", "silent-disconnect", "unrelated-disconnect"])
 def test_tailnet_verifier_pairs_full_producer_receipts_with_independent_destination(tailnet_phase, tmp_path, monkeypatch, defect):
     args, _guest, _runtime, diagnosis, _calls = tailnet_phase
     phases, checks = [], []
@@ -270,6 +280,7 @@ def test_tailnet_verifier_pairs_full_producer_receipts_with_independent_destinat
             for index, phase in enumerate(installed_tailnet.PHASES)], "connections": [
             {"source": args.source, "control": False, "phase": phase, "received_bytes": 1,
              "connect": True, "markers": [phase]} for phase in ("initial", "restored")]}
+    observer["connections"][0].update(forced_disconnect="lost-interface", closed=True)
     cleanup = {"root": initial["root"], "cli": initial["cli"], "cleanup": "stopped", "cleanup_failures": []}
     # Same length-prefixed principal contract as the native destination producer.
     principal = "ag-fed-" + hashlib.sha256(b"9:sy-sourceag-source").hexdigest()
@@ -303,6 +314,15 @@ def test_tailnet_verifier_pairs_full_producer_receipts_with_independent_destinat
         checks.pop()
     elif defect == "unrelated-observer":
         observer["nonce"] = "another-run"
+    elif defect in {"no-active-disconnect", "silent-disconnect", "unrelated-disconnect"}:
+        observer["connections"][0].pop("forced_disconnect")
+        if defect != "no-active-disconnect":
+            # Retain the minimized silent closing-connection counterexample,
+            # or a live authenticated connection that never carried the marker.
+            observer["connections"].append({"source": args.source, "control": False, "closed": True,
+                "phase": "initial" if defect == "unrelated-disconnect" else "missing-interface",
+                "connect": defect == "unrelated-disconnect", "markers": [],
+                "received_bytes": int(defect == "unrelated-disconnect"), "forced_disconnect": "lost-interface"})
     elif defect == "source-cleanup":
         cleanup["cleanup_failures"] = ["owned guest still running"]
     destination = tmp_path / "destination"
