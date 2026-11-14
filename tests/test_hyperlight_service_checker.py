@@ -7,6 +7,7 @@ import importlib.util
 import json
 import signal
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -306,3 +307,110 @@ def test_named_evidence_binds_the_raw_adopted_definition_digest(host_driver, tmp
         named["evidence"]["execution"]["definition_digest"] = value
         with pytest.raises(AssertionError):
             host_driver.check_named_evidence(first, named, path, subject)
+
+
+@pytest.mark.parametrize("engine", ["hyperlight", "hyperlight-unikraft"])
+def test_held_controls_keep_entry_triggers_late_release_and_fresh_runs(host_driver, tmp_path, monkeypatch, engine):
+    """Exercise the observer's four modes; these local controls are not VM proof."""
+    origin = SimpleNamespace(entered=threading.Event(), release=threading.Event())
+    services = {"held": {"token": "held-secret"}}
+    instance = SimpleNamespace(root=tmp_path, policy={"agents": {
+        "gate:hyperlight-service-check": {"services": services}}}, proxy=object())
+    controls, triggers, fresh = [], [], []
+    modes = ("deadline", "cancel", "revoke", "shutdown")
+
+    def trigger(value):
+        assert origin.entered.is_set() and not origin.release.is_set()
+        triggers.append(value)
+
+    @contextlib.contextmanager
+    def job(selected, request, *, probe, timeout):
+        mode = modes[len(controls)]
+        controls.append(mode)
+        assert selected == engine and probe and request["call"]["url"].endswith("/hold")
+        # Retained17813 Unikraft totals reached8243ms; entry can take up to20s.
+        assert timeout == (5 if engine == "hyperlight" and mode == "deadline" else 30)
+        if engine == "hyperlight-unikraft":
+            assert timeout * 1000 > 8243 and timeout > 20
+        assert not origin.entered.is_set() and not origin.release.is_set()
+        origin.entered.set()
+        prefix = tmp_path / mode
+
+        def wait(*, timeout):
+            assert timeout == 45 and not origin.release.is_set()
+            if mode != "deadline":
+                assert triggers[-1] == mode
+
+        child = SimpleNamespace(poll=lambda: None, wait=wait,
+            send_signal=lambda sig: trigger("cancel") if sig == signal.SIGINT else pytest.fail("wrong signal"))
+        yield child, prefix
+        assert origin.release.is_set(), "late success must be released after the child stops"
+        outcome = ({"kind": "timeout"} if mode == "deadline" else {
+            "kind": "interrupted", "signal": int(signal.SIGINT if mode == "cancel" else signal.SIGTERM)})
+        prefix.with_suffix(".stdout").write_text(json.dumps({
+            "outcome": outcome, "observation_error": None, "service_evidence": [{"response_sha256": None}]}))
+        prefix.with_suffix(".stderr").write_text("")
+        prefix.with_suffix(".status.json").write_text(json.dumps({"returncode": 124 if mode == "deadline" else 1}))
+
+    def apply():
+        if "held" not in services:
+            trigger("revoke")
+        else:
+            assert origin.release.is_set(), "restore standing authority after the interrupted run"
+
+    def run_job(selected, request, *, probe):
+        assert selected == engine and probe and request["call"]["url"].endswith("/value")
+        assert "held" in services and origin.release.is_set()
+        fresh.append(controls[-1])
+        payload = b'[{"ok": true}]'
+        return {"stdout": {"retained_base64": base64.b64encode(payload).decode(), "bytes": len(payload),
+                           "sha256": host_driver.hashlib.sha256(payload).hexdigest()}}
+
+    instance.job, instance.apply, instance.run_job = job, apply, run_job
+    monkeypatch.setattr(host_driver, "stop", lambda proxy: trigger("shutdown"))
+    host_driver.held_lifetimes(instance, engine, origin, 18451)
+    assert controls == list(modes) and triggers == ["cancel", "revoke", "shutdown"]
+    assert fresh == ["deadline", "cancel", "revoke"] and "held" in services
+
+
+@pytest.mark.parametrize("entered,alive", [(False, True), (True, False)])
+def test_held_controls_reject_an_unreached_or_finished_call(host_driver, tmp_path, entered, alive):
+    triggered = []
+    origin = SimpleNamespace(entered=SimpleNamespace(clear=lambda: None, wait=lambda timeout: entered),
+                             release=threading.Event())
+
+    @contextlib.contextmanager
+    def job(*_args, **_options):
+        yield SimpleNamespace(poll=lambda: None if alive else 124,
+                              send_signal=lambda sig: triggered.append(sig)), tmp_path / "job"
+
+    with pytest.raises(AssertionError, match="never reached|terminated before"):
+        host_driver.held_lifetimes(SimpleNamespace(job=job), "hyperlight-unikraft", origin, 18451)
+    assert triggered == [] and not origin.release.is_set()
+
+
+def test_remaining_window_skips_completed_phases_and_reports_its_actual_scope(host_driver, tmp_path, monkeypatch, capsys):
+    args = SimpleNamespace(root=tmp_path / "root", scratch=tmp_path, admin_port=18450,
+                           bundle=tmp_path, cli=tmp_path / "cli", proxy=tmp_path / "proxy",
+                           unikraft_lifetimes_only=True)
+    for name in ("runtime.json", "cli", "proxy"):
+        (tmp_path / name).write_text(name)
+    calls = []
+    instance = SimpleNamespace(prepare=lambda port: calls.append("prepare"))
+    monkeypatch.setattr(host_driver, "Instance", lambda actual: instance)
+    monkeypatch.setattr(host_driver.subprocess, "Popen", lambda *_args, **_options: object())
+    monkeypatch.setattr(host_driver, "wait_ready", lambda *_args: calls.append("ready"))
+    monkeypatch.setattr(host_driver, "stop", lambda *_args: calls.append("stop"))
+
+    def held(actual, engine, origin, port):
+        assert actual is instance and engine == "hyperlight-unikraft"
+        calls.append("held")
+
+    monkeypatch.setattr(host_driver, "held_lifetimes", held)
+    host_driver.exercise(args)
+    assert calls == ["prepare", "ready", "held", "stop"]
+    result = json.loads((tmp_path / "result.json").read_bytes())
+    assert result["engines"] == ["hyperlight-unikraft"]
+    assert result["checks"] == "held deadline/cancel/revoke/shutdown lifetimes"
+    report = capsys.readouterr().out
+    assert "hyperlight-unikraft" in report and "live GitHub" not in report and "both" not in report

@@ -1,5 +1,7 @@
 """Exercise both real Hyperlight engines in one owned, disposable instance.
 
+Use --unikraft-lifetimes-only to run just the four Unikraft lifetime controls.
+
 Requires matching candidate CLI/proxy, a protocol-3 bundle built on this host's
 architecture, Python with tomlkit, and accessible KVM or entitled Apple-silicon
 HVF. The operator supplies an existing GitHub read credential in a private file.
@@ -319,8 +321,13 @@ def held_lifetimes(instance, engine, origin, port):
     for mode in ("deadline", "cancel", "revoke", "shutdown"):
         origin.entered.clear()
         origin.release.clear()
-        with instance.job(engine, request, probe=True, timeout=5 if mode == "deadline" else 30) as (child, prefix):
+        # Execution17813's completed Unikraft jobs took 7.2–8.2s in total;
+        # its five-second deadline expired before any provider call. Keep a
+        # finite whole-job budget that leaves a held-call window after entry.
+        timeout = 5 if mode == "deadline" and engine == "hyperlight" else 30
+        with instance.job(engine, request, probe=True, timeout=timeout) as (child, prefix):
             assert origin.entered.wait(20), f"{engine}/{mode} never reached held provider"
+            assert child.poll() is None, f"{engine}/{mode} terminated before its held-call trigger"
             if mode == "cancel":
                 child.send_signal(signal.SIGINT)
             elif mode == "revoke":
@@ -354,6 +361,7 @@ def held_lifetimes(instance, engine, origin, port):
 def exercise(args):
     instance = Instance(args)
     observations = []
+    engines = ("hyperlight-unikraft",) if args.unikraft_lifetimes_only else ("hyperlight", "hyperlight-unikraft")
 
     class Provider(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -386,13 +394,16 @@ def exercise(args):
         thread.start()
         try:
             instance.prepare(port)
-            for engine in ("hyperlight", "hyperlight-unikraft"):
+            for engine in engines:
                 # Each engine gets a fresh proxy lifetime; grants stay standing.
                 with (args.scratch / f"{engine}-proxy.log").open("wb") as log:
                     instance.proxy = subprocess.Popen([str(args.proxy), "--config", str(args.root / "config.toml")],
                                                       stdout=log, stderr=log)
                     try:
                         wait_ready(instance.proxy, args.root, args.admin_port)
+                        if args.unikraft_lifetimes_only:
+                            held_lifetimes(instance, engine, origin, port)
+                            continue
                         spec = args.scratch / f"{engine}-adopted.json"
                         instance.command("job", "validate", str(spec))
                         request = {"subject": {"kind": "value", "value": str(args.issue)}, "inputs": {
@@ -436,11 +447,12 @@ def exercise(args):
     assert all(row["credential_replaced"] and not row["gateway_token_leaked"] for row in observations), observations
     assert not (args.root / "data/ready.json").exists()
     assert not list((args.root / "data").glob("job-hyperlight-*"))
-    save(args.scratch / "result.json", {"engines": ["hyperlight", "hyperlight-unikraft"],
-                                      "checks": "live GitHub, standing grant/removal, named input/typed mismatch, scope/limits, held lifetimes",
+    checks = ("held deadline/cancel/revoke/shutdown lifetimes" if args.unikraft_lifetimes_only else
+              "live GitHub, standing grant/removal, named input/typed mismatch, scope/limits, held lifetimes")
+    save(args.scratch / "result.json", {"engines": engines, "checks": checks,
                                       "bundle": digest(args.bundle / "runtime.json"),
                                       "cli": digest(args.cli), "proxy": digest(args.proxy)})
-    print("PASS both real engines: mediated authority, typed evidence, limits and held-call lifetimes")
+    print(f"PASS {', '.join(engines)}: {checks}")
 
 
 def main():
@@ -452,6 +464,8 @@ def main():
     parser.add_argument("--expected-author-id", required=True)
     parser.add_argument("--parent-proxy")
     parser.add_argument("--admin-port", type=int, required=True)
+    parser.add_argument("--unikraft-lifetimes-only", action="store_true",
+                        help="run only the remaining Unikraft deadline/cancel/revoke/shutdown controls in a fresh instance")
     args = parser.parse_args()
     for name in ("cli", "proxy", "bundle", "github_token_file", "scratch"):
         setattr(args, name, getattr(args, name).resolve(strict=True))
