@@ -12,6 +12,12 @@ state, and supervisors remain authoritative.
 
 ## Select the workflow
 
+For executable admission and output checks, use the installed
+[job-authoring walkthrough](../job-authoring/references/walkthrough.md).
+Its adopted `work_bindings` enforce the native boundaries; contract prose alone
+does not. Consume the GitHub snapshot retained with admission rather than a
+later independent fetch. A refreshed admission supplies a new checked snapshot.
+
 Read the selected TOML and role contracts before assigning or completing work.
 With `[work]`, supervised roles receive native participant actions and settle
 them through their named canonical mutations. Do not mirror that lifecycle in

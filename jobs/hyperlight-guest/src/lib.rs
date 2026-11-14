@@ -68,7 +68,26 @@ pub fn service_check(
     let actual_author = evidence["user"]["id"]
         .as_u64()
         .ok_or("GitHub author ID unavailable")?;
-    Ok(json!({"finding":{"kind":"finding","positive":actual_author == author}}))
+    Ok(
+        json!({"finding":{"kind":"finding","positive":actual_author == author && evidence.get("pull_request").is_none()}}),
+    )
+}
+
+/// Verify the small JSON artifact retained by native Work, not a caller-selected path.
+pub fn artifact_check(input: &[u8]) -> Result<Value, String> {
+    let request: Value = serde_json::from_slice(input).map_err(|e| e.to_string())?;
+    if request["subject"]["kind"] != "value" {
+        return Err("artifact subject must be a value".into());
+    }
+    let subject: Value =
+        serde_json::from_str(text(&request["subject"], "value")?).map_err(|e| e.to_string())?;
+    let bytes = STANDARD
+        .decode(text(&subject, "artifact_base64")?)
+        .map_err(|e| e.to_string())?;
+    let artifact: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let status = text(&artifact, "status")?;
+    let expected = text(&request["inputs"], "expected_status")?;
+    Ok(json!({"finding":{"kind":"finding","positive":status == expected}}))
 }
 
 fn decimal(value: &str) -> Result<u64, String> {
@@ -164,6 +183,56 @@ mod tests {
                 })
                 .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn shared_author_and_autonomy_cases() {
+        let cases: Vec<Value> = serde_json::from_slice(include_bytes!(
+            "../../../proxy/tests/fixtures/hyperlight-author-cases.json"
+        ))
+        .unwrap();
+        for case in cases {
+            let mut capture: Value = serde_json::from_slice(CAPTURE).unwrap();
+            capture
+                .as_object_mut()
+                .unwrap()
+                .extend(case["patch"].as_object().unwrap().clone());
+            let mut request = input();
+            if let Some(author) = case.get("expected_author_id") {
+                request["inputs"]["expected_author_id"] = author.clone();
+            }
+            let result = evaluate(request, &serde_json::to_vec(&capture).unwrap());
+            match case["outcome"].as_str().unwrap() {
+                "pass" => assert_eq!(result.unwrap()["finding"]["positive"], true, "{case}"),
+                "reject" => assert_eq!(result.unwrap()["finding"]["positive"], false, "{case}"),
+                "unavailable" => assert!(result.is_err(), "{case}"),
+                other => panic!("unknown outcome {other}"),
+            }
+        }
+    }
+
+    #[test]
+    fn shared_exact_artifact_cases() {
+        let cases: Vec<Value> = serde_json::from_slice(include_bytes!(
+            "../../../proxy/tests/fixtures/hyperlight-artifact-cases.json"
+        ))
+        .unwrap();
+        for case in cases {
+            let subject =
+                json!({"artifact_base64":STANDARD.encode(case["artifact"].as_str().unwrap())});
+            let request = json!({"subject":{"kind":"value","value":subject.to_string()},
+                "inputs":{"expected_status":"ready"}});
+            let result = artifact_check(request.to_string().as_bytes());
+            if case["positive"].is_null() {
+                assert!(result.is_err(), "{case}");
+            } else {
+                assert_eq!(
+                    result.unwrap()["finding"]["positive"],
+                    case["positive"],
+                    "{case}"
+                );
+            }
         }
     }
 }

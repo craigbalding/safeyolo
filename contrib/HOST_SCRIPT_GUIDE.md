@@ -102,7 +102,7 @@ defaults and SafeYolo context without reading host Claude state. Existing agent
 authentication stays in place. With copying enabled, the host helper replaces
 credential files through private temporary files with mode `0600`. Extension
 files use atomic replacement too; a destination directory link stops copying.
-Host skills named `safeyolo`, `safeyolo-lab-controller`, or `safeyolo-factory`
+Host skills named `safeyolo`, `safeyolo-lab-controller`, `safeyolo-factory`, or `job-authoring`
 are skipped because SafeYolo stages those shared skills itself. Other host
 skills keep the existing copy behavior.
 
@@ -214,7 +214,7 @@ read-only, per-run skill trees under the agent's skill directory. Both Claude
 and Codex get `/safeyolo/skills/safeyolo`. Pi gets the same shared skill under
 its native `~/.pi/agent/skills` path. Claude and Codex also get
 `/safeyolo/skills/safeyolo-lab-controller`,
-`/safeyolo/skills/safeyolo-factory`, and the `safeyolo-lab` guest command. The
+`/safeyolo/skills/safeyolo-factory`, `/safeyolo/skills/job-authoring`, and the `safeyolo-lab` guest command. The
 Codex and Pi setups both stage `repo-map` under `~/.local/bin`; their launchers
 put that directory on the harness `PATH`. The helper refuses to overwrite a
 user-owned skill or command with a managed name. Custom standalone scripts may

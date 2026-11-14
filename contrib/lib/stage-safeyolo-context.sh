@@ -175,14 +175,14 @@ stage_safeyolo_context() {
     case "$consumer" in
         codex)
             link_dir="$agent_home/.agents/skills"
-            skill_names="safeyolo safeyolo-lab-controller safeyolo-factory readme-usability"
+            skill_names="safeyolo safeyolo-lab-controller safeyolo-factory readme-usability job-authoring"
             if [ -n "${SAFEYOLO_FACTORY_SNAPSHOT:-}" ] && [ -d "$repo_root/skills" ]; then
-                skill_names="safeyolo safeyolo-factory readme-usability"
+                skill_names="safeyolo safeyolo-factory readme-usability job-authoring"
             fi
             ;;
         claude)
             link_dir="$agent_home/.claude/skills"
-            skill_names="safeyolo safeyolo-lab-controller safeyolo-factory readme-usability"
+            skill_names="safeyolo safeyolo-lab-controller safeyolo-factory readme-usability job-authoring"
             ;;
         pi)
             link_dir="$agent_home/.pi/agent/skills"

@@ -6,6 +6,11 @@ a Python checker that fits its Linux compatibility subset. Both use the
 job definitions and captured-stream evidence. Engine selection does not grant
 service or network access.
 
+For the installed GitHub-author/factory and generated-artifact examples, use
+the [job-authoring walkthrough](../cli/src/safeyolo/agent_context/skills/job-authoring/references/walkthrough.md).
+The [engine-selection guide](../cli/src/safeyolo/agent_context/skills/job-authoring/references/engines.md)
+compares these runtimes with existing gVisor/VZ jobs and states measurement limits.
+
 ## Build and select a runtime
 
 Build on Linux x86_64/aarch64 or Apple-silicon macOS as an ordinary user, from a
@@ -65,12 +70,18 @@ the repository, issue number and expected stable GitHub user ID:
 ```
 
 The checkers fetch the exact issue through the mediated service, read the full
-bounded capture and compare `user.id`. An author mismatch returns a negative
+bounded capture and compare `user.id`. An author mismatch or a pull-request
+record returned by the issues endpoint produces a negative
 typed finding. A denied call, oversized response, incomplete JSON or mismatched
 issue identity fails execution. The host retains the capture digest and actual
 upstream metadata; the checker supplies no identity or observation timestamp.
 These job definitions are examples. Adopting a named check also fixes its inputs
 and expected author in the host policy; invocation supplies only its subject.
+
+The package also includes `hyperlight-artifact.json`,
+`hyperlight-unikraft-artifact.json` and `artifact_checker.py`. These check the
+small JSON output retained by native Work against the adopted `expected_status`.
+The walkthrough binds that predicate to output acceptance automatically.
 
 For integrated runtime verification, `tests/blackbox/host/hyperlight_services.py`
 drives both engines with matching candidate binaries and a bundle built for the

@@ -54,6 +54,13 @@ def test_complete_chunked_capture_and_identity_mismatch():
         checker.service_check(request(), bridge(data[:-1]))
 
 
+@pytest.mark.parametrize("constant", ["Infinity", "-Infinity", "NaN"])
+def test_non_json_constants_in_capture_are_unavailable(constant):
+    data = json.dumps(CAPTURE)[:-1] + ',"value":' + constant + '}'
+    with pytest.raises(ValueError, match="invalid JSON constant"):
+        checker.service_check(request(), bridge(data.encode()))
+
+
 @pytest.mark.parametrize("field", ["url", "number", "id", "title", "updated_at", "user"])
 def test_missing_evidence_is_unavailable(field):
     capture = copy.deepcopy(CAPTURE)
@@ -95,7 +102,7 @@ def test_bundle_pins_both_service_checkers_without_changing_offline_examples(tmp
     spec = importlib.util.spec_from_file_location("builder", REPO / "scripts/build_hyperlight_jobs.py")
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
-    for name in ("core.elf", "checker.py", "service_checker.py", "runtime.json"):
+    for name in ("core.elf", "checker.py", "service_checker.py", "artifact_checker.py", "runtime.json"):
         (tmp_path / name).write_text(name)
     builder.write_job_definitions(tmp_path)
     for kind in ("hyperlight", "hyperlight-unikraft"):
@@ -113,6 +120,62 @@ def test_bundle_pins_both_service_checkers_without_changing_offline_examples(tmp
         else:
             assert offline["engine"]["checker"]["path"] == "checker.py"
             assert selected["path"] == "service_checker.py"
+        artifact = json.loads((tmp_path / f"{kind}-artifact.json").read_text())
+        for definition in (offline, service, artifact):
+            assert definition["timeout_seconds"] == (5 if kind == "hyperlight" else 15)
+            assert definition["max_input_bytes"] == definition["retain_bytes"] == 16384
+            assert definition["max_input_entries"] == 16
+            assert definition["memory_mb"] == (16 if kind == "hyperlight" else 256)
+        assert service["mediated_services"] == {
+            "services": ["github"], "max_calls": 4,
+            "max_request_bytes": 49152, "max_response_bytes": 1048576,
+        }
+        assert "mediated_services" not in artifact
+        assert artifact["gate_id"] == "hyperlight-artifact-check"
+        if kind == "hyperlight":
+            assert artifact["engine"]["function"] == "ArtifactCheck"
+        else:
+            assert artifact["engine"]["checker"]["sha256"] == hashlib.sha256((tmp_path / "artifact_checker.py").read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("case", json.loads((REPO / "proxy/tests/fixtures/hyperlight-author-cases.json").read_bytes()), ids=lambda case: case["name"])
+def test_shared_author_and_autonomy_cases(case):
+    capture = {**CAPTURE, **case["patch"]}
+    value = request()
+    if "expected_author_id" in case:
+        value["inputs"]["expected_author_id"] = case["expected_author_id"]
+    call = bridge(json.dumps(capture).encode())
+    if case["outcome"] == "unavailable":
+        with pytest.raises((ValueError, KeyError)):
+            checker.service_check(value, call)
+    else:
+        assert checker.service_check(value, call)["finding"]["positive"] is (case["outcome"] == "pass")
+
+
+@pytest.mark.parametrize("case", json.loads((REPO / "proxy/tests/fixtures/hyperlight-artifact-cases.json").read_bytes()), ids=lambda case: case["name"])
+def test_shared_exact_artifact_cases(case):
+    spec = importlib.util.spec_from_file_location("artifact_checker", REPO / "jobs/artifact_checker.py")
+    artifact = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(artifact)
+    value = {"subject": {"kind": "value", "value": json.dumps({
+        "artifact_base64": base64.b64encode(case["artifact"].encode()).decode()})}, "inputs": {"expected_status": "ready"}}
+    if case["positive"] is None:
+        with pytest.raises((ValueError, KeyError)):
+            artifact.artifact_check(value)
+    else:
+        assert artifact.artifact_check(value)["finding"]["positive"] is case["positive"]
+
+
+@pytest.mark.parametrize("constant", ["Infinity", "-Infinity", "NaN"])
+def test_non_json_constants_in_artifact_subject_are_unavailable(constant):
+    spec = importlib.util.spec_from_file_location("artifact_checker", REPO / "jobs/artifact_checker.py")
+    artifact = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(artifact)
+    subject = json.dumps({"artifact_base64": base64.b64encode(b'{"status":"ready"}').decode()})
+    value = {"subject": {"kind": "value", "value": subject[:-1] + ',"value":' + constant + '}'},
+             "inputs": {"expected_status": "ready"}}
+    with pytest.raises(ValueError, match="invalid JSON constant"):
+        artifact.artifact_check(value)
 
 
 @pytest.fixture

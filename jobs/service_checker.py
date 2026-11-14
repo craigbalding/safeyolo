@@ -13,6 +13,10 @@ MAX_CAPTURE = 1024 * 1024
 CHUNK = 16 * 1024
 
 
+def reject_non_json_constant(value):
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
 def decimal(value):
     if not isinstance(value, str) or not value or any(char not in "0123456789" for char in value):
         raise ValueError("issue and author IDs must be unsigned decimal integers")
@@ -44,7 +48,7 @@ def service_check(request, call):
         if not data or len(data) > min(CHUNK, size - len(capture)):
             raise ValueError("capture chunk is empty or exceeds remaining bytes")
         capture.extend(data)
-    evidence = json.loads(capture)
+    evidence = json.loads(capture, parse_constant=reject_non_json_constant)
     if (evidence.get("url") != url or type(evidence.get("number")) is not int
             or evidence["number"] != number or type(evidence.get("id")) is not int
             or not isinstance(evidence.get("title"), str) or not isinstance(evidence.get("updated_at"), str)):
@@ -54,13 +58,13 @@ def service_check(request, call):
         raise ValueError("GitHub author ID unavailable")
     if not 0 <= actual_author <= 2**64 - 1 or not 0 <= evidence["id"] <= 2**64 - 1:
         raise ValueError("GitHub ID exceeds u64")
-    return {"finding": {"kind": "finding", "positive": actual_author == author}}
+    return {"finding": {"kind": "finding", "positive": actual_author == author and "pull_request" not in evidence}}
 
 
 def main():
     import hyperlight
 
-    request = json.loads(Path("/input/request.json").read_bytes())
+    request = json.loads(Path("/input/request.json").read_bytes(), parse_constant=reject_non_json_constant)
 
     def call(value):
         reply = hyperlight.call("sy.call", value)

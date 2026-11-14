@@ -1,0 +1,14 @@
+[
+  {"name":"configured-user","patch":{},"outcome":"pass"},
+  {"name":"agent-created-as-configured-user","patch":{"body":"Created autonomously using a user credential"},"outcome":"pass"},
+  {"name":"different-app-bot","patch":{"user":{"id":999999999,"login":"example[bot]"}},"outcome":"reject"},
+  {"name":"wrong-author","expected_author_id":"0","patch":{},"outcome":"reject"},
+  {"name":"pull-request","patch":{"pull_request":{"url":"https://api.github.com/repos/craigbalding/safeyolo/pulls/1544"}},"outcome":"reject"},
+  {"name":"different-repository","patch":{"url":"https://api.github.com/repos/other/repository/issues/1544"},"outcome":"unavailable"},
+  {"name":"different-number","patch":{"number":1545},"outcome":"unavailable"},
+  {"name":"missing-author","patch":{"user":{}},"outcome":"unavailable"},
+  {"name":"boolean-author","patch":{"user":{"id":true}},"outcome":"unavailable"},
+  {"name":"out-of-range-author","patch":{"user":{"id":18446744073709551616}},"outcome":"unavailable"},
+  {"name":"missing-title","patch":{"title":null},"outcome":"unavailable"},
+  {"name":"missing-revision","patch":{"updated_at":null},"outcome":"unavailable"}
+]

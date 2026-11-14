@@ -570,6 +570,7 @@ async fn invoke(runtime: &Runtime, state: &RuntimeState, mut record: Obligation)
             runtime,
             state,
             action,
+            record.binding.boundary == Boundary::AdmitIssue,
         )
         .await;
     match result {
@@ -739,7 +740,8 @@ pub(crate) async fn mutate(
         let policy = runtime.policy.as_ref().unwrap();
         if let Some(record) = work.as_ref().and_then(|w| {
             w.automatic.iter().find(|r| {
-                r.binding.name == binding.name
+                binding.boundary != Boundary::AdmitIssue
+                    && r.binding.name == binding.name
                     && json!(r.binding) == json!(binding)
                     && r.policy_hash == policy.work_authority_digest()
                     && r.service_definitions_hash.as_ref()

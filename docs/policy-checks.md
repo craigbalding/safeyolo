@@ -492,7 +492,14 @@ Bindings also name the room and approved factory. Issue admission applies to
 the configured repository in that room even when a caller omits `factory`.
 Equivalent GitHub web and API issue URLs select the same requirement. Successful
 admission selects the approved factory and retains the finding and its source
-provenance. Existing ordinary issue Work must pass the same check before
+provenance. The Hyperlight GitHub example also retains its exact captured
+response as `automatic[].evidence.execution.checked_input`, with Base64 bytes
+and their SHA-256 digest. The worker consumes that checked title/body snapshot.
+Admission and later delegation perform fresh reads instead of reusing earlier
+admission results. A new relevant issue revision therefore supplies new input;
+the observation does not promise GitHub stays unchanged after collection.
+Other adopted service/check implementations do not imply this captured-input
+contract merely by returning a positive finding. Existing ordinary issue Work must pass the same check before
 execution delegation. Work without a matching issue reference remains generic;
 review/check assignments are separate operations. These bindings do not inspect
 an agent's unmediated intentions or discover an issue reference hidden in prose.
@@ -623,6 +630,10 @@ not bypass it. The source implementation does not change a running factory's
 contracts or install a candidate.
 
 ### Service requests and release limits
+
+The [installed walkthrough](../cli/src/safeyolo/agent_context/skills/job-authoring/references/walkthrough.md)
+provides scoped GitHub setup and both-engine artifact examples using these
+boundaries, with the authorship/autonomy note beside capability adoption.
 
 For an ordinary mediated service request, use the existing required
 `check_rules` at the visible `request` stage. Select the actual host, agent and

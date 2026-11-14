@@ -152,6 +152,10 @@ def write_job_definitions(output: Path) -> None:
         if kind == "hyperlight":
             engine["function"] = "Check"
         spec = {**common, "memory_mb": memory, "engine": engine}
+        if kind == "hyperlight-unikraft":
+            # Retained jobs took 7.2–8.3s; the five-second installed example
+            # expired before delegation. This covers the whole job.
+            spec["timeout_seconds"] = 15
         (output / f"{kind}.json").write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
         service_spec = {**spec, "gate_id": "hyperlight-service-check", "network": False,
                         "mediated_services": {"services": ["github"], "max_calls": 4,
@@ -163,6 +167,13 @@ def write_job_definitions(output: Path) -> None:
             service_spec["engine"]["checker"] = {"path": "service_checker.py",
                                                "sha256": file_digest(output / "service_checker.py")}
         (output / f"{kind}-service.json").write_text(json.dumps(service_spec, indent=2) + "\n", encoding="utf-8")
+        artifact_spec = {**spec, "gate_id": "hyperlight-artifact-check", "network": False, "engine": dict(engine)}
+        if kind == "hyperlight":
+            artifact_spec["engine"]["function"] = "ArtifactCheck"
+        else:
+            artifact_spec["engine"]["checker"] = {"path": "artifact_checker.py",
+                                                "sha256": file_digest(output / "artifact_checker.py")}
+        (output / f"{kind}-artifact.json").write_text(json.dumps(artifact_spec, indent=2) + "\n", encoding="utf-8")
 
 
 def bundle(repository: Path, output: Path, profile: str) -> None:
@@ -228,6 +239,7 @@ def bundle(repository: Path, output: Path, profile: str) -> None:
     )
     shutil.copyfile(repository / "jobs/checker.py", output / "checker.py")
     shutil.copyfile(repository / "jobs/service_checker.py", output / "service_checker.py")
+    shutil.copyfile(repository / "jobs/artifact_checker.py", output / "artifact_checker.py")
     source = rootfs(output, architecture)
     copy_licenses(repository, output)
     manifest = {

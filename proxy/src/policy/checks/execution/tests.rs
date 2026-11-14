@@ -32,6 +32,65 @@ fn returned_job_metadata_does_not_disclose_host_retained_dependency_bodies() {
 const CAPTURE: &[u8] = include_bytes!("../../../../tests/fixtures/policy-check-github-issue.json");
 
 #[test]
+fn admission_consumes_one_complete_host_capture_not_caller_normalized_facts() {
+    let url = "https://api.github.com/repos/craigbalding/safeyolo/issues/1544";
+    let inputs = BTreeMap::from([("repository".into(), "craigbalding/safeyolo".into())]);
+    let subject = Subject::Value {
+        value: "1544".into(),
+    };
+    let capture = json!({"service":"github","method":"GET","url":url,"status":200,
+        "error":null,"response_bytes":CAPTURE.len(),"response_sha256":content_digest(CAPTURE),
+        "retained_base64":STANDARD.encode(CAPTURE)});
+    let execution = json!({"kind":"job","service_evidence":[capture]});
+    let snapshot = checked_github_input(&execution, &inputs, &subject).unwrap();
+    assert_eq!(snapshot["sha256"], content_digest(CAPTURE));
+    assert_eq!(
+        STANDARD
+            .decode(snapshot["content_base64"].as_str().unwrap())
+            .unwrap(),
+        CAPTURE
+    );
+    for (field, value) in [
+        (
+            "url",
+            json!("https://api.github.com/repos/other/repo/issues/1544"),
+        ),
+        ("service", json!("another-service")),
+        ("method", json!("POST")),
+        ("status", json!(403)),
+        ("error", json!("policy_denied")),
+        ("response_bytes", json!(CAPTURE.len() - 1)),
+        ("response_sha256", json!("substituted")),
+        ("retained_base64", Value::Null),
+    ] {
+        let mut changed = execution.clone();
+        changed["service_evidence"][0][field] = value;
+        assert!(
+            checked_github_input(&changed, &inputs, &subject).is_err(),
+            "{field}"
+        );
+    }
+    let duplicate = json!({"service_evidence":[capture.clone(),capture]});
+    assert!(checked_github_input(&duplicate, &inputs, &subject).is_err());
+    let mut changed: Value = serde_json::from_slice(CAPTURE).unwrap();
+    changed["body"] = json!("Refreshed relevant issue revision");
+    changed["updated_at"] = json!("2026-11-14T03:00:00Z");
+    let bytes = serde_json::to_vec(&changed).unwrap();
+    let mut refreshed = execution;
+    refreshed["service_evidence"][0]["retained_base64"] = json!(STANDARD.encode(&bytes));
+    refreshed["service_evidence"][0]["response_bytes"] = json!(bytes.len());
+    refreshed["service_evidence"][0]["response_sha256"] = json!(content_digest(&bytes));
+    let next = checked_github_input(&refreshed, &inputs, &subject).unwrap();
+    assert_ne!(next["sha256"], snapshot["sha256"]);
+    assert_eq!(
+        STANDARD
+            .decode(next["content_base64"].as_str().unwrap())
+            .unwrap(),
+        bytes
+    );
+}
+
+#[test]
 fn captured_authoritative_github_issue_reports_identity_match_mismatch_and_missing_evidence() {
     // Captured with gh api repos/craigbalding/safeyolo/issues/1544 on
     // 2026-11-13. Identity expectations are policy inputs, not adapter constants.

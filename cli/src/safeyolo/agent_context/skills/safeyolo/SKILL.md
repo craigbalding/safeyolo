@@ -38,6 +38,9 @@ do not reload Coord or GitHub references already supplied by the role contract.
 
 ## Select the needed reference
 
+- Read [job authoring](../job-authoring/SKILL.md) to choose an execution engine,
+  develop a check or action, and prepare the installed GitHub/factory example.
+  Adoption belongs to the selected instance's existing operator authority.
 - Read [Agent launch and terminal troubleshooting](references/agent-launchers.md)
   for sandbox-ready/agent-stopped confusion, persistent host launchers,
   run versus attach versus shell, or managed-agent interactive debugging.
