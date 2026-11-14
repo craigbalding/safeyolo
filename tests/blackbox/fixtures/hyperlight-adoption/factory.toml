@@ -1,0 +1,30 @@
+schema = "safeyolo.factory/v1"
+name = "ha1552"
+room = "ha1552"
+
+[operator_input]
+to = "coordinator"
+types = ["DIRECTION"]
+
+[roles.coordinator]
+agent = "ha1552-creator"
+contract = "creator.md"
+
+[roles.owner]
+agent = "ha1552-owner"
+contract = "owner.md"
+
+[roles.reviewer]
+agent = "ha1552-reviewer"
+contract = "reviewer.md"
+
+[work]
+creators = ["coordinator"]
+authorities = ["coordinator"]
+deciders = ["reviewer"]
+independent = true
+
+[[work.checks]]
+reviewer = "reviewer"
+criterion = "Independently inspect the exact retained JSON artifact and checked issue snapshot. Require status=ready, matching checked_input_sha256, title and body_sha256. A draft, substitution or unavailable input must not be approved."
+independent = true

@@ -1,0 +1,17 @@
+# Apply only to the newly installed /home/agent/ha1552 fixture.
+admin_port = 18452
+flow_store_enabled = false
+agent_api_enabled = true
+tls_ca_file = "certs/mitmproxy-ca.pem"
+
+[[listeners]]
+agent_id = "ha1552-creator"
+socket_path = "creator.sock"
+
+[[listeners]]
+agent_id = "ha1552-owner"
+socket_path = "owner.sock"
+
+[[listeners]]
+agent_id = "ha1552-reviewer"
+socket_path = "reviewer.sock"

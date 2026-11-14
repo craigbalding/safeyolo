@@ -1,0 +1,15 @@
+# These are new fixture identities, not copied production memberships.
+[hosts."*"]
+egress = "deny"
+
+[controls.test_context]
+action = "warn"
+
+[agents.ha1552-creator]
+agent_id = "ag-ba78f4c34ded4a0295c682f4061adbf6"
+
+[agents.ha1552-owner]
+agent_id = "ag-a8f92b091dae4fa08da0fb2835ff0956"
+
+[agents.ha1552-reviewer]
+agent_id = "ag-2dc62d4650ea4ec981151bcef62308e0"
