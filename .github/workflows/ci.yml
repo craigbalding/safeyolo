@@ -80,6 +80,7 @@ jobs:
             tests/test_blackbox_catalogue.py tests/test_blackbox_execution_receipt.py \
             tests/test_blackbox_guest_exec.py tests/test_blackbox_listener_restart.py tests/test_retained_hardware.py \
             tests/test_claude_smoke.py \
+            tests/test_blackbox_changes.py \
             tests/test_trusted_claude_blackbox.py \
             tests/test_claude_blackbox_events.py \
             tests/test_kvm_p1_route.py tests/test_p2_installed_fixture.py \
