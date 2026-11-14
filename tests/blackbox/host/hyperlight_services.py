@@ -1,5 +1,7 @@
 """Exercise both real Hyperlight engines in one owned, disposable instance.
 
+Use --unikraft-lifetimes-only to run just the four Unikraft lifetime controls.
+
 Requires matching candidate CLI/proxy, a protocol-3 bundle built on this host's
 architecture, Python with tomlkit, and accessible KVM or entitled Apple-silicon
 HVF. The operator supplies an existing GitHub read credential in a private file.
@@ -46,6 +48,32 @@ def stop(child):
         child.kill()
         child.wait()
         raise
+
+
+def job_result(prefix, engine, mode, *, expected_outcome=None):
+    """Match an explicit job outcome and the CLI status derived from it."""
+    expected = {"kind": "exit", "code": 0} if expected_outcome is None else expected_outcome
+    # jobs::command_status returns 124 for timeout, 0 for complete exit 0,
+    # and 1 for every other outcome. A CLI failure without a result still fails.
+    expected_status = 124 if expected == {"kind": "timeout"} else 0 if expected == {"kind": "exit", "code": 0} else 1
+    status_path = prefix.with_suffix(".status.json")
+    stdout_path = prefix.with_suffix(".stdout")
+    stderr_path = prefix.with_suffix(".stderr")
+    status = json.loads(status_path.read_bytes())
+    stderr = stderr_path.read_text(errors="replace")
+    context = (f"{engine}/{mode}: command exit {status['returncode']}; "
+               f"status={status_path}; stdout={stdout_path}; stderr={stderr_path}; "
+               f"diagnostic: {stderr}")
+    if status["returncode"] != expected_status:
+        raise RuntimeError(f"{context}; expected command exit {expected_status}")
+    try:
+        result = json.loads(stdout_path.read_bytes())
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise RuntimeError(f"{context}; unavailable or invalid job result JSON: {error}") from error
+    if (not isinstance(result, dict) or result.get("outcome") != expected
+            or result.get("observation_error", "missing") is not None):
+        raise RuntimeError(f"{context}; expected observed outcome {expected}; job result: {result}")
+    return result
 
 
 class Instance:
@@ -185,10 +213,10 @@ class Instance:
                 stop(child)
                 save(prefix.with_suffix(".status.json"), {"returncode": child.returncode})
 
-    def run_job(self, engine, request, **options):
+    def run_job(self, engine, request, *, expected_outcome=None, **options):
         with self.job(engine, request, **options) as (child, prefix):
             child.wait(timeout=60)
-        return json.loads(prefix.with_suffix(".stdout").read_bytes())
+        return job_result(prefix, engine, "run_job", expected_outcome=expected_outcome)
 
 
 def output(result):
@@ -284,8 +312,7 @@ def scope_and_limits(instance, engine, port):
     record = result["service_evidence"][0]
     assert "limit exceeded" in record["error"] and record["retained_base64"] is None
     request["call"]["url"] = "https://api.github.com/" + "x" * 50_000
-    result = instance.run_job(engine, request, probe=True)
-    assert result["outcome"] != {"kind": "exit", "code": 0}, result
+    instance.run_job(engine, request, probe=True, expected_outcome={"kind": "exit", "code": 1})
 
 
 def held_lifetimes(instance, engine, origin, port):
@@ -294,8 +321,13 @@ def held_lifetimes(instance, engine, origin, port):
     for mode in ("deadline", "cancel", "revoke", "shutdown"):
         origin.entered.clear()
         origin.release.clear()
-        with instance.job(engine, request, probe=True, timeout=5 if mode == "deadline" else 30) as (child, prefix):
+        # Execution17813's completed Unikraft jobs took 7.2–8.2s in total;
+        # its five-second deadline expired before any provider call. Keep a
+        # finite whole-job budget that leaves a held-call window after entry.
+        timeout = 5 if mode == "deadline" and engine == "hyperlight" else 30
+        with instance.job(engine, request, probe=True, timeout=timeout) as (child, prefix):
             assert origin.entered.wait(20), f"{engine}/{mode} never reached held provider"
+            assert child.poll() is None, f"{engine}/{mode} terminated before its held-call trigger"
             if mode == "cancel":
                 child.send_signal(signal.SIGINT)
             elif mode == "revoke":
@@ -306,12 +338,15 @@ def held_lifetimes(instance, engine, origin, port):
             child.wait(timeout=45)
             # Deliver late success only after the owning helper has terminated.
             origin.release.set()
-        result = json.loads(prefix.with_suffix(".stdout").read_bytes())
+        expected = ({"kind": "timeout"} if mode == "deadline" else
+                    {"kind": "interrupted", "signal": int(signal.SIGINT if mode == "cancel" else signal.SIGTERM)})
+        result = job_result(prefix, engine, mode, expected_outcome=expected)
         save(prefix.with_suffix(".result.json"), result)
-        assert result["outcome"] != {"kind": "exit", "code": 0}, result
         assert not result["service_evidence"] or all(row["response_sha256"] is None
                                                     for row in result["service_evidence"]), result
-        assert not list((instance.root / "data").glob("job-hyperlight-*")), "owned VM runtime remains"
+        assert not list((instance.root / "data").glob("job-hyperlight-*")), (
+            "unexpected retained runtime after a successful command; inspect its diagnostics; "
+            "directory presence alone does not establish a live VM")
         if mode == "revoke":
             instance.policy["agents"]["gate:hyperlight-service-check"]["services"]["held"] = grant
             instance.apply()
@@ -326,6 +361,7 @@ def held_lifetimes(instance, engine, origin, port):
 def exercise(args):
     instance = Instance(args)
     observations = []
+    engines = ("hyperlight-unikraft",) if args.unikraft_lifetimes_only else ("hyperlight", "hyperlight-unikraft")
 
     class Provider(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -358,13 +394,16 @@ def exercise(args):
         thread.start()
         try:
             instance.prepare(port)
-            for engine in ("hyperlight", "hyperlight-unikraft"):
+            for engine in engines:
                 # Each engine gets a fresh proxy lifetime; grants stay standing.
                 with (args.scratch / f"{engine}-proxy.log").open("wb") as log:
                     instance.proxy = subprocess.Popen([str(args.proxy), "--config", str(args.root / "config.toml")],
                                                       stdout=log, stderr=log)
                     try:
                         wait_ready(instance.proxy, args.root, args.admin_port)
+                        if args.unikraft_lifetimes_only:
+                            held_lifetimes(instance, engine, origin, port)
+                            continue
                         spec = args.scratch / f"{engine}-adopted.json"
                         instance.command("job", "validate", str(spec))
                         request = {"subject": {"kind": "value", "value": str(args.issue)}, "inputs": {
@@ -390,8 +429,7 @@ def exercise(args):
                         services = instance.policy["agents"]["gate:hyperlight-service-check"]["services"]
                         grant = services.pop("github")
                         instance.apply()
-                        denied = instance.run_job(engine, request)
-                        assert denied["outcome"] != {"kind": "exit", "code": 0}, denied
+                        instance.run_job(engine, request, expected_outcome={"kind": "exit", "code": 1})
                         services["github"] = grant
                         instance.apply()
                         assert output(instance.run_job(engine, request))["finding"]["positive"] is True
@@ -409,11 +447,12 @@ def exercise(args):
     assert all(row["credential_replaced"] and not row["gateway_token_leaked"] for row in observations), observations
     assert not (args.root / "data/ready.json").exists()
     assert not list((args.root / "data").glob("job-hyperlight-*"))
-    save(args.scratch / "result.json", {"engines": ["hyperlight", "hyperlight-unikraft"],
-                                      "checks": "live GitHub, standing grant/removal, named input/typed mismatch, scope/limits, held lifetimes",
+    checks = ("held deadline/cancel/revoke/shutdown lifetimes" if args.unikraft_lifetimes_only else
+              "live GitHub, standing grant/removal, named input/typed mismatch, scope/limits, held lifetimes")
+    save(args.scratch / "result.json", {"engines": engines, "checks": checks,
                                       "bundle": digest(args.bundle / "runtime.json"),
                                       "cli": digest(args.cli), "proxy": digest(args.proxy)})
-    print("PASS both real engines: mediated authority, typed evidence, limits and held-call lifetimes")
+    print(f"PASS {', '.join(engines)}: {checks}")
 
 
 def main():
@@ -425,6 +464,8 @@ def main():
     parser.add_argument("--expected-author-id", required=True)
     parser.add_argument("--parent-proxy")
     parser.add_argument("--admin-port", type=int, required=True)
+    parser.add_argument("--unikraft-lifetimes-only", action="store_true",
+                        help="run only the remaining Unikraft deadline/cancel/revoke/shutdown controls in a fresh instance")
     args = parser.parse_args()
     for name in ("cli", "proxy", "bundle", "github_token_file", "scratch"):
         setattr(args, name, getattr(args, name).resolve(strict=True))

@@ -42,11 +42,12 @@ pub(crate) struct Prepared {
     command_centre: Option<command_centre::Host>,
 }
 
-pub(crate) type EventTasks = Arc<AsyncMutex<JoinSet<()>>>;
+pub(crate) type ListenerTasks = Arc<AsyncMutex<JoinSet<()>>>;
 
 #[derive(Clone)]
 struct ConnectionAccess {
     events: Arc<crate::operator_events::Feed>,
+    delegation_tasks: ListenerTasks,
     events_only: bool,
     token: Arc<Zeroizing<String>>,
     command_centre: Option<command_centre::Host>,
@@ -173,18 +174,21 @@ impl Prepared {
     pub(crate) fn start(self, state: RuntimeState) -> Running {
         let (stop, receiver) = watch::channel(false);
         let event_tasks = Arc::new(AsyncMutex::new(JoinSet::new()));
+        let delegation_tasks = Arc::new(AsyncMutex::new(JoinSet::new()));
         let stats_tasks = StatsTasks::new();
         Running {
             address: self.address,
             events_address: self.events_address,
             stop,
             _event_tasks: event_tasks.clone(),
+            _delegation_tasks: delegation_tasks.clone(),
             _stats_tasks: stats_tasks.clone(),
             task: Some(tokio::spawn(accept(
                 self,
                 state,
                 receiver,
                 event_tasks,
+                delegation_tasks,
                 stats_tasks,
             ))),
         }
@@ -195,7 +199,8 @@ pub(crate) struct Running {
     address: SocketAddr,
     events_address: Option<SocketAddr>,
     stop: watch::Sender<bool>,
-    _event_tasks: EventTasks,
+    _event_tasks: ListenerTasks,
+    _delegation_tasks: ListenerTasks,
     _stats_tasks: Arc<StatsTasks>,
     task: Option<JoinHandle<()>>,
 }
@@ -258,7 +263,8 @@ async fn accept(
     prepared: Prepared,
     state: RuntimeState,
     mut stop: watch::Receiver<bool>,
-    event_tasks: EventTasks,
+    event_tasks: ListenerTasks,
+    delegation_tasks: ListenerTasks,
     stats_tasks: Arc<StatsTasks>,
 ) {
     let events =
@@ -275,6 +281,7 @@ async fn accept(
                         peer,
                         ConnectionAccess {
                             events: events.clone(),
+                            delegation_tasks: delegation_tasks.clone(),
                             events_only: false,
                             token: prepared.token.clone(),
                             command_centre: prepared.command_centre.clone(),
@@ -305,6 +312,7 @@ async fn accept(
                         peer,
                         ConnectionAccess {
                             events: events.clone(),
+                            delegation_tasks: delegation_tasks.clone(),
                             events_only: true,
                             token: prepared.token.clone(),
                             command_centre: prepared.command_centre.clone(),
@@ -340,7 +348,7 @@ async fn accept(
     let event_tasks_for_join = event_tasks.clone();
     if tokio::time::timeout(
         Duration::from_secs(2),
-        drain_event_tasks(event_tasks_for_join.clone()),
+        drain_listener_tasks(event_tasks_for_join.clone()),
     )
     .await
     .is_err()
@@ -349,26 +357,30 @@ async fn accept(
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
     }
+    // Delegation supervisors owe an acknowledgment after joining accepted
+    // transports, whose cleanup may outlast the disposable event-stream grace.
+    // Keep ownership of their management streams until that join completes.
+    drain_listener_tasks(delegation_tasks).await;
     stats_tasks.drain().await;
 }
 
-async fn drain_event_tasks(event_tasks: EventTasks) {
+async fn drain_listener_tasks(event_tasks: ListenerTasks) {
     let mut tasks = event_tasks.lock().await;
     while let Some(result) = tasks.join_next().await {
         if let Err(error) = result {
-            eprintln!("operator event stream failed: {error}");
+            eprintln!("operator listener task failed: {error}");
         }
     }
 }
 
-pub(crate) async fn spawn_event_task<F>(event_tasks: &EventTasks, task: F)
+pub(crate) async fn spawn_listener_task<F>(event_tasks: &ListenerTasks, task: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
     let mut tasks = event_tasks.lock().await;
     while let Some(result) = tasks.try_join_next() {
         if let Err(error) = result {
-            eprintln!("operator event stream failed: {error}");
+            eprintln!("operator listener task failed: {error}");
         }
     }
     tasks.spawn(task);
@@ -380,7 +392,7 @@ async fn serve_connection(
     access: ConnectionAccess,
     state: RuntimeState,
     mut stop: watch::Receiver<bool>,
-    event_tasks: EventTasks,
+    event_tasks: ListenerTasks,
     stats_tasks: Arc<StatsTasks>,
 ) {
     let event_stop = stop.clone();
@@ -466,7 +478,7 @@ async fn serve_connection(
                     state,
                     access.token.trim_matches(python_whitespace),
                     event_stop,
-                    &event_tasks,
+                    &access.delegation_tasks,
                 )
                 .await
                 .map(close_http_response_unless_upgrade);
@@ -549,7 +561,7 @@ async fn serve_events(
     stop: watch::Receiver<bool>,
     client_ip: String,
     target: String,
-    event_tasks: EventTasks,
+    event_tasks: ListenerTasks,
 ) -> Result<hyper::Response<crate::admin_api::AdminBody>, admin_api::Error> {
     if !admin_api::authenticate(
         request.headers(),
@@ -577,7 +589,7 @@ async fn serve_events(
     let response = handshake
         .server_response(body)
         .map_err(|_| admin_api::Error::BodyFraming)?;
-    spawn_event_task(&event_tasks, async move {
+    spawn_listener_task(&event_tasks, async move {
         let Ok(upgraded) = upgrade.await else {
             return;
         };
@@ -666,7 +678,7 @@ async fn serve_capture(
     stop: watch::Receiver<bool>,
     client_ip: String,
     target: String,
-    tasks: EventTasks,
+    tasks: ListenerTasks,
 ) -> Result<hyper::Response<crate::admin_api::AdminBody>, admin_api::Error> {
     // DOC: docs/native-observations.md
     let read = admin_api::authenticate(request.headers(), token)?;
@@ -706,7 +718,7 @@ async fn serve_capture(
     let response = handshake
         .server_response(body)
         .map_err(|_| admin_api::Error::BodyFraming)?;
-    spawn_event_task(&tasks, async move {
+    spawn_listener_task(&tasks, async move {
         let Ok(upgraded) = upgrade.await else {
             return;
         };
@@ -759,7 +771,7 @@ mod tests {
     async fn completed_event_subscription_is_reaped_before_reconnect() {
         let event_tasks = Arc::new(AsyncMutex::new(JoinSet::new()));
         let (finished, wait_for_finish) = tokio::sync::oneshot::channel();
-        spawn_event_task(&event_tasks, async move {
+        spawn_listener_task(&event_tasks, async move {
             let _ = finished.send(());
         })
         .await;
@@ -769,7 +781,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1)).await;
 
         let (_release, release_receiver) = tokio::sync::oneshot::channel::<()>();
-        spawn_event_task(&event_tasks, async move {
+        spawn_listener_task(&event_tasks, async move {
             let _ = release_receiver.await;
         })
         .await;

@@ -111,7 +111,7 @@ pub(crate) async fn serve(
     state: RuntimeState,
     token: &str,
     mut stop: tokio::sync::watch::Receiver<bool>,
-    tasks: &crate::admin_listener::EventTasks,
+    tasks: &crate::admin_listener::ListenerTasks,
 ) -> Result<Response<admin_api::AdminBody>, admin_api::Error> {
     let runtime = state
         .read()
@@ -176,7 +176,7 @@ pub(crate) async fn serve(
             ));
         }
     };
-    crate::admin_listener::spawn_event_task(tasks, async move {
+    crate::admin_listener::spawn_listener_task(tasks, async move {
         if let Ok(upgraded) = upgrade.await {
             let mut stream = TokioIo::new(upgraded);
             let sent = async {
