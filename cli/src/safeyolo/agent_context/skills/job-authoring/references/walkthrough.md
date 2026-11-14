@@ -128,13 +128,14 @@ the requested behavior in a workspace copy of the example, then rerun them.
 Host paths in a proposal do not grant guest access to that host.
 
 Return to the owning host. In a private working directory, copy the installed
-bundle to an unused `proposed-bundle` directory. Replace
+bundle to an unused `proposed-bundle` directory. Follow source symlinks so the
+copy is independent of the installed bundle. Replace
 `/path/to/selected/workspace` with that agent's existing host-mounted workspace
 before running these commands. Copy and review the tested source as data;
 execute agent-developed code inside the sandbox.
 
 ```sh
-cp -R "$HOME/.safeyolo/assets/hyperlight" proposed-bundle
+cp -R -L "$HOME/.safeyolo/assets/hyperlight" proposed-bundle
 cp /path/to/selected/workspace/service_checker.py proposed-bundle/service_checker.py
 ```
 

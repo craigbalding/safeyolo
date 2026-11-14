@@ -50,22 +50,65 @@ a restore measurement. Neither runtime is promised to be faster or smaller than
 gVisor or VZ. Selected scratch sizes (16 MiB for the small core example and
 256 MiB for Python) are configuration, not measured resident-memory peaks.
 
-The current retained source/build controls do not supply a qualified
-whole-command latency/peak-memory comparison for all supported hosts. Those
-measurements remain unproved; build duration, a QEMU-user identity check and
-nominal scratch allocation are not substitutes. Keep actual observations with
-the component's independent acceptance evidence, including host/architecture,
-virtualization, source and exact runtime/configuration bindings.
+### Installed offline observations
 
-For a comparable run, use the same small offline input-byte-count workload,
-input bytes, passive authority and stream retention through each installed
-engine. Measure wall time from command invocation through completed cleanup and
-the process-family peak resident memory with the host's native measurement
-tool. Label whether that tool reports a maximum individual process or aggregate
-memory. Record a first run and repeated fresh runs; report their observations,
-not a universal bound. Measure the live GitHub example separately so network
-and provider latency do not become VM-startup time. If any engine, host or
-measurement is unavailable, leave that comparison unknown.
+On 14 November 2026, fifteen successful installed jobs ran the same offline
+byte-count workload over 4096 bytes, with networking disabled and bounded
+stream retention. Wall time covers command invocation through job completion
+and cleanup. Build, installation, input preparation and `job validate` are
+outside that interval. The already running proxy and prewarmer are excluded.
+These observations measure complete jobs, including their workload, rather
+than isolated VM startup or live GitHub latency.
+
+The Linux x86_64 host ran Linux 6.8.0-137 with glibc 2.39, KVM for Hyperlight
+and the packaged gVisor runtime. Its debug native executables came from
+[`b8272ea8`](https://github.com/craigbalding/safeyolo/commit/b8272ea837a62240fec92a8f4e9263c2a650bbcd),
+with example preparation at
+[`c6dd3b8b`](https://github.com/craigbalding/safeyolo/commit/c6dd3b8bfef1a2e5f49e1fbc273c4b2ac2b46a52).
+The physical Apple-silicon host ran macOS 26.6.2 with Hypervisor.framework
+and the c6dd3b8b debug package. These are different hosts, architectures and
+native revisions; compare engines within each host, not performance between
+hosts.
+
+| Host and engine | First job (ms) | Fresh job 2 (ms) | Fresh job 3 (ms) | Maximum individual RSS range (MiB) |
+|---|---:|---:|---:|---:|
+| Linux: core Hyperlight | 322.250 | 398.677 | 405.639 | 31.250–32.375 |
+| Linux: Hyperlight-Unikraft | 10624.707 | 8646.953 | 10838.341 | 76.457–76.586 |
+| Linux: gVisor | 29396.281 | 12384.282 | 7788.608 | 38.250–38.316 |
+| macOS: core Hyperlight | 347.138 | 238.601 | 264.875 | 22.656–22.672 |
+| macOS: Hyperlight-Unikraft | 393.703 | 473.134 | 536.391 | 74.813–74.859 |
+
+Resident set size (RSS) comes from the host's `/usr/bin/time`. The reported
+maximum includes waited descendants as individual processes; it is not their
+aggregate memory and excludes the standing services. One MiB is 1048576 bytes.
+The ranges cover the three jobs in each row, not a memory limit.
+
+The first job used existing prepared files with unknown cache temperature.
+Later jobs created fresh helpers and guests or sandboxes with previously read
+files. They did not restore a warm VM or template. Prepared gVisor images and
+VZ boot assets can be reused while each job gets disposable writable state;
+that asset reuse is separate from preserving a running guest. No cold-cache
+or warm-restore latency or aggregate-memory measurement is established here.
+
+The macOS VZ comparison has no successful sample. Its first job exited 127
+before the byte-count payload, reporting `/usr/sbin/pivot_root: No such file
+or directory`. Subsequent read-only inspection confirmed that executable was
+absent from the selected retained Kali Rolling 2026.1 rootfs. That fixture was
+not an input from the current Trixie guest producer. Keep VZ latency and memory
+unknown rather than treating that failed job as a comparable run or evidence
+of a current producer defect.
+The Linux gVisor samples followed repair of an instance runtime binding;
+its earlier setup failures are also excluded from successful-job timings.
+
+The retained [#1552 observation records](https://github.com/craigbalding/safeyolo/issues/1552#issuecomment-6870450206)
+identify each input, specification, runtime, native executable and job, with
+the original observations in `installed-operator-15980.json`,
+`linux-comparison-15980.json` and `physical-mac-16006.json`. The table rounds
+those observations to three decimal places. The later fixture diagnosis is in
+`installed-authoring-and-vz-input-16013.json`. The measurements establish no universal
+latency or memory bound, production-profile result, or result for an unmeasured
+host/engine combination. Measure live service checks separately so network
+and provider latency retain their meaning.
 
 Pinned upstream references explain the
 [core guest ABI](https://github.com/hyperlight-dev/hyperlight/blob/a03088470d822b538d2525ef9a5ae9e29daea1e8/docs/how-to-build-a-hyperlight-guest-binary.md),
