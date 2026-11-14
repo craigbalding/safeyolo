@@ -116,7 +116,7 @@ jobs:
       contents: read
       actions: read
       issues: write
-      pull-requests: read
+      pull-requests: write
     # Serialize the SAME assurance delta across PR/retry/merge events. Distinct
     # deltas use different groups, so a pending event cannot discard another
     # assurance change. Do not cancel a possible comment POST.

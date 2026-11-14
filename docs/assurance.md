@@ -252,8 +252,12 @@ collection or coverage behavior. The rules use no language-model verdict.
 
 [The publisher](../tools/assurance/notify_blackbox.py) runs in a separate job
 with the trusted publisher checkout and this run's bounded, event-bound report.
-Only that job has `issues: write`; its other permissions are `contents: read`,
-`actions: read` and `pull-requests: read`. It uses the job's `GITHUB_TOKEN`,
+Only that job has `issues: write` and `pull-requests: write`; its other permissions
+are `contents: read` and `actions: read`. Pull-request conversation comments and
+ordinary issue comments use the same
+[issue-comment endpoint](https://docs.github.com/en/rest/issues/comments#create-an-issue-comment).
+The publisher requests write access for both target types. The analyzer retains
+read-only permissions. The publisher uses the job's `GITHUB_TOKEN`,
 never a personal token or provider secret. It validates report shape, revisions,
 control IDs and reasons before constructing the comment. It does not copy
 candidate explanations into a mention.

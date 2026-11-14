@@ -380,6 +380,7 @@ def test_craig_authored_draft_fork_later_revision_retry_and_merge(sources, githu
     later = compare(sources, {TEST: ORIGINAL.replace("== 0", "<= 2")})
     assert notices.publish(later, event(), "pull_request_target")["status"] == "published"
     assert len(github.posts) == 2  # NEW comments create NEW mentions.
+    assert {endpoint for endpoint, _ in github.posts} == {"issues/123/comments"}
     assert all(comment["body"].count("@craigbalding") == 1 for _, comment in github.posts)
     github.associated = [{"merged_at": "now", "number": 123, "base": {"repo": {"full_name": notices.REPOSITORY}}}]
     assert notices.publish(later, event("push"), "push")["status"] == "duplicate"
@@ -506,8 +507,9 @@ def test_workflow_does_not_execute_candidate_with_publication_token():
     assert "opened" in workflow["on"]["pull_request_target"]["types"]
     analyzer, publisher = workflow["jobs"]["analyze"], workflow["jobs"]["publish"]
     assert workflow["permissions"] == {"contents": "read"}
-    assert publisher["permissions"]["issues"] == "write"
-    assert publisher["permissions"]["contents"] == "read"
+    assert analyzer.get("permissions", workflow["permissions"]) == {"contents": "read"}
+    assert publisher["permissions"] == {"contents": "read", "actions": "read",
+                                        "issues": "write", "pull-requests": "write"}
     assert "needs.analyze.outputs.delta" in publisher["concurrency"]["group"]
     steps = json.dumps(analyzer["steps"])
     assert "candidate" not in " ".join(step.get("run", "") for step in analyzer["steps"])
