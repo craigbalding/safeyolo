@@ -22,7 +22,8 @@ def installed(tmp_path):
     runtime = root / "assets/hyperlight"
     runtime.mkdir(parents=True)
     shutil.copytree(SKILL, root / "assets/skills/job-authoring")
-    (root / "config.toml").write_text('policy_file="policy/current.toml"\ngateway_builtin_services_dir="assets/services"\ngateway_services_dir="data/services"\n')
+    configuration = (REPO / "tests/blackbox/fixtures/hyperlight-adoption/config.toml").read_text()
+    (root / "config.toml").write_text('policy_file="policy/current.toml"\n' + configuration)
     (root / "policy").mkdir()
     (root / "policy/current.toml").write_text('''# Retain existing operator choices.
 [hosts."*"]

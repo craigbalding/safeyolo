@@ -35,9 +35,12 @@ Apple-silicon macOS needs Hypervisor.framework and the entitled helper. A Mac
 VM without nested virtualization can prepare source but cannot run this example.
 See [engine selection](engines.md) before choosing a runtime.
 
-The host preparation helper requires Python 3.12+ and uv; its declared
-TOMLKit/PyYAML dependencies are authoring tools, separate from native product
-startup. The guest runtime is the pinned bundle, not the host Python install.
+The host preparation helper requires Python 3.12+. The commands below use uv
+to resolve its declared TOMLKit 0.14.0 and PyYAML 6.0.3 authoring dependencies.
+If the selected Python environment already supplies those versions, invoke
+the same helper with `python3` instead of `uv run --script`. These are host
+authoring tools, separate from native product startup. The guest runtime is
+the pinned bundle, not the host Python install.
 Select an existing GitHub credential by its vault reference name. Select the
 existing approved factory and room; creating or changing a factory remains the
 ordinary `safeyolo-factory` workflow. No factory change is performed by this
@@ -121,19 +124,37 @@ Retain the current saved policy and any user GitHub override before activation.
 The following commands assume the default native installation's user catalogue
 is `data/services`; use the helper's reported `service_target` if configured
 differently. Copying the reviewed override adds a capability to the GitHub
-catalogue. Policy apply saves and activates the candidate through the running
-proxy. Neither operation changes factory contracts.
+catalogue. The running proxy watches that directory separately from policy
+activation. First observe the new capability in the loaded catalogue:
 
 ```sh
 cp candidate/github.yaml "$HOME/.safeyolo/data/services/github.yaml"
+safeyolo --root "$HOME/.safeyolo" services show github
+```
+
+Continue when `definition.capabilities.read_example_issues.routes` shows only
+`GET /repos/OWNER/REPOSITORY/issues/*` for the selected repository. If the
+watcher has not loaded the override, repeat this read. A failed read or a
+different definition requires inspection of the selected path and proxy's
+configuration errors. `services check` validates a file; it does not load it.
+
+Then apply the reviewed candidate. Policy apply saves and activates against
+the loaded catalogue. Neither operation changes factory contracts:
+
+```sh
 safeyolo --root "$HOME/.safeyolo" policy apply candidate/candidate.toml
 safeyolo --root "$HOME/.safeyolo" policy show
 safeyolo --root "$HOME/.safeyolo" services authorized gate:hyperlight-service-check
 ```
 
 Expected: active policy, `saved_matches_active=true` and the selected read-only
-capability. A written file alone does not establish active authority. If a reply
-is lost, read the same root's current state before another change. Restore a
+capability. The authorized `github` entry must name the selected credential and
+contain only the expected repository's `GET` issue route. An empty `routes`
+array grants no callable route, even if the capability name is correct. If
+that readback differs, stop before admission and inspect the loaded definition
+and effective policy. Do not revoke/reissue a grant or retry admission blindly.
+A written file alone does not establish active authority. If a reply is lost,
+read the same root's current state before another change. Restore a
 retained policy through `policy apply`; restore a catalogue override separately.
 Standing adopted grants require no repeated routine approval.
 

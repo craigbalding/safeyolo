@@ -1,238 +1,145 @@
 # Selected #1552 native execution recipe
 
-Source: the immutable PR #1573 candidate named by the accompanying native output.
-Ground truth: canonical operator backlog15953,15956,15957 and the shared native-input-inventory.json/gvisor-binding.json.
-Native binaries remain b827, corrected Python checkers remain f427, and the prior
-package/Work witness scripts remain d3. This update supplies fixture configuration
-and replaces the old existing-factory assumption; it does not rebuild those bytes.
-The native Work and packaging scripts come from that source. The operational
-scope/revocation helpers are retained here and reuse the existing runner and
-TOMLKit writer. Their exact bytes are bound by this archive's identity.
-These are prepared commands, not a receipt of protected execution or feature acceptance.
-Sequence this run after the active #1550 native command reaches its real boundary.
+Use the immutable PR #1573 candidate named by the accompanying native output.
+This recipe resumes the installed disposable instance on sy-239-clean-6728,
+Ubuntu x86_64, UID1000, glibc2.39. Sylab owns protected execution through the
+existing transport. Forge prepares source; Lens supplies independent judgment.
+No new host, login, root access, model or broader service grant is needed.
 
-## Executor and remaining operands
+## Reuse the installed consumer
 
-Sylab executes on the existing Ubuntu x86_64 guest sy-239-clean-6728,
-192.168.122.100, UID1000, glibc2.39, using its existing protected transport.
-Forge supplies these scripts. The native venue supplies /usr/bin/tmux and its
-ldd-resolved closure. No new host, root access, login or broad grant is needed.
+Canonical operator backlog15963/15965 and the shared receipts under
+/evidence/operator/1552/runtime-d3c1e8c2 establish the completed packaging,
+installation, fixture setup and core admission/publication. Preserve those
+results. Do not repeat them to apply this recipe correction. The retained root
+is /home/agent/ha1552; the package stage is /home/agent/1552-package-d3c1e8c2.
+Preserve q1452b,1452-native-bundle and production backlog.
 
-The selected gVisor input is /home/agent/1452-native-bundle/libexec.
-Read-only execution17820 verified its patched release-20261005.0-safeyolo.1 and
-all four required files as UID1000. gvisor.sha256 retains the supplied exact
-hashes. The other ~/.safeyolo/libexec input lacks the required patch suffix.
-Use independent packaged copies and preserve the original1452 private modes.
-Before construction, compare the input sizes and modes with the same receipt:
+Native executables remain b8272ea837a62240fec92a8f4e9263c2a650bbcd/debug.
+The corrected optional Python checkers remain
+f4275ba656f38a22b5215caab25217355dad04eb. The package/Work witness scripts remain
+d3c1e8c2; the three-role factory contracts remain the 230db88d fixture. This
+correction changes configuration and guidance, not those executable inputs.
+The accepted #1551 base is integrated separately; it does not relabel the
+retained native package. Use package_hyperlight_adoption.sh only when a new
+consumer actually needs packaging, with its exact existing inputs.
 
-| Input relative to GVISOR_ROOT | Bytes | Mode |
-| --- | ---: | --- |
-| runsc | 109963262 | 0755 |
-| gvisor-bin/gvisor-sentry-prewarmer | 1392 | 0755 |
-| gvisor-bin/gvisor_sentry | 52149776 | 0755 |
-| gvisor-bin/runsc-fd-parking | 1272 | 0755 |
+The gVisor input remains /home/agent/1452-native-bundle/libexec. Execution17820
+verified patched release-20261005.0-safeyolo.1 and the four files with mode 0755 below.
+Their exact hashes remain in gvisor.sha256 and the shared gvisor-binding.json:
 
-The new disposable installed root is /home/agent/ha1552. Operator15957 checked
-its absence. Preserve q1452b,1452-native-bundle and production backlog. This
-recipe supplies the new ha1552 factory/room fixture; no preexisting test factory
-or room is needed. The configured identities are explicit in fixture/policy.toml
-and resolve through the current host_agents and native room mechanisms.
-Canonical grant/status readback must match those IDs before the witness uses
-them. A prepared identity file is not a claim that membership is already active.
-Sylab supplies the existing authorized GitHub read credential under the local
-reference live-github using the existing private provisioner. No secret is in
-these recipes. Preserve native proxy/CA environment and private token handling.
+| Input relative to GVISOR_ROOT | Bytes |
+| --- | ---: |
+| runsc | 109963262 |
+| gvisor-bin/gvisor-sentry-prewarmer | 1392 |
+| gvisor-bin/gvisor_sentry | 52149776 |
+| gvisor-bin/runsc-fd-parking | 1272 |
 
-Read current free space and active commands before allocating. The dated guest
-receipt had about11GiB free. The archive, extraction and package are reproducible
-outputs for this current consumer. Apply the existing 5GiB nested floor and
-storage policy; do not purge another consumer or start a runtime source build.
+The retained original packet is 1552-linux-x86_64-b8272ea8.tar.gz,
+118655011 bytes, SHA256 a744fe13c8f58d576def3786bb97a322606f88cdb19223cc5d47dfad3fe2000a.
+Its extracted source is under the retained stage's inputs/safeyolo-1552-b8272ea8.
+The corrected checker update is 1552-f4275ba6-checker-update.tar.gz,3880 bytes,
+SHA256 b233a410eb20efd16d8013134d088c8e30f245bff1e0b5e3bc43f0a1eee95b81.
+Both originals are shared under /evidence/operator/1552/inputs-b8272ea8.
+Core ELF, helper, Python CPIO, runtime.json and notices stay unchanged.
 
-## Package on the native venue
-
-Transport these recipes and both archives through the existing protected route.
-The first archive is already shared at
-/evidence/operator/1552/inputs-b8272ea8/1552-linux-x86_64-b8272ea8.tar.gz:
-118655011bytes, SHA256a744fe13c8f58d576def3786bb97a322606f88cdb19223cc5d47dfad3fe2000a.
-The small corrected checker archive is
-/home/agent/safeyolo-rust-620-evidence/1552-f4275ba6-checker-update.tar.gz on Forge:
-3880bytes, SHA256b233a410eb20efd16d8013134d088c8e30f245bff1e0b5e3bc43f0a1eee95b81.
-That is an owner backing path for Sylab's copy/readback, not a peer mount.
-
-On the native guest, put the inputs and scripts under /home/agent/1552-inputs.
-The commands below bind the exact supplied complete native payload. Run them
-from /home/agent. Choose a new stage directory if the named path already exists.
-The script preserves the original archive and uses umask022 for package files;
-its separate diagnostics directory is0700. It performs no installation.
+Sylab stages only the new small recipe archive into the selected directory
+/home/agent/1552-inputs/recipes-adoption-fixed. Inspect any existing directory
+before choosing another effect. Use the existing native host shell, preserve
+proxy/CA variables and private credentials, and read current free space and
+active commands before allocating. The existing 5 GiB floor and storage policy
+apply. The following commands only read the selected installed state:
 
 ```bash
 set -euo pipefail
-packet=/home/agent/1552-inputs/1552-linux-x86_64-b8272ea8.tar.gz
-update=/home/agent/1552-inputs/1552-f4275ba6-checker-update.tar.gz
-recipes=/home/agent/1552-inputs/recipes
-stage=/home/agent/1552-package-ready
-GVISOR_ROOT=/home/agent/1452-native-bundle/libexec
-(cd "$GVISOR_ROOT" && sha256sum -c "$recipes/fixture/gvisor.sha256")
-stat -c '%n %s %a' "$GVISOR_ROOT/runsc" \
-  "$GVISOR_ROOT/gvisor-bin/"{gvisor-sentry-prewarmer,gvisor_sentry,runsc-fd-parking}
-bash "$recipes/package_hyperlight_adoption.sh" "$packet" "$update" "$GVISOR_ROOT" "$stage"
-```
-
-Expected: all four input hashes, sizes and modes match the table and receipt.
-The ordinary build_host_packages.sh and verify_native_package checks
-pass and report the selected package path. The source checkout and all native
-executables remain b8272ea837a62240fec92a8f4e9263c2a650bbcd/debug. The optional
-checker component is source f4275ba656f38a22b5215caab25217355dad04eb. Only the two
-Python files and their two architecture-specific pinned definitions change in
-that component. Core ELF, helper, Python CPIO, runtime.json and notices remain
-unchanged. The script binds --hyperlight-artifacts explicitly and never relabels
-b827 native executables as a later commit. The packet's actual top-level name is
-safeyolo-1552-b8272ea8. A source or package identity check must not be bypassed.
-
-## Install and prepare both engines
-
-Sylab uses the selected new root /home/agent/ha1552 and a separate command
-directory and runs the package's ordinary installer. For the host/native-API witness, its existing
---no-guest-download option is sufficient. This does not prove managed guest or
-coding-client discovery. For that separate criterion, use the existing qualified
-compatible platform assets or ordinary guest acquisition and exercise actual
-Codex/Claude discovery in the resulting managed guest. Preserve their accepted
-client choices, credentials, proxy and CA. Do not count repository lookup as
-installed discovery.
-
-```bash
 root=/home/agent/ha1552
-# Stop here if this root now exists; inspect that consumer before another effect.
-if [[ -e $root || -L $root ]]; then
-  echo "Inspect the existing selected root before installation: $root" >&2
-  exit 1
-fi
-bash "$stage/package/install_native.sh" --root "$root" --bundle "$stage/package" \
-  --command-dir "$stage/commands" --no-guest-download
-cli=$root/bin/safeyolo
-"$cli" --root "$root" status
-```
-
-## Prepare the task-local native factory
-
-This follows proxy/tests/native_coord/supervision.rs::ReviewRun::start and
-factory.rs::selected_work: host-owned agent metadata, named Unix listeners,
-managed NATS, explicit room grants and an approved native Work policy. It adds
-no controller, alternate queue, scheduler or model invocation. Only the new
-instance's configuration is selected. The base policy denies unselected egress;
-the installed authoring helper proposes the existing repository-scoped GitHub
-grant and automatic admission/output bindings for operator adoption.
-
-| Role | Native authority | Completion and evidence |
-| --- | --- | --- |
-| ha1552-creator/coordinator | Create assigned Work and amend requirements | Canonical admission and exact checked snapshot |
-| ha1552-owner/owner | Claim, publish immutable artifact, complete execution | Exact output generation; no self-review |
-| ha1552-reviewer/reviewer | Answer selected check and decide acceptance | Lens's independent exact-output judgment; automatic requirements remain |
-
-```mermaid
-flowchart LR
-  C[Creator Unix listener] -->|admit_issue automatic check| W[Canonical native Work]
-  W --> O[Owner consumes checked snapshot]
-  O -->|immutable output| V[verify_output automatic check]
-  V --> R[Selected independent reviewer]
-  R -->|native check and decision| A[Exact output acceptance]
-```
-
-Run these host commands as UID1000 after installation and before starting the
-new proxy. The explicit identities and listeners in the fixture are the actual
-selected configuration; they do not copy any production identity. Retain the
-installer defaults privately before selecting these task-local files:
-
-```bash
+stage=/home/agent/1552-package-d3c1e8c2
+recipes=/home/agent/1552-inputs/recipes-adoption-fixed
 fixture=$recipes/fixture
+cli=$root/bin/safeyolo
 factory=ha1552
 room=ha1552
 credential=live-github
-cp "$root/config.toml" "$stage/diagnostics/installed-config.toml"
-cp "$root/policy.toml" "$stage/diagnostics/installed-policy.toml"
-install -m 0600 "$fixture/config.toml" "$root/config.toml"
-install -m 0600 "$fixture/policy.toml" "$root/policy.toml"
-"$cli" --root "$root" policy check "$root/policy.toml"
-"$cli" --root "$root" factory check "$fixture/factory.toml"
-# Sylab's existing operator authority approves this exact disposable selection.
-"$cli" --root "$root" factory approve "$fixture/factory.toml" --yes
-# Verify ports18452/18453/18454 are free before this first runtime start.
-# The ordinary native runtime reuses or acquires its reviewed pinned NATS binary.
-"$cli" --root "$root" coord start --client-port 18453 --monitor-port 18454
-"$cli" --root "$root" coord room create "$room"
-for participant in ha1552-creator ha1552-owner ha1552-reviewer; do
-  "$cli" --root "$root" coord grant "$room" "$participant" receive send \
-    --operation-id "ha1552-grant-$participant-1"
-done
-snapshot=$(cat "$root/factories/ha1552/approved")
+packet_source=$stage/inputs/safeyolo-1552-b8272ea8/source
 creator_socket=$root/creator.sock
 owner_socket=$root/owner.sock
 reviewer_socket=$root/reviewer.sock
 creator_id=ag-ba78f4c34ded4a0295c682f4061adbf6
 owner_id=ag-a8f92b091dae4fa08da0fb2835ff0956
 reviewer_id=ag-2dc62d4650ea4ec981151bcef62308e0
-```
-
-Expected: factory check validates the complete contract and approval retains its
-immutable snapshot. Each grant receipt identifies the selected configured ID. The room
-readback below verifies active send/receive rights before the witness uses them. No page_operator permission, guest creation, factory prepare/run or paid
-coding-client call is needed for this native-client witness. This is the same
-qualification boundary as the maintained authenticated native Factory fixture;
-it does not establish managed coding-client discovery or model behavior.
-
-Sylab provisions live-github privately through the existing credentials add
---stdin path and records only the nonsecret reference. Before coord start, verify local ports18452/18453/18454 are available.
-NATS uses18453/18454 and the proxy Admin API uses18452. The named Unix listeners are
-relative to /home/agent/ha1552. Preserve any required proxy/CA settings in the
-selected config; the existing sy-239-clean-6728 transport used for1550 remains
-the venue. After startup, inspect native status and the actual socket paths:
-
-```bash
-"$cli" --root "$root" start
+snapshot=$(cat "$root/factories/ha1552/approved")
 "$cli" --root "$root" status
-"$cli" --root "$root" coord status "$room" --json > "$stage/diagnostics/room.json"
+"$cli" --root "$root" factory doctor "$factory"
+"$cli" --root "$root" coord status "$room" --json
+"$cli" --root "$root" services authorized gate:hyperlight-service-check
 for listener in "$creator_socket" "$owner_socket" "$reviewer_socket"; do
   test -S "$listener"
 done
 ```
 
-A failed readback or startup stops the affected attempt and retains its receipt.
-Room creation has no operation-ID option. After an uncertain reply, inspect
-coord room list and the named ha1552 room before deciding another effect. Grant
-operations use the chosen IDs above; recover their original inputs/IDs before
-retrying. Never create a replacement room to avoid that readback. Approval
-and source preparation alone do not claim a running factory or independent
-acceptance. No production factory or1452 input is changed.
+Expected: the three exact configured identities/listeners, active room rights
+and approved snapshot 625b28c460bea73ce3e81acecefe8aef3336bb48b740a620b6c5ac3960c3fb1d.
+The installed configuration must retain gateway_builtin_services_dir=assets/services
+and gateway_services_dir=data/services. These are the actual installer bindings;
+the fixture now includes them. Operator15965 reports their completed correction
+and restart. Do not overwrite configuration, reinstall, reapprove, recreate the
+room, regrant membership or restart a healthy consumer for this source change.
+A failed state read stops the affected attempt and retains its receipt.
 
-Before applying either example, prepare both candidates against the same
-unmodified baseline with the installed helper. Use the room/factory/credential values selected above. The live issue is1552, author123607 in
-craigbalding/safeyolo. PR1573 is the same author's existing pull request and is a
-negative type control. No live GitHub issue is created or edited by these tests.
-Use uv and the helper's declared pinned authoring dependencies through the
-normal proxy/CA; product runtime remains the native installation.
+The factory selects its creator as coordinator, a separate owner and Lens's
+independent reviewer. Automatic admit_issue/github_issue and
+verify_output/published_artifact requirements remain policy-owned. The producer
+publishes/completes; the reviewer answers/decides. Sylab may transport Lens's
+explicit judgment through the reviewer listener, never invent one. No
+page_operator permission, factory prepare/run or paid client call is needed
+for this native-client witness. This does not prove managed-client discovery.
+
+The existing live-github reference was provisioned privately. Never print or
+retain its value. Execution 18093 admitted parent
+work-484b55e3234a4619804a1b5e7ddfd792; execution 18094 published its ready output 1 with target
+sha256:e84d817d4a2e5ffd0952e7bb8a795dc1b0264492782b76c4662807b12665d531.
+Independent check work-48b7881b96fb49a8b71a11c17ccc7adb remains Lens-owned.
+Read its current state before continuing; do not create another parent or
+publish ready again to replace the pending review. Exact subject/artifact/input
+bytes are in core-review-230db88d.json,
+SHA256 70aba60c89015c38dde715a7f8b31580e2d1f24d7f0af0ee9e3705fb75e9a968.
+
+## Prepare and adopt only the remaining selection
+
+Both engine proposals were prepared and validated in execution 18084. Reuse them under
+$stage/candidate-hyperlight and $stage/candidate-hyperlight-unikraft. Core
+adoption and its successful windows are complete. The commands below explain
+the remaining second-engine selection. Preserve the completed effects.
+
+The actual venue lacks uv. Use Python 3.12+ with the existing task-local
+authoring-deps environment from execution 18084, which supplies TOMLKit 0.14.0
+and PyYAML 6.0.3. Preserve that environment through every python3 invocation below.
+Before preparation, verify those imports in that same shell. An import failure
+requires inspection of the retained authoring-deps setup, not a native product
+rebuild. This path does not prove the default uv launcher is usable:
 
 ```bash
-for engine in hyperlight hyperlight-unikraft; do
-  uv run --script "$root/assets/skills/job-authoring/scripts/prepare.py" \
-    --root "$root" --engine "$engine" --repository craigbalding/safeyolo \
-    --author-id 123607 --issue 1552 --room "$room" --factory "$factory" \
-    --credential "$credential" --output "$stage/candidate-$engine" \
-    > "$stage/diagnostics/prepare-$engine.json"
-  "$cli" --root "$root" services check "$stage/candidate-$engine/github.yaml"
-  "$cli" --root "$root" policy check "$stage/candidate-$engine/candidate.toml"
-done
+python3 -c 'import sys,tomlkit,yaml; assert sys.version_info >= (3,12); assert tomlkit.__version__ == "0.14.0"; assert yaml.__version__ == "6.0.3"'
 ```
 
-Inspect proposed authority and the helper's exact service_target before
-activation. The installed walkthrough retains the authorship/autonomy explanation.
-A file write alone is not adoption. Select hyperlight for the first qualification
-and finish its useful witness before selecting hyperlight-unikraft. The second
-engine is a qualification run; normal operation can select one implementation.
-For each deliberate selection, run from the same native host shell:
+Use the existing proposal and preparation-receipt paths below. If a required
+path is unavailable, recover its actual output location from execution 18084
+before continuing. Do not regenerate a proposal merely because its path was
+forgotten. The installed walkthrough describes fresh preparation separately.
+
+The expected issue is 1552, author 123607 in craigbalding/safeyolo. PR 1573 is the
+same author's existing pull request and is a negative type control. The check
+reads live GitHub evidence; these tests create or edit no GitHub issue. Inspect
+the printed proposed authority and service_target before adoption. The installed
+walkthrough retains the authorship/autonomy explanation.
+
+For a deliberate remaining engine selection, use its retained proposal and
+preparation receipt. Select engine=hyperlight-unikraft in the same host shell.
+Back up any current override privately, then install only the reviewed service
+file to its reported path:
 
 ```bash
-engine=hyperlight
-# Use engine=hyperlight-unikraft for the separate second-engine qualification.
+engine=hyperlight-unikraft
 service_target=$(python3 - "$stage/diagnostics/prepare-$engine.json" <<'TARGET'
 import json,sys
 print(json.load(open(sys.argv[1]))['service_target'])
@@ -242,22 +149,46 @@ if [[ -e $service_target ]]; then
   cp "$service_target" "$stage/diagnostics/github-before-$engine.yaml"
 fi
 install -m 0600 "$stage/candidate-$engine/github.yaml" "$service_target"
+"$cli" --root "$root" services show github > "$stage/diagnostics/catalogue-$engine.json"
+```
+
+Continue only when definition.capabilities.read_example_issues.routes in that
+readback contains exactly GET /repos/craigbalding/safeyolo/issues/*. Repeat only
+the services show read while the watcher loads the override. A read failure or
+a different definition requires inspection of the selected path and
+configuration-error evidence. services check validates a file but does not load
+it. Policy apply compiles against the loaded catalogue; it does not reload a
+new override first. The independent service watcher checks every 2 seconds.
+Once the selected capability is loaded, apply and inspect the exact authority:
+
+```bash
 "$cli" --root "$root" policy apply "$stage/candidate-$engine/candidate.toml"
 "$cli" --root "$root" policy show
 "$cli" --root "$root" services authorized gate:hyperlight-service-check
 ```
 
-Expected: saved_matches_active=true, the selected repository-scoped read
-capability, and both automatic bindings active for ha1552/ha1552. A failed
-activation is not saved-as-active success. Inspect actual state before another
-effect after a lost reply. This selection changes only the disposable instance.
+Expected: saved_matches_active=true and github's capability=read_example_issues,
+credential=live-github, host=api.github.com and routes containing only that GET
+issue route. Empty routes is not usable authority. If readback differs, stop
+before admission, retain the failed result and inspect current policy/catalogue.
+Do not blindly revoke/reissue, widen access or retry admission. A lost reply
+requires current-state inspection before another effect.
 
-The shipped job definitions currently select5seconds and the prepared named
-check permits10seconds. Execution17813 observed Unikraft jobs taking about7–8s
-with a30second selected job limit, and a5second deadline expired before the held
-provider. Those were #1550 driver observations, not #1552 automatic-admission
-results. Retain the actual selected limits and any failed installed result. Do
-not silently extend them and call the default installed journey proved.
+Operator15965 retains failed automatic create 18086 and its 403/service-gateway
+response, empty routes and later exact grant repair 18092. No credential/risk
+approval was pending. A local b827 probe reproduced empty routes when policy
+was applied before its new capability loaded; the watcher then supplied the
+correct route. That establishes an ordering failure in this recipe, not the
+cause of any persistent empty-route state after catalogue publication. Further
+diagnosis of that state needs the original failed attempt's timestamped loaded
+catalogue, effective policy/grant projection and configuration-error evidence.
+The reached successful core windows need no replay for that diagnosis.
+
+The shipped jobs select 5 seconds and the prepared named check permits 10 seconds.
+Execution 17813 observed Unikraft jobs taking about 7–8 seconds with a 30 second selected
+job limit; a 5 second deadline expired before the held provider. Those are #1550
+driver observations, not #1552 automatic-admission results. Retain actual limits
+and failures. Do not silently extend them and call default usability proved.
 
 ## Native admission, checked-input consumption and output replacement
 
@@ -280,7 +211,7 @@ python3 "$recipes/hyperlight_adoption.py" publish "${common[@]}" --work-id "$wor
 
 Expected: required admission selects the approved factory despite omission of a
 selector; verdict/identity injection and wrong snapshot selection are refused;
-the API alias for PR1573 is refused by the automatic requirement. The worker
+the API alias for PR 1573 is refused by the automatic requirement. The worker
 verifies and consumes the retained checked_input bytes, then publishes an exact
 ready artifact made from its title and body digest. Digest substitution and
 stale publication expectations are refused. The automatic requirement is
@@ -319,8 +250,8 @@ requirement, and acceptance no longer accepted. A further ready publication
 uses another deliberate run_id/scratch path and requires its own exact review.
 Prior output acceptance cannot supply the new obligation.
 
-For the grant control, the packet's source/uv.lock supplies the existing host
-TOMLKit tool. The following commands prepare a candidate that removes only the
+For the grant control, use the same prepared Python/TOMLKit environment.
+The following commands prepare a candidate that removes only the
 selected example's GitHub grant, then activate and test it. They preserve the
 checker and spec bytes. Sylab owns these protected policy activations:
 
@@ -328,7 +259,7 @@ checker and spec bytes. Sylab owns these protected policy activations:
 packet_source=$stage/inputs/safeyolo-1552-b8272ea8/source
 baseline=$stage/candidate-$engine/candidate.toml
 revoked=$stage/diagnostics/revoked-$engine.toml
-uv run --project "$packet_source" --frozen python3 "$recipes/revoke_example_grant.py" \
+python3 "$recipes/revoke_example_grant.py" \
   --baseline "$baseline" --output "$revoked"
 "$cli" --root "$root" policy check "$revoked"
 "$cli" --root "$root" policy apply "$revoked"
@@ -382,12 +313,12 @@ same original operation first.
 
 The small probe_scopes.py reuses only Instance.run_job and output from the
 retained hyperlight_services.py. Its imports of job_network/job_sandbox come
-from the exact packet source. It uses the source's locked host Python environment.
+from the exact packet source. It uses the same prepared host Python environment.
 It does not initialize, restart or change the selected installed instance.
 Run after positive admission with the restored scoped grant:
 
 ```bash
-uv run --project "$packet_source" --frozen python3 "$recipes/probe_scopes.py" \
+python3 "$recipes/probe_scopes.py" \
   --root "$root" --packet-source "$packet_source" --engine "$engine" \
   --scratch "$stage/diagnostics/$engine-scopes"
 ```
@@ -412,16 +343,17 @@ Keep useful pending native reviews; do not replace them with shell narration.
 Retain package/checker/runtime/source identities and compact actual results for
 Lens. Private diagnostics can contain captured issue bodies and remain private.
 The native product output/check records are the lifecycle; these scratch files
-are test inputs/results, not another queue or assignment log. Installed two-engine
-execution, actual factory use, refreshed input, independent postcondition
-acceptance and comparisons stay unproved until observed and independently judged.
+are test inputs/results, not another queue or assignment log. Preserve the
+supplied core admission/publication and pending exact-output review. Complete
+two-engine factory execution, refreshed input, independent postcondition
+acceptance and comparisons need their remaining observations and judgment.
 Physical Apple-silicon HVF remains required separately; the Linux packet and
 Linux helper do not qualify macOS. Reuse existing Bristol sy-agent/Sylab authority
 and component proof, with no root or personal-account access.
 
 The exact same workload comparison still needs the actual selected gVisor/VZ
 consumer and native macOS inputs. No performance or managed-client result is
-claimed by this source preparation. Preserve criteria9/10 acceptance; the other
+claimed by this source preparation. Preserve criteria 9/10 acceptance; the other
 nine criteria remain unchecked.
 
 Output groups for normal retention are the original b827 packet, small checker

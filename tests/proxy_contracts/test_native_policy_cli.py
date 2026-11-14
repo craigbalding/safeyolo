@@ -28,8 +28,9 @@ from pathlib import Path
 
 import pytest
 import tomlkit
+import yaml
 
-from tests.proxy_contracts.harness import ReadinessError, child_process, read_events, request, wait_ready
+from tests.proxy_contracts.harness import ReadinessError, child_process, launch_proxy, read_events, request, wait_ready
 from tests.proxy_contracts.scenarios import origin_server
 
 REPO = Path(__file__).resolve().parents[2]
@@ -1172,6 +1173,62 @@ def test_apply_with_service_store_uses_existing_transaction_without_deadlock(tmp
         instance.apply(scoped_policy(origin.server_address[1]))
         controls(instance, origin, other)
         assert instance.show()["saved_matches_active"]
+
+
+def test_new_service_capability_is_loaded_before_its_policy_is_applied(tmp_path):
+    """Exercise the installed walkthrough's catalogue and effective-route readbacks."""
+    builtin = tmp_path / "builtin-services"
+    user = tmp_path / "services"
+    builtin.mkdir()
+    user.mkdir()
+    service = yaml.safe_load((REPO / "cli/src/safeyolo/services/github.yaml").read_text())
+    (builtin / "github.yaml").write_text(json.dumps(service))
+    token = tmp_path / "admin-token"
+    token.write_text("synthetic-catalogue-order-admin")
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin/safeyolo").symlink_to(native_inputs()[0] / "safeyolo")
+    with launch_proxy(
+        "rust", tmp_path, DENY, native_product=True, admin_port=0, admin_api_token_file=token,
+        gateway_builtin_services_dir=str(builtin), gateway_services_dir=str(user), agent_api=True,
+    ) as proxy:
+        instance = NativeInstance(tmp_path, proxy.process, proxy.paths, os.environ.copy())
+        candidate = DENY + '''
+[hosts."api.github.com"]
+egress="allow"
+service="github"
+allow=["github:*"]
+[agents."gate:hyperlight-service-check".services.github]
+capability="read_example_issues"
+token="synthetic-vault-reference"
+'''
+        # An unloaded capability can name a binding without granting a route.
+        instance.apply(candidate)
+        authorization = instance.cli("services", "authorized", "gate:hyperlight-service-check")
+        assert authorization.returncode == 0, authorization.stderr
+        assert json.loads(authorization.stdout)["services"]["github"]["routes"] == []
+
+        routes = [{"methods": ["GET"], "path": "/repos/owner/repository/issues/*"}]
+        service["capabilities"]["read_example_issues"] = {"routes": routes}
+        (user / "github.yaml").write_text(json.dumps(service))
+        deadline = time.monotonic() + 4
+        while True:
+            catalogue = instance.cli("services", "show", "github")
+            assert catalogue.returncode == 0, catalogue.stderr
+            capabilities = json.loads(catalogue.stdout)["definition"]["capabilities"]
+            if capabilities.get("read_example_issues", {}).get("routes") == routes:
+                break
+            assert time.monotonic() < deadline, "the service watcher did not load the selected capability"
+            time.sleep(0.02)
+
+        instance.apply(candidate)
+        assert instance.show()["saved_matches_active"]
+        authorization = instance.cli("services", "authorized", "gate:hyperlight-service-check")
+        assert authorization.returncode == 0, authorization.stderr
+        github = json.loads(authorization.stdout)["services"]["github"]
+        assert {key: github[key] for key in ("host", "capability", "credential", "routes")} == {
+            "host": "api.github.com", "capability": "read_example_issues",
+            "credential": "synthetic-vault-reference", "routes": routes,
+        }
 
 
 def test_apply_keeps_checked_list_file_scope_when_saved_under_another_root(tmp_path):

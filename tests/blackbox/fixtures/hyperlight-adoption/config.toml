@@ -3,6 +3,8 @@ admin_port = 18452
 flow_store_enabled = false
 agent_api_enabled = true
 tls_ca_file = "certs/mitmproxy-ca.pem"
+gateway_builtin_services_dir = "assets/services"
+gateway_services_dir = "data/services"
 
 [[listeners]]
 agent_id = "ha1552-creator"
