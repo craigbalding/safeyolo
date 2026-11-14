@@ -481,6 +481,87 @@ def analyze_cli(root, base, head, output):
     return json.loads(report.read_text())
 
 
+def test_trusted_workflow_bootstrap_runs_selected_interpreters(tmp_path, git_sources):
+    root, git = git_sources
+    workflow = yaml.load((ROOT / changes.WORKFLOW).read_text(), Loader=yaml.BaseLoader)
+    analyze, publish = (workflow["jobs"][job]["steps"] for job in ("analyze", "publish"))
+    install = next(step["run"] for step in analyze if step.get("run", "").startswith("uv sync "))
+    compare_step = next(step["run"] for step in analyze if step.get("name") == "Compare executable assurance definitions")
+    publish_step = next(step["run"] for step in publish if step.get("name") == "Publish a new notice only for a material delta")
+    summary_step = next(step["run"] for step in analyze if step.get("name") == "Report analysis and publication state")
+    for path in ("tools/acceptance/pyproject.toml", "tools/acceptance/uv.lock"):
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / path).read_bytes())
+    git("rm", changes.SELF, changes.PUBLISHER)
+    git("add", ".")
+    git("commit", "-qm", "trusted base predating notification tools")
+    old_base = git("rev-parse", "HEAD")
+    for path in (changes.SELF, changes.PUBLISHER):
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / path).read_bytes())
+    git("add", ".")
+    git("commit", "-qm", "trusted notification tools and parser lock")
+    base = git("rev-parse", "HEAD")
+    (root / TEST).write_text(ORIGINAL.replace("== 0", "== 1"))
+    git("add", ".")
+    git("commit", "-qm", "candidate assertion change")
+    head = git("rev-parse", "HEAD")
+    workspace = tmp_path / "runner"
+    workspace.mkdir()
+    trusted = workspace / "trusted"
+    subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(root), str(trusted)], check=True)
+    subprocess.run(["git", "-C", str(trusted), "checkout", "-q", "--detach", base], check=True)
+    output = tmp_path / "reports"
+    output.mkdir()
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({"repository": {"full_name": notices.REPOSITORY, "default_branch": "master"},
+                                     "ref": "refs/heads/master", "before": base, "after": base}))
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV", "GH_TOKEN", "GITHUB_TOKEN"}}
+    env.update(RUNNER_TEMP=str(output), NOTICE_BASE=base, NOTICE_HEAD=base,
+               GITHUB_ACTIONS="true", GITHUB_EVENT_NAME="push", GITHUB_EVENT_PATH=str(event_path),
+               GITHUB_STEP_SUMMARY=str(tmp_path / "summary.md"))
+
+    def run(script):
+        return subprocess.run(["bash", "-e", "-c", script], cwd=workspace, env=env,
+                              capture_output=True, text=True, timeout=180)
+
+    # Use the workflow's frozen group in a fresh trusted checkout, rather than
+    # the development Python that imports this test and already has PyYAML.
+    result = run(install)
+    assert result.returncode == 0, result.stderr
+    result = run(compare_step)
+    assert result.returncode == 0, result.stderr
+    report = output / "blackbox-changes.json"
+    assert json.loads(report.read_text())["delta_id"] is None
+    (output / "analysis").mkdir()
+    (output / "analysis/blackbox-changes.json").write_bytes(report.read_bytes())
+    # The publisher's actual system-Python command uses only the standard
+    # library. A quiet report returns before any GitHub API operation.
+    result = run(publish_step)
+    assert result.returncode == 0, result.stderr
+    assert json.loads((output / "blackbox-notice.json").read_text())["status"] == "quiet"
+    env["NOTICE_HEAD"] = head
+    result = run(compare_step)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(report.read_text())["delta_id"]
+    assert subprocess.check_output(["git", "-C", str(trusted), "rev-parse", "HEAD"], text=True).strip() == base
+
+    # An old trusted source cannot bootstrap itself from candidate code. Its
+    # actual failing command and always-run summary must retain unknown impact.
+    subprocess.run(["git", "-C", str(trusted), "checkout", "-q", old_base], check=True)
+    report.unlink()
+    (output / "blackbox-changes.md").unlink()
+    env["NOTICE_BASE"] = old_base
+    result = run(compare_step)
+    assert result.returncode != 0 and "blackbox_changes.py" in result.stderr
+    assert not report.exists()
+    assert run(summary_step).returncode == 0
+    assert "Assurance impact is unknown" in Path(env["GITHUB_STEP_SUMMARY"]).read_text()
+
+
 @pytest.mark.parametrize(("setting", "target", "source"), [
     ("autolib", "fixture", "src/lib.rs"),
     ("autobins", "credential_check", "src/bin/credential_check.rs"),
