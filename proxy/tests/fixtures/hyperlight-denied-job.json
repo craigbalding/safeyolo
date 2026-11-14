@@ -1,0 +1,66 @@
+{
+  "denied_job_result": {
+    "engine": "hyperlight",
+    "outcome_source": "host_helper",
+    "runtime_report": {
+      "completion": null,
+      "error": "Guest error occurred GuestError: service is not selected or has no standing grant"
+    },
+    "helper_process_status": {
+      "kind": "exit",
+      "code": 1
+    },
+    "run_id": "job-90971b8dd44d49e3a199451ebacbb578",
+    "gate_id": "hyperlight-service-check",
+    "gate_definition_sha256": "3506736f2476bb8dade62121b763c26e7d6f83112d4e2929510640c2c5ca2cd3",
+    "gate_principal": "gate:hyperlight-service-check",
+    "authorization_principal": "gate:hyperlight-service-check",
+    "service_evidence": [],
+    "rootfs": {
+      "kind": "hyperlight",
+      "runtime_manifest_sha256": "d41e34e05418e28b88aaea6dd0fbd4af5f483a6a79fccf9c0808c257ba73ee8f",
+      "artifact_sha256": "2255154eaafe837b91c8abf39dab7e2051549f4963f71cc856f75207ef6343fa",
+      "bundle": {
+        "protocol": 3,
+        "os": "linux",
+        "architecture": "x86_64",
+        "hyperlight": "0.19.0",
+        "unikraft": "0.21.0",
+        "kernel_contract": "kfb05f5f9150b9c48-c8",
+        "helper": {
+          "file": "safeyolo-hyperlight",
+          "sha256": "6da649413ccfa460bded954be24521ce58d4201a1103e24b218f3980b791d4fb"
+        },
+        "rootfs": {
+          "file": "python.cpio",
+          "sha256": "64621671bc089be3acf8f7b26b956c74b9a5d792e5c0480721879c332e0b0336"
+        },
+        "rootfs_source": "https://ghcr.io/v2/hyperlight-dev/hyperlight-unikraft/python/blobs/sha256:79215ef44af8f66fcf068c8d9f487d93a39daad476b4dcdb0a5b4ad5fb81ac26"
+      },
+      "policy_hash": "sha256:951ac9e1db8a714b",
+      "service_access": "mediated",
+      "console_encoding": "utf-8"
+    },
+    "input_sha256": "df491896f137b738c9221b902febe154090c61e51617e8eb4b134636fea4bc49",
+    "started_unix_ms": 1794626527815,
+    "ended_unix_ms": 1794626528122,
+    "outcome": {
+      "kind": "exit",
+      "code": 1
+    },
+    "observation_error": null,
+    "stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "retained_base64": ""
+    },
+    "stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "retained_base64": ""
+    }
+  },
+  "denied_command_status": {
+    "returncode": 1
+  }
+}

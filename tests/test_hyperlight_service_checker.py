@@ -5,6 +5,8 @@ import contextlib
 import copy
 import importlib.util
 import json
+import signal
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -194,18 +196,92 @@ def test_driver_preserves_job33_failure_before_decoding_stdout(host_driver, tmp_
 
 def test_driver_cannot_accept_json_from_a_failed_command(host_driver, tmp_path):
     prefix = tmp_path / "job"
-    prefix.with_suffix(".stdout").write_text('{"outcome": {"kind": "exit", "code": 0}}')
+    prefix.with_suffix(".stdout").write_text('{"outcome": {"kind": "exit", "code": 0}, "observation_error": null}')
     prefix.with_suffix(".stderr").write_text("cleanup failed")
     prefix.with_suffix(".status.json").write_text('{"returncode": 1}')
     with pytest.raises(RuntimeError, match="command exit 1.*cleanup failed"):
         host_driver.job_result(prefix, "hyperlight-unikraft", "shutdown")
     prefix.with_suffix(".status.json").write_text('{"returncode": 0}')
     assert host_driver.job_result(prefix, "hyperlight-unikraft", "run_job") == {
-        "outcome": {"kind": "exit", "code": 0}}
+        "outcome": {"kind": "exit", "code": 0}, "observation_error": None}
     for malformed in (b"malformed", b"\xff"):
         prefix.with_suffix(".stdout").write_bytes(malformed)
         with pytest.raises(RuntimeError, match="invalid job result JSON"):
             host_driver.job_result(prefix, "hyperlight-unikraft", "run_job")
+
+
+@pytest.fixture
+def driver_command(host_driver, tmp_path):
+    """Run the real driver subprocess boundary without starting a VM."""
+    cli = tmp_path / "fixture-cli"
+    cli.write_text(f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n"
+                   "value = json.loads(Path(__file__).with_suffix('.json').read_bytes())\n"
+                   "sys.stdout.write(value['stdout'])\nsys.stderr.write(value['stderr'])\n"
+                   "sys.exit(value['returncode'])\n")
+    cli.chmod(0o700)
+    (tmp_path / "hyperlight-adopted.json").write_text('{"engine": {}}')
+    instance = host_driver.Instance(SimpleNamespace(root=tmp_path, scratch=tmp_path, cli=cli))
+
+    def run(stdout, returncode, *, expected=None, stderr=""):
+        cli.with_suffix(".json").write_text(json.dumps({"stdout": stdout, "returncode": returncode, "stderr": stderr}))
+        return instance.run_job("hyperlight", {}, expected_outcome=expected)
+
+    return run
+
+
+def test_driver_accepts_only_the_explicit_retained_grant_denial(driver_command):
+    # Exact nonsecret execution17804/job8 operands supplied in backlog15950.
+    # CLI/proxy3dc, protocol3; a reached negative, not complete engine proof.
+    retained = json.loads((REPO / "proxy/tests/fixtures/hyperlight-denied-job.json").read_bytes())
+    result, status = retained["denied_job_result"], retained["denied_command_status"]["returncode"]
+    assert result["outcome"] == {"kind": "exit", "code": 1} and status == 1
+    assert result["stdout"]["bytes"] == result["stderr"]["bytes"] == 0
+    with pytest.raises(RuntimeError, match="command exit 1"):
+        driver_command(json.dumps(result), status)
+    assert driver_command(json.dumps(result), status, expected={"kind": "exit", "code": 1}) == result
+
+
+@pytest.mark.parametrize("control,outcome,status", [
+    ("scope probe with a typed denial", {"kind": "exit", "code": 0}, 0),
+    ("oversize request", {"kind": "exit", "code": 1}, 1),
+    ("deadline", {"kind": "timeout"}, 124),
+    ("cancel", {"kind": "interrupted", "signal": int(signal.SIGINT)}, 1),
+    ("revoke", {"kind": "interrupted", "signal": int(signal.SIGTERM)}, 1),
+    ("shutdown", {"kind": "interrupted", "signal": int(signal.SIGTERM)}, 1),
+])
+def test_driver_matches_sibling_job_outcomes_and_cli_status(driver_command, control, outcome, status):
+    # Synthetic siblings follow jobs::command_status and hyperlight::run;
+    # they establish result classification, not a protected execution result.
+    result = {"outcome": outcome, "observation_error": None}
+    assert driver_command(json.dumps(result), status, expected=outcome) == result, control
+    with pytest.raises(RuntimeError, match="command exit"):
+        driver_command(json.dumps(result), 0 if status else 1, expected=outcome)
+
+
+@pytest.mark.parametrize("stdout,status", [
+    ("", 1), ("malformed", 1), ('{"outcome":', 1), ("[]", 1), ("{}", 1),
+    ('{"outcome":{"kind":"exit","code":0},"observation_error":null}', 1),
+    ('{"outcome":{"kind":"exit","code":2},"observation_error":null}', 1),
+    ('{"outcome":{"kind":"signal","number":11},"observation_error":null}', 1),
+    ('{"outcome":{"kind":"exit","code":1},"observation_error":"incomplete report"}', 1),
+    ('{"outcome":{"kind":"exit","code":1}}', 1),
+    ('{"outcome":{"kind":"exit","code":1},"observation_error":null}', 0),
+    ('{"outcome":{"kind":"exit","code":1},"observation_error":null}', 2),
+])
+def test_expected_negative_still_rejects_command_and_observation_failures(driver_command, stdout, status):
+    with pytest.raises(RuntimeError) as failed:
+        driver_command(stdout, status, expected={"kind": "exit", "code": 1}, stderr="retained diagnostic")
+    message = str(failed.value)
+    assert f"command exit {status}" in message and "retained diagnostic" in message
+    assert all(suffix in message for suffix in (".status.json", ".stdout", ".stderr"))
+
+
+def test_expected_negative_requires_a_retained_json_file(host_driver, tmp_path):
+    prefix = tmp_path / "missing"
+    prefix.with_suffix(".status.json").write_text('{"returncode": 1}')
+    prefix.with_suffix(".stderr").write_text("retained diagnostic")
+    with pytest.raises(RuntimeError, match="command exit 1.*retained diagnostic.*job result JSON"):
+        host_driver.job_result(prefix, "hyperlight", "revoke", expected_outcome={"kind": "exit", "code": 1})
 
 
 @pytest.fixture
