@@ -48,8 +48,12 @@ def stop(child):
         raise
 
 
-def job_result(prefix, engine, mode):
-    """Keep command failures and their retained files ahead of JSON parsing."""
+def job_result(prefix, engine, mode, *, expected_outcome=None):
+    """Match an explicit job outcome and the CLI status derived from it."""
+    expected = {"kind": "exit", "code": 0} if expected_outcome is None else expected_outcome
+    # jobs::command_status returns 124 for timeout, 0 for complete exit 0,
+    # and 1 for every other outcome. A CLI failure without a result still fails.
+    expected_status = 124 if expected == {"kind": "timeout"} else 0 if expected == {"kind": "exit", "code": 0} else 1
     status_path = prefix.with_suffix(".status.json")
     stdout_path = prefix.with_suffix(".stdout")
     stderr_path = prefix.with_suffix(".stderr")
@@ -58,12 +62,16 @@ def job_result(prefix, engine, mode):
     context = (f"{engine}/{mode}: command exit {status['returncode']}; "
                f"status={status_path}; stdout={stdout_path}; stderr={stderr_path}; "
                f"diagnostic: {stderr}")
-    if status["returncode"] != 0:
-        raise RuntimeError(context)
+    if status["returncode"] != expected_status:
+        raise RuntimeError(f"{context}; expected command exit {expected_status}")
     try:
-        return json.loads(stdout_path.read_bytes())
-    except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise RuntimeError(f"{context}; invalid job result JSON: {error}") from error
+        result = json.loads(stdout_path.read_bytes())
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise RuntimeError(f"{context}; unavailable or invalid job result JSON: {error}") from error
+    if (not isinstance(result, dict) or result.get("outcome") != expected
+            or result.get("observation_error", "missing") is not None):
+        raise RuntimeError(f"{context}; expected observed outcome {expected}; job result: {result}")
+    return result
 
 
 class Instance:
@@ -203,10 +211,10 @@ class Instance:
                 stop(child)
                 save(prefix.with_suffix(".status.json"), {"returncode": child.returncode})
 
-    def run_job(self, engine, request, **options):
+    def run_job(self, engine, request, *, expected_outcome=None, **options):
         with self.job(engine, request, **options) as (child, prefix):
             child.wait(timeout=60)
-        return job_result(prefix, engine, "run_job")
+        return job_result(prefix, engine, "run_job", expected_outcome=expected_outcome)
 
 
 def output(result):
@@ -302,8 +310,7 @@ def scope_and_limits(instance, engine, port):
     record = result["service_evidence"][0]
     assert "limit exceeded" in record["error"] and record["retained_base64"] is None
     request["call"]["url"] = "https://api.github.com/" + "x" * 50_000
-    result = instance.run_job(engine, request, probe=True)
-    assert result["outcome"] != {"kind": "exit", "code": 0}, result
+    instance.run_job(engine, request, probe=True, expected_outcome={"kind": "exit", "code": 1})
 
 
 def held_lifetimes(instance, engine, origin, port):
@@ -324,9 +331,10 @@ def held_lifetimes(instance, engine, origin, port):
             child.wait(timeout=45)
             # Deliver late success only after the owning helper has terminated.
             origin.release.set()
-        result = job_result(prefix, engine, mode)
+        expected = ({"kind": "timeout"} if mode == "deadline" else
+                    {"kind": "interrupted", "signal": int(signal.SIGINT if mode == "cancel" else signal.SIGTERM)})
+        result = job_result(prefix, engine, mode, expected_outcome=expected)
         save(prefix.with_suffix(".result.json"), result)
-        assert result["outcome"] != {"kind": "exit", "code": 0}, result
         assert not result["service_evidence"] or all(row["response_sha256"] is None
                                                     for row in result["service_evidence"]), result
         assert not list((instance.root / "data").glob("job-hyperlight-*")), (
@@ -410,8 +418,7 @@ def exercise(args):
                         services = instance.policy["agents"]["gate:hyperlight-service-check"]["services"]
                         grant = services.pop("github")
                         instance.apply()
-                        denied = instance.run_job(engine, request)
-                        assert denied["outcome"] != {"kind": "exit", "code": 0}, denied
+                        instance.run_job(engine, request, expected_outcome={"kind": "exit", "code": 1})
                         services["github"] = grant
                         instance.apply()
                         assert output(instance.run_job(engine, request))["finding"]["positive"] is True
