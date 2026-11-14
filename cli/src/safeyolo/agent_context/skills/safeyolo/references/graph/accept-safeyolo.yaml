@@ -1015,9 +1015,9 @@ nodes:
       obtain_from: "mypy declared and hash-locked in the isolated tools/acceptance uv project, fetched through the approved SafeYolo proxy"
       sources:
         - path: tools/acceptance/pyproject.toml
-          sha256: ef294a36bb949e066bd429dff850c100b52c7b2fbcebc3c3a3a9bce58ca9f966
+          sha256: 74f39d9e04874385eddc5ed6b5258c0ae26b8821ef9d28553dc87633641f081f
         - path: tools/acceptance/uv.lock
-          sha256: 4d348b3da128498611ae9b7cd9a50b56dbf515a091f5564ae55a1f9302965842
+          sha256: 6600e8f222cd4b2e567d826695ea4cacb6284058cf212d52a37fdc3f9ea80769
       setup: "uv sync --project tools/acceptance --frozen --only-group static"
       verify: "sha256sum tools/acceptance/{pyproject.toml,uv.lock} && uv run --project tools/acceptance --frozen --no-sync mypy --version"
       run:
@@ -1070,9 +1070,9 @@ nodes:
       obtain_from: "Semgrep declared and hash-locked in the isolated tools/acceptance uv project; rules and rule tests come from the exact trusted-base Git object"
       sources:
         - path: tools/acceptance/pyproject.toml
-          sha256: ef294a36bb949e066bd429dff850c100b52c7b2fbcebc3c3a3a9bce58ca9f966
+          sha256: 74f39d9e04874385eddc5ed6b5258c0ae26b8821ef9d28553dc87633641f081f
         - path: tools/acceptance/uv.lock
-          sha256: 4d348b3da128498611ae9b7cd9a50b56dbf515a091f5564ae55a1f9302965842
+          sha256: 6600e8f222cd4b2e567d826695ea4cacb6284058cf212d52a37fdc3f9ea80769
         - path: tools/acceptance/semgrep-rules.yml
           sha256: 36c03e46e234a6a4d1d72233c72096099d1bb1e798216d9413ddb817eb944555
         - path: tools/acceptance/semgrep-rules.py
@@ -1104,9 +1104,9 @@ nodes:
         - path: uv.lock
           sha256: fd244df9e559bed2b211bbe93f257831fce8e1087b19cfc7d9d3da2fd1bc3050
         - path: tools/acceptance/pyproject.toml
-          sha256: ef294a36bb949e066bd429dff850c100b52c7b2fbcebc3c3a3a9bce58ca9f966
+          sha256: 74f39d9e04874385eddc5ed6b5258c0ae26b8821ef9d28553dc87633641f081f
         - path: tools/acceptance/uv.lock
-          sha256: 4d348b3da128498611ae9b7cd9a50b56dbf515a091f5564ae55a1f9302965842
+          sha256: 6600e8f222cd4b2e567d826695ea4cacb6284058cf212d52a37fdc3f9ea80769
       setup: "uv sync --project tools/acceptance --frozen --only-group static; retain /home/agent/.cache/pip-audit across tasks"
       verify: "sha256sum pyproject.toml uv.lock tools/acceptance/{pyproject.toml,uv.lock} && uv run --project tools/acceptance --frozen --no-sync pip-audit --version"
       run:
@@ -1128,9 +1128,9 @@ nodes:
       obtain_from: "Radon declared and hash-locked in the isolated tools/acceptance uv project, fetched through the approved SafeYolo proxy"
       sources:
         - path: tools/acceptance/pyproject.toml
-          sha256: ef294a36bb949e066bd429dff850c100b52c7b2fbcebc3c3a3a9bce58ca9f966
+          sha256: 74f39d9e04874385eddc5ed6b5258c0ae26b8821ef9d28553dc87633641f081f
         - path: tools/acceptance/uv.lock
-          sha256: 4d348b3da128498611ae9b7cd9a50b56dbf515a091f5564ae55a1f9302965842
+          sha256: 6600e8f222cd4b2e567d826695ea4cacb6284058cf212d52a37fdc3f9ea80769
       setup: "uv sync --project tools/acceptance --frozen --only-group static"
       verify: "sha256sum tools/acceptance/{pyproject.toml,uv.lock} && uv run --project tools/acceptance --frozen --no-sync radon --version"
       run:
