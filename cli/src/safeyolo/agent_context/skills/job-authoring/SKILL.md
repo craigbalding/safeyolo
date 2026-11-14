@@ -27,8 +27,10 @@ Existing standing grants avoid repeated routine approvals.
 Develop against the logical request/result contract: policy owns inputs,
 artifacts, engine, capabilities and limits; invocation supplies the subject.
 Use the bundle's Rust `ServiceCheck` or Python `service_checker.py` as the
-working example. Test a real positive result, predicate mismatch, malformed or
-missing evidence, denied capability and bounded failure. A successful process
+working example. The walkthrough includes a runnable offline test for a working
+Python copy and preparation with `--bundle` for proposed bytes. Test a real
+positive result, predicate mismatch, malformed or missing evidence, denied
+capability and bounded failure. A successful process
 exit does not establish the predicate. A source fixture establishes its own
 scope; it does not prove the selected installed runtime.
 

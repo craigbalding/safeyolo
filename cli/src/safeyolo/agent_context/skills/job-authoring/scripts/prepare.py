@@ -51,6 +51,7 @@ def relocate_policy_inputs(policy, policy_path):
 def prepare(args):
     """Write reviewable candidates and runnable inputs in a new private directory."""
     root = args.root.resolve(strict=True)
+    bundle = args.bundle.resolve(strict=True) if args.bundle else root / "assets/hyperlight"
     config = tomlkit.parse((root / "config.toml").read_text())
     policy_path = Path(config.get("policy_file", "policy.toml"))
     if not policy_path.is_absolute():
@@ -75,12 +76,12 @@ def prepare(args):
         (AUTHOR, "service", {"repository": args.repository, "expected_author_id": args.author_id}),
         (ARTIFACT, "artifact", {"expected_status": "ready"}),
     ]:
-        path = root / "assets/hyperlight" / f"{args.engine}-{purpose}.json"
+        path = bundle / f"{args.engine}-{purpose}.json"
         spec = json.loads(path.read_bytes())
         selected = spec["engine"]["guest" if args.engine == "hyperlight" else "checker"]
         artifact = path.parent / selected["path"]
         if digest(artifact) != selected["sha256"]:
-            raise ValueError(f"Installed checker digest differs: {artifact}")
+            raise ValueError(f"Selected checker digest differs: {artifact}")
         definition = {"source_id": name, "meaning": "GitHub recorded issue author" if name == AUTHOR else "JSON artifact status is ready",
             "subject": "value", "result_type": "finding", "influences": ["hard_exclusion"],
             "implementation_version": selected["sha256"], "configuration_version": digest(path),
@@ -114,7 +115,7 @@ def prepare(args):
         with open(args.output / name, "x", opener=lambda path, flags: os.open(path, flags, 0o600)) as stream:
             stream.write(value)
     print(json.dumps({"root": str(root), "saved_policy": str(policy_path), "candidate": str(args.output.resolve()),
-        "engine": args.engine, "repository": args.repository, "expected_author_id": args.author_id,
+        "engine": args.engine, "bundle": str(bundle), "repository": args.repository, "expected_author_id": args.author_id,
         "service_target": str(service_target),
         "grant": {"principal": "gate:hyperlight-service-check", "capability": CAPABILITY, "credential": args.credential},
         "boundaries": ["admit_issue", "verify_output"], "activation": "not applied"}))
@@ -123,6 +124,7 @@ def prepare(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--bundle", type=Path, help="Proposed job bundle; defaults to the selected instance's assets/hyperlight")
     parser.add_argument("--engine", required=True, choices=["hyperlight", "hyperlight-unikraft"])
     for name in ("repository", "author-id", "issue", "room", "factory", "credential"):
         parser.add_argument("--" + name, required=True)

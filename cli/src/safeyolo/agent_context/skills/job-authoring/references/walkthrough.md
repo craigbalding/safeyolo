@@ -99,6 +99,69 @@ Comment authorship, later edits, repository ownership, assignees and content
 safety are separate claims. Login names help readers; the predicate uses stable
 numeric `user.id`.
 
+## Develop and test a checker
+
+For the Python implementation, develop and test inside the selected agent's
+existing sandbox. The host owner supplies the nonsecret
+`assets/hyperlight/service_checker.py` from the selected installation in that
+agent's existing workspace as `supplied-service_checker.py`. The installed
+skill and Python 3.12+ must be available in that guest. Run these commands as
+the ordinary agent in its workspace, with `service_checker.py` unused. They
+copy source and run controlled cases with Python's standard library. They
+contact no provider, launch no Hyperlight runtime and change no instance
+authority.
+
+```sh
+cp supplied-service_checker.py service_checker.py
+python3 /safeyolo/skills/job-authoring/examples/test_service_checker.py service_checker.py
+```
+
+Expected: seven tests pass. The cases cover a matching author, another author,
+a pull request, a different repository, malformed evidence, a missing author
+and a denied service call. The injected capture includes multiple chunks.
+The denial is a controlled exception, not proof of live capability enforcement.
+
+Read and edit `service_checker.py` to implement the requested
+predicate through its existing `service_check(request, call)` interface. Keep
+authority in the declared inputs and host calls. Extend the local tests for
+the requested behavior in a workspace copy of the example, then rerun them.
+Host paths in a proposal do not grant guest access to that host.
+
+Return to the owning host. In a private working directory, copy the installed
+bundle to an unused `proposed-bundle` directory. Replace
+`/path/to/selected/workspace` with that agent's existing host-mounted workspace
+before running these commands. Copy and review the tested source as data;
+execute agent-developed code inside the sandbox.
+
+```sh
+cp -R "$HOME/.safeyolo/assets/hyperlight" proposed-bundle
+cp /path/to/selected/workspace/service_checker.py proposed-bundle/service_checker.py
+```
+
+Update the proposed definition's digest from the same host working directory:
+
+```sh
+python3 - <<'PY'
+import hashlib
+import json
+from pathlib import Path
+
+bundle = Path("proposed-bundle")
+path = bundle / "hyperlight-unikraft-service.json"
+definition = json.loads(path.read_text())
+checker = definition["engine"]["checker"]
+checker["sha256"] = hashlib.sha256((bundle / checker["path"]).read_bytes()).hexdigest()
+path.write_text(json.dumps(definition, indent=2) + "\n")
+PY
+```
+
+The runtime and artifact checker keep their existing pins. A Rust checker
+instead needs the matching core guest build; use the bundle producer's
+toolchain and application binary interface (ABI). Update `guest.sha256` in
+each definition that selects that rebuilt guest, including the artifact check
+when it shares the executable. The Python tests do not qualify Rust or the
+selected virtual machine runtime.
+
 ## Prepare, inspect and adopt
 
 In a private host working directory, replace `OWNER/REPOSITORY`,
@@ -108,10 +171,12 @@ authorized room, approved factory and existing credential reference. The helper
 writes a new private `candidate` directory; it contacts no provider and changes
 no saved or active instance state.
 
+Choose one preparation command: the first uses the installed bundle; the
+second uses the developed Python bundle. Both write `candidate`, so run only
+the selected variant before validation.
+
 ```sh
 uv run --script "$HOME/.safeyolo/assets/skills/job-authoring/scripts/prepare.py" --root "$HOME/.safeyolo" --engine hyperlight --repository OWNER/REPOSITORY --author-id STABLE_USER_ID --issue ISSUE_NUMBER --room engineering --factory example --credential factory-github --output candidate
-safeyolo --root "$HOME/.safeyolo" services check candidate/github.yaml
-safeyolo --root "$HOME/.safeyolo" policy check candidate/candidate.toml
 ```
 
 Select `--engine hyperlight-unikraft` for the Python implementation. Preparation
@@ -121,8 +186,31 @@ service capability. It preserves existing controls and other capabilities.
 A conflicting example block stops generation; an existing explicit host denial
 remains effective. Resolve the named conflict through the existing authority.
 
+For the developed Python bundle, run this variant instead of the preparation
+command above. Use the same selected instance, room, factory and credential
+choices. The bundle must be at its reviewed host path before adoption:
+
+```sh
+uv run --script "$HOME/.safeyolo/assets/skills/job-authoring/scripts/prepare.py" --root "$HOME/.safeyolo" --bundle proposed-bundle --engine hyperlight-unikraft --repository OWNER/REPOSITORY --author-id STABLE_USER_ID --issue ISSUE_NUMBER --room engineering --factory example --credential factory-github --output candidate
+```
+
+`--bundle` selects the proposed definitions and digest-checked checker bytes;
+it defaults to the instance's installed bundle. The receipt names the selected
+bundle. Review the proposed code, runtime pins, capabilities and limits before
+the same service/policy checks and owner adoption below. Digest agreement and
+offline tests do not approve code. Existing adopted definitions that differ
+still require the owner's explicit reconciliation; this option does not
+replace them or remove a required binding.
+
 Review `candidate.toml`, `github.yaml` and the printed root, policy and service
-target. `policy check` compiles; offline `policy evaluate` cannot execute a
+target. Then validate the selected proposal:
+
+```sh
+safeyolo --root "$HOME/.safeyolo" services check candidate/github.yaml
+safeyolo --root "$HOME/.safeyolo" policy check candidate/candidate.toml
+```
+
+`policy check` compiles; offline `policy evaluate` cannot execute a
 dynamic job and cannot prove live admission. A direct `job run` with
 `author-request.json` renamed to `request.json` in its input directory is an
 execution test, not adoption or a passed factory requirement.

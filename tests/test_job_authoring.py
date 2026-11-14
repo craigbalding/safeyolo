@@ -1,6 +1,7 @@
 """Installed example preparation preserves authority and selects exact artifacts."""
 
 import base64
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -47,15 +48,20 @@ existing="existing.txt"
     return root
 
 
-def run(root, output, engine="hyperlight"):
+def run(root, output, engine="hyperlight", bundle=None):
     return subprocess.run([sys.executable, str(root / "assets/skills/job-authoring/scripts/prepare.py"),
         "--root", str(root), "--engine", engine, "--repository", "owner/repository", "--author-id", "42",
         "--issue", "1", "--room", "engineering", "--factory", "example", "--credential", "existing-github",
-        "--output", str(output)], capture_output=True, text=True)
+        "--output", str(output), *(["--bundle", str(bundle)] if bundle else [])], capture_output=True, text=True)
 
 
 @pytest.mark.parametrize("engine", ["hyperlight", "hyperlight-unikraft"])
-def test_installed_helper_proposes_scoped_authority_without_applying(installed, tmp_path, engine):
+@pytest.mark.parametrize("linked_bundle", [False, True])
+def test_installed_helper_proposes_scoped_authority_without_applying(installed, tmp_path, engine, linked_bundle):
+    if linked_bundle:
+        runtime = installed / "assets/hyperlight"
+        runtime.rename(installed / "assets/selected-hyperlight")
+        runtime.symlink_to("selected-hyperlight", target_is_directory=True)
     policy = installed / "policy/current.toml"
     original = policy.read_bytes()
     output = tmp_path / "candidate"
@@ -64,6 +70,7 @@ def test_installed_helper_proposes_scoped_authority_without_applying(installed, 
     receipt = json.loads(result.stdout)
     assert receipt["root"] == str(installed)
     assert receipt["saved_policy"] == str(policy)
+    assert receipt["bundle"] == str(installed / "assets/hyperlight")
     assert receipt["service_target"] == str(installed / "data/services/github.yaml")
     assert receipt["activation"] == "not applied"
     assert policy.read_bytes() == original
@@ -90,6 +97,43 @@ def test_installed_helper_proposes_scoped_authority_without_applying(installed, 
         "capability": "read_example_issues", "token": "existing-github"}
     assert output.stat().st_mode & 0o777 == 0o700
     assert all(path.stat().st_mode & 0o777 == 0o600 for path in output.iterdir())
+
+
+@pytest.mark.parametrize("engine", ["hyperlight", "hyperlight-unikraft"])
+def test_preparation_selects_developed_bundle_without_replacing_installed_bytes(installed, tmp_path, engine):
+    original = (installed / "policy/current.toml").read_bytes()
+    runtime = installed / "assets/hyperlight"
+    proposed = tmp_path / "proposed-bundle"
+    shutil.copytree(runtime, proposed)
+    spec_path = proposed / f"{engine}-service.json"
+    spec = json.loads(spec_path.read_text())
+    selected = spec["engine"]["guest" if engine == "hyperlight" else "checker"]
+    artifact = proposed / selected["path"]
+    installed_bytes = (runtime / selected["path"]).read_bytes()
+    artifact.write_bytes(b"developed checker")
+    output = tmp_path / "candidate"
+    refused = run(installed, output, engine, proposed)
+    assert refused.returncode != 0
+    assert "Selected checker digest differs" in refused.stderr
+    assert not output.exists()
+    selected["sha256"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    spec_path.write_text(json.dumps(spec))
+    artifact_spec_path = proposed / f"{engine}-artifact.json"
+    artifact_spec = json.loads(artifact_spec_path.read_text())
+    artifact_selection = artifact_spec["engine"]["guest" if engine == "hyperlight" else "checker"]
+    if artifact_selection["path"] == selected["path"]:
+        artifact_selection["sha256"] = selected["sha256"]
+        artifact_spec_path.write_text(json.dumps(artifact_spec))
+    result = run(installed, output, engine, proposed)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["bundle"] == str(proposed)
+    candidate = tomllib.loads((output / "candidate.toml").read_text())
+    author = candidate["checks"]["example_issue_author"]
+    assert author["source"]["spec"] == str(spec_path)
+    assert author["implementation_version"] == selected["sha256"]
+    assert author["configuration_version"] == hashlib.sha256(spec_path.read_bytes()).hexdigest()
+    assert (runtime / selected["path"]).read_bytes() == installed_bytes
+    assert (installed / "policy/current.toml").read_bytes() == original
 
 
 @pytest.mark.parametrize("conflict", ["grant", "binding", "artifact"])
