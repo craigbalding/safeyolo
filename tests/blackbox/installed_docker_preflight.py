@@ -31,6 +31,11 @@ daemon, closed-port and stopped-provider failure controls with --gateway.
 --reuse-root continues this probe's stopped disposable instance without
 replacing its policy, registry approvals or prepared inputs. The driver does not
 approve or retry a failed operation. Independent acceptance remains separate.
+
+--recurring runs a fresh application journey followed by the scoped Docker API
+controls, live revocation and daemon/provider failures. It uses owned allowed
+and denied origins and retains named checkpoints. With a parent route for the
+test origin, SAFEYOLO_DOCKER_ORIGIN_BIND selects an owned routable IPv4 address.
 """
 
 from __future__ import annotations
@@ -44,11 +49,14 @@ import shutil
 import subprocess
 import threading
 import uuid
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import tomlkit
 
+from tests.blackbox.execution_receipt import ProcedureReceipt
 from tests.blackbox.guest_exec import guest_command_args
 from tests.blackbox.installed_host_smoke import _agent_listeners, _native_config, _runtime_observation, _sha256
 from tests.blackbox.installed_ingress import runsc_identity
@@ -112,6 +120,11 @@ capabilities:
     routes:
       - methods: [GET, HEAD, POST, PUT, DELETE]
         path: /v1.45/**
+  reader:
+    docker_access: {mode: sandbox_admin}
+    routes:
+      - methods: [GET]
+        path: /v1.45/**
 '''
 
 
@@ -125,7 +138,7 @@ def verify_gateway_client_failure(observation):
     assert diagnostic and not diagnostic.isdigit(), "Docker client returned no useful failure diagnostic"
 
 
-def gateway_client_failure(client_command, label):
+def gateway_client_failure(client_command, label, arguments="version"):
     """Retain the actual CLI exit, stderr and a read-only raw HTTP response."""
     directory = "/home/agent/docker-gateway-client"
     capture = f'''
@@ -145,7 +158,7 @@ connection.close()
 print(json.dumps({{"exit": int((directory / (label + ".exit")).read_text()),
                   "stderr": (directory / (label + ".log")).read_text(), "http": raw}}))
 '''
-    command = (f"client_exit=0; /workspace/docker-client version >{directory}/{label}.stdout "
+    command = (f"client_exit=0; /workspace/docker-client {arguments} >{directory}/{label}.stdout "
                f"2>{directory}/{label}.log || client_exit=$?; "
                f"printf '%s\\n' \"$client_exit\" >{directory}/{label}.exit; "
                "python3 -c " + shlex.quote(capture))
@@ -424,7 +437,7 @@ def gateway_compose_journey(caller, client_command, guest, background, report):
     gateway_compose_finish(caller, observation, client_command)
 
 
-def gateway_management(args, root, output, native, guest, background, report):
+def gateway_management(args, root, output, native, guest, background, report, receipt=None):
     """Exercise the real inner Engine over the existing sandbox-provider route."""
     caller = root / "docker-caller"
     assert caller.is_dir(), "reuse the qualified #1436 caller and workspace"
@@ -539,8 +552,9 @@ printf 'Authorization: Bearer %s\\n' "$agent_token" |
         # Keep the accepted single-container and negative-only paths separate
         # from the optional missing-route proof. Both use guest host networking.
         if not failures_only:
-            client_command(f"/workspace/docker-client create -i --network=host --name {name} "
-                           "debian:trixie-slim sh -c 'read line; echo internal:$line'", "gateway-create")
+            base_image = (Path(__file__).parent / "fixtures/nested-docker/Dockerfile").read_text().splitlines()[0].split()[1]
+            client_command(f"/workspace/docker-client create -i --pull=never --network=host --name {name} "
+                           f"{shlex.quote(base_image)} sh -c 'read line; echo internal:$line'", "gateway-create")
             client_command(f"/workspace/docker-client start {name}", "gateway-container-start")
             inspected = client_command(f"/workspace/docker-client inspect --format '{{{{.State.Running}}}}' {name}", "gateway-inspect")
             assert inspected.strip().removeprefix("\x1b[2K") == "true"
@@ -548,13 +562,37 @@ printf 'Authorization: Bearer %s\\n' "$agent_token" |
             assert "exec-half-close" in echoed
             attached = client_command(f"printf 'attach-half-close\\n' | /workspace/docker-client attach --sig-proxy=false {name}", "gateway-attach")
             assert "internal:attach-half-close" in attached
+            if receipt is not None:
+                native("services", "authorize", "dockercaller", "notes", "--capability", "reader")
+                guest(prepare, "gateway-reader-client-config", agent="dockercaller")
+                # Independent daemon inspection must still observe the
+                # container after the narrowed caller's refused deletion.
+                denied = gateway_client_failure(client_command, "gateway-adjacent-delete", "rm " + name)
+                verify_gateway_client_failure(denied)
+                assert denied["http"]["status"] == 200, "reader positive failed"
+                actual = json.loads(guest(f"sudo -n {DOCKER} inspect {name}", "gateway-adjacent-host-inspect").strip().removeprefix("\x1b[2K"))
+                assert len(actual) == 1 and actual[0]["Name"] == "/" + name
+                report["gateway_adjacent"] = {"client": denied, "container_id": actual[0]["Id"]}
+                receipt.checkpoint("gateway-effects", observation=report["gateway_adjacent"])
+                native("services", "revoke", "dockercaller", "notes")
+                revoked = gateway_client_failure(client_command, "gateway-revoked-delete", "rm " + name)
+                verify_gateway_client_failure(revoked)
+                assert revoked["http"]["status"] == 403
+                remaining = json.loads(guest(f"sudo -n {DOCKER} inspect {name}", "gateway-revoked-host-inspect").strip().removeprefix("\x1b[2K"))
+                assert remaining[0]["Id"] == actual[0]["Id"]
+                receipt.checkpoint("gateway-revocation", observation=revoked, container_id=remaining[0]["Id"])
+                native("services", "authorize", "dockercaller", "notes", "--capability", "engine")
+                guest(prepare, "gateway-engine-client-config", agent="dockercaller")
             client_command(f"/workspace/docker-client rm {name}", "gateway-remove")
+            names = guest(f"sudo -n {DOCKER} ps --all --format '{{{{.Names}}}}'", "gateway-removed-host-inspect")
+            assert name not in [line.removeprefix("\x1b[2K").strip() for line in names.splitlines()]
 
         def failure(label):
             observation = gateway_client_failure(client_command, label)
             report.setdefault("gateway_failures", {})[label] = observation
             (output / f"{label}.json").write_text(json.dumps(observation, indent=2) + "\n")
             verify_gateway_client_failure(observation)
+            assert observation["http"]["status"] in {502, 503}, "provider/daemon failure was not reached"
 
         guest("sudo -n kill -TERM $(cat /run/safeyolo-nested-docker/dockerd.pid)", "gateway-stop-daemon")
         report["gateway_daemon_exit"] = daemon.wait(timeout=20)
@@ -564,6 +602,8 @@ printf 'Authorization: Bearer %s\\n' "$agent_token" |
         failure("gateway-closed")
         native("agent", "stop", "notes")
         failure("gateway-stopped")
+        if receipt is not None:
+            receipt.checkpoint("gateway-failures", observations=report["gateway_failures"])
         report["gateway_result"] = ("daemon failure and unavailable provider passed" if failures_only else
                                     "version, create/inspect, exec/attach half-close, removal, daemon failure and unavailable provider passed")
     finally:
@@ -576,7 +616,7 @@ printf 'Authorization: Bearer %s\\n' "$agent_token" |
                 path.write_bytes(original)
 
 
-def compose_journey(args, root, output, workspace, native, guest, background, report):
+def compose_journey(args, root, output, workspace, native, guest, background, report, receipt=None):
     """Run one finite application journey against the hosting guest's daemon."""
     fixture = workspace / "nested-docker"
     shutil.copytree(Path(__file__).parent / "fixtures/nested-docker", fixture)
@@ -636,7 +676,9 @@ def compose_journey(args, root, output, workspace, native, guest, background, re
                    f">{STATE}/denied-image.log 2>&1 && exit 1; "
                    f"cat {STATE}/denied-image.log; grep -Eq '403|Forbidden' {STATE}/denied-image.log", "image-denied")
     assert "428" not in denied, "image refusal requires operator diagnosis"
-    build = docker(f"{COMPOSE} build --no-cache store", "compose-build", timeout=240)
+    probes = getattr(args, "owned_origins", {})
+    build_options = " ".join(f"--build-arg {shlex.quote(key + '=' + value)}" for key, value in probes.items())
+    build = docker(f"{COMPOSE} build --no-cache {build_options} store", "compose-build", timeout=240)
     docker(f"{COMPOSE} create", "compose-create")
     docker(f"{COMPOSE} start", "compose-start")
     notes([], "notes-empty")
@@ -660,10 +702,12 @@ def compose_journey(args, root, output, workspace, native, guest, background, re
     report["unshared_host_file"] = str(host_file)
     guest("sudo -n test ! -e " + shlex.quote(str(host_file)), "guest-root-cannot-read-unshared-host-file")
     probe_environment = ["PROBE_PHASE=privileged", f"PROBE_HOST={args.host_address}",
-                         f"PROBE_HOST_PORT={args.host_port}", f"PROBE_HOST_FILE={host_file}"]
+                         f"PROBE_HOST_PORT={args.host_port}", f"PROBE_HOST_FILE={host_file}",
+                         *(key + "=" + value for key, value in probes.items())]
     application = docker(f"{COMPOSE} exec -T " + " ".join(f"-e {shlex.quote(value)}" for value in (
         "PROBE_PHASE=application", f"PROBE_HOST={args.host_address}",
-        f"PROBE_HOST_PORT={args.host_port}", f"PROBE_HOST_FILE={host_file}")) +
+        f"PROBE_HOST_PORT={args.host_port}", f"PROBE_HOST_FILE={host_file}",
+        *(key + "=" + value for key, value in probes.items()))) +
         " api python3 /app/network_probe.py", "application-network")
     privileged = docker(f"{DOCKER} run --rm --privileged --network=host "
                         "--env HTTP_PROXY --env HTTPS_PROXY " +
@@ -675,6 +719,10 @@ def compose_journey(args, root, output, workspace, native, guest, background, re
             if '{"phase":' in line:
                 report["network_probes"].append(json.loads(line[line.index('{"phase":'):]))
     assert len(report["network_probes"]) == 6, "build, application and privileged probes must each test both destinations"
+    assert {(row["phase"], row["status"]) for row in report["network_probes"]} == {
+        (phase, status) for phase in ("build", "application", "privileged") for status in (200, 403)}
+    if receipt is not None:
+        receipt.checkpoint("containment", probes=report["network_probes"], host_file=str(host_file))
     docker(f"{COMPOSE} logs --no-color", "compose-logs")
     docker(f"{COMPOSE} exec -T api python3 -c 'print(\"compose-exec-ran\")'", "compose-exec")
     docker(f"{COMPOSE} restart", "compose-restart")
@@ -703,6 +751,8 @@ def compose_journey(args, root, output, workspace, native, guest, background, re
     assert not docker(f"{DOCKER} volume ls --quiet --filter name=nested-notes_notes", "deleted-volume").strip()
     docker(f"{COMPOSE} up --no-build --pull never -d", "recreate-empty-data")
     notes([], "after-data-deletion")
+    if receipt is not None:
+        receipt.checkpoint("application", runtime=report["runtime"], recovery=report["recovery"])
     provider_controls(root, output, native, guest, background, docker, report)
 
 
@@ -842,10 +892,13 @@ def verify_outbound(events, report, *, reused_image):
             "image pull lacks hosting-principal policy evidence"
 
 
-def run(args):
+def run(args, receipt=None):
     base, root, output = args.prepared_config.resolve(), args.root.resolve(), args.output.resolve()
     assert root.is_dir() if args.reuse_root else not root.exists(), "--reuse-root requires the retained disposable root"
-    output.mkdir(mode=0o700, parents=True, exist_ok=False)
+    if output.exists() and receipt is not None:
+        assert list(output.iterdir()) == [receipt.path], "recurring output must be fresh"
+    else:
+        output.mkdir(mode=0o700, parents=True, exist_ok=False)
     cli = str(base / "bin/safeyolo")
     env = os.environ | {"SAFEYOLO_CONFIG_DIR": str(root), "SAFEYOLO_RUNSC_PLATFORM": "systrap",
                         "SAFEYOLO_NATS_TEST_INSTANCE": uuid.uuid4().hex, "SAFEYOLO_RUNSC_DEBUG": "1"}
@@ -853,6 +906,7 @@ def run(args):
               "nested_docker": args.nested_docker, "revision": args.revision,
               "driver": {"path": str(Path(__file__).resolve()), "sha256": _sha256(Path(__file__))},
               "root": str(root), "cleanup": "unverified"}
+    report["initial_reused_image"] = bool(args.docker_data)
     processes = []
     children = []
     capture_failures = []
@@ -898,6 +952,8 @@ def run(args):
             version = checked([str(path), "--version"]).strip()
             assert f"commit={revision}" in version, f"selected {name} revision differs"
             report["inputs"][name] = {"path": str(path), "sha256": _sha256(path), "version": version}
+        if receipt is not None:
+            receipt.checkpoint("identity", inputs=report["inputs"], controller=report["driver"])
         if args.reuse_root:
             status = json.loads(native("agent", "status", "notes"))
             assert status["runtime_state"] == "stopped", "stop the retained fixture before continuing"
@@ -922,10 +978,15 @@ def run(args):
             config["admin_port"] = args.admin_port
             # If this approved host uses a parent proxy, preserve that route.
             prepared = tomlkit.parse((base / "config.toml").read_text())
-            if "parent_proxy" in prepared:
-                config["parent_proxy"] = prepared["parent_proxy"]
+            for name in ("parent_proxy", "parent_proxy_agents", "parent_proxy_hosts"):
+                if name in prepared:
+                    config[name] = prepared[name]
             (root / "config.toml").write_text(tomlkit.dumps(config))
-            (root / "policy.toml").write_text(POLICY)
+            policy = tomlkit.parse(POLICY)
+            for name, destination in getattr(args, "owned_origins", {}).items():
+                authority = urlsplit(destination).netloc
+                policy["hosts"][authority] = {"egress": "allow" if name == "PROBE_ALLOWED" else "deny"}
+            (root / "policy.toml").write_text(tomlkit.dumps(policy))
             workspace = root / "workspace"
             workspace.mkdir(mode=0o755)
             native("agent", "create", "notes", "--workspace", str(workspace), "--memory", "1536",
@@ -963,7 +1024,13 @@ def run(args):
             gateway_management(args, root, output, native, guest, background, report)
             report["status"] = "gateway-passed"
         elif args.journey:
-            compose_journey(args, root, output, workspace, native, guest, background, report)
+            compose_journey(args, root, output, workspace, native, guest, background, report, receipt)
+            if receipt is not None:
+                # Continue with this invocation's owned fixture and pinned
+                # image. The application journey already stopped the provider.
+                args.docker_data = args.docker_data or STATE + "/data"
+                native("agent", "start", "notes", "--sandbox-only")
+                gateway_management(args, root, output, native, guest, background, report, receipt)
             report["status"] = "journey-ran"
         else:
             command = "sudo -n apt-get update && sudo -n apt-get install -y --no-install-recommends docker.io docker-cli docker-compose && sudo -n bash /workspace/docker-preflight.sh /home/agent/docker-preflight"
@@ -1017,16 +1084,73 @@ def run(args):
         report.update(cleanup="failed" if failures else "stopped", cleanup_failures=failures,
                       finished_at=datetime.now(UTC).isoformat())
         (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
+        if receipt is not None and not failures:
+            receipt.checkpoint("cleanup", failures=failures)
     if args.journey and report["status"] == "journey-ran" and report["cleanup"] == "stopped":
         # stop flushes the current audit writer. Match these real request IDs,
         # rather than treating a caller-supplied phase header as authority.
         events = [json.loads(line) for line in (root / "logs/audit.jsonl").read_text().splitlines() if line.strip()]
         try:
-            verify_outbound(events, report, reused_image=bool(args.docker_data))
+            verify_outbound(events, report, reused_image=report["initial_reused_image"])
         finally:
             (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
         report["status"] = "journey-passed"
         (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
+        if receipt is not None:
+            receipt.checkpoint("origin", outbound=report["outbound"], application=report["provider_origin"])
+    return report
+
+
+def recurring_journey(args, receipt):
+    """Observe allowed and denied egress at owned live TCP receivers."""
+    address = os.environ.get("SAFEYOLO_DOCKER_ORIGIN_BIND", "127.0.0.1")
+    prepared = tomlkit.parse((args.prepared_config / "config.toml").read_text())
+    parent_agents, parent_hosts = prepared.get("parent_proxy_agents", []), prepared.get("parent_proxy_hosts", [])
+    parent_selected = (prepared.get("parent_proxy") and (not parent_agents or "notes" in parent_agents)
+                       and (not parent_hosts or address in parent_hosts))
+    if parent_selected and address == "127.0.0.1":
+        raise ValueError("parent-proxy Docker proof needs SAFEYOLO_DOCKER_ORIGIN_BIND reachable through that approved route")
+    with ExitStack() as stack:
+        servers = []
+        for _ in range(2):
+            server = ParentObserver((address, 0))
+            stack.enter_context(server)
+            thread = threading.Thread(target=server.serve_forever)
+            thread.start()
+
+            def stop(server=server, thread=thread):
+                server.shutdown()
+                thread.join(timeout=10)
+                assert not thread.is_alive(), "Docker origin receiver did not stop"
+
+            stack.callback(stop)
+            servers.append(server)
+
+        def positives():
+            for server in servers:
+                connection = http.client.HTTPConnection(address, server.server_port, timeout=5)
+                try:
+                    connection.request("GET", "/host-positive")
+                    response = connection.getresponse()
+                    assert response.status == 200 and response.read() == b"fallback"
+                finally:
+                    connection.close()
+
+        positives()
+        allowed, denied = servers
+        args.owned_origins = {"PROBE_ALLOWED": f"http://{address}:{allowed.server_port}/allowed",
+                              "PROBE_DENIED": f"http://{address}:{denied.server_port}/denied"}
+        args.host_address, args.host_port = address, denied.server_port
+        # The journey's final checkpoint is emitted only after the independent
+        # receiver comparison and receiver cleanup have both succeeded.
+        report = run(args, receipt)
+        positives()
+        assert allowed.accepts == 5 and denied.accepts == 2, "refused/direct probes reached an origin or an allowed phase was missing"
+        report["owned_origins"] = {"destinations": args.owned_origins, "allowed_accepts": allowed.accepts,
+                                   "denied_accepts": denied.accepts}
+        (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
+    receipt.checkpoint("receivers", observation=report["owned_origins"])
+    receipt.checkpoint("finished")
     return report
 
 
@@ -1040,6 +1164,7 @@ def main():
     parser.add_argument("--proxy-revision", help="source-equivalent prepared proxy revision when only the CLI changed")
     parser.add_argument("--admin-port", type=int)
     parser.add_argument("--nested-docker", action="store_true")
+    parser.add_argument("--recurring", action="store_true", help="Run the complete bounded BB-21 journey and retain named checkpoints")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--journey", action="store_true")
     mode.add_argument("--gateway", action="store_true", help="only management through the retained nested provider")
@@ -1056,6 +1181,9 @@ def main():
     parser.add_argument("--host-address", help="unapproved real venue host address for the inner network negative control")
     parser.add_argument("--host-port", type=int, help="unapproved real host TCP port for the negative control")
     args = parser.parse_args()
+    if args.recurring:
+        if args.gateway or args.reuse_root or not args.journey or args.output.exists():
+            parser.error("--recurring requires a fresh --journey")
     if args.gateway_failures_only and not args.gateway:
         parser.error("--gateway-failures-only requires --gateway")
     if args.gateway_lifecycle and (not args.gateway or args.gateway_failures_only):
@@ -1072,9 +1200,10 @@ def main():
         parser.error("a fresh instance requires --admin-port")
     if args.reuse_root and not args.docker_data:
         parser.error("--reuse-root requires the retained --docker-data path")
-    if args.journey and (not args.nested_docker or not args.host_address or not args.host_port):
+    if args.journey and (not args.nested_docker or not args.recurring and (not args.host_address or not args.host_port)):
         parser.error("--journey requires --nested-docker, --host-address and --host-port")
-    report = run(args)
+    receipt = ProcedureReceipt("docker", args.output / "result.json") if args.recurring else None
+    report = recurring_journey(args, receipt) if receipt is not None else run(args)
     print(json.dumps({key: report.get(key) for key in ("status", "cleanup", "outcome")}))
     return int(report["status"] not in {"container-ran", "journey-passed", "gateway-passed"} or report["cleanup"] != "stopped")
 

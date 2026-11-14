@@ -7,9 +7,13 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tests.blackbox.selections import SECTIONS
 
 if __package__:
     from . import select_blackbox_artifacts as selection
@@ -24,8 +28,7 @@ QUARANTINE_SECONDS = 172800
 SMOKE_REPORTS = ("selection.json", "retained-run.json", "installed-inputs.json", "guest/installed-sections.json")
 CONTINUATION_REPORTS = ("selection.json", "installed-continuation.json")
 SMOKE_LANES = {"linux-amd64": {"systrap", "kvm"}, "linux-arm64": {"systrap", "kvm"}, "darwin-arm64": {"vz"}}
-INSTALLED_SECTIONS = {"systrap": {"isolation", "workloads", "access", "lifecycle", "continuity"},
-                      "kvm": {"isolation", "ingress", "workloads"}, "vz": {"isolation", "access", "lifecycle", "continuity"}}
+INSTALLED_SECTIONS = {lane: set(names) for lane, names in SECTIONS.items()}
 
 
 class FailedSmoke(ValueError):

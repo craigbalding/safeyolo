@@ -5,9 +5,9 @@ the same names. Platform exclusions are explicit and do not hide missing setup.
 """
 
 SECTIONS = {
-    "systrap": ("isolation", "workloads", "access", "lifecycle", "continuity"),
-    "kvm": ("isolation", "ingress", "workloads"),
-    "vz": ("isolation", "access", "lifecycle", "continuity"),
+    "systrap": ("isolation", "workloads", "access", "lifecycle", "continuity", "job-sandbox", "job-network", "mounts", "docker"),
+    "kvm": ("isolation", "ingress", "workloads", "job-sandbox", "job-network", "mounts"),
+    "vz": ("isolation", "access", "lifecycle", "continuity", "job-sandbox", "job-network", "mounts"),
 }
 OPTIONAL_SECTIONS = {"systrap": ("claude", "ingress"), "kvm": (), "vz": ()}
 
@@ -50,11 +50,19 @@ PROCEDURES = {
     "access": ("installed_access.py", ("identity", "service", "contract", "flow-ownership", "coord", "origin", "finished")),
     "lifecycle": ("installed_lifecycle.py", ("identity", "listener", "tls", "restart", "drain", "recovery", "finished")),
     "continuity": ("installed_state_transition.py", ("initial", "restart", "replacement", "return", "cleanup", "finished")),
+    "job-sandbox": ("host/job_sandbox.py", ("identity", "inputs", "privilege-state", "exit-signal", "timeout", "caller-signals", "network-off", "cleanup", "finished")),
+    "job-network": ("host/job_network.py", ("identity", "scoped-requests", "revocation", "expiry", "cancellation", "audit", "cleanup", "finished")),
+    "mounts": ("../nested-linux/live_mount_backend_proof.py", ("identity", "startup", "path-refusals", "busy-file", "busy-cwd", "busy-mmap", "detach", "saved-live", "cleanup", "finished")),
+    "docker": ("installed_docker_preflight.py", ("identity", "containment", "application", "gateway-effects", "gateway-revocation", "gateway-failures", "cleanup", "origin", "receivers", "finished")),
 }
+
+# These procedures launch their own job/guest lifetimes and retain their actual
+# identities. They do not use the isolation section's bbtest platform receipt.
+BOUNDARY_SECTIONS = ("job-sandbox", "job-network", "mounts", "docker")
 
 SECTION_DRIVERS = {
     "isolation": tuple(PYTEST_PHASES)[:6],
-    **{name: (name,) for name in ("ingress", "workloads", "access", "lifecycle", "continuity")},
+    **{name: (name,) for name in ("ingress", "workloads", "access", "lifecycle", "continuity", *BOUNDARY_SECTIONS)},
     "claude": ("claude_smoke.py",),
 }
 

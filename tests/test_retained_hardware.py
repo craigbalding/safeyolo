@@ -58,8 +58,11 @@ def hardware_reports(tmp_path):
                           "tests": {node: dict.fromkeys(("setup", "call", "teardown"), "passed") for node in nodes}}
                 name = f"pytest-{phase}.json"
             else:
-                report = {"section": phase, "run_id": "selected-run", "guest": context, "finished": True,
-                          "checkpoints": list(PROCEDURES[phase][1])}
+                report = {"section": phase, "lane": "kvm", "run_id": "selected-run", "guest": context, "finished": True,
+                          "checkpoints": list(PROCEDURES[phase][1]),
+                          "identities": {"product": installed,
+                                         "controller": {"controller_revision": "d" * 40, "controller_dirty": False},
+                                         "guest_selection": selection["guest"]}}
                 name = "procedure.json"
             data[f"guest/{section}/{name}"] = report
 

@@ -3,7 +3,9 @@
 Use a disposable host from a clean checkout. systrap runs isolation, workloads,
 access, lifecycle and host continuity, with optional two-agent ingress.
 KVM runs isolation, guest ingress and workloads. Physical Apple Silicon VZ runs isolation, access, lifecycle and
-host continuity. Each section retains its own report and logs. No hosted
+host continuity. All three also select disposable jobs, job network authority
+and live mounts. Systrap additionally selects nested Docker/gateway controls.
+Each section retains its own report and logs. No hosted
 proxy or host-continuity result is an isolation result.
 """
 
@@ -23,10 +25,10 @@ from pathlib import Path
 
 if __package__:
     from .execution_receipt import section_execution
-    from .selections import OPTIONAL_SECTIONS, SECTIONS
+    from .selections import BOUNDARY_SECTIONS, OPTIONAL_SECTIONS, SECTIONS
 else:
     from execution_receipt import section_execution
-    from selections import OPTIONAL_SECTIONS, SECTIONS
+    from selections import BOUNDARY_SECTIONS, OPTIONAL_SECTIONS, SECTIONS
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 # run-tests.sh reserves this result for failed cleanup when invoked by this
@@ -251,6 +253,14 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                     "--root", str(source), "--workspace", str(directory / "claude-workspace"),
                     "--credential", os.environ.get("SAFEYOLO_CLAUDE_SMOKE_CREDENTIAL", ""),
                     "--output", str(section_artifacts / "claude-smoke.json")]
+        if section in BOUNDARY_SECTIONS:
+            # This is the invocation's freshly created state parent. Mapped
+            # job UIDs must traverse it; individual credential files stay private.
+            directory.chmod(0o755)
+            args = [str(REPOSITORY / ".venv/bin/python"),
+                    str(REPOSITORY / "tests/blackbox/installed_boundaries.py"),
+                    "--section", section, "--lane", lane, "--prepared-config", str(source),
+                    "--root", str(instance), "--revision", revision, "--output", str(section_artifacts)]
         print(f"=== Installed {section}: {instance} ===", flush=True)
         error = None
         claude_cleanup = None
@@ -281,6 +291,12 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                     failures = ["Claude section did not retain its cleanup result"]
             if section == "lifecycle":
                 failures += cleanup_instance(cli, directory / "lifecycle-owner", owner=True)
+            if section in BOUNDARY_SECTIONS:
+                try:
+                    boundary = json.loads((section_artifacts / "boundary-result.json").read_bytes())
+                    failures += boundary["cleanup_failures"]
+                except (OSError, ValueError, KeyError):
+                    failures.append("boundary runner did not retain its cleanup result")
         if section != "continuity" and section_exit == INNER_CLEANUP_FAILURE_EXIT:
             # An inner stop can remove its markers while leaving a process
             # live. A later empty inspection cannot clear that known failure.

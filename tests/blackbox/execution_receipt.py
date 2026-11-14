@@ -18,6 +18,7 @@ from pathlib import Path
 
 if __package__:
     from .selections import (
+        BOUNDARY_SECTIONS,
         HOST_EXCLUSIONS,
         OPTIONAL_CASES,
         PLATFORM_EXCLUSIONS,
@@ -27,6 +28,7 @@ if __package__:
     )
 else:
     from selections import (
+        BOUNDARY_SECTIONS,
         HOST_EXCLUSIONS,
         OPTIONAL_CASES,
         PLATFORM_EXCLUSIONS,
@@ -161,15 +163,18 @@ class ProcedureReceipt:
         self.document = {"section": section, "run_id": os.environ.get("SAFEYOLO_BLACKBOX_RUN_ID"),
                          "lane": os.environ.get("SAFEYOLO_BLACKBOX_LANE"),
                          "agent": os.environ.get("SAFEYOLO_TEST_AGENT", "bbtest"),
+                         "expected_checkpoints": list(PROCEDURES[section][1]),
                          "checkpoints": [], "finished": False}
         self.document["guest"] = json.loads(os.environ.get("SAFEYOLO_BLACKBOX_GUEST_IDENTITY", "null"))
         save(self.path, self.document)
 
-    def checkpoint(self, name: str) -> None:
+    def checkpoint(self, name: str, **observations) -> None:
         expected = PROCEDURES[self.document["section"]][1]
         if name not in expected or name in self.document["checkpoints"]:
             raise ValueError(f"unexpected or repeated procedure checkpoint: {name}")
         self.document["checkpoints"].append(name)
+        if observations:
+            self.document.setdefault("observations", {})[name] = observations
         self.document["finished"] = name == "finished"
         save(self.path, self.document)
 
@@ -183,7 +188,7 @@ def section_execution(artifacts: Path, section: str, lane: str, run_id: str,
     rows = []
     context = None
     context_problem = None
-    if section != "continuity":
+    if section not in ("continuity", *BOUNDARY_SECTIONS):
         try:
             context = guest_context(read_json(artifacts / "platform.json"))
             if context["platform"] != lane:
@@ -204,6 +209,16 @@ def section_execution(artifacts: Path, section: str, lane: str, run_id: str,
             problems.append("report belongs to another guest/backend lifetime")
         if report.get("run_id") != run_id:
             problems.append("report belongs to another run")
+        if section in BOUNDARY_SECTIONS and report.get("lane") != lane:
+            problems.append("procedure belongs to another backend")
+        if section in BOUNDARY_SECTIONS:
+            identities = report.get("identities")
+            if not isinstance(identities, dict) or not all(
+                    isinstance(identities.get(key), dict) and identities[key]
+                    for key in ("product", "controller", "guest_selection")):
+                problems.append("missing product/controller/guest identities")
+            elif identities["controller"].get("controller_dirty") is not False or not identities["controller"].get("controller_revision"):
+                problems.append("controller source is not a clean recorded revision")
         if phase in PYTEST_PHASES:
             problems += pytest_problems(report, phase, lane, root=root)
             valid_fields = "invalid pytest outcome fields" not in problems
@@ -221,7 +236,9 @@ def section_execution(artifacts: Path, section: str, lane: str, run_id: str,
             excluded = {}
             failed_stages = []
         rows.append({"phase": phase, "complete": not problems, "problems": problems,
-                     "exclusions": excluded, "failed_stages": failed_stages})
+                     "exclusions": excluded, "failed_stages": failed_stages,
+                     **({"expected_checkpoints": list(PROCEDURES[phase][1]),
+                         "checkpoints": report.get("checkpoints", [])} if phase in PROCEDURES else {})})
     return {"complete": bool(rows) and all(row["complete"] for row in rows), "phases": rows}
 
 

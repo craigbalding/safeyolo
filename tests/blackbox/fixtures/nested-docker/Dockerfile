@@ -5,6 +5,8 @@ RUN printf 'Acquire::http::Proxy "%s";\nAcquire::https::Proxy "%s";\nAcquire::ht
     && apt-get update && apt-get install -y --no-install-recommends python3 \
     && rm -rf /var/lib/apt/lists/*
 COPY network_probe.py /app/network_probe.py
+ARG PROBE_ALLOWED=https://example.com
+ARG PROBE_DENIED=http://denied.invalid
 RUN python3 /app/network_probe.py
 COPY notes.py /app/notes.py
 CMD ["python3", "-u", "/app/notes.py"]

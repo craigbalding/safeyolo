@@ -12,15 +12,80 @@ Successful output names each observed boundary. Failure retains the scratch path
 import argparse
 import base64
 import hashlib
+import http.client
 import json
 import os
+import runpy
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from execution_receipt import ProcedureReceipt
+
+
+def network_off(job, receipt, port=0):
+    """Pair direct guest TCP attempts with an independently functioning sink."""
+    hits = []
+
+    class Receiver(BaseHTTPRequestHandler):
+        timeout = 3
+        def do_GET(self):
+            hits.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *unused):
+            pass  # The sanitized path inventory replaces request logging.
+
+    class ReceiverServer(HTTPServer):
+        accepts = 0
+
+        def get_request(self):
+            connection, address = super().get_request()
+            self.accepts += 1
+            connection.settimeout(3)
+            return connection, address
+
+    with ReceiverServer(("127.0.0.1", port), Receiver) as sink:
+        thread = threading.Thread(target=sink.serve_forever)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection(*sink.server_address, timeout=3)
+            try:
+                connection.request("GET", "/host-positive")
+                response = connection.getresponse()
+                assert response.status == 200 and response.read() == b"ok"
+            finally:
+                connection.close()
+            for privilege in ("unprivileged", "guest-root"):
+                program = f'''if exec 3<>/dev/tcp/127.0.0.1/{sink.server_port}; then
+                    printf 'GET /job-{privilege} HTTP/1.0\\r\\n\\r\\n' >&3 || true
+                    exit 1
+                fi'''
+                _, result = job(program, privilege=privilege)
+                assert result["outcome"] == {"kind": "exit", "code": 0}, result
+            connection = http.client.HTTPConnection(*sink.server_address, timeout=3)
+            try:
+                connection.request("GET", "/host-positive-after")
+                response = connection.getresponse()
+                assert response.status == 200 and response.read() == b"ok"
+            finally:
+                connection.close()
+            assert hits == ["/host-positive", "/host-positive-after"] and sink.accepts == 2, (hits, sink.accepts)
+            receipt.checkpoint("network-off", receiver_hits=hits, accepts=sink.accepts, privileges=["unprivileged", "guest-root"])
+        finally:
+            sink.shutdown()
+            thread.join(timeout=5)
+            assert not thread.is_alive(), "network-off receiver did not stop"
 
 
 def job_directories(root: Path):
@@ -41,11 +106,22 @@ def job_directories(root: Path):
     return result
 
 
-def interrupt_request(command, root: Path, signal_number: int):
+def observe_backend(record):
+    """Reuse the installed runner's live backend and process-birth checks."""
+    probe = runpy.run_path(str(Path(__file__).resolve().parents[1] / "assert-platform.py"))
+    observed = probe["running_platform"](record.parents[2], record.parent.name)
+    expected = os.environ.get("SAFEYOLO_BLACKBOX_LANE")
+    if expected is not None:
+        assert observed["platform"] == expected, "job used another backend"
+    return observed
+
+
+def interrupt_request(command, root: Path, signal_number: int | None, *, umask=-1):
     """Signal the owned caller after its host runtime record is published."""
     before = job_directories(root)
     records = []
-    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as child:
+    observed = []
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, umask=umask) as child:
         deadline = time.monotonic() + 180
         try:
             while child.poll() is None:
@@ -56,7 +132,16 @@ def interrupt_request(command, root: Path, signal_number: int):
                     if path.is_file()
                 ]
                 if records:
-                    child.send_signal(signal_number)
+                    try:
+                        observed = [observe_backend(record) for record in records]
+                    except (OSError, ValueError, KeyError) as error:
+                        # Keep the native result and streams before the caller
+                        # rejects this missing observer evidence.
+                        observed = [{"error": str(error)}]
+                        child.terminate()
+                    else:
+                        if signal_number is not None:
+                            child.send_signal(signal_number)
                     break
                 if time.monotonic() >= deadline:
                     raise subprocess.TimeoutExpired(command, 180)
@@ -80,14 +165,17 @@ def interrupt_request(command, root: Path, signal_number: int):
                 except subprocess.TimeoutExpired:
                     child.kill()
                     child.communicate()
-        return subprocess.CompletedProcess(command, child.returncode, stdout, stderr), records
+        return subprocess.CompletedProcess(command, child.returncode, stdout, stderr), records, observed
 
 
-def run(cli: Path, root: Path, scratch: Path, signals_only: bool = False, observer_probe: Path | None = None) -> None:
+def run(cli: Path, root: Path, scratch: Path, signals_only: bool = False, observer_probe: Path | None = None,
+        receipt=None, receiver_port=0) -> None:
     """Keep normal installed state unchanged while exercising real job runs."""
     protected = [root / "config.toml", root / "policy.toml"]
     original = {path: path.read_bytes() for path in protected if path.is_file()}
     jobs_before = job_directories(root)
+    receipt = receipt or ProcedureReceipt("job-sandbox", scratch / "result.json")
+    receipt.checkpoint("identity", cli=subprocess.check_output([str(cli), "--version"], text=True).strip())
     input_dir = scratch / "input"
     input_dir.mkdir()
     (input_dir / "candidate").write_text("read-only candidate\n")
@@ -96,6 +184,7 @@ def run(cli: Path, root: Path, scratch: Path, signals_only: bool = False, observ
         (input_dir / "observer-probe").chmod(0o755)
     input_bytes = sum(path.stat().st_size for path in input_dir.iterdir())
     job_number = 0
+    runtimes = []
 
     def job(program: str, *, privilege: str = "unprivileged", timeout: int = 30, interrupt_signal=None):
         nonlocal job_number
@@ -120,10 +209,7 @@ def run(cli: Path, root: Path, scratch: Path, signals_only: bool = False, observ
         command = [str(cli), "--root", str(root), "job", "run", str(spec_path), "--input", str(input_dir)]
         records = []
         try:
-            if interrupt_signal is None:
-                completed = subprocess.run(command, capture_output=True, timeout=180, check=False)
-            else:
-                completed, records = interrupt_request(command, root, interrupt_signal)
+            completed, records, observed = interrupt_request(command, root, interrupt_signal)
         except subprocess.TimeoutExpired as error:
             prefix.with_suffix(".stdout").write_bytes(error.stdout or b"")
             prefix.with_suffix(".stderr").write_bytes(error.stderr or b"")
@@ -135,7 +221,9 @@ def run(cli: Path, root: Path, scratch: Path, signals_only: bool = False, observ
             "returncode": completed.returncode,
             "interrupt_signal": interrupt_signal,
             "observed_runtime_records": [str(path) for path in records],
+            "observed_backends": observed,
         }))
+        assert observed and all("error" not in item for item in observed), "job did not retain a verified live backend"
         result = json.loads(completed.stdout)
         if interrupt_signal is not None:
             assert len(records) == 1, records
@@ -146,6 +234,7 @@ def run(cli: Path, root: Path, scratch: Path, signals_only: bool = False, observ
         assert len(result["rootfs"]["sha256"]) == 64, result
         assert len(result["input_sha256"]) == 64, result
         assert len(result["gate_definition_sha256"]) == 64, result
+        runtimes.append({**{key: result[key] for key in ("run_id", "engine", "rootfs", "input_sha256")}, "backends": observed})
         assert job_directories(root) == jobs_before
         for path, content in original.items():
             assert path.read_bytes() == content, path
@@ -189,6 +278,7 @@ printf 'uid=1000 gid=1000 NoNewPrivs=1\n'
 """)
     assert default["outcome"] == {"kind": "exit", "code": 0}, default
     print("PASS default identity, capability clearing, sudo/setuid refusal, read-only inputs, no agent authority")
+    receipt.checkpoint("inputs", job=runtimes[-1])
 
     root_program = """
 test "$(id -u)" = 0
@@ -216,6 +306,7 @@ exec /input/observer-probe
     _, fresh = job("test ! -e /etc/job-root-marker")
     assert fresh["outcome"] == {"kind": "exit", "code": 0}, fresh
     print("PASS explicit guest root and discarded root/home/work state")
+    receipt.checkpoint("privilege-state", jobs=runtimes[-2:])
 
     _, high_exit = job("exit 139")
     _, signalled = job("kill -s SEGV $$")
@@ -228,6 +319,7 @@ exec /input/observer-probe
             _, generic = job(f"kill -s {signal_number} $$")
             assert generic["outcome"] == {"kind": "signal", "number": signal_number}, generic
     print("PASS real exit139 versus SIGSEGV and printed PASS has no acceptance authority")
+    receipt.checkpoint("exit-signal")
 
     code, timed_out = job(
         "head -c 100000 /dev/zero | tr '\\0' A; head -c 100000 /dev/zero | tr '\\0' B >&2; exec sleep 300", timeout=2
@@ -239,8 +331,14 @@ exec /input/observer-probe
         assert output["sha256"] == hashlib.sha256(byte * 100000).hexdigest(), output
         assert base64.b64decode(output["retained_base64"]) == byte * 8192, output
     print("PASS timeout, bounded retained output, complete stream hashes and owned teardown")
+    receipt.checkpoint("timeout")
 
     caller_signals()
+    receipt.checkpoint("caller-signals")
+    network_off(job, receipt, receiver_port)
+    assert job_directories(root) == jobs_before
+    receipt.checkpoint("cleanup", jobs=runtimes)
+    receipt.checkpoint("finished")
 
 
 def main() -> None:

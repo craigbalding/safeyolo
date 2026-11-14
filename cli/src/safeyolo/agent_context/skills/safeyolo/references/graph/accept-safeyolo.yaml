@@ -264,9 +264,9 @@ nodes:
         - path: proxy/src/jobs/input.rs
           sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
         - path: tests/blackbox/host/job_sandbox.py
-          sha256: d0636a2c40ebea884bf7eafdc701960f8db7e0586db64f3dd6264820b9678741
+          sha256: 0288d8bd91d3949384221c016fe075391a5b6a540a39a9ff3707bad3753bfc33
         - path: tests/blackbox/host/job_network.py
-          sha256: 50e5875eb2e8c62cd8277c90a338228d631762bf25a49d04f0f5f78d25f0c64b
+          sha256: 37d3f81b86e8251aff1264164512daaa7a682225dff7a48d790f3ae43ee8d24b
         - path: proxy/Cargo.toml
           sha256: 14ba0c41411f4b9589b3395204b1f0557336a035c807fc660355512f439ce9c3
         - path: proxy/Cargo.lock
@@ -280,7 +280,7 @@ nodes:
         - path: tests/blackbox/claude_smoke.py
           sha256: 98a1ded436d5c4f395c9014e4d270efcbc9834732b0d0f8049c3c5ba51df1f06
         - path: tests/blackbox/installed_sections.py
-          sha256: 7c992f0c1a51a0ce5878da5d1a1d764ce0ffc58c9d3e45e85e16175a0dfae54a
+          sha256: 8164c240f1ad0b5021f8f67c851655939e93bf57a4b950e5c70f638e50302eb9
         - path: tests/blackbox/installed_ingress_pair.py
           sha256: 7528dc814fa524b27b960e9e1ec8efbd0f1ae649344e55486c73d98ab052fc3f
         - path: tests/blackbox/installed_storage.py
@@ -289,6 +289,22 @@ nodes:
           sha256: 501b133f084764fae135e214ceebce8a939f298715b623aa11c3cdd7b3d31dbe
         - path: tests/blackbox/retained_inputs.py
           sha256: f78e88fcbe2026b7873ec172918201c2387a66ca9839254b4b6df7705eebd1c2
+        - path: tests/blackbox/installed_boundaries.py
+          sha256: 505b52c0acb63215abca9851d202ccc190575caf3af2e686672bc657e17675be
+        - path: tests/blackbox/execution_receipt.py
+          sha256: 5e1f8b04e7961cb5578050ccc8bce64df7c4631d9f56d4a898579a9c2865d6e8
+        - path: tests/blackbox/selections.py
+          sha256: 603b487b6586ff0f3b23c7835469df9e33368145c902d1d3f007795aa3fef504
+        - path: tests/blackbox/installed_docker_preflight.py
+          sha256: bb98eb1c4059fab7a84e66aa934539c78947475aa3f448f13c82e8b77aca260c
+        - path: tests/blackbox/installed_provider.py
+          sha256: 775dfed9d0277f72b895fa05727225a1b27c6a916d4c99c579dd36ce7538a768
+        - path: tests/blackbox/fixtures/nested-docker/Dockerfile
+          sha256: 5fe5d23af297c9bf4d5ba435723419e7cd9d7fe59260527aa7c132c0da0ddaca
+        - path: tests/blackbox/fixtures/nested-docker/network_probe.py
+          sha256: 7a8177b2592ecca627a9eb2a4465c5d12a0eb2e535d6d1011291d7512585bbda
+        - path: tests/nested-linux/live_mount_backend_proof.py
+          sha256: 178048fc3af9feaa8816004549d40fd42fe4b697b8ff228f760ab8f1f6440442
       setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Retained manual Claude reuse requires the same host and selected installed bytes; see tests/blackbox/README.md. The caller verifies runtime settings, creates separate writable state and runs credential-free systrap sections before provisioning. Optional --readiness reuses applicable successful original reports and their retained isolation config.toml. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
       verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh proxy/src/host_platform.rs proxy/src/host_boot.rs guest/build-rootfs.sh && safeyolo doctor"
       run:
@@ -345,9 +361,9 @@ nodes:
         - path: proxy/src/jobs/macos.rs
           sha256: 1b9b3798f9dba8d169b983ba9a1c610e2fb2a2f827f4d04bd8a41b3fcdc833f8
         - path: tests/blackbox/host/job_sandbox.py
-          sha256: d0636a2c40ebea884bf7eafdc701960f8db7e0586db64f3dd6264820b9678741
+          sha256: 0288d8bd91d3949384221c016fe075391a5b6a540a39a9ff3707bad3753bfc33
         - path: tests/blackbox/host/job_network.py
-          sha256: 50e5875eb2e8c62cd8277c90a338228d631762bf25a49d04f0f5f78d25f0c64b
+          sha256: 37d3f81b86e8251aff1264164512daaa7a682225dff7a48d790f3ae43ee8d24b
         - path: proxy/Cargo.toml
           sha256: 14ba0c41411f4b9589b3395204b1f0557336a035c807fc660355512f439ce9c3
         - path: proxy/Cargo.lock
@@ -362,6 +378,14 @@ nodes:
           sha256: 72e284a6b8cc9aae65870b97cdf9ab9f4c123dacebc78f3694bd2cb4203ff58a
         - path: tests/fixtures/job-observer-probe.c
           sha256: 0207c5417386d7022d0ffefeb9a6b4b9d162e5017a8684a5225c62533beb0e8b
+        - path: tests/blackbox/installed_boundaries.py
+          sha256: 505b52c0acb63215abca9851d202ccc190575caf3af2e686672bc657e17675be
+        - path: tests/blackbox/execution_receipt.py
+          sha256: 5e1f8b04e7961cb5578050ccc8bce64df7c4631d9f56d4a898579a9c2865d6e8
+        - path: tests/blackbox/selections.py
+          sha256: 603b487b6586ff0f3b23c7835469df9e33368145c902d1d3f007795aa3fef504
+        - path: tests/nested-linux/live_mount_backend_proof.py
+          sha256: 178048fc3af9feaa8816004549d40fd42fe4b697b8ff228f760ab8f1f6440442
       setup: "Use the approved physical Apple Silicon host and a source-compatible signed helper. For snapshot smoke, select an extracted standard Darwin guest, current public staged guest assets and a new disk-backed run directory. Set SAFEYOLO_VZ_TEST_RUNNER to the maintained run-vz-test on Bristol; wrapped discovery uses Python 3.10+ and the two kernel observers listed in sources, at their checkout-relative paths. Full mode requires separate restore authority and a working VZ recipient. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance."
       verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh vm/test/snapshot-scheduling.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
       run:

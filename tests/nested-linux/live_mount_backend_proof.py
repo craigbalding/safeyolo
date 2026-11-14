@@ -33,6 +33,7 @@ import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "blackbox"))
+from execution_receipt import ProcedureReceipt
 from harness.process_identity import process_start_token
 from installed_sections import owned_processes, surviving_processes
 
@@ -128,7 +129,7 @@ def assert_mount_removed(target, before, after):
 
 
 def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate: str | None = None,
-              saved_retirement: bool = False):
+              saved_retirement: bool = False, receipt=None):
     if root == base or root in base.parents or base in root.parents:
         raise ValueError("ROOT and BASE must be separate owned directories")
     if list((root / "agents").glob("*")):
@@ -138,6 +139,7 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
     process_kinds = ("backend",) if sys.platform == "darwin" else ("holder", "backend")
     receipt_backend = "macos" if sys.platform == "darwin" else "linux"
     base.mkdir(mode=0o755)
+    receipt = receipt or ProcedureReceipt("mounts", base / "observed.json")
     report = {"root": str(root), "base": str(base), "commands": [], "operations": []}
     cli = [str(root / "bin/safeyolo"), "--root", str(root)]
     agent, second, failed = "proof1042", "proof1042second", "proof1042failed"
@@ -353,6 +355,7 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
         report["guest_kernel"] = guest("uname -a").stdout.strip()
         saved_policy = (root / "policy.toml").read_bytes()
         assert "commit=" + report["candidate"] in guest("/safeyolo/safeyolo-guest --version").stdout
+        receipt.checkpoint("identity", candidate=report["candidate"], agents=initial, kernel=report["guest_kernel"])
         if saved_retirement:
             original_policy = tomllib.loads(saved_policy.decode())
             original_policy["agents"].pop(agent)
@@ -429,6 +432,7 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
         assert (base / "startup/guest.txt").read_text() == "startup-write"
         refused = guest("printf forbidden > /mnt/proof1042startupro/forbidden", check=False)
         assert refused.returncode != 0 and not (base / "startup-ro/forbidden").exists()
+        receipt.checkpoint("startup")
         if native_test is None:
             marker = base / "workspace/marker-holder"
             marker_identity = json.loads(wait_file(marker.with_suffix(".ready")))
@@ -472,6 +476,7 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
             refused = operation("add", spec)
             assert not refused["success"], refused
             assert runtime(agent) == before_invalid
+        receipt.checkpoint("path-refusals")
         for mode in ("file", "cwd", "mmap"):
             handle, identity = holder(mode, "/mnt/proof1042live")
             removed = operation("remove", "/mnt/proof1042live")
@@ -485,6 +490,12 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
             save()
             assert not removed["success"] and "busy" in removed["error"].lower()
             assert observation["accessible"] is True and observation["exit"] == 0
+            if mode == "file":
+                receipt.checkpoint("busy-file", observation=report["busy"][-1])
+            elif mode == "cwd":
+                receipt.checkpoint("busy-cwd", observation=report["busy"][-1])
+            else:
+                receipt.checkpoint("busy-mmap", observation=report["busy"][-1])
         report["live_before_removals"] = (base / "live/host.txt").read_text()
         alias = guest("sudo -n mkdir -p /mnt/proof1042alias && "
                       "sudo -n mount --bind /mnt/proof1042live /mnt/proof1042alias", check=False)
@@ -539,6 +550,7 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
             report["bind_alias"]["after_removal"] = {"exit": access.returncode, "stdout": access.stdout, "stderr": access.stderr}
             assert access.returncode != 0 and not (base / "live/forbidden").exists()
             guest("sudo -n umount /mnt/proof1042alias")
+        receipt.checkpoint("detach", mounts=report["removed"])
         capture_final()
         if native_test is None:
             report["launch_after"] = json.loads(command([*cli, "agent", "status", agent]).stdout)
@@ -592,6 +604,7 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
             assert guest("test -r /mnt/proof1042unsaved/host.txt", check=False).returncode != 0
             assert (root / "policy.toml").read_bytes() == saved_policy
             same_run(second)
+            receipt.checkpoint("saved-live", persistence=report["persistence"])
         report["backend_operations_completed"] = True
         save()
     finally:
@@ -622,6 +635,8 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
         save()
         if failures:
             raise RuntimeError(f"owned instance cleanup failed; inspect {base}/observed.json")
+        receipt.checkpoint("cleanup", failures=failures)
+    receipt.checkpoint("finished")
     print(json.dumps({"result": str(base / "observed.json"), "completed": report["backend_operations_completed"]}))
 
 

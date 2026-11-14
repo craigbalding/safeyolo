@@ -1,4 +1,4 @@
-"""Run two credentialed jobs through an owned native proxy on a prepared host.
+"""Exercise scoped jobs, revocation and teardown through an owned proxy.
 
 Requires host Python 3.10+, tomlkit, OpenSSL, candidate CLI/proxy binaries and
 an installed shared Trixie guest. Supply a fresh --root with traversable parents
@@ -6,22 +6,34 @@ and a disk-backed --scratch directory. --admin-port and --upstream-port must be
 free ports authorized for this run. On macOS use the approved physical VZ wrapper
 and a short, owned TMPDIR. This creates a separate instance and retains its saved
 grant, sanitized upstream observations and job results for inspection.
+Two ordinary runs check stable saved authority. Three further runs check live
+revocation, expiry and caller cancellation, including retained connections.
 """
 
 import argparse
 import base64
 import hashlib
+import http.client
 import json
+import signal
 import socket
 import ssl
 import subprocess
+import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import tomlkit
-from job_sandbox import job_directories
+
+if __package__:
+    from .job_sandbox import interrupt_request, job_directories, observe_backend
+else:
+    from job_sandbox import interrupt_request, job_directories, observe_backend
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from execution_receipt import ProcedureReceipt
 
 
 def prepare(cli: Path, proxy: Path, base: Path, root: Path, port: int, upstream: int):
@@ -144,25 +156,20 @@ def job(cli: Path, root: Path, scratch: Path, port: int, index: int):
     }))
     # Write streams before waiting or asserting, including on caller timeout.
     output_path = scratch / f"job-{index}.stdout"
-    with output_path.open("wb") as stdout, (scratch / f"job-{index}.stderr").open("wb") as stderr:
-        with subprocess.Popen(
-            [str(cli), "--root", str(root), "job", "run", str(spec)],
-            stdout=stdout, stderr=stderr, umask=0o022,
-        ) as child:
-            try:
-                child.wait(timeout=180)
-            finally:
-                if child.poll() is None:
-                    child.terminate()
-                    try:
-                        child.wait(timeout=180)
-                    except subprocess.TimeoutExpired:
-                        child.kill()
-                        child.wait()
-                        raise
-                (scratch / f"job-{index}.exit").write_text(str(child.returncode))
+    try:
+        completed, _records, observed = interrupt_request(
+            [str(cli), "--root", str(root), "job", "run", str(spec)], root, None, umask=0o022)
+    except subprocess.TimeoutExpired as error:
+        output_path.write_bytes(error.stdout or b"")
+        (scratch / f"job-{index}.stderr").write_bytes(error.stderr or b"")
+        raise
+    output_path.write_bytes(completed.stdout)
+    (scratch / f"job-{index}.stderr").write_bytes(completed.stderr)
+    (scratch / f"job-{index}.exit").write_text(str(completed.returncode))
+    (scratch / f"job-{index}.backend.json").write_text(json.dumps(observed))
+    assert observed and all("error" not in item for item in observed), "job did not retain a verified live backend"
     result = json.loads(output_path.read_bytes())
-    assert child.returncode == 0, result
+    assert completed.returncode == 0, result
     assert result["outcome"] == {"kind": "exit", "code": 0}, result
     assert result["observation_error"] is None, result
     assert result["gate_principal"] == result["authorization_principal"] == "gate:proof", result
@@ -173,7 +180,7 @@ def job(cli: Path, root: Path, scratch: Path, port: int, index: int):
     assert len(fingerprint) == 64 and all(c in "0123456789abcdef" for c in fingerprint), output
     assert message == "HTTPS gateway, route/Agent API/egress refusal", output
     assert job_directories(root) == before, "job runtime or delegated socket remains"
-    return result, fingerprint
+    return {**result, "observed_backends": observed}, fingerprint
 
 
 def wait_ready(child: subprocess.Popen, root: Path, port: int):
@@ -190,13 +197,137 @@ def wait_ready(child: subprocess.Popen, root: Path, port: int):
     raise RuntimeError(f"owned proxy exited before readiness: {child.returncode}")
 
 
-def run(args):
+class DelegatedHTTPSConnection(http.client.HTTPSConnection):
+    """Reconnect only through the selected job socket, including after EOF."""
+
+    def __init__(self, path, port, certificate):
+        super().__init__("127.0.0.1", port, timeout=5,
+                         context=ssl.create_default_context(cafile=str(certificate)))
+        self.path = path
+        self.set_tunnel("127.0.0.1", port)
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.settimeout(self.timeout)
+        try:
+            self.sock.connect(str(self.path))
+            self._tunnel()
+            self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host)
+        except (OSError, http.client.HTTPException):
+            self.close()
+            raise
+
+
+def delegated_connection(path, port, certificate):
+    """Keep a real delegated CONNECT open across job teardown."""
+    connection = DelegatedHTTPSConnection(path, port, certificate)
+    connection.connect()
+    return connection
+
+
+def scoped_request(connection, token):
+    connection.request("GET", "/value", headers={"Authorization": "Bearer " + token})
+    response = connection.getresponse()
+    body = response.read()
+    return response.status, body
+
+
+def ended_delegation(path, connection, token, observations, expected):
+    """Old connections and new dials must both fail without an origin effect."""
+    assert not path.exists(), "terminated job retained its delegated socket"
+    try:
+        scoped_request(connection, token)
+    except (OSError, http.client.HTTPException):
+        pass  # A closed transport is the required result after teardown.
+    else:
+        raise AssertionError("terminated job retained an active delegated connection")
+    with socket.socket(socket.AF_UNIX) as fresh:
+        fresh.settimeout(3)
+        try:
+            fresh.connect(str(path))
+        except OSError:
+            pass  # The delegated endpoint must be unavailable after teardown.
+        else:
+            raise AssertionError("terminated job accepted a new delegated connection")
+    assert len(observations) == expected, "old authority produced an origin effect"
+
+
+def lifecycle_job(args, mode, observations):
+    """Exercise live revocation, expiry or cancellation on one owned job."""
+    before = job_directories(args.root)
+    count = len(observations)
+    spec = args.scratch / f"{mode}.spec.json"
+    spec.write_text(json.dumps({"gate_id": "proof", "argv": ["/bin/bash", "-euo", "pipefail", "-c",
+                                                           program(args.upstream_port) + "\nexec sleep 300"],
+                                "network": True, "timeout_seconds": 25 if mode == "expiry" else 90,
+                                "memory_mb": 512, "max_input_bytes": 0, "max_input_entries": 1, "retain_bytes": 4096}))
+    command = [str(args.cli), "--root", str(args.root), "job", "run", str(spec)]
+    connection = None
+    with (args.scratch / f"{mode}.stdout").open("wb") as stdout, (args.scratch / f"{mode}.stderr").open("wb") as stderr:
+        with subprocess.Popen(command, stdout=stdout, stderr=stderr, umask=0o022) as child:
+            try:
+                deadline = time.monotonic() + 180
+                paths = []
+                while child.poll() is None:
+                    paths = [path for directory in job_directories(args.root) - before
+                             for path in directory.glob("agents/job-*/proxy/proxy.sock") if path.is_socket()]
+                    if len(paths) == 1 and len(observations) == count + 1:
+                        break
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("job did not reach the owned origin and delegate")
+                    time.sleep(0.025)
+                assert child.poll() is None and len(paths) == 1, "job exited before the live authority probe"
+                backend = observe_backend(paths[0].parents[1] / "runtime.json")
+                # Only this fixture's scoped token enters memory. Never retain
+                # the services response or put the token in a command argument.
+                authorized = json.loads(subprocess.check_output(
+                    [str(args.cli), "--root", str(args.root), "services", "authorized", "gate:proof"], timeout=10))
+                token = authorized["services"]["simple"]["token"]
+                connection = delegated_connection(paths[0], args.upstream_port, args.root / "certs/mitmproxy-ca-cert.pem")
+                assert scoped_request(connection, token) == (200, b"ok")
+                assert len(observations) == count + 2
+                if mode == "revocation":
+                    subprocess.run([str(args.cli), "--root", str(args.root), "services", "revoke", "gate:proof", "simple"],
+                                   check=True, capture_output=True, timeout=10)
+                    assert scoped_request(connection, token)[0] == 403
+                    assert len(observations) == count + 2, "revoked authority reached the origin"
+                if mode != "expiry":
+                    child.send_signal(signal.SIGTERM)
+                child.wait(timeout=180)
+                result = json.loads((args.scratch / f"{mode}.stdout").read_text())
+                expected = {"kind": "timeout"} if mode == "expiry" else {"kind": "interrupted", "signal": signal.SIGTERM}
+                assert result["outcome"] == expected and result["observation_error"] is None, result
+                assert child.returncode == (124 if mode == "expiry" else 1)
+                assert job_directories(args.root) == before
+                ended_delegation(paths[0], connection, token, observations, count + 2)
+                return {**result, "observed_backend": backend}
+            finally:
+                if child.poll() is None:
+                    child.terminate()
+                    try:
+                        child.wait(timeout=180)
+                    except subprocess.TimeoutExpired:
+                        child.kill()
+                        child.wait()
+                        raise
+                if connection is not None:
+                    connection.close()
+                if mode == "revocation":
+                    subprocess.run([str(args.cli), "--root", str(args.root), "services", "authorize", "gate:proof", "simple",
+                                    "--capability", "reader", "--credential", "job-secret"],
+                                   check=True, capture_output=True, timeout=10)
+
+
+def run(args, receipt=None):
     observations = []
     original = {args.base_root / name: (args.base_root / name).read_bytes()
                 for name in ("config.toml", "policy.toml") if (args.base_root / name).is_file()}
 
     class Upstream(BaseHTTPRequestHandler):
-        timeout = 10
+        # Keep the origin side live beyond the owned job deadline, so an idle
+        # server close cannot substitute for delegated-connection teardown.
+        timeout = 180
+        protocol_version = "HTTP/1.1"
 
         def do_GET(self):
             credential = self.headers.get("Authorization", "")
@@ -213,11 +344,12 @@ def run(args):
             pass
 
     prepare(args.cli, args.proxy, args.base_root, args.root, args.admin_port, args.upstream_port)
-    protected = {args.root / name: (args.root / name).read_bytes() for name in ("config.toml", "policy.toml")}
-    protected.update(original)
+    receipt = receipt or ProcedureReceipt("job-network", args.scratch / "result.json")
+    receipt.checkpoint("identity", cli=subprocess.check_output([str(args.cli), "--version"], text=True).strip(),
+                       proxy=subprocess.check_output([str(args.proxy), "--version"], text=True).strip())
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(args.root / "certs/upstream.pem", args.root / "certs/upstream.key")
-    with HTTPServer(("127.0.0.1", args.upstream_port), Upstream) as sink:
+    with ThreadingHTTPServer(("127.0.0.1", args.upstream_port), Upstream) as sink:
         sink.socket = context.wrap_socket(sink.socket, server_side=True)
         thread = threading.Thread(target=sink.serve_forever)
         thread.start()
@@ -231,6 +363,14 @@ def run(args):
                         assert first["run_id"] != second["run_id"], (first, second)
                         assert fingerprint == again, "saved gate capability changed between transient runs"
                         assert len(observations) == 2 and all(row["credential_replaced"] and not row["gateway_token_leaked"] for row in observations), observations
+                        receipt.checkpoint("scoped-requests", jobs=[first, second], origin=list(observations))
+                        revoked = lifecycle_job(args, "revocation", observations)
+                        receipt.checkpoint("revocation", job=revoked)
+                        expired = lifecycle_job(args, "expiry", observations)
+                        receipt.checkpoint("expiry", job=expired)
+                        cancelled = lifecycle_job(args, "cancellation", observations)
+                        receipt.checkpoint("cancellation", job=cancelled)
+                        assert len(observations) == 8 and all(row["credential_replaced"] and not row["gateway_token_leaked"] for row in observations)
                     finally:
                         if child.poll() is None:
                             child.terminate()
@@ -245,20 +385,28 @@ def run(args):
             sink.shutdown()
             thread.join(timeout=15)
             assert not thread.is_alive(), "upstream thread did not stop"
-    for path, content in protected.items():
+    # Live service revoke/authorize restores the grant semantically; serialization
+    # and reload metadata can change. The donor instance stays byte-identical.
+    for path, content in original.items():
         assert path.read_bytes() == content, path
+    settings = tomlkit.parse((args.root / "policy.toml").read_text())
+    assert settings["agents"]["gate:proof"]["services"]["simple"] == {"capability": "reader", "token": "job-secret"}
+    assert len(observations) == 8 and all(row["credential_replaced"] and not row["gateway_token_leaked"] for row in observations)
     assert not (args.root / "data/ready.json").exists(), "proxy readiness remains after shutdown"
     rows = [json.loads(line) for line in (args.root / "logs/audit.jsonl").read_text().splitlines()]
-    for result in (first, second):
+    for result in (first, second, revoked, expired, cancelled):
         assert any(row["details"].get("attribution", {}).get("trusted_transport_identity") == result["run_id"]
                    and row["details"]["attribution"].get("attribution_provenance", {}).get("authorization_principal") == "gate:proof"
                    for row in rows), f"missing trusted audit attribution for {result['run_id']}"
+    receipt.checkpoint("audit")
     # A live foreign listener after teardown must not be mistaken for cleanup.
     for port in (args.admin_port, args.upstream_port):
         with socket.socket() as listener:
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind(("127.0.0.1", port))
-    print("PASS two transient runs, stable saved grant, HTTPS credential replacement, refusals, audit and owned teardown")
+    receipt.checkpoint("cleanup", origin=observations)
+    receipt.checkpoint("finished")
+    print("PASS scoped runs, credential replacement, revocation, expiry, cancellation, audit and delegated teardown")
 
 
 def main():

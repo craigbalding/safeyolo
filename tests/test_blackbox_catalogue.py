@@ -45,6 +45,7 @@ adapter = "controlled assertion"
     monkeypatch.setattr(execution_receipt, "PYTEST_PHASES", shared)
     shell = "\n".join("run_pytest_phase " + phase for phase in phases)
     for _section, (filename, checkpoints) in PROCEDURES.items():
+        (tmp_path / "tests/blackbox" / filename).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / "tests/blackbox" / filename).write_text(
             "def main():\n" + "\n".join(f"    receipt.checkpoint({name!r})" for name in checkpoints) + "\n")
         shell += "\npython3 " + filename
