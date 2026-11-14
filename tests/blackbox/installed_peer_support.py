@@ -7,12 +7,14 @@ Start its proxy and configure two disposable workers with an owned workspace,
 the supervisor launcher and a long-running command such as ``exec sleep 300``.
 Both workers must be stopped. Supply their names as --support and --target.
 
-Run with host Python 3.10+ and --cli, --root and an empty disk-backed --scratch.
+Run with host Python 3.11+ and --cli, --root and an empty disk-backed --scratch.
 This starts and stops those two workers, changes only the named test grant,
 and retains proposals in scratch and canonical receipts in the instance.
 It does not launch a model or establish the separate unexplained-fault journey.
 Guest requests use Bash/curl and never copy the Agent API token to the host.
 On macOS retain the operator-approved VZ wrapper and authorized port settings.
+For recurring execution, --output and --platform retain the named procedure
+checkpoints and observed backend birth beside the selected report path.
 
 --probe-recovery selects only the failed-harness/probe/config-repair journey on
 the retained worker.sh fixture. Its saved command must run /workspace/worker.sh,
@@ -30,8 +32,12 @@ import json
 import shlex
 import subprocess
 import time
+import tomllib
 import uuid
 from pathlib import Path
+
+from tests.blackbox.execution_receipt import ProcedureReceipt, save
+from tests.blackbox.installed_lifecycle import running_guest
 
 
 def run(args):
@@ -56,6 +62,20 @@ def run(args):
     support, target = status(args.support), status(args.target)
     assert support["runtime_state"] == target["runtime_state"] == "stopped", (support, target)
     assert support["agent_id"] != target["agent_id"]
+    receipt = ProcedureReceipt("peer-support", args.output) if args.output else None
+    canaries = {}
+    if not args.probe_recovery:
+        policy = tomllib.loads((args.root / "policy.toml").read_text())
+        canary_name = ".support-canary-" + uuid.uuid4().hex
+        canaries = {name: Path(policy["agents"][name]["folder"]) / canary_name
+                    for name in (args.support, args.target)}
+        for name, path in canaries.items():
+            path.write_text(name + "\n")
+        mutation = "printf 'effect\\n' >> " + shlex.quote("/workspace/" + canary_name)
+
+    def canary_snapshot():
+        return {name: path.read_text() for name, path in canaries.items()}
+
     instance = host("support", "grants", "--json")["instance_id"]
     grant = {
         "instance_id": instance,
@@ -109,6 +129,10 @@ def run(args):
         assert receipt["initiator"]["agent_id"] == support["agent_id"], receipt
         assert receipt["target_id"] == target["agent_id"], receipt
         return receipt
+
+    def saved_result(receipt):
+        # Audit delivery can advance after completion without another effect.
+        return {key: value for key, value in receipt.items() if key not in {"audit_delivered", "audit_status"}}
 
     def inspect():
         return execute(operation({"action": "inspect"}))["result"]
@@ -194,16 +218,31 @@ def run(args):
             return
         assert apply()["lifetime"] == "standing"
         host("agent", "start", args.support, "--sandbox-only")
+        if receipt:
+            observed = running_guest(args.root, args.support, status(args.support))
+            context = {"platform": args.platform, "agent": args.support,
+                       "pid": observed["backend_pid"], "start_token": observed["backend_token"]}
+            save(args.output.with_name("platform.json"), context)
+            receipt.document["guest"] = context
+            receipt.checkpoint('identity')
         stopped = inspect()
         assert stopped["runtime_state"] == "stopped", stopped
         for action in [
-            {"action": "guest_command", "command": "true", "timeout_seconds": 5},
+            {"action": "guest_command", "command": mutation, "timeout_seconds": 5},
             {"action": "guest_log", "path": "/etc/passwd"},
             {"action": "lifecycle", "operation": "start_sandbox"},
         ]:
+            before = canary_snapshot()
             assert request("POST", "/support/operations", operation(action))[0] == 403
-        forged = operation({"action": "inspect"}, target_id=support["agent_id"])
+            assert canary_snapshot() == before
+            assert status(args.target)["runtime_state"] == "stopped"
+        forged = operation({"action": "guest_command", "command": mutation, "timeout_seconds": 5},
+                           target_id=support["agent_id"])
+        before = canary_snapshot()
         assert request("POST", "/support/operations", forged)[0] == 403
+        assert canary_snapshot() == before
+        if receipt:
+            receipt.checkpoint('scope')
         print("PASS standing inspection of stopped target and guest/log/lifecycle/unrelated-target denials", flush=True)
 
         expiry = datetime.datetime.now().astimezone() + datetime.timedelta(minutes=20)
@@ -216,6 +255,11 @@ def run(args):
         assert booted["runtime_state"] == "running" and booted["agent_state"] != "running", booted
         assert inspect()["exec"] is True
         assert guest("sudo -n id -u", generation)["stdout"].strip() == "0"
+        guest("sudo -n sh -c " + shlex.quote(mutation), generation)
+        assert canaries[args.target].read_text() == args.target + "\neffect\n"
+        assert canaries[args.support].read_text() == args.support + "\n"
+        if receipt:
+            receipt.checkpoint('permitted-effect')
         failed = guest("printf diagnostic; printf problem >&2; exit 7", generation)
         assert failed["exit_code"] == 7 and failed["stdout"] == "diagnostic" and failed["stderr"] == "problem", failed
         bounded = guest("head -c 16384 /dev/zero | tr '\\000' x", generation)
@@ -225,12 +269,19 @@ def run(args):
         assert timed["result"]["exit_code"] is None and timed["result"]["guest_descendants_terminated"] is None
         print("PASS stopped-target start, guest sudo, nonzero status, bounded output and honest timeout", flush=True)
 
-        once = operation({"action": "guest_command", "command": "printf receipt-once", "timeout_seconds": 5}, expected=generation)
+        before = canary_snapshot()
+        once = operation({"action": "guest_command", "command": mutation, "timeout_seconds": 5}, expected=generation)
         first = execute(once)
-        assert execute(once) == first
-        assert request("GET", "/support/operations/" + once["operation_id"]) == (200, first)
-        once["operation"]["command"] = "false"
+        assert saved_result(execute(once)) == saved_result(first)
+        code, recovered = request("GET", "/support/operations/" + once["operation_id"])
+        assert code == 200 and saved_result(recovered) == saved_result(first)
+        assert canaries[args.target].read_text() == before[args.target] + "effect\n"
+        before = canary_snapshot()
+        once["operation"]["command"] = mutation + "; " + mutation
         assert request("POST", "/support/operations", once)[0] == 409
+        assert canary_snapshot() == before
+        if receipt:
+            receipt.checkpoint('replay')
 
         launched = lifecycle("start_harness", generation)
         assert launched["agent_state"] == "running", launched
@@ -243,29 +294,51 @@ def run(args):
         assert again["run_id"] == generation and again["launch_id"] == restarted["launch_id"], again
         replacement = lifecycle("restart_sandbox", generation)
         assert replacement["runtime_state"] == "running" and replacement["run_id"] != generation, replacement
-        execute(operation({"action": "guest_command", "command": "true", "timeout_seconds": 5}, expected=generation), states=("refused",))
-        lifecycle("stop_sandbox", replacement["run_id"])
-        assert inspect()["runtime_state"] == "stopped"
+        before = canary_snapshot()
+        execute(operation({"action": "guest_command", "command": mutation, "timeout_seconds": 5}, expected=generation), states=("refused",))
+        assert canary_snapshot() == before
+        guest(mutation, replacement["run_id"])
+        assert canaries[args.target].read_text() == before[args.target] + "effect\n"
+        if receipt:
+            receipt.checkpoint('stale-run')
         print("PASS original receipts, changed-input refusal, separate harness/sandbox recovery and stale-run refusal", flush=True)
 
         grant.update(guest_admin=False, lifecycle=[], expires_at=None)
         apply()
         host("agent", "stop", args.support)
         host("agent", "start", args.support, "--sandbox-only")
-        assert inspect()["runtime_state"] == "stopped"
-        assert request("POST", "/support/operations", operation({"action": "guest_command", "command": "true", "timeout_seconds": 5}))[0] == 403
-        grant["expires_at"] = (datetime.datetime.now().astimezone() - datetime.timedelta(seconds=1)).isoformat()
+        assert inspect()["runtime_state"] == "running"
+        before = canary_snapshot()
+        assert request("POST", "/support/operations", operation({"action": "guest_command", "command": mutation, "timeout_seconds": 5}))[0] == 403
+        assert canary_snapshot() == before
+        grant.update(guest_admin=True,
+                     expires_at=(datetime.datetime.now().astimezone() - datetime.timedelta(seconds=1)).isoformat())
         apply()
         assert request("POST", "/support/operations", operation({"action": "inspect"}))[0] == 403
+        assert request("POST", "/support/operations", operation({"action": "guest_command", "command": mutation, "timeout_seconds": 5}))[0] == 403
+        assert canary_snapshot() == before
+        grant.update(guest_admin=True, expires_at=expiry.isoformat())
+        apply()
+        guest(mutation, replacement["run_id"])
+        assert canaries[args.target].read_text() == before[args.target] + "effect\n"
+        before = canary_snapshot()
         proposal_file.write_text(json.dumps({"expected_revision": revision}))
         host("support", "revoke", grant_name, "--file", str(proposal_file), "--json")
         assert request("POST", "/support/operations", operation({"action": "inspect"}))[0] == 403
+        assert request("POST", "/support/operations", operation({"action": "guest_command", "command": mutation, "timeout_seconds": 5}))[0] == 403
+        assert canary_snapshot() == before
+        if receipt:
+            receipt.checkpoint('narrow-expire-revoke')
         print("PASS narrowing, standing authority across support restart, expiry and revocation", flush=True)
     finally:
         # Preserve canonical receipts and stopped diagnostic records for review.
         # These names are explicitly supplied disposable workers, never donors.
         host("agent", "stop", args.target)
         host("agent", "stop", args.support)
+        for path in canaries.values():
+            path.unlink()
+    if receipt:
+        receipt.checkpoint('finished')
 
 
 def main():
@@ -276,7 +349,14 @@ def main():
     parser.add_argument("--support", default="support")
     parser.add_argument("--target", default="target")
     parser.add_argument("--probe-recovery", action="store_true")
-    run(parser.parse_args())
+    parser.add_argument("--output", type=Path, help="Write the maintained recurring procedure receipt beside this path")
+    parser.add_argument("--platform", choices=("systrap", "kvm", "vz"), help="Required with --output to name the selected installed backend")
+    args = parser.parse_args()
+    if args.probe_recovery and args.output:
+        parser.error("--output records the full peer-support suite; select it separately from --probe-recovery")
+    if args.output and not args.platform:
+        parser.error("--output requires --platform")
+    run(args)
 
 
 if __name__ == "__main__":

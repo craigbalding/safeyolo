@@ -33,6 +33,15 @@ fn receipt(root: &Path, id: &str) -> Option<Value> {
     None
 }
 
+fn saved_support_result(mut receipt: Value) -> Value {
+    // Delivery metadata can advance after the saved operation completes.
+    assert!(receipt["audit_delivered"] == true || receipt["audit_status"].is_string());
+    let fields = receipt.as_object_mut().unwrap();
+    fields.remove("audit_delivered");
+    fields.remove("audit_status");
+    receipt
+}
+
 pub(super) async fn apply(root: &Path, name: &str, mut proposal: Value) -> Value {
     let path = root.join(format!("{name}.json"));
     fs::write(&path, proposal.to_string()).unwrap();
@@ -515,13 +524,11 @@ async fn remote_support_uses_owner_grants_receipts_and_independent_attention_sou
     assert_eq!(first["target_id"], ALICE);
     assert_eq!(first["initiator"]["remote"]["instance_id"], a_id);
     assert!(!a.join("data/support-operations").exists());
-    assert_eq!(
-        remote
-            .call("support_operation", &inspect(&b_id, "inspect-1"))
-            .await
-            .unwrap(),
-        first
-    );
+    let repeated = remote
+        .call("support_operation", &inspect(&b_id, "inspect-1"))
+        .await
+        .unwrap();
+    assert_eq!(saved_support_result(repeated), saved_support_result(first));
     let mut wrong = inspect(&b_id, "wrong-target");
     wrong["target_id"] = json!(CAROL);
     assert!(
@@ -733,12 +740,13 @@ async fn remote_support_uses_owner_grants_receipts_and_independent_attention_sou
         .await
         .unwrap();
     assert_eq!(recorded["completion_verified"], true);
+    let replayed = remote
+        .call("support_operation", &inspect(&b_id, "lost-support-reply"))
+        .await
+        .unwrap();
     assert_eq!(
-        remote
-            .call("support_operation", &inspect(&b_id, "lost-support-reply"))
-            .await
-            .unwrap(),
-        recorded
+        saved_support_result(replayed),
+        saved_support_result(recorded)
     );
     let _replacement_target = super::super::controlled_runs::agent_run(
         &b,

@@ -210,8 +210,8 @@ id = "BB-18"
 control = "Local peer support"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_peer_support.py"
 what = "Granted target/action/current-run scope, expiry and revocation constrain effects."
-existing = "Strong real-guest tests; on demand."
-conformance = "Wire and extend target canaries where denial currently relies on status."
+existing = "Real-guest systrap section with independently read target canaries; installed execution pending."
+conformance = "Verify the selected installed run and deployed cadence; retain guest-root, replay, narrowing, expiry/revocation and stale-run controls."
 effort = "M"
 comments = "Retain guest-root, replay, narrowing and stale-generation coverage."
 owner = "#1561"
@@ -222,8 +222,8 @@ id = "BB-19"
 control = "Delegated approvals / route exceptions"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_shared_approvals.py"
 what = "Helpers decide only permitted typed actions for the exact principal, run and route."
-existing = "Installed drivers plus proxy tests; full guest journey not nightly."
-conformance = "Wire a deterministic real-guest journey: wrong helper/target/run, revocation/expiry, exact effects and no automatic replay."
+existing = "Deterministic installed helper/worker selector and native process controller test; real-guest execution pending."
+conformance = "Verify the installed selector, exact network/gateway effects, wrong principal/route/run, expiry/revocation and no decision replay; model/human modes remain optional."
 effort = "M"
 comments = "Model/human modes remain optional; reuse native route-challenge coverage."
 owner = "#1561"
@@ -234,8 +234,8 @@ id = "BB-20"
 control = "Agent-provided services"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_provider.py"
 what = "Only authorized callers/peers reach the service; a stopped provider cannot cause fallback."
-existing = "Strong two-guest tests; on demand."
-conformance = "Existing checks conformant: wire recurring execution."
+existing = "Existing two-guest driver selected by the systrap runner; current installed result and deployed cadence pending."
+conformance = "Retain exact delivery, caller/peer/method/path/port scope, revocation, closed/stopped provider and a live zero-hit fallback observer."
 effort = "S–M"
 comments = "Trusted receiver identity, revocation and zero-hit fallback are already observed."
 owner = "#1561"
@@ -270,8 +270,8 @@ id = "BB-23"
 control = "Desktop / service sharing"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_access.py"
 what = "Unlock/session authority binds to the target; expiry/revocation/stop ends access under the advertised lifecycle."
-existing = "Native plus optional installed tests."
-conformance = "Extend and wire invalid session/target, active-session revocation/expiry and stale-run checks with actual bytes."
+existing = "Native controls plus installed access viewer/session lifecycle checks; installed execution pending."
+conformance = "Verify live VNC bytes, invalid session/target, active-viewer revocation/expiry, stale-run refusal and independent-source preservation."
 effort = "M"
 comments = "No visual UI automation is required."
 owner = "#1561"
@@ -282,8 +282,8 @@ id = "BB-24"
 control = "Coord ownership / review / output authority"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/proxy/tests/native_coord/reviews.rs"
 what = "Ownership/review cannot be forged; evidence cannot authorize a different output or generation."
-existing = "Ignored native acceptance tests; basic guest messaging nightly."
-conformance = "Wire curated deterministic ownership, attestation, review, immutable-output, replay and stale-authority cases."
+existing = "Curated native cases selected by the scheduled Linux contract job; basic guest messaging is a separate narrower control."
+conformance = "Retain exact selected/executed case receipts and independent acceptance; process tests do not prove a guest or deployed cadence."
 effort = "M"
 comments = "Retain special-venue limitations; basic messaging is a narrower claim."
 owner = "#1561"
@@ -294,8 +294,8 @@ id = "BB-25"
 control = "Federation authority / TLS"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/proxy/tests/native_coord/federation.rs"
 what = "Destination owns the grant; identity, partition, rotation and revocation cannot widen authority."
-existing = "Real-instance/NATS tests exist but are ignored."
-conformance = "Wire deterministic cases and add one guest-to-remote-instance effect journey."
+existing = "Curated TLS/NATS cases and a real-guest-to-separate-instance systrap selector; installed execution pending."
+conformance = "Verify destination-owned guest effects and refusals, retained partition/restart/revocation and rotation cases; live tailnet remains separate."
 effort = "L"
 comments = "Reuse support, delegation and rotation fixtures."
 owner = "#1561"
@@ -701,6 +701,34 @@ controls = ["BB-15", "BB-19"]
 kind = "procedure"
 scope = "Installed driver; actual backend and identities recorded in its own report"
 adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_shared_approvals.py::deterministic_exchange"]
+controls = ["BB-19"]
+kind = "procedure"
+scope = "Two actual Linux/systrap guests; deterministic typed decisions"
+adapter = "Worker and helper requests, exact network/gateway effects, wrong principal/route, expiry/revocation and run turnover; no model or human decision"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_shared_authority_assurance.py"]
+controls = ["BB-19"]
+kind = "pytest"
+scope = "Native proxy processes; controlled backend births and guest transport"
+adapter = "The actual deterministic controller, typed decisions and independently served origin effects; no real-guest claim"
+
+[[witnesses]]
+paths = ["tests/blackbox/native_authority.py::main"]
+controls = ["BB-24", "BB-25"]
+kind = "procedure"
+scope = "Curated native Coord cases on Linux with real NATS and isolated instance roots"
+adapter = "Per-control procedure receipts and exact executed cases; process evidence, without a real guest or live tailnet"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_federation.py::main"]
+controls = ["BB-25"]
+kind = "procedure"
+scope = "Two actual systrap guests and a separate destination instance on the same Linux host"
+adapter = "Real TLS/NATS, destination operator history, exact delivery, wrong principal/instance and trust revocation; no live Tailscale claim"
 
 [[witnesses]]
 paths = ["tests/blackbox/installed_provider.py::main"]

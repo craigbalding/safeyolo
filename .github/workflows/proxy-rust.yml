@@ -732,6 +732,27 @@ jobs:
           # Restore the normal production outputs for the component consumers.
           ../scripts/cargo_with_space.sh build --release --locked --bins
 
+      - name: Exercise delegated and shared native authority
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: |
+          executable=$(
+            scripts/cargo_with_space.sh test --release --locked --manifest-path proxy/Cargo.toml --test native_coord --no-run --message-format=json |
+              .venv/bin/python -c 'import json,sys; rows=(json.loads(line) for line in sys.stdin); hits=[r["executable"] for r in rows if r.get("reason")=="compiler-artifact" and r.get("target",{}).get("name")=="native_coord" and r.get("executable")]; assert len(hits)==1,hits; print(hits[0])'
+          )
+          .venv/bin/python -m tests.blackbox.native_authority --test-executable "$executable" \
+            --output "$RUNNER_TEMP/native-authority"
+
+      - name: Retain native authority receipts
+        if: always() && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: native-authority-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-authority/**/*.json
+          retention-days: 30
+          if-no-files-found: warn
+
       - name: Stop the native Coord fixture
         if: always()
         env:

@@ -17,10 +17,26 @@ import yaml
 
 if __package__:
     from .execution_receipt import phase_functions, python_tests
-    from .selections import HOST_EXCLUSIONS, OPTIONAL_CASES, OPTIONAL_SECTIONS, PROCEDURES, PYTEST_PHASES, SECTIONS
+    from .selections import (
+        HOST_EXCLUSIONS,
+        NATIVE_AUTHORITY,
+        OPTIONAL_CASES,
+        OPTIONAL_SECTIONS,
+        PROCEDURES,
+        PYTEST_PHASES,
+        SECTIONS,
+    )
 else:
     from execution_receipt import phase_functions, python_tests
-    from selections import HOST_EXCLUSIONS, OPTIONAL_CASES, OPTIONAL_SECTIONS, PROCEDURES, PYTEST_PHASES, SECTIONS
+    from selections import (
+        HOST_EXCLUSIONS,
+        NATIVE_AUTHORITY,
+        OPTIONAL_CASES,
+        OPTIONAL_SECTIONS,
+        PROCEDURES,
+        PYTEST_PHASES,
+        SECTIONS,
+    )
 
 ROOT = Path(__file__).resolve().parents[2]
 METADATA = "tests/blackbox/controls.toml"
@@ -43,6 +59,8 @@ def workflows(root: Path) -> list[dict]:
             recurring = scheduled and (not condition or "github.event_name == 'schedule'" in condition
                                         or condition == "github.event_name != 'workflow_run'")
             for step in job.get("steps", []):
+                step_condition = step.get("if", "")
+                platform_step = re.fullmatch(r"matrix\.os\s*==\s*'[^']+'", step_condition)
                 for line in step.get("run", "").replace("\\\n", " ").splitlines():
                     # Ignore prose comments and preserve quoted shell operands.
                     try:
@@ -50,10 +68,11 @@ def workflows(root: Path) -> list[dict]:
                     except ValueError:
                         continue  # An embedded script line is not a shell selector.
                     if ("pytest" in tokens or any(token.endswith("cargo_with_space.sh") for token in tokens)
-                            or any(token.endswith("retained_inputs.py") for token in tokens)):
+                            or any(token.endswith(("retained_inputs.py", "tests.blackbox.native_authority")) for token in tokens)):
                         commands.append({"path": path.relative_to(root).as_posix(), "job": name,
-                                         "tokens": tokens, "condition": condition,
-                                         "cadence": "scheduled/manual" if recurring and not step.get("if") else "conditional CI"})
+                                         "tokens": tokens, "condition": condition +
+                                         (f"; step {step_condition}" if step_condition else ""),
+                                         "cadence": "scheduled/manual" if recurring and (not step_condition or platform_step) else "conditional CI"})
     return commands
 
 
@@ -143,6 +162,9 @@ def resolve(witness: dict, reference: str, root: Path) -> list[dict]:
 
 
 def cargo_selected(witness: dict, node: dict, command: dict) -> bool:
+    if any(token.endswith("tests.blackbox.native_authority") for token in command["tokens"]):
+        return witness["target"] == "native_coord" and node["node"] in {
+            case for cases in NATIVE_AUTHORITY.values() for case in cases}
     tokens = command["tokens"]
     if "test" not in tokens or "--no-run" in tokens:
         return False
@@ -197,12 +219,17 @@ def selection(witness: dict, reference: str, node: dict, commands: list[dict], p
         for phase, (driver, _checkpoints) in PROCEDURES.items():
             if filename != driver:
                 continue
+            if phase == "shared-approvals" and not reference.endswith("::deterministic_exchange"):
+                continue
             section = "ingress" if phase == "ingress-pair" else phase
             for lane, sections in SECTIONS.items():
                 if section in sections and not (section == "ingress" and phase == "ingress-pair"):
                     selected.append(f"default `{lane}` section `{section}`")
                 elif section in OPTIONAL_SECTIONS[lane]:
                     selected.append(f"optional `{lane}` section `{section}`")
+        matches = [command for command in commands if any(
+            token.endswith(filename) or token == "tests.blackbox." + filename.removesuffix(".py")
+            for token in command["tokens"])]
     selected += [f"[{command['job']}]({link(command['path'])}) ({command['cadence']}; condition `{command['condition'] or 'none'}`)"
                  for command in matches]
     return list(dict.fromkeys(selected)) or ["manual; no recurring selector resolved"]
@@ -237,7 +264,11 @@ def selector_problems(root: Path = ROOT) -> list[str]:
         if sorted(actual) != sorted(checkpoints):
             problems.append(f"{filename}: stale/missing procedure checkpoints for {section}")
         drivers = shell + (root / "tests/blackbox/installed_sections.py").read_text()
-        if filename not in drivers:
+        wrapper = root / "tests/blackbox/installed_authority.py"
+        if wrapper.is_file():
+            drivers += wrapper.read_text()
+        drivers += "\n".join(" ".join(command["tokens"]) for command in commands)
+        if filename not in drivers and "tests.blackbox." + filename.removesuffix(".py") not in drivers:
             problems.append(f"unwired installed procedure: {filename}")
     explicit = [node for node, _variable, _value, _reason in OPTIONAL_CASES]
     explicit += [node for _system, node, _reason in HOST_EXCLUSIONS if "*" not in node]

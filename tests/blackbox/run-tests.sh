@@ -413,6 +413,7 @@ PY
 fi
 
 if [ "$ACCESS" = true ]; then
+    export SAFEYOLO_BLACKBOX_DESKTOP=1
     # The installed lane supplies its matching native host command. Config-only
     # consumers also select an explicit input, without requiring a warm build.
     if ! SAFEYOLO_NATIVE_CLI="$(cd "$CALLER_DIR" && python3 - "$SCRIPT_DIR" "$INSTALLED_RUST_BIN" "$INSTALL_COMMIT" "$INSTALLED_CLI" <<'PY'
@@ -526,7 +527,7 @@ config = tomlkit.parse((root / "config.toml").read_text())
 config["admin_port"] = int(sys.argv[2])
 config["gateway_builtin_services_dir"] = str(root / "assets/services")
 config["gateway_services_dir"] = str(root / "services")
-if sys.argv[5] == "vz" and sys.argv[6] == "1":
+if sys.argv[5] == "vz":
     # The access selection has no lifecycle owner; use its permitted port
     # for the operator's desktop instead of an ephemeral host listener.
     config.setdefault("desktop", tomlkit.table())["present_host_port"] = 46375
@@ -549,6 +550,20 @@ safeyolo policy check "$SAFEYOLO_CONFIG_DIR/policy.toml"
 if [ "$ACCESS_CONFIG_ONLY" = true ]; then
     echo "Access configuration prepared; no proxy or guest started"
     exit 0
+fi
+
+# Desktop authority tests observe real viewer bytes. Replace only the host
+# browser opener with an owned marker, so the fixture needs no visual UI.
+if [ "$ACCESS" = true ]; then
+    mkdir -p "$SAFEYOLO_CONFIG_DIR/desktop-opener"
+    for opener in open xdg-open; do
+        cat > "$SAFEYOLO_CONFIG_DIR/desktop-opener/$opener" <<'DESKTOP_OPENER'
+#!/bin/sh
+printf 'opened\n' >> "$SAFEYOLO_CONFIG_DIR/desktop-openings"
+DESKTOP_OPENER
+        chmod 755 "$SAFEYOLO_CONFIG_DIR/desktop-opener/$opener"
+    done
+    export PATH="$SAFEYOLO_CONFIG_DIR/desktop-opener:$PATH"
 fi
 
 # Symlink shared guest artifacts (rootfs, kernel) from the caller's

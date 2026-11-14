@@ -242,6 +242,18 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                          "--https-port", "46374", "--oauth-port", "46375",
                          "--admin-port", "46371", "--nats-client-port", "46370",
                          "--nats-monitor-port", "46372"]
+        if section in {"peer-support", "shared-approvals"}:
+            args = [str(REPOSITORY / ".venv/bin/python"), "-m", "tests.blackbox.installed_authority",
+                    "--section", section, "--prepared-config", str(source), "--root", str(instance),
+                    "--revision", revision, "--output", str(section_artifacts)]
+        if section == "provider":
+            args = [str(REPOSITORY / ".venv/bin/python"), "-m", "tests.blackbox.installed_provider",
+                    "--prepared-config", str(source), "--root", str(instance), "--revision", revision,
+                    "--output", str(section_artifacts), "--admin-port", "0"]
+        if section == "federation":
+            args = [str(REPOSITORY / ".venv/bin/python"), "-m", "tests.blackbox.installed_federation",
+                    "--prepared-config", str(source), "--root", str(instance), "--revision", revision,
+                    "--output", str(section_artifacts)]
         if section == "claude":
             # The operator prepares the subscription in this dedicated host
             # instance. Never copy its encrypted store into another instance.

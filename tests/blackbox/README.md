@@ -266,12 +266,18 @@ Individual procedural compositions remain intact.
 
 For a guest without Debian or Python Package Index (PyPI) network access, first
 stage verified offline test inputs under the test checkout's `offline/`
-directory. Supply `debs/*.deb` for Python, pip and all their Debian dependencies,
+directory. Supply `debs/*.deb` for Python, pip, the OpenSSH client and all their Debian dependencies,
 matched to the selected guest's architecture and installed packages. Supply `wheels/*.whl` for the
 unchanged [`guest-requirements.txt`](guest-requirements.txt), including its
 interpreter-specific dependencies. Verify the input archive against the
 supplier's checksum before extracting it. Keep the host's proxy and certificate
 settings.
+
+The access section also prepares the guest desktop. Its offline archives must
+include `xvfb`, `x11vnc`, `x11-utils`, `novnc` and a window manager (`fluxbox`
+or `openbox`), with their dependencies. Online preparation installs these test
+packages in the owned guest. The host browser opener records a marker; the
+checks observe live VNC bytes without visual UI automation.
 
 Set `SAFEYOLO_GUEST_TEST_INPUTS` to the absolute path **inside each guest**.
 The test checkout is mounted at `/workspace` for the subject, peers and lifecycle
@@ -291,11 +297,17 @@ still needs its usual prepared inputs or network access.
 
 | Lane | Default independent sections |
 |---|---|
-| `systrap` | isolation, workloads, access, lifecycle, host continuity |
+| `systrap` | isolation, workloads, access, peer support, deterministic shared approvals, provider sharing, federation, lifecycle, host continuity |
 | `kvm` | isolation, ingress, workloads |
 | `vz` | isolation, access, lifecycle, host continuity |
 
 `--section NAME` runs just that supported section; repeat it to select several.
+The additional systrap section names are `peer-support`, `shared-approvals`,
+`provider` and `federation`. They reuse the prepared host/guest bytes in separate
+owned instances. The shared-approval and federation HTTP probes use the guest's
+shipped curl. The federation section uses real TLS and NATS on one host; the
+two-host Tailscale venue remains separate and unverified under #1561.
+
 For example, run access on the software-isolation host:
 
 ```sh
