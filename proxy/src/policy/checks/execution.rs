@@ -181,15 +181,40 @@ impl Checks {
         runtime: &'a Runtime,
         state: &'a RuntimeState,
     ) -> futures_util::future::BoxFuture<'a, std::result::Result<Evidence, Error>> {
+        self.invoke_adopted(name, Some(caller), subject, runtime, state, false)
+    }
+
+    pub(crate) fn invoke_automatic<'a>(
+        &'a self,
+        name: &'a str,
+        subject: Subject,
+        runtime: &'a Runtime,
+        state: &'a RuntimeState,
+        action: bool,
+    ) -> futures_util::future::BoxFuture<'a, std::result::Result<Evidence, Error>> {
+        self.invoke_adopted(name, None, subject, runtime, state, action)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_adopted<'a>(
+        &'a self,
+        name: &'a str,
+        caller: Option<&'a str>,
+        subject: Subject,
+        runtime: &'a Runtime,
+        state: &'a RuntimeState,
+        action: bool,
+    ) -> futures_util::future::BoxFuture<'a, std::result::Result<Evidence, Error>> {
         // This entry can itself be reached by a delegated proxy listener.
         // As with collect_live, box the boundary to keep its Send type finite.
         Box::pin(async move {
             let check = self.checks.get(name).ok_or("unknown adopted check")?;
-            if !check
-                .invokers
-                .iter()
-                .any(|allowed| allowed == caller || allowed == "*")
-            {
+            if caller.is_some_and(|caller| {
+                !check
+                    .invokers
+                    .iter()
+                    .any(|allowed| allowed == caller || allowed == "*")
+            }) {
                 return Err("caller is not an adopted check invoker".into());
             }
             let kind = match &subject {
@@ -223,8 +248,16 @@ impl Checks {
                 execution: None,
                 feed_version: None,
             };
-            self.execute(name, check, entry, runtime, state, vec![name.into()])
-                .await
+            self.execute(
+                name,
+                check,
+                entry,
+                runtime,
+                state,
+                vec![name.into()],
+                action,
+            )
+            .await
         })
     }
 
@@ -259,7 +292,7 @@ impl Checks {
                 let mut stack = ancestry.to_vec();
                 stack.push(name.clone());
                 let outcome = self
-                    .execute(name, check, entry.clone(), runtime, state, stack)
+                    .execute(name, check, entry.clone(), runtime, state, stack, false)
                     .await;
                 match outcome {
                     Ok(result) => *entry = result,
@@ -270,6 +303,7 @@ impl Checks {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn execute(
         &self,
         name: &str,
@@ -278,6 +312,7 @@ impl Checks {
         runtime: &Runtime,
         state: &RuntimeState,
         stack: Vec<String>,
+        action: bool,
     ) -> std::result::Result<Evidence, Error> {
         let (limits, prepared) = match &check.source {
             EvidenceSource::Job { spec, limits, .. } => {
@@ -338,7 +373,7 @@ impl Checks {
                 })
             })
             .clone();
-        if let Some(mut result) = self.execution.cached(name, &key, check)? {
+        if !action && let Some(mut result) = self.execution.cached(name, &key, check)? {
             result.acquisition = "reused_live_evidence".into();
             return Ok(result);
         }
@@ -365,7 +400,9 @@ impl Checks {
         let audit = runtime.audit.clone();
         let cancelled_notice = cancelled.clone();
         let check_name = name.to_owned();
-        let work = async move {
+        // Keep the job future on the heap before moving it through JoinSet.
+        // HTTP admission adds enough stack depth to make its debug copies unsafe.
+        let work = Box::pin(async move {
             let _pending = pending;
             let _running = tokio::select! {
                 result = worker_execution.running.clone().acquire_owned() => result.map_err(|_| "check concurrency unavailable")?,
@@ -383,9 +420,10 @@ impl Checks {
                 input,
                 stack,
                 cancelled.clone(),
+                action,
             )
             .await
-        };
+        });
 
         let (send, mut worker) = tokio::sync::oneshot::channel();
         {
@@ -453,9 +491,11 @@ impl Checks {
             },
         };
         let mut result = result;
-        validate_evidence(check, &mut result, now());
-        self.execution
-            .remember(name, key, result.clone(), limits.max_cached)?;
+        if !action {
+            validate_evidence(check, &mut result, now());
+            self.execution
+                .remember(name, key, result.clone(), limits.max_cached)?;
+        }
         Ok(result)
     }
 }
@@ -693,6 +733,7 @@ async fn run(
     input: Vec<u8>,
     stack: Vec<String>,
     mut cancelled: watch::Receiver<bool>,
+    action: bool,
 ) -> std::result::Result<Evidence, Error> {
     if *cancelled.borrow() {
         return Err("check cancelled before execution".into());
@@ -904,6 +945,10 @@ async fn run(
         }
     };
     entry.execution = Some(execution);
+    if action {
+        // Actions report the reached execution, never a predicate or cached success.
+        return Ok(entry);
+    }
     let mapped = match mapping {
         Mapping::Typed => serde_json::from_slice::<ProviderResult>(&bytes)
             .map_err(|_| "malformed typed check result".into()),

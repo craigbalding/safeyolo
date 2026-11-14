@@ -6,7 +6,10 @@ use super::{
 use serde_json::{Value, json};
 
 pub(super) const HELP: &str = concat!(
-    "safeyolo [--root ROOT] coord work create ROOM TITLE [--external-ref REF] [--assignee JSON] [--factory JSON] [--operation-id ID]\nsafeyolo [--root ROOT] coord work import-github ROOM URL [--operation-id ID]\nsafeyolo [--root ROOT] coord work list ROOM [--state open|claimed|done|cancelled] [--after WORK_ID] [--limit N]\nsafeyolo [--root ROOT] coord work show ROOM WORK_ID\nsafeyolo [--root ROOT] coord work release ROOM WORK_ID --expected-version N --expected-generation N [--operation-id ID]\nsafeyolo [--root ROOT] coord work complete ROOM WORK_ID --expected-version N --expected-generation N [--short-result TEXT] [--operation-id ID]\nsafeyolo [--root ROOT] coord work reassign ROOM WORK_ID --agent-id AGENT_ID --expected-version N --expected-generation N [--operation-id ID]\nsafeyolo [--root ROOT] coord work cancel ROOM WORK_ID --expected-version N --expected-generation N --reason TEXT [--operation-id ID]\nsafeyolo [--root ROOT] coord work attest ROOM WORK_ID --target-generation N --kind KIND --verdict approve|reject|abstain --summary TEXT [--evidence-refs JSON_ARRAY] [--operation-id ID]\nsafeyolo [--root ROOT] coord work attestations ROOM WORK_ID [--after ATTESTATION_ID] [--limit N]\nsafeyolo [--root ROOT] coord work outputs ROOM WORK_ID [--after-version N] [--limit N]\n\nUse the owning host account. Agents claim through claim_work using their authenticated durable ID. Reassign can claim open work, replace a holder or reopen done/cancelled work; release explicitly removes a claim. Time and process liveness never transfer ownership. Each claim or reassignment increments claim_generation. All changes increment version. Repeat an operation ID with its original inputs to recover an ambiguous result; changed input conflicts. Current room authority is checked on every agent read or mutation, including retries. Work changes notify current receive-authorized agents. The agent actor receives its own edge only when a current native action requires it. Attention resolves the original immutable work version. Canonical work input is bounded to 262144 UTF-8 bytes. Lists return up to 200 items ordered by work_id; next_after is a continuation value, not a snapshot across pages. external_ref and target_ref remain opaque to local work operations. import-github validates a GitHub issue or pull request HTTPS URL and seeds local work without network access. Agents can use read_github_work for separate, read-only external metadata through their own GitHub service grant. GitHub state never changes local claims, completion or targets. target_ref is never fetched. Optional --factory is {name:NAME,snapshot_id:HASH}, encoded as JSON. It requires the currently approved native work policy and a selected creator or operator. Role identities and requirements are retained in Work. Each publication atomically creates the configured exact-output checks; its receipt includes factory.current_checks. Replays return the same IDs. Later approval does not alter existing policy. Selected authorities or the operator can explicitly amend requirements; ownership alone cannot. The next publication reapplies the retained templates, preserving additional selected checks and challenges. New work has no candidate (target_generation=0). The holder uses publish_work_output to atomically select a retained immutable target_ref and attributed execution outcome. Publication requires expected version, claim generation and target generation. It advances target_generation and leaves work completion separate. A retained holder may correct done work; another producer needs operator reassignment. Earlier outputs and attestations remain readable. Integrations use the actual producer's authenticated transport; neither an arbitrary producer field nor host publication on behalf of a holder is supported. Cancellation clears ownership and advances the claim generation without reporting successful completion. Outputs lists return original publications ordered by work_version, at most 200 items and 65536 item JSON bytes, with next_after_version. Target generation is separate from claim generation. Attest uses the current target generation, without an expected work version, and derives its author from identity. It does not complete work or decide a vote. Attestation kind is nonempty and at most 128 UTF-8 bytes; summary is nonempty and at most 1024; at most 16 evidence refs of 1024 bytes each; the complete serialized record is at most 32768 bytes. target_ref is nonempty and at most 1024 UTF-8 bytes. Evidence refs are untrusted external content. Attestation lists contain at most 200 items and 65536 item JSON bytes, ordered by attestation_id with next_after; pages do not share a snapshot. --evidence-refs accepts a JSON array of strings.",
+    "safeyolo [--root ROOT] coord work create ROOM TITLE [--external-ref REF] [--assignee JSON] [--factory JSON] [--operation-id ID]\nsafeyolo [--root ROOT] coord work import-github ROOM URL [--operation-id ID]\nsafeyolo [--root ROOT] coord work list ROOM [--state open|claimed|done|cancelled] [--after WORK_ID] [--limit N]\nsafeyolo [--root ROOT] coord work show ROOM WORK_ID\nsafeyolo [--root ROOT] coord work release ROOM WORK_ID --expected-version N --expected-generation N [--operation-id ID]\nsafeyolo [--root ROOT] coord work complete ROOM WORK_ID --expected-version N --expected-generation N [--short-result TEXT] [--operation-id ID]\nsafeyolo [--root ROOT] coord work reassign ROOM WORK_ID --agent-id AGENT_ID --expected-version N --expected-generation N [--operation-id ID]\nsafeyolo [--root ROOT] coord work cancel ROOM WORK_ID --expected-version N --expected-generation N --reason TEXT [--operation-id ID]\nsafeyolo [--root ROOT] coord work attest ROOM WORK_ID --target-generation N --kind KIND --verdict approve|reject|abstain --summary TEXT [--evidence-refs JSON_ARRAY] [--operation-id ID]\nsafeyolo [--root ROOT] coord work attestations ROOM WORK_ID [--after ATTESTATION_ID] [--limit N]\nsafeyolo [--root ROOT] coord work outputs ROOM WORK_ID [--after-version N] [--limit N]\n\nUse the owning host account. Agents claim through claim_work using their authenticated durable ID. Reassign can claim open work, replace a holder or reopen done/cancelled work; release explicitly removes a claim. Time and process liveness never transfer ownership. Each claim or reassignment increments claim_generation. All changes increment version. Repeat an operation ID with its original inputs to recover an ambiguous result; changed input conflicts. Current room authority is checked on every agent read or mutation, including retries. Work changes notify current receive-authorized agents. The agent actor receives its own edge only when a current native action requires it. Attention resolves the original immutable work version. Canonical work input is bounded to 262144 UTF-8 bytes. Lists return up to 200 items ordered by work_id; next_after is a continuation value, not a snapshot across pages. external_ref and target_ref remain opaque to local work operations. Without an applicable automatic requirement, import-github validates a GitHub issue or pull request HTTPS URL and seeds local work without network access. Agents can use read_github_work for separate, read-only external metadata through their own GitHub service grant. GitHub state never changes local claims, completion or targets. target_ref is never fetched. Optional --factory is {name:NAME,snapshot_id:HASH}, encoded as JSON. It requires the currently approved native work policy and a selected creator or operator. Role identities and requirements are retained in Work. Each publication atomically creates the configured exact-output checks; its receipt includes factory.current_checks. Replays return the same IDs. Later approval does not alter existing policy. Selected authorities or the operator can explicitly amend requirements; ownership alone cannot. The next publication reapplies the retained templates, preserving additional selected checks and challenges. New work has no candidate (target_generation=0). The holder uses publish_work_output to atomically select a retained immutable target_ref and attributed execution outcome. Publication requires expected version, claim generation and target generation. It advances target_generation and leaves work completion separate. A retained holder may correct done work; another producer needs operator reassignment. Earlier outputs and attestations remain readable. Integrations use the actual producer's authenticated transport; neither an arbitrary producer field nor host publication on behalf of a holder is supported. Cancellation clears ownership and advances the claim generation without reporting successful completion. Outputs lists return original publications ordered by work_version, at most 200 items and 65536 item JSON bytes, with next_after_version. Target generation is separate from claim generation. Attest uses the current target generation, without an expected work version, and derives its author from identity. It does not complete work or decide a vote. Attestation kind is nonempty and at most 128 UTF-8 bytes; summary is nonempty and at most 1024; at most 16 evidence refs of 1024 bytes each; the complete serialized record is at most 32768 bytes. target_ref is nonempty and at most 1024 UTF-8 bytes. Evidence refs are untrusted external content. Attestation lists contain at most 200 items and 65536 item JSON bytes, ordered by attestation_id with next_after; pages do not share a snapshot. --evidence-refs accepts a JSON array of strings.",
+    "\n\nAutomatic requirements:\nApplicable work_bindings invoke adopted jobs through the running proxy. Issue admission includes omitted factory selectors and import/delegation paths. A producer can retain a small artifact_base64 with a matching sha256 target_ref for exact-output verification. This does not replace participant reviews. A follow-up action is retained with completion; uncertainty grants no automatic retry. Use show to inspect current automatic records and authority.\n",
+    "safeyolo [--root ROOT] coord work resolve-action ROOM WORK_ID --expected-version N --expected-generation N --obligation-id ID --outcome completed|failed|uncertain --summary TEXT --evidence-refs JSON_ARRAY --operation-id ID\n",
+    "Only the owning host operator can record an external reconciliation. This operation performs no external effect.\n",
     "\n\nContinue completed work:\n",
     "safeyolo [--root ROOT] coord work continue ROOM WORK_ID --expected-version N --expected-generation N --reason TEXT --evidence-refs JSON_ARRAY --operation-id ID\n",
     "\nContinuation selects another attempt with the same retained participant. It requires completed assigned execution or an answered check. Ordinary work requires its creator or operator. A currently required check requires the root acceptance-amendment authority or operator; an advisory check requires its requester or operator. Supply a reason of 1..1024 UTF-8 bytes and 1..16 nonempty findings or changed-input refs of at most 1024 bytes each. The current work retains the complete continuation context; revisions retain earlier attempts. The claim generation advances, and native delivery remains outstanding until complete_work or answer_check. Prior outputs remain; renewed required checks become pending and invalidate previous approval. Reassignment remains the operation for a different participant, unassigned work or abandoned claims. Continuation grants no target access or permission to repeat an uncertain external effect. Inspect that effect before retrying. Retry the original operation ID with its exact inputs after a lost response, then read current work separately.",
@@ -14,7 +17,7 @@ pub(super) const HELP: &str = concat!(
     "\n\nSelected output acceptance:\nsafeyolo coord work set-requirements ROOM WORK_ID --expected-version N --expected-generation N --expected-requirements-version N --authorities JSON_ARRAY --deciders JSON_ARRAY [--independent true|false] [--checks JSON_ARRAY] [--challenges JSON_ARRAY] --reason TEXT [--operation-id ID]\nsafeyolo coord work select-review ROOM WORK_ID --expected-version N --expected-generation N --expected-requirements-version N --review-kind check|challenge --review JSON [--replace-work-id ID] --reason TEXT [--operation-id ID]\nsafeyolo coord work decide-acceptance ROOM WORK_ID --expected-version N --expected-generation N --expected-requirements-version N --expected-target-generation N --verdict approve|reject|abstain --summary TEXT [--evidence-refs JSON_ARRAY] [--operation-id ID]\n\nThe creator or operator selects initial requirements (version 0). Later amendments require an existing selected authority or operator. Ownership and production alone grant no policy authority; an explicit authorized delegation can name a worker. Use set-requirements for initial selection or deliberate full-policy changes. Use select-review to add one existing review or replace the explicitly named selected review of the same kind; --review is {work_id,version}. Unrelated selected revisions/definitions, authorities, deciders and independence stay unchanged. A changed retained definition remains inconsistent until deliberately reselected. Each amendment advances the requirements version and invalidates earlier decisions. Checks/challenges are arrays of {work_id,version} selecting current related review definitions. The operator can recover authority. Only explicitly selected deciders can decide acceptance. Approval validates required current-output checks and challenge dispositions atomically. Rejection and uncertainty remain possible with outstanding obligations. Each author has one effective decision; corrections retain immutable history. Output/context/review changes stale the affected approval. Conflicting eligible decisions require explicit correction or an authorized policy amendment. Unselected work can complete normally without implying acceptance. show includes current acceptance_status and reasons; immutable receipts describe their original revision."
 );
 
-pub(super) fn run(root: &Path, arguments: &[String]) -> Result<Value, Error> {
+pub(super) async fn run(root: &Path, arguments: &[String]) -> Result<Value, Error> {
     let [command, room, rest @ ..] = arguments else {
         return Err(HELP.into());
     };
@@ -106,6 +109,15 @@ pub(super) fn run(root: &Path, arguments: &[String]) -> Result<Value, Error> {
                     "--review",
                     "--replace-work-id",
                     "--reason",
+                    "--operation-id",
+                ],
+                "resolve-action" => &[
+                    "--expected-version",
+                    "--expected-generation",
+                    "--obligation-id",
+                    "--outcome",
+                    "--summary",
+                    "--evidence-refs",
                     "--operation-id",
                 ],
                 "decide-acceptance" => &[
@@ -222,16 +234,18 @@ pub(super) fn run(root: &Path, arguments: &[String]) -> Result<Value, Error> {
     match (command.as_str(), positional.as_slice()) {
         ("import-github", [url]) => {
             let reference = work::github::Reference::parse(url)?;
-            Ok(work::mutate(
+            Ok(mutate(
+                root,
                 factory_files,
                 &mut conn,
                 room,
                 Actor::Operator,
                 serde_json::from_value(reference.create())?,
                 options.get("operation_id").and_then(Value::as_str),
-            )?)
+            )
+            .await?)
         }
-        ("list", []) => Ok(work::list(
+        ("list", []) => Ok(offline(work::list(
             &mut conn,
             room,
             Actor::Operator,
@@ -241,7 +255,7 @@ pub(super) fn run(root: &Path, arguments: &[String]) -> Result<Value, Error> {
                 .map_or(Some(50), Value::as_u64)
                 .ok_or("limit must be positive")? as usize,
             options.get("state").and_then(Value::as_str),
-        )?),
+        )?)),
         ("show", [id]) => match options.get("version").and_then(Value::as_i64) {
             Some(version) => Ok(work::read_at_version(
                 &mut conn,
@@ -250,7 +264,29 @@ pub(super) fn run(root: &Path, arguments: &[String]) -> Result<Value, Error> {
                 id,
                 version,
             )?),
-            None => Ok(work::read(&mut conn, room, Actor::Operator, id)?),
+            None => {
+                let value = work::read(&mut conn, room, Actor::Operator, id)?;
+                if value["automatic"].as_array().is_some_and(|a| !a.is_empty()) {
+                    match crate::native_client::admin(
+                        &root.join("config.toml"),
+                        &format!(
+                            "/admin/coord/rooms/{}/work?work_id={}",
+                            crate::coord_tools::segment(room),
+                            crate::coord_tools::segment(id)
+                        ),
+                        hyper::Method::GET,
+                        Value::Null,
+                        std::time::Duration::from_secs(5),
+                    )
+                    .await
+                    {
+                        Ok(current) => Ok(current),
+                        Err(_) => Ok(offline(value)),
+                    }
+                } else {
+                    Ok(value)
+                }
+            }
         },
         ("reviews", [id]) => Ok(work::reviews::list(
             &mut conn,
@@ -290,7 +326,8 @@ pub(super) fn run(root: &Path, arguments: &[String]) -> Result<Value, Error> {
         )?),
         ("create", [title]) => {
             let operation = options.remove("operation_id");
-            Ok(work::mutate(
+            Ok(mutate(
+                root,
                 factory_files,
                 &mut conn,
                 room,
@@ -313,19 +350,22 @@ pub(super) fn run(root: &Path, arguments: &[String]) -> Result<Value, Error> {
                         .map(str::to_owned),
                 },
                 operation.as_ref().and_then(Value::as_str),
-            )?)
+            )
+            .await?)
         }
         ("request-check" | "raise-challenge", []) => {
             let operation = options.remove("operation_id");
             options.insert("action".into(), json!(command.replace('-', "_")));
-            Ok(work::mutate(
+            Ok(mutate(
+                root,
                 factory_files,
                 &mut conn,
                 room,
                 Actor::Operator,
                 serde_json::from_value(Value::Object(options))?,
                 operation.as_ref().and_then(Value::as_str),
-            )?)
+            )
+            .await?)
         }
         (
             "release"
@@ -340,22 +380,88 @@ pub(super) fn run(root: &Path, arguments: &[String]) -> Result<Value, Error> {
             | "recover-challenge-deciders"
             | "set-requirements"
             | "select-review"
-            | "decide-acceptance",
+            | "decide-acceptance"
+            | "resolve-action",
             [id],
         ) => {
             let operation = options.remove("operation_id");
             options.insert("action".into(), json!(command.replace('-', "_")));
             options.insert("work_id".into(), json!(id));
             let mutation: Mutation = serde_json::from_value(Value::Object(options))?;
-            Ok(work::mutate(
+            Ok(mutate(
+                root,
                 factory_files,
                 &mut conn,
                 room,
                 Actor::Operator,
                 mutation,
                 operation.as_ref().and_then(Value::as_str),
-            )?)
+            )
+            .await?)
         }
         _ => Err(HELP.into()),
     }
+}
+
+async fn mutate(
+    root: &Path,
+    files: Option<(&Path, &Path)>,
+    conn: &mut rusqlite::Connection,
+    room: &str,
+    actor: Actor<'_>,
+    mutation: Mutation,
+    operation: Option<&str>,
+) -> Result<Value, Error> {
+    let task_root = root.to_owned();
+    let task_room = room.to_owned();
+    let task_files = files.map(|(root, policy)| (root.to_owned(), policy.to_owned()));
+    let task_input = serde_json::to_value(&mutation)?;
+    let requires_runtime = tokio::task::spawn_blocking(move || {
+        let conn = open(&task_root)?;
+        let mutation = serde_json::from_value(task_input)?;
+        Ok::<_, Error>(work::automatic::requires_runtime(
+            task_files
+                .as_ref()
+                .map(|(root, policy)| (root.as_path(), policy.as_path())),
+            &conn,
+            &task_room,
+            &mutation,
+        )?)
+    })
+    .await??;
+    if !requires_runtime {
+        return Ok(work::mutate(files, conn, room, actor, mutation, operation)?);
+    }
+    let mut body = serde_json::to_value(mutation)?;
+    if let Some(operation) = operation {
+        body["operation_id"] = json!(operation);
+    }
+    crate::native_client::admin(
+        &root.join("config.toml"),
+        &format!(
+            "/admin/coord/rooms/{}/work",
+            crate::coord_tools::segment(room)
+        ),
+        hyper::Method::POST,
+        body,
+        std::time::Duration::from_secs(60),
+    )
+    .await
+}
+
+fn offline(mut value: Value) -> Value {
+    if let Some(items) = value.get_mut("items").and_then(Value::as_array_mut) {
+        for item in items {
+            *item = offline(std::mem::take(item));
+        }
+    } else if value["automatic"].as_array().is_some_and(|a| {
+        a.iter()
+            .any(|r| r["binding"]["boundary"] == "verify_output")
+    }) {
+        value["acceptance_status"]["recorded_state"] = value["acceptance_status"]["state"].clone();
+        value["acceptance_status"]["state"] = json!("pending");
+        value["acceptance_status"]["reason"] =
+            json!("retained findings; inspect current automatic authority with coord work show");
+    }
+    value
 }

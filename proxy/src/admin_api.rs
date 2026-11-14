@@ -1088,6 +1088,133 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
     }
     if let Some(room) = path
         .strip_prefix("/admin/coord/rooms/")
+        .and_then(|p| p.strip_suffix("/work"))
+        .filter(|r| !r.is_empty() && !r.contains('/'))
+    {
+        if method == Method::GET {
+            let Some(state) = task_state else {
+                return Ok(response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error":"work runtime unavailable"}),
+                ));
+            };
+            let Some(encoded) = request
+                .uri()
+                .query()
+                .and_then(|q| q.strip_prefix("work_id="))
+            else {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"work_id query required"}),
+                ));
+            };
+            let id = services::decode_name(encoded)?;
+            let room = services::decode_name(room)?;
+            let (root, policy) = {
+                let active = state.read().map_err(|_| Error::ServiceMutation)?;
+                (
+                    active.config.native_config_dir.clone(),
+                    active.policy.clone(),
+                )
+            };
+            let Some(root) = root else {
+                return Ok(response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error":"work root unavailable"}),
+                ));
+            };
+            let result = tokio::task::spawn_blocking(move || {
+                let mut conn = crate::coord_rooms::open(&root)
+                    .map_err(|e| crate::coord_rooms::work::WorkError(503, e.to_string()))?;
+                crate::coord_rooms::work::read_with_policy(
+                    &mut conn,
+                    &room,
+                    crate::coord_rooms::work::Actor::Operator,
+                    &id,
+                    policy.as_deref(),
+                )
+            })
+            .await;
+            return Ok(match result {
+                Ok(Ok(value)) => response(StatusCode::OK, value),
+                Ok(Err(error)) => response(
+                    StatusCode::from_u16(error.0).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                    json!({"error":error.1}),
+                ),
+                Err(_) => response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error":"work read unavailable"}),
+                ),
+            });
+        }
+        if method != Method::POST {
+            return Ok(unsupported(method));
+        }
+        let Some(state) = task_state else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"work runtime unavailable"}),
+            ));
+        };
+        let room = services::decode_name(room)?;
+        let mut body = match read_json(request).await? {
+            ParsedBody::Value(mut body) => std::mem::take(&mut body.0),
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"work mutation body required"}),
+                ));
+            }
+        };
+        let operation = body.as_object_mut().and_then(|b| b.remove("operation_id"));
+        if operation.as_ref().is_some_and(|v| !v.is_string()) {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"operation_id must be a string"}),
+            ));
+        }
+        let mutation = match serde_json::from_value::<crate::coord_rooms::work::Mutation>(body) {
+            Ok(mutation) => mutation,
+            Err(error) => {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":error.to_string()}),
+                ));
+            }
+        };
+        let Some(root) = state
+            .read()
+            .ok()
+            .and_then(|r| r.config.native_config_dir.clone())
+        else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"work instance root unavailable"}),
+            ));
+        };
+        return Ok(
+            match crate::coord_rooms::work::automatic::mutate(
+                state,
+                &root,
+                &room,
+                crate::coord_rooms::work::Actor::Operator,
+                mutation,
+                operation.as_ref().and_then(Value::as_str),
+                None,
+            )
+            .await
+            {
+                Ok(value) => response(StatusCode::OK, value),
+                Err(error) => response(
+                    StatusCode::from_u16(error.0).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                    json!({"error":error.1}),
+                ),
+            },
+        );
+    }
+    if let Some(room) = path
+        .strip_prefix("/admin/coord/rooms/")
         .and_then(|path| path.strip_suffix("/state"))
         .filter(|room| !room.is_empty() && !room.contains('/'))
     {

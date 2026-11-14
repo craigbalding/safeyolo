@@ -342,16 +342,17 @@ fn cancelled_work_has_its_own_status_and_open_work_needs_creator_authority() {
     let result = submit(&mut conn, Actor::Operator, &input, "operator-cancel").unwrap();
     assert_eq!(result["work"]["state"], "cancelled");
     assert_eq!(
-        super::super::super::room_status::work_page(&conn, "rm-owned", None).unwrap()["total"],
+        super::super::super::room_status::work_page(&conn, "rm-owned", None, None).unwrap()["total"],
         0
     );
     assert_eq!(
-        super::super::super::room_status::work_page(&conn, "rm-owned", Some("done")).unwrap()["total"],
-        0
-    );
-    assert_eq!(
-        super::super::super::room_status::work_page(&conn, "rm-owned", Some("cancelled")).unwrap()
+        super::super::super::room_status::work_page(&conn, "rm-owned", Some("done"), None).unwrap()
             ["total"],
+        0
+    );
+    assert_eq!(
+        super::super::super::room_status::work_page(&conn, "rm-owned", Some("cancelled"), None)
+            .unwrap()["total"],
         1
     );
     let created = mutate(

@@ -470,3 +470,162 @@ Within the operator's existing authorization, use the current
 and verify the candidate. Keep saved, active and unconfirmed states distinct.
 The model and transport tests are source proof; installed backend, managed-feed
 and complete cyber-recipe acceptance require their actual implementations.
+
+## Automatic requirements on native Work
+
+An operator can adopt `work_bindings` in the selected instance's `policy.toml`.
+Each binding names an existing executable job or service under `checks`. The
+job retains its own engine, artifact, input limits, freshness and dependency
+grants. A binding grants no network or service access to the invoking job.
+Normal invocation uses the standing adopted authority and creates no recurring
+approval. Role instructions are explanatory; the proxy enforces the binding.
+
+The supported Coord boundaries are:
+
+| `boundary` | `input` | Protected transition and result |
+|---|---|---|
+| `admit_issue` | `github_issue` | Before creating ordinary issue Work, claiming it, reassigning it or continuing it, require the adopted predicate. The value subject is the canonical positive issue number. The binding's repository must equal the job's policy-owned `inputs.repository`. |
+| `verify_output` | `published_artifact` | Retain the output and a verification obligation together. Invoke the job automatically, then hold `decide_acceptance` approval until its predicate qualifies for those exact bytes and that output generation. |
+| `after_complete` | `completed_work` | Retain a follow-up with ordinary Work completion. Dispatch the action under its separately adopted capabilities. Its failure or uncertain result cannot prevent or undo the committed completion. |
+
+Bindings also name the room and approved factory. Issue admission applies to
+the configured repository in that room even when a caller omits `factory`.
+Equivalent GitHub web and API issue URLs select the same requirement. Successful
+admission selects the approved factory and retains the finding and its source
+provenance. Existing ordinary issue Work must pass the same check before
+execution delegation. Work without a matching issue reference remains generic;
+review/check assignments are separate operations. These bindings do not inspect
+an agent's unmediated intentions or discover an issue reference hidden in prose.
+
+Before using the following example, the operator must approve factory `example`
+for room `engineering` and adopt the three named executable sources. The
+`issue_author` source must check authoritative GitHub evidence for repository
+`owner/repository` against the operator's expected stable author ID. Its
+`inputs.repository` must be `owner/repository`. `artifact_check` evaluates the
+retained bytes. `completion_notice` performs the explicitly authorized effect.
+Both predicate sources must declare `effects = "passive"`. Add these root array
+tables to the selected instance's policy, then use the existing policy
+check/show/apply workflow:
+
+```toml
+[[work_bindings]]
+name = "required_issue_author"
+room = "engineering"
+factory = "example"
+boundary = "admit_issue"
+job = "issue_author"
+repository = "owner/repository"
+input = "github_issue"
+on_failure = "hold"
+require = { op = "finding", check = "issue_author" }
+
+[[work_bindings]]
+name = "required_artifact"
+room = "engineering"
+factory = "example"
+boundary = "verify_output"
+job = "artifact_check"
+input = "published_artifact"
+on_failure = "hold"
+require = { op = "finding", check = "artifact_check" }
+
+[[work_bindings]]
+name = "notify_completion"
+room = "engineering"
+factory = "example"
+boundary = "after_complete"
+job = "completion_notice"
+input = "completed_work"
+on_failure = "report"
+retry = "never"
+```
+
+A check can use the shared typed predicate operators, including explicit
+negative conditions and declared score thresholds. It must use its named job.
+An action has no `require` predicate. Its result records reached execution and
+acknowledgment, rather than a boolean finding. Action invocation bypasses the
+check-result cache. Unknown jobs, unsupported boundaries or mappings, invalid
+predicate types, effectful predicate sources and unsupported retry policies
+fail validation. Bindings have no dependency edges to other bindings; unknown
+fields such as `depends_on` are rejected. Job/service dependencies retain the
+shared cycle detection and bounded failure behavior.
+
+### Retain and verify an exact small artifact
+
+For a selected `verify_output` binding, the producer passes `artifact_base64`
+to `publish_work_output` and uses `sha256:HEX_DIGEST` as `target_ref`. The digest
+must be the SHA-256 of the decoded bytes. The existing 32,768-byte serialized
+publication limit includes the artifact. An inconsistent digest or malformed
+base64 rejects publication. This concrete binding supports small inline
+artifacts; it does not fetch arbitrary output references or claim to verify
+external files that can change behind a reference.
+
+The canonical output and immutable Work revision retain the bytes. The checker
+receives a `value` subject containing a JSON object with `work_id`,
+`target_generation`, `target_ref` and `artifact_base64`. It cannot authorize a
+replacement output, including another generation containing identical bytes.
+Publication without the required artifact remains retained with an unmet
+verification obligation. Missing, negative, stale, malformed or failed evidence
+holds approval. Independent participant checks and their independence rules
+remain separate and still apply. Amending participant review requirements does
+not supply a machine finding.
+
+Evidence acquisition and job execution occur outside Coord transactions and
+runtime policy locks. The final commit checks the exact mutation, output and
+claim generations, current policy, approved admission snapshot, job definition
+and authority. Changed policy or revoked authority invalidates pending evidence.
+Approval reevaluates evidence freshness and applicable authority; a manual
+preview or caller-supplied result cannot satisfy the requirement. Current Agent
+API reads and room status evaluate retained findings against active authority.
+Removing a verifier from adopted policy cancels that requirement at the next
+acceptance decision through the running proxy; earlier evidence remains in Work
+revisions. A newly selected verifier makes acceptance pending until it qualifies.
+An operation receipt describes its original committed revision; read current
+Work after recovery or automatic execution changes its version.
+
+### Recover a follow-up action
+
+A completed transition retains its action's logical obligation ID, adopted
+binding, authority, subject and pending state in the same Work transaction.
+The action input identifies the Work, claim generation, output generation,
+output reference, completion summary and `obligation_id`. An external action
+can use that ID for its own reconciliation. This does not assert that every
+external service implements idempotency.
+
+The proxy retains `dispatching` before invoking the action. Startup recovers
+pending obligations. An interrupted passive verification can run again. An
+action left dispatching at restart becomes `uncertain` and is not automatically
+retried. Lost replies and unavailable completion observations also remain
+uncertain. A local receipt does not establish exactly-once remote execution or
+rollback. Completed actions are not repeated after redelivery or restart.
+
+Read the Work's `automatic` records to inspect the binding, reached result,
+authority and recovery explanation. After inspecting the effect at its external
+authority, the owning host operator can record a resolution with
+`safeyolo coord work resolve-action`. Supply the current Work version and claim
+generation, exact `--obligation-id`, `--outcome completed|failed|uncertain`,
+`--summary`, external `--evidence-refs` JSON array and an `--operation-id`.
+This records the observation under the operator's identity. It performs no
+external action and grants no retry permission.
+
+The host Work CLI routes applicable mutations through the authenticated Admin
+API on the selected instance. The Agent API and direct transactional core enforce
+the same requirement; import and omission of the optional factory selector do
+not bypass it. The source implementation does not change a running factory's
+contracts or install a candidate.
+
+### Service requests and release limits
+
+For an ordinary mediated service request, use the existing required
+`check_rules` at the visible `request` stage. Select the actual host, agent and
+HTTP-path predicate. The shared enforcement path completes the required check
+before forwarding; a denial prevents origin contact for that request. The
+job's dependency traffic retains its own capability and credential controls.
+No second service evaluator is required.
+
+Output verification protects native output acceptance, which SafeYolo controls.
+It does not withdraw artifacts already exposed elsewhere. A final GitHub merge,
+external release or publication must enforce the required revision and authority
+at that system's boundary. The controlled native tests establish these source
+boundaries. They do not establish installed factory adoption or both-engine
+runtime acceptance; those outcomes require their own supplied runtime evidence.

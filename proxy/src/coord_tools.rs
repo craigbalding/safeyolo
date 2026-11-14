@@ -753,7 +753,7 @@ pub fn tools() -> Vec<Value> {
     add(
         "publish_work_output",
         "Publish a retained immutable output reference and execution outcome atomically under your current claim. Supply current version, claim generation and target generation. Producer comes from authenticated identity; integrations cannot supply it. Publication also permits correction by the retained holder of done work. It advances target_generation and invalidates prior target attestations; it does not complete work or establish acceptance. Retain the external artifact first. Pick operation_id before writing; retry exact original inputs after a lost response. Stale or cancelled assignments cannot publish. target_ref is opaque and never fetched. Summary: 1..1024 UTF-8 bytes; evidence_refs: at most 16 strings of 1024 bytes each.",
-        json!({"room_name":string,"work_id":string,"expected_version":integer,"expected_generation":integer,"expected_target_generation":integer,"target_ref":string,"execution_outcome":{"type":"string","enum":["succeeded","failed","uncertain"]},"summary":string,"evidence_refs":array,"operation_id":string}),
+        json!({"room_name":string,"work_id":string,"expected_version":integer,"expected_generation":integer,"expected_target_generation":integer,"target_ref":string,"artifact_base64":string,"execution_outcome":{"type":"string","enum":["succeeded","failed","uncertain"]},"summary":string,"evidence_refs":array,"operation_id":string}),
         &[
             "room_name",
             "work_id",

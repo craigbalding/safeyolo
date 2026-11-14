@@ -2091,6 +2091,7 @@ impl Proxy {
                 .admin_shield
                 .protect_ingress_endpoints(external_ingress::endpoints(&ingress)?);
         }
+        coord_rooms::work::automatic::recover(&proxy.runtime);
         proxy.commit_listeners(&config, additions);
         proxy.commit_ingress(&config, ingress);
         proxy.capture = packet_capture::Running::start(

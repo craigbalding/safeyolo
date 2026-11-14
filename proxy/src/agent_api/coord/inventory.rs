@@ -358,6 +358,7 @@ fn read_inventory(
     room: &str,
     kind: &str,
     principal: &str,
+    active_policy: Option<&crate::policy::Policy>,
 ) -> Result<Inventory, CoordError> {
     let conn = open_db(db, false)?;
     conn.execute_batch("BEGIN")
@@ -437,12 +438,14 @@ fn read_inventory(
         false,
     )
     .map_err(|_| CoordError::Data)?;
-    let active_work =
-        room_status::work_page(&conn, &access.room_id, None).map_err(|_| CoordError::Data)?;
-    let completed_work = room_status::work_page(&conn, &access.room_id, Some("done"))
+    let active_work = room_status::work_page(&conn, &access.room_id, None, active_policy)
         .map_err(|_| CoordError::Data)?;
-    let cancelled_work = room_status::work_page(&conn, &access.room_id, Some("cancelled"))
-        .map_err(|_| CoordError::Data)?;
+    let completed_work =
+        room_status::work_page(&conn, &access.room_id, Some("done"), active_policy)
+            .map_err(|_| CoordError::Data)?;
+    let cancelled_work =
+        room_status::work_page(&conn, &access.room_id, Some("cancelled"), active_policy)
+            .map_err(|_| CoordError::Data)?;
     let latest_results = crate::coord_rooms::signals::latest_results(&conn, &access.room_id)
         .map_err(|_| CoordError::Data)?;
     conn.execute_batch("COMMIT")
@@ -468,7 +471,9 @@ async fn read_current(
     room: &str,
     kind: &str,
     principal: &str,
+    runtime: Option<&crate::RuntimeState>,
 ) -> Result<Inventory, CoordError> {
+    let active_policy = runtime.and_then(|state| state.read().ok().and_then(|r| r.policy.clone()));
     let (db, policy, room, kind, principal) = (
         client.owner.data_dir.join("v0.db"),
         client.policy_file.clone(),
@@ -477,7 +482,14 @@ async fn read_current(
         principal.to_owned(),
     );
     tokio::task::spawn_blocking(move || {
-        read_inventory(&db, policy.as_deref(), &room, &kind, &principal)
+        read_inventory(
+            &db,
+            policy.as_deref(),
+            &room,
+            &kind,
+            &principal,
+            active_policy.as_deref(),
+        )
     })
     .await
     .map_err(|_| CoordError::Unavailable)?
@@ -490,7 +502,7 @@ pub(super) async fn room_state(
     principal: &str,
     runtime: Option<&crate::RuntimeState>,
 ) -> Result<Value, CoordError> {
-    let mut initial = read_current(client, room, kind, principal).await?;
+    let mut initial = read_current(client, room, kind, principal, runtime).await?;
     retain_active_grants(&mut initial, runtime)?;
     let providers = initial
         .capabilities
@@ -509,7 +521,7 @@ pub(super) async fn room_state(
     // Provider I/O is outside the authoritative snapshot. Re-read membership,
     // advertisements, current service grants and declarations together before
     // projecting; never carry a revoked grant or removed holder across I/O.
-    let mut current = read_current(client, room, kind, principal).await?;
+    let mut current = read_current(client, room, kind, principal, runtime).await?;
     retain_active_grants(&mut current, runtime)?;
     project(current, &initial, &observations, now_ms())
 }

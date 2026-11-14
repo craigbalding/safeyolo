@@ -139,3 +139,12 @@ pub(crate) fn resolve(
         },
     })
 }
+
+/// Capture the approved selection before an automatic admission starts.
+pub(crate) fn current_reference(root: &Path, name: &str) -> Result<Reference, Error> {
+    let (snapshot, _) = approved(root, name)?;
+    Ok(Reference {
+        name: name.into(),
+        snapshot_id: snapshot.id()?,
+    })
+}

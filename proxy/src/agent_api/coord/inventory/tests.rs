@@ -39,6 +39,7 @@ fn read(root: &Path) -> Inventory {
         "shared",
         "agent",
         ALICE,
+        None,
     )
     .unwrap()
 }
@@ -446,7 +447,7 @@ async fn production_observation_timeout_retains_worker_permit_and_recovers() {
     assert_eq!(
         tokio::time::timeout(
             Duration::from_millis(500),
-            read_current(&client, "shared", "agent", ALICE)
+            read_current(&client, "shared", "agent", ALICE, None)
         )
         .await
         .unwrap()
@@ -646,7 +647,8 @@ fn recheck_removes_revoked_authority_and_holder_and_does_not_promote_declaration
             Some(&root.path().join("policy.toml")),
             "shared",
             "agent",
-            ALICE
+            ALICE,
+            None,
         ),
         Err(CoordError::NotFound)
     ));
@@ -831,7 +833,8 @@ fn configured_identity_is_rename_stable_and_duplicate_or_readded_ids_inherit_no_
             Some(&policy),
             "shared",
             "agent",
-            ALICE
+            ALICE,
+            None,
         ),
         Err(CoordError::NotFound)
     ));

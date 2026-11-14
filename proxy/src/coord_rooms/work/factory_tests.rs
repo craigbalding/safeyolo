@@ -1,6 +1,6 @@
 use super::*;
 
-async fn approved() -> (tempfile::TempDir, Connection, Value) {
+pub(super) async fn approved() -> (tempfile::TempDir, Connection, Value) {
     let root = fixture();
     fs::write(
         root.path().join("policy.toml"),

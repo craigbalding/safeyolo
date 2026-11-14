@@ -14,6 +14,7 @@ use std::{
 };
 use tokio::io::AsyncReadExt;
 pub(crate) mod execution;
+pub(crate) mod work;
 
 pub fn content_digest(bytes: &[u8]) -> String {
     digest(&SHA256, bytes)
@@ -447,6 +448,8 @@ pub struct Checks {
     pub checks: BTreeMap<String, Check>,
     #[serde(rename = "check_rules")]
     pub rules: Vec<Rule>,
+    #[serde(default)]
+    pub work_bindings: Vec<work::Binding>,
     #[serde(skip)]
     execution: std::sync::Arc<execution::CheckExecutions>,
     #[serde(skip)]
@@ -608,6 +611,7 @@ impl Checks {
         let mut checks: Self = serde_json::from_value(json!({
             "checks": document.get("checks").cloned().unwrap_or_else(|| json!({})),
             "check_rules": document.get("check_rules").cloned().unwrap_or_else(|| json!([])),
+            "work_bindings": document.get("work_bindings").cloned().unwrap_or_else(|| json!([])),
         }))
         .map_err(|error| invalid(format!("named checks: {error}")))?;
         for (name, check) in &mut checks.checks {
@@ -660,6 +664,7 @@ impl Checks {
                 *path = base.unwrap_or(Path::new(".")).join(&path);
             }
         }
+        work::validate(&checks)?;
         for rule in &mut checks.rules {
             if rule.host != "*" {
                 rule.host = if let Some(suffix) = rule.host.strip_prefix("*.") {

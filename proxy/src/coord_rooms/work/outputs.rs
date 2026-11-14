@@ -11,6 +11,8 @@ pub(crate) enum ExecutionOutcome {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Publication {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_base64: Option<String>,
     pub producer: Value,
     pub claim_generation: i64,
     pub work_version: i64,
@@ -68,6 +70,7 @@ pub(super) fn publish(
     actor: Actor<'_>,
     expected_target_generation: i64,
     target_ref: String,
+    artifact_base64: Option<String>,
     execution_outcome: ExecutionOutcome,
     summary: String,
     evidence_refs: Vec<String>,
@@ -104,12 +107,24 @@ pub(super) fn publish(
             "output summary must contain 1..1024 UTF-8 bytes; evidence_refs at most 16 strings of 1024 bytes each",
         ));
     }
+    if let Some(bytes) = artifact_base64.as_deref() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let bytes = STANDARD
+            .decode(bytes)
+            .map_err(|_| invalid("invalid output artifact base64"))?;
+        if target_ref != format!("sha256:{}", crate::policy::checks::content_digest(&bytes)) {
+            return Err(invalid(
+                "output artifact does not match its sha256 target_ref",
+            ));
+        }
+    }
     work.target_generation = work
         .target_generation
         .checked_add(1)
         .ok_or_else(|| conflict("target generation cannot advance"))?;
     work.target_ref = Some(target_ref);
     let publication = Publication {
+        artifact_base64,
         producer: json!({"kind":actor.kind(),"id":actor.id()}),
         claim_generation: work.claim_generation,
         work_version: work
