@@ -99,6 +99,77 @@ def python_definition(source: str) -> dict:
     return units
 
 
+def publisher_definition(source: str) -> dict:
+    """Compare notification decisions, with the GitHub adapter as transport.
+
+    Follow static names from module statements through local functions. Keep
+    the adapter's interface, but leave its implementation and private helpers
+    visible as unclassified input. This does not establish transport equivalence.
+    """
+    tree = ast.parse(source, type_comments=True)
+    functions = {}
+    statements = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            functions.setdefault(node.name, []).append(node)
+        else:
+            statements.append(node)
+    pending = [node.id for statement in statements for node in ast.walk(statement) if isinstance(node, ast.Name)]
+    # Decorators and defaults execute at definition time even for an otherwise
+    # unused function. Do not hide their code behind static call discovery.
+    pending.extend(name for name, definitions in functions.items()
+                   if any(function.decorator_list or function.args.defaults or any(function.args.kw_defaults)
+                          or any(is_python_assertion(node) for node in ast.walk(function))
+                          for function in definitions))
+    selected = set()
+    while pending:
+        name = pending.pop()
+        if name in selected or name not in functions:
+            continue
+        selected.add(name)
+        for function in functions[name]:
+            if name == "api" and not any(is_python_assertion(node) for node in ast.walk(function)):
+                function.body = [ast.Pass()]
+            pending.extend(node.id for node in ast.walk(function) if isinstance(node, ast.Name))
+    tree.body = [node for node in tree.body
+                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name in selected]
+    interpreter = source.splitlines()[0] + "\n" if source.startswith("#!") else ""
+    return python_definition(interpreter + ast.unparse(tree))
+
+
+def is_python_assertion(node: ast.AST) -> bool:
+    if isinstance(node, ast.Assert):
+        return True
+    if not isinstance(node, ast.Call):
+        return False
+    name = node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id if isinstance(node.func, ast.Name) else ""
+    return name.startswith("assert") or name in {"raises", "fail", "skip", "skipif", "xfail", "check_call", "check_output"}
+
+
+def regression_assertions(source: str) -> dict:
+    """Retain oracles and selection in unmapped CI regression tests.
+
+    Straight-line test setup remains an inspected, unclassified input. BB
+    witnesses and their helpers use the full executable definition instead.
+    """
+    tree = ast.parse(source, type_comments=True)
+    for function in ast.walk(tree):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)) or not function.name.startswith("test_"):
+            continue
+        assertions = []
+        for node in function.body:
+            if isinstance(node, (ast.Assert, ast.If, ast.For, ast.AsyncFor, ast.While,
+                                 ast.With, ast.AsyncWith, ast.Try, ast.TryStar, ast.Raise, ast.Return, ast.Match)):
+                assertions.append(node)
+            else:
+                for call in ast.walk(node):
+                    if isinstance(call, ast.Call) and is_python_assertion(call):
+                        assertions.append(ast.Expr(value=call))
+        function.body = assertions or [ast.Pass()]
+    interpreter = source.splitlines()[0] + "\n" if source.startswith("#!") else ""
+    return python_definition(interpreter + ast.unparse(tree))
+
+
 def python_scope(nodes: list, prefix: str, units: dict, order: list) -> None:
     remainder = []
     for node in nodes:
@@ -412,7 +483,7 @@ def referenced_helpers(source: str, name: str) -> set[str]:
 
 def definition(name: str, source: str) -> object:
     if name.endswith(".py"):
-        return python_definition(source)
+        return publisher_definition(source) if name == PUBLISHER else python_definition(source)
     if name.endswith(".toml"):
         return toml_definition(name, source)
     if not source:
@@ -563,8 +634,18 @@ def sequence_changes(subject: str, before: list[str], after: list[str], *, rust:
     return result
 
 
+def report_python_context(row: dict, before: str, after: str) -> None:
+    """Report changed setup/transport as unclassified, without calling it equal."""
+    delta, edits = definition_delta(row["path"], python_definition(before), python_definition(after))
+    if delta:
+        reason = ("notification transport or unused helper changed; assurance effect not established" if row["path"] == PUBLISHER
+                  else "unmapped regression test setup changed; no changed oracle or selection established")
+        row.update(status="unclassified", edits=edits, reason=reason)
+
+
 def compare(base: Revision, head: Revision, *, trusted: Revision | None = None) -> dict:
     scope = evidence_scope(base, head, trusted or base)
+    declared = catalogue_scope(trusted or base)
     metadata = tomllib.loads((trusted or base).read(CATALOGUE))
     excluded = {path for group in metadata.get("out_of_scope", []) for path in group["paths"]}
     moves = mechanical_moves(base, head, scope)
@@ -587,8 +668,12 @@ def compare(base: Revision, head: Revision, *, trusted: Revision | None = None) 
             changes.append(row)
             continue
         if status == "material":
-            before = definition(name, base.read(name))
-            after = definition(name, moved_references(head.read(name), moves))
+            ancillary_test = (name in scope and name not in declared and not scope[name]
+                              and not name.startswith(EVIDENCE_DIRS) and name.endswith(".py")
+                              and PurePosixPath(name).name.startswith("test_"))
+            before = regression_assertions(base.read(name)) if ancillary_test else definition(name, base.read(name))
+            source = moved_references(head.read(name), moves)
+            after = regression_assertions(source) if ancillary_test else definition(name, source)
             delta, edits = definition_delta(name, before, after)
             old_mode = base.files.get(name, (None,))[0]
             new_mode = head.files.get(name, (None,))[0]
@@ -597,6 +682,8 @@ def compare(base: Revision, head: Revision, *, trusted: Revision | None = None) 
                 edits.append({"unit": "<file mode>", "change": "changed"})
             if not delta:
                 row.update(status="mechanical", reason="same executable definition after bounded normalization")
+                if name == PUBLISHER or ancillary_test:
+                    report_python_context(row, base.read(name), head.read(name))
             else:
                 row["edits"] = edits
                 # Keep the affected subject and changed definition chunks, not

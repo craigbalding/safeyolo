@@ -51,7 +51,7 @@ def sources():
             TEST: ORIGINAL, RUST: '#[test]\nfn refresh() { assert_eq!(refresh_count(), 1); }\n',
             WORKFLOW: 'on:\n  schedule:\n    - cron: "17 3 * * *"\njobs:\n  guest:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: python tests/blackbox/installed_sections.py --lane systrap\n',
             changes.SELF: 'def filter_changes(rows):\n    return rows\n',
-            changes.PUBLISHER: 'def notify(rows):\n    return rows\n',
+            changes.PUBLISHER: 'def notify(rows):\n    return rows\n\nnotify([])\n',
             changes.WORKFLOW: 'on: [push]\njobs:\n  analyze:\n    steps:\n      - run: python tools/assurance/blackbox_changes.py\n'}
 
 
@@ -83,6 +83,69 @@ def test_material_definitions(sources, path, before, after):
 
 def test_oracle_change_with_unchanged_explanation_is_material(sources):
     assert compare(sources, {TEST: ORIGINAL.replace("== 0", "== 1")})["delta_id"]
+
+
+def test_unmapped_ci_test_setup_stays_visible_but_oracles_remain_material(sources):
+    path = "tests/test_ci_regression.py"
+    original = 'def test_response():\n    protocol = "old framing"\n    assert response() == 1\n'
+    files = sources | {path: original, WORKFLOW: sources[WORKFLOW] + f'      - run: pytest {path}\n'}
+    report = compare(files, {path: original.replace("old framing", "new framing")})
+    assert report["delta_id"] is None
+    assert report["changes"][0]["status"] == "unclassified"
+    assert report["changes"][0]["edits"] == [{"unit": "test_response#0", "change": "changed"}]
+    assert compare(files, {path: original.replace("== 1", "== 2")})["delta_id"]
+    assert compare(files, {path: original.replace("assert response() == 1", "pytest.skip('disabled')")})["delta_id"]
+    assert compare(files, {path: original.replace("def test_response():", "@pytest.mark.parametrize('expected', [1, 2])\ndef test_response(expected):")})["delta_id"]
+    # The same setup belongs to the full oracle when the trusted catalogue
+    # identifies this test as BB evidence, including outside the BB tree.
+    files[changes.CATALOGUE] += f'[[witnesses]]\npaths = ["{path}"]\ncontrols = ["BB-01"]\nkind = "pytest"\n'
+    assert compare(files, {path: original.replace("old framing", "new framing")})["delta_id"]
+
+
+def test_notification_transport_diagnostics_are_visible_without_a_mention(sources, github):
+    publisher = (ROOT / changes.PUBLISHER).read_text()
+    files = sources | {changes.PUBLISHER: publisher}
+    report = compare(files, {changes.PUBLISHER: publisher.replace('message: {message}', 'diagnostic: {message}')})
+    assert report["delta_id"] is None
+    assert report["changes"][0]["status"] == "unclassified"
+    assert report["changes"][0]["edits"] == [{"unit": "api_failure#0", "change": "changed"}]
+    assert notices.publish(report, event(), "pull_request_target")["status"] == "quiet"
+    assert not github.posts
+    # A later genuine assertion change in the same comparison still publishes.
+    material = compare(files, {changes.PUBLISHER: publisher.replace('message: {message}', 'diagnostic: {message}'),
+                               TEST: ORIGINAL.replace("== 0", "== 1")})
+    assert notices.publish(material, event(), "pull_request_target")["status"] == "published"
+    assert len(github.posts) == 1
+
+
+@pytest.mark.parametrize(("before", "after"), [
+    ('report.get("status") != "complete"', 'report.get("status") == "complete"'),
+    ('if not material:', 'if material:'),
+    ('if already_notified(context, delta, current):', 'if False:'),
+    ('comment.get("user", {}).get("login") != BOT', 'comment.get("user", {}).get("login") == BOT'),
+    ('@craigbalding {target}', 'quiet {target}'),
+    ('os.environ.get("GITHUB_ACTIONS") != "true"', 'os.environ.get("GITHUB_ACTIONS") == "true"'),
+    ('payload: dict | None = None', 'payload: dict | None = {}'),
+    ('REPOSITORY = "craigbalding/safeyolo"', 'REPOSITORY = "other/repo"'),
+    ('#!/usr/bin/env python3', '#!/bin/true'),
+])
+def test_notification_guards_and_transport_interface_stay_material(sources, before, after):
+    publisher = (ROOT / changes.PUBLISHER).read_text()
+    assert before in publisher
+    files = sources | {changes.PUBLISHER: publisher}
+    report = compare(files, {changes.PUBLISHER: publisher.replace(before, after)})
+    assert report["delta_id"]
+    assert report["changes"][0]["status"] == "material"
+
+
+def test_notification_helpers_reached_by_guard_and_definition_side_effects_stay_material(sources):
+    publisher = (ROOT / changes.PUBLISHER).read_text()
+    files = sources | {changes.PUBLISHER: publisher + '\ndef new_filter():\n    return True\n'}
+    assert compare(files, {changes.PUBLISHER: files[changes.PUBLISHER].replace('if not material:', 'if new_filter():')})["delta_id"]
+    assert compare(files, {changes.PUBLISHER: files[changes.PUBLISHER].replace('def new_filter():', '@disable_notices\ndef new_filter():')})["delta_id"]
+    assert compare(files, {changes.PUBLISHER: publisher.replace('def api(endpoint: str, payload: dict | None = None):',
+                                                               'def api(endpoint: str, payload: dict | None = None):\n    assert payload is None')})["delta_id"]
+    assert compare(files, {changes.PUBLISHER: publisher + '\ndef unknown_oracle():\n    assert False\n'})["delta_id"]
 
 
 def test_removal_or_new_check_cannot_disappear_with_candidate_map(sources):

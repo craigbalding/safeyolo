@@ -203,16 +203,35 @@ The comparison has these bounded rules:
 
 | Input or change | Result |
 |---|---|
-| Python assertion, parameter, decorator, fixture, helper or executable statement changes | Material; report added, removed or changed definitions. |
+| Python assertion, parameter, decorator, fixture, helper or executable statement changes in a catalogue witness or discovered BB evidence and its helpers | Material; report added, removed or changed definitions. |
 | Python or shell script interpreter (`#!` line) changes | Material; a changed interpreter can change execution even when the body is identical. |
 | Rust test/helper tokens or inline test module changes | Material; retain literals, attributes, oracle and failure-handling tokens. Production code outside an inline test module remains context. |
 | Selected runner command, skip/filter, backend, user/root phase, dependency between jobs, required trigger or cadence changes | Material. Jobs that contain assurance commands and their prerequisite jobs are compared. |
-| Catalogue witness mapping, effective pytest/Cargo test configuration, analyzer or publisher logic changes | Material. Cargo selection inputs are described below. Candidate-authored labels or impact claims cannot suppress the result. |
+| Catalogue witness mapping, effective pytest/Cargo test configuration, analyzer or notification decision changes | Material. Cargo selection inputs and notification scope are described below. Candidate-authored labels or impact claims cannot suppress the result. |
 | Python comments, docstrings, formatting, parentheses or empty `pass` statements; Rust comments or token-preserving formatting | Quiet when the normalized executable definition is equal. Strings used by assertions remain executable input. |
 | An identical Python file moves within its directory, keeps test discovery, has no recognized location introspection, and all known static references are updated | Quiet after reference comparison. Other executable moves remain material. |
 | Daily or weekly cron time changes with the same frequency | Quiet for the supported single-time expressions. Other expressions are compared exactly. |
 | Lockfiles, dependency versions, action revision pins, same-platform runner-image versions, product/guest artifact or result refreshes | Context; a dependency or artifact refresh alone does not establish an assurance change. Changes to action identity, runner platform or executable test configuration remain material. |
 | Generated documentation, other prose and unclassified inputs | Visible in the check report; no automatic mention. |
+
+A general CI pytest command does not establish that each named regression test
+is a BB witness. For an unmapped test outside the discovered evidence trees,
+the comparison retains assertions, exception expectations, skips, decorators,
+parameters, control flow and shared helper definitions. Straight-line setup
+changes without a changed oracle or selection remain unclassified. Catalogue
+witnesses and discovered evidence retain their full executable definitions.
+
+For the publisher, static name references from module statements select the
+notification decisions and their local helpers. The comparison retains event
+and report validation, the materiality threshold, deduplication, notice content,
+bot identity checks and top-level failure handling. The `api` adapter's signature
+remains part of that comparison. Its transport implementation and helpers used
+only by that implementation remain inspected, unclassified inputs. Assertions
+remain material even inside transport or an otherwise unused helper. Decorators
+and defaults also retain a function because they execute at definition time.
+Transport classification does not establish equivalent behavior or delivery;
+reviewers must inspect a concrete transport effect separately. The analyzer does
+not exempt the publisher file or execute its candidate code.
 
 Cargo comparison retains automatic target discovery (including
 `package.autotests`) and explicit library, binary, example, test and benchmark
