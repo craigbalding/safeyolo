@@ -577,6 +577,14 @@ and authority. Changed policy or revoked authority invalidates pending evidence.
 Approval reevaluates evidence freshness and applicable authority; a manual
 preview or caller-supplied result cannot satisfy the requirement. Current Agent
 API reads and room status evaluate retained findings against active authority.
+The host `coord work show` command also reads active authority for current
+factory Work, including Work with no earlier automatic records. If the proxy
+is unavailable, `show` retains the local data and reports acceptance as
+`pending`, with `recorded_state` and an explanation that current automatic
+authority has not been read. `coord work list` uses the same recorded view for
+factory Work and retained verification requirements. Use `show` with the proxy
+running to inspect current applicability. `show --version` returns the selected
+historical revision.
 Removing a verifier from adopted policy cancels that requirement at the next
 acceptance decision through the running proxy; earlier evidence remains in Work
 revisions. A newly selected verifier makes acceptance pending until it qualifies.

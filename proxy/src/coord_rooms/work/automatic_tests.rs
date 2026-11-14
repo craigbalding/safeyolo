@@ -1127,6 +1127,162 @@ async fn automatic_service_request_rule_prevents_the_authorized_effect() {
 }
 
 #[tokio::test]
+async fn automatic_cli_reads_new_verifiers_and_identifies_recorded_offline_status() {
+    let provider = Provider::start().await;
+    let (root, proxy, reference) = fixture_proxy(&provider).await;
+    let source = fs::read_to_string(root.path().join("policy.toml")).unwrap();
+    let mut without_bindings: toml_edit::DocumentMut = source.parse().unwrap();
+    without_bindings.as_table_mut().remove("work_bindings");
+    crate::apply_native_policy(&proxy.runtime, &without_bindings.to_string()).unwrap();
+    let work = submit(
+        &proxy,
+        root.path(),
+        Actor::Agent(ALICE),
+        json!({"action":"create","title":"new verifier","factory":reference}),
+        "create",
+    )
+    .await
+    .unwrap()["work"]
+        .clone();
+    let work = submit(
+        &proxy,
+        root.path(),
+        Actor::Agent(ALICE),
+        input(&work, "claim"),
+        "claim",
+    )
+    .await
+    .unwrap()["work"]
+        .clone();
+    let id = work["work_id"].as_str().unwrap();
+    submit(
+        &proxy,
+        root.path(),
+        Actor::Agent(ALICE),
+        publication(&work, b"wanted"),
+        "publish",
+    )
+    .await
+    .unwrap();
+    let work = current_value(root.path(), id);
+    let r = &work["acceptance_requirements"];
+    let mut amend = input(&work, "set_requirements");
+    for field in ["authorities", "deciders", "independent"] {
+        amend[field] = r[field].clone();
+    }
+    amend["expected_requirements_version"] = r["version"].clone();
+    amend["checks"] = json!([]);
+    amend["challenges"] = json!([]);
+    amend["reason"] = json!("Isolate machine status; retain the independent decider");
+    submit(&proxy, root.path(), Actor::Agent(BOB), amend, "amend")
+        .await
+        .unwrap();
+    submit(
+        &proxy,
+        root.path(),
+        Actor::Agent(BOB),
+        approval(&current_value(root.path(), id)),
+        "approve",
+    )
+    .await
+    .unwrap();
+    let recorded = current_value(root.path(), id);
+    assert!(
+        recorded
+            .get("automatic")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty)
+    );
+    let show = vec!["show".into(), "owned".into(), id.into()];
+    let cli = &super::super::super::work_cli::run;
+    assert_eq!(
+        cli(root.path(), &show).await.unwrap()["acceptance_status"]["state"],
+        "accepted"
+    );
+
+    crate::apply_native_policy(&proxy.runtime, &source).unwrap();
+    let live = crate::native_client::admin(
+        &root.path().join("config.toml"),
+        &format!("/admin/coord/rooms/owned/work?work_id={id}"),
+        hyper::Method::GET,
+        Value::Null,
+        std::time::Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    assert_eq!(live["acceptance_status"]["state"], "pending");
+    let required = &live["acceptance_status"]["obligations"][0];
+    assert_eq!(required["binding"], "verify");
+    assert_eq!(required["job"], "verify");
+    assert_eq!(required["authority"]["factory"], "native");
+    assert!(
+        required["recovery"]
+            .as_str()
+            .unwrap()
+            .contains("running proxy")
+    );
+    assert_eq!(
+        cli(root.path(), &show).await.unwrap()["acceptance_status"],
+        live["acceptance_status"]
+    );
+
+    let generic = submit(
+        &proxy,
+        root.path(),
+        Actor::Agent(ALICE),
+        json!({"action":"create","title":"ordinary generic work"}),
+        "generic",
+    )
+    .await
+    .unwrap()["work"]
+        .clone();
+    let generic = current_value(root.path(), generic["work_id"].as_str().unwrap());
+    let listed = cli(root.path(), &["list".into(), "owned".into()])
+        .await
+        .unwrap();
+    let items = listed["items"].as_array().unwrap();
+    let status = &items.iter().find(|w| w["work_id"] == id).unwrap()["acceptance_status"];
+    assert_eq!(status["state"], "pending");
+    assert_eq!(status["recorded_state"], "accepted");
+    assert!(
+        status["reason"]
+            .as_str()
+            .unwrap()
+            .contains("has not been read")
+    );
+    assert_eq!(
+        items
+            .iter()
+            .find(|w| w["work_id"] == generic["work_id"])
+            .unwrap()["acceptance_status"],
+        generic["acceptance_status"]
+    );
+    let mut historical = show.clone();
+    historical.extend(["--version".into(), recorded["version"].to_string()]);
+    let mut historical_record = recorded.clone();
+    historical_record
+        .as_object_mut()
+        .unwrap()
+        .remove("acceptance_status");
+    assert_eq!(
+        cli(root.path(), &historical).await.unwrap(),
+        historical_record,
+        "historical reads keep their recorded meaning"
+    );
+    proxy.shutdown().await;
+    let offline = cli(root.path(), &show).await.unwrap();
+    assert_eq!(offline["acceptance_status"]["state"], "pending");
+    assert_eq!(offline["acceptance_status"]["recorded_state"], "accepted");
+    assert!(
+        offline["acceptance_status"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("proxy is running")
+    );
+    assert_eq!(current_value(root.path(), id), recorded);
+}
+
+#[tokio::test]
 async fn automatic_current_authority_read_invalidates_a_previously_accepted_finding() {
     let provider = Provider::start().await;
     let (root, proxy, reference) = fixture_proxy(&provider).await;
