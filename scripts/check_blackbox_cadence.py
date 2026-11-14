@@ -191,6 +191,11 @@ def contract_problems(
 
 def main() -> int:
     problems = contract_problems()
+    # Use the same section-to-driver mapping as execution and generation.
+    sys.path.insert(0, str(REPO_ROOT))
+    from tests.blackbox.catalogue import selector_problems
+
+    problems += selector_problems(REPO_ROOT)
     if not problems:
         return 0
     print("check-blackbox-cadence: documentation drifted from automation:", file=sys.stderr)

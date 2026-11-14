@@ -21,13 +21,14 @@ import tomllib
 import uuid
 from pathlib import Path
 
+if __package__:
+    from .execution_receipt import section_execution
+    from .selections import OPTIONAL_SECTIONS, SECTIONS
+else:
+    from execution_receipt import section_execution
+    from selections import OPTIONAL_SECTIONS, SECTIONS
+
 REPOSITORY = Path(__file__).resolve().parents[2]
-SECTIONS = {
-    "systrap": ("isolation", "workloads", "access", "lifecycle", "continuity"),
-    "kvm": ("isolation", "ingress", "workloads"),
-    "vz": ("isolation", "access", "lifecycle", "continuity"),
-}
-OPTIONAL_SECTIONS = {"systrap": ("claude", "ingress"), "kvm": (), "vz": ()}
 # run-tests.sh reserves this result for failed cleanup when invoked by this
 # loop. Its ordinary public infrastructure/cleanup exit remains 2.
 INNER_CLEANUP_FAILURE_EXIT = 3
@@ -157,7 +158,10 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
     env.update(SAFEYOLO_CONFIG_DIR=str(source), SAFEYOLO_LOGS_DIR=str(source / "logs"),
                SAFEYOLO_COORD_DATA_DIR=str(source / "data/coord"),
                SAFEYOLO_NATS_TEST_INSTANCE=uuid.uuid4().hex, CARGO_BUILD_JOBS="1")
-    report = {"source_revision": revision, "lane": lane, "preparation": {}, "sections": []}
+    run_id = uuid.uuid4().hex
+    env["SAFEYOLO_BLACKBOX_RUN_ID"] = run_id
+    env["SAFEYOLO_BLACKBOX_LANE"] = lane
+    report = {"source_revision": revision, "lane": lane, "run_id": run_id, "preparation": {}, "sections": []}
     if listener_restart:
         report["isolation_selection"] = "listener-restart"
     artifacts.mkdir(parents=True, exist_ok=True)
@@ -289,6 +293,16 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                "cleanup": "failed" if failures else claude_cleanup or "stopped", "cleanup_failures": failures}
         if error is not None:
             row["error"] = error
+        if section != "claude":
+            row["execution"] = section_execution(section_artifacts, section, lane, run_id,
+                                                  listener_restart=listener_restart and section == "isolation")
+            if section_exit == 0 and not row["execution"]["complete"]:
+                section_exit = 2
+                row.update(exit=2, result="incomplete")
+            stages = {stage for phase in row["execution"]["phases"] for stage in phase.get("failed_stages", [])}
+            if not failures and stages:
+                row["result"] = ("cleanup_failure" if "teardown" in stages else
+                                 "preparation_failure" if "setup" in stages else "assertion_failure")
         report["sections"].append(row)
         save()
         if failures:

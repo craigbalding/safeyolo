@@ -54,7 +54,7 @@ repos:
         name: Blackbox coverage doc in sync
         entry: uv run python tests/blackbox/gen_docs.py --check
         language: system
-        files: ^(tests/blackbox/.*\.py|docs/blackbox-coverage\.md)$
+        files: ^(tests/.*\.(py|toml|sh)|cli/tests/.*\.py|proxy/(tests|src)/.*\.rs|docs/(blackbox-coverage\.md|assurance-map\.toml)|\.github/workflows/.*\.yml|scripts/check_blackbox_cadence\.py)$
         pass_filenames: false
 
       - id: test-assurance

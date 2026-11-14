@@ -1,0 +1,1106 @@
+# Authored control meaning and dispositions from issue #1557.
+# Existence, exact identities and selectors are resolved from maintained source.
+
+[[controls]]
+id = "BB-01"
+control = "Direct network egress"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_vm_isolation.py"
+what = "TCP, IPv6 and metadata routes cannot bypass the proxy."
+existing = "Guest BB; nightly."
+conformance = "Repair uncontrolled endpoints and curl-exit-code oracles: use live owned receivers and prove zero unauthorized delivery."
+effort = "M"
+comments = "Exercise ordinary agent and guest root."
+owner = "#1560"
+decisions = ["authorization"]
+
+[[controls]]
+id = "BB-02"
+control = "DNS/UDP egress"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_vm_isolation.py"
+what = "Queries/datagrams cannot leak even when no response returns."
+existing = "Guest BB; nightly."
+conformance = "Repair NXDOMAIN/gaierror/no-reply oracles with owned receivers, unique markers and positive controls."
+effort = "M"
+comments = "Share receiver infrastructure with BB-01."
+owner = "#1560"
+decisions = ["authorization"]
+
+[[controls]]
+id = "BB-03"
+control = "Guest-root containment"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_vm_isolation.py"
+what = "Guest administration cannot modify host configuration or access host processes/devices."
+existing = "Guest BB; nightly; partly conformant."
+conformance = "Retain live UID mapping/read-only checks; replace invalid syscall arguments and host-PID-1-name assumptions with valid probes and host canaries."
+effort = "M"
+comments = "Guest root is intentionally allowed; device-node creation and device use are different claims."
+owner = "#1560"
+decisions = ["other_sinks_and_launch"]
+
+[[controls]]
+id = "BB-04"
+control = "Agent identity / peer isolation"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_ingress_pair.py"
+what = "Forged claims cannot select another agent; peer sockets/private files remain inaccessible as user and root."
+existing = "Strong two-guest BB exists but is optional; basic peer checks run by default."
+conformance = "Wire the existing ingress-pair witness into nightly selection; retire guessed-neighbour probes and SSH checks accepting either outcome."
+effort = "S"
+comments = "Existing pair covers guest root and proxy restart; retain its actual platform scope."
+owner = "#1560"
+decisions = ["identity"]
+
+[[controls]]
+id = "BB-05"
+control = "Agent/Admin API authorization"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/proxy_contracts/test_local_api_authorization.py"
+what = "Missing/wrong tokens, foreign records and operator-only controls are refused."
+existing = "Guest and proxy BB; nightly."
+conformance = "Conformant: retain."
+effort = "—"
+comments = "Includes populated peer data and reserved API containment."
+owner = "#1558"
+decisions = ["authorization","management_evidence"]
+
+[[controls]]
+id = "BB-06"
+control = "Destination policy / reload"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/proxy_contracts/test_native_network_policy.py"
+what = "Agent/destination rules govern real requests; invalid reload retains valid policy."
+existing = "Proxy and representative guest BB; nightly."
+conformance = "Conformant: retain."
+effort = "—"
+comments = "Existing precedence, forged identity and failed-reload cases."
+owner = "#1558"
+decisions = ["authorization","policy_publication"]
+
+[[controls]]
+id = "BB-07"
+control = "Credential authorization / redirects"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/proxy_contracts/test_gateway_redirect.py"
+what = "Vault secrets reach only approved destinations, including cross-authority redirects."
+existing = "Proxy BB; nightly; guest credential injection also exists."
+conformance = "Conformant: retain wire/origin observations."
+effort = "—"
+comments = "No need to duplicate every redirect variant in every VM."
+owner = "#1558"
+decisions = ["credentials"]
+
+[[controls]]
+id = "BB-08"
+control = "Service capabilities / contracts / risk grants"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_access.py"
+what = "Only authorized operations cause effects; binding constraints and one-use grant consumption hold."
+existing = "Guest and proxy BB; nightly."
+conformance = "Conformant: retain."
+effort = "—"
+comments = "Exact origin effects and stolen-token rejection already covered."
+owner = "#1558"
+decisions = ["credentials","authorization"]
+
+[[controls]]
+id = "BB-09"
+control = "Host-secret custody"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_key_isolation.py"
+what = "Guest and guest root cannot directly read host CA/vault secrets."
+existing = "Scans and injection checks exist; partial."
+conformance = "Extend with unique synthetic secret canaries across relevant guest files, environment and scoped APIs."
+effort = "M"
+comments = "Preserve deliberately provisioned client credentials and authorized operator views."
+owner = "#1560"
+decisions = ["credentials"]
+
+[[controls]]
+id = "BB-10"
+control = "Subscription credential adoption / renewal"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/proxy/tests/credential_http/codex.rs"
+what = "Refresh/import cannot change identity or resurrect revoked authority."
+existing = "Strong native HTTP tests; run-lifetime backend is synthetic."
+conformance = "Extend with one real guest and controlled provider: adoption, refresh, restart, revocation and wrong guest."
+effort = "M"
+comments = "No paid model service needed; retain existing native cases."
+owner = "#1560"
+decisions = ["credentials"]
+
+[[controls]]
+id = "BB-11"
+control = "TLS / guest trust separation"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_root_containment.py"
+what = "Guest CAs cannot widen host upstream verification; bad TLS cannot fall through."
+existing = "Guest and proxy BB; nightly."
+conformance = "Conformant: retain."
+effort = "—"
+comments = "Negative certificate tests, persisted trust and scoped exceptions exist."
+owner = "#1558"
+decisions = ["interception_tls"]
+
+[[controls]]
+id = "BB-12"
+control = "HTTP framing / authority / transitions"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/proxy_contracts/test_raw_http_gateway_boundary.py"
+what = "Parsing, normalization, reuse, WebSocket and CONNECT cannot authorize one target and forward to another."
+existing = "Extensive proxy BB nightly; representative guest HTTP/WSS/SSH."
+conformance = "Conformant layered coverage: retain."
+effort = "—"
+comments = "Keep full wire permutations at the proxy boundary."
+owner = "#1558"
+decisions = ["authorization","interception_tls"]
+
+[[controls]]
+id = "BB-13"
+control = "Configured parent routing"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/proxy_contracts/test_configured_parent_boundary.py"
+what = "A required parent cannot be bypassed by direct fallback after connection/TLS failure."
+existing = "Proxy BB; nightly."
+conformance = "Conformant: retain."
+effort = "—"
+comments = "Selected and unselected agents/destinations covered."
+owner = "#1558"
+decisions = ["external_effects"]
+
+[[controls]]
+id = "BB-14"
+control = "Budgets / circuit breakers"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/proxy_contracts/test_operator_budgets.py"
+what = "Limits stop real upstream effects, preserve unrelated scopes and permit authorized reset/recovery."
+existing = "Proxy BB; nightly."
+conformance = "Conformant for current behavior: retain."
+effort = "—"
+comments = "If temporary elevated windows are later introduced, add expiry/crash tests for that new contract."
+owner = "#1558"
+decisions = ["authorization"]
+
+[[controls]]
+id = "BB-15"
+control = "Restart / abrupt-failure recovery"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_shared_approvals.py"
+what = "Outages cannot bypass enforcement, revive authority or replay effects."
+existing = "Orderly guest lifecycle nightly; SIGKILL witness on demand."
+conformance = "Wire and extend abrupt failure: guest non-delivery during outage; consumed/revoked authority stays unusable after recovery."
+effort = "M"
+comments = "Preserve graceful drain and admitted-stream semantics."
+owner = "#1560"
+decisions = ["policy_publication"]
+
+[[controls]]
+id = "BB-16"
+control = "Disposable-job isolation"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/host/job_sandbox.py"
+what = "Jobs receive only declared inputs/privilege, without inherited agent authority or persistent state."
+existing = "Real installed tests; on demand."
+conformance = "Wire and extend: retain input/state/signal/timeout checks; prove network-off non-delivery at an owned receiver."
+effort = "M"
+comments = "Missing proxy environment variables alone do not prove containment; foundation for new engines."
+owner = "#1562"
+decisions = ["other_sinks_and_launch"]
+
+[[controls]]
+id = "BB-17"
+control = "Disposable-job network authority"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/host/job_network.py"
+what = "Gate/service scopes constrain job effects; teardown ends delegated authority."
+existing = "Real installed tests; on demand."
+conformance = "Wire and extend revocation, cancellation and socket/runtime lifetime."
+effort = "M"
+comments = "Origin counts and credential replacement already exist."
+owner = "#1562"
+decisions = ["authorization","credentials"]
+
+[[controls]]
+id = "BB-18"
+control = "Local peer support"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_peer_support.py"
+what = "Granted target/action/current-run scope, expiry and revocation constrain effects."
+existing = "Strong real-guest tests; on demand."
+conformance = "Wire and extend target canaries where denial currently relies on status."
+effort = "M"
+comments = "Retain guest-root, replay, narrowing and stale-generation coverage."
+owner = "#1561"
+decisions = ["management_evidence"]
+
+[[controls]]
+id = "BB-19"
+control = "Delegated approvals / route exceptions"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_shared_approvals.py"
+what = "Helpers decide only permitted typed actions for the exact principal, run and route."
+existing = "Installed drivers plus proxy tests; full guest journey not nightly."
+conformance = "Wire a deterministic real-guest journey: wrong helper/target/run, revocation/expiry, exact effects and no automatic replay."
+effort = "M"
+comments = "Model/human modes remain optional; reuse native route-challenge coverage."
+owner = "#1561"
+decisions = ["management_evidence"]
+
+[[controls]]
+id = "BB-20"
+control = "Agent-provided services"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_provider.py"
+what = "Only authorized callers/peers reach the service; a stopped provider cannot cause fallback."
+existing = "Strong two-guest tests; on demand."
+conformance = "Existing checks conformant: wire recurring execution."
+effort = "S–M"
+comments = "Trusted receiver identity, revocation and zero-hit fallback are already observed."
+owner = "#1561"
+decisions = ["provider_services"]
+
+[[controls]]
+id = "BB-21"
+control = "Nested Docker / gateway"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_docker_preflight.py"
+what = "Extra guest privileges remain contained; Docker API scopes constrain actual effects."
+existing = "Extensive real-sandbox tests; on demand."
+conformance = "Adapt and wire a bounded pinned workload: privileged inner-container negatives, allowed/denied management effects and revocation."
+effort = "L"
+comments = "This is a distinct privilege configuration."
+owner = "#1562"
+decisions = ["other_sinks_and_launch"]
+
+[[controls]]
+id = "BB-22"
+control = "Live mounts / removal"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/nested-linux/live_mount_backend_proof.py"
+what = "Only approved paths/modes are exposed; removal truthfully reports remaining access."
+existing = "Strong Linux and physical-Mac tests; on demand."
+conformance = "Existing checks conformant: wire per supported backend."
+effort = "M"
+comments = "Retain busy-file refusal, real detach and unaffected-peer evidence."
+owner = "#1562"
+decisions = ["other_sinks_and_launch"]
+
+[[controls]]
+id = "BB-23"
+control = "Desktop / service sharing"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_access.py"
+what = "Unlock/session authority binds to the target; expiry/revocation/stop ends access under the advertised lifecycle."
+existing = "Native plus optional installed tests."
+conformance = "Extend and wire invalid session/target, active-session revocation/expiry and stale-run checks with actual bytes."
+effort = "M"
+comments = "No visual UI automation is required."
+owner = "#1561"
+decisions = ["management_evidence"]
+
+[[controls]]
+id = "BB-24"
+control = "Coord ownership / review / output authority"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/proxy/tests/native_coord/reviews.rs"
+what = "Ownership/review cannot be forged; evidence cannot authorize a different output or generation."
+existing = "Ignored native acceptance tests; basic guest messaging nightly."
+conformance = "Wire curated deterministic ownership, attestation, review, immutable-output, replay and stale-authority cases."
+effort = "M"
+comments = "Retain special-venue limitations; basic messaging is a narrower claim."
+owner = "#1561"
+decisions = ["management_evidence"]
+
+[[controls]]
+id = "BB-25"
+control = "Federation authority / TLS"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/proxy/tests/native_coord/federation.rs"
+what = "Destination owns the grant; identity, partition, rotation and revocation cannot widen authority."
+existing = "Real-instance/NATS tests exist but are ignored."
+conformance = "Wire deterministic cases and add one guest-to-remote-instance effect journey."
+effort = "L"
+comments = "Reuse support, delegation and rotation fixtures."
+owner = "#1561"
+decisions = ["management_evidence"]
+
+[[controls]]
+id = "BB-26"
+control = "Tailscale transport validation"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/proxy/src/coord_rooms/federation/tailscale.rs"
+what = "Credentials are withheld without the correct node, interface and protected route."
+existing = "Unit coverage; no maintained live BB found in the audit."
+conformance = "Write wrong-node/route, interface-loss and restored-path controls; observe credential-bearing connections independently."
+effort = "L"
+comments = "Requires a two-host tailnet venue."
+owner = "#1561"
+decisions = ["management_evidence"]
+
+[[controls]]
+id = "BB-27"
+control = "External TCP ingress"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/proxy/src/external_ingress/tests.rs"
+what = "Owner is fixed at accept; client traffic cannot impersonate a guest run or cross partitions."
+existing = "Real-wire native tests; recurring."
+conformance = "Conformant: retain."
+effort = "—"
+comments = "Unauthenticated external-client exposure is an explicit operator choice."
+owner = "#1558"
+decisions = ["identity"]
+
+[[controls]]
+id = "BB-28"
+control = "Artifact integrity / archive confinement"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/test_guest_acquisition.py"
+what = "Corrupt, incompatible or path-escaping inputs cannot activate or modify unrelated host paths."
+existing = "Real native-CLI BB in CI plus installed acquisition."
+conformance = "Conformant: retain existing digest, size, path, link and metadata checks."
+effort = "—"
+comments = "Valid BB evidence also lives outside tests/blackbox."
+owner = "#1558"
+decisions = ["other_sinks_and_launch"]
+
+[[controls]]
+id = "BB-29"
+control = "Named policy checks"
+source = "https://github.com/craigbalding/safeyolo/issues/1543"
+what = "Composition, evidence type, freshness and subject binding govern actual requests."
+existing = "New/in progress under #1543; no complete integrated BB at the audited master."
+conformance = "Write/integrate conflict, unknown/error, expiry, redirect and pending-revocation cases; preview must not contact the assessed target, including via dependencies."
+effort = "L"
+comments = "Reuse policy/origin fixtures and accepted #1543 increments; consume #1544/#1546 where applicable."
+owner = "#1563"
+decisions = ["authorization"]
+
+[[controls]]
+id = "BB-30"
+control = "Managed feeds"
+source = "https://github.com/craigbalding/safeyolo/issues/1545"
+what = "Invalid or stale refreshes cannot grant access contrary to configured policy."
+existing = "Managed-refresh repair under #1545; integrated regression needed."
+conformance = "Write/integrate valid refresh, malformed/partial updates, atomic activation, retained last-valid data and configured stale behavior."
+effort = "M"
+comments = "Use an owned server; existing local-list regression can precede full named-check integration."
+owner = "#1563"
+decisions = ["policy_publication"]
+
+[[controls]]
+id = "BB-31"
+control = "Hyperlight capabilities"
+source = "https://github.com/craigbalding/safeyolo/issues/1550"
+what = "Both engines receive only adopted scoped capabilities; revoked/expired invocations cannot retain authority."
+existing = "New under #1549/#1550."
+conformance = "Write/integrate allowed effects plus destination/socket/ABI bypass, limits, cancellation, late-completion and host-provenance cases."
+effort = "L"
+comments = "Share logical fixtures across both engines; reuse #1552 examples."
+owner = "#1563"
+decisions = ["foreign_and_embedded"]
+
+[[controls]]
+id = "BB-32"
+control = "Before/after enforcement"
+source = "https://github.com/craigbalding/safeyolo/issues/1551"
+what = "Required checks bind to the exact operation/output; follow-up effects are durable without unsafe external retry."
+existing = "Existing Coord foundation; new bindings under #1551."
+conformance = "Write/integrate omitted check, substituted/stale evidence, pending revocation, crash recovery and uncertain external effects."
+effort = "L"
+comments = "Observe actual effects; distinguish before-release verification from follow-up that cannot undo completed work."
+owner = "#1563"
+decisions = ["external_effects"]
+
+[[controls]]
+id = "BB-33"
+control = "Rootless guest preparation"
+source = "https://github.com/craigbalding/safeyolo/issues/1553"
+what = "Install/update/cleanup needs no sudo after prerequisites and retains required metadata/usable guest behavior."
+existing = "Current path tests exist; new promise under #1553/#1554."
+conformance = "Extend/write sudo-unavailable, regular/special metadata, distinct UID/GID, cancellation and old-install preservation cases."
+effort = "L"
+comments = "Reuse archive fixtures; correct the privileged offline harness and accepted fixture semantics."
+owner = "#1563"
+decisions = ["other_sinks_and_launch"]
+
+[[controls]]
+id = "BB-34"
+control = "Sudo disclosure"
+source = "https://github.com/craigbalding/safeyolo/issues/1555"
+what = "Exact privileged commands and reasons appear before existing consent and execution."
+existing = "New under #1555."
+conformance = "Write preview/execution agreement, quoting, fresh/cached/passwordless sudo and refusal cases."
+effort = "M"
+comments = "Preserve existing consent policy; do not add a new approval mechanism."
+owner = "#1563"
+decisions = ["other_sinks_and_launch"]
+
+[[controls]]
+id = "BB-35"
+control = "Native target identity"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_host_smoke.py"
+what = "The selected package/binary is the native implementation and actual runtime backend is identified."
+existing = "Strong recurring identity checks exist."
+conformance = "Conformant: retain."
+effort = "—"
+comments = "Record product, controller and guest identities separately; this is not the old mitmproxy target."
+owner = "#1558"
+decisions = ["identity"]
+
+[[controls]]
+id = "BB-36"
+control = "Required assertions executed"
+source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/run-tests.sh"
+what = "A missing prerequisite, skipped check or incomplete procedure cannot produce a complete receipt."
+existing = "Section/cleanup results exist; per-assertion accounting is partial."
+conformance = "Extend per-phase machine-readable expected/executed checks by backend and guest identity, with explicit exclusions."
+effort = "M"
+comments = "Named obligations; do not substitute total test counts or treat source inventory as execution."
+owner = "#1558"
+decisions = []
+
+[[controls]]
+id = "BB-37"
+control = "Backend coverage"
+source = "https://github.com/craigbalding/safeyolo/issues/889"
+what = "Applicable control outcomes recur on each supported backend."
+existing = "Systrap scheduled; KVM/VZ automation unfinished under #889."
+conformance = "Complete existing #889 venue work and fill justified per-backend selection omissions."
+effort = "M + host setup"
+comments = "Compare control outcomes, not counts; retain independent hardware deployment architecture."
+owner = "#889"
+decisions = []
+
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_local_api_authorization.py", "tests/proxy_contracts/test_agent_api_contract.py", "tests/proxy_contracts/test_agent_egress_scope.py", "tests/proxy_contracts/test_agent_api_test_context.py"]
+controls = ["BB-04", "BB-05"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_native_network_policy.py", "tests/proxy_contracts/test_agent_api_policy.py", "tests/proxy_contracts/test_agent_api_policy_yaml.py", "tests/proxy_contracts/test_policy_authoring.py", "tests/proxy_contracts/test_native_policy_cli.py", "tests/proxy_contracts/test_service_effect_assessment.py"]
+controls = ["BB-06", "BB-29", "BB-30"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_gateway_redirect.py", "tests/proxy_contracts/test_coding_client_auth.py", "tests/proxy_contracts/test_native_credentials_cli.py", "tests/proxy_contracts/test_native_onepassword_cli.py", "tests/proxy_contracts/test_codex_approval_fallback.py"]
+controls = ["BB-07", "BB-10"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_gateway_scope.py", "tests/proxy_contracts/test_gateway_risk_approval.py", "tests/proxy_contracts/test_service_route_challenge.py", "tests/proxy_contracts/test_shared_operator_approval.py", "tests/proxy_contracts/test_operator_consumer_approval.py", "tests/proxy_contracts/test_installed_shared_approvals.py", "tests/proxy_contracts/test_guard_approval_audit.py"]
+controls = ["BB-08", "BB-19"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_https_contract.py", "tests/proxy_contracts/test_https_trust_continuity.py"]
+controls = ["BB-11"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_raw_http_gateway_boundary.py", "tests/proxy_contracts/test_allowed_chunked_framing.py", "tests/proxy_contracts/test_authority_consistency.py", "tests/proxy_contracts/test_authority_parent_fixture.py", "tests/proxy_contracts/test_http1_handoff_contract.py", "tests/proxy_contracts/test_http2_contract.py", "tests/proxy_contracts/test_http2_gate.py", "tests/proxy_contracts/test_http2_gate_timing.py", "tests/proxy_contracts/test_http_contract.py", "tests/proxy_contracts/test_http_test_context.py", "tests/proxy_contracts/test_request_headers.py", "tests/proxy_contracts/test_request_streaming_inspection.py", "tests/proxy_contracts/test_selected_ip.py", "tests/proxy_contracts/test_te_gzip_handoff.py", "tests/proxy_contracts/test_tunnel_contract.py", "tests/proxy_contracts/test_websocket_contract.py", "tests/proxy_contracts/test_sse_shutdown.py", "tests/proxy_contracts/test_tunnel_audit_wait.py"]
+controls = ["BB-12"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_configured_parent_boundary.py"]
+controls = ["BB-13"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_operator_budgets.py", "tests/proxy_contracts/test_agent_api_budgets.py", "tests/proxy_contracts/test_connect_budgets.py", "tests/proxy_contracts/test_circuit_bypass.py", "tests/proxy_contracts/test_circuit_completion.py", "tests/proxy_contracts/test_circuit_failure_recovery.py", "tests/proxy_contracts/test_circuit_reload.py", "tests/proxy_contracts/test_operator_circuits.py"]
+controls = ["BB-14"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_native_blackbox_lifecycle.py", "tests/proxy_contracts/test_lifecycle_batch.py", "tests/proxy_contracts/test_readiness.py", "tests/proxy_contracts/test_first_agent_launch.py"]
+controls = ["BB-15", "BB-35"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_gateway_provider.py", "tests/proxy_contracts/test_native_provider_recovery.py"]
+controls = ["BB-20"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_desktop_waiting_page.py"]
+controls = ["BB-23"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_native_coord_operator.py", "tests/proxy_contracts/test_installed_coord_events.py", "tests/proxy_contracts/test_native_factory_cli.py", "tests/proxy_contracts/test_native_harness_attention.py"]
+controls = ["BB-24", "BB-32"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_native_ingress_observer.py"]
+controls = ["BB-27"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_native_managed_state.py"]
+controls = ["BB-28", "BB-33", "BB-34"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Owned HTTP origins; real native executable"
+
+[[out_of_scope]]
+paths = ["tests/proxy_contracts/test_event_log_reader.py", "tests/proxy_contracts/test_heap_release.py", "tests/proxy_contracts/test_native_skill_trace.py", "tests/proxy_contracts/test_observability_contract.py"]
+reason = "Harness, presentation, reporting or diagnostic behavior; no additional BB control assertion is claimed. Existing tests remain selected by the native-contract runner."
+
+[[witnesses]]
+paths = ["tests/blackbox/isolation/test_vm_isolation.py"]
+controls = ["BB-01", "BB-02", "BB-03", "BB-04"]
+kind = "pytest"
+scope = "Linux guest; gVisor systrap/KVM or VZ; ordinary user and setpriv subprocesses"
+adapter = "Real guest; audited uncontrolled network endpoints remain under #1560"
+
+[[witnesses]]
+paths = ["tests/blackbox/isolation/test_root_containment.py"]
+controls = ["BB-03", "BB-11"]
+kind = "pytest"
+scope = "Linux guest; gVisor systrap/KVM or VZ; guest root"
+adapter = "Real guest root with host-prepared controls"
+
+[[witnesses]]
+paths = ["tests/blackbox/isolation/test_key_isolation.py"]
+controls = ["BB-09"]
+kind = "pytest"
+scope = "Linux guest; gVisor systrap/KVM or VZ; user and private-key root selection"
+adapter = "Real guest scans; synthetic canary extension remains #1560"
+
+[[witnesses]]
+paths = ["tests/blackbox/isolation/test_agent_api_scope.py"]
+controls = ["BB-04", "BB-05"]
+kind = "pytest"
+scope = "Guest; gVisor systrap/KVM or VZ; ordinary user"
+adapter = "Real Agent API; no host Admin credential"
+
+[[witnesses]]
+paths = ["tests/blackbox/isolation/test_runtime_capabilities.py", "tests/blackbox/isolation/test_guest_ssh.py"]
+controls = ["BB-01", "BB-03"]
+kind = "pytest"
+scope = "Guest; gVisor systrap/KVM or VZ; ordinary user"
+adapter = "Real guest; dependency and SSH limitations remain visible in outcomes"
+
+[[witnesses]]
+paths = ["tests/blackbox/host/native/test_installed_native.py"]
+controls = ["BB-05", "BB-35"]
+kind = "pytest"
+scope = "Installed host proxy; Linux/macOS; host identity"
+adapter = "Real selected native executable and owned origin"
+
+[[witnesses]]
+paths = ["tests/blackbox/host/security/test_firewall_structural.py"]
+controls = ["BB-01", "BB-03"]
+kind = "pytest"
+scope = "Installed host and guest configuration; Linux/macOS; host identity"
+adapter = "Structural checks; no independent delivery oracle"
+
+[[witnesses]]
+paths = ["tests/blackbox/host/identity/test_agent_identity.py"]
+controls = ["BB-04"]
+kind = "pytest"
+scope = "Installed host/guest mapping; Linux/macOS; host identity"
+adapter = "Real runtime state; gVisor-only UID-map exclusion on VZ"
+
+[[witnesses]]
+paths = ["tests/blackbox/host/lifecycle/test_home_persistence.py", "tests/blackbox/host/lifecycle/test_token_lifecycle.py", "tests/blackbox/host/lifecycle/test_host_listener.py"]
+controls = ["BB-01", "BB-04", "BB-15"]
+kind = "pytest"
+scope = "Installed host with real guest; Linux/macOS; user/root parameter cases"
+adapter = "Real guest; owned live listener where selected"
+
+[[witnesses]]
+paths = ["tests/test_guest_acquisition.py", "tests/test_guest_upgrade.py", "tests/test_component_upgrade.py", "tests/test_linux_host.py"]
+controls = ["BB-28", "BB-33"]
+kind = "pytest"
+scope = "Ordinary native CLI; Linux/macOS; host identity"
+adapter = "Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers"
+
+[[witnesses]]
+paths = ["tests/test_host_sudo.py"]
+controls = ["BB-34"]
+kind = "pytest"
+scope = "Host command disclosure; controlled subprocess adapter"
+adapter = "Controlled command/consent executor; not installed sudo proof"
+
+[[witnesses]]
+paths = ["tests/test_hyperlight_adoption.py", "tests/test_hyperlight_service_checker.py", "tests/test_job_authoring.py"]
+controls = ["BB-31"]
+kind = "pytest"
+scope = "Host job authoring and adoption; controlled adapters"
+adapter = "Controlled build/runner adapters; not a live Hyperlight boundary pass"
+
+[[witnesses]]
+paths = ["tests/test_blackbox_execution_receipt.py", "tests/test_blackbox_catalogue.py"]
+controls = ["BB-36"]
+kind = "pytest"
+scope = "Receipt/catalogue fixtures; host identity"
+adapter = "Controlled reports and real fixture pytest; not product containment"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_ingress.py::main"]
+controls = ["BB-04", "BB-06", "BB-35"]
+kind = "procedure"
+scope = "Installed driver; actual backend and identities recorded in its own report"
+adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_ingress_pair.py::main"]
+controls = ["BB-04", "BB-15"]
+kind = "procedure"
+scope = "Installed driver; actual backend and identities recorded in its own report"
+adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_workloads.py::main"]
+controls = ["BB-07", "BB-11", "BB-12"]
+kind = "procedure"
+scope = "Installed driver; actual backend and identities recorded in its own report"
+adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_access.py::main"]
+controls = ["BB-08", "BB-19", "BB-23", "BB-24"]
+kind = "procedure"
+scope = "Installed driver; actual backend and identities recorded in its own report"
+adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_lifecycle.py::main"]
+controls = ["BB-11", "BB-15"]
+kind = "procedure"
+scope = "Installed driver; actual backend and identities recorded in its own report"
+adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_state_transition.py::main"]
+controls = ["BB-07", "BB-10", "BB-14", "BB-15", "BB-20"]
+kind = "procedure"
+scope = "Installed driver; actual backend and identities recorded in its own report"
+adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_host_smoke.py::main"]
+controls = ["BB-35"]
+kind = "procedure"
+scope = "Installed driver; actual backend and identities recorded in its own report"
+adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_peer_support.py::main"]
+controls = ["BB-18"]
+kind = "procedure"
+scope = "Installed driver; actual backend and identities recorded in its own report"
+adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_shared_approvals.py::main"]
+controls = ["BB-15", "BB-19"]
+kind = "procedure"
+scope = "Installed driver; actual backend and identities recorded in its own report"
+adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_provider.py::main"]
+controls = ["BB-20"]
+kind = "procedure"
+scope = "Installed driver; actual backend and identities recorded in its own report"
+adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_docker_preflight.py::main"]
+controls = ["BB-21"]
+kind = "procedure"
+scope = "Installed driver; actual backend and identities recorded in its own report"
+adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/host/job_sandbox.py::main"]
+controls = ["BB-16"]
+kind = "procedure"
+scope = "Installed driver; actual backend and identities recorded in its own report"
+adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/host/job_network.py::main"]
+controls = ["BB-17"]
+kind = "procedure"
+scope = "Installed driver; actual backend and identities recorded in its own report"
+adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/host/hyperlight_adoption.py::main"]
+controls = ["BB-31"]
+kind = "procedure"
+scope = "Installed driver; actual backend and identities recorded in its own report"
+adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/host/hyperlight_services.py::main"]
+controls = ["BB-31"]
+kind = "procedure"
+scope = "Installed driver; actual backend and identities recorded in its own report"
+adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/claude_smoke.py::run"]
+controls = ["BB-10"]
+kind = "procedure"
+scope = "Installed driver; actual backend and identities recorded in its own report"
+adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/nested-linux/live_mount_backend_proof.py::run_proof"]
+controls = ["BB-22"]
+kind = "procedure"
+scope = "Linux nested installed live mount; user/root backend-specific probes"
+adapter = "Real nested guests; manual venue"
+
+[[witnesses]]
+paths = ["proxy/tests/credential_http/codex.rs"]
+controls = ["BB-10"]
+kind = "cargo"
+scope = "Native Rust; host OS/cfg and ignore attributes are retained per source"
+adapter = "Controlled OAuth provider and run-lifetime adapter; native HTTP"
+target = "credential_http"
+module = "codex"
+owner = "proxy/tests/credential_http.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/reviews.rs"]
+controls = ["BB-24", "BB-32"]
+kind = "cargo"
+scope = "Native Rust; host OS/cfg and ignore attributes are retained per source"
+adapter = "Real instances/NATS; controlled run adapters"
+target = "native_coord"
+module = "reviews"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/work.rs"]
+controls = ["BB-24"]
+kind = "cargo"
+scope = "Native Rust; host OS/cfg and ignore attributes are retained per source"
+adapter = "Real instances/NATS; controlled run adapters"
+target = "native_coord"
+module = "work"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/outputs.rs"]
+controls = ["BB-24"]
+kind = "cargo"
+scope = "Native Rust; host OS/cfg and ignore attributes are retained per source"
+adapter = "Real instances/NATS; controlled run adapters"
+target = "native_coord"
+module = "outputs"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/attestations.rs"]
+controls = ["BB-24"]
+kind = "cargo"
+scope = "Native Rust; host OS/cfg and ignore attributes are retained per source"
+adapter = "Real instances/NATS; controlled run adapters"
+target = "native_coord"
+module = "attestations"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/federation.rs"]
+controls = ["BB-25"]
+kind = "cargo"
+scope = "Native Rust; host OS/cfg and ignore attributes are retained per source"
+adapter = "Real instances/NATS; controlled run adapters"
+target = "native_coord"
+module = "federation"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["proxy/src/coord_rooms/federation/tailscale.rs"]
+controls = ["BB-26"]
+kind = "cargo"
+scope = "Native Rust; host OS/cfg and ignore attributes are retained per source"
+adapter = "Unit fixtures for node/interface/route validation; not a live tailnet witness"
+target = "lib"
+module = "coord_rooms::federation::tailscale::tests"
+owner = "proxy/src/coord_rooms/federation/tailscale.rs"
+
+[[witnesses]]
+paths = ["proxy/src/external_ingress/tests.rs"]
+controls = ["BB-27"]
+kind = "cargo"
+scope = "Native Rust; host OS/cfg and ignore attributes are retained per source"
+adapter = "Real wire; independently owned local endpoints"
+target = "lib"
+module = "external_ingress::tests"
+owner = "proxy/src/external_ingress.rs"
+
+[[witnesses]]
+paths = ["proxy/src/http/policy_checks/execution_tests.rs"]
+controls = ["BB-29", "BB-32"]
+kind = "cargo"
+scope = "Native Rust; host OS/cfg and ignore attributes are retained per source"
+adapter = "Real native request/gateway; owned assessment service and origin"
+target = "lib"
+module = "http::policy_checks::execution_tests"
+owner = "proxy/src/http/policy_checks.rs"
+
+[[witnesses]]
+paths = ["proxy/src/jobs/hyperlight/tests.rs"]
+controls = ["BB-31"]
+kind = "cargo"
+scope = "Native Rust; host OS/cfg and ignore attributes are retained per source"
+adapter = "Controlled executable-helper supervisor; no VM or Python checker execution"
+target = "lib"
+module = "jobs::hyperlight::tests"
+owner = "proxy/src/jobs/hyperlight.rs"
+
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_agent_api_config.py", "tests/proxy_contracts/test_agent_api_status.py", "tests/proxy_contracts/test_operator_modes_and_listeners.py", "tests/proxy_contracts/test_operator_task_api.py"]
+controls = ["BB-05", "BB-06"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Real native policy and scoped API requests"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_github_git.py"]
+controls = ["BB-07"]
+kind = "pytest"
+scope = "Native gateway; owned Git server; host identity"
+adapter = "Real Git and owned gateway origin"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_native_dispatch.py", "tests/proxy_contracts/test_native_mattermost.py", "tests/proxy_contracts/test_operational_events.py"]
+controls = ["BB-24", "BB-32"]
+kind = "pytest"
+scope = "Native Coord/adapter; host identity"
+adapter = "Real NATS/HTTP with controlled external adapter and run fixtures; not a complete integrated before/after witness"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_outbound_effects.py"]
+controls = ["BB-01", "BB-02", "BB-05", "BB-06"]
+kind = "pytest"
+scope = "Native process; Linux; host tracer selection"
+adapter = "Independent syscall/DNS observation; tracer unavailable remains a required skip unless explicitly excluded"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_single_event_log.py"]
+controls = ["BB-05"]
+kind = "pytest"
+scope = "Native scoped evidence API; host identity"
+adapter = "Real policy traffic and scoped evidence readers"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_public_arm_install_workflow.py"]
+controls = ["BB-35", "BB-36"]
+kind = "pytest"
+scope = "Workflow/report fixtures; controlled installer adapters"
+adapter = "Controlled acquisition/report consumers; not a fresh installed native identity pass"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/catch_up.rs"]
+controls = ["BB-24"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "catch_up"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/continuation.rs"]
+controls = ["BB-24"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "continuation"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/factory.rs"]
+controls = ["BB-24"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "factory"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/federation/guided.rs"]
+controls = ["BB-25"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "federation::guided"
+owner = "proxy/tests/native_coord/federation.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/federation/modes.rs"]
+controls = ["BB-25"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "federation::modes"
+owner = "proxy/tests/native_coord/federation.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/federation/operator.rs"]
+controls = ["BB-25"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "federation::operator"
+owner = "proxy/tests/native_coord/federation.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/federation/reliability.rs"]
+controls = ["BB-25"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "federation::reliability"
+owner = "proxy/tests/native_coord/federation.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/federation/support.rs"]
+controls = ["BB-25"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "federation::support"
+owner = "proxy/tests/native_coord/federation.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/federation/support_audit.rs"]
+controls = ["BB-25"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "federation::support::audit"
+owner = "proxy/tests/native_coord/federation/support.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/federation/support_authority.rs"]
+controls = ["BB-25"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "federation::support::authority"
+owner = "proxy/tests/native_coord/federation/support.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/github.rs"]
+controls = ["BB-24"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "github"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/inventory.rs"]
+controls = ["BB-24"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "inventory"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/room_status.rs"]
+controls = ["BB-24"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "room_status"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/signals.rs"]
+controls = ["BB-24"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "signals"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/stage0.rs"]
+controls = ["BB-24"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "stage0"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/supervision.rs"]
+controls = ["BB-24"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "supervision"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/upgrade.rs"]
+controls = ["BB-24"]
+kind = "cargo"
+scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venue limits"
+adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
+target = "native_coord"
+module = "upgrade"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/credential_http/boundary.rs"]
+controls = ["BB-07", "BB-08", "BB-12"]
+kind = "cargo"
+scope = "Native HTTP; host process; controlled credentials and upstream origins"
+adapter = "Real proxy wire with controlled credential/provider adapters"
+target = "credential_http"
+module = "boundary"
+owner = "proxy/tests/credential_http.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/credential_http/ghcr.rs"]
+controls = ["BB-07"]
+kind = "cargo"
+scope = "Native HTTP; host process; controlled credentials and upstream origins"
+adapter = "Real proxy wire with controlled credential/provider adapters"
+target = "credential_http"
+module = "ghcr"
+owner = "proxy/tests/credential_http.rs"
+
+[[out_of_scope]]
+paths = ["tests/test_guest_helper_build.py", "tests/test_guest_inputs.py", "tests/test_guest_oci_publisher.py", "tests/test_guest_promotion.py", "tests/test_guest_release_auth.py", "tests/test_guest_scheduling.py", "tests/test_guest_signatures.py", "tests/test_guest_smoke_upload.py", "tests/test_guest_test_packages.py"]
+reason = "Guest artifact publication, preparation, scheduling and supporting contracts; no additional running sandbox-control witness is claimed. These source and workflow tests remain selected by their maintained CI lanes."
+
+[[witnesses]]
+paths = ["proxy/src/jobs/mediated/tests.rs"]
+controls = ["BB-31"]
+kind = "cargo"
+scope = "Native mediated job capabilities; host process"
+adapter = "Controlled runtime, artifact and credential fixtures; real native capability enforcement"
+target = "lib"
+module = "jobs::mediated::tests"
+owner = "proxy/src/jobs/mediated.rs"

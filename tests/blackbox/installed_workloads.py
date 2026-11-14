@@ -32,12 +32,14 @@ from contextlib import contextmanager
 from pathlib import Path
 
 if __package__:
+    from .execution_receipt import ProcedureReceipt
     from .guest_exec import guest_command_args
     from .host.sinkhole_client import SinkholeClient
     from .installed_host_smoke import _native_config, _sha256
     from .installed_ingress import installed_identity, runsc_identity
     from .isolation.installed_ingress import is_mounted_forwarder
 else:
+    from execution_receipt import ProcedureReceipt
     from guest_exec import guest_command_args
     from host.sinkhole_client import SinkholeClient
     from installed_host_smoke import _native_config, _sha256
@@ -292,6 +294,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--install-commit", required=True)
     args = parser.parse_args()
+    receipt = ProcedureReceipt('workloads', args.output)
     config_dir = args.config_dir.resolve()
     selected_checkout = os.environ.get("SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT")
     install_checkout = Path(selected_checkout).resolve() if selected_checkout else None
@@ -312,6 +315,7 @@ def main() -> None:
     assert Path(native["upstream_ca_file"]).is_file()
     listener = next(item for item in runtime["guest_ingress"]["agents"] if item["agent_id"] == args.agent)
     gvisor = runsc_identity(config_dir, args.agent, Path(listener["path"]), platform=args.platform)
+    receipt.checkpoint('identity')
     oci = json.loads((config_dir / "agents" / args.agent / "config.json").read_text())
     rootfs = Path(oci["root"]["path"]).resolve()
     assert rootfs.is_dir() and (rootfs / "etc/os-release").is_file(), (
@@ -331,11 +335,15 @@ def main() -> None:
             guest = run_guest(identity["cli"]["path"], args.agent, marker, "package-repo",
                               "--package-sha", package_sha, "--repo-commit", repo_commit)
             assert guest["trace_agent"] == args.agent
+            receipt.checkpoint('package-repo')
             stream, stream_control = run_held_sse(identity["cli"]["path"], args.agent, marker)
+            receipt.checkpoint('sse')
             websocket = run_guest(identity["cli"]["path"], args.agent, marker, "wss-ssh",
                                   "--ssh-user", username)
+            receipt.checkpoint('wss-ssh')
             origin = check_origin(sinkhole, marker, package_sha, repo_commit, guest, stream,
                                   websocket, observed)
+            receipt.checkpoint('origin')
     finally:
         sinkhole.close()
     report = {
@@ -347,6 +355,7 @@ def main() -> None:
         "parent_proxy": native["parent_proxy"], "upstream_ca_file": native["upstream_ca_file"]},
     }
     args.output.write_text(json.dumps(report, indent=2) + "\n")
+    receipt.checkpoint('finished')
     print(f"Linux {args.platform} workloads: installed guest package, repository, early SSE, "
           f"WSS, deny and pinned SSH verified ({args.output})")
 
