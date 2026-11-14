@@ -18,6 +18,25 @@ from tests.blackbox.selections import PROCEDURES
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_inline_rust_modules_keep_distinct_executable_identities(tmp_path):
+    path = tmp_path / "checks.rs"
+    path.write_text('''#[cfg(test)]
+mod tests {
+    #[test]
+    fn regular() {}
+}
+#[cfg(test)]
+mod fixture_tests {
+    #[tokio::test]
+    async fn preview() {}
+}
+''')
+    for module, function in [("tests", "regular"), ("fixture_tests", "preview")]:
+        witness = {"kind": "cargo", "target": "lib", "module": "checks::" + module, "owner": "checks.rs"}
+        nodes = catalogue.resolve(witness, "checks.rs", tmp_path)
+        assert [node["node"] for node in nodes] == ["checks::" + module + "::" + function]
+
+
 @pytest.fixture
 def catalogue_root(tmp_path, monkeypatch):
     for path in ("tests/blackbox/host/identity", "docs", ".github/workflows"):
