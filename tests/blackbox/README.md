@@ -364,6 +364,62 @@ with no markers cannot clear an inner cleanup failure that already detected a
 surviving owned process. Stop the proxy and each disposable guest: `safeyolo stop`
 alone does not stop a guest.
 
+## Manual two-host tailnet refusal witness
+
+`installed_tailnet.py` supplies a fresh independent TCP observer and native
+wrong-node and missing-local-interface checks. Use two existing authorized
+host accounts with real Tailscale status, assigned addresses and a prepared
+native installation containing pinned NATS. It does not stop Tailscale, change
+routes, create interfaces, enroll nodes or prove active loss/reconnect behavior.
+The isolated wrong-route and loss/recovery scenarios remain separate work.
+
+Run these modules from this checkout with the selected Python. On the receiver,
+replace `DEST_IP` with its own assigned Tailscale address and `SOURCE_IP` with
+the sender's assigned address. Use a new disk-backed private output directory:
+
+```sh
+python -m tests.blackbox.installed_tailnet observe \
+  --address DEST_IP --source SOURCE_IP --duration 60 --output OBSERVER_OUTPUT
+```
+
+Keep the observer foreground in its authorized transport. Read its
+`ready.json`; transfer only the fresh `port` and nonsecret `nonce` to the sender.
+Do not reuse a port from an older receipt. On the sender, probe that listener,
+run the native check, then repeat the same probe while the observer is live:
+
+```sh
+python -m tests.blackbox.installed_tailnet probe \
+  --address DEST_IP --source SOURCE_IP --port PORT --nonce NONCE
+python -m tests.blackbox.installed_tailnet check \
+  --address DEST_IP --source SOURCE_IP --port PORT --nonce NONCE \
+  --source-node SOURCE_NODE_ID --destination-node DEST_NODE_ID \
+  --cli INSTALLED_ROOT/bin/safeyolo --root NEW_NATIVE_ROOT \
+  --expect wrong-node --output CHECK_OUTPUT
+python -m tests.blackbox.installed_tailnet probe \
+  --address DEST_IP --source SOURCE_IP --port PORT --nonce NONCE
+```
+
+The wrong-node case deliberately selects the sender's actual stable node ID for
+the receiver's address. Both identities must still appear in live host status.
+These cases exercise the native home-selection refusal before saving an
+invalid endpoint. They do not exercise a previously selected connection's
+authentication or reconnect. The native report binds CLI/Coord bytes, source
+revision, driver bytes, exact refusal reason and cleanup. The independent observer offers a NATS greeting,
+counts even silent unexpected connections, retains no incoming credential
+bytes, and requires successful source probes before closing. Review both
+reports together and verify that the probes bracket the selected check using
+the same address, port and nonce. Neither report alone establishes withholding.
+
+For `--expect missing-interface`, an authorized executor must run only the
+check in a real isolated network namespace which can still read the live host
+daemon status but lacks its assigned interface. Run the bracketing probes from
+the ordinary sender context; never substitute status JSON or mutate a shared
+interface. Use new native roots and output directories for each case. Exit the
+namespace and verify the original host route/interface separately. This case
+proves the missing-interface refusal, not a previously working protected
+session losing and recovering its interface. There is no hosted recurring
+selection or completed two-host execution claim for this manual procedure.
+
 ## Journey with Python unavailable
 
 This bounded R5 preparation exercises installation, start/status/doctor,

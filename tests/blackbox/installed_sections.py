@@ -1,7 +1,8 @@
 """Prepare one installed product and run sections with separate writable state.
 
 Use a disposable host from a clean checkout. systrap runs isolation, workloads,
-access, lifecycle and host continuity, with optional two-agent ingress.
+access, peer support, approvals, providers, federation, lifecycle and host
+continuity, with optional two-agent ingress.
 KVM runs isolation, guest ingress and workloads. Physical Apple Silicon VZ runs isolation, access, lifecycle and
 host continuity. Each section retains its own report and logs. No hosted
 proxy or host-continuity result is an isolation result.

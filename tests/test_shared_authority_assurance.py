@@ -6,15 +6,55 @@ import json
 import os
 import shlex
 import shutil
+import socket
 import socketserver
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler
 
 import pytest
 
-from tests.blackbox import catalogue, guest_exec, native_authority
+from tests.blackbox import catalogue, guest_exec, installed_tailnet, native_authority
 from tests.blackbox.selections import NATIVE_AUTHORITY
+
+
+@pytest.mark.parametrize("unexpected", [None, b"", b"CONNECT private-observer-canary\r\n"])
+def test_tailnet_observer_requires_live_paired_probes_and_counts_silent_connections(tmp_path, unexpected):
+    output = tmp_path / "observer"
+    output.mkdir()
+    errors = []
+
+    def observe():
+        try:
+            installed_tailnet.observe("127.0.0.1", "127.0.0.1", 1, output)
+        except AssertionError as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=observe)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not (output / "ready.json").exists():
+            assert thread.is_alive() and time.monotonic() < deadline
+            time.sleep(.01)
+        ready = json.loads((output / "ready.json").read_text())
+        installed_tailnet.probe("127.0.0.1", ready["port"], "127.0.0.1", ready["nonce"])
+        if unexpected is not None:
+            with socket.create_connection(("127.0.0.1", ready["port"]), timeout=5) as connection:
+                assert connection.recv(4096).startswith(b"INFO ")
+                connection.sendall(unexpected)
+        installed_tailnet.probe("127.0.0.1", ready["port"], "127.0.0.1", ready["nonce"])
+    finally:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    text = (output / "result.json").read_text()
+    report = json.loads(text)
+    assert report["closed"] is True
+    assert report["status"] == ("passed" if unexpected is None else "failed")
+    assert len(report["connections"]) == (2 if unexpected is None else 3)
+    assert bool(errors) is (unexpected is not None)
+    assert "private-observer-canary" not in text
 
 
 def test_curated_native_cases_resolve_to_ignored_native_coord_tests():

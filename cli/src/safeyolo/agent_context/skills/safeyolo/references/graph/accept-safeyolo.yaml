@@ -280,7 +280,7 @@ nodes:
         - path: tests/blackbox/claude_smoke.py
           sha256: 98a1ded436d5c4f395c9014e4d270efcbc9834732b0d0f8049c3c5ba51df1f06
         - path: tests/blackbox/installed_sections.py
-          sha256: a4314d89ef842d36b887f0bcb5fe13bae2571e3c3f2aaed54dc28d59838f3daf
+          sha256: 084d72a991eae6c8714efc8af4db8038558e768348fd1f9693dce5b0091cada2
         - path: tests/blackbox/installed_ingress_pair.py
           sha256: 7528dc814fa524b27b960e9e1ec8efbd0f1ae649344e55486c73d98ab052fc3f
         - path: tests/blackbox/installed_storage.py

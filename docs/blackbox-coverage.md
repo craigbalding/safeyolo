@@ -810,11 +810,11 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **What and why:** Credentials are withheld without the correct node, interface and protected route.
 
-**Audit coverage:** Unit coverage; no maintained live BB found in the audit.
+**Audit coverage:** Manual real-status wrong-node/missing-interface driver and fresh independent TCP observer; protected execution pending.
 
-**Conformance / action:** Write wrong-node/route, interface-loss and restored-path controls; observe credential-bearing connections independently.
+**Conformance / action:** Execute paired refusals; add safe isolated wrong-route, interface-loss and restored-path proof with independent connection observation.
 
-**Effort:** L. **Comments:** Requires a two-host tailnet venue.
+**Effort:** L. **Comments:** Two-host bindings are supplied privately; isolated wrong-route/loss capability and deployed cadence remain unverified.
 
 **Owner / remaining work:** [#1561](https://github.com/craigbalding/safeyolo/issues/1561). [Audit source / evidence context](https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/proxy/src/coord_rooms/federation/tailscale.rs).
 
@@ -822,6 +822,8 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
+- [tests/blackbox/installed_tailnet.py::main](../tests/blackbox/installed_tailnet.py#L147) — Manual two-host tailnet negative control; real status and native CLI/Coord identities. Evidence: Fresh observer with bracketing source probes; wrong-node and authorized missing-interface cases only. No route mutation, loss/recovery or scheduled execution claim.
+  Selection: manual; no recurring selector resolved.
 - [proxy/src/coord_rooms/federation/tailscale.rs](../proxy/src/coord_rooms/federation/tailscale.rs#L162) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Unit fixtures for node/interface/route validation; not a live tailnet witness.
   Exact identities: [source inventory](#witness-proxy-src-coord-rooms-federation-tailscale-rs).
 

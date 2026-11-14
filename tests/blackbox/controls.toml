@@ -306,10 +306,10 @@ id = "BB-26"
 control = "Tailscale transport validation"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/proxy/src/coord_rooms/federation/tailscale.rs"
 what = "Credentials are withheld without the correct node, interface and protected route."
-existing = "Unit coverage; no maintained live BB found in the audit."
-conformance = "Write wrong-node/route, interface-loss and restored-path controls; observe credential-bearing connections independently."
+existing = "Manual real-status wrong-node/missing-interface driver and fresh independent TCP observer; protected execution pending."
+conformance = "Execute paired refusals; add safe isolated wrong-route, interface-loss and restored-path proof with independent connection observation."
 effort = "L"
-comments = "Requires a two-host tailnet venue."
+comments = "Two-host bindings are supplied privately; isolated wrong-route/loss capability and deployed cadence remain unverified."
 owner = "#1561"
 decisions = ["management_evidence"]
 
@@ -845,6 +845,13 @@ adapter = "Real instances/NATS; controlled run adapters"
 target = "native_coord"
 module = "federation"
 owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_tailnet.py::main"]
+controls = ["BB-26"]
+kind = "procedure"
+scope = "Manual two-host tailnet negative control; real status and native CLI/Coord identities"
+adapter = "Fresh observer with bracketing source probes; wrong-node and authorized missing-interface cases only. No route mutation, loss/recovery or scheduled execution claim"
 
 [[witnesses]]
 paths = ["proxy/src/coord_rooms/federation/tailscale.rs"]
