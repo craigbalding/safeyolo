@@ -907,6 +907,12 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
             inode = tree.stat().st_ino
         else:
             assert not list(trees.glob(prepared))
+            # The real remapper is held after its sudo wrapper starts. Both
+            # early command previews must already be visible on stderr.
+            disclosed = stderr_log.read_text()
+            assert "Host command: sudo -n tar " in disclosed
+            assert any(line.startswith("Host command: sudo -n -- ") and "host remap-rootfs" in line
+                       for line in disclosed.splitlines())
             assert host_calls.exists() == (outcome == "installed")
             assert not guest_calls.exists()
             # Discovery may advance while preparation is held. Installation

@@ -9,6 +9,32 @@ cleanup_install() {
   if [[ -n $install_lock ]]; then rmdir "$install_lock"; fi
 }
 
+preview_command_install() {
+  local purpose=$1
+  shift
+  printf 'Host command:' >&2
+  printf ' %q' "$@" >&2
+  printf '\n  %s\n' "$purpose" >&2
+}
+
+run_command_install() {
+  local purpose=$1 status
+  shift
+  if ((${#command_install[@]})); then preview_command_install "$purpose" "$@"; fi
+  "$@" || {
+    status=$?
+    printf 'Command installation failed (exit %s):' "$status" >&2
+    printf ' %q' "$@" >&2
+    if [[ -f $root/config.toml ]]; then
+      printf '\nInstallation files at %s remain.\n' "$root" >&2
+    else
+      printf '\nNo instance was activated at %s.\n' "$root" >&2
+    fi
+    printf 'Completed host preparation remains. Repair the reported privilege or command-directory failure and retry with this root, or select a writable --command-dir.\n' >&2
+    return "$status"
+  }
+}
+
 # The bootstrap calls this in its own shell so it can join its guest child
 # after independent host preparation and before guest selection or activation.
 install_native() {
@@ -40,8 +66,9 @@ while (($#)); do
       echo 'From source: scripts/install_native.sh --root ROOT --runtime-artifacts DIRECTORY [--artifacts HOST_BIN_DIRECTORY] [--guest-artifacts LINUX_BIN_DIRECTORY] [--vm-artifacts DIRECTORY] [--profile production|debug]'
       echo 'The public bootstrap uses --move-bundle to consume its temporary extraction. Ordinary --bundle input is copied and remains reusable.'
       echo 'Installation checks the bundle, acquires its compatible default guest and creates configuration, trust and tokens internally. Default ROOT is HOME/.safeyolo (or SAFEYOLO_CONFIG_DIR). Repeat preserves a matching installation without upgrading. Conflicting or older state requires a separate root. --platform-assets uses prepared/offline guest inputs; --no-guest-download supports contributor or proxy-only installation.'
-      echo 'New Linux bundles include the complete pinned gVisor runtime. Host preparation explains required packages, unused UID/GID allocations, private-runtime access and AppArmor changes before consent. --yes accepts those changes; --system-runsc selects a complete compatible system payload. Proxy-only --no-guest-download skips preparation unless --system-runsc explicitly selects a runtime.'
+      echo 'New Linux bundles include the complete pinned gVisor runtime. Host preparation shows exact commands and explains required packages, unused UID/GID allocations, private-runtime access and AppArmor changes before consent. --yes accepts those changes; --system-runsc selects a complete compatible system payload. Proxy-only --no-guest-download skips preparation unless --system-runsc explicitly selects a runtime.'
       echo 'Installs the safeyolo command in HOME/.local/bin when that directory is already on PATH, otherwise /usr/local/bin (using sudo if needed). --command-dir selects another command location. Existing unrelated commands are preserved.'
+      echo 'Every host sudo command and its effects are shown before execution, including cached/passwordless authorization and guest-stage cleanup. A user-writable --command-dir avoids command-link sudo.'
       echo '--guest-index pins first acquisition to an exact compatible OCI index. Repeated installation retains its installed guest; use guest upgrade for a later change.'
       exit 0;;
     --no-guest-download) download_guest=false; shift;;
@@ -114,13 +141,6 @@ if $existing; then
   for file in data/admin_token data/agent_token data/instance_id certs/mitmproxy-ca.pem certs/mitmproxy-ca-cert.pem; do
     require_file "$root/$file"
   done
-  if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]] || $runtime_override; }; then
-    "$root/bin/safeyolo" --root "$root" host prepare ${host_arguments[@]+"${host_arguments[@]}"}
-  fi
-  if [[ -f $root/share/guest-selection.json ]]; then
-    temporary=$(mktemp -d "$(dirname -- "$root")/native-repeat.XXXXXX")
-    "$root/bin/safeyolo" --root "$root" guest acquire --package-info "$root/package-info" --write-selection "$temporary/guest-selection.json" >/dev/null
-  fi
 fi
 if ! $existing && [[ -n $platform_assets ]]; then
   if [[ $(uname -s) == Darwin ]]; then
@@ -145,14 +165,14 @@ command_target=$root/bin/safeyolo
 command_parent=$command_dir
 while [[ ! -d $command_parent ]]; do command_parent=$(dirname "$command_parent"); done
 command_install=()
-if [[ ! -w $command_parent ]]; then
+command_entry=$command_dir/safeyolo
+if [[ ! -w $command_parent ]] && { [[ ! -d $command_dir ]] || [[ ! -L $command_entry ]]; }; then
   command -v sudo >/dev/null || {
     echo "Cannot write command directory $command_dir and sudo is unavailable; select a writable command directory with --command-dir." >&2
     exit 1
   }
   command_install=(sudo)
 fi
-command_entry=$command_dir/safeyolo
 check_command_entry() {
   local discovered
   if $command_on_path; then
@@ -169,6 +189,24 @@ check_command_entry() {
   fi
 }
 check_command_entry
+command_mkdir=(${command_install[@]+"${command_install[@]}"} mkdir -p "$command_dir")
+link_options=(-s)
+if [[ $(uname -s) == Darwin ]]; then link_options+=(-h); else link_options+=(-T); fi
+command_link=(${command_install[@]+"${command_install[@]}"} ln "${link_options[@]}" "$command_target" "$command_entry")
+command_purpose="install the command in $command_dir because your account cannot write $command_parent; --command-dir can select a user-writable directory to avoid sudo"
+if ((${#command_install[@]})); then
+  if [[ ! -d $command_dir ]]; then preview_command_install "$command_purpose" "${command_mkdir[@]}"; fi
+  if [[ ! -L $command_entry ]]; then preview_command_install "$command_purpose" "${command_link[@]}"; fi
+fi
+if $existing; then
+  if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]] || $runtime_override; }; then
+    "$root/bin/safeyolo" --root "$root" host prepare ${host_arguments[@]+"${host_arguments[@]}"}
+  fi
+  if [[ -f $root/share/guest-selection.json ]]; then
+    temporary=$(mktemp -d "$(dirname -- "$root")/native-repeat.XXXXXX")
+    "$root/bin/safeyolo" --root "$root" guest acquire --package-info "$root/package-info" --write-selection "$temporary/guest-selection.json" >/dev/null
+  fi
+fi
 if ! $existing; then
   # Existing prepared inputs and unrelated files can remain in a fresh root.
   # Never overwrite a partially initialized instance or another host package.
@@ -241,10 +279,7 @@ if ! $existing; then
   check_fresh_root
 fi
 check_command_entry
-if ((${#command_install[@]})); then
-  echo "SafeYolo will use sudo to create $command_dir if needed and link $command_entry to $command_target because your account cannot write $command_parent. Linux host preparation and guest extraction use sudo separately." >&2
-fi
-${command_install[@]+"${command_install[@]}"} mkdir -p "$command_dir"
+if [[ ! -d $command_dir ]]; then run_command_install "$command_purpose" "${command_mkdir[@]}"; fi
 if ! $existing; then
   echo "SafeYolo: activating the verified installation at $root." >&2
   mkdir -p "$root"
@@ -268,9 +303,7 @@ else
   echo "SafeYolo: retaining the installed host, guest and state at $root." >&2
 fi
 if [[ ! -L $command_entry ]]; then
-  link_options=(-s)
-  if [[ $(uname -s) == Darwin ]]; then link_options+=(-h); else link_options+=(-T); fi
-  ${command_install[@]+"${command_install[@]}"} ln "${link_options[@]}" "$command_target" "$command_entry"
+  run_command_install "$command_purpose" "${command_link[@]}"
 fi
 check_command_entry
 [[ $command_entry -ef $command_target ]] || {

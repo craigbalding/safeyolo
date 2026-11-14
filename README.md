@@ -45,12 +45,13 @@ Use Ubuntu 24.04 AMD64 (x86_64), an ordinary sudo-enabled account, Bash, curl,
 tar and an existing host Claude Code login. Open a host terminal in your own
 project directory without `install-safeyolo.sh`.
 
-You trust the project publisher. Setup uses host sudo for missing packages and
-sandbox IDs, guest extraction and ownership, and AppArmor rules for the selected
-runtime's user namespaces. Selected sandbox IDs get traversal to the runtime and
-read/execute on its files. Setting these permissions uses sudo only on paths you
-do not own. Command linking uses sudo for an unwritable parent. Host changes are
-listed before consent. Run separately; stop on failure.
+You trust the publisher. Host sudo prepares missing packages, sandbox IDs,
+guest extraction/ownership/cleanup and AppArmor user-namespace rules for the
+selected runtime. Sandbox IDs receive runtime traversal and file read/execute
+permissions; sudo changes permissions only on paths you do not own. Command
+linking uses sudo for an unwritable parent. Exact commands and effects precede
+consent and execution, including cached/passwordless sudo. Run separately; stop
+on failure.
 
 ```sh
 curl -fLO https://github.com/craigbalding/safeyolo/releases/latest/download/install-safeyolo.sh
