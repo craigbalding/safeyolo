@@ -8,7 +8,7 @@ No new host, login, root access, model or broader service grant is needed.
 
 ## Reuse the installed consumer
 
-Canonical operator backlog15963/15965 and the shared receipts under
+Canonical operator backlog15963/15965/15966 and the shared receipts under
 /evidence/operator/1552/runtime-d3c1e8c2 establish the completed packaging,
 installation, fixture setup and core admission/publication. Preserve those
 results. Do not repeat them to apply this recipe correction. The retained root
@@ -19,10 +19,13 @@ Native executables remain b8272ea837a62240fec92a8f4e9263c2a650bbcd/debug.
 The corrected optional Python checkers remain
 f4275ba656f38a22b5215caab25217355dad04eb. The package/Work witness scripts remain
 d3c1e8c2; the three-role factory contracts remain the 230db88d fixture. This
-correction changes configuration and guidance, not those executable inputs.
+correction changes configuration, guidance and the shipped Unikraft deadlines.
+Native executables and checker/runtime bytes stay unchanged.
 The accepted #1551 base is integrated separately; it does not relabel the
-retained native package. Use package_hyperlight_adoption.sh only when a new
-consumer actually needs packaging, with its exact existing inputs.
+retained native package. The retained package_hyperlight_adoption.sh reproduces the original b827/f427
+package, including its earlier budgets. It is not the corrected adoption input.
+Use the small asset update below for this existing consumer. Future ordinary
+bundles use the corrected write_job_definitions producer and installed helper.
 
 The gVisor input remains /home/agent/1452-native-bundle/libexec. Execution17820
 verified patched release-20261005.0-safeyolo.1 and the four files with mode 0755 below.
@@ -55,11 +58,9 @@ set -euo pipefail
 root=/home/agent/ha1552
 stage=/home/agent/1552-package-d3c1e8c2
 recipes=/home/agent/1552-inputs/recipes-adoption-fixed
-fixture=$recipes/fixture
 cli=$root/bin/safeyolo
 factory=ha1552
 room=ha1552
-credential=live-github
 packet_source=$stage/inputs/safeyolo-1552-b8272ea8/source
 creator_socket=$root/creator.sock
 owner_socket=$root/owner.sock
@@ -95,20 +96,32 @@ page_operator permission, factory prepare/run or paid client call is needed
 for this native-client witness. This does not prove managed-client discovery.
 
 The existing live-github reference was provisioned privately. Never print or
-retain its value. Execution 18093 admitted parent
-work-484b55e3234a4619804a1b5e7ddfd792; execution 18094 published its ready output 1 with target
-sha256:e84d817d4a2e5ffd0952e7bb8a795dc1b0264492782b76c4662807b12665d531.
-Independent check work-48b7881b96fb49a8b71a11c17ccc7adb remains Lens-owned.
-Read its current state before continuing; do not create another parent or
-publish ready again to replace the pending review. Exact subject/artifact/input
-bytes are in core-review-230db88d.json,
+retain its value. Parent work-484b55e3234a4619804a1b5e7ddfd792/output1, target
+sha256:e84d817d4a2e5ffd0952e7bb8a795dc1b0264492782b76c4662807b12665d531,
+was independently approved by Lens and canonically accepted in execution 18098.
+Execution 18099 published draft output2; readback 18100 records a typed
+positive=false finding with process exit0 and no observation error. The old
+acceptance does not apply. Preserve its pending exact-output check
+work-ecfdab3955884ffebf38c110c0326a3d and do not publish another output to replace
+that review. The original artifact/input bytes remain in core-review-230db88d.json,
 SHA256 70aba60c89015c38dde715a7f8b31580e2d1f24d7f0af0ee9e3705fb75e9a968.
+The follow-through is in core-followthrough-uk-default.json,
+SHA256 00aa165a2b1dc6fd758d77c67f1e8a95d2710eb11e9141878e5f50f77b935d47.
+
+Execution 18101 applied the prepared Unikraft policy and verified the intended
+GET route, KVM access and sufficient available space. Operation
+1552-unikraft-admit-1-admit-1 returned 409 after 5708 ms. Its job timed out after
+5106 ms with no delegated service records. No Unikraft Work was admitted.
+Preserve that failed operation. Precise time attribution before delegation is
+unknown; neither an empty grant nor a new hardware/access need follows.
 
 ## Prepare and adopt only the remaining selection
 
 Both engine proposals were prepared and validated in execution 18084. Reuse them under
 $stage/candidate-hyperlight and $stage/candidate-hyperlight-unikraft. Core
-adoption and its successful windows are complete. The commands below explain
+adoption and its successful windows are complete. The Unikraft attempt failed
+under the earlier shipped five-second budget; apply the reviewed correction
+below before selecting another attempt. The commands below explain
 the remaining second-engine selection. Preserve the completed effects.
 
 The actual venue lacks uv. Use Python 3.12+ with the existing task-local
@@ -133,39 +146,21 @@ reads live GitHub evidence; these tests create or edit no GitHub issue. Inspect
 the printed proposed authority and service_target before adoption. The installed
 walkthrough retains the authorship/autonomy explanation.
 
-For a deliberate remaining engine selection, use its retained proposal and
-preparation receipt. Select engine=hyperlight-unikraft in the same host shell.
-Back up any current override privately, then install only the reviewed service
-file to its reported path:
+Read the currently loaded capability and effective policy before the budget
+correction. Execution 18101 already selected Unikraft; retain that selection
+and the corrected grant. These commands make no activation:
 
 ```bash
 engine=hyperlight-unikraft
-service_target=$(python3 - "$stage/diagnostics/prepare-$engine.json" <<'TARGET'
-import json,sys
-print(json.load(open(sys.argv[1]))['service_target'])
-TARGET
-)
-if [[ -e $service_target ]]; then
-  cp "$service_target" "$stage/diagnostics/github-before-$engine.yaml"
-fi
-install -m 0600 "$stage/candidate-$engine/github.yaml" "$service_target"
-"$cli" --root "$root" services show github > "$stage/diagnostics/catalogue-$engine.json"
-```
-
-Continue only when definition.capabilities.read_example_issues.routes in that
-readback contains exactly GET /repos/craigbalding/safeyolo/issues/*. Repeat only
-the services show read while the watcher loads the override. A read failure or
-a different definition requires inspection of the selected path and
-configuration-error evidence. services check validates a file but does not load
-it. Policy apply compiles against the loaded catalogue; it does not reload a
-new override first. The independent service watcher checks every 2 seconds.
-Once the selected capability is loaded, apply and inspect the exact authority:
-
-```bash
-"$cli" --root "$root" policy apply "$stage/candidate-$engine/candidate.toml"
+"$cli" --root "$root" services show github > "$stage/diagnostics/catalogue-current.json"
 "$cli" --root "$root" policy show
 "$cli" --root "$root" services authorized gate:hyperlight-service-check
 ```
+
+The loaded definition must contain GET /repos/craigbalding/safeyolo/issues/*
+under read_example_issues. A fresh catalogue override must load before its
+policy is applied, as the installed walkthrough explains. The service watcher
+checks every two seconds; services check validates a file but does not load it.
 
 Expected: saved_matches_active=true and github's capability=read_example_issues,
 credential=live-github, host=api.github.com and routes containing only that GET
@@ -174,21 +169,96 @@ before admission, retain the failed result and inspect current policy/catalogue.
 Do not blindly revoke/reissue, widen access or retry admission. A lost reply
 requires current-state inspection before another effect.
 
-Operator15965 retains failed automatic create 18086 and its 403/service-gateway
-response, empty routes and later exact grant repair 18092. No credential/risk
-approval was pending. A local b827 probe reproduced empty routes when policy
-was applied before its new capability loaded; the watcher then supplied the
-correct route. That establishes an ordering failure in this recipe, not the
-cause of any persistent empty-route state after catalogue publication. Further
-diagnosis of that state needs the original failed attempt's timestamped loaded
-catalogue, effective policy/grant projection and configuration-error evidence.
-The reached successful core windows need no replay for that diagnosis.
+Canonical operator backlog15969 corrects the earlier persistent-grant premise.
+The initial empty scope was captured at 05:46:58Z; the correct catalogue was
+read later at 05:49:39–41Z. A subsequent read reused the old scope file, and the
+pre-revoke empty routes were copied from that old observation. No
+contemporaneous scope read establishes persistence after the catalogue loaded.
+The initial 403, scoped reissue and successful consumer remain established.
+The local b827 transient watcher/order reproduction is compatible. Exact
+causation beyond those observations stays unproved; do not replay the product
+or investigate a separate persistent defect to fill that observer gap.
+The retained chronology is grant-chronology-correction.json,
+SHA256 79f878b8d5cc10fcf8e4be372e4ca43a879f37b8db5752ebd8d2de3d0fcccc3f.
 
-The shipped jobs select 5 seconds and the prepared named check permits 10 seconds.
-Execution 17813 observed Unikraft jobs taking about 7–8 seconds with a 30 second selected
-job limit; a 5 second deadline expired before the held provider. Those are #1550
-driver observations, not #1552 automatic-admission results. Retain actual limits
-and failures. Do not silently extend them and call default usability proved.
+## Correct the shipped Unikraft budget
+
+The corrected producer ships 15-second Unikraft job definitions, based on the
+retained successful 7.2–8.3-second jobs and the actual five-second timeout.
+The installed preparation helper derives its named-check budget from the job
+plus five seconds, giving Unikraft 20 seconds. The core job/check budgets remain 5/10 seconds. These
+are whole-job deadlines. They do not establish faster execution or a more
+precise explanation of the pre-delegation delay. All byte, memory, service-call,
+concurrency and cancellation controls remain intact.
+
+The accompanying small archive includes update/assets for the selected native
+Linux x86_64 consumer: three Unikraft definitions and the corrected installed
+prepare.py/walkthrough.md. The definitions come from the corrected producer
+using the retained packet and f427 checker bytes. Only timeout_seconds changes
+in those definitions; the core definitions remain byte-identical. The current
+candidate in Coord identifies this update's immutable source and archive.
+Do not relabel the b827 native executables or f427 checker/runtime inputs.
+
+Sylab applies the reviewed files while no witness invocation is active. Back up
+the selected files privately first. This updates only the disposable instance's
+example assets; it requires no native rebuild, reinstall or proxy restart:
+
+```bash
+budget_backup=$stage/diagnostics/budget-assets-before
+mkdir -m 0700 "$budget_backup"
+for definition in hyperlight-unikraft.json hyperlight-unikraft-service.json hyperlight-unikraft-artifact.json; do
+  cp "$root/assets/hyperlight/$definition" "$budget_backup/$definition"
+  install -m 0644 "$recipes/update/assets/hyperlight/$definition" "$root/assets/hyperlight/$definition"
+done
+cp "$root/assets/skills/job-authoring/scripts/prepare.py" "$budget_backup/prepare.py"
+cp "$root/assets/skills/job-authoring/references/walkthrough.md" "$budget_backup/walkthrough.md"
+install -m 0644 "$recipes/update/assets/skills/job-authoring/scripts/prepare.py" "$root/assets/skills/job-authoring/scripts/prepare.py"
+install -m 0644 "$recipes/update/assets/skills/job-authoring/references/walkthrough.md" "$root/assets/skills/job-authoring/references/walkthrough.md"
+```
+
+Preserve the current saved policy and prepare a private candidate that changes
+only the two adopted Unikraft checks' definition digests and deadlines. The
+current selected policy is Unikraft from execution 18101. If that selection has
+changed, inspect it before applying these scoped edits. Use the existing
+Python/TOMLKit environment verified above. Choose a new candidate path if this
+one already exists, after inspecting the prior result:
+
+```bash
+budget_policy=$stage/diagnostics/unikraft-budget-policy.toml
+python3 - "$root" "$budget_policy" <<'BUDGET'
+import hashlib,json,os,sys
+from pathlib import Path
+import tomlkit
+root=Path(sys.argv[1])
+policy=tomlkit.parse((root/'policy.toml').read_text())
+for name,suffix in [('example_issue_author','service'),('example_artifact','artifact')]:
+    spec_path=root/'assets/hyperlight'/f'hyperlight-unikraft-{suffix}.json'
+    check=policy['checks'][name]
+    if Path(check['source']['spec']).resolve() != spec_path.resolve():
+        raise SystemExit('Inspect the changed selected engine before preparing its policy')
+    raw=spec_path.read_bytes()
+    spec=json.loads(raw)
+    check['configuration_version']=hashlib.sha256(raw).hexdigest()
+    check['source']['limits']['timeout_ms']=spec['timeout_seconds']*1000+5000
+fd=os.open(sys.argv[2],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+with os.fdopen(fd,'w') as stream:
+    stream.write(tomlkit.dumps(policy))
+BUDGET
+"$cli" --root "$root" policy check "$budget_policy"
+"$cli" --root "$root" policy apply "$budget_policy"
+"$cli" --root "$root" policy show
+"$cli" --root "$root" services authorized gate:hyperlight-service-check
+```
+
+Expected: saved_matches_active=true, 15-second selected job definitions and
+20-second named-check limits, with the same intended GET route and credential
+reference. The old prepared candidates still contain ten-second named-check
+limits; do not reapply them after this correction. For any later grant control,
+use budget_policy as the corrected baseline. Fresh installed preparation uses
+the corrected helper and obtains these same budgets without this existing-policy
+edit. Stop on any failed activation or differing readback. A corrected source
+or saved file is not installed qualification; Sylab owns the next actual
+consumer and Lens judges its result. No unchanged retry is selected here.
 
 ## Native admission, checked-input consumption and output replacement
 
@@ -203,7 +273,7 @@ common=(--root "$root" --room "$room" --factory "$factory" --snapshot "$snapshot
   --owner-socket "$owner_socket" --owner-id "$owner_id"
   --repository craigbalding/safeyolo --author-id 123607 --issue 1552)
 python3 "$recipes/hyperlight_adoption.py" admit "${common[@]}" \
-  --rejected-issue 1573 --run-id "1552-$engine-admit-1" --scratch "$stage/diagnostics/$engine-admit"
+  --rejected-issue 1573 --run-id "1552-$engine-admit-budget-1" --scratch "$stage/diagnostics/$engine-admit-budget"
 # work is the canonical work_id printed by that successful admission.
 python3 "$recipes/hyperlight_adoption.py" publish "${common[@]}" --work-id "$work" \
   --artifact-status ready --run-id "1552-$engine-ready-1" --scratch "$stage/diagnostics/$engine-ready"
@@ -257,7 +327,7 @@ checker and spec bytes. Sylab owns these protected policy activations:
 
 ```bash
 packet_source=$stage/inputs/safeyolo-1552-b8272ea8/source
-baseline=$stage/candidate-$engine/candidate.toml
+baseline=$budget_policy
 revoked=$stage/diagnostics/revoked-$engine.toml
 python3 "$recipes/revoke_example_grant.py" \
   --baseline "$baseline" --output "$revoked"
@@ -344,7 +414,8 @@ Retain package/checker/runtime/source identities and compact actual results for
 Lens. Private diagnostics can contain captured issue bodies and remain private.
 The native product output/check records are the lifecycle; these scratch files
 are test inputs/results, not another queue or assignment log. Preserve the
-supplied core admission/publication and pending exact-output review. Complete
+supplied core admission/acceptance and draft replacement, plus its pending
+exact-output review. Complete
 two-engine factory execution, refreshed input, independent postcondition
 acceptance and comparisons need their remaining observations and judgment.
 Physical Apple-silicon HVF remains required separately; the Linux packet and

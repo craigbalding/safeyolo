@@ -152,6 +152,10 @@ def write_job_definitions(output: Path) -> None:
         if kind == "hyperlight":
             engine["function"] = "Check"
         spec = {**common, "memory_mb": memory, "engine": engine}
+        if kind == "hyperlight-unikraft":
+            # Retained jobs took 7.2–8.3s; the five-second installed example
+            # expired before delegation. This covers the whole job.
+            spec["timeout_seconds"] = 15
         (output / f"{kind}.json").write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
         service_spec = {**spec, "gate_id": "hyperlight-service-check", "network": False,
                         "mediated_services": {"services": ["github"], "max_calls": 4,

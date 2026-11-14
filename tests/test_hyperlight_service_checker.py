@@ -121,6 +121,15 @@ def test_bundle_pins_both_service_checkers_without_changing_offline_examples(tmp
             assert offline["engine"]["checker"]["path"] == "checker.py"
             assert selected["path"] == "service_checker.py"
         artifact = json.loads((tmp_path / f"{kind}-artifact.json").read_text())
+        for definition in (offline, service, artifact):
+            assert definition["timeout_seconds"] == (5 if kind == "hyperlight" else 15)
+            assert definition["max_input_bytes"] == definition["retain_bytes"] == 16384
+            assert definition["max_input_entries"] == 16
+            assert definition["memory_mb"] == (16 if kind == "hyperlight" else 256)
+        assert service["mediated_services"] == {
+            "services": ["github"], "max_calls": 4,
+            "max_request_bytes": 49152, "max_response_bytes": 1048576,
+        }
         assert "mediated_services" not in artifact
         assert artifact["gate_id"] == "hyperlight-artifact-check"
         if kind == "hyperlight":

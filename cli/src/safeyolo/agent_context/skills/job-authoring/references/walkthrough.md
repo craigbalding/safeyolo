@@ -62,6 +62,13 @@ For Python, validate `hyperlight-unikraft-service.json` instead. Missing
 artifacts, runtime/architecture mismatches or unavailable virtualization stop
 the run; there is no engine fallback. A validation pass is not a VM execution.
 
+The core examples have a five-second job deadline; the Unikraft examples have
+a fifteen-second deadline. The helper gives each named check five additional
+seconds for its surrounding execution. These are finite budgets, not latency
+promises. Retained Unikraft runs took 7.2–8.3 seconds; an installed attempt with
+the earlier five-second budget timed out before delegation. Increasing the
+budget does not establish faster execution or installed qualification.
+
 The proposed dependency grant belongs only to
 `gate:hyperlight-service-check`. It permits authenticated `GET` of issues in
 one repository through service `github`, with no GitHub write route. The

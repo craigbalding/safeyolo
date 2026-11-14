@@ -86,7 +86,7 @@ def prepare(args):
             "implementation_version": selected["sha256"], "configuration_version": digest(path),
             "max_age_seconds": 60, "inputs": inputs,
             "source": {"kind": "job", "spec": str(path), "effects": "passive", "limits": {
-                "timeout_ms": 10000, "max_input_bytes": spec["max_input_bytes"],
+                "timeout_ms": spec["timeout_seconds"] * 1000 + 5000, "max_input_bytes": spec["max_input_bytes"],
                 "max_output_bytes": spec["retain_bytes"], "max_concurrent": 1, "max_pending": 1, "max_cached": 0}}}
         add_example_setting(policy.setdefault("checks", {}), name, definition)
         binding = {"name": name, "room": args.room, "factory": args.factory, "job": name,

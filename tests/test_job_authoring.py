@@ -77,6 +77,9 @@ def test_installed_helper_proposes_scoped_authority_without_applying(installed, 
     assert author["inputs"] == {"repository": "owner/repository", "expected_author_id": "42"}
     assert author.get("invokers", []) == []
     assert author["source"]["spec"] == str(installed / f"assets/hyperlight/{engine}-service.json")
+    for name in ("example_issue_author", "example_artifact"):
+        assert candidate["checks"][name]["source"]["limits"]["timeout_ms"] == (
+            10000 if engine == "hyperlight" else 20000)
     assert [item["boundary"] for item in candidate["work_bindings"]] == ["admit_issue", "verify_output"]
     assert all(item["on_failure"] == "hold" for item in candidate["work_bindings"])
     service = yaml.safe_load((output / "github.yaml").read_text())
