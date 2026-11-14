@@ -102,6 +102,11 @@ It uses the instance owner's existing policy authority and keeps administrative
 credentials outside the research workload. Its optional Python/TOMLKit authoring
 helper is separate from the package/install/start path.
 
+For adopted executable checks, use the shipped `job-authoring` skill and its
+[installed factory walkthrough](../cli/src/safeyolo/agent_context/skills/job-authoring/references/walkthrough.md).
+Hyperlight execution additionally needs the matching optional runtime bundle;
+the skill explains engine selection, scoped adoption and failure inspection.
+
 Before startup, make curl and tar available and permit the configured network
 route to acquire the pinned NATS runtime. Coord verifies the archive,
 binary and instance ownership. Its existing `coord start --binary PATH` option

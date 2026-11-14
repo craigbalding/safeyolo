@@ -391,6 +391,24 @@ async fn automatic_admission_covers_api_cli_import_omitted_factory_and_existing_
     let calls = provider.calls.load(Ordering::SeqCst);
     assert_eq!(api(root.path(), &allowed).await.1, receipt);
     assert_eq!(provider.calls.load(Ordering::SeqCst), calls);
+    // A later delegation refreshes the relevant issue read, even within its
+    // prior result's freshness period. An idempotent replay above stays a replay.
+    provider.mode.store(1, Ordering::SeqCst);
+    let mut delegated = input(&receipt["work"], "reassign");
+    delegated["agent_id"] = json!(ALICE);
+    assert!(
+        submit(
+            &proxy,
+            root.path(),
+            Actor::Operator,
+            delegated,
+            "refreshed-delegation"
+        )
+        .await
+        .is_err()
+    );
+    assert!(provider.calls.load(Ordering::SeqCst) > calls);
+    provider.mode.store(0, Ordering::SeqCst);
     let imported = super::super::super::work_cli::run(
         root.path(),
         &[

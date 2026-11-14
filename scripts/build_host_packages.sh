@@ -82,12 +82,15 @@ fi
 [[ ! -e $directory ]] || { package_error "bundle directory already exists: $directory"; exit 1; }
 mkdir -p "$directory/bin" "$directory/libexec" "$directory/lib" "$directory/assets/guest" "$directory/assets/launchers" "$directory/assets/contrib/lib" "$directory/assets/docs"
 if [[ -n $hyperlight_artifacts ]]; then
-  for artifact in safeyolo-hyperlight runtime.json python.cpio core.elf checker.py hyperlight.json hyperlight-unikraft.json; do
+  hyperlight_files=(safeyolo-hyperlight runtime.json python.cpio core.elf checker.py service_checker.py artifact_checker.py
+    hyperlight.json hyperlight-unikraft.json hyperlight-service.json hyperlight-unikraft-service.json
+    hyperlight-artifact.json hyperlight-unikraft-artifact.json)
+  for artifact in "${hyperlight_files[@]}"; do
     require_file "$hyperlight_artifacts/$artifact"
   done
   native_executable "$hyperlight_artifacts/safeyolo-hyperlight" "$platform"
   mkdir -p "$directory/assets/hyperlight"
-  for artifact in safeyolo-hyperlight runtime.json python.cpio core.elf checker.py hyperlight.json hyperlight-unikraft.json; do
+  for artifact in "${hyperlight_files[@]}"; do
     cp "$hyperlight_artifacts/$artifact" "$directory/assets/hyperlight/"
   done
   [[ -d $hyperlight_artifacts/licenses ]] || { package_error 'Hyperlight bundle license notices are missing'; exit 1; }

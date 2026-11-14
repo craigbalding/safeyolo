@@ -593,9 +593,14 @@ fn stage_claude_state(home: &Path, operator_home: Option<&Path>) -> Result<(), E
             directory(&claude.join("skills"))?;
             for entry in fs::read_dir(source.join("skills"))? {
                 let entry = entry?;
-                if ["safeyolo", "safeyolo-lab-controller", "safeyolo-factory"]
-                    .iter()
-                    .any(|name| entry.file_name() == *name)
+                if [
+                    "safeyolo",
+                    "safeyolo-lab-controller",
+                    "safeyolo-factory",
+                    "job-authoring",
+                ]
+                .iter()
+                .any(|name| entry.file_name() == *name)
                 {
                     eprintln!(
                         "Skipped host Claude skill '{}' (reserved by SafeYolo)",

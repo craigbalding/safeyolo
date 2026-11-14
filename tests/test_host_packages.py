@@ -572,7 +572,7 @@ def package_inputs(tmp_path, request, monkeypatch):
         (assets / f"{name}.sh").write_text("#!/bin/sh\nexit 0\n")
     for name in ("launchers", "agent_context/skills/safeyolo", "services"):
         (assets / name).mkdir(parents=True)
-    for name in ("safeyolo-lab-controller", "safeyolo-factory"):
+    for name in ("safeyolo-lab-controller", "safeyolo-factory", "job-authoring"):
         shutil.copytree(
             REPO / "cli/src/safeyolo/agent_context/skills" / name,
             assets / "agent_context/skills" / name,
@@ -928,7 +928,9 @@ def test_hyperlight_runtime_is_packaged_with_pinned_definitions_and_notices(pack
     runtime = tmp_path / "hyperlight"
     runtime.mkdir()
     shutil.copy2(package_inputs[1] / "safeyolo-proxy", runtime / "safeyolo-hyperlight")
-    for name in ("runtime.json", "python.cpio", "core.elf", "checker.py", "hyperlight.json", "hyperlight-unikraft.json"):
+    for name in ("runtime.json", "python.cpio", "core.elf", "checker.py", "service_checker.py", "artifact_checker.py",
+                 "hyperlight.json", "hyperlight-unikraft.json", "hyperlight-service.json", "hyperlight-unikraft-service.json",
+                 "hyperlight-artifact.json", "hyperlight-unikraft-artifact.json"):
         (runtime / name).write_text("controlled runtime fixture\n")
     if notices:
         (runtime / "licenses").mkdir()
@@ -1305,6 +1307,10 @@ def test_fresh_install_preserves_prepared_platform_inputs(package_inputs, tmp_pa
     for name, relative in (
         ("safeyolo-lab-controller", "scripts/prepare-nested.sh"),
         ("safeyolo-factory", "SKILL.md"),
+        ("job-authoring", "SKILL.md"),
+        ("job-authoring", "references/walkthrough.md"),
+        ("job-authoring", "references/engines.md"),
+        ("job-authoring", "scripts/prepare.py"),
     ):
         assert (root / "assets/skills" / name / relative).read_bytes() == (
             skill_source / name / relative

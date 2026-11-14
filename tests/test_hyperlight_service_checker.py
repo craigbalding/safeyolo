@@ -1,10 +1,12 @@
 """Both guests' predicate uses the existing authoritative GitHub capture."""
 
 import base64
+import contextlib
 import copy
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -90,7 +92,7 @@ def test_bundle_pins_both_service_checkers_without_changing_offline_examples(tmp
     spec = importlib.util.spec_from_file_location("builder", REPO / "scripts/build_hyperlight_jobs.py")
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
-    for name in ("core.elf", "checker.py", "service_checker.py", "runtime.json"):
+    for name in ("core.elf", "checker.py", "service_checker.py", "artifact_checker.py", "runtime.json"):
         (tmp_path / name).write_text(name)
     builder.write_job_definitions(tmp_path)
     for kind in ("hyperlight", "hyperlight-unikraft"):
@@ -108,6 +110,41 @@ def test_bundle_pins_both_service_checkers_without_changing_offline_examples(tmp
         else:
             assert offline["engine"]["checker"]["path"] == "checker.py"
             assert selected["path"] == "service_checker.py"
+        artifact = json.loads((tmp_path / f"{kind}-artifact.json").read_text())
+        assert "mediated_services" not in artifact
+        assert artifact["gate_id"] == "hyperlight-artifact-check"
+        if kind == "hyperlight":
+            assert artifact["engine"]["function"] == "ArtifactCheck"
+        else:
+            assert artifact["engine"]["checker"]["sha256"] == hashlib.sha256((tmp_path / "artifact_checker.py").read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("case", json.loads((REPO / "proxy/tests/fixtures/hyperlight-author-cases.json").read_bytes()), ids=lambda case: case["name"])
+def test_shared_author_and_autonomy_cases(case):
+    capture = {**CAPTURE, **case["patch"]}
+    value = request()
+    if "expected_author_id" in case:
+        value["inputs"]["expected_author_id"] = case["expected_author_id"]
+    call = bridge(json.dumps(capture).encode())
+    if case["outcome"] == "unavailable":
+        with pytest.raises((ValueError, KeyError)):
+            checker.service_check(value, call)
+    else:
+        assert checker.service_check(value, call)["finding"]["positive"] is (case["outcome"] == "pass")
+
+
+@pytest.mark.parametrize("case", json.loads((REPO / "proxy/tests/fixtures/hyperlight-artifact-cases.json").read_bytes()), ids=lambda case: case["name"])
+def test_shared_exact_artifact_cases(case):
+    spec = importlib.util.spec_from_file_location("artifact_checker", REPO / "jobs/artifact_checker.py")
+    artifact = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(artifact)
+    value = {"subject": {"kind": "value", "value": json.dumps({
+        "artifact_base64": base64.b64encode(case["artifact"].encode()).decode()})}, "inputs": {"expected_status": "ready"}}
+    if case["positive"] is None:
+        with pytest.raises((ValueError, KeyError)):
+            artifact.artifact_check(value)
+    else:
+        assert artifact.artifact_check(value)["finding"]["positive"] is case["positive"]
 
 
 @pytest.fixture
@@ -118,6 +155,57 @@ def host_driver(monkeypatch):
     driver = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(driver)
     return driver
+
+
+@pytest.mark.parametrize("entrypoint", ["job_result", "run_job"])
+def test_driver_preserves_job33_failure_before_decoding_stdout(host_driver, tmp_path, monkeypatch, entrypoint):
+    prefix = tmp_path / "job-33"
+    stderr = ("safeyolo: job cleanup failed: delegated listener cleanup acknowledgment is unavailable; "
+              "runtime preserved at /home/agent/hl1550-a706de61/data/job-hyperlight-sP769u\n")
+    assert len(stderr.encode()) == 164
+    prefix.with_suffix(".stdout").write_bytes(b"")
+    prefix.with_suffix(".stderr").write_text(stderr)
+    prefix.with_suffix(".status.json").write_text('{"returncode": 1}\n')
+    diagnostic = tmp_path / "job-hyperlight-sP769u" / "service-evidence.json"
+    diagnostic.parent.mkdir()
+    diagnostic.write_text("retained diagnostic\n")
+
+    @contextlib.contextmanager
+    def completed_job(_engine, _request, **_options):
+        yield SimpleNamespace(wait=lambda timeout: 1), prefix
+
+    instance = host_driver.Instance(SimpleNamespace(root=tmp_path, scratch=tmp_path))
+    monkeypatch.setattr(instance, "job", completed_job)
+    with pytest.raises(RuntimeError) as failed:
+        if entrypoint == "job_result":
+            host_driver.job_result(prefix, "hyperlight", "shutdown")
+        else:
+            instance.run_job("hyperlight", {})
+    message = str(failed.value)
+    mode = "shutdown" if entrypoint == "job_result" else "run_job"
+    assert f"hyperlight/{mode}" in message and "command exit 1" in message
+    assert stderr in message
+    for suffix in (".status.json", ".stdout", ".stderr"):
+        assert str(prefix.with_suffix(suffix)) in message
+    assert diagnostic.read_text() == "retained diagnostic\n"
+    assert prefix.with_suffix(".stdout").read_bytes() == b""
+    assert json.loads(prefix.with_suffix(".status.json").read_bytes()) == {"returncode": 1}
+
+
+def test_driver_cannot_accept_json_from_a_failed_command(host_driver, tmp_path):
+    prefix = tmp_path / "job"
+    prefix.with_suffix(".stdout").write_text('{"outcome": {"kind": "exit", "code": 0}}')
+    prefix.with_suffix(".stderr").write_text("cleanup failed")
+    prefix.with_suffix(".status.json").write_text('{"returncode": 1}')
+    with pytest.raises(RuntimeError, match="command exit 1.*cleanup failed"):
+        host_driver.job_result(prefix, "hyperlight-unikraft", "shutdown")
+    prefix.with_suffix(".status.json").write_text('{"returncode": 0}')
+    assert host_driver.job_result(prefix, "hyperlight-unikraft", "run_job") == {
+        "outcome": {"kind": "exit", "code": 0}}
+    for malformed in (b"malformed", b"\xff"):
+        prefix.with_suffix(".stdout").write_bytes(malformed)
+        with pytest.raises(RuntimeError, match="invalid job result JSON"):
+            host_driver.job_result(prefix, "hyperlight-unikraft", "run_job")
 
 
 @pytest.fixture

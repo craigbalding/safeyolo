@@ -163,6 +163,13 @@ def write_job_definitions(output: Path) -> None:
             service_spec["engine"]["checker"] = {"path": "service_checker.py",
                                                "sha256": file_digest(output / "service_checker.py")}
         (output / f"{kind}-service.json").write_text(json.dumps(service_spec, indent=2) + "\n", encoding="utf-8")
+        artifact_spec = {**spec, "gate_id": "hyperlight-artifact-check", "network": False, "engine": dict(engine)}
+        if kind == "hyperlight":
+            artifact_spec["engine"]["function"] = "ArtifactCheck"
+        else:
+            artifact_spec["engine"]["checker"] = {"path": "artifact_checker.py",
+                                                "sha256": file_digest(output / "artifact_checker.py")}
+        (output / f"{kind}-artifact.json").write_text(json.dumps(artifact_spec, indent=2) + "\n", encoding="utf-8")
 
 
 def bundle(repository: Path, output: Path, profile: str) -> None:
@@ -228,6 +235,7 @@ def bundle(repository: Path, output: Path, profile: str) -> None:
     )
     shutil.copyfile(repository / "jobs/checker.py", output / "checker.py")
     shutil.copyfile(repository / "jobs/service_checker.py", output / "service_checker.py")
+    shutil.copyfile(repository / "jobs/artifact_checker.py", output / "artifact_checker.py")
     source = rootfs(output, architecture)
     copy_licenses(repository, output)
     manifest = {

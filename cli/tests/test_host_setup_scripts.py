@@ -228,6 +228,7 @@ def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
         expected_links = {"safeyolo": SKILL_LINK_TARGET}
         if consumer_dir in {".agents", ".claude"}:
             expected_links["readme-usability"] = "/safeyolo/skills/readme-usability"
+            expected_links["job-authoring"] = "/safeyolo/skills/job-authoring"
             expected_links["safeyolo-lab-controller"] = LAB_CONTROLLER_LINK_TARGET
             expected_links["safeyolo-factory"] = FACTORY_SKILL_LINK_TARGET
         if consumer_dir == ".agents":
@@ -1700,7 +1701,7 @@ def test_codex_state_rejects_mixed_external_provider_and_chatgpt_auth(tmp_path):
         ("claude-host-setup.sh", ".claude"),
     ],
 )
-@pytest.mark.parametrize("skill_name", ["safeyolo", "safeyolo-lab-controller", "safeyolo-factory", "readme-usability"])
+@pytest.mark.parametrize("skill_name", ["safeyolo", "safeyolo-lab-controller", "safeyolo-factory", "readme-usability", "job-authoring"])
 def test_context_staging_migrates_legacy_managed_skill_link(
     tmp_path: Path,
     script_name: str,
@@ -2172,7 +2173,7 @@ def test_claude_setup_stages_personal_skills_but_reserves_managed_names(
     personal = operator_home / ".claude/skills/personal/SKILL.md"
     personal.parent.mkdir(parents=True)
     personal.write_text("operator personal skill\n")
-    reserved = ["safeyolo", "safeyolo-lab-controller", "safeyolo-factory"]
+    reserved = ["safeyolo", "safeyolo-lab-controller", "safeyolo-factory", "job-authoring"]
     for name in reserved:
         colliding = operator_home / ".claude/skills" / name / "SKILL.md"
         colliding.parent.mkdir(parents=True)
@@ -2195,7 +2196,7 @@ def test_claude_setup_stages_personal_skills_but_reserves_managed_names(
         assert os.readlink(agent_home / ".claude/skills" / name) == f"/safeyolo/skills/{name}"
 
 
-@pytest.mark.parametrize("skill_name", ["safeyolo", "safeyolo-lab-controller", "safeyolo-factory"])
+@pytest.mark.parametrize("skill_name", ["safeyolo", "safeyolo-lab-controller", "safeyolo-factory", "job-authoring"])
 @pytest.mark.parametrize("kind", ["directory", "file", "symlink", "parent-symlink"])
 def test_claude_managed_skill_conflicts_preserve_user_paths(tmp_path, skill_name, kind):
     operator, home = tmp_path / "operator", tmp_path / "agent"

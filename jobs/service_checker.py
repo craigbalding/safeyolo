@@ -54,7 +54,7 @@ def service_check(request, call):
         raise ValueError("GitHub author ID unavailable")
     if not 0 <= actual_author <= 2**64 - 1 or not 0 <= evidence["id"] <= 2**64 - 1:
         raise ValueError("GitHub ID exceeds u64")
-    return {"finding": {"kind": "finding", "positive": actual_author == author}}
+    return {"finding": {"kind": "finding", "positive": actual_author == author and "pull_request" not in evidence}}
 
 
 def main():

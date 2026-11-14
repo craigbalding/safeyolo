@@ -181,7 +181,7 @@ impl Checks {
         runtime: &'a Runtime,
         state: &'a RuntimeState,
     ) -> futures_util::future::BoxFuture<'a, std::result::Result<Evidence, Error>> {
-        self.invoke_adopted(name, Some(caller), subject, runtime, state, false)
+        self.invoke_adopted(name, Some(caller), subject, runtime, state, false, false)
     }
 
     pub(crate) fn invoke_automatic<'a>(
@@ -191,8 +191,9 @@ impl Checks {
         runtime: &'a Runtime,
         state: &'a RuntimeState,
         action: bool,
+        capture_issue: bool,
     ) -> futures_util::future::BoxFuture<'a, std::result::Result<Evidence, Error>> {
-        self.invoke_adopted(name, None, subject, runtime, state, action)
+        self.invoke_adopted(name, None, subject, runtime, state, action, capture_issue)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -204,6 +205,7 @@ impl Checks {
         runtime: &'a Runtime,
         state: &'a RuntimeState,
         action: bool,
+        capture_issue: bool,
     ) -> futures_util::future::BoxFuture<'a, std::result::Result<Evidence, Error>> {
         // This entry can itself be reached by a delegated proxy listener.
         // As with collect_live, box the boundary to keep its Send type finite.
@@ -256,6 +258,7 @@ impl Checks {
                 state,
                 vec![name.into()],
                 action,
+                capture_issue,
             )
             .await
         })
@@ -292,7 +295,16 @@ impl Checks {
                 let mut stack = ancestry.to_vec();
                 stack.push(name.clone());
                 let outcome = self
-                    .execute(name, check, entry.clone(), runtime, state, stack, false)
+                    .execute(
+                        name,
+                        check,
+                        entry.clone(),
+                        runtime,
+                        state,
+                        stack,
+                        false,
+                        false,
+                    )
                     .await;
                 match outcome {
                     Ok(result) => *entry = result,
@@ -313,6 +325,7 @@ impl Checks {
         state: &RuntimeState,
         stack: Vec<String>,
         action: bool,
+        capture_issue: bool,
     ) -> std::result::Result<Evidence, Error> {
         let (limits, prepared) = match &check.source {
             EvidenceSource::Job { spec, limits, .. } => {
@@ -373,7 +386,10 @@ impl Checks {
                 })
             })
             .clone();
-        if !action && let Some(mut result) = self.execution.cached(name, &key, check)? {
+        if !action
+            && !capture_issue
+            && let Some(mut result) = self.execution.cached(name, &key, check)?
+        {
             result.acquisition = "reused_live_evidence".into();
             return Ok(result);
         }
@@ -421,6 +437,7 @@ impl Checks {
                 stack,
                 cancelled.clone(),
                 action,
+                capture_issue,
             )
             .await
         });
@@ -493,8 +510,10 @@ impl Checks {
         let mut result = result;
         if !action {
             validate_evidence(check, &mut result, now());
-            self.execution
-                .remember(name, key, result.clone(), limits.max_cached)?;
+            if !capture_issue {
+                self.execution
+                    .remember(name, key, result.clone(), limits.max_cached)?;
+            }
         }
         Ok(result)
     }
@@ -734,6 +753,7 @@ async fn run(
     stack: Vec<String>,
     mut cancelled: watch::Receiver<bool>,
     action: bool,
+    capture_issue: bool,
 ) -> std::result::Result<Evidence, Error> {
     if *cancelled.borrow() {
         return Err("check cancelled before execution".into());
@@ -744,7 +764,7 @@ async fn run(
         EvidenceSource::Job { limits, .. } | EvidenceSource::Service { limits, .. } => limits,
         _ => unreachable!(),
     };
-    let (bytes, execution, mapping, path) = match prepared {
+    let (bytes, mut execution, mapping, path) = match prepared {
         Prepared::Job {
             job,
             path,
@@ -944,6 +964,25 @@ async fn run(
             )
         }
     };
+    if capture_issue
+        && execution["kind"] == "job"
+        && execution["service_evidence"]
+            .as_array()
+            .is_some_and(|captures| {
+                captures
+                    .iter()
+                    .any(|capture| capture["service"] == "github")
+            })
+    {
+        match checked_github_input(&execution, &check.inputs, entry.subject.as_ref().unwrap()) {
+            Ok(snapshot) => execution["checked_input"] = snapshot,
+            Err(error) => {
+                entry.execution = Some(execution);
+                entry.unavailable = Some(error.to_string());
+                return Ok(entry);
+            }
+        }
+    }
     entry.execution = Some(execution);
     if action {
         // Actions report the reached execution, never a predicate or cached success.
@@ -1094,6 +1133,57 @@ fn github_issue(
         source_observed_at_ms: None,
         valid_until_ms: None,
     })
+}
+
+/// Only an automatic GitHub admission receives the exact captured dependency.
+/// Manual check invocation still returns derived evidence without private bodies.
+fn checked_github_input(
+    execution: &Value,
+    inputs: &BTreeMap<String, String>,
+    subject: &Subject,
+) -> std::result::Result<Value, Error> {
+    let repository = inputs
+        .get("repository")
+        .ok_or("issue snapshot needs an adopted repository")?;
+    let Subject::Value { value } = subject else {
+        return Err("issue snapshot needs an issue-number subject".into());
+    };
+    let number: u64 = value.parse()?;
+    let url = format!("https://api.github.com/repos/{repository}/issues/{number}");
+    let captures = execution["service_evidence"]
+        .as_array()
+        .ok_or("GitHub snapshot capture unavailable")?;
+    let mut matches = captures.iter().filter(|capture| {
+        capture["service"] == "github" && capture["method"] == "GET" && capture["url"] == url
+    });
+    let capture = matches
+        .next()
+        .ok_or("GitHub snapshot capture unavailable")?;
+    if matches.next().is_some() || capture["status"] != 200 || !capture["error"].is_null() {
+        return Err("GitHub snapshot needs one complete successful issue read".into());
+    }
+    let encoded = capture["retained_base64"]
+        .as_str()
+        .ok_or("GitHub snapshot bytes unavailable")?;
+    let bytes = STANDARD.decode(encoded)?;
+    let digest = content_digest(&bytes);
+    if capture["response_bytes"].as_u64() != Some(bytes.len() as u64)
+        || capture["response_sha256"] != digest
+    {
+        return Err("GitHub snapshot capture digest or length mismatch".into());
+    }
+    let issue: Value = serde_json::from_slice(&bytes)?;
+    if issue["url"] != url
+        || issue["number"].as_u64() != Some(number)
+        || !issue["title"].is_string()
+        || !issue["updated_at"].is_string()
+        || !issue
+            .get("body")
+            .is_some_and(|body| body.is_string() || body.is_null())
+    {
+        return Err("GitHub snapshot content or subject unavailable".into());
+    }
+    Ok(json!({"kind":"github_issue","url":url,"content_base64":encoded,"sha256":digest}))
 }
 
 #[cfg(test)]

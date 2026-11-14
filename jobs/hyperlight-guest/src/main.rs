@@ -51,6 +51,14 @@ fn service_probe(_argv: String) -> Result<String> {
     Ok(alloc::format!("{}\n", serde_json::json!(replies)))
 }
 
+#[guest_function("ArtifactCheck")]
+fn artifact_check(_argv: String) -> Result<String> {
+    let bytes = read_input(String::from("request.json"))?;
+    let result = safeyolo_checker::artifact_check(&bytes)
+        .map_err(|message| HyperlightGuestError::new(ErrorCode::GuestError, message))?;
+    Ok(alloc::format!("{result}\n"))
+}
+
 /// A small deterministic checker workload shared with the Python example.
 #[guest_function("Check")]
 fn check(_argv: String) -> Result<String> {
