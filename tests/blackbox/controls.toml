@@ -306,8 +306,8 @@ id = "BB-26"
 control = "Tailscale transport validation"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/proxy/src/coord_rooms/federation/tailscale.rs"
 what = "Credentials are withheld without the correct node, interface and protected route."
-existing = "Manual real-status wrong-node/missing-interface driver and fresh independent TCP observer; protected execution pending."
-conformance = "Execute paired refusals; add safe isolated wrong-route, interface-loss and restored-path proof with independent connection observation."
+existing = "Maintained two-host refusal, live-source loss/recovery and destination-effect controllers with a fresh independent forwarding observer; protected execution pending."
+conformance = "Execute wrong-node, isolated wrong-route/missing-interface, active source loss and restored-path phases; pair withheld bytes, canonical destination effects and owned cleanup."
 effort = "L"
 comments = "Two-host bindings are supplied privately; isolated wrong-route/loss capability and deployed cadence remain unverified."
 owner = "#1561"
@@ -850,8 +850,8 @@ owner = "proxy/tests/native_coord.rs"
 paths = ["tests/blackbox/installed_tailnet.py::main"]
 controls = ["BB-26"]
 kind = "procedure"
-scope = "Manual two-host tailnet negative control; real status and native CLI/Coord identities"
-adapter = "Fresh observer with bracketing source probes; wrong-node and authorized missing-interface cases only. No route mutation, loss/recovery or scheduled execution claim"
+scope = "Manual two-host tailnet journey; real status, native CLI/Coord and unchanged source proxy/guest identities"
+adapter = "Fresh observer forwards to owned real NATS, brackets fixed phases on the source clock and forces an active reconnect. Destination verifies canonical effects, refused non-delivery and cleanup. Faults require authorized isolated contexts; no executed live-tailnet or scheduled coverage inferred"
 
 [[witnesses]]
 paths = ["proxy/src/coord_rooms/federation/tailscale.rs"]

@@ -618,7 +618,9 @@ def prepared_invocation(retained_invocation):
     ''')
     (instruments / 'run-tests.sh').write_text(f'#!{sys.executable}\n' + section)
     (instruments / 'run-tests.sh').chmod(0o700)
-    (instruments / 'installed_state_transition.py').write_text(section)
+    for driver in ('installed_state_transition.py', 'installed_authority.py',
+                   'installed_provider.py', 'installed_federation.py'):
+        (instruments / driver).write_text(section)
     (controller / '.gitignore').write_text('__pycache__/\n/events\n/retained installation/\n/original reports/\n'
                                           '/original isolation state/\n/frozen selection.json\n')
     for command in (['git', 'init', '-q'], ['git', 'add', '.'],
@@ -643,7 +645,9 @@ def test_missing_readiness_runs_maintained_sections_before_binding_and_preserves
         assert report['exit'] == 0, report
         stages = [row['stage'] for row in events(controller)]
         assert stages == ['doctor', 'init', 'isolation', 'doctor', 'stop', 'workloads', 'stop',
-                          'access', 'stop', 'lifecycle', 'stop', 'continuity', 'stop', 'binding', 'smoke']
+                          'access', 'stop', 'peer-support', 'stop', 'shared-approvals', 'stop',
+                          'provider', 'stop', 'federation', 'stop', 'lifecycle', 'stop',
+                          'continuity', 'stop', 'binding', 'smoke']
         assert report['selection_mode'] == 'retained-manual' and report['readiness_reused'] is False
         assert report['readiness_origin'] is None
         assert report['readiness']['controller_revision'] == subprocess.check_output(

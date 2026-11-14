@@ -732,7 +732,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-harness-attention-py).
 - [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L591) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `access`; default `vz` section `access`.
-- [tests/blackbox/native_authority.py::main](../tests/blackbox/native_authority.py#L73) — Curated native Coord cases on Linux with real NATS and isolated instance roots. Evidence: Per-control procedure receipts and exact executed cases; process evidence, without a real guest or live tailnet.
+- [tests/blackbox/native_authority.py::main](../tests/blackbox/native_authority.py#L74) — Curated native Coord cases on Linux with real NATS and isolated instance roots. Evidence: Per-control procedure receipts and exact executed cases; process evidence, without a real guest or live tailnet.
   Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only); step matrix.os == 'ubuntu-latest'`).
 - [proxy/tests/native_coord/reviews.rs](../proxy/tests/native_coord/reviews.rs#L100) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real instances/NATS; controlled run adapters.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-reviews-rs).
@@ -785,7 +785,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/native_authority.py::main](../tests/blackbox/native_authority.py#L73) — Curated native Coord cases on Linux with real NATS and isolated instance roots. Evidence: Per-control procedure receipts and exact executed cases; process evidence, without a real guest or live tailnet.
+- [tests/blackbox/native_authority.py::main](../tests/blackbox/native_authority.py#L74) — Curated native Coord cases on Linux with real NATS and isolated instance roots. Evidence: Per-control procedure receipts and exact executed cases; process evidence, without a real guest or live tailnet.
   Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only); step matrix.os == 'ubuntu-latest'`).
 - [tests/blackbox/installed_federation.py::main](../tests/blackbox/installed_federation.py#L152) — Two actual systrap guests and a separate destination instance on the same Linux host. Evidence: Real TLS/NATS, destination operator history, exact delivery, wrong principal/instance and trust revocation; no live Tailscale claim.
   Selection: default `systrap` section `federation`.
@@ -810,9 +810,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **What and why:** Credentials are withheld without the correct node, interface and protected route.
 
-**Audit coverage:** Manual real-status wrong-node/missing-interface driver and fresh independent TCP observer; protected execution pending.
+**Audit coverage:** Maintained two-host refusal, live-source loss/recovery and destination-effect controllers with a fresh independent forwarding observer; protected execution pending.
 
-**Conformance / action:** Execute paired refusals; add safe isolated wrong-route, interface-loss and restored-path proof with independent connection observation.
+**Conformance / action:** Execute wrong-node, isolated wrong-route/missing-interface, active source loss and restored-path phases; pair withheld bytes, canonical destination effects and owned cleanup.
 
 **Effort:** L. **Comments:** Two-host bindings are supplied privately; isolated wrong-route/loss capability and deployed cadence remain unverified.
 
@@ -822,7 +822,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/installed_tailnet.py::main](../tests/blackbox/installed_tailnet.py#L147) — Manual two-host tailnet negative control; real status and native CLI/Coord identities. Evidence: Fresh observer with bracketing source probes; wrong-node and authorized missing-interface cases only. No route mutation, loss/recovery or scheduled execution claim.
+- [tests/blackbox/installed_tailnet.py::main](../tests/blackbox/installed_tailnet.py#L504) — Manual two-host tailnet journey; real status, native CLI/Coord and unchanged source proxy/guest identities. Evidence: Fresh observer forwards to owned real NATS, brackets fixed phases on the source clock and forces an active reconnect. Destination verifies canonical effects, refused non-delivery and cleanup. Faults require authorized isolated contexts; no executed live-tailnet or scheduled coverage inferred.
   Selection: manual; no recurring selector resolved.
 - [proxy/src/coord_rooms/federation/tailscale.rs](../proxy/src/coord_rooms/federation/tailscale.rs#L162) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Unit fixtures for node/interface/route validation; not a live tailnet witness.
   Exact identities: [source inventory](#witness-proxy-src-coord-rooms-federation-tailscale-rs).

@@ -46,12 +46,13 @@ def run(executable: Path, output: Path) -> None:
                                            capture_output=True, text=True, env=env, check=True, timeout=30)
                 if inventory.stdout.splitlines().count(case + ": test") != 1:
                     raise ValueError("missing exact native case")
+                log = directory / (case.replace("::", "-") + ".log")
                 execution_started = True
-                result = subprocess.run([str(executable), case, "--exact", "--ignored", "--test-threads=1"],
-                                        capture_output=True, text=True, env=env, timeout=300)
-                (directory / (case.replace("::", "-") + ".log")).write_text(result.stdout + result.stderr)
+                with log.open("w") as diagnostics:
+                    result = subprocess.run([str(executable), case, "--exact", "--ignored", "--test-threads=1"],
+                                            stdout=diagnostics, stderr=subprocess.STDOUT, env=env, timeout=300)
                 row.update(exit=result.returncode,
-                           passed=result.returncode == 0 and f"test {case} ... ok" in result.stdout)
+                           passed=result.returncode == 0 and f"test {case} ... ok" in log.read_text())
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 row["error"] = type(error).__name__ + ": " + str(error)
                 if execution_started and isinstance(error, subprocess.TimeoutExpired):
