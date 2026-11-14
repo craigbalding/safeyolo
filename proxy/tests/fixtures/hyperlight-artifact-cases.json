@@ -2,6 +2,10 @@
   {"name":"ready","artifact":"{\"status\":\"ready\"}\n","positive":true},
   {"name":"draft","artifact":"{\"status\":\"draft\"}\n","positive":false},
   {"name":"changed-output","artifact":"{\"status\":\"ready\",\"revision\":2}","positive":true},
+  {"name":"constant-names-in-string","artifact":"{\"status\":\"ready\",\"value\":\"Infinity -Infinity NaN\"}","positive":true},
+  {"name":"positive-infinity","artifact":"{\"status\":\"ready\",\"value\":Infinity}","positive":null},
+  {"name":"negative-infinity","artifact":"{\"status\":\"ready\",\"value\":-Infinity}","positive":null},
+  {"name":"not-a-number","artifact":"{\"status\":\"ready\",\"value\":NaN}","positive":null},
   {"name":"missing-status","artifact":"{}","positive":null},
   {"name":"wrong-type","artifact":"{\"status\":true}","positive":null},
   {"name":"malformed-json","artifact":"{","positive":null}

@@ -53,6 +53,13 @@ def test_complete_chunked_capture_and_identity_mismatch():
         checker.service_check(request(), bridge(data[:-1]))
 
 
+@pytest.mark.parametrize("constant", ["Infinity", "-Infinity", "NaN"])
+def test_non_json_constants_in_capture_are_unavailable(constant):
+    data = json.dumps(CAPTURE)[:-1] + ',"value":' + constant + '}'
+    with pytest.raises(ValueError, match="invalid JSON constant"):
+        checker.service_check(request(), bridge(data.encode()))
+
+
 @pytest.mark.parametrize("field", ["url", "number", "id", "title", "updated_at", "user"])
 def test_missing_evidence_is_unavailable(field):
     capture = copy.deepcopy(CAPTURE)
@@ -147,6 +154,18 @@ def test_shared_exact_artifact_cases(case):
             artifact.artifact_check(value)
     else:
         assert artifact.artifact_check(value)["finding"]["positive"] is case["positive"]
+
+
+@pytest.mark.parametrize("constant", ["Infinity", "-Infinity", "NaN"])
+def test_non_json_constants_in_artifact_subject_are_unavailable(constant):
+    spec = importlib.util.spec_from_file_location("artifact_checker", REPO / "jobs/artifact_checker.py")
+    artifact = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(artifact)
+    subject = json.dumps({"artifact_base64": base64.b64encode(b'{"status":"ready"}').decode()})
+    value = {"subject": {"kind": "value", "value": subject[:-1] + ',"value":' + constant + '}'},
+             "inputs": {"expected_status": "ready"}}
+    with pytest.raises(ValueError, match="invalid JSON constant"):
+        artifact.artifact_check(value)
 
 
 @pytest.fixture
