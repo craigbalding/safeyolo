@@ -216,10 +216,22 @@ The comparison has these bounded rules:
 
 A general CI pytest command does not establish that each named regression test
 is a BB witness. For an unmapped test outside the discovered evidence trees,
-the comparison retains assertions, exception expectations, skips, decorators,
-parameters, control flow and shared helper definitions. Straight-line setup
-changes without a changed oracle or selection remain unclassified. Catalogue
-witnesses and discovered evidence retain their full executable definitions.
+the comparison retains the full executable definition, including straight-line
+setup, assertions, exception expectations, skips, decorators, parameters,
+control flow and shared helpers. Changing an assigned expected status from
+403 to 200 remains material even when the assertion text is unchanged.
+
+One bounded exception recognizes the inspected GitHub command-line interface
+(CLI) fixture adaptation in `2ec26866..690549f1`. The adapter selects the `repos/`
+argument after `--include` is added and emits fixed success headers before the
+same JSON response. The analyzer pins the two complete normalized definitions
+of `test_recurring_git_changes_through_both_clis`, including all setup,
+assertions and selection. Only that exact pair compares equally and stays
+visible as unclassified input. A different setup statement, expected value,
+assertion, adapter operation or selection produces a different fingerprint and
+remains material. This exception does not normalize arbitrary embedded strings
+or establish general equivalence. Catalogue witnesses and discovered evidence
+retain their full executable definitions without this exception.
 
 For the publisher, static name references from module statements select the
 notification decisions and their local helpers. The comparison retains event

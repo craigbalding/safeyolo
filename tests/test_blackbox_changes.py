@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import inspect
 import json
 import os
 import subprocess
@@ -85,14 +86,51 @@ def test_oracle_change_with_unchanged_explanation_is_material(sources):
     assert compare(sources, {TEST: ORIGINAL.replace("== 0", "== 1")})["delta_id"]
 
 
-def test_unmapped_ci_test_setup_stays_visible_but_oracles_remain_material(sources):
+@pytest.mark.parametrize(("original", "before", "after"), [
+    ('def test_auth():\n    expected = 403\n    actual = request_as_guest()\n    assert actual == expected\n',
+     'expected = 403', 'expected = 200'),
+    ('def test_auth():\n    expected = 403\n    actual = request_as_guest()\n    assert actual == expected\n',
+     'request_as_guest()', 'request_as_admin()'),
+    ('def test_auth():\n    actual = request("guest")\n    assert actual == 403\n',
+     '"guest"', '"admin"'),
+    ('def test_auth():\n    tolerance = 0\n    observed = 1\n    assert observed <= tolerance\n',
+     'tolerance = 0', 'tolerance = 1'),
+    ('def test_auth():\n    options = {"role": "guest"}\n    actual = request(options)\n    assert actual == 403\n',
+     '"guest"', '"admin"'),
+    ('def test_auth():\n    options = {}\n    options["role"] = "guest"\n    assert request(options) == 403\n',
+     '"guest"', '"admin"'),
+    ('def test_auth():\n    run = lambda: request_as_guest()\n    assert run() == 403\n',
+     'request_as_guest()', 'request_as_admin()'),
+    ('def test_auth():\n    failure = PermissionError\n    with pytest.raises(failure):\n        request_as_guest()\n',
+     'PermissionError', 'Exception'),
+    ('def test_auth():\n    selected = "guest"\n    pytest.importorskip(selected)\n    assert request_as_guest() == 403\n',
+     '"guest"', '"admin"'),
+    ('def test_response():\n    protocol = "old framing"\n    assert response() == 1\n',
+     'old framing', 'new framing'),
+])
+def test_unmapped_ci_test_setup_and_oracles_remain_material(tmp_path, git_sources, original, before, after):
+    root, git = git_sources
+    path = "tests/test_ci_regression.py"
+    (root / path).write_text(original)
+    workflow = root / WORKFLOW
+    workflow.write_text(workflow.read_text() + f'      - run: pytest {path}\n')
+    git("add", ".")
+    git("commit", "-qm", "original ancillary regression")
+    base = git("rev-parse", "HEAD")
+    changed = original.replace(before, after)
+    assert changes.regression_definition(original) != changes.regression_definition(changed)
+    (root / path).write_text(changed)
+    git("add", ".")
+    git("commit", "-qm", "changed regression setup")
+    report = analyze_cli(root, base, git("rev-parse", "HEAD"), tmp_path)
+    assert report["delta_id"]
+    assert report["changes"][0]["status"] == "material"
+
+
+def test_unmapped_ci_test_selection_and_mapped_setup_remain_material(sources):
     path = "tests/test_ci_regression.py"
     original = 'def test_response():\n    protocol = "old framing"\n    assert response() == 1\n'
     files = sources | {path: original, WORKFLOW: sources[WORKFLOW] + f'      - run: pytest {path}\n'}
-    report = compare(files, {path: original.replace("old framing", "new framing")})
-    assert report["delta_id"] is None
-    assert report["changes"][0]["status"] == "unclassified"
-    assert report["changes"][0]["edits"] == [{"unit": "test_response#0", "change": "changed"}]
     assert compare(files, {path: original.replace("== 1", "== 2")})["delta_id"]
     assert compare(files, {path: original.replace("assert response() == 1", "pytest.skip('disabled')")})["delta_id"]
     assert compare(files, {path: original.replace("def test_response():", "@pytest.mark.parametrize('expected', [1, 2])\ndef test_response(expected):")})["delta_id"]
@@ -100,6 +138,34 @@ def test_unmapped_ci_test_setup_stays_visible_but_oracles_remain_material(source
     # identifies this test as BB evidence, including outside the BB tree.
     files[changes.CATALOGUE] += f'[[witnesses]]\npaths = ["{path}"]\ncontrols = ["BB-01"]\nkind = "pytest"\n'
     assert compare(files, {path: original.replace("old framing", "new framing")})["delta_id"]
+
+
+def test_github_cli_fixture_framing_keeps_other_setup_and_oracles(sources, github):
+    # Exercise the actual recurring CLI control's accepted diagnostic adaptation.
+    framed = inspect.getsource(test_recurring_git_changes_through_both_clis)
+    raw = framed.replace("next(arg for arg in sys.argv if arg.startswith('repos/'))", "sys.argv[2]").replace(
+        "if '--include' in sys.argv:\n    print('HTTP/2.0 200 OK')\n    print('X-Github-Request-Id: fixture')\n    print()\n", "")
+    assert raw != framed
+    path = "tests/test_ci_regression.py"
+    files = sources | {path: raw, WORKFLOW: sources[WORKFLOW] + f'      - run: pytest {path}\n'}
+    report = compare(files, {path: framed})
+    assert report["delta_id"] is None
+    assert report["changes"][0]["status"] == "unclassified"
+    assert notices.publish(report, event(), "pull_request_target")["status"] == "quiet"
+    assert not github.posts
+    for before, after in [
+        ('state = tmp_path / "comments.json"', 'state = tmp_path / "other.json"'),
+        ('enumerate((1, 0, 1)', 'enumerate((1, 1, 1)'),
+        ('assert len(comments) == 3', 'assert len(comments) == 2'),
+        ("arg.startswith('repos/')", "arg.startswith('issues/')"),
+        ("if '--method' in sys.argv:", "if False:"),
+        ("print('HTTP/2.0 200 OK')", "print('HTTP/2.0 403 Forbidden')"),
+    ]:
+        assert before in framed
+        assert compare(files, {path: framed.replace(before, after)})["delta_id"]
+    later = compare(files, {path: framed.replace('assert len(comments) == 3', 'assert len(comments) == 2')})
+    assert notices.publish(later, event(), "pull_request_target")["status"] == "published"
+    assert len(github.posts) == 1
 
 
 def test_notification_transport_diagnostics_are_visible_without_a_mention(sources, github):
