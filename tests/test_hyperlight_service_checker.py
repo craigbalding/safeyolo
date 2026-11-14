@@ -339,6 +339,22 @@ def test_host_capture_retains_the_current_policy_and_configuration_identities(ho
         host_driver.captured(host_capture)
 
 
+@pytest.mark.parametrize("engine", ["hyperlight", "hyperlight-unikraft"])
+@pytest.mark.parametrize("defect", [None, "engine", "kind", "runtime_manifest_sha256", "artifact_sha256"])
+def test_engine_observer_matches_selected_engine_and_artifact_pins(host_driver, host_capture, tmp_path, engine, defect):
+    host_capture["engine"] = host_capture["rootfs"]["kind"] = engine
+    selected = {"runtime": {"sha256": "a" * 64},
+                "guest" if engine == "hyperlight" else "checker": {"sha256": "b" * 64}}
+    path = tmp_path / "adopted.json"
+    path.write_text(json.dumps({"engine": selected}))
+    if defect:
+        (host_capture if defect == "engine" else host_capture["rootfs"])[defect] = "wrong"
+        with pytest.raises(AssertionError):
+            host_driver.check_engine_identity(host_capture, engine, path)
+    else:
+        host_driver.check_engine_identity(host_capture, engine, path)
+
+
 @pytest.mark.parametrize("field,value", [
     ("policy_hash", "a" * 64), ("policy_hash", "sha256:" + "a" * 64),
     ("policy_hash", "sha256:" + "a" * 15), ("policy_hash", "sha256:" + "g" * 16),

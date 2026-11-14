@@ -17,10 +17,26 @@ import yaml
 
 if __package__:
     from .execution_receipt import phase_functions, python_tests
-    from .selections import HOST_EXCLUSIONS, OPTIONAL_CASES, OPTIONAL_SECTIONS, PROCEDURES, PYTEST_PHASES, SECTIONS
+    from .selections import (
+        HOST_EXCLUSIONS,
+        NATIVE_PHASES,
+        OPTIONAL_CASES,
+        OPTIONAL_SECTIONS,
+        PROCEDURES,
+        PYTEST_PHASES,
+        SECTIONS,
+    )
 else:
     from execution_receipt import phase_functions, python_tests
-    from selections import HOST_EXCLUSIONS, OPTIONAL_CASES, OPTIONAL_SECTIONS, PROCEDURES, PYTEST_PHASES, SECTIONS
+    from selections import (
+        HOST_EXCLUSIONS,
+        NATIVE_PHASES,
+        OPTIONAL_CASES,
+        OPTIONAL_SECTIONS,
+        PROCEDURES,
+        PYTEST_PHASES,
+        SECTIONS,
+    )
 
 ROOT = Path(__file__).resolve().parents[2]
 METADATA = "tests/blackbox/controls.toml"
@@ -125,16 +141,28 @@ def resolve(witness: dict, reference: str, root: Path) -> list[dict]:
                   for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == suffix]
     elif kind == "cargo":
         source = path.read_text()
+        start, end = 0, len(source)
+        if relative == witness["owner"]:
+            # An owner file can contain several sibling inline test modules.
+            # Keep each module's identities separate; native execution must
+            # still confirm every discovered name against the compiled tests.
+            leaf = witness["module"].split("::")[-1]
+            inline = re.search(r"(?m)^(?P<indent>[ \t]*)mod\s+" + re.escape(leaf) + r"\s*\{", source)
+            if inline:
+                start = inline.end()
+                closing = re.search(r"(?m)^" + inline["indent"] + r"\}", source[start:])
+                if closing:
+                    end = start + closing.start()
         constraint_sources = [source, (root / witness["owner"]).read_text()]
         if witness["target"] != "lib":
             target = root / "proxy/tests" / (witness["target"] + ".rs")
             constraint_sources.append(target.read_text())
         file_constraints = "\n".join(dict.fromkeys(
             constraint for content in constraint_sources for constraint in re.findall(r"#!\[cfg[^\]]*\]", content)))
-        result = [{"node": witness["module"] + "::" + match["name"],
+        result = [{"node": "::".join(filter(None, (witness["module"], match["name"]))),
                    "line": source[:match.start()].count("\n") + 1,
                    "ignored": "#[ignore" in match["attrs"], "cfg": file_constraints + "\n" + match["attrs"].strip()}
-                  for match in RUST_TEST.finditer(source) if re.search(r"#\[(?:tokio::)?test\b", match["attrs"])]
+                  for match in RUST_TEST.finditer(source, start, end) if re.search(r"#\[(?:tokio::)?test\b", match["attrs"])]
     else:
         raise ValueError(f"unknown witness kind: {kind}")
     if not result:
@@ -189,6 +217,10 @@ def selection(witness: dict, reference: str, node: dict, commands: list[dict], p
         matches = [command for command in commands if pytest_selected(command, node["node"])]
     elif witness["kind"] == "cargo":
         matches = [command for command in commands if cargo_selected(witness, node, command)]
+        for phase, groups in NATIVE_PHASES.items():
+            if any(witness["target"] == target and (not prefix or node["node"].startswith(prefix + "::"))
+                   for target, prefix in groups):
+                selected.append(f"manual native phase `{phase}` (named execution receipt; ignored cases remain incomplete)")
         if node["ignored"]:
             selected.append("ignored by default")
     else:
@@ -237,6 +269,9 @@ def selector_problems(root: Path = ROOT) -> list[str]:
         if sorted(actual) != sorted(checkpoints):
             problems.append(f"{filename}: stale/missing procedure checkpoints for {section}")
         drivers = shell + (root / "tests/blackbox/installed_sections.py").read_text()
+        focused = root / "tests/blackbox/run-controls.sh"
+        if focused.is_file():
+            drivers += focused.read_text()
         if filename not in drivers:
             problems.append(f"unwired installed procedure: {filename}")
     explicit = [node for node, _variable, _value, _reason in OPTIONAL_CASES]
@@ -265,6 +300,11 @@ def validate_controls(controls: list[dict], root: Path) -> set[str]:
 
 def validate_cargo_source(witness: dict, root: Path) -> None:
     owner = root / witness["owner"]
+    if not witness["module"] and witness["target"] != "lib":
+        expected = root / "proxy/tests" / (witness["target"] + ".rs")
+        if owner != expected or any(root / path != expected for path in witness["paths"]):
+            raise ValueError(f"unwired Cargo root target: {witness['paths']}")
+        return
     leaf = witness["module"].split("::")[-1]
     if witness["target"] == "lib":
         prefix = owner.relative_to(root / "proxy/src").with_suffix("").parts
@@ -347,7 +387,7 @@ def render_control_rows(controls: list[dict], witnesses: list[dict], commands: l
                 if witness["kind"] == "procedure":
                     lines += ["  Selection: " + "; ".join(selection(witness, reference, nodes[0], commands, phases)) + "."]
                 else:
-                    lines += [f"  Exact identities: [source inventory](#{anchor(reference)})."]
+                    lines += [f"  Exact identities: [source inventory](#{witness_anchor(witness, reference)})."]
         lines.append("")
     return lines
 
@@ -358,7 +398,7 @@ def render_witness_identities(witnesses: list[dict], commands: list[dict], phase
         for reference, nodes in witness["resolved"]:
             if witness["kind"] == "procedure":
                 continue
-            lines += [f'<a id="{anchor(reference)}"></a>', f"### [`{reference}`]({link(reference)})", ""]
+            lines += [f'<a id="{witness_anchor(witness, reference)}"></a>', f"### [`{reference}`]({link(reference)})", ""]
             last_selection = None
             for node in nodes:
                 selected = selection(witness, reference, node, commands, phases)
@@ -411,3 +451,9 @@ def render(root: Path = ROOT) -> str:
 
 def anchor(reference: str) -> str:
     return "witness-" + re.sub(r"[^a-z0-9]+", "-", reference.lower()).strip("-")
+
+
+def witness_anchor(witness: dict, reference: str) -> str:
+    # Sibling inline Rust modules share a file but have distinct inventories.
+    suffix = "::" + witness["module"] if witness["kind"] == "cargo" and reference == witness["owner"] else ""
+    return anchor(reference + suffix)
