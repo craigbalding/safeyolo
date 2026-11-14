@@ -111,13 +111,13 @@ def observe_backend(record):
     probe = runpy.run_path(str(Path(__file__).resolve().parents[1] / "assert-platform.py"))
     observed = probe["running_platform"](record.parents[2], record.parent.name)
     expected = os.environ.get("SAFEYOLO_BLACKBOX_LANE")
-    if expected is not None:
-        assert observed["platform"] == expected, "job used another backend"
+    if expected is not None and observed["platform"] != expected:
+        raise ValueError("job used another backend")
     return observed
 
 
 def interrupt_request(command, root: Path, signal_number: int | None, *, umask=-1):
-    """Signal the owned caller after its host runtime record is published."""
+    """Signal the owned caller after its live backend identity is verified."""
     before = job_directories(root)
     records = []
     observed = []
@@ -133,16 +133,29 @@ def interrupt_request(command, root: Path, signal_number: int | None, *, umask=-
                 ]
                 if records:
                     try:
-                        observed = [observe_backend(record) for record in records]
+                        pending = False
+                        observed = []
+                        for record in records:
+                            run = json.loads(record.read_text())
+                            # jobs.rs publishes this owned starting record
+                            # before start_job_sandbox supplies the backend.
+                            if (run.get("state") == "starting"
+                                    and run.get("name") == run.get("agent_id") == record.parent.name
+                                    and run.get("backend_pid") is None and run.get("backend_token") is None):
+                                pending = True
+                            else:
+                                observed.append(observe_backend(record))
                     except (OSError, ValueError, KeyError) as error:
                         # Keep the native result and streams before the caller
                         # rejects this missing observer evidence.
                         observed = [{"error": str(error)}]
                         child.terminate()
+                        break
                     else:
-                        if signal_number is not None:
-                            child.send_signal(signal_number)
-                    break
+                        if not pending:
+                            if signal_number is not None:
+                                child.send_signal(signal_number)
+                            break
                 if time.monotonic() >= deadline:
                     raise subprocess.TimeoutExpired(command, 180)
                 time.sleep(0.05)

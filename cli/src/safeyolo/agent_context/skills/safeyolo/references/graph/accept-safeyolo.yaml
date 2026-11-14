@@ -264,7 +264,7 @@ nodes:
         - path: proxy/src/jobs/input.rs
           sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
         - path: tests/blackbox/host/job_sandbox.py
-          sha256: 0288d8bd91d3949384221c016fe075391a5b6a540a39a9ff3707bad3753bfc33
+          sha256: ce1fec2dda673ad7e185d8bdaef3f4cf444f0d984e613adbce079d12988f1cfb
         - path: tests/blackbox/host/job_network.py
           sha256: 37d3f81b86e8251aff1264164512daaa7a682225dff7a48d790f3ae43ee8d24b
         - path: proxy/Cargo.toml
@@ -361,7 +361,7 @@ nodes:
         - path: proxy/src/jobs/macos.rs
           sha256: 1b9b3798f9dba8d169b983ba9a1c610e2fb2a2f827f4d04bd8a41b3fcdc833f8
         - path: tests/blackbox/host/job_sandbox.py
-          sha256: 0288d8bd91d3949384221c016fe075391a5b6a540a39a9ff3707bad3753bfc33
+          sha256: ce1fec2dda673ad7e185d8bdaef3f4cf444f0d984e613adbce079d12988f1cfb
         - path: tests/blackbox/host/job_network.py
           sha256: 37d3f81b86e8251aff1264164512daaa7a682225dff7a48d790f3ae43ee8d24b
         - path: proxy/Cargo.toml

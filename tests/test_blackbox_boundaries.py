@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import http.client
 import importlib.util
 import json
 import os
 import re
+import signal
 import socket
 import ssl
 import subprocess
@@ -20,10 +23,148 @@ import pytest
 from tests.blackbox import execution_receipt as receipts
 from tests.blackbox import installed_boundaries as boundaries
 from tests.blackbox import installed_docker_preflight as docker
+from tests.blackbox.harness.process_identity import process_start_token
 from tests.blackbox.host import job_network, job_sandbox
 from tests.blackbox.selections import BOUNDARY_SECTIONS, PROCEDURES, SECTIONS
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture
+def job_observer_cli(tmp_path):
+    """Publish the job producer's records around a real owned backend process."""
+    if sys.platform != "linux":
+        pytest.skip("the controlled backend uses Linux runsc arguments and process births")
+    root = tmp_path / "instance"
+    root.mkdir()
+    (root / "config.toml").touch()
+    (root / "data").mkdir()
+    backend = tmp_path / "runsc-sandbox"
+    backend.symlink_to(sys.executable)
+
+    def prepare(mode="starting-live"):
+        cli = tmp_path / "cli"
+        output = ("a" * 64 + "\nHTTPS gateway, route/Agent API/egress refusal\n").encode()
+        payload = {"retained_base64": base64.b64encode(output).decode(),
+                   "bytes": len(output), "sha256": hashlib.sha256(output).hexdigest()}
+        cli.write_text(f'''#!{sys.executable}
+import json, pathlib, shutil, signal, subprocess, sys, time
+sys.path.insert(0, {str(ROOT)!r})
+from tests.blackbox.harness.process_identity import process_start_token
+root = pathlib.Path(sys.argv[sys.argv.index("--root") + 1])
+directory = root / "data/job-observer"
+directory.mkdir()
+(directory / "config.toml").symlink_to(root / "config.toml")
+record = directory / "agents/job-observer/runtime.json"
+record.parent.mkdir(parents=True)
+run = {{"name": "job-observer", "agent_id": "job-observer", "run_id": "1" * 32, "state": "starting"}}
+mode = {mode!r}
+backend = None
+def publish():
+    temporary = record.with_suffix(".new")
+    temporary.write_text(json.dumps(run))
+    temporary.replace(record)
+def interrupted(number, _frame):
+    print(f"caller signal {{number}}", file=sys.stderr, flush=True)
+    raise SystemExit(128 + number)
+signal.signal(signal.SIGINT, interrupted)
+signal.signal(signal.SIGTERM, interrupted)
+try:
+    if mode != "live":
+        publish()
+        print("published starting", file=sys.stderr, flush=True)
+        time.sleep(0.3 if mode != "pending" else 30)
+        if mode == "failed-start":
+            raise SystemExit(17)
+    bundle = "/another/job" if mode == "foreign-bundle" else str(record.parent)
+    backend = subprocess.Popen([{str(backend)!r}, "-c", "import time; time.sleep(30)",
+                                "--bundle=" + bundle, "--platform=systrap"])
+    run.update(backend_pid=backend.pid, backend_token=process_start_token(backend.pid))
+    if mode == "stale-birth":
+        run["backend_token"] = "another-process-birth"
+    publish()
+    print("published live", file=sys.stderr, flush=True)
+    # Keep the live identity observable until the caller is signalled or exits.
+    time.sleep(0.3)
+finally:
+    if backend is not None:
+        backend.terminate()
+        backend.wait(timeout=5)
+    shutil.rmtree(directory)
+    print("owned cleanup", file=sys.stderr, flush=True)
+print(json.dumps({{"outcome": {{"kind": "exit", "code": 0}}, "observation_error": None,
+                  "gate_principal": "gate:proof", "authorization_principal": "gate:proof",
+                  "stdout": {payload!r}}}))
+''')
+        cli.chmod(0o755)
+        return cli, root
+
+    return prepare
+
+
+@pytest.mark.parametrize("mode", ["starting-live", "failed-start"])
+def test_job_network_caller_keeps_backend_readiness_and_failure_evidence(job_observer_cli, tmp_path, monkeypatch, mode):
+    cli, root = job_observer_cli(mode)
+    monkeypatch.setenv("SAFEYOLO_BLACKBOX_LANE", "systrap")
+    if mode == "failed-start":
+        with pytest.raises(AssertionError, match="verified live backend"):
+            job_network.job(cli, root, tmp_path, port=0, index=1)
+        assert (tmp_path / "job-1.exit").read_text() == "17"
+        assert json.loads((tmp_path / "job-1.backend.json").read_text()) == []
+    else:
+        result, fingerprint = job_network.job(cli, root, tmp_path, port=0, index=1)
+        assert fingerprint == "a" * 64
+        assert result["observed_backends"][0]["platform"] == "systrap"
+        assert (tmp_path / "job-1.exit").read_text() == "0"
+    assert b"published starting\n" in (tmp_path / "job-1.stderr").read_bytes()
+    assert b"owned cleanup\n" in (tmp_path / "job-1.stderr").read_bytes()
+    assert job_sandbox.job_directories(root) == set()
+
+
+@pytest.mark.parametrize("mode", ["live", "starting-live"])
+@pytest.mark.parametrize("interrupt", [None, signal.SIGINT, signal.SIGTERM])
+def test_job_observer_waits_for_verified_live_backend(job_observer_cli, monkeypatch, mode, interrupt):
+    cli, root = job_observer_cli(mode)
+    monkeypatch.setenv("SAFEYOLO_BLACKBOX_LANE", "systrap")
+    result, records, observed = job_sandbox.interrupt_request([str(cli), "--root", str(root)], root, interrupt)
+    assert result.returncode == (0 if interrupt is None else 128 + interrupt), result.stderr
+    assert len(records) == len(observed) == 1
+    backend = observed[0]
+    assert backend["platform"] == "systrap" and backend["agent"] == "job-observer"
+    assert backend["start_token"] and process_start_token(backend["pid"]) is None
+    assert b"published live\n" in result.stderr and b"owned cleanup\n" in result.stderr
+    if mode == "starting-live":
+        assert b"published starting\n" in result.stderr
+    if interrupt is not None:
+        assert result.stderr.index(b"published live\n") < result.stderr.index(b"caller signal")
+    assert job_sandbox.job_directories(root) == set()
+
+
+@pytest.mark.parametrize("mode,error", [
+    ("stale-birth", "native sandbox receipt does not own a live backend"),
+    ("foreign-bundle", "runsc backend belongs to another bundle"),
+    ("wrong-lane", "job used another backend"),
+])
+def test_job_observer_rejects_invalid_live_identity_after_starting(job_observer_cli, monkeypatch, mode, error):
+    cli, root = job_observer_cli(mode)
+    monkeypatch.setenv("SAFEYOLO_BLACKBOX_LANE", "kvm" if mode == "wrong-lane" else "systrap")
+    result, records, observed = job_sandbox.interrupt_request([str(cli), "--root", str(root)], root, None)
+    assert result.returncode == 128 + signal.SIGTERM
+    assert len(records) == 1 and observed == [{"error": error}]
+    assert b"published live\n" in result.stderr and b"owned cleanup\n" in result.stderr
+    assert job_sandbox.job_directories(root) == set()
+
+
+def test_job_observer_keeps_starting_within_existing_deadline(job_observer_cli, monkeypatch):
+    cli, root = job_observer_cli("pending")
+    record = root / "data/job-observer/agents/job-observer/runtime.json"
+    monotonic = job_sandbox.time.monotonic
+    monkeypatch.setattr(job_sandbox.time, "monotonic", lambda: monotonic() + (181 if record.exists() else 0))
+    with pytest.raises(subprocess.TimeoutExpired) as timeout:
+        job_sandbox.interrupt_request([str(cli), "--root", str(root)], root, signal.SIGINT)
+    assert b"published starting\n" in timeout.value.stderr and b"owned cleanup\n" in timeout.value.stderr
+    assert b"published live\n" not in timeout.value.stderr and b"caller signal 2\n" not in timeout.value.stderr
+    assert job_sandbox.job_directories(root) == set()
 
 
 @pytest.mark.parametrize("leak", [None, "http", "tcp"])
