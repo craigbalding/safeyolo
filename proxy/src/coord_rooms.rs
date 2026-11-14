@@ -941,7 +941,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
             println!("{}", work_cli::HELP);
             return Ok(());
         }
-        [kind, arguments @ ..] if kind == "work" => work_cli::run(root, arguments)?,
+        [kind, arguments @ ..] if kind == "work" => work_cli::run(root, arguments).await?,
         [kind, options @ ..]
             if kind == "signal" && (options.is_empty() || options == ["--help"]) =>
         {

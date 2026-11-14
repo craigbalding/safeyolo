@@ -149,6 +149,7 @@ pub(crate) fn work_page(
     conn: &Connection,
     room: &str,
     terminal_state: Option<&str>,
+    policy: Option<&crate::policy::Policy>,
 ) -> Result<Value, Error> {
     let total: i64 = conn.query_row(
         "SELECT count(*) FROM coord_work WHERE room_id=?1 AND ((?2 IS NULL AND state IN ('open','claimed')) OR state=?2)",
@@ -163,7 +164,11 @@ pub(crate) fn work_page(
             row.get::<_, String>(0)
         })?
         .map(|row| {
-            let mut work = work_summary(super::work::describe(conn, serde_json::from_str(&row?)?)?);
+            let mut work = work_summary(super::work::describe_with_policy(
+                conn,
+                serde_json::from_str(&row?)?,
+                policy,
+            )?);
             let mut counts = attestations::counts(conn, &work)?;
             let total =
                 counts["current_total"].as_u64().unwrap() + counts["stale_total"].as_u64().unwrap();

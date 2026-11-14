@@ -452,3 +452,6 @@ fn bounded_reads_cross_room_refusal_and_untrusted_inputs() {
     assert_eq!(next["next_after"], Value::Null);
     assert_ne!(page["items"][0]["work_id"], next["items"][0]["work_id"]);
 }
+
+#[path = "automatic_tests.rs"]
+mod automatic_tests;

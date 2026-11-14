@@ -152,7 +152,8 @@ If GitHub fails or the caller lacks service access, `external.status` is
 do not fetch external metadata. Room and service access are checked again after
 the external fetch. Revoked room access refuses the read; revoked service access
 prevents the metadata return. A member without GitHub access can still claim,
-release or complete work according to room permissions. `coord status ROOM`
+release or complete work according to room permissions and applicable adopted
+requirements. Automatic issue checks use their own adopted dependency authority. `coord status ROOM`
 labels a recognized GitHub URL as an external reference without fetching it.
 
 ### Claims, outputs and attestations
@@ -162,6 +163,11 @@ reference and record its execution outcome in one transaction. The operation
 requires `room_name`, `work_id`, `expected_version`, `expected_generation`
 (the claim generation), `expected_target_generation`, `target_ref`,
 `execution_outcome`, `summary`, and an optional `evidence_refs` array.
+For a small inline artifact, optional `artifact_base64` retains its exact bytes
+with the publication. Its `target_ref` must equal `sha256:HEX_DIGEST` for those
+decoded bytes. The existing serialized publication bound includes the artifact.
+See [automatic Work requirements](policy-checks.md#automatic-requirements-on-native-work)
+for required verification and durable follow-up semantics.
 `execution_outcome` is `succeeded`, `failed`, or `uncertain`. It reports the
 producer's execution result; it does not establish acceptance of the output.
 

@@ -25,7 +25,7 @@ fn submit(
     )
 }
 fn page(conn: &Connection) -> Value {
-    room_status::work_page(conn, "rm-owned", None).unwrap()["items"][0].clone()
+    room_status::work_page(conn, "rm-owned", None, None).unwrap()["items"][0].clone()
 }
 
 #[test]

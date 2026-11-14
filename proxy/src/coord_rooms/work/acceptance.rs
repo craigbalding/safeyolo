@@ -313,8 +313,9 @@ fn obligations(
     conn: &Connection,
     work: &Work,
     requirements: &Requirements,
+    policy: Option<&crate::policy::Policy>,
 ) -> Result<Vec<Value>, WorkError> {
-    let mut observations = Vec::new();
+    let mut observations = automatic::observations(conn, work, policy)?;
     for (challenge, required) in requirements
         .checks
         .iter()
@@ -415,7 +416,7 @@ pub(super) fn decide(
     if work.output.is_none() {
         return Err(conflict("acceptance decision requires a published output"));
     }
-    let observations = obligations(conn, work, requirements)?;
+    let observations = obligations(conn, work, requirements, None)?;
     if matches!(verdict, attestations::Verdict::Approve)
         && observations.iter().any(|o| o["status"] != "satisfied")
     {
@@ -450,13 +451,21 @@ pub(super) fn decide(
 }
 
 pub(super) fn status(conn: &Connection, work: &Work) -> Result<Value, WorkError> {
+    status_with_policy(conn, work, None)
+}
+
+pub(crate) fn status_with_policy(
+    conn: &Connection,
+    work: &Work,
+    policy: Option<&crate::policy::Policy>,
+) -> Result<Value, WorkError> {
     let Some(requirements) = work.acceptance_requirements.as_ref() else {
         return Ok(
             json!({"state":"not_selected","target_generation":work.target_generation,
             "reason":"no acceptance requirements selected; execution and attestations do not imply acceptance"}),
         );
     };
-    let observations = obligations(conn, work, requirements)?;
+    let observations = obligations(conn, work, requirements, policy)?;
     let current_basis = basis(&observations);
     let satisfied = observations.iter().all(|o| o["status"] == "satisfied");
     let mut decisions = Vec::new();

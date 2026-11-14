@@ -217,6 +217,16 @@ impl CoordClient {
         self
     }
 
+    pub(crate) fn work_caller_current(&self, policy: &crate::policy::Policy) -> bool {
+        match self.request_run.as_deref() {
+            None => true,
+            Some(SourceRun::Local { run, root }) => {
+                policy.identity_root() == Some(root.as_path()) && run.current(policy)
+            }
+            Some(SourceRun::Remote { .. }) => self.bound_current().is_ok(),
+        }
+    }
+
     fn bound_current(&self) -> Result<(), CoordError> {
         let Some(source) = self.request_run.as_deref() else {
             return Ok(());
@@ -2830,7 +2840,17 @@ async fn respond_as(
         Err(error) => return error_response(error),
     };
     match operation {
-        "work" => work::respond(request, context.client, &room_name, principal, payload).await,
+        "work" => {
+            work::respond(
+                request,
+                context.client,
+                &room_name,
+                principal,
+                payload,
+                context.runtime,
+            )
+            .await
+        }
         "signals" => {
             signals::respond(request, context.client, &room_name, principal, payload).await
         }

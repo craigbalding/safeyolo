@@ -8,6 +8,7 @@ pub(super) async fn respond(
     room: &str,
     principal: &str,
     payload: Option<&[u8]>,
+    runtime_state: Option<&crate::RuntimeState>,
 ) -> Outcome<'static> {
     if !["GET", "POST"].contains(&request.method) {
         return response(
@@ -15,7 +16,7 @@ pub(super) async fn respond(
             json!({"error":"Method Not Allowed","allowed":["GET","POST"]}),
         );
     }
-    let mutation = if request.method == "POST" {
+    let mut mutation = if request.method == "POST" {
         let Some(payload) = payload else {
             return response(400, json!({"error":"body required"}));
         };
@@ -154,6 +155,37 @@ pub(super) async fn respond(
         Ok(value) => value,
         Err(_) => return response(400, json!({"error":"invalid work page limit"})),
     };
+    if let (Some(state), Some(root)) = (runtime_state, client.instance_root.as_deref())
+        && let Some((mutation, operation)) = mutation.take()
+    {
+        if state.read().ok().is_none_or(|r| {
+            r.policy
+                .as_ref()
+                .is_none_or(|p| !client.work_caller_current(p))
+        }) {
+            return response(403, json!({"error":"requester run changed"}));
+        }
+        let actor = client
+            .remote
+            .as_ref()
+            .map_or(Actor::Agent(principal), Actor::Remote);
+        return match work::automatic::mutate(
+            state,
+            root,
+            room,
+            actor,
+            mutation,
+            operation.as_deref(),
+            Some(client.clone()),
+        )
+        .await
+        {
+            Ok(value) => response(200, value),
+            Err(error) => response(error.0, json!({"error":error.1})),
+        };
+    }
+    let active_policy =
+        runtime_state.and_then(|state| state.read().ok().and_then(|r| r.policy.clone()));
     let db = client.owner.data_dir.join("v0.db");
     let room = room.to_owned();
     let principal = principal.to_owned();
@@ -196,8 +228,18 @@ pub(super) async fn respond(
                 Some(id) if attestations => {
                     work::attestations::list(&mut conn, &room, actor, &id, &after, limit)
                 }
-                Some(id) => work::read(&mut conn, &room, actor, &id),
-                None => work::list(&mut conn, &room, actor, &after, limit, state.as_deref()),
+                Some(id) => {
+                    work::read_with_policy(&mut conn, &room, actor, &id, active_policy.as_deref())
+                }
+                None => work::list_with_policy(
+                    &mut conn,
+                    &room,
+                    actor,
+                    &after,
+                    limit,
+                    state.as_deref(),
+                    active_policy.as_deref(),
+                ),
             },
         }
     })

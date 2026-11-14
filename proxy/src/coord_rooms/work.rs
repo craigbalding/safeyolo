@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 pub(crate) mod acceptance;
 pub(crate) mod actions;
 pub(crate) mod attestations;
+pub(crate) mod automatic;
 pub(crate) mod challenges;
 pub(crate) mod checks;
 pub(crate) mod continuation;
@@ -48,6 +49,7 @@ fn conflict(detail: &str) -> WorkError {
 #[derive(Clone, Copy)]
 pub(crate) enum Actor<'a> {
     Operator,
+    Machine(&'a str),
     Agent(&'a str),
     Remote(&'a super::federation::RemoteAgent),
 }
@@ -61,12 +63,14 @@ impl<'a> Actor<'a> {
     pub(super) fn kind(self) -> &'static str {
         match self {
             Self::Operator => "operator",
+            Self::Machine(_) => "machine",
             Self::Agent(_) | Self::Remote(_) => "agent",
         }
     }
     pub(super) fn id(self) -> &'a str {
         match self {
             Self::Operator => "operator",
+            Self::Machine(id) => id,
             Self::Agent(id) => id,
             Self::Remote(remote) => &remote.principal_id,
         }
@@ -123,7 +127,19 @@ pub(crate) enum Mutation {
         expected_generation: i64,
         expected_target_generation: i64,
         target_ref: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact_base64: Option<String>,
         execution_outcome: outputs::ExecutionOutcome,
+        summary: String,
+        #[serde(default)]
+        evidence_refs: Vec<String>,
+    },
+    ResolveAction {
+        work_id: String,
+        expected_version: i64,
+        expected_generation: i64,
+        obligation_id: String,
+        outcome: automatic::State,
         summary: String,
         #[serde(default)]
         evidence_refs: Vec<String>,
@@ -263,6 +279,8 @@ pub(crate) struct Work {
     pub acceptance_decisions: Vec<acceptance::AcceptanceDecision>,
     #[serde(default)]
     pub continuation: Option<continuation::Continuation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub automatic: Vec<automatic::Obligation>,
     pub state: String,
     pub claim_agent_id: Option<String>,
     pub claim_generation: i64,
@@ -325,6 +343,18 @@ pub(crate) fn read(
     describe(&tx, current(&tx, &room_id, work_id)?)
 }
 
+pub(crate) fn read_with_policy(
+    conn: &mut Connection,
+    room: &str,
+    actor: Actor<'_>,
+    work_id: &str,
+    policy: Option<&crate::policy::Policy>,
+) -> Result<Value, WorkError> {
+    let tx = conn.transaction()?;
+    let room_id = authorize(&tx, room, actor, false)?;
+    describe_with_policy(&tx, current(&tx, &room_id, work_id)?, policy)
+}
+
 pub(crate) fn read_at_version(
     conn: &mut Connection,
     room: &str,
@@ -354,6 +384,19 @@ pub(crate) fn list(
     limit: usize,
     state: Option<&str>,
 ) -> Result<Value, WorkError> {
+    list_with_policy(conn, room, actor, after, limit, state, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn list_with_policy(
+    conn: &mut Connection,
+    room: &str,
+    actor: Actor<'_>,
+    after: &str,
+    limit: usize,
+    state: Option<&str>,
+    policy: Option<&crate::policy::Policy>,
+) -> Result<Value, WorkError> {
     let tx = conn.transaction()?;
     let room_id = authorize(&tx, room, actor, false)?;
     if !(1..=MAX_PAGE).contains(&limit)
@@ -368,7 +411,7 @@ pub(crate) fn list(
         .query_map(params![room_id, after, state, limit as i64 + 1], |r| {
             r.get::<_, String>(0)
         })?
-        .map(|r| describe(&tx, serde_json::from_str::<Work>(&r?)?))
+        .map(|r| describe_with_policy(&tx, serde_json::from_str::<Work>(&r?)?, policy))
         .collect::<Result<Vec<_>, WorkError>>()?;
     let more = items.len() > limit;
     let items: Vec<_> = items.into_iter().take(limit).collect();
@@ -389,7 +432,15 @@ fn current(conn: &Connection, room_id: &str, work_id: &str) -> Result<Work, Work
 }
 
 pub(crate) fn describe(conn: &Connection, work: Work) -> Result<Value, WorkError> {
-    let acceptance_status = acceptance::status(conn, &work)?;
+    describe_with_policy(conn, work, None)
+}
+
+pub(crate) fn describe_with_policy(
+    conn: &Connection,
+    work: Work,
+    policy: Option<&crate::policy::Policy>,
+) -> Result<Value, WorkError> {
+    let acceptance_status = acceptance::status_with_policy(conn, &work, policy)?;
     let status = if let Some(check) = &work.check {
         Some(
             json!({"kind":"check", "subject_current":subjects::is_current(conn, &work.room_id, &check.subject)?,
@@ -434,6 +485,7 @@ fn new_work(
         acceptance_requirements: None,
         acceptance_decisions: Vec::new(),
         continuation: None,
+        automatic: vec![],
         state: "open".into(),
         claim_agent_id: None,
         claim_generation: 0,
@@ -465,6 +517,20 @@ pub(crate) fn mutate(
     mutation: Mutation,
     operation: Option<&str>,
 ) -> Result<Value, WorkError> {
+    mutate_prepared(factory_files, conn, room, actor, mutation, operation, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn mutate_prepared(
+    factory_files: Option<(&std::path::Path, &std::path::Path)>,
+    conn: &mut Connection,
+    room: &str,
+    actor: Actor<'_>,
+    mutation: Mutation,
+    operation: Option<&str>,
+    prepared: Option<&automatic::Prepared>,
+) -> Result<Value, WorkError> {
+    let configured = automatic::configuration(factory_files, prepared)?;
     // A burst of independent claimers serializes at SQLite's writer. Keep the
     // wait within the client's 60-second request deadline for the 100-caller case.
     conn.busy_timeout(std::time::Duration::from_secs(30))?;
@@ -510,6 +576,7 @@ pub(crate) fn mutate(
         }
         return Ok(serde_json::from_str(&result)?);
     }
+    let automatic = automatic::guard(&configured, &tx, room, &room_id, actor, &input, prepared)?;
     let changed_at = now();
     if let Mutation::ReceiveAction {
         work_id,
@@ -544,7 +611,7 @@ pub(crate) fn mutate(
             }
             let mut work = new_work(&room_id, actor, title, external_ref, changed_at);
             work.assignee = assignee;
-            if let Some(reference) = factory {
+            if let Some(reference) = automatic.factory.clone().or(factory) {
                 factory_policy::select(
                     factory_files,
                     &tx,
@@ -600,6 +667,26 @@ pub(crate) fn mutate(
         mutation => {
             let id = input["work_id"].as_str().unwrap();
             let mut work = current(&tx, &room_id, id)?;
+            automatic::apply(&mut work, &automatic);
+            if work.factory.is_none()
+                && let Some(reference) = automatic.factory.clone()
+            {
+                let creator = work.created_by["id"].as_str().unwrap_or("").to_owned();
+                let selector = if work.created_by["kind"] == "operator" {
+                    Actor::Operator
+                } else {
+                    Actor::Agent(&creator)
+                };
+                factory_policy::select(
+                    factory_files,
+                    &tx,
+                    room,
+                    selector,
+                    &mut work,
+                    reference,
+                    changed_at,
+                )?;
+            }
             // Independent append-only attestations contend only on the candidate,
             // not on another author's submission or on ownership changes.
             if !matches!(mutation, Mutation::Attest { .. }) {
@@ -617,6 +704,23 @@ pub(crate) fn mutate(
                 }
             }
             match mutation {
+                Mutation::ResolveAction {
+                    obligation_id,
+                    outcome,
+                    summary,
+                    evidence_refs,
+                    ..
+                } => {
+                    automatic::resolve(
+                        &mut work,
+                        actor,
+                        &obligation_id,
+                        outcome,
+                        summary,
+                        evidence_refs,
+                        changed_at,
+                    )?;
+                }
                 Mutation::Continue {
                     reason,
                     evidence_refs,
@@ -738,6 +842,7 @@ pub(crate) fn mutate(
                 Mutation::PublishOutput {
                     expected_target_generation,
                     target_ref,
+                    artifact_base64,
                     execution_outcome,
                     summary,
                     evidence_refs,
@@ -748,6 +853,7 @@ pub(crate) fn mutate(
                         actor,
                         expected_target_generation,
                         target_ref,
+                        artifact_base64,
                         execution_outcome,
                         summary,
                         evidence_refs,
@@ -835,7 +941,7 @@ pub(crate) fn mutate(
                         _ => match actor {
                             Actor::Agent(id) => id,
                             Actor::Remote(remote) => &remote.principal_id,
-                            Actor::Operator => {
+                            Actor::Operator | Actor::Machine(_) => {
                                 return Err(invalid(
                                     "operator claims use reassign with a durable agent ID",
                                 ));
@@ -916,11 +1022,15 @@ pub(crate) fn mutate(
         }
     };
     work.updated_at = changed_at;
+    automatic::retain(&configured, room, &mut work, &automatic, action, changed_at)?;
     if action == "publish_output" {
         factory_policy::publication(&tx, &mut work, actor, operation, changed_at)?;
     }
     let result = record_change(&tx, &work, actor, operation, action, attestation)?;
     tx.execute("INSERT INTO coord_operations(principal_kind,principal_id,operation_type,operation_id,request_hash,outcome_kind,outcome_json,created_at) VALUES(?1,?2,?3,?4,?5,'success',?6,?7)", params![actor.kind(),actor.id(),operation_type,operation,request_hash,result.to_string(),changed_at])?;
+    // Only the commit holds the runtime read guard. No evidence acquisition or
+    // job execution occurs under this guard or the Coord transaction.
+    let _authority = prepared.map(automatic::Prepared::current).transpose()?;
     tx.commit()?;
     Ok(result)
 }
