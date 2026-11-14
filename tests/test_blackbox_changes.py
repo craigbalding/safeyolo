@@ -766,7 +766,11 @@ def test_recurring_git_changes_through_both_clis(tmp_path, git_sources):
     fake_gh.write_text(f"#!{sys.executable}\n" + '''import json, pathlib, sys
 state = pathlib.Path(''' + repr(str(state)) + ''')
 rows = json.loads(state.read_text()) if state.exists() else []
-endpoint = sys.argv[2].split('?', 1)[0]
+endpoint = next(arg for arg in sys.argv if arg.startswith('repos/')).split('?', 1)[0]
+if '--include' in sys.argv:
+    print('HTTP/2.0 200 OK')
+    print('X-Github-Request-Id: fixture')
+    print()
 if '--method' in sys.argv:
     body = json.load(sys.stdin)['body']
     comment = {'id': len(rows) + 1, 'body': body, 'user': {'login': 'github-actions[bot]', 'type': 'Bot'},

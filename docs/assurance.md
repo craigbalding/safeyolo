@@ -262,6 +262,14 @@ material run also retains `blackbox-notice-RUN_ID-ATTEMPT`, including the commen
 URL and ID or the explicit publication failure. Missing analysis, parse errors,
 unavailable history and preparation failures mean unknown impact, never “no
 change.” They fail the affected job without issuing a recurring change mention.
+
+For a GitHub API failure, the publication receipt identifies the request method
+and path. It retains the CLI exit code, HTTP status, GitHub request ID and bounded
+response message when available. It excludes raw headers, stderr and request
+bodies, and redacts `GH_TOKEN` and `GITHUB_TOKEN` values from the response message.
+An unavailable diagnostic field does not establish the failure cause or whether
+a comment was created.
+
 After an uncertain comment response, inspect canonical bot comments for the
 reported delta before retrying the run. The publisher performs that read before
 another post. No source rebuild or nightly product replay is needed.
