@@ -140,14 +140,17 @@ pub(super) fn remove_stage(path: &Path, platform: ConsumerPlatform) -> Result<()
                 && platform != ConsumerPlatform::DarwinArm64 =>
         {
             // Only the freshly created stage needs elevation for subuid-owned files.
-            let status = Command::new("sudo")
-                .args(["-n", "rm", "-rf", "--"])
-                .arg(path)
-                .status()?;
+            let mut command = Command::new("sudo");
+            command.args(["-n", "rm", "-rf", "--"]).arg(path);
+            crate::host_sudo::preview(
+                &command,
+                "remove only this failed private guest stage; mapped files cannot be removed by the host account",
+            )?;
+            let status = command.status().map_err(|error| format!("{} could not start: {error}; guest stage {} remains. Repair sudo or filesystem access and remove this private stage before retrying", crate::host_sudo::display(&command), path.display()))?;
             if status.success() {
                 Ok(())
             } else {
-                Err(format!("cannot remove guest staging directory {}", path.display()).into())
+                Err(format!("{} failed ({status}); guest staging directory {} remains. Repair the reported sudo or filesystem failure and remove this private stage before retrying", crate::host_sudo::display(&command), path.display()).into())
             }
         }
         Err(error) => Err(error.into()),
@@ -195,6 +198,13 @@ fn extract(
     } else {
         command.args(["Image", "initramfs.cpio.gz", "rootfs-base.ext4"]);
     }
+    if linux && unsafe { libc::geteuid() } != 0 {
+        crate::host_sudo::preview(
+            &command,
+            "extract the verified guest archive from standard input into this private stage, preserving numeric owners, ACLs and extended attributes; the host account cannot assign published guest IDs",
+        )?;
+    }
+    let invocation = crate::host_sudo::display(&command);
     let mut errors = tempfile::tempfile_in(stage.parent().ok_or("guest stage has no parent")?)?;
     let mut child = command
         // DownloadDecoder has finished and the compressed descriptor has
@@ -203,7 +213,7 @@ fn extract(
         .stdin(decoded.map_or_else(Stdio::piped, Stdio::from))
         .stdout(Stdio::null())
         .stderr(errors.try_clone()?)
-        .spawn()?;
+        .spawn().map_err(|error| format!("{invocation} could not start: {error}; no guest tree was published. Repair the reported command or privilege failure, then retry; the verified archive remains reusable"))?;
     let copy = (|| -> Result<(), Error> {
         // A retained compressed blob still needs streaming decompression.
         if let Some(mut output) = child.stdin.take() {
@@ -220,7 +230,7 @@ fn extract(
     errors.take(4096).read_to_end(&mut diagnostic)?;
     let diagnostic = String::from_utf8_lossy(&diagnostic);
     if !status.success() {
-        return Err(format!("cannot extract guest archive ({status}): {diagnostic}").into());
+        return Err(format!("cannot extract guest archive ({status}): {diagnostic}\n{invocation} failed; no guest tree was published. Repair the reported extraction or privilege failure, then retry; the verified archive remains reusable").into());
     }
     copy?;
     if !diagnostic.is_empty() {
@@ -264,8 +274,21 @@ fn extract(
             .arg(mapping.gid_base.to_string())
             .arg(mapping.host_uid.to_string())
             .arg(mapping.host_gid.to_string());
-        if !remap.status()?.success() {
-            return Err("guest ownership preparation failed; no mapped tree was published. Repair the reported privilege or filesystem failure, then retry the installer".into());
+        crate::host_sudo::preview(
+            &remap,
+            &format!(
+                "map the private rootfs tree from published IDs {ARCHIVE_BASE}..{} to UID {}..{} and GID {}..{}; map guest user 1000 to host {}:{} and update named ACLs and file capabilities while preserving modes and links. The host account cannot change published guest ownership",
+                ARCHIVE_BASE + crate::linux_host::ID_COUNT - 1,
+                mapping.uid_base,
+                mapping.uid_base + crate::linux_host::ID_COUNT - 1,
+                mapping.gid_base,
+                mapping.gid_base + crate::linux_host::ID_COUNT - 1,
+                mapping.host_uid,
+                mapping.host_gid
+            ),
+        )?;
+        if !remap.status().map_err(|error| format!("{} could not start: {error}; no mapped tree was published. Repair the reported command or privilege failure, then retry the installer", crate::host_sudo::display(&remap)))?.success() {
+            return Err(format!("{}: guest ownership preparation failed; no mapped tree was published. Repair the reported privilege or filesystem failure, then retry the installer", crate::host_sudo::display(&remap)).into());
         }
         validate_assets(stage, platform, mapping)?;
         eprintln!(
@@ -290,7 +313,8 @@ pub(super) fn prepare(
         .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in(parent)?
         .keep();
-    // Early cache preparation cannot ask for privilege or change host settings.
+    // Early cache preparation uses only noninteractive sudo and discloses each
+    // invocation. It cannot ask for authentication or change host settings.
     // Finish and reap extraction/remapping before observing cancellation, so
     // cleanup cannot race a child still writing into the private stage.
     let result = extract(

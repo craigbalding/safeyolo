@@ -587,9 +587,12 @@ def test_host_prepare_retries_retained_runtime_profile(native_cli, owned_stage, 
     parent, _stage = owned_stage
     runtime = payload(parent / "runtime")
     root = parent / "instance"
+    if prepared_entry:
+        (parent / "alias").symlink_to(parent, target_is_directory=True)
+        root = parent / "alias/instance"
     entry = root / "host/namespace-entry"
     profiles = [Path("/etc/apparmor.d") / (prefix + "-" + hashlib.sha256(os.fsencode(path)).hexdigest()[:16])
-                for prefix, path in (("safeyolo-runsc", runtime), ("safeyolo-userns", entry))]
+                for prefix, path in (("safeyolo-runsc", runtime), ("safeyolo-userns", entry.resolve()))]
     tools = parent / "tools"
     tools.mkdir()
     loaded = parent / "loaded"
@@ -648,6 +651,8 @@ int {name}(const char *path, int flags, ...) {{
         refused.touch()
         failed = command(*arguments, env=environment)
         assert failed.returncode != 0 and "fixture profile load refused" in failed.stderr, failed.stderr
+        assert failed.stderr.index("Host command: sudo -- ") < failed.stderr.index("fixture profile load refused")
+        assert str(profiles[0]) in failed.stderr and "apparmor_parser -r" in failed.stderr
         assert "profile file remains" in failed.stderr and not settings.exists()
         original = profiles[0].read_bytes()
         assert b"userns," in original and b"flags=(unconfined)" in original
@@ -707,10 +712,11 @@ def test_scoped_namespace_entry_with_both_apparmor_restrictions(native_cli, owne
         runtime_repaired = command(native_cli, "--root", root, "host", "prepare", "--yes",
                                    "--system-runsc", runtime, "--write-settings", parent / "runtime-repaired.toml")
         assert runtime_repaired.returncode == 0, runtime_repaired.stderr
-        assert json.loads(runtime_repaired.stdout)["applied"] == [
-            f"profile setup was requested; {profiles[0]} remains if the profile load fails",
-            "load this runtime's AppArmor profile",
-        ]
+        applied = json.loads(runtime_repaired.stdout)["applied"]
+        assert len(applied) == 2
+        assert applied[0] == f"profile setup was requested; {profiles[0]} remains if the profile load fails"
+        assert applied[1].startswith("load this runtime's AppArmor profile: ")
+        assert str(profiles[0]) in applied[1]
         entry.chmod(0o700)
         subprocess.run(["sudo", "-n", "apparmor_parser", "-R", str(profiles[1])], check=True)
         repaired = command(native_cli, "--root", root, "host", "prepare", "--yes",
