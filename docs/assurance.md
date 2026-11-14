@@ -207,12 +207,22 @@ The comparison has these bounded rules:
 | Python or shell script interpreter (`#!` line) changes | Material; a changed interpreter can change execution even when the body is identical. |
 | Rust test/helper tokens or inline test module changes | Material; retain literals, attributes, oracle and failure-handling tokens. Production code outside an inline test module remains context. |
 | Selected runner command, skip/filter, backend, user/root phase, dependency between jobs, required trigger or cadence changes | Material. Jobs that contain assurance commands and their prerequisite jobs are compared. |
-| Catalogue witness mapping, effective pytest/Cargo test configuration, analyzer or publisher logic changes | Material. Cargo comparison retains automatic target discovery (including `package.autotests`) and explicit library, binary, example, test and benchmark targets. Explicit discovery defaults stay quiet. Candidate-authored labels or impact claims cannot suppress the result. |
+| Catalogue witness mapping, effective pytest/Cargo test configuration, analyzer or publisher logic changes | Material. Cargo selection inputs are described below. Candidate-authored labels or impact claims cannot suppress the result. |
 | Python comments, docstrings, formatting, parentheses or empty `pass` statements; Rust comments or token-preserving formatting | Quiet when the normalized executable definition is equal. Strings used by assertions remain executable input. |
 | An identical Python file moves within its directory, keeps test discovery, has no recognized location introspection, and all known static references are updated | Quiet after reference comparison. Other executable moves remain material. |
 | Daily or weekly cron time changes with the same frequency | Quiet for the supported single-time expressions. Other expressions are compared exactly. |
 | Lockfiles, dependency versions, action revision pins, same-platform runner-image versions, product/guest artifact or result refreshes | Context; a dependency or artifact refresh alone does not establish an assurance change. Changes to action identity, runner platform or executable test configuration remain material. |
 | Generated documentation, other prose and unclassified inputs | Visible in the check report; no automatic mention. |
+
+Cargo comparison retains automatic target discovery (including
+`package.autotests`) and explicit library, binary, example, test and benchmark
+targets. The comparison also retains package and inherited workspace editions,
+the member's workspace path, and workspace membership, default selection and
+exclusions. These inputs can remove targets or packages from a required run.
+Explicit discovery defaults for literal package editions and workspace selection
+reordering stay quiet. Workspace dependency version and other package metadata
+changes alone do not create a material delta. The rules retain inherited edition declarations without
+resolving defaults across manifests.
 
 These rules establish limited mechanical equivalence. They do not establish
 arbitrary semantic equivalence or infer the effects of every dependency

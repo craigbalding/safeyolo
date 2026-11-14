@@ -443,8 +443,10 @@ def toml_definition(name: str, source: str) -> object:
         return data.get("tool", {}).get("pytest")
     if PurePosixPath(name).name == "Cargo.toml":
         package = data.get("package", {})
+        workspace = data.get("workspace", {})
         # Cargo 2015 disables inference for an explicitly listed target kind;
-        # later editions default to discovery. Explicit defaults stay quiet.
+        # later editions default to discovery. Keep the edition/inheritance and
+        # workspace inputs too: member defaults can depend on another manifest.
         automatic = {option: package.get(option,
                      kind == "lib" or kind not in data or package.get("edition", "2015") != "2015")
                      for kind, option in (("lib", "autolib"), ("bin", "autobins"), ("example", "autoexamples"),
@@ -453,6 +455,10 @@ def toml_definition(name: str, source: str) -> object:
                     for profile, settings in data.get("profile", {}).items()}
         return {key: data[key] for key in ("lib", "bin", "example", "test", "bench", "features") if key in data} | {
             "automatic-targets": automatic,
+            "edition": package.get("edition", "2015"),
+            "package-workspace": package.get("workspace"),
+            "workspace": ({key: sorted(workspace[key]) for key in ("members", "exclude", "default-members") if key in workspace}
+                          | {"edition": workspace.get("package", {}).get("edition")}) if "workspace" in data else None,
             "profile": {profile: settings for profile, settings in profiles.items() if settings}}
     return data
 

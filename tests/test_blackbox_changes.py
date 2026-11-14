@@ -522,6 +522,107 @@ def test_cargo_automatic_target_selection_reaches_analyzer_cli(tmp_path, git_sou
     assert [(row["path"], row["status"]) for row in report["changes"]] == [("proxy/Cargo.toml", "material")]
 
 
+@pytest.mark.parametrize(("kind", "source"), [
+    ("bin", "src/bin/inherited.rs"),
+    ("example", "examples/inherited.rs"),
+    ("test", "tests/inherited.rs"),
+    ("bench", "benches/inherited.rs"),
+])
+@pytest.mark.parametrize("changed_manifest", ["workspace", "member", "workspace-pointer"])
+def test_cargo_inherited_edition_selection_reaches_analyzer_cli(tmp_path, git_sources, kind, source, changed_manifest):
+    root, git = git_sources
+    workspace = root / "Cargo.toml"
+    workspace.write_text('[workspace]\nmembers = ["proxy"]\nresolver = "2"\n[workspace.package]\nedition = "2024"\n')
+    member = root / "proxy/Cargo.toml"
+    member.write_text('[package]\nname = "fixture"\nversion = "0.1.0"\nedition.workspace = true\n'
+                      f'\n[[{kind}]]\nname = "explicit"\npath = "explicit.rs"\n')
+    if changed_manifest != "workspace":
+        workspace.write_text(workspace.read_text().replace('"2024"', '"2015"'))
+        if changed_manifest == "member":
+            member.write_text(member.read_text().replace('edition.workspace = true', 'edition = "2024"'))
+        else:
+            modern = root / "modern"
+            modern.mkdir()
+            (modern / "Cargo.toml").write_text(workspace.read_text().replace('["proxy"]', '["../proxy"]').replace('"2015"', '"2024"'))
+            member.write_text(member.read_text().replace('[package]\n', '[package]\nworkspace = "../modern"\n'))
+    (member.parent / "explicit.rs").write_text("fn main() {}\n#[test]\nfn explicit() { assert!(true); }\n")
+    (member.parent / "src").mkdir(exist_ok=True)
+    (member.parent / "src/lib.rs").write_text("#[test]\nfn library() { assert!(true); }\n")
+    witness = member.parent / source
+    witness.parent.mkdir(parents=True, exist_ok=True)
+    witness.write_text("fn main() {}\n#[test]\nfn inherited() { assert!(true); }\n")
+    catalogue = root / changes.CATALOGUE
+    catalogue.write_text(catalogue.read_text() + '[[witnesses]]\npaths = ["proxy/Cargo.toml"]\ncontrols = ["BB-01"]\nkind = "cargo"\n')
+
+    def targets():
+        metadata = subprocess.check_output(["cargo", "metadata", "--offline", "--no-deps", "--format-version", "1",
+                                            "--manifest-path", str(member)], text=True)
+        return {row["name"] for row in json.loads(metadata)["packages"][0]["targets"]}
+
+    git("add", ".")
+    git("commit", "-qm", "inherited target discovery")
+    base = git("rev-parse", "HEAD")
+    before = targets()
+    assert "inherited" in before and "explicit" in before
+    manifest = workspace if changed_manifest == "workspace" else member
+    if changed_manifest == "workspace":
+        manifest.write_text(manifest.read_text().replace('"2024"', '"2015"'))
+    elif changed_manifest == "member":
+        manifest.write_text(manifest.read_text().replace('edition = "2024"', 'edition.workspace = true'))
+    else:
+        manifest.write_text(manifest.read_text().replace('workspace = "../modern"', 'workspace = ".."'))
+    assert targets() == before - {"inherited"}
+    git("add", ".")
+    git("commit", "-qm", "change inherited discovery edition")
+    report = analyze_cli(root, base, git("rev-parse", "HEAD"), tmp_path)
+    assert report["delta_id"]
+    assert [(row["path"], row["status"]) for row in report["changes"]] == [(str(manifest.relative_to(root)), "material")]
+
+
+@pytest.mark.parametrize(("before", "after", "selection"), [
+    ('members = ["proxy", "witness"]', 'members = ["proxy"]', "workspace_members"),
+    ('members = ["p*", "w*"]', 'members = ["p*", "w*"]\nexclude = ["witness"]', "workspace_members"),
+    ('members = ["proxy", "witness"]', 'members = ["proxy", "witness"]\ndefault-members = ["proxy"]', "workspace_default_members"),
+])
+def test_cargo_workspace_selection_reaches_analyzer_cli(tmp_path, git_sources, before, after, selection):
+    root, git = git_sources
+    workspace = root / "Cargo.toml"
+    workspace.write_text(f'[workspace]\nresolver = "2"\n{before}\n')
+    for name in ("proxy", "witness"):
+        package = root / name
+        package.mkdir(exist_ok=True)
+        (package / "Cargo.toml").write_text(f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2024"\n')
+        (package / "src").mkdir()
+        (package / "src/lib.rs").write_text("#[test]\nfn denied() { assert!(true); }\n")
+
+    def selected():
+        metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--offline", "--no-deps", "--format-version", "1",
+                                                       "--manifest-path", str(workspace)], text=True))
+        return {row["name"] for row in metadata["packages"] if row["id"] in metadata[selection]}
+
+    git("add", ".")
+    git("commit", "-qm", "workspace witnesses")
+    base = git("rev-parse", "HEAD")
+    assert selected() == {"proxy", "witness"}
+    workspace.write_text(workspace.read_text().replace(before, after))
+    assert selected() == {"proxy"}
+    git("add", ".")
+    git("commit", "-qm", "deselect workspace witness")
+    report = analyze_cli(root, base, git("rev-parse", "HEAD"), tmp_path)
+    assert report["delta_id"]
+    assert [(row["path"], row["status"]) for row in report["changes"]] == [("Cargo.toml", "material")]
+
+
+def test_cargo_workspace_dependency_and_metadata_changes_stay_quiet(sources):
+    manifest = ('[workspace]\nmembers = ["proxy", "witness"]\nresolver = "2"\n'
+                '[workspace.package]\nedition = "2024"\nversion = "0.1.0"\n'
+                '[workspace.dependencies]\nhttp = "1"\n')
+    files = sources | {"Cargo.toml": manifest}
+    edited = manifest.replace('http = "1"', 'http = "2"').replace('version = "0.1.0"', 'version = "0.2.0"')
+    assert compare(files, {"Cargo.toml": edited})["delta_id"] is None
+    assert compare(files, {"Cargo.toml": manifest.replace('["proxy", "witness"]', '["witness", "proxy"]')})["delta_id"] is None
+
+
 @pytest.mark.parametrize("edition", ["2015", "2024"])
 def test_cargo_dependency_and_explicit_discovery_defaults_stay_quiet(sources, edition):
     manifest = f'[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "{edition}"\n'
