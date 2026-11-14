@@ -7,6 +7,7 @@ assertion semantics, control sufficiency or whether a deployment passed.
 from __future__ import annotations
 
 import ast
+import fnmatch
 import re
 import shlex
 import tomllib
@@ -72,17 +73,40 @@ def shell_commands(root: Path) -> list[dict]:
     return commands
 
 
-def pytest_selectors(command: dict) -> list[str]:
+def pytest_path_options(command: dict) -> dict[str, list[str]]:
+    """Separate maintained collection exclusions from positive path operands."""
+    options = {name: [] for name in ("selectors", "--ignore", "--ignore-glob", "--deselect")}
     tokens = command["tokens"]
     if "pytest" not in tokens:
-        return []
-    return [token for token in tokens[tokens.index("pytest") + 1:]
-            if token.startswith(("tests/", "cli/tests/"))]
+        return options
+    arguments = iter(tokens[tokens.index("pytest") + 1:])
+    for token in arguments:
+        name, separator, value = token.partition("=")
+        if name in options and name != "selectors":
+            options[name].append(value if separator else next(arguments, ""))
+        elif token.startswith(("tests/", "cli/tests/")):
+            options["selectors"].append(token)
+    return options
 
 
 def selects(selector: str, node: str) -> bool:
     path = node.split("::", 1)[0]
     return node == selector or node.startswith(selector + "::") or path.startswith(selector.rstrip("/") + "/")
+
+
+def pytest_selected(command: dict, node: str) -> bool:
+    """Apply collection exclusions and deselection to a source test identity."""
+    options = pytest_path_options(command)
+    paths = [Path(selector.split("::", 1)[0]) for selector in options["selectors"] if selects(selector, node)]
+    if not paths or any(node.startswith(prefix) for prefix in options["--deselect"]):
+        return False
+    # Pytest applies ignores while traversing directories, not to a sole
+    # explicit starting file. A broader starting directory still applies them.
+    start = min(paths, key=lambda path: len(path.parts))
+    path = Path(node.split("::", 1)[0])
+    traversed = [entry for entry in (path, *path.parents) if start in entry.parents]
+    return not any(entry == Path(ignored) for entry in traversed for ignored in options["--ignore"]) and not any(
+        fnmatch.fnmatchcase(entry.as_posix(), pattern) for entry in traversed for pattern in options["--ignore-glob"])
 
 
 def resolve(witness: dict, reference: str, root: Path) -> list[dict]:
@@ -162,7 +186,7 @@ def selection(witness: dict, reference: str, node: dict, commands: list[dict], p
         for phase, functions in phases.items():
             if any(selects(function, node["node"]) for function in functions):
                 selected.append(f"phase `{phase}` ({PYTEST_PHASES[phase][0]})")
-        matches = [command for command in commands if any(selects(value, node["node"]) for value in pytest_selectors(command))]
+        matches = [command for command in commands if pytest_selected(command, node["node"])]
     elif witness["kind"] == "cargo":
         matches = [command for command in commands if cargo_selected(witness, node, command)]
         if node["ignored"]:
@@ -192,13 +216,17 @@ def selector_problems(root: Path = ROOT) -> list[str]:
     required = {"native", "security", "identity", "guest-agent", "guest-root", "host-lifecycle", "listener-restart", "proxy"}
     if not required <= wired:
         problems.append(f"unwired pytest phases: {sorted(required - wired)}")
-    for command in [*workflows(root), *shell_commands(root)]:
-        for selector in pytest_selectors(command):
+    commands = [*workflows(root), *shell_commands(root)]
+    commands += [{"path": f"shared phase {phase}", "tokens": ["pytest", *operands]}
+                 for phase, (_identity, operands) in PYTEST_PHASES.items()]
+    for command in commands:
+        options = pytest_path_options(command)
+        for selector in [*options["selectors"], *options["--ignore"], *options["--deselect"]]:
             relative, _, _suffix = selector.partition("::")
             path = root / relative
             if not path.exists():
                 problems.append(f"{command['path']}: unresolved pytest selector {selector}")
-            elif "::" in selector and not any(selects(selector, node) for node in python_tests(path, root)):
+            elif "::" in selector and (not path.is_file() or not any(selects(selector, node) for node in python_tests(path, root))):
                 problems.append(f"{command['path']}: unresolved pytest identity {selector}")
     for section, (filename, checkpoints) in PROCEDURES.items():
         path = root / "tests/blackbox" / filename

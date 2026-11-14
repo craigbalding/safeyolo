@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from tests.blackbox import catalogue
+from tests.blackbox import catalogue, execution_receipt
 from tests.blackbox.selections import PROCEDURES
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
-def catalogue_root(tmp_path):
+def catalogue_root(tmp_path, monkeypatch):
     for path in ("tests/blackbox/host/identity", "docs", ".github/workflows"):
         (tmp_path / path).mkdir(parents=True)
     shutil.copyfile(ROOT / "docs/assurance-map.toml", tmp_path / "docs/assurance-map.toml")
@@ -36,6 +40,9 @@ adapter = "controlled assertion"
     (tmp_path / catalogue.METADATA).write_text(metadata)
     (tmp_path / "tests/blackbox/host/identity/test_named.py").write_text("def test_required(): pass\n")
     phases = "native security identity guest-agent guest-root host-lifecycle listener-restart proxy".split()
+    shared = dict.fromkeys(phases, ("host", ("tests/blackbox/host/identity/test_named.py",)))
+    monkeypatch.setattr(catalogue, "PYTEST_PHASES", shared)
+    monkeypatch.setattr(execution_receipt, "PYTEST_PHASES", shared)
     shell = "\n".join("run_pytest_phase " + phase for phase in phases)
     for _section, (filename, checkpoints) in PROCEDURES.items():
         (tmp_path / "tests/blackbox" / filename).write_text(
@@ -101,6 +108,49 @@ def test_current_catalogue_resolves_all_controls_and_external_families():
     assert len(controls) == 37
     assert {witness["kind"] for witness in witnesses} == {"pytest", "cargo", "procedure"}
     assert any("tests/test_guest_acquisition.py" in witness["paths"] for witness in witnesses)
+
+
+@pytest.mark.parametrize("arguments", [
+    ("tests/", "--ignore=tests/blackbox/"),
+    ("tests/", "--ignore", "tests/blackbox/host/identity/test_named.py"),
+    ("tests/", "--ignore-glob=tests/blackbox/*"),
+    ("tests/", "--deselect", "tests/blackbox/host/identity/test_named.py::test_required"),
+    ("tests/", "--ignore=tests/blackbox/", "tests/blackbox/host/identity/test_named.py"),
+    ("tests/test_positive.py", "tests/blackbox/host/identity/test_named.py", "--ignore=tests/blackbox/"),
+])
+def test_workflow_selection_agrees_with_real_pytest_exclusions(catalogue_root, arguments):
+    root = catalogue_root
+    (root / "tests/test_positive.py").write_text("def test_positive(): pass\n")
+    (root / ".github/workflows/test.yml").write_text(
+        "on:\n  schedule:\n    - cron: '0 0 * * *'\njobs:\n  fixture:\n    steps:\n      - run: pytest "
+        + shlex.join(arguments) + "\n")
+    config = root / "pytest.ini"
+    config.write_text("[pytest]\n")
+    collected = subprocess.run([sys.executable, "-m", "pytest", "-c", str(config), "--collect-only", "-q", *arguments],
+                               cwd=root, env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
+                               capture_output=True, text=True, check=True)
+    actual = {line for line in collected.stdout.splitlines() if line.startswith("tests/")}
+    assert "tests/test_positive.py::test_positive" in actual
+    commands = catalogue.workflows(root)
+    for path in root.rglob("test_*.py"):
+        for node in execution_receipt.python_tests(path, root):
+            selection = catalogue.selection({"kind": "pytest"}, path.relative_to(root).as_posix(),
+                                            {"node": node}, commands, {})
+            assert any("[fixture]" in item for item in selection) == (node in actual), (node, selection, actual)
+
+
+@pytest.mark.parametrize("selector", [
+    "tests/blackbox/host/identity/test_renamed.py",
+    "tests/blackbox/host/identity/test_named.py::TestRenamed",
+    "tests/blackbox/host/identity/test_named.py::test_renamed",
+    "--ignore=tests/blackbox/host/identity/test_renamed.py",
+])
+def test_unresolved_shared_phase_operand_cannot_pass_generation(catalogue_root, monkeypatch, selector):
+    monkeypatch.setitem(catalogue.PYTEST_PHASES, "guest-root", (
+        "guest-root", ("tests/blackbox/host/identity/test_named.py::test_required", selector)))
+    assert any("shared phase guest-root" in problem for problem in catalogue.selector_problems(catalogue_root))
+    with pytest.raises(ValueError, match="shared phase guest-root"):
+        catalogue.render(catalogue_root)
 
 
 @pytest.mark.parametrize("unwired,module,expected", [

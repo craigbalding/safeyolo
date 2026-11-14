@@ -217,7 +217,7 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: tests/blackbox/run-tests.sh
-          sha256: 3133aa2996f262439280bb0a7fdb5fe66e15a7780fa7909fc3259a516efd092f
+          sha256: 6a52612ce4909eb4e9c5d024cccf4611dc279aaeb011afb0981d1014ad605a1b
         - path: uv.lock
           sha256: fd244df9e559bed2b211bbe93f257831fce8e1087b19cfc7d9d3da2fd1bc3050
       setup: "Use an approved host with native bundle/build inputs and a fresh SAFEYOLO_CONFIG_DIR; the lane owns its separate test instance, ports, certificates and sinkhole."
@@ -252,7 +252,7 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: tests/blackbox/run-tests.sh
-          sha256: 3133aa2996f262439280bb0a7fdb5fe66e15a7780fa7909fc3259a516efd092f
+          sha256: 6a52612ce4909eb4e9c5d024cccf4611dc279aaeb011afb0981d1014ad605a1b
         - path: proxy/src/host_platform.rs
           sha256: 0f39c1bfde1db3723e2618dae202babab37b92e7807596918f9dec4ed9846815
         - path: proxy/src/host_boot.rs
@@ -280,9 +280,9 @@ nodes:
         - path: tests/blackbox/claude_smoke.py
           sha256: 98a1ded436d5c4f395c9014e4d270efcbc9834732b0d0f8049c3c5ba51df1f06
         - path: tests/blackbox/installed_sections.py
-          sha256: 9053d64b7217fefc049b9a266c2187933bb0e8acd7d2ae741987836a45400c55
+          sha256: 7c992f0c1a51a0ce5878da5d1a1d764ce0ffc58c9d3e45e85e16175a0dfae54a
         - path: tests/blackbox/installed_ingress_pair.py
-          sha256: ac820e1fa31b67eda5c9ceb1bf49adf50a9b68fe57b6d7b4ab733b006a7196c9
+          sha256: 7528dc814fa524b27b960e9e1ec8efbd0f1ae649344e55486c73d98ab052fc3f
         - path: tests/blackbox/installed_storage.py
           sha256: 3379b6140df6f4e425bfc309a7483a8364373332d049f005cc1d4a050176de41
         - path: tests/blackbox/isolation/installed_ingress.py
@@ -939,7 +939,7 @@ nodes:
       obtain_from: "the exact trusted-base blackbox and native Cargo tests; Python drivers are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: tests/blackbox/run-tests.sh
-          sha256: 3133aa2996f262439280bb0a7fdb5fe66e15a7780fa7909fc3259a516efd092f
+          sha256: 6a52612ce4909eb4e9c5d024cccf4611dc279aaeb011afb0981d1014ad605a1b
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: proxy/tests/native_host_cli.rs
@@ -966,7 +966,7 @@ nodes:
         - path: ruff.toml
           sha256: ec622855546870fcea36325759af749cd95480b10df98c95b6a8a95ccca73213
         - path: .pre-commit-config.yaml
-          sha256: 91ada1101761243365bb0ae0ce5ebf99d8e97d51c59c71a56aad31013af9a5f1
+          sha256: 95cbdef697edd5d729331c723de3c3bfbcf45b8940b1dd17d16a70645e2ca97f
         - path: uv.lock
           sha256: fd244df9e559bed2b211bbe93f257831fce8e1087b19cfc7d9d3da2fd1bc3050
       setup: "Use the trusted base's locked Python environment and already-approved hook dependencies."
