@@ -164,11 +164,10 @@ The command directory and link use sudo only if their nearest existing parent
 is unwritable by your account. Configuration remains owned by your account;
 the Linux guest tree has mapped sandbox owners.
 
-The published `host-c5ce76019b6c997e282ab05cea0212b492e945d2` bundle says
-“Only these command-entry operations require sudo.” This is misleading:
-Linux host preparation and guest acquisition also use sudo.
-Current source corrects the message. It does not change installation actions,
-consent or privileges, and does not update an already published bundle.
+Current source shows exact host sudo commands and their effects before the
+existing host-change decision and before execution. The preview remains visible
+with `--yes`, cached credentials or passwordless sudo. A source change does not
+update an already published bundle.
 
 Put installer options before `--launch`. Arguments after it go to the existing
 `agent launch` command. Omitting `--launch` installs only. `--yes` accepts
@@ -231,7 +230,7 @@ this needs existing validated UID/GID ranges and tar with numeric ownership,
 ACL and extended-attribute support. Extraction, remapping and any privileged
 cleanup use noninteractive sudo.
 On macOS, cached image extraction needs no elevation. Early preparation does not
-allocate ranges, change host settings or prompt for privilege. If setup, tools
+allocate ranges, change host settings or prompt for authentication. If setup, tools
 or extraction privilege is missing, the normal installer prepares the verified
 archive after host consent.
 If staging cleanup fails, installation stops and reports the remaining path.
@@ -693,8 +692,9 @@ The public installer downloads the host archive with that runtime already
 inside it. Selecting the bundled runtime needs no separate gVisor download.
 
 Run the bundle's ordinary `install.sh` as your host account. Before changing
-Ubuntu or Alpine, it lists missing packages, subordinate account ranges, file permissions,
-the namespace entry and AppArmor profiles, then asks for consent. `--yes` accepts those listed changes
+Ubuntu or Alpine, it shows exact commands and explains their packages, account
+ranges, file permissions, namespace entry and AppArmor profile targets, then
+asks for consent. `--yes` accepts those changes
 for an unattended installation. The proxy and agents run without host root
 privilege. Guest root maps to subordinate host user and group IDs, not host root.
 
@@ -714,7 +714,17 @@ These operations prepare the rootless guest filesystem. They do not give the
 agent host root privilege. If ordinary cleanup cannot remove a failed extraction
 stage because of its mapped owners, cleanup uses `sudo -n` for that newly
 created stage only. Completed host preparation remains if guest acquisition
-fails; retry reuses valid inputs.
+fails; retry reuses valid inputs. Every elevated command is shown before it
+runs, including early cache preparation and noninteractive cleanup. If a new
+ID allocation or created path determines a later command, the final arguments
+appear before that command runs under the existing authorization. Helpers
+also identify their profile files, mapping ranges or ACL targets. These previews
+do not depend on a sudo password prompt and do not add approval prompts.
+
+Already satisfied host prerequisites need no sudo. To avoid command-link
+elevation, select a user-writable directory already on PATH with `--command-dir`.
+An existing matching command link needs no privileged update. This does not
+remove the current Linux guest filesystem preparation operations.
 
 Preparation installs missing host tools from the host's existing package sources.
 Alpine uses `shadow-subids`, `shadow-libs` and `util-linux-misc` for the

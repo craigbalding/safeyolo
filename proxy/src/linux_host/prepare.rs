@@ -6,7 +6,7 @@ use crate::{
 };
 use serde_json::json;
 use std::{
-    ffi::CString,
+    ffi::{CString, OsStr},
     fs,
     io::{self, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -136,17 +136,19 @@ fn check_kvm_access(path: &Path, mapping: Mapping) -> Result<(), Error> {
 }
 
 fn execute(command: &mut Command, purpose: &str, applied: &mut Vec<String>) -> Result<(), Error> {
+    crate::host_sudo::preview(command, purpose)?;
     let record = applied.len();
     applied.push(format!("attempted {purpose}"));
-    let status = command.status().map_err(|e| format!("{purpose}: {e}"))?;
+    let invocation = crate::host_sudo::display(command);
+    let status = command.status().map_err(|e| format!("{invocation}: {purpose}: {e}; repair the reported host operation and retry the installer"))?;
     if !status.success() {
-        return Err(format!("{purpose} failed ({status}); repair the reported host operation and run the installer again").into());
+        return Err(format!("{invocation}: {purpose} failed ({status}); repair the reported host operation and run the installer again").into());
     }
     applied[record] = purpose.into();
     Ok(())
 }
 
-fn privilege(program: &str) -> Command {
+fn privilege(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new("sudo");
     command.arg("--").arg(program);
     command
@@ -369,10 +371,13 @@ fn load_profile(runtime: &Path, prefix: &str) -> Result<(), Error> {
         }
         fs::File::open("/etc/apparmor.d")?.sync_all()?;
     }
-    let status = Command::new("apparmor_parser")
-        .arg("-r")
-        .arg(&path)
-        .status()?;
+    let mut parser = Command::new("apparmor_parser");
+    parser.arg("-r").arg(&path);
+    crate::host_sudo::preview(
+        &parser,
+        "load the installation-scoped user-namespace profile; the profile file remains if loading fails",
+    )?;
+    let status = parser.status()?;
     if !status.success() {
         return Err(format!("AppArmor could not load {}; the profile file remains. Repair the reported parser or kernel failure, then retry host preparation",path.display()).into());
     }
@@ -555,19 +560,34 @@ fn grant_access(
     identity: &str,
     applied: &mut Vec<String>,
 ) -> Result<(), Error> {
+    let mut command = access_command(&change);
+    execute(&mut command, &access_purpose(&change.0, identity), applied)
+}
+
+fn access_command(change: &(PathBuf, String, bool)) -> Command {
     let (path, acl, needs_sudo) = change;
-    let mut command = if needs_sudo {
+    let mut command = if *needs_sudo {
         privilege("setfacl")
     } else {
         Command::new("setfacl")
     };
-    execute(
-        command.args(["--no-mask", "-m", &acl]).arg(&path),
-        &format!(
-            "allow {identity} required access to {} while preserving other ACL permissions",
-            path.display()
-        ),
-        applied,
+    command.args(["--no-mask", "-m", acl]).arg(path);
+    command
+}
+
+fn access_purpose(path: &Path, identity: &str) -> String {
+    format!(
+        "allow {identity} required access to {} while preserving other ACL permissions",
+        path.display()
+    )
+}
+
+fn profile_purpose(runtime: &Path, prefix: &str) -> String {
+    let profile = Path::new("/etc/apparmor.d").join(profile_name(runtime, prefix));
+    format!(
+        "install or reuse {} and load it with apparmor_parser -r; attach an unconfined profile with user-namespace permission to {}. The profile file remains if loading fails",
+        profile.display(),
+        runtime.display()
     )
 }
 
@@ -1037,6 +1057,48 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
             return Err(format!("automatic host package setup supports Ubuntu and Alpine; missing packages: {}. Prepare these tools with your host package manager, then retry",packages.join(", ")).into());
         }
     }
+    // Keep the invocations shown before consent for execution after that same
+    // decision. ACL operands can depend on newly allocated IDs or installed tools.
+    let mut package_commands = Vec::new();
+    if !packages.is_empty() {
+        if alpine {
+            let mut command = privilege("apk");
+            command.args(["add", "--no-cache"]).args(&packages);
+            package_commands.push((command, "install required Alpine host packages (a failed APK operation may have installed some packages)"));
+        } else {
+            let mut update = privilege("apt-get");
+            update.args(["update", "-qq"]);
+            package_commands.push((update, "refresh Ubuntu package indexes"));
+            let mut install = privilege("apt-get");
+            install
+                .args(["install", "-y", "--no-install-recommends"])
+                .args(&packages);
+            package_commands.push((install, "install required Ubuntu host packages (a failed apt operation may have installed some packages)"));
+        }
+    }
+    let executable = std::env::current_exe()?;
+    let mut allocation = privilege(&executable);
+    allocation.args(["host", "allocate-ids", &uid.to_string()]);
+    let allocation_purpose = format!(
+        "allocate missing subordinate IDs: {ID_COUNT}-ID UID/GID ranges for {owner} (host UID {uid}) in /etc/subuid and /etc/subgid through shadow's locked allocator; preserve existing ranges and other accounts. Successful range writes remain if a later range fails"
+    );
+    let mut runtime_profile = privilege(&executable);
+    runtime_profile
+        .args(["host", "load-profile"])
+        .arg(&destination);
+    let runtime_profile_purpose = format!(
+        "load this runtime's AppArmor profile: {}",
+        profile_purpose(&destination, "safeyolo-runsc")
+    );
+    let profile_entry = crate::native_config::resolve_protected_directory(&entry)?;
+    let mut namespace_profile = privilege(&executable);
+    namespace_profile
+        .args(["host", "load-namespace-profile"])
+        .arg(&profile_entry);
+    let namespace_profile_purpose = format!(
+        "load this installation's namespace AppArmor profile: {}",
+        profile_purpose(&profile_entry, "safeyolo-userns")
+    );
     let mut changes = Vec::new();
     if !packages.is_empty() {
         changes.push(format!(
@@ -1101,7 +1163,45 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
             "SafeYolo needs these host changes:\n  {}",
             changes.join("\n  ")
         );
-        eprintln!("Only the listed host operations use sudo. The proxy and agent run as {owner}.");
+        for (command, purpose) in &package_commands {
+            crate::host_sudo::preview(command, purpose)?;
+        }
+        if need_ranges {
+            crate::host_sudo::preview(&allocation, &allocation_purpose)?;
+        }
+        if load_profile_needed {
+            crate::host_sudo::preview(&runtime_profile, &runtime_profile_purpose)?;
+        }
+        if entry_setup_needed {
+            crate::host_sudo::preview(&namespace_profile, &namespace_profile_purpose)?;
+        }
+        if let Some(mapping) = planned_mapping.filter(|_| command_path("getfacl").is_some()) {
+            for change in runtime_access_changes(&destination, mapping)? {
+                crate::host_sudo::preview(
+                    &access_command(&change),
+                    &access_purpose(&change.0, &format!("UID {}", mapping.uid_base)),
+                )?;
+            }
+            if kvm && let Some(change) = kvm_access_change(Path::new("/dev/kvm"), mapping)? {
+                crate::host_sudo::preview(
+                    &access_command(&change),
+                    &access_purpose(
+                        &change.0,
+                        &format!(
+                            "mapped root GID {} (UID {})",
+                            mapping.gid_base, mapping.uid_base
+                        ),
+                    ),
+                )?;
+            }
+        } else if access_needed || kvm {
+            eprintln!(
+                "Final ACL commands and mapped IDs will be shown after the required host tools or ID ranges are available, before those commands run."
+            );
+        }
+        eprintln!(
+            "The proxy and agent run as {owner}. Guest acquisition can also use sudo for extraction, ownership mapping and failed-stage cleanup; each command is shown before it runs."
+        );
         if !yes {
             eprint!("Allow these host changes? [y/N] ");
             io::stderr().flush()?;
@@ -1112,41 +1212,12 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
             }
         }
     }
-    if !packages.is_empty() {
-        if alpine {
-            execute(
-                privilege("apk").args(["add", "--no-cache"]).args(packages),
-                "install required Alpine host packages (a failed APK operation may have installed some packages)",
-                applied,
-            )?;
-        } else {
-            execute(
-                privilege("apt-get").args(["update", "-qq"]),
-                "refresh Ubuntu package indexes",
-                applied,
-            )?;
-            execute(
-                privilege("apt-get")
-                    .args(["install", "-y", "--no-install-recommends"])
-                    .args(packages),
-                "install required Ubuntu host packages (a failed apt operation may have installed some packages)",
-                applied,
-            )?;
-        }
+    for (mut command, purpose) in package_commands {
+        execute(&mut command, purpose, applied)?;
     }
     if need_ranges {
-        let executable = std::env::current_exe()?;
         applied.push("subordinate-ID allocation was requested; successful range writes are reported above and remain if a later range fails".into());
-        execute(
-            privilege(
-                executable
-                    .to_str()
-                    .ok_or("installer executable path is not UTF-8")?,
-            )
-            .args(["host", "allocate-ids", &uid.to_string()]),
-            "allocate missing subordinate IDs",
-            applied,
-        )?;
+        execute(&mut allocation, &allocation_purpose, applied)?;
     }
     let mapping = if let Some(saved) = &saved {
         saved.mapping()?
@@ -1157,22 +1228,11 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
     };
     linux_host::validate_current_mapping(mapping)?;
     if load_profile_needed {
-        let executable = std::env::current_exe()?;
         applied.push(format!(
             "profile setup was requested; {} remains if the profile load fails",
             profile.display()
         ));
-        execute(
-            privilege(
-                executable
-                    .to_str()
-                    .ok_or("installer executable path is not UTF-8")?,
-            )
-            .args(["host", "load-profile"])
-            .arg(&destination),
-            "load this runtime's AppArmor profile",
-            applied,
-        )?;
+        execute(&mut runtime_profile, &runtime_profile_purpose, applied)?;
     }
     if entry_setup_needed {
         fs::create_dir_all(entry.parent().ok_or("namespace entry has no parent")?)?;
@@ -1190,16 +1250,21 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
             ));
         }
         fs::File::open(entry.parent().unwrap())?.sync_all()?;
-        let executable = std::env::current_exe()?;
+        // Creating the entry resolves any previously absent path components.
+        // Disclose the final canonical operand before invoking the helper.
+        let canonical_entry = entry.canonicalize()?;
+        if canonical_entry != profile_entry {
+            namespace_profile = privilege(&executable);
+            namespace_profile
+                .args(["host", "load-namespace-profile"])
+                .arg(&canonical_entry);
+        }
         execute(
-            privilege(
-                executable
-                    .to_str()
-                    .ok_or("installer executable path is not UTF-8")?,
-            )
-            .args(["host", "load-namespace-profile"])
-            .arg(entry.canonicalize()?),
-            "load this installation's namespace AppArmor profile",
+            &mut namespace_profile,
+            &format!(
+                "load this installation's namespace AppArmor profile: {}",
+                profile_purpose(&canonical_entry, "safeyolo-userns")
+            ),
             applied,
         )?;
     }
