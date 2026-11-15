@@ -1,16 +1,17 @@
 # Rootless published-guest preparation: current proof
 
-This is the bounded feasibility work for [#1553](https://github.com/craigbalding/safeyolo/issues/1553).
-The complete go/no-go result remains **unproved**. Native macOS extraction of
-one published Kali image bundle passed. The same files started a
-Virtualization.framework (VZ) virtual machine (VM) with working root and
-user-1000 read/write/execute. Native Ubuntu import and systrap startup
-passed with the ordinary mapping, including guest identity and read/write/execute.
-The native supplementary canonical specimen matches the privileged baseline,
-including kernel runtime-map access, ACL inheritance and capability effects.
-Candidate and baseline backend observations are characterized below, including
-unsupported metadata cases. The native distinct-map witness and final independent
-go/no-go remain pending. This candidate changes no production installer.
+This is the bounded feasibility result for [#1553](https://github.com/craigbalding/safeyolo/issues/1553).
+Forge's conclusion is **go for the tested pinned published guests**, after the
+recorded legitimate host prerequisites. Native Ubuntu preparation and systrap
+startup passed with ordinary and distinct subordinate user/group ID mappings.
+Native macOS extraction passed, and the prepared files started a
+Virtualization.framework (VZ) virtual machine (VM). Both platforms reached
+guest-root and user-1000 read/write/execute. Failed/cancelled private preparation
+preserved an external target and a usable guest on each platform. The matrix
+below records baseline comparisons, unsupported synthetic cases and unavailable
+metadata coverage. Those limits prevent a general arbitrary-archive guarantee.
+Lens's independent final go/no-go decision remains pending.
+This candidate changes no production installer.
 #1554 owns production integration; #1563 owns maintained blackbox coverage.
 
 The trusted starting source is `6ee7e8bb308fcd865fa0a244b455c7dcc86b9bb6`.
@@ -180,8 +181,8 @@ The small missing-cache and explicit-cancellation specimens each exited 1,
 removed their private stages and preserved the external target's content,
 owner, mode and inode. The original missing-cache error records tar exit 2
 and zstd exit 0. Cancellation occurred after extraction children completed.
-Asynchronous published-archive cancellation and preservation of an existing
-usable guest remain unproved.
+Those two cases did not establish active-tar cancellation or usable-guest
+preservation. Execution 18425 below supplies those Ubuntu observations.
 
 ### Native Ubuntu retained-tree runtime
 
@@ -391,11 +392,10 @@ archive and supply no authority to add arbitrary-archive support or new input
 restrictions. No repair or archive-contract change is established for canonical
 V3 by this comparison.
 
-All runtime-map effects above are Linux kernel observations, not gVisor
-observations. gVisor capability/ACL/set-ID behavior, including any pre-existing
-limitation, remains unqualified. An isolated backend comparison is useful only
-for a still-required effect; retain the actual baseline comparison before
-classifying any backend difference as a candidate regression.
+All runtime-map effects above are Linux kernel observations. Execution 18425
+below separately compares the same canonical trees through gVisor. Both trees
+deny its ACL operations and set-ID execution and suppress capability effects.
+The kernel results alone do not establish that backend's enforcement.
 
 The operator's first recursive collector hit EACCES on a private baseline
 descendant after the observation completed. Execution 18415 only read the named
@@ -414,31 +414,11 @@ output-5 check `work-aeac4cf2781840ff93efa43bee252df2@3`, all 16 evidence refere
 and its full prior checks carry forward. Its pending-native-comparison gap is
 now supplied; its remaining limits and full-issue abstention persist.
 
-The following steps describe remaining full-issue proof. Completed inventory,
-import and ordinary-map startup observations carry forward. The selected
-continuation prepares the next isolated Ubuntu operation; no new native result
-is claimed here.
-
-1. Reuse the reached Ubuntu inventory, import, contents and ordinary-map runtime.
-   Before a further native operation, inspect its actual retained inputs,
-   effective delegation, active consumers and capacity. A distinct mapping
-   needs genuinely delegated, different nondefault UID/GID bases. Record
-   legitimate prerequisite preparation separately; do not weaken global policy.
-2. Reuse the completed supplementary comparison. Any selected isolated gVisor
-   observation should use the retained candidate and baseline canonical trees
-   under `/home/agent/1553-native-metadata-g5`, with the same installed runtime.
-   Compare required ACL/private access, capability/set-ID effects and identities
-   33/65535 without repeating import or the completed guest journey. Do not add
-   previously unsupported backend behavior merely to match kernel observations.
-3. Resolve asynchronous cancellation and existing usable-guest preservation.
-   Carry forward the completed small missing-cache/after-extraction cancellation
-   controls. Inspect an incomplete or failed attempt before selecting any retry.
-4. Follow each remaining successful **published** preparation into the backend.
-   Reuse `tests/blackbox/installed_sections.py::prepare_native_instance`, the
-   existing installed-host/lifecycle fixtures and `guest_exec.py` commands.
-   Bind the newly prepared assets explicitly and capture current guest identity,
-   read/write/execute, metadata, and owned shutdown. Do not replace this step
-   with a synthetic guest, a worker namespace or a broad unrelated suite.
+The complete bounded result combines the retained inventory/import/runtime
+with execution 18425's isolated backend/cancellation comparison, 18428/18431's
+distinct-map import/runtime and the Mac observations below. These use the
+existing installed-instance, process-identity and guest-command helpers.
+No additional backend support, guest build or ordinary proof replay was needed.
 
 ### Isolated Ubuntu backend and cancellation packet
 
@@ -606,11 +586,11 @@ owned versus foreign survivors. They replace the native boundary with controlled
 inputs and start no VM. The original run remains bound to `6ebd2f96`; it was not
 replayed for the observer correction.
 
-The reached reassessment supplies Mac startup and useful Linux metadata evidence.
-No asynchronous or failed import ran while this guest was live. That preservation
-criterion, capability/ACL comparison, the protected Ubuntu packet and genuinely
-different delegated bases remain open. No new host policy decision or default
-guest is required for this Kali result. The separate original default-manifest
+This original Mac startup operation included no failed or cancelled import while
+its guest was live. The baseline/preservation operation below supplies that
+observation on a separate VM using the retained baseline images. The distinct
+Ubuntu witness and backend comparison are recorded separately. No new host
+policy decision or default guest was required. The separate original default-manifest
 refusal still requires its canonical approval and effective-access reads before
 any decision or retry. Bristol root, elevation, personal-account access and
 held #500/#1104 changes remain unauthorized.
@@ -619,7 +599,7 @@ held #500/#1104 changes remain unauthorized.
 
 | Case | Expected and observed result | Limit or remaining observation |
 | --- | --- | --- |
-| Ordinary/private files, directories, executable and set-ID modes | Native Ubuntu host/kernel owners and access match its privileged baseline. Corresponding gVisor candidate/baseline trees also agree, including their set-ID refusal. Mac candidate/baseline ownership, private access, executable and set-ID effects agree. Both platforms reached root/user-1000 read/write/execute. | The full native distinct-map run remains pending. |
+| Ordinary/private files, directories, executable and set-ID modes | Native Ubuntu host/kernel owners and access match its privileged baseline. Corresponding gVisor candidate/baseline trees also agree, including their set-ID refusal. Mac candidate/baseline ownership, private access, executable and set-ID effects agree. Both platforms reached root/user-1000 read/write/execute. Distinct-map Ubuntu also passed other/boundary identity execution, host-write owners and private-parent denial. | These observations cover the pinned guests and canonical specimen, not arbitrary archives or other platforms. |
 | Symbolic links and hardlinks | Published Ubuntu links and hardlink identity matched. Mac candidate/baseline links and hardlink identity agree. Native failed/cancelled stages preserve the external target and a usable guest on each platform. | Mac cancellation followed extraction-child completion; Ubuntu cancellation interrupted active tar. No blanket arbitrary-archive claim. |
 | Sparse files | Ubuntu canonical kernel contents and 64 MiB logical/8 KiB allocation match baseline. gVisor reports the same logical block accounting for both mounted trees; that is not host physical allocation. Mac candidate/baseline specimen uses 4 KiB for 64 MiB logical contents; the unchanged outer disk remains sparse. | Different backend allocation reports do not prove loss of host sparseness. |
 | First in, first out (FIFO), character and block nodes | Ubuntu FIFO matches baseline. Device creation fails EPERM and cleans its stage; privileged baseline succeeds. The published Ubuntu archive requires neither device nor FIFO creation. Mac candidate/baseline VM specimens create FIFO and devices with matching numeric metadata. | These Linux devices are inside the VM. No APFS materialization or arbitrary host mknod support is required. |
@@ -641,9 +621,10 @@ The existing installed namespace entry is used with the unchanged AppArmor
 restriction. Permitted prerequisite execution 18426 preserved the original
 agent 100000 and ubuntu 165536 ranges and added distinct agent UID 231072 and
 GID 296608 ranges, each 65536 IDs. Its actual namespace/id consumer passed.
-That prerequisite alone does not establish the full distinct import/runtime
-witness. The command below uses those real ranges without changing the original
-installation config. Sylab owns its protected execution and original return files.
+That prerequisite alone established namespace entry only. Executions 18428 and
+18431 below supply the actual distinct import/runtime witness. Sylab performed
+the protected commands and retained their originals. The original installation
+config was unchanged.
 
 The actual `compat-v1` discovery tag was resolved on15November to that same
 `67bcb6c5...` default index. The public index bytes are retained locally at
@@ -659,17 +640,34 @@ access before any future decision or retry. Network allow alone grants no
 credential or route permission. Do not change package metadata or classify the
 retained Kali archive as the default to compensate.
 
-The reached feasibility conclusion is positive for the tested pinned
-ordinary-map Ubuntu payload and Mac image bundle. Their actual backends agree
-with the corresponding existing-path observations at the recorded scope.
-Native failed/cancelled preparation preserved external targets and usable guests.
+The reached feasibility conclusion is positive for the tested pinned Ubuntu
+payload with both mappings and the Mac image bundle. Their actual backends
+agree with the corresponding existing-path observations at the recorded scope.
 The distinct published/specimen imports completed in execution 18428. Its
 private-access observer failed before runtime because the dropped identity
-could not execute `id` through the private host PATH. Correcting that observer
-and resuming the retained imports supplies the remaining native witness;
-no ordinary journey or successful import needs replay. Complete issue
-acceptance and the final independent go/no-go remain pending. Production
-integration belongs to #1554 and is not implemented here.
+could not execute `id` through the private host PATH. Execution 18431 used
+absolute `/usr/bin/id` and reused both imports. All 17 native actions passed,
+including private-parent denial, backend identity/read/write/execute and owned
+shutdown. The initial failure remains recorded; no successful import or ordinary
+journey was repeated.
+
+The smallest production path for #1554 is the existing delegated namespace
+entry with archive-coordinate ownership and a separate ordinary-account cache
+list extraction on Linux. On macOS, retain native extraction of the three image
+files. Preserve production's existing verification, inode/mount/hardlink checks,
+private staging and confinement. The prototype does not implement that integration
+or establish its performance.
+
+There is no observed blocker for the recorded published inputs. Device-node
+creation, synthetic V2 capability handling and raw out-of-range ACL42 prevent a
+claim of arbitrary Linux archive fidelity. They are absent from the inventoried
+published Ubuntu archive. No stripping, new support or input restriction was
+implemented to compensate. Mac ACL/xattr tools are unavailable, and both tested
+paths reject setcap; these remain coverage/support limits rather than proved
+preservation. The identical image bytes and actual baseline observations support
+the bounded conclusion, not new runtime metadata guarantees. The refused default
+Mac manifest remains separate from the tested pinned Kali profile. Full issue
+acceptance and the independent final go/no-go remain with Lens.
 
 Lens accepted criteria 1/2/5 in comment 6892180913. Criteria 3/4/6/7 remain
 unchecked until Lens judges the coherent result. Full Lens check
@@ -679,21 +677,23 @@ estimate and already reached cumulative 60-minute reassessment carry; there is
 no fresh allowance. Missing Mac tools and pre-existing unsupported runtime
 metadata effects require honest characterization, not another implementation.
 
-At the executed source `5aeb1f51`, hosted Lint, Test CLI, Analyze, Blackbox
-assurance and CodeQL 132767789334 pass; Test Addons 132767577475 was still running
-at collection. Proxy assurance 43699588728/job 132767576998 fails and remains
-unwaived, as did prior source-data drift. This result's final report needs its
-own exact-head checks; prior passes do not establish a new pass. Local CodeQL
+At the executed source `00bede1e`, hosted Lint 132771692461, Test CLI
+132771692652, Analyze 132771625621, Blackbox assurance 132771622098/132772043039
+and CodeQL 132771893499 pass. Test Addons 132771692754 was still running at
+collection. Proxy assurance 43700912986/job 132771625546 fails: the retained
+failed log reports source-data drift and exit 1. It remains unwaived. This
+result's final report has separate exact-head checks; prior passes do not
+establish a new pass. Relay owns CI follow-through and integration. Local CodeQL
 is unsupported on Linux aarch64. Configured Ruff, full pre-commit and existing
-graph source-hash assertions passed. The 23 affected local controls passed:
-16 Ubuntu observer cases and 7 Mac cases, including real failed/cancelled
+graph source-hash assertions passed. At `5aeb1f51`, the 23 affected local controls
+passed: 16 Ubuntu observer cases and 7 Mac cases, including real failed/cancelled
 extraction with external preservation. These controls do not substitute for
 the native operations. Focused complexity findings in the experimental drivers
 cover the added bounded mapping/guest/preservation branches; no new production
 abstraction or dependency was introduced. Relay owns CI and integration.
 No merge approval or additional criterion acceptance is asserted.
 
-### Remaining distinct-map witness
+### Native distinct-map witness
 
 Sylab executes this operation as ordinary UID/GID 1000 on the retained native
 Ubuntu host. The published archive, compatible `b6821094` installation and
@@ -725,48 +725,68 @@ root 231072:296608, guest 1000 mapped to 1000:1000, daemon 231105:296641 and
 boundary 296607:362143. Both private parent and stage remain 1000:1000/0700.
 The failed observation's shell could execute after `setpriv`, but its bare
 `id` commands resolved through the private command directory and returned
-Permission denied. This is an observation failure, not an isolation verdict.
-Use absolute `/usr/bin/id`; do not broaden traversal permissions or the PATH.
+Permission denied. Protected diagnosis 18429 confirmed that `/home/agent`,
+1000:1000/mode0770, prevented those callers from reaching the command directory.
+Absolute `/usr/bin/id` resolved the observation without a permission change.
+Its original diagnosis is retained beside the initial result, SHA-256
+`e08dbcc0de08de86e6775b0105abc4824c3fd3c601c0ffe06b3c99725ad50c91`.
+This was an observation failure, not an isolation verdict.
 
-Sylab resumes only the remaining observation/runtime in a new absent output:
+Sylab then ran the remaining observation/runtime from staged source
+`00bede1eb2c0166c886e99a37a0a58fcc38d7994` in the new output below:
 
 ```sh
 /usr/bin/python3 experiments/rootless_guest/ubuntu_runtime_probe.py \
   /home/agent/r1553g9resume --resume-distinct /home/agent/r1553g9
 ```
 
-This reads both retained `preparation.json` files and the original result.
-It creates a new owned runtime/report and never invokes extraction or the
-specimen producer. The original output and imports remain unchanged. The
-resumption input must be the selected pre-runtime failure; the probe refuses a
-record that already contains a guest/runtime identity. Cleanup stops only the
-new owned agent, proxy and Coord. Return its original `result.json`,
-`prepare.log` and caller output, preserving the initial failure/source binding.
-The current backing filesystem must have at least 5435817984 bytes free:
-the 5 GiB floor plus 64 MiB for the runtime, against prior observed 24,436,736-byte
-growth. No second 429 MB import or copy is needed. The initial operation ended
-with 5,545,783,296 bytes free. Refresh actual capacity before effects; do not
-remove protected inputs to meet the forecast.
+Execution 18431 ran from 09:49:17.791855 to 09:49:25.998950 UTC on
+15 November 2026, taking 8.207095 seconds. It returned 0. All four originals
+match their manifest at
+`/evidence/operator/1553/g9resume-00bede-runtime-18431/` and the ordinary mirror
+`/home/agent/acceptance/1553-operator-receipts/g9resume-00bede-runtime-18431/`.
+The 31,048-byte result has SHA-256
+`0eba0cfaadec8950c2a544915a27e8e74be77a296a619c3e61e4ae8240aee6ea`.
+The executed probe hash is
+`c2b8a5d1caba7da9b612d411af74fe866d6d605fb2c03e2fc945e54ace38398f`.
 
-The initial probe imported one published tree and the existing small canonical
-specimen with those distinct bases; resumption reuses them. It changes only its disposable instance's
-mapping. The original `b6821094` config, existing imports and baseline remain
-unchanged. It checks host owners for root, 1000, 33 and 65535; private staging
-stays operator-owned 0700. Mapped identities 33 and 65535 must be unable to
-traverse that private host parent. Explicit runtime mounting must still allow
-guest root/1000 read/write/execute and other/boundary identity execution and
-writes, with the expected distinct host owners. Host UID/GID zero remains
-outside both import and runtime mappings. The existing finally block stops
-only its owned agent, proxy and Coord and retains failures and exact births.
+The command read both retained `preparation.json` files and the original
+pre-runtime result. No extraction or specimen-generation command ran. The
+recorded imported root inode/owners, specimen metadata and private-stage
+metadata match the initial result exactly. The probe refuses resumption of a
+record that already contains a guest/runtime identity. Only the new disposable
+instance's UID/GID bases changed; the original `b6821094` config was preserved.
 
-The initial import allowance was 576 MiB above the 5 GiB floor: 512 MiB for the
-429,073,907-byte published payload, filesystem overhead and tiny specimen,
-plus 64 MiB for the runtime whose preceding observed growth was 24,436,736
-bytes. Check current backing capacity before effects; do not reuse the older
-640 MiB cancellation forecast or discard active inputs. Return original
-`result.json`, `prepare.log`, and both import `preparation.json` files through
-the existing readable handoff. Keep credentials and the private instance remote.
-A failure is retained for interpretation, not automatically retried.
+Both private-parent checks returned 0 with exact import-namespace identities
+100033 and 165535 and cleared supplementary groups. Both callers were denied
+stage traversal. Parent and stage remained operator-owned 1000:1000/mode0700.
+The runtime maps were:
+
+| Guest IDs | Host UIDs | Host GIDs |
+| --- | --- | --- |
+| 0..999 | 231072..232071 | 296608..297607 |
+| 1000 | 1000 | 1000 |
+| 1001..65535 | 232073..296607 | 297609..362143 |
+
+Host UID/GID zero is outside both import and runtime maps. The observed holder
+was PID67660/birth36765108 and backend PID67694/birth36765124, run
+`687ba65a5a664c5da026c8a00bdb16d2`. Native systrap guest-root and user1000
+identity/read/write/execute passed. Explicit `/distinct` mounting preserved
+root/1000/33/65535 owners. Identities 33 and 65535 executed the specimen and
+wrote/executed their workspace files; both were denied the private user1000
+file. Their host writes had owners 231105:296641 and 296607:362143 respectively.
+The four root/user1000 home/workspace markers also had the expected host owners.
+The retained regular-empty `/usr/bin/id` stat observation remains unchanged;
+the actual identity commands succeeded.
+
+Agent, proxy and Coord stops all returned 0. Cleanup failures, surviving owned
+processes, listeners and active-state observations were empty. Sudo was absent
+from the candidate PATH. Source staging reduced free space from 5,545,242,624 to
+5,542,998,016 bytes; the runtime ended at 5,518,589,952 bytes. Runtime growth was
+24,408,064 bytes, within the 64 MiB allowance above the 5 GiB floor. No second
+429 MB import, cleanup, build, policy or delegation change was needed. These
+are endpoint space readings, not a continuous peak measurement. No further
+native replay is selected by this result.
 
 ### Native Mac baseline and preservation comparison
 
@@ -862,6 +882,11 @@ specimens, candidate imports and privileged baseline stages. Its current consume
 is interpretation/review of 18414; retain these operands for any selected isolated
 backend comparison. The original records and manifest are retained under
 `/evidence/operator/1553/metadata-18414`; no new guest image was created. Local
-`/home/agent/1553-metadata-pytest` contains disposable observer controls. Keep
-the original M / High estimate and reached cumulative 60-minute reassessment;
-select only a decision-changing remaining operation before further execution.
+`/home/agent/1553-metadata-pytest` contains disposable observer controls.
+The native `r1553g9` group contains the reproducible distinct published/specimen
+imports and original failed observation; `r1553g9resume` contains only the new
+disposable instance, markers and compact successful result. Their current
+consumer is exact-output review. Both runtimes are stopped. Preserve original
+results, source/input identities and the 18429 diagnosis when retiring the
+reproducible trees after review. Keep the original M / High estimate and reached
+cumulative 60-minute reassessment. No further native operation is selected.
