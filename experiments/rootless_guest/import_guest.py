@@ -125,28 +125,36 @@ def import_namespace(host_root, uid_base, gid_base):
 
 
 def extract(stream, stage, prefix, linux):
-    # Keep the exact maintained selected-member and tar confinement options.
+    # Preserve rootfs metadata in archive coordinates. The cache list is host
+    # text: host_boot reads its contents, not its incidental build-account ID.
     arguments = ["tar", "-xpf", "-", "-C", str(stage)]
     if linux:
         arguments += ["--blocking-factor=256", "--numeric-owner", "--same-owner",
                       "--acls", "--xattrs", "--xattrs-include=*"]
-    members = ["rootfs-tree", "cache-paths.txt"] if linux else ["Image", "initramfs.cpio.gz", "rootfs-base.ext4"]
+    members = ["rootfs-tree"] if linux else ["Image", "initramfs.cpio.gz", "rootfs-base.ext4"]
     arguments += ["--", *members]
-    with subprocess.Popen(["zstd", "-dc"], stdin=stream, stdout=subprocess.PIPE) as decoder:
-        try:
-            result = subprocess.run(prefix + arguments, stdin=decoder.stdout, timeout=600, check=False)
-        finally:
-            decoder.stdout.close()
-            # Reap both writers before cleanup, including cancellation/failure.
+    commands = [prefix + arguments]
+    if linux:
+        commands.append(["tar", "-xpf", "-", "-C", str(stage),
+                         "--no-same-owner", "--", "cache-paths.txt"])
+    for command in commands:
+        # Reuse the verified descriptor for both selected-member passes.
+        stream.seek(0)
+        with subprocess.Popen(["zstd", "-dc"], stdin=stream, stdout=subprocess.PIPE) as decoder:
             try:
-                decoder_status = decoder.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                decoder.kill()
-                decoder.wait()
-                raise
-    if result.returncode or decoder_status:
-        raise RuntimeError(f"Extraction failed: tar={result.returncode}, zstd={decoder_status}")
-    return arguments
+                result = subprocess.run(command, stdin=decoder.stdout, timeout=600, check=False)
+            finally:
+                decoder.stdout.close()
+                # Reap both writers before cleanup, including cancellation/failure.
+                try:
+                    decoder_status = decoder.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    decoder.kill()
+                    decoder.wait()
+                    raise
+        if result.returncode or decoder_status:
+            raise RuntimeError(f"Extraction failed: tar={result.returncode}, zstd={decoder_status}")
+    return commands
 
 
 def prepare(args, stream, digest):

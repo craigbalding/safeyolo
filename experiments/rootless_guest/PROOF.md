@@ -66,13 +66,32 @@ confinement switches, verifies one open archive descriptor, creates private
 staging, and reaps extraction before cleanup in the same namespace.
 Existing output directories are refused before mutation.
 
-The 15 focused Linux-worker controls pass. They cover all 65536 canonical IDs
+The rootfs is extracted with numeric owners, access control lists (ACLs) and
+extended attributes in the import namespace. A second pass reads the same
+verified archive descriptor and extracts only `cache-paths.txt` as the ordinary
+host account, with `--no-same-owner`. The producer writes that file as text;
+`host_boot.rs` reads its lines to select package-cache mounts. Its build-account
+owner is not guest metadata. The rootfs pass keeps its existing ownership and
+metadata options.
+This bounded prototype uses two decompression passes; performance and production
+integration are not established by this correction.
+
+The 18 focused Linux-worker controls pass. They cover all 65536 canonical IDs
 with ordinary and distinct nondefault bases, embedded metadata inventory,
 descriptor replacement, selected members, failed tar, cancellation, external
 symlink-target preservation and existing-directory preservation. GNU tar reads
 the supplementary GNU 1.0 sparse fixture with the expected contents.
+The new real-tar control preserves rootfs modes and executable content while
+extracting a cache list whose UID/GID 1001 differ from the ordinary account.
+The former combined extraction at `bcde3993` fails that control with tar exit 2
+because it cannot assign the cache owner. Separate missing-cache and cancellation
+controls remove the private stage and preserve the external target's content,
+owner, mode and inode. Their namespace is replaced by the worker account for
+these controls; they do not establish native multi-ID cleanup.
 These controls do **not** prove native namespace entry, kernel metadata writes,
 an existing usable guest, native macOS failure cleanup, or backend behavior.
+Worker tar reports that ACL writes are unsupported on this filesystem. Passing
+worker controls do not establish ACL preservation on the required native host.
 The prototype is not a replacement for production's inode/mount/hardlink
 validation. Production integration must preserve those existing checks.
 
@@ -84,7 +103,7 @@ scratch directory for pytest:
 uv run --frozen pytest -q experiments/rootless_guest/test_import_guest.py --basetemp /disk/backed/1553-pytest
 ```
 
-Expected result: 15 passed. This command starts no guest or namespace.
+Expected result: 18 passed. This command starts no guest or namespace.
 
 ## Native execution packet
 
@@ -95,14 +114,54 @@ owned proof directory, with the verified compatible package and archive already
 bound. Retain original preparation failures before changing prerequisites.
 Use user-writable command locations. No guest build is needed.
 
-The precise next Ubuntu operation is `bash ubuntu_first_probe.sh ARCHIVE
-NEW_OUTPUT`, with the source files alongside that script. Sylab supplies the
-readable archive whose digest is fixed in the script. The script inventories
-that archive and tests the ordinary delegated mapping using the verified
-existing entry at `/home/agent/1562-b682-installed/host/namespace-entry`.
-It starts no guest, extracts no tree, invokes no sudo and changes no host
-prerequisite. It retains JSON and reaps its namespace holder. The archive
-inventory will resolve cache-owner and special-file questions before import.
+The inventory and ordinary mapping operation has completed as native execution
+18403, using the immutable `bcde3993` packet. The complete readable receipts are
+`/evidence/operator/1553/native-first-18403.json`,
+`/evidence/operator/1553/18403-archive-inventory.json` and
+`/evidence/operator/1553/18403-normal-mapping.json`. Their hashes match canonical
+operator direction backlog:16101. This candidate consumed those ordinary reads.
+The packet exited 0 in 2.218 seconds and reaped its namespace holder. The normal
+UID/GID maps match the table. No extraction or backend ran. Preserve observer
+compile failure 18402, which occurred before guest effects.
+
+The actual archive has 7,737 records: 1,011 directories, 831 symbolic links,
+5,893 regular files and two hardlinks. All 7,736 rootfs records use UID/GID
+100000. The only other owner is UID/GID 1001 on regular `cache-paths.txt`
+(mode 0644, 34 bytes). No sparse map, device, FIFO, ACL or extended-attribute
+header is present. PAX headers contain only modification times and paths.
+This inventory does not cover supplementary metadata or runtime enforcement.
+
+The next protected operation is the script below. On the existing native
+Ubuntu host, Sylab stages `ubuntu_import_probe.sh` and `import_guest.py` from
+the same immutable candidate in one source directory. Run as UID/GID 1000 from
+that directory. The archive and inventory already exist at the shown paths;
+the output directory must be absent. The script checks the selected hashes,
+existing namespace entry and current capacity against the existing 5 GiB floor
+plus its archive-based growth forecast before extracting anything.
+
+```sh
+bash ubuntu_import_probe.sh \
+  /home/agent/1436-operator/guest-store/blobs/sha256/1fb64d224df243e24bddbab42a4b1c12b876712270ae5eb59822cdb4c5f8febe \
+  /home/agent/1553-native-first-a/archive-inventory.json \
+  /home/agent/1553-native-import-b
+```
+
+Expected observations are a fresh published import, an operator-owned readable
+cache list, and a namespace comparison of all rootfs header types, owners,
+modes, regular-file sizes and links. Two small specimens then test a missing
+cache and explicit cancellation, stage removal and external-target preservation.
+The candidate PATH has no sudo. Only the successful new stage remains for a
+later backend operation; there is no backend, download, host setup, policy
+change or different delegated range in this packet. Preserve each original
+failure and inspect partial output before any retry. The packet has passed
+Bash syntax and both embedded Python compilation checks; native execution is
+still pending.
+
+Return `result.json`, `published-metadata.json`, each `preparation.json`, and
+the corresponding stdout/stderr through the existing readable operator handoff.
+An import failure must retain its original logs even if no preparation report
+was created. Ordinary owner-home paths were unreadable to Lens on output 1;
+source controls and owner logs alone do not supply native proof.
 
 1. Run `python3 experiments/rootless_guest/inspect_host.py --root PREPARED_ROOT`.
    Record the current package, selected guest, delegated ranges, namespace entry,
@@ -166,11 +225,11 @@ and the selected runtime/configuration must determine actual listener needs.
 | Extended attributes (xattrs) and capabilities | `canonical` has `user.*` and revision-3 (V3) capabilities rooted at 100000; revision-2 (V2) is separate in `v2-capability`. | V2/V3 root identity and capability effect in the intended runtime versus the existing path; other namespaces actually published. |
 | Access/default access control lists (ACLs) | Canonical principals/mask in `canonical`; out-of-range 42 in `raw-acl42` separately. | Host/runtime principals, masks and effective access. Raw 42 is characterization, not a host-ID passthrough requirement. |
 
-Linux top-level cache-file owners may use build-account coordinates rather than
-the canonical rootfs coordinates. The real inventory must decide whether a
-separate ordinary extraction of that regular file is needed. V2 capability root
-identity also needs observation: import root and runtime root intentionally have
-different mappings. Neither question is a proved product blocker yet.
+The actual Linux cache list uses build-account coordinates; the split extraction
+above removes that incidental owner from the namespace requirement. Native
+import remains pending. V2 capability root identity also needs observation:
+import root and runtime root intentionally have different mappings. No new
+delegated range or required arbitrary-archive compatibility is inferred.
 
 The current Ubuntu reads are
 `/evidence/operator/1553/native-preflight-18397.json` and
@@ -179,13 +238,15 @@ Ubuntu 24.04.4/x86_64/kernel 6.8.0-147/ext4, UID/GID 1000, GNU tar 1.35, the
 delegated 100000:65536 UID/GID ranges and enabled AppArmor namespace restriction.
 The queried old default root lacked `host/namespace-entry`. Its selected archive
 `sha256:1fb64d224df243e24bddbab42a4b1c12b876712270ae5eb59822cdb4c5f8febe`
-is absent from its blob cache. The index is
+was absent from that queried blob cache. Execution 18403 found and hash-verified
+the same archive in the retained `1436-operator/guest-store` path. The index is
 `sha256:67bcb6c51460619d3c021414961cd42b1f9751adc07f69d212a1d6485b1f132a`.
 A single-ID direct `unshare -Ur` failure is readiness evidence only. The later
 `/evidence/operator/1553/namespace-entry-18400.json` proves that the existing
 entry under `/home/agent/1562-b682-installed` succeeds for a single-ID namespace.
 Its SHA-256 is checked by the Ubuntu packet. No prerequisite is inferred from
-the earlier absent path. Multi-ID behavior still needs the proposed probe.
+the earlier absent path. Execution 18403 later established the normal multi-ID
+namespace. A distinct nondefault mapping and actual import remain unproved.
 
 The actual `compat-v1` discovery tag was resolved on15November to that same
 `67bcb6c5...` default index. The public index bytes are retained locally at
@@ -199,11 +260,12 @@ private refusal at03:54UTC and effective access, or supply the verified default
 input through the existing authorized acquisition route. Do not change package
 metadata or classify the retained Kali archive as the default to compensate.
 
-Resume on the same work/branch with the protected Ubuntu probe result and the
-default-archive acquisition result. The existing namespace entry and selected
-Bristol slot need no new permission or discovery. The smallest protected action
-is the supplied Ubuntu inventory/mapping script and original registry-refusal
-inspection; ordinary Bristol operations remain Forge-owned.
+The selected continuation resolves only the current selected-member import
+uncertainty. The original 60-minute reassessment has been reached; it is not
+restarted. Resume on the same work/branch with the protected import result.
+The original registry-refusal inspection remains separately pending and no
+retry is selected. The existing namespace entry and selected Bristol slot need
+no new permission or discovery; ordinary Bristol operations remain Forge-owned.
 The full privileged-use witness, failure cleanup, metadata comparison and both
 guest journeys remain unproved. No independent acceptance is claimed.
 
@@ -216,3 +278,7 @@ Local supplementary archives,
 reproducible disposable outputs. The source and this compact external-platform
 result remain review inputs. No additional queue, proof service or guest image
 is introduced.
+The proposed native `/home/agent/1553-native-import-b` group contains one
+reproducible imported tree, two tiny specimens and compact results. If execution
+succeeds, the tree is an actual input for the remaining guest-startup step.
+Retain original results and input identities under the existing storage policy.

@@ -1,8 +1,10 @@
 """Focused prototype controls; these do not qualify a native host or backend."""
 
+import contextlib
 import hashlib
 import io
 import json
+import os
 import struct
 import subprocess
 import tarfile
@@ -14,6 +16,7 @@ import pytest
 from experiments.rootless_guest.import_guest import (
     ARCHIVE_BASE,
     ID_COUNT,
+    extract,
     import_ids,
     inventory,
     prepare,
@@ -102,6 +105,64 @@ def test_verified_open_descriptor_survives_path_replacement(tmp_path):
         assert inventory(stream)["records"][0]["size"] == len(b"verified")
     with path.open("rb") as stream, pytest.raises(ValueError, match="SHA-256"):
         verify_archive(stream, digest)
+
+
+def test_linux_cache_list_uses_host_owner_without_changing_rootfs_metadata(tmp_path):
+    root = tarfile.TarInfo("rootfs-tree")
+    root.type, root.uid, root.gid, root.mode = tarfile.DIRTYPE, os.getuid(), os.getgid(), 0o750
+    executable = tarfile.TarInfo("rootfs-tree/executable")
+    executable.uid, executable.gid, executable.mode = os.getuid(), os.getgid(), 0o755
+    cache = tarfile.TarInfo("cache-paths.txt")
+    cache.uid, cache.gid, cache.mode = 1001, 1001, 0o644
+    content = b"/var/cache/apt\n/var/lib/apt/lists\n"
+    archive, digest = archive_file(tmp_path, [
+        (root, b""), (executable, b"#!/bin/sh\nexit 0\n"), (cache, content),
+        (tarfile.TarInfo("unselected-host-state"), b"not a backend input"),
+    ])
+    stage = tmp_path / "stage"
+    stage.mkdir(mode=0o700)
+    with archive.open("rb") as stream:
+        verify_archive(stream, digest)
+        extract(stream, stage, [], True)
+    assert sorted(p.name for p in stage.iterdir()) == ["cache-paths.txt", "rootfs-tree"]
+    for path, mode in [(stage / "rootfs-tree", 0o750),
+                       (stage / "rootfs-tree/executable", 0o755),
+                       (stage / "cache-paths.txt", 0o644)]:
+        info = path.lstat()
+        assert (info.st_uid, info.st_gid, info.st_mode & 0o7777) == (os.getuid(), os.getgid(), mode)
+    assert (stage / "cache-paths.txt").read_bytes() == content
+    assert subprocess.run([str(stage / "rootfs-tree/executable")], check=False).returncode == 0
+
+
+@pytest.mark.parametrize("missing_cache,cancel", [(True, False), (False, True)])
+def test_linux_host_cache_failure_and_cancellation_remove_stage(tmp_path, monkeypatch, missing_cache, cancel):
+    # Exercise real tar/rm as the worker account; this is not native mapping proof.
+    monkeypatch.setattr("experiments.rootless_guest.import_guest.import_namespace",
+                        lambda *args: contextlib.nullcontext(([], {})))
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"unchanged external target")
+    before = outside.stat()
+    root = tarfile.TarInfo("rootfs-tree")
+    root.type, root.uid, root.gid, root.mode = tarfile.DIRTYPE, os.getuid(), os.getgid(), 0o700
+    link = tarfile.TarInfo("rootfs-tree/external")
+    link.type, link.linkname, link.uid, link.gid = tarfile.SYMTYPE, str(outside), os.getuid(), os.getgid()
+    cache = tarfile.TarInfo("cache-paths.txt")
+    cache.uid = cache.gid = 1001
+    members = [(root, b""), (link, b"")]
+    if not missing_cache:
+        members.append((cache, b"/var/cache/apt\n"))
+    archive, digest = archive_file(tmp_path, members)
+    args = SimpleNamespace(platform="linux", output=tmp_path / "attempt", host_root=tmp_path,
+                           uid_base=os.getuid(), gid_base=os.getgid(), cancel_after_extract=cancel)
+    with archive.open("rb") as stream, pytest.raises((InterruptedError, RuntimeError)):
+        prepare(args, stream, digest)
+    report = json.loads((args.output / "preparation.json").read_text())
+    assert report["result"] == "failed/cancelled; private stage removed"
+    assert not Path(report["stage"]).exists()
+    assert outside.read_bytes() == b"unchanged external target"
+    after = outside.stat()
+    assert (before.st_uid, before.st_gid, before.st_mode, before.st_ino) == (
+        after.st_uid, after.st_gid, after.st_mode, after.st_ino)
 
 
 def mac_fixture(tmp_path, external=None):
