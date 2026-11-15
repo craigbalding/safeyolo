@@ -2,11 +2,13 @@
 
 This is the bounded feasibility work for [#1553](https://github.com/craigbalding/safeyolo/issues/1553).
 The complete go/no-go result remains **unproved**. Native macOS extraction of
-one published Kali image bundle passed. Native Ubuntu import and systrap startup
+one published Kali image bundle passed. The same files started a
+Virtualization.framework (VZ) virtual machine (VM) with working root and
+user-1000 read/write/execute. Native Ubuntu import and systrap startup
 passed with the ordinary mapping, including guest identity and read/write/execute.
 The native supplementary canonical specimen matches the privileged baseline,
 including kernel runtime-map access, ACL inheritance and capability effects.
-The macOS backend journey remains unproved. This candidate changes no production
+The complete backend metadata and cancellation matrix remains unproved. This candidate changes no production
 installer.
 #1554 owns production integration; #1563 owns maintained blackbox coverage.
 
@@ -28,7 +30,8 @@ compatibility `v1`, from `ghcr.io/craigbalding/safeyolo-guest`. The index,
 manifest and compressed archive hashes were checked. The retained config blob
 was absent, so this was not a new full Open Container Initiative (OCI) admission.
 The inspected compatible package was debug source
-`c6dd3b8bfef1a2e5f49e1fbc273c4b2ac2b46a52`; no runtime executable was exercised.
+`c6dd3b8bfef1a2e5f49e1fbc273c4b2ac2b46a52`. The later retained-image runtime
+below uses that unchanged installation.
 
 The prototype used the existing macOS `tar -xpf - -C STAGE -- Image
 initramfs.cpio.gz rootfs-base.ext4` extraction path. It preserved the three
@@ -41,8 +44,8 @@ to that extent sum. No Linux special files were materialized on APFS.
 The candidate PATH contained only tar, zstd and rm. `sudo` was absent from that
 PATH. Parent and child recorded UID 502/GID 20. This records the actual commands
 and account; it does not claim a syscall trace or system-wide sudo revocation.
-The account's confinement and policy were unchanged. No virtual machine (VM)
-or model was started.
+The account's confinement and policy were unchanged. That extraction operation
+started no VM or model; the separate runtime operation is recorded below.
 The same prototype also removed a cancelled private stage on native macOS
 using a small synthetic three-file archive. This did not test a usable guest.
 
@@ -260,7 +263,7 @@ active state, stop failures and inspection failures still fail cleanup.
 The separate `guest_result` field preserves the result before cleanup inspection.
 No diagnostic record is removed to manufacture success.
 
-Fourteen focused observer controls pass, including real closed/listening sockets,
+Sixteen focused observer controls pass, including real closed/listening sockets,
 an unrelated listener, real live/stopped child processes, retained active state
 and an unreadable listener table. The content controls remain included.
 Run these controls from the task checkout using the locked development Python
@@ -270,7 +273,7 @@ environment and a disposable disk-backed pytest directory:
 uv run --frozen pytest -q experiments/rootless_guest/test_ubuntu_runtime_probe.py --basetemp /disk/backed/1553-runtime-pytest
 ```
 
-Expected result: 14 passed. No guest or namespace starts. The native result is
+Expected result: 16 passed. No guest or namespace starts. The native result is
 reused after this observer correction; no product replay is needed.
 
 ### Native supplementary comparison
@@ -491,52 +494,114 @@ The packet has not run natively. Local validation is 44 focused controls:
 20 import, 16 runtime-observer and 8 metadata-observer cases. The two new
 runtime controls check early completion and failure reporting; they do not
 establish the protected cancellation result. Local CodeQL remains unsupported
-on Linux aarch64. The fixture correction needs its new hosted analysis.
+on Linux aarch64. Hosted CodeQL passed on the independently reviewed fixture
+correction at `351b4d95`; this publication's new hosted checks are separate.
 
-### Remaining macOS operand
+### Native macOS retained-image runtime
 
-For Bristol, the characterized Kali assets are retained at
-`/Users/sy-agent/f1553-20261115/native/prepared/extract-kiyduh7b`.
-The source prototype is retained beside `macos_prepare.py` under that 1553 parent.
-Do not repeat its extraction for bookkeeping or call it the default guest.
-Bind the selected compatible published input and runtime before the next
-attempt. The issue does not require changing the characterized Kali profile to
-the default profile. Reuse the Kali preparation at its recorded scope; keep
-the original default-manifest refusal and its approval prerequisite separate.
-Use a fresh 1553 instance and the existing `/Users/sy-agent/bin/run-vz-test`.
-Check current capacity first: preparation left 22,567,608,320 free bytes; the
-operator-home reserve is 20 gibibytes (GiB). Record actual peak headroom for the
-runtime. Preserve `/Users/sy-agent/s500d`, both held 1104 roots and unrelated processes.
-No Bristol root, elevation, personal account or policy change is permitted.
-The canonical readiness input found only ports 46372/46374 free. This does not
-prove a port blocker: the helper's shell/control transport uses Unix sockets,
-and the selected runtime/configuration must determine actual listener needs.
+On 15 November, the selected physical Bristol operation ran from 08:27:00.033
+to 08:27:11.669 UTC, including image checks and owned shutdown. The executed
+controller and guest script are retained at source
+`6ebd2f96f71a79b7ecc619e96304f9fa0aeb366b`.
+[`macos-observed.json::runtime_witness`](macos-observed.json) contains the
+original result, helper/serial/guest output and post-shutdown host read.
 
-Ordinary UID502 inspection at 07:55 UTC on 15 November verifies the complete
-compatible `c6dd3b8b` debug installation at `/Users/sy-agent/h1552`.
-`macos-observed.json::runtime_readiness` retains current hashes, allocation,
-owners and modes for the prepared Kali files and that installation's retained
-`share-kali-failed-1050` files. All three file hashes match across the two
-directories. The directory name supplies no startup diagnosis. The prepared
-image hash is `5d2286d5deb330073b9af96b54a62ee1982707308a52223e2e714fc642f0063f`.
-Current free space is 23,087,058,944 bytes. Temporary bind-and-close probes
-again find only 46372/46374 available; other permitted ports return address in
-use. Broad process listing is denied by confinement. No VM, proxy or Coord
-was started, and no registry request was repeated. These observations bind
-available operands; they neither prove a missing platform nor settle runtime
-feasibility. A physical runtime attempt still needs serialization and its actual
-listener/configuration selection within the existing account's authority.
+The ordinary UID 502/GID 20 process reused the prepared Kali files at
+`/Users/sy-agent/f1553-20261115/native/prepared/extract-kiyduh7b` and the complete
+compatible installation at `/Users/sy-agent/h1552`, source `c6dd3b8b`.
+All three image hashes equalled that installation's existing
+`share-kali-failed-1050` files before startup. The prepared image hash remained
+`5d2286d5deb330073b9af96b54a62ee1982707308a52223e2e714fc642f0063f` after shutdown.
+No extraction, complete installation copy, product build or acquisition ran.
+The directory name of the existing files supplies no startup diagnosis.
+
+The maintained kernel observers found no active VM consumer before effects.
+The held #500 NATS/proxy births were recorded and remained unchanged afterward.
+Only authorized ports 46372/46374 were available in the preceding bind-and-close
+read; this fixture required no host TCP listener. The helper used the existing
+`/Users/sy-agent/bin/run-vz-test` wrapper, a new private `runtime-g8` parent,
+four owned VirtioFS shares and a new 256 MiB sparse overlay. It copied only the
+installed guest assets. The normal installed two-phase init ran unchanged;
+a wrapper around its static phase started the Linux observation script.
+The candidate host PATH contained only the wrapper's Python interpreter.
+The helper was mode 0755, and no host sudo command ran. This is an account,
+command and byte-bound observation, not a syscall trace or global sudo revocation.
+
+The VM reported Kali 2026.1, Linux 6.12.17/aarch64. Root and UID/GID 1000 passed
+the required identity and actual read/write/execute checks. Ordinary-user data
+and executables reached both the new home and workspace shares. The subsequent
+host read found all four files owned by 502:20, with modes 0644/0755 and the
+expected contents. The output parent remained 0700.
+
+Published guest observations preserve root ownership, ordinary and set-ID modes,
+`/bin` and `/lib` links, and guest character/block devices. The small specimen
+inside the disposable overlay preserved a hardlink inode, symbolic-link target,
+FIFO and character/block nodes. Its 64 MiB sparse file used 4 KiB allocation and
+returned its written tail. UID 1000 read its private file; IDs 33/65535 were
+denied. Each identity executed the specimen. The separate set-ID executable
+reported effective UID 0 for all three identities. These Linux devices were
+created inside the VM, not on APFS.
+
+`getfacl`, `getfattr`, `setfacl` and `setfattr` were absent, with exit 127 retained.
+The ACL-labelled directory therefore used ordinary permissions; its successful
+reads are not ACL proof. `setcap cap_net_bind_service=ep` returned
+`Operation not supported`, exit 1. The subsequent executable had no file
+capability, and its zero effective masks do not establish capability behavior.
+The precise cause and a separate baseline capability/ACL comparison remain
+unproved. Matching prepared/baseline disk bytes establish unchanged inputs;
+this run does not claim a complete baseline runtime comparison or a candidate
+regression. Missing guest tools were not installed.
+
+The wrapper received the requested SIGTERM and returned 143 after reaping its
+helper. The helper log records its five-second grace followed by a forced VM
+stop. Final kernel enumeration found no VM processes. This proves owned teardown,
+not graceful guest shutdown. No foreign process was stopped.
+Free space was 23,107,645,440 bytes before the operation, 23,073,927,168 after
+shutdown and 22,974,439,424 on the later read. These endpoints exceed the existing
+20 GiB operator-home reserve; no continuous peak measurement is claimed.
+The overlay allocated 1,052,672 bytes after shutdown. The three prepared files
+retained their hashes, modes, owners and sparse allocation.
+
+For reproduction on the same authorized host/account, keep the verified
+installation and prepared inputs above, retain the two maintained kernel
+observers under the checkout's `tests/blackbox/harness`, and select an unused
+disk-backed output. From a checkout with this packet, run:
+
+```sh
+/Users/sy-agent/f1104-8744/source/.venv/bin/python experiments/rootless_guest/macos_runtime_probe.py /Users/sy-agent/f1553-20261115/runtime-next
+```
+
+Expected result: `guest_probe_exit` is `0`, guest and helper logs retain individual
+metadata failures, and no owned VM birth survives cleanup. A previously used
+output is refused before another run. Do not repeat this successful journey
+solely to reformat its evidence.
+
+After the reached run, the observer was corrected to retain stop errors and
+check exact owned births separately from a later foreign VM consumer. Six local
+controls cover early exit, successful teardown, stop/inspection failures and
+owned versus foreign survivors. They replace the native boundary with controlled
+inputs and start no VM. The original run remains bound to `6ebd2f96`; it was not
+replayed for the observer correction.
+
+The reached reassessment supplies Mac startup and useful Linux metadata evidence.
+No asynchronous or failed import ran while this guest was live. That preservation
+criterion, capability/ACL comparison, the protected Ubuntu packet and genuinely
+different delegated bases remain open. No new host policy decision or default
+guest is required for this Kali result. The separate original default-manifest
+refusal still requires its canonical approval and effective-access reads before
+any decision or retry. Bristol root, elevation, personal-account access and
+held #500/#1104 changes remain unauthorized.
 
 ## Matrix and remaining interpretation
 
 | Case | Specimen / reached observation | Native comparison still required |
 | --- | --- | --- |
-| Ordinary/private files, directories, executable and set-ID modes | Native canonical host/kernel observations match baseline, including IDs 33/65535, private access and set-ID execution. Mac outer modes/owners and Ubuntu ordinary-map root/user-1000 I/O passed. | Distinct delegated bases, applicable gVisor metadata/access/identity observations and full Mac runtime. |
-| Symbolic links and hardlinks | `canonical`, `escaping-link`; local external target and existing directory survived. Native published link targets/hardlink inode matched. | Supplementary confinement and existing **usable** guest preservation. |
-| Sparse files | Native canonical contents and 64 MiB logical/8 KiB allocation match baseline; real Mac image remained sparse. | Applicable image/VM contents. |
-| First in, first out (FIFO), character and block nodes | Native FIFO matches baseline. Candidate device creation fails EPERM and cleans its stage; privileged baseline succeeds. Published Linux archive requires neither. | Applicable Linux special-file results inside the Mac image/VM. No arbitrary host mknod support is required. |
-| Extended attributes (xattrs) and capabilities | Canonical user xattr/V3 roots and kernel execution masks match baseline. Separate synthetic V2 has different raw root, EOVERFLOW reads and capability effects. Published Ubuntu archive has no xattrs. | Applicable gVisor and Mac VM effects against existing behavior; no inferred arbitrary V2 support. |
-| Access/default access control lists (ACLs) | Canonical host/runtime-map principals, masks, inheritance and actual access match baseline. Raw 42 fails ACL restoration despite import exit 0. | Applicable gVisor/Mac VM behavior. Raw 42 remains characterization, not a passthrough requirement. |
+| Ordinary/private files, directories, executable and set-ID modes | Native canonical host/kernel observations match baseline, including IDs 33/65535, private access and set-ID execution. Both platforms passed root/user-1000 I/O. Mac VM private access and set-ID effects were observed. | Distinct delegated bases, applicable gVisor effects and complete Mac baseline comparison. |
+| Symbolic links and hardlinks | `canonical`, `escaping-link`; local external target and existing directory survived. Native published link targets/hardlink inode matched. Mac VM specimen preserved its target and hardlink inode. | Supplementary confinement and existing **usable** guest preservation. |
+| Sparse files | Native canonical contents and 64 MiB logical/8 KiB allocation match baseline. Mac outer image retained allocation and hash; VM specimen used 4 KiB for 64 MiB logical contents. | Complete applicable baseline comparison. |
+| First in, first out (FIFO), character and block nodes | Native FIFO matches baseline. Ubuntu device creation fails EPERM and cleans its stage; privileged baseline succeeds. Published Linux archive requires neither. Mac VM created the specimen's FIFO and device nodes. | Complete comparison; no arbitrary host mknod support is required. |
+| Extended attributes (xattrs) and capabilities | Canonical Ubuntu V3 roots and kernel masks match baseline. Synthetic V2 differs and causes EOVERFLOW. Published Ubuntu archive has no xattrs. Mac `setcap` fails as unsupported; xattr tools are absent. | Applicable gVisor effects, Mac cause and baseline comparison; no inferred arbitrary V2 support. |
+| Access/default access control lists (ACLs) | Canonical Ubuntu principals, masks, inheritance and actual access match baseline. Raw 42 loses ACL despite import exit 0. Mac ACL tools are absent; ordinary permissions alone were observed. | Applicable gVisor/Mac ACL behavior. Raw 42 remains characterization, not a passthrough requirement. |
 
 The actual Linux cache list uses build-account coordinates; the split extraction
 above removes that incidental owner from the namespace requirement. Native
@@ -586,8 +651,8 @@ No new capability rewrite, arbitrary-device support or policy restriction is
 justified by these observations.
 
 Remaining inputs are genuinely delegated different nondefault UID/GID bases;
-any necessary isolated gVisor baseline/candidate metadata/access comparison;
-complete pinned macOS preparation/runtime with Linux metadata inside the VM;
+the isolated gVisor baseline/candidate metadata/access comparison;
+the remaining Mac capability/ACL cause and applicable baseline comparison;
 and asynchronous cancellation with external-target/existing usable-guest
 preservation. The native canonical stages and unchanged runtime supply operands
 for a selected backend comparison; current equal delegations do not supply the
@@ -595,9 +660,11 @@ distinct-map operand. The original Mac registry disposition must be resolved
 and effective access read before a future retry. These gaps require scoped
 operations or changed inputs, not replay of the successful import or journey.
 Sylab retains precisely identified protected operations; no new Craig input is
-needed to interpret 18414. The selected continuation prepares the isolated
-Ubuntu packet above; actual protected execution and full macOS proof remain
-pending.
+needed to interpret 18414 or the reached Mac result. The isolated Ubuntu packet
+remains with Sylab under `sig-8f416629a47a4072adeb97016768262f@1`. Actual protected
+execution, a genuine distinct-map input and the remaining Mac matrix need a
+coordinator-selected further attempt. No successful journey needs replay for
+reporting.
 M / High and the already reached cumulative 60-minute reassessment remain;
 there is no fresh allowance. Full independent go/no-go and all seven criteria
 remain open.
@@ -607,21 +674,26 @@ The complete output-3 rejection `work-6460c275ae88410a88b9afed14fc435b@3`
 supplies F1 and carries those reviews forward. Its earlier pending-runtime
 observation is superseded by the original 18413 receipts, not by a replay.
 
-At `b2c4355f`, Lint, Test CLI, Test Addons, Analyze and Blackbox assurance pass.
-Separate CodeQL check 132737015687/alert 567 and Proxy assurance workflow
-43689446332/job 132736773402 fail and remain unwaived. The fixture assignment is
-now expressed without starred expansion; no new hosted result is claimed.
-The Proxy assurance artifact compares against
-accepted source `8ba22365616d83b8b8b18b87781f0e9b9ad1e439` and reports 55 changed
-mapped decisions and 10 stale symbols. This is unresolved drift, not an accepted
-baseline update. Local CodeQL is unsupported on this Linux aarch64 worker.
+At independently reviewed `351b4d95`, Lint, Test CLI, Test Addons, Analyze,
+Blackbox assurance and CodeQL check 132745628740 pass; the tuple diagnostic
+is fixed. Proxy assurance workflow 43692327943/job 132745412677 still fails
+source-data drift and remains unwaived. This is unresolved drift, not an accepted
+baseline update. This publication needs its own hosted results; no new pass is
+inferred from the prior candidate. Local CodeQL is unsupported on Linux aarch64.
 Relay owns CI and integration.
 This candidate establishes no merge approval or issue acceptance.
 
 ## Output retention
 
-The Bristol 1553 characterized Kali stage occupies about 2.35 GB. It is a
-reproducible comparison input, not the selected default-runtime operand.
+The Bristol 1553 characterized Kali stage occupies about 2.35 GB. It supplied
+the completed Kali runtime and remains an input to its exact review. It is not
+the default guest. `/Users/sy-agent/f1553-20261115/runtime-g8` contains small
+reproducible guest assets, a sparse overlay and compact original results.
+`/Users/sy-agent/f1553-20261115/g8-source` is the small source packet.
+No runtime remains active. These output groups become disposable after their
+reviewers stop reading; retain the source, compact results and input identities
+under the existing policy. The local `/home/agent/1553-macos-g8-results` originals
+and `/home/agent/1553-macos-pytest` controls are also small reproducible groups.
 Local supplementary archives,
 `/home/agent/1553-pytest`, and successful duplicate fixture attempts are
 reproducible disposable outputs. The source and this compact external-platform

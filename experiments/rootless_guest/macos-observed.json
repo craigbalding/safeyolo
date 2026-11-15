@@ -276,13 +276,6 @@
       "elapsed_seconds": 12.197793667204678
     }
   },
-  "limits": [
-    "Published Kali-pentest profile only; no default-guest claim.",
-    "Package c6dd3b8b was inspected for compatibility; no runtime executable or VZ guest was started.",
-    "sudo was absent from the candidate PATH; no system-wide revocation or syscall-trace claim.",
-    "Linux metadata inside ext4 and the VM remains unobserved.",
-    "Cached index and manifest hashes were verified and the pinned archive was verified on its open descriptor. The config blob was absent from the retained cache; no new full OCI admission claimed."
-  ],
   "native_cancellation": {
     "command": [
       "/opt/homebrew/bin/python3",
@@ -425,6 +418,356 @@
       "Port availability does not establish required listener count or a blocker.",
       "Retained share-kali-failed-1050 name is not a startup failure diagnosis.",
       "No original registry request or approval decision retried."
+    ]
+  },
+  "preparation_scope": [
+    "Published Kali-pentest profile only; no default-guest claim.",
+    "Package c6dd3b8b was inspected for compatibility; no runtime executable or VZ guest was started.",
+    "sudo was absent from the candidate PATH; no system-wide revocation or syscall-trace claim.",
+    "Linux metadata inside ext4 and the VM remains unobserved.",
+    "Cached index and manifest hashes were verified and the pinned archive was verified on its open descriptor. The config blob was absent from the retained cache; no new full OCI admission claimed."
+  ],
+  "runtime_witness": {
+    "source_commit": "6ebd2f96f71a79b7ecc619e96304f9fa0aeb366b",
+    "original_result": {
+      "started_at": "2026-11-15T08:27:00.033071+00:00",
+      "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+      "uid": 502,
+      "gid": 20,
+      "result": "published preparation reached VZ guest identity/read/write/execute",
+      "actions": [
+        {
+          "command": [
+            "version"
+          ],
+          "exit": 0,
+          "stdout": "safeyolo-vm 0.3.1 safeyolo=0.1.0 git=c6dd3b8bfef1a2e5f49e1fbc273c4b2ac2b46a52 tree=clean profile=development arch=arm64 debuggable=yes\n",
+          "stderr": ""
+        },
+        {
+          "command": [
+            "check"
+          ],
+          "exit": 0,
+          "stdout": "safeyolo-vm check: ok\n",
+          "stderr": ""
+        }
+      ],
+      "controller": {
+        "sha256": "c569fcd0d4f01a7215031b4ef329d1d194a34c36bb78bd633392f55026d4ca5b",
+        "bytes": 10577,
+        "allocated_bytes": 12288,
+        "uid": 502,
+        "gid": 20,
+        "mode": "0o600"
+      },
+      "free_bytes_before": 23107645440,
+      "prior_vm_processes": [],
+      "held_processes_before": {
+        "93166": "darwin:93166:1794279947:605837",
+        "93168": "darwin:93168:1794279947:732784"
+      },
+      "package_info": "source_commit=c6dd3b8bfef1a2e5f49e1fbc273c4b2ac2b46a52\nprofile=debug\nplatform=darwin-arm64\nminimum_runtime=26.0\nguest_compatibility=v1\nguest_repository=ghcr.io/craigbalding/safeyolo-guest\nguest_discovery_tag=compat-v1\n",
+      "files": {
+        "/Users/sy-agent/f1553-20261115/native/prepared/extract-kiyduh7b": {
+          "Image": {
+            "sha256": "cfb99c160084f605b4acf9e7d7a50e4805e07de0c6fa7a88918067100a9066c0",
+            "bytes": 8772096,
+            "allocated_bytes": 8773632,
+            "uid": 502,
+            "gid": 20,
+            "mode": "0o600"
+          },
+          "initramfs.cpio.gz": {
+            "sha256": "1ca27b00cef28f6e7065f84524fc65bf48ed71c91b1bf498a4dc8532c5a6ec15",
+            "bytes": 2713140,
+            "allocated_bytes": 2715648,
+            "uid": 502,
+            "gid": 20,
+            "mode": "0o600"
+          },
+          "rootfs-base.ext4": {
+            "sha256": "5d2286d5deb330073b9af96b54a62ee1982707308a52223e2e714fc642f0063f",
+            "bytes": 3387375616,
+            "allocated_bytes": 2335162368,
+            "uid": 502,
+            "gid": 20,
+            "mode": "0o644"
+          }
+        },
+        "/Users/sy-agent/h1552/share-kali-failed-1050": {
+          "Image": {
+            "sha256": "cfb99c160084f605b4acf9e7d7a50e4805e07de0c6fa7a88918067100a9066c0",
+            "bytes": 8772096,
+            "allocated_bytes": 8773632,
+            "uid": 502,
+            "gid": 20,
+            "mode": "0o600"
+          },
+          "initramfs.cpio.gz": {
+            "sha256": "1ca27b00cef28f6e7065f84524fc65bf48ed71c91b1bf498a4dc8532c5a6ec15",
+            "bytes": 2713140,
+            "allocated_bytes": 2715648,
+            "uid": 502,
+            "gid": 20,
+            "mode": "0o600"
+          },
+          "rootfs-base.ext4": {
+            "sha256": "5d2286d5deb330073b9af96b54a62ee1982707308a52223e2e714fc642f0063f",
+            "bytes": 3387375616,
+            "allocated_bytes": 2335162368,
+            "uid": 502,
+            "gid": 20,
+            "mode": "0o644"
+          }
+        }
+      },
+      "helper": {
+        "sha256": "f35c072c6ebd83f6861b6ec83bc0589525b23373dabcb09e145be92e44691d6c",
+        "bytes": 651040,
+        "allocated_bytes": 651264,
+        "uid": 502,
+        "gid": 20,
+        "mode": "0o700"
+      },
+      "wrapper": {
+        "sha256": "534297944736aa9cb1fef615c88628577d5236a32d183c92f952d4d32ebd7593",
+        "bytes": 3105,
+        "allocated_bytes": 4096,
+        "uid": 502,
+        "gid": 20,
+        "mode": "0o700"
+      },
+      "assets": {
+        "guest-init": {
+          "sha256": "701beeb92b5db60ad80ac4c60b73b46b53f595a4be61573a9d412f55dfbd6a81",
+          "bytes": 6182,
+          "allocated_bytes": 8192,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o700"
+        },
+        "guest-init-static": {
+          "sha256": "ef588e52df4c4d3d1baa983e1d50aebaa037f9c817f55d95d8868a73bf147e57",
+          "bytes": 19807,
+          "allocated_bytes": 20480,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o700"
+        },
+        "guest-init-per-run": {
+          "sha256": "08316e40553462a2293b025d2f20258f8de48c0a3067edf19a2390a8e6ccd397",
+          "bytes": 18884,
+          "allocated_bytes": 20480,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o700"
+        },
+        "safeyolo-guest": {
+          "sha256": "368d3d19e9786234d71ed6c8c9966853de1b0860f1781a8fde7e8cf579eac58e",
+          "bytes": 7728560,
+          "allocated_bytes": 7729152,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o700"
+        },
+        "guest-proxy-forwarder": {
+          "sha256": "5f59e67ea5630a748e6eea346c96efe314dba816849a89636177f77812c705bf",
+          "bytes": 2622,
+          "allocated_bytes": 4096,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o700"
+        },
+        "guest-shell-bridge": {
+          "sha256": "1efef68fdb2d0f58d88750e25f8ebd2cb8294af70a34b33e34e7d4ed85f1737e",
+          "bytes": 1375,
+          "allocated_bytes": 4096,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o700"
+        },
+        "guest-sudo": {
+          "sha256": "4effee1b60e8dff422b962d91d2f6180f87cf50d57399c9c3968e39348330842",
+          "bytes": 1147,
+          "allocated_bytes": 4096,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o700"
+        },
+        "guest-desktop": {
+          "sha256": "960fbb33c0c4873ce463e3f1be1310fea39a7ebec383a0a1e08b81dc0e07d215",
+          "bytes": 16002,
+          "allocated_bytes": 16384,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o700"
+        }
+      },
+      "guest_probe": {
+        "sha256": "a7b5c289ab9b599b9926650d1b0ab4ad67ce2fc34fb854ea14bd7330d1a7a4cd",
+        "bytes": 4468,
+        "allocated_bytes": 8192,
+        "uid": 502,
+        "gid": 20,
+        "mode": "0o600"
+      },
+      "sudo_on_candidate_path": null,
+      "command": [
+        "/Users/sy-agent/bin/run-vz-test",
+        "--timeout-seconds",
+        "150",
+        "--",
+        "/Users/sy-agent/h1552/bin/safeyolo-vm",
+        "run",
+        "--kernel",
+        "/Users/sy-agent/f1553-20261115/native/prepared/extract-kiyduh7b/Image",
+        "--initrd",
+        "/Users/sy-agent/f1553-20261115/native/prepared/extract-kiyduh7b/initramfs.cpio.gz",
+        "--rootfs",
+        "/Users/sy-agent/f1553-20261115/native/prepared/extract-kiyduh7b/rootfs-base.ext4",
+        "--overlay",
+        "/Users/sy-agent/f1553-20261115/runtime-g8/overlay.ext4",
+        "--cpus",
+        "2",
+        "--memory",
+        "1024",
+        "--no-terminal",
+        "--serial-log",
+        "/Users/sy-agent/f1553-20261115/runtime-g8/serial.log",
+        "--share",
+        "/Users/sy-agent/f1553-20261115/runtime-g8/config:config:ro",
+        "--share",
+        "/Users/sy-agent/f1553-20261115/runtime-g8/status:status:rw",
+        "--share",
+        "/Users/sy-agent/f1553-20261115/runtime-g8/home:home:rw",
+        "--share",
+        "/Users/sy-agent/f1553-20261115/runtime-g8/workspace:workspace:rw"
+      ],
+      "wrapper_process": {
+        "pid": 91928,
+        "birth": "darwin:91928:1794731223:637177"
+      },
+      "owned_helpers": [
+        {
+          "pid": 91929,
+          "birth": "darwin:91929:1794731223:700533",
+          "argv": [
+            "/Users/sy-agent/h1552/bin/safeyolo-vm",
+            "run",
+            "--kernel",
+            "/Users/sy-agent/f1553-20261115/native/prepared/extract-kiyduh7b/Image",
+            "--initrd",
+            "/Users/sy-agent/f1553-20261115/native/prepared/extract-kiyduh7b/initramfs.cpio.gz",
+            "--rootfs",
+            "/Users/sy-agent/f1553-20261115/native/prepared/extract-kiyduh7b/rootfs-base.ext4",
+            "--overlay",
+            "/Users/sy-agent/f1553-20261115/runtime-g8/overlay.ext4",
+            "--cpus",
+            "2",
+            "--memory",
+            "1024",
+            "--no-terminal",
+            "--serial-log",
+            "/Users/sy-agent/f1553-20261115/runtime-g8/serial.log",
+            "--share",
+            "/Users/sy-agent/f1553-20261115/runtime-g8/config:config:ro",
+            "--share",
+            "/Users/sy-agent/f1553-20261115/runtime-g8/status:status:rw",
+            "--share",
+            "/Users/sy-agent/f1553-20261115/runtime-g8/home:home:rw",
+            "--share",
+            "/Users/sy-agent/f1553-20261115/runtime-g8/workspace:workspace:rw"
+          ]
+        }
+      ],
+      "guest_probe_exit": "0",
+      "wrapper_exit": 143,
+      "free_bytes_after": 23073927168,
+      "held_processes_after": {
+        "93166": "darwin:93166:1794279947:605837",
+        "93168": "darwin:93168:1794279947:732784"
+      },
+      "held_processes_unchanged": true,
+      "remaining_vm_processes": [],
+      "overlay": {
+        "bytes": 268435456,
+        "allocated_bytes": 1052672
+      },
+      "finished_at": "2026-11-15T08:27:11.669129+00:00"
+    },
+    "original_helper_log": "2026-11-15 08:27:03.707 [vm] safeyolo-vm 0.3.1 safeyolo=0.1.0 git=c6dd3b8bfef1a2e5f49e1fbc273c4b2ac2b46a52 tree=clean profile=development arch=arm64 debuggable=yes\nReceived SIGTERM, shutting down VM...\nVM did not stop within 5s, forcing...\n[vm] atexit\n",
+    "original_serial_log": "initramfs: /dev/vdb has no filesystem, formatting ext4 (first boot)\n[orch rlimit] RLIMIT_NOFILE=65536/65536\n[orch start] pid=1 date=Sun Nov 15 08:27:04 UTC 2026\n[static start] pid=84\n[static] sshd launched pid=122\n[static] started guest-proxy-forwarder (pid=128)\n[static end] pid=84\nnohup: appending output to 'nohup.out'\n[orch exit] waited=0 per-run-go=yes\n[orch exec] /run/safeyolo/guest-init-per-run\n[per-run start] pid=1\n[guest-clock] {\"checked_at\":1794731225.9342604,\"last_correction_at\":null,\"offset_seconds\":-0.9342389106750488,\"remaining_offset_seconds\":-0.9342572689056396,\"source\":\"/sys/class/rtc/rtc0/since_epoch\",\"state\":\"aligned\"}\n[per-run] started guest-proxy-forwarder (pid=151)\nnohup: [per-run] sshd reachable at 127.0.0.1:22\nappending output to 'nohup.out'\n[per-run] started guest-shell-bridge (pid=155)\n[per-run rlimit] PID 1 RLIMIT_NOFILE=65536/65536\n[per-run-started written] pid=1\nDetach mode: VM running, SSH ready\n[per-run] guest-shell-bridge alive\n[guest-clock] {\"checked_at\":1794731226.0000503,\"last_correction_at\":1794731226.0000453,\"offset_seconds\":-1.0540745258331299,\"remaining_offset_seconds\":-0.00004267692565917969,\"source\":\"/sys/class/rtc/rtc0/since_epoch\",\"state\":\"corrected\"}\n",
+    "original_guest_log": "\nOBSERVATION root-identity\nuid=0(root) gid=0(root) groups=0(root)\nEXIT 0\n\nOBSERVATION kernel\nLinux rootless-1553 6.12.17 #1 SMP Fri Oct 16 12:03:44 UTC 2026 aarch64 GNU/Linux\nEXIT 0\n\nOBSERVATION os-release\nPRETTY_NAME=\"Kali GNU/Linux Rolling\"\nNAME=\"Kali GNU/Linux\"\nVERSION_ID=\"2026.1\"\nVERSION=\"2026.1\"\nVERSION_CODENAME=kali-rolling\nID=kali\nID_LIKE=debian\nHOME_URL=\"https://www.kali.org/\"\nSUPPORT_URL=\"https://forums.kali.org/\"\nBUG_REPORT_URL=\"https://bugs.kali.org/\"\nANSI_COLOR=\"1;31\"\nEXIT 0\n\nOBSERVATION mounts\n/                  overlay   overlay  rw,relatime,lowerdir=/mnt/lower,upperdir=/mnt/overlay/upper,workdir=/mnt/overlay/work,uuid=on\n|-/proc            proc      proc     rw,relatime\n|-/sys             sys       sysfs    rw,relatime\n|-/dev             dev       devtmpfs rw,relatime,size=507860k,nr_inodes=126965,mode=755\n| |-/dev/pts       devpts    devpts   rw,relatime,gid=5,mode=620,ptmxmode=666\n| `-/dev/shm       tmpfs     tmpfs    rw,nosuid,nodev,relatime\n|-/tmp             tmpfs     tmpfs    rw,nosuid,nodev,relatime\n|-/run             tmpfs     tmpfs    rw,nosuid,nodev,relatime,mode=755\n|-/safeyolo        config    virtiofs rw,relatime\n|-/workspace       workspace virtiofs rw,relatime\n|-/safeyolo-status status    virtiofs rw,relatime\n`-/home/agent      home      virtiofs rw,relatime\nEXIT 0\n\nOBSERVATION published-stat\n/ type=directory uid=0 gid=0 mode=755 size=4096 blocks=8 inode=2 links=1\n/usr/bin/bash type=regular file uid=0 gid=0 mode=755 size=1478040 blocks=2848 inode=8844 links=1\n/usr/bin/cat type=regular file uid=0 gid=0 mode=755 size=68160 blocks=96 inode=8870 links=1\n/usr/bin/passwd type=regular file uid=0 gid=0 mode=4755 size=142424 blocks=232 inode=9191 links=1\n/usr/bin/sudo type=regular file uid=0 gid=0 mode=4755 size=335200 blocks=584 inode=9328 links=1\n/bin type=symbolic link uid=0 gid=0 mode=777 size=7 blocks=0 inode=12 links=1\n/lib type=symbolic link uid=0 gid=0 mode=777 size=7 blocks=0 inode=779 links=1\n/dev/null type=character special file uid=0 gid=0 mode=666 size=0 blocks=0 inode=3 links=1\n/dev/vda type=block special file uid=0 gid=0 mode=600 size=0 blocks=0 inode=606 links=1\nEXIT 0\n\nOBSERVATION published-links\nusr/bin\nusr/lib\nusr/sbin\nEXIT 0\nUNAVAILABLE getfacl\nUNAVAILABLE getfattr\n/sbin/getcap\nUNAVAILABLE setfacl\n/sbin/setcap\n/bin/setpriv\n\nOBSERVATION published-capabilities\nEXIT 0\n\nOBSERVATION published-acls\n/safeyolo/macos_runtime_guest.sh: line 11: getfacl: command not found\nEXIT 127\n\nOBSERVATION published-xattrs\n/safeyolo/macos_runtime_guest.sh: line 11: getfattr: command not found\nEXIT 127\n\nOBSERVATION fifo\nEXIT 0\n\nOBSERVATION character-node\nEXIT 0\n\nOBSERVATION block-node\nEXIT 0\n\nOBSERVATION character-access\nEXIT 0\n\nOBSERVATION fixture-stat\n. type=directory uid=0 gid=0 mode=755 size=4096 blocks=8 inode=47 links=4\n./private type=directory uid=1000 gid=1000 mode=700 size=4096 blocks=8 inode=48 links=2\n./private/agent type=regular file uid=1000 gid=1000 mode=644 size=13 blocks=8 inode=54 links=1\n./hardlink type=regular file uid=0 gid=0 mode=644 size=14 blocks=8 inode=50 links=2\n./character type=character special file uid=0 gid=0 mode=644 size=0 blocks=0 inode=58 links=1\n./symlink type=symbolic link uid=0 gid=0 mode=777 size=7 blocks=0 inode=51 links=1\n./executable type=regular file uid=0 gid=0 mode=755 size=37 blocks=8 inode=55 links=1\n./fifo type=fifo uid=0 gid=0 mode=644 size=0 blocks=0 inode=57 links=1\n./block type=block special file uid=0 gid=0 mode=644 size=0 blocks=0 inode=59 links=1\n./acl-dir type=directory uid=0 gid=0 mode=755 size=4096 blocks=8 inode=49 links=2\n./sparse type=regular file uid=0 gid=0 mode=644 size=67108864 blocks=8 inode=56 links=1\n./regular type=regular file uid=0 gid=0 mode=644 size=14 blocks=8 inode=50 links=2\nEXIT 0\n\nOBSERVATION hardlink-identity\nEXIT 0\n\nOBSERVATION symlink-target\nregular\nEXIT 0\n\nOBSERVATION sparse-tail\nsparse-endEXIT 0\n\nOBSERVATION user-xattr\n/safeyolo/macos_runtime_guest.sh: line 11: setfattr: command not found\nEXIT 127\n\nOBSERVATION access-acl\n/safeyolo/macos_runtime_guest.sh: line 11: setfacl: command not found\nEXIT 127\n\nOBSERVATION default-acl\n/safeyolo/macos_runtime_guest.sh: line 11: setfacl: command not found\nEXIT 127\n\nOBSERVATION fixture-acls\n/safeyolo/macos_runtime_guest.sh: line 11: getfacl: command not found\nEXIT 127\n\nOBSERVATION fixture-xattrs\n/safeyolo/macos_runtime_guest.sh: line 11: getfattr: command not found\nEXIT 127\n\nOBSERVATION file-capability\nFailed to set capabilities on file 'cap-v3': Operation not supported\nEXIT 1\n\nOBSERVATION raw-capability\ncap-v3\nEXIT 0\n\nOBSERVATION capability-xattr\n/safeyolo/macos_runtime_guest.sh: line 11: getfattr: command not found\nEXIT 127\n\nOBSERVATION identity-effects/1000\nuid=1000(agent) gid=1000(agent) groups=1000(agent)\nOPERATION cat private/agent\nprivate-1000\nEXIT 0\nOPERATION ls acl-dir\ninherited\nEXIT 0\nOPERATION stat acl-dir/inherited\n  File: acl-dir/inherited\n  Size: 0         \tBlocks: 0          IO Block: 4096   regular empty file\nDevice: 0,17\tInode: 60          Links: 1\nAccess: (0644/-rw-r--r--)  Uid: (    0/    root)   Gid: (    0/    root)\nAccess: 2026-11-15 08:27:06.170000000 +0000\nModify: 2026-11-15 08:27:06.170000000 +0000\nChange: 2026-11-15 08:27:06.170000000 +0000\n Birth: 2026-11-15 08:27:06.170000000 +0000\nEXIT 0\nOPERATION ./executable\nguest-exec-1553\nEXIT 0\nEXEC cap-v3\nName:\tcap-v3\nUmask:\t0022\nState:\tR (running)\nTgid:\t217\nNgid:\t0\nPid:\t217\nPPid:\t210\nTracerPid:\t0\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nFDSize:\t64\nGroups:\t \nNStgid:\t217\nNSpid:\t217\nNSpgid:\t0\nNSsid:\t0\nKthread:\t0\nVmPeak:\t    3384 kB\nVmSize:\t    3384 kB\nVmLck:\t       0 kB\nVmPin:\t       0 kB\nVmHWM:\t    1036 kB\nVmRSS:\t    1036 kB\nRssAnon:\t       0 kB\nRssFile:\t    1036 kB\nRssShmem:\t       0 kB\nVmData:\t    1288 kB\nVmStk:\t     132 kB\nVmExe:\t      40 kB\nVmLib:\t    1828 kB\nVmPTE:\t      36 kB\nVmSwap:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t0\nuntag_mask:\t0xffffffffffffff\nThreads:\t1\nSigQ:\t0/3967\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000000000006\nSigCgt:\t0000000000000000\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t0\nSeccomp_filters:\t0\nSpeculation_Store_Bypass:\tvulnerable\nSpeculationIndirectBranch:\tunknown\nCpus_allowed:\t3\nCpus_allowed_list:\t0-1\nvoluntary_ctxt_switches:\t1\nnonvoluntary_ctxt_switches:\t0\nEXIT 0\nEXEC setid\nName:\tsetid\nUmask:\t0022\nState:\tR (running)\nTgid:\t218\nNgid:\t0\nPid:\t218\nPPid:\t210\nTracerPid:\t0\nUid:\t1000\t0\t0\t0\nGid:\t1000\t1000\t1000\t1000\nFDSize:\t64\nGroups:\t \nNStgid:\t218\nNSpid:\t218\nNSpgid:\t0\nNSsid:\t0\nKthread:\t0\nVmPeak:\t    2616 kB\nVmSize:\t    2616 kB\nVmLck:\t       0 kB\nVmPin:\t       0 kB\nVmHWM:\t    1036 kB\nVmRSS:\t    1036 kB\nRssAnon:\t       0 kB\nRssFile:\t    1036 kB\nRssShmem:\t       0 kB\nVmData:\t     520 kB\nVmStk:\t     132 kB\nVmExe:\t      40 kB\nVmLib:\t    1828 kB\nVmPTE:\t      36 kB\nVmSwap:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t0\nuntag_mask:\t0xffffffffffffff\nThreads:\t1\nSigQ:\t0/3967\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000000000006\nSigCgt:\t0000000000000000\nCapInh:\t0000000000000000\nCapPrm:\t000001ffffffffff\nCapEff:\t000001ffffffffff\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t0\nSeccomp_filters:\t0\nSpeculation_Store_Bypass:\tvulnerable\nSpeculationIndirectBranch:\tunknown\nCpus_allowed:\t3\nCpus_allowed_list:\t0-1\nvoluntary_ctxt_switches:\t1\nnonvoluntary_ctxt_switches:\t0\nEXIT 0\nEXIT 0\n\nOBSERVATION identity-effects/33\nuid=33(www-data) gid=33(www-data) groups=33(www-data)\nOPERATION cat private/agent\ncat: private/agent: Permission denied\nEXIT 1\nOPERATION ls acl-dir\ninherited\nEXIT 0\nOPERATION stat acl-dir/inherited\n  File: acl-dir/inherited\n  Size: 0         \tBlocks: 0          IO Block: 4096   regular empty file\nDevice: 0,17\tInode: 60          Links: 1\nAccess: (0644/-rw-r--r--)  Uid: (    0/    root)   Gid: (    0/    root)\nAccess: 2026-11-15 08:27:06.170000000 +0000\nModify: 2026-11-15 08:27:06.170000000 +0000\nChange: 2026-11-15 08:27:06.170000000 +0000\n Birth: 2026-11-15 08:27:06.170000000 +0000\nEXIT 0\nOPERATION ./executable\nguest-exec-1553\nEXIT 0\nEXEC cap-v3\nName:\tcap-v3\nUmask:\t0022\nState:\tR (running)\nTgid:\t225\nNgid:\t0\nPid:\t225\nPPid:\t219\nTracerPid:\t0\nUid:\t33\t33\t33\t33\nGid:\t33\t33\t33\t33\nFDSize:\t64\nGroups:\t \nNStgid:\t225\nNSpid:\t225\nNSpgid:\t0\nNSsid:\t0\nKthread:\t0\nVmPeak:\t    2872 kB\nVmSize:\t    2872 kB\nVmLck:\t       0 kB\nVmPin:\t       0 kB\nVmHWM:\t    1028 kB\nVmRSS:\t    1028 kB\nRssAnon:\t       0 kB\nRssFile:\t    1028 kB\nRssShmem:\t       0 kB\nVmData:\t     776 kB\nVmStk:\t     132 kB\nVmExe:\t      40 kB\nVmLib:\t    1828 kB\nVmPTE:\t      36 kB\nVmSwap:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t0\nuntag_mask:\t0xffffffffffffff\nThreads:\t1\nSigQ:\t0/3967\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000000000006\nSigCgt:\t0000000000000000\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t0\nSeccomp_filters:\t0\nSpeculation_Store_Bypass:\tvulnerable\nSpeculationIndirectBranch:\tunknown\nCpus_allowed:\t3\nCpus_allowed_list:\t0-1\nvoluntary_ctxt_switches:\t1\nnonvoluntary_ctxt_switches:\t0\nEXIT 0\nEXEC setid\nName:\tsetid\nUmask:\t0022\nState:\tR (running)\nTgid:\t226\nNgid:\t0\nPid:\t226\nPPid:\t219\nTracerPid:\t0\nUid:\t33\t0\t0\t0\nGid:\t33\t33\t33\t33\nFDSize:\t64\nGroups:\t \nNStgid:\t226\nNSpid:\t226\nNSpgid:\t0\nNSsid:\t0\nKthread:\t0\nVmPeak:\t    3448 kB\nVmSize:\t    3448 kB\nVmLck:\t       0 kB\nVmPin:\t       0 kB\nVmHWM:\t    1036 kB\nVmRSS:\t    1036 kB\nRssAnon:\t       0 kB\nRssFile:\t    1036 kB\nRssShmem:\t       0 kB\nVmData:\t    1352 kB\nVmStk:\t     132 kB\nVmExe:\t      40 kB\nVmLib:\t    1828 kB\nVmPTE:\t      36 kB\nVmSwap:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t0\nuntag_mask:\t0xffffffffffffff\nThreads:\t1\nSigQ:\t0/3967\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000000000006\nSigCgt:\t0000000000000000\nCapInh:\t0000000000000000\nCapPrm:\t000001ffffffffff\nCapEff:\t000001ffffffffff\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t0\nSeccomp_filters:\t0\nSpeculation_Store_Bypass:\tvulnerable\nSpeculationIndirectBranch:\tunknown\nCpus_allowed:\t3\nCpus_allowed_list:\t0-1\nvoluntary_ctxt_switches:\t1\nnonvoluntary_ctxt_switches:\t0\nEXIT 0\nEXIT 0\n\nOBSERVATION identity-effects/65535\nuid=65535 gid=65535 groups=65535\nOPERATION cat private/agent\ncat: private/agent: Permission denied\nEXIT 1\nOPERATION ls acl-dir\ninherited\nEXIT 0\nOPERATION stat acl-dir/inherited\n  File: acl-dir/inherited\n  Size: 0         \tBlocks: 0          IO Block: 4096   regular empty file\nDevice: 0,17\tInode: 60          Links: 1\nAccess: (0644/-rw-r--r--)  Uid: (    0/    root)   Gid: (    0/    root)\nAccess: 2026-11-15 08:27:06.170000000 +0000\nModify: 2026-11-15 08:27:06.170000000 +0000\nChange: 2026-11-15 08:27:06.170000000 +0000\n Birth: 2026-11-15 08:27:06.170000000 +0000\nEXIT 0\nOPERATION ./executable\nguest-exec-1553\nEXIT 0\nEXEC cap-v3\nName:\tcap-v3\nUmask:\t0022\nState:\tR (running)\nTgid:\t233\nNgid:\t0\nPid:\t233\nPPid:\t227\nTracerPid:\t0\nUid:\t65535\t65535\t65535\t65535\nGid:\t65535\t65535\t65535\t65535\nFDSize:\t64\nGroups:\t \nNStgid:\t233\nNSpid:\t233\nNSpgid:\t0\nNSsid:\t0\nKthread:\t0\nVmPeak:\t    4152 kB\nVmSize:\t    4152 kB\nVmLck:\t       0 kB\nVmPin:\t       0 kB\nVmHWM:\t    1036 kB\nVmRSS:\t    1036 kB\nRssAnon:\t       0 kB\nRssFile:\t    1036 kB\nRssShmem:\t       0 kB\nVmData:\t    2056 kB\nVmStk:\t     132 kB\nVmExe:\t      40 kB\nVmLib:\t    1828 kB\nVmPTE:\t      40 kB\nVmSwap:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t0\nuntag_mask:\t0xffffffffffffff\nThreads:\t1\nSigQ:\t0/3967\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000000000006\nSigCgt:\t0000000000000000\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t0\nSeccomp_filters:\t0\nSpeculation_Store_Bypass:\tvulnerable\nSpeculationIndirectBranch:\tunknown\nCpus_allowed:\t3\nCpus_allowed_list:\t0-1\nvoluntary_ctxt_switches:\t1\nnonvoluntary_ctxt_switches:\t0\nEXIT 0\nEXEC setid\nName:\tsetid\nUmask:\t0022\nState:\tR (running)\nTgid:\t234\nNgid:\t0\nPid:\t234\nPPid:\t227\nTracerPid:\t0\nUid:\t65535\t0\t0\t0\nGid:\t65535\t65535\t65535\t65535\nFDSize:\t64\nGroups:\t \nNStgid:\t234\nNSpid:\t234\nNSpgid:\t0\nNSsid:\t0\nKthread:\t0\nVmPeak:\t    2936 kB\nVmSize:\t    2936 kB\nVmLck:\t       0 kB\nVmPin:\t       0 kB\nVmHWM:\t    1020 kB\nVmRSS:\t    1020 kB\nRssAnon:\t       0 kB\nRssFile:\t    1020 kB\nRssShmem:\t       0 kB\nVmData:\t     840 kB\nVmStk:\t     132 kB\nVmExe:\t      40 kB\nVmLib:\t    1828 kB\nVmPTE:\t      36 kB\nVmSwap:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t0\nuntag_mask:\t0xffffffffffffff\nThreads:\t1\nSigQ:\t0/3967\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000000000006\nSigCgt:\t0000000000000000\nCapInh:\t0000000000000000\nCapPrm:\t000001ffffffffff\nCapEff:\t000001ffffffffff\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t0\nSeccomp_filters:\t0\nSpeculation_Store_Bypass:\tvulnerable\nSpeculationIndirectBranch:\tunknown\nCpus_allowed:\t3\nCpus_allowed_list:\t0-1\nvoluntary_ctxt_switches:\t1\nnonvoluntary_ctxt_switches:\t0\nEXIT 0\nEXIT 0\nguest-exec-1553\n\nREQUIRED_IDENTITY_RWX_EXIT 0\n",
+    "post_shutdown_read": {
+      "uid": 502,
+      "gid": 20,
+      "output_mode": "0o700",
+      "free_bytes": 22974439424,
+      "markers": {
+        "/Users/sy-agent/f1553-20261115/runtime-g8/home/1553-data": {
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o644",
+          "contents": "ordinary-1553\n"
+        },
+        "/Users/sy-agent/f1553-20261115/runtime-g8/home/1553-executable": {
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o755",
+          "contents": "#!/bin/sh\nprintf \"guest-exec-1553\\n\"\n"
+        },
+        "/Users/sy-agent/f1553-20261115/runtime-g8/workspace/1553-data": {
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o644",
+          "contents": "ordinary-1553\n"
+        },
+        "/Users/sy-agent/f1553-20261115/runtime-g8/workspace/1553-executable": {
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o755",
+          "contents": "#!/bin/sh\nprintf \"guest-exec-1553\\n\"\n"
+        }
+      },
+      "images_after": {
+        "Image": {
+          "sha256": "cfb99c160084f605b4acf9e7d7a50e4805e07de0c6fa7a88918067100a9066c0",
+          "bytes": 8772096,
+          "allocated_bytes": 8773632,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o600"
+        },
+        "initramfs.cpio.gz": {
+          "sha256": "1ca27b00cef28f6e7065f84524fc65bf48ed71c91b1bf498a4dc8532c5a6ec15",
+          "bytes": 2713140,
+          "allocated_bytes": 2715648,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o600"
+        },
+        "rootfs-base.ext4": {
+          "sha256": "5d2286d5deb330073b9af96b54a62ee1982707308a52223e2e714fc642f0063f",
+          "bytes": 3387375616,
+          "allocated_bytes": 2335162368,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o644"
+        }
+      }
+    },
+    "limits": [
+      "Retained Kali-pentest published image only; no default-profile or new OCI admission claim.",
+      "Exact prepared and existing h1552 image hashes agree. No second baseline boot or complete capability/ACL parity claim.",
+      "getfacl, getfattr, setfacl and setfattr are absent; their observations exit127. No ACL or general xattr pass.",
+      "setcap cap_net_bind_service=ep returned Operation not supported, exit1. Subsequent capability masks are for an unlabelled executable; cause and baseline comparison remain unproved.",
+      "The guest fixture uses its disposable Linux overlay. Its special files are not materialized on APFS; no arbitrary host device support is required.",
+      "Host PATH contains only the wrapper Python. Actual ordinary UID502 and non-setuid helper bytes recorded; no syscall trace or system-wide sudo revocation claim.",
+      "Existing maintained helper forced this owned VM stop after its five-second grace. Wrapper reaped helper, exited143 on requested SIGTERM, and final kernel enumeration found no VM processes. No graceful guest shutdown claim.",
+      "Space readings are endpoints, not a continuous peak measurement. Overlay was bounded256MiB and allocated1052672B at shutdown. No new image copy or guest build.",
+      "No failed or asynchronous extraction ran while this guest was live. Existing usable-guest preservation across failed/cancelled import remains unproved.",
+      "No Ubuntu operation, registry retry, approval decision, host/delegation/policy change or held500/1104 effect."
     ]
   }
 }

@@ -168,18 +168,23 @@ def main(output):
         raise
     finally:
         if child is not None:
-            if child.poll() is None:
-                child.terminate()  # The maintained wrapper stops and reaps its own VM helper.
             try:
+                if child.poll() is None:
+                    child.terminate()  # The maintained wrapper stops and reaps its own VM helper.
                 report["wrapper_exit"] = child.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                report["cleanup_error"] = "Owned wrapper did not stop; inspect exact births before any retry"
+            except (OSError, subprocess.TimeoutExpired) as error:
+                report["cleanup_error"] = f"Owned wrapper stop failed: {error}; inspect exact births before retry"
         report["free_bytes_after"] = shutil.disk_usage(output).free
         report["held_processes_after"] = {pid: process_start_token(pid) for pid in held}
         report["held_processes_unchanged"] = report["held_processes_after"] == held
         try:
             report["remaining_vm_processes"] = vm_processes()
-        except (OSError, ValueError) as error:
+            tracked = [(item["pid"], item["birth"]) for item in report.get("owned_helpers", [])]
+            if child is not None:
+                tracked.append((child.pid, report["wrapper_process"]["birth"]))
+            report["owned_survivors"] = [item for item in report["remaining_vm_processes"]
+                                         if (item["pid"], item["birth"]) in tracked]
+        except (OSError, ValueError, RuntimeError) as error:
             report["cleanup_inspection_error"] = str(error)
         if (output / "overlay.ext4").exists():
             info = (output / "overlay.ext4").stat()
@@ -187,7 +192,7 @@ def main(output):
         report["finished_at"] = datetime.now(UTC).isoformat()
         save()
     if (report.get("cleanup_error") or report.get("cleanup_inspection_error")
-            or report.get("remaining_vm_processes") or not report["held_processes_unchanged"]):
+            or report.get("owned_survivors") or not report["held_processes_unchanged"]):
         raise RuntimeError("Inspect retained cleanup observations before further effects")
     print(json.dumps(report, indent=2))
 
