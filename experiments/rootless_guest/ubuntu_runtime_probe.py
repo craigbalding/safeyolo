@@ -117,7 +117,74 @@ def observe_cleanup(root, tracked):
     }
 
 
-def qualify(output):
+def cancel_published_import(output):
+    """Interrupt a real partial import, preserving original output and births."""
+    from installed_host_smoke import _process_start_token
+    from installed_sections import surviving_processes
+
+    target = output / "external-target"
+    target.write_bytes(b"external target must survive\n")
+    target.chmod(0o600)
+    before = target.stat()
+    attempt = output / "cancelled-import"
+    command = [sys.executable, str(Path(__file__).with_name("import_guest.py")), "prepare",
+               "--archive", str(ARCHIVE), "--sha256", ARCHIVE_SHA, "--output", str(attempt),
+               "--host-root", str(PREPARED)]
+    result = {"command": command, "signalled": False, "children": []}
+    log_path = output / "cancellation.json"
+    try:
+        with (output / "cancellation.stdout").open("w") as stdout, (output / "cancellation.stderr").open("w") as stderr:
+            with subprocess.Popen(command, stdout=stdout, stderr=stderr) as child:
+                try:
+                    deadline = time.monotonic() + 30
+                    while child.poll() is None and time.monotonic() < deadline:
+                        stages = list(attempt.glob("extract-*"))
+                        children_file = Path(f"/proc/{child.pid}/task/{child.pid}/children")
+                        pids = [int(pid) for pid in children_file.read_text().split()]
+                        active = [(pid, Path(f"/proc/{pid}/comm")) for pid in pids]
+                        # A rootfs plus a live tar is an in-progress extraction,
+                        # unlike the older after-child cancellation witness.
+                        if stages and (stages[0] / "rootfs-tree").is_dir() and any(
+                            path.exists() and path.read_text().strip() == "tar" for _, path in active
+                        ):
+                            result["stage"] = str(stages[0])
+                            result["children"] = [{"pid": pid, "start_token": _process_start_token(pid)} for pid in pids]
+                            assert all(item["start_token"] for item in result["children"])
+                            (stages[0] / "external-preservation").symlink_to(target)
+                            child.terminate()
+                            result["signalled"] = True
+                            break
+                        time.sleep(0.005)
+                    if not result["signalled"]:
+                        raise RuntimeError("No active extraction observed; preserve reached import without retry")
+                    result["exit"] = child.wait(timeout=30)
+                finally:
+                    if child.poll() is None:
+                        # Terminate the exact candidate so its normal cleanup can
+                        # run; a failed stop stays an explicit packet failure.
+                        child.terminate()
+                        try:
+                            child.wait(timeout=30)
+                        except subprocess.TimeoutExpired:
+                            result["stop_failed"] = "candidate ignored cleanup deadline; inspect children before retry"
+                            child.kill()
+                            child.wait(timeout=5)
+                            raise
+        result["preparation"] = json.loads((attempt / "preparation.json").read_text())
+        result["survivors"] = surviving_processes(result["children"])
+        after = target.stat()
+        result["external_preserved"] = target.read_bytes() == b"external target must survive\n" and (
+            before.st_uid, before.st_gid, before.st_mode, before.st_ino
+        ) == (after.st_uid, after.st_gid, after.st_mode, after.st_ino)
+        assert result["exit"] != 0 and result["external_preserved"] and not result["survivors"]
+        assert result["preparation"]["result"] == "failed/cancelled; private stage removed"
+        assert not Path(result["preparation"]["stage"]).exists()
+    finally:
+        log_path.write_text(json.dumps(result, indent=2) + "\n")
+    return result
+
+
+def qualify(output, metadata=None):
     # Keep the experimental packet on the maintained native instance, command,
     # token-redaction and process-birth helpers. No product helper is duplicated.
     import tomlkit
@@ -128,7 +195,8 @@ def qualify(output):
 
     assert platform.system() == "Linux" and platform.machine() == "x86_64"
     assert (os.getuid(), os.getgid()) == (1000, 1000)
-    assert shutil.disk_usage(output.parent).free >= 5 * 1024**3 + 128 * 1024**2
+    forecast = (640 if metadata is not None else 128) * 1024**2
+    assert shutil.disk_usage(output.parent).free >= 5 * 1024**3 + forecast
     os.umask(0o022)  # New runtime directories must be traversable by mapped root.
     output.mkdir(mode=0o755)  # Existing output requires inspection, never replay.
     root, workspace = output / "instance", output / "workspace"
@@ -202,12 +270,13 @@ def qualify(output):
         assert report["sudo_on_path"] is None
         assert f"commit={PRODUCT} profile=production" in run("cli-version", [cli, "--version"]).stdout
         run("runsc-version", [PREPARED / "libexec/runsc", "--version"])
-        with import_namespace(PREPARED, 100000, 100000) as (prefix, maps):
-            report["content_observer_maps"] = maps
-            observed = run("content-comparison", prefix + [sys.executable, Path(__file__).resolve(), "contents",
-                           str(ARCHIVE), ARCHIVE_SHA, str(STAGE), str(baseline)], check=False)
-            if observed.returncode:
-                raise RuntimeError("Content observer failed; retain its exact result before runtime")
+        if metadata is None:
+            with import_namespace(PREPARED, 100000, 100000) as (prefix, maps):
+                report["content_observer_maps"] = maps
+                observed = run("content-comparison", prefix + [sys.executable, Path(__file__).resolve(), "contents",
+                               str(ARCHIVE), ARCHIVE_SHA, str(STAGE), str(baseline)], check=False)
+                if observed.returncode:
+                    raise RuntimeError("Content observer failed; retain its exact result before runtime")
         prepare_log = output / "prepare.log"
         prepare_log.touch(mode=0o600)
         with prepare_log.open("w") as log:
@@ -227,7 +296,24 @@ def qualify(output):
         selected.update(assets=str(STAGE), installed_assets=str(STAGE))
         (root / "share/guest-selection.json").write_text(json.dumps(selected, indent=2) + "\n")
         workspace.mkdir()
-        native("create-agent", "agent", "create", "bbtest", "--workspace", workspace)
+        mounts = []
+        if metadata is not None:
+            # Reuse the exact canonical stages from 18414. Do not reimport or
+            # copy them: copying would itself change the metadata under test.
+            prepared = json.loads((metadata / "candidate/canonical/preparation.json").read_text())
+            assert prepared["result"].startswith("prepared;")
+            fixture = json.loads((metadata / "fixtures.json").read_text())["canonical"]
+            assert prepared["archive_sha256"] == fixture["sha256"]
+            report["metadata_inputs"] = {
+                "candidate": str(Path(prepared["stage"]) / "rootfs-tree"),
+                "baseline": str(metadata / "baseline/extract-canonical/rootfs-tree"),
+                "fixture": fixture,
+            }
+            for kind in ("candidate", "baseline"):
+                mounts += ["--mount", report["metadata_inputs"][kind] + ":/" + kind]
+            shutil.copyfile(Path(__file__).with_name("ubuntu_metadata_guest.sh"), workspace / "metadata.sh")
+            (workspace / "metadata.sh").chmod(0o644)
+        native("create-agent", "agent", "create", "bbtest", "--workspace", workspace, *mounts)
         native("start-proxy", "start")
         tracked += owned_processes(root)
         native("start-agent", "agent", "start", "bbtest", "--sandbox-only")
@@ -244,16 +330,30 @@ def qualify(output):
         assert Path(spec["root"]["path"]).resolve() == STAGE / "rootfs-tree"
         for kind in ("uid", "gid"):
             run(kind + "-map", ["cat", f"/proc/{runtime['holder_pid']}/{kind}_map"])
-        for guest_root in (False, True):
-            run("guest-root" if guest_root else "guest-agent", guest_command_args(
-                str(cli), "bbtest", guest_script(guest_root), guest_root=guest_root))
-        report["host_files"] = {str(path): info(path) for directory in (workspace, root / "agents/bbtest/home")
-                                for path in directory.glob("rootless1553-*")}
-        assert len(report["host_files"]) == 4
-        for path, details in report["host_files"].items():
-            expected = (100000, 100000) if path.endswith("-0") else (1000, 1000)
-            assert (details["uid"], details["gid"]) == expected
-        report["result"] = "retained import started; guest identity/read-write-execute passed"
+        if metadata is None:
+            for guest_root in (False, True):
+                run("guest-root" if guest_root else "guest-agent", guest_command_args(
+                    str(cli), "bbtest", guest_script(guest_root), guest_root=guest_root))
+            report["host_files"] = {str(path): info(path) for directory in (workspace, root / "agents/bbtest/home")
+                                    for path in directory.glob("rootless1553-*")}
+            assert len(report["host_files"]) == 4
+            for path, details in report["host_files"].items():
+                expected = (100000, 100000) if path.endswith("-0") else (1000, 1000)
+                assert (details["uid"], details["gid"]) == expected
+            report["result"] = "retained import started; guest identity/read-write-execute passed"
+        else:
+            run("guest-canonical-metadata", guest_command_args(
+                str(cli), "bbtest", "exec /bin/bash /workspace/metadata.sh", guest_root=True))
+            # Refuse an extraction onto the imported stage while its owned
+            # guest is demonstrably usable; the archive is not decompressed.
+            preserved = run("existing-usable-stage", [sys.executable, Path(__file__).with_name("import_guest.py"),
+                            "prepare", "--archive", ARCHIVE, "--sha256", ARCHIVE_SHA,
+                            "--output", STAGE, "--host-root", PREPARED], check=False)
+            assert preserved.returncode and "FileExistsError" in preserved.stderr
+            report["cancellation"] = cancel_published_import(output)
+            run("guest-after-refused-import", guest_command_args(
+                str(cli), "bbtest", guest_script(False)))
+            report["result"] = "canonical backend observation completed; compare individual results with baseline"
     except (OSError, ValueError, RuntimeError, AssertionError, subprocess.SubprocessError) as error:
         report["error"] = str(error)
         raise
@@ -295,7 +395,9 @@ def main():
         return int(bool(result["mismatches"]))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, help="absent disk-backed directory; retain original failures")
-    qualify(parser.parse_args().output.absolute())
+    parser.add_argument("--metadata", type=Path, help="retained native metadata-g5 directory; skips completed contents/I/O proof")
+    args = parser.parse_args()
+    qualify(args.output.absolute(), args.metadata.absolute() if args.metadata else None)
     return 0
 
 

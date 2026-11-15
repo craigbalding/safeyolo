@@ -322,5 +322,109 @@
     },
     "stage_absent": true,
     "scope": "native macOS small-fixture cancellation cleanup; no VM/existing-usable-guest claim"
+  },
+  "runtime_readiness": {
+    "observed_at": "2026-11-15T07:55:06.364830+00:00",
+    "uid": 502,
+    "gid": 20,
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "installed_root": "/Users/sy-agent/h1552",
+    "package_info": "source_commit=c6dd3b8bfef1a2e5f49e1fbc273c4b2ac2b46a52\nprofile=debug\nplatform=darwin-arm64\nminimum_runtime=26.0\nguest_compatibility=v1\nguest_repository=ghcr.io/craigbalding/safeyolo-guest\nguest_discovery_tag=compat-v1\n",
+    "free_bytes": 23087058944,
+    "files": {
+      "/Users/sy-agent/f1553-20261115/native/prepared/extract-kiyduh7b": {
+        "Image": {
+          "sha256": "cfb99c160084f605b4acf9e7d7a50e4805e07de0c6fa7a88918067100a9066c0",
+          "bytes": 8772096,
+          "allocated_bytes": 8773632,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o600"
+        },
+        "initramfs.cpio.gz": {
+          "sha256": "1ca27b00cef28f6e7065f84524fc65bf48ed71c91b1bf498a4dc8532c5a6ec15",
+          "bytes": 2713140,
+          "allocated_bytes": 2715648,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o600"
+        },
+        "rootfs-base.ext4": {
+          "sha256": "5d2286d5deb330073b9af96b54a62ee1982707308a52223e2e714fc642f0063f",
+          "bytes": 3387375616,
+          "allocated_bytes": 2335162368,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o644"
+        }
+      },
+      "/Users/sy-agent/h1552/share-kali-failed-1050": {
+        "Image": {
+          "sha256": "cfb99c160084f605b4acf9e7d7a50e4805e07de0c6fa7a88918067100a9066c0",
+          "bytes": 8772096,
+          "allocated_bytes": 8773632,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o600"
+        },
+        "initramfs.cpio.gz": {
+          "sha256": "1ca27b00cef28f6e7065f84524fc65bf48ed71c91b1bf498a4dc8532c5a6ec15",
+          "bytes": 2713140,
+          "allocated_bytes": 2715648,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o600"
+        },
+        "rootfs-base.ext4": {
+          "sha256": "5d2286d5deb330073b9af96b54a62ee1982707308a52223e2e714fc642f0063f",
+          "bytes": 3387375616,
+          "allocated_bytes": 2335162368,
+          "uid": 502,
+          "gid": 20,
+          "mode": "0o644"
+        }
+      }
+    },
+    "ports": {
+      "46370": {
+        "errno": 48,
+        "error": "[Errno 48] Address already in use"
+      },
+      "46371": {
+        "errno": 48,
+        "error": "[Errno 48] Address already in use"
+      },
+      "46372": {
+        "bind_and_close": true
+      },
+      "46373": {
+        "errno": 48,
+        "error": "[Errno 48] Address already in use"
+      },
+      "46374": {
+        "bind_and_close": true
+      },
+      "46375": {
+        "errno": 48,
+        "error": "[Errno 48] Address already in use"
+      },
+      "46377": {
+        "errno": 48,
+        "error": "[Errno 48] Address already in use"
+      },
+      "46378": {
+        "errno": 48,
+        "error": "[Errno 48] Address already in use"
+      }
+    },
+    "wrapper": "/Users/sy-agent/bin/run-vz-test",
+    "wrapper_sha256": "534297944736aa9cb1fef615c88628577d5236a32d183c92f952d4d32ebd7593",
+    "limits": [
+      "Read-only package/retained-file inspection and temporary bind-and-close probes; no VM, proxy or Coord start.",
+      "Broad ps listing was denied by confinement; no assertion about all live processes.",
+      "Port availability does not establish required listener count or a blocker.",
+      "Retained share-kali-failed-1050 name is not a startup failure diagnosis.",
+      "No original registry request or approval decision retried."
+    ]
   }
 }

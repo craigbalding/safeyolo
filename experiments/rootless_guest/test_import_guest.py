@@ -5,9 +5,12 @@ import hashlib
 import io
 import json
 import os
+import signal
 import struct
 import subprocess
+import sys
 import tarfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -253,3 +256,95 @@ def test_supplementary_sparse_fixture_is_readable_by_gnu_tar(tmp_path):
         digest = hashlib.file_digest(child.stdout, "sha256").hexdigest()
         assert child.wait() == 0
     assert digest == "c1550f3e6e179b84b5305c572dbc624d3a88e2cf57744c8d516fe867334d69f7"
+    with Path(cases["devices"]["path"]).open("rb") as stream:
+        devices = inventory(stream)["records"]
+    assert [(row["type"], row["device"]) for row in devices[2:]] == [
+        ("3", [1, 3]), ("4", [7, 0]),
+    ]
+
+
+@pytest.mark.parametrize("interrupt", [signal.SIGTERM, signal.SIGINT])
+def test_signal_during_extraction_reaps_children_before_cleanup(tmp_path, interrupt):
+    # Stop real GNU tar after its first block, with zstd blocked on its pipe.
+    # The worker account replaces namespace entry only; both children are real.
+    import shutil
+
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"external target must survive")
+    before = outside.stat()
+    root = tarfile.TarInfo("rootfs-tree")
+    root.type, root.uid, root.gid = tarfile.DIRTYPE, os.getuid(), os.getgid()
+    link = tarfile.TarInfo("rootfs-tree/external")
+    link.type, link.linkname = tarfile.SYMTYPE, str(outside)
+    link.uid, link.gid = os.getuid(), os.getgid()
+    payload = tarfile.TarInfo("rootfs-tree/payload")
+    payload.uid, payload.gid = os.getuid(), os.getgid()
+    archive, digest = archive_file(tmp_path, [(root, b""), (link, b""), (payload, b"x" * 2**20)])
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    for name in ("tar", "zstd"):
+        tool = shutil.which(name)
+        shim = commands / name
+        extra = ["--checkpoint=2", "--checkpoint-action=exec=kill -STOP $PPID"] if name == "tar" else []
+        shim.write_text(f"#!{sys.executable}\nimport os\nfrom pathlib import Path\n"
+                        "os.setpgid(0, 0)\n"
+                        f"pid_path = Path({str(tmp_path / (name + '.pid'))!r})\n"
+                        "pid_path.with_suffix('.new').write_text(str(os.getpid()))\n"
+                        "pid_path.with_suffix('.new').replace(pid_path)\n"
+                        f"os.execv({tool!r}, [{name!r}, *{extra!r}, *os.sys.argv[1:]])\n")
+        shim.chmod(0o700)
+    output = tmp_path / "attempt"
+    driver = """
+import contextlib, signal, sys
+from pathlib import Path
+from types import SimpleNamespace
+from experiments.rootless_guest import import_guest as candidate
+candidate.import_namespace = lambda *args: contextlib.nullcontext(([], {}))
+def interrupted(signum, frame):
+    raise InterruptedError(f'Interrupted by signal {signum}')
+signal.signal(signal.SIGTERM, interrupted)
+signal.signal(signal.SIGINT, signal.default_int_handler)
+args = SimpleNamespace(platform='linux', output=Path(sys.argv[3]), host_root=Path('.'),
+                       uid_base=0, gid_base=0, cancel_after_extract=False)
+with Path(sys.argv[1]).open('rb') as stream:
+    candidate.prepare(args, stream, candidate.verify_archive(stream, sys.argv[2]))
+"""
+    environment = dict(os.environ, PATH=str(commands) + os.pathsep + os.environ["PATH"])
+    children = []
+    with subprocess.Popen([sys.executable, "-c", driver, str(archive), digest, str(output)],
+                          env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                          start_new_session=True) as parent:
+        try:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if all((tmp_path / (name + ".pid")).exists() for name in ("tar", "zstd")):
+                    children = [int((tmp_path / (name + ".pid")).read_text()) for name in ("tar", "zstd")]
+                    status = Path(f"/proc/{children[0]}/status")
+                    if status.exists() and "State:\tT" in status.read_text():
+                        break
+                assert parent.poll() is None
+                time.sleep(0.01)
+            else:
+                pytest.fail("real tar did not reach its stopped extraction checkpoint")
+            assert list(output.glob("extract-*/rootfs-tree/external"))
+            parent.send_signal(interrupt)
+            stdout, stderr = parent.communicate(timeout=10)
+            assert parent.returncode != 0, (stdout, stderr)
+            assert ("InterruptedError" if interrupt == signal.SIGTERM else "KeyboardInterrupt") in stderr, (
+                parent.returncode, stdout, stderr, list(output.iterdir()))
+            report = json.loads((output / "preparation.json").read_text())
+            assert report["result"] == "failed/cancelled; private stage removed"
+            assert not Path(report["stage"]).exists()
+            assert all(not Path(f"/proc/{pid}").exists() for pid in children)
+        finally:
+            # A failed control must not leave its deliberately stopped child.
+            for pid in children:
+                if Path(f"/proc/{pid}").exists():
+                    os.kill(pid, signal.SIGKILL)
+            if parent.poll() is None:
+                parent.kill()
+                parent.wait()
+    after = outside.stat()
+    assert outside.read_bytes() == b"external target must survive"
+    assert (before.st_uid, before.st_gid, before.st_mode, before.st_ino) == (
+        after.st_uid, after.st_gid, after.st_mode, after.st_ino)

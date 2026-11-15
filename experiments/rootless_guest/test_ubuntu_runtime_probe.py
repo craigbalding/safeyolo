@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from experiments.rootless_guest import ubuntu_runtime_probe as probe
 from experiments.rootless_guest.test_import_guest import archive_file
 from experiments.rootless_guest.ubuntu_runtime_probe import __file__ as probe_path
 from experiments.rootless_guest.ubuntu_runtime_probe import compare_contents, observe_cleanup
@@ -123,3 +124,20 @@ def test_cleanup_observer_keeps_inspection_failure_visible(tmp_path, monkeypatch
     monkeypatch.setattr(Path, "read_text", denied_unix_table)
     with pytest.raises(PermissionError, match="cannot inspect listeners"):
         observe_cleanup(tmp_path, [])
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_cancellation_observer_does_not_accept_completion_before_signal(tmp_path, monkeypatch, exit_code):
+    popen = subprocess.Popen
+
+    def completed_before_extraction(command, **options):
+        return popen([sys.executable, "-c", f"print('before extraction'); raise SystemExit({exit_code})"], **options)
+
+    monkeypatch.setattr(subprocess, "Popen", completed_before_extraction)
+    with pytest.raises(RuntimeError, match="No active extraction observed"):
+        probe.cancel_published_import(tmp_path)
+    result = json.loads((tmp_path / "cancellation.json").read_text())
+    assert result["signalled"] is False
+    assert result["children"] == []
+    assert (tmp_path / "cancellation.stdout").read_text() == "before extraction\n"
+    assert (tmp_path / "external-target").read_bytes() == b"external target must survive\n"

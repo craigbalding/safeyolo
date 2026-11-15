@@ -80,7 +80,7 @@ metadata options.
 This bounded prototype uses two decompression passes; performance and production
 integration are not established by this correction.
 
-The 18 focused Linux-worker controls pass. They cover all 65536 canonical IDs
+The 20 focused Linux-worker controls pass. They cover all 65536 canonical IDs
 with ordinary and distinct nondefault bases, embedded metadata inventory,
 descriptor replacement, selected members, failed tar, cancellation, external
 symlink-target preservation and existing-directory preservation. GNU tar reads
@@ -107,7 +107,22 @@ scratch directory for pytest:
 uv run --frozen pytest -q experiments/rootless_guest/test_import_guest.py --basetemp /disk/backed/1553-pytest
 ```
 
-Expected result: 18 passed. This command starts no guest or namespace.
+Expected result: 20 passed. This command starts no guest or namespace.
+
+Two controls send SIGTERM and SIGINT while real GNU tar is stopped after its
+first extracted block and real zstd is blocked on the pipe. Both children are
+reaped before the private stage is removed. The external target retains its
+contents, owner, mode and inode. Only namespace entry is replaced by the worker
+account. These controls establish active-child cancellation locally; native
+mapping and preservation of an existing usable guest remain separate proof.
+The control isolates each child process group so its deliberate SIGSTOP does
+not deliver an unrelated orphan-group SIGHUP to the driver.
+
+`make_fixture.py` now assigns the link name and device pair separately. This
+preserves the default `(0, 0)`, character `(1, 3)` and block `(7, 0)` headers
+while avoiding the repeated CodeQL tuple-inference diagnostic. The existing
+real archive control checks those generated device headers. No scanner rule or
+archive support requirement changes.
 
 ## Native execution packet
 
@@ -383,8 +398,9 @@ absent namespace holder 65091. No observation was repeated for collection.
 The top-level result string also does not establish success of the two candidate
 xattr snapshots; their original exit-1 records remain authoritative.
 
-The prior 26 focused controls, configured Ruff, complexity checks and hooks
-remain valid because this continuation changes only this report. The
+The prior 26 focused controls and their independent interpretation carry
+forward. The current source correction adds active-child cancellation controls
+and prepares the isolated backend packet below. The
 worker controls used controlled xattr bytes and credential-drop calls; those
 controls alone do not prove native enforcement. Lens's complete
 output-5 check `work-aeac4cf2781840ff93efa43bee252df2@3`, all 16 evidence references
@@ -392,8 +408,9 @@ and its full prior checks carry forward. Its pending-native-comparison gap is
 now supplied; its remaining limits and full-issue abstention persist.
 
 The following steps describe remaining full-issue proof. Completed inventory,
-import and ordinary-map startup observations carry forward. These steps do not
-select their replay or another platform attempt.
+import and ordinary-map startup observations carry forward. The selected
+continuation prepares the next isolated Ubuntu operation; no new native result
+is claimed here.
 
 1. Reuse the reached Ubuntu inventory, import, contents and ordinary-map runtime.
    Before a further native operation, inspect its actual retained inputs,
@@ -416,12 +433,77 @@ select their replay or another platform attempt.
    read/write/execute, metadata, and owned shutdown. Do not replace this step
    with a synthetic guest, a worker namespace or a broad unrelated suite.
 
+### Isolated Ubuntu backend and cancellation packet
+
+Sylab runs this packet on `sy-1050-connected-8029-amd64` as UID/GID 1000.
+Use `/usr/bin/python3` 3.12.3, the retained `b6821094` package at
+`/home/agent/1562-b682-installed`, the existing published import and the complete
+`/home/agent/1553-native-metadata-g5` directory from execution 18414.
+Stage this candidate's `experiments/rootless_guest` and the existing blackbox
+helpers with their repository layout, including `harness/process_identity.py`.
+Before execution, verify the immutable source, current maps, live owned consumers,
+and absent output directory. The backing filesystem must have the existing
+5 GiB floor plus 640 MiB: 512 MiB bounds a partial published import even if it
+finishes before the signal; 128 MiB retains the previous runtime allowance.
+Do not remove active inputs to make this check pass.
+
+From the staged source root, run once:
+
+```sh
+/usr/bin/python3 experiments/rootless_guest/ubuntu_runtime_probe.py \
+  /home/agent/r1553g7 \
+  --metadata /home/agent/1553-native-metadata-g5
+```
+
+The packet creates one disposable instance and mounts the original canonical
+candidate and baseline trees at `/candidate` and `/baseline`. It skips the
+completed content comparison and ordinary-map I/O journey. The guest shell
+records numeric metadata, contents, links, sparse allocation, capability labels,
+and actual private/ACL access and capability/set-ID execution for IDs 1000, 33
+and 65535. Each command's exit is retained. Missing `getfacl` or `getfattr` is
+reported as unavailable coverage; no guest package installation is hidden in
+the observation. A collection exit of zero is not a parity verdict.
+
+While that owned guest is running, the packet refuses an import onto its
+existing stage. It then interrupts a new published-archive import only after
+observing a rootfs and live tar child. An external-target symlink in that new
+private stage tests cleanup confinement. The original archive is unchanged.
+The packet checks the extraction result, stage removal, exact child birth tokens
+and external target. A completed or failed import before the signal is an
+incomplete cancellation observation, never a pass or an automatic retry.
+Two focused controls verify that distinction with real child exits 0 and 7.
+After both operations, the live guest must pass the existing ordinary-user
+identity and home/workspace read/write/execute command. Reusing that command
+tests preservation across the cancellation, rather than repeating the original
+journey for bookkeeping. The existing
+finally block stops its agent, proxy and Coord and retains genuine cleanup
+failures and inert diagnostic paths separately.
+
+Return the original `result.json`, `prepare.log`, `cancellation.json`,
+`cancellation.stdout`, `cancellation.stderr` and cancelled attempt's
+`preparation.json` through the existing readable operator handoff. Do not copy
+the private instance or credentials. Retain reached failures and inspect effects
+before a retry. Existing 18414 stages, original 18413 results and the successful
+published import remain current inputs. This packet adds no privileged setup,
+delegation, host policy change, production integration or new acceptance gate.
+
+The packet has not run natively. Local validation is 44 focused controls:
+20 import, 16 runtime-observer and 8 metadata-observer cases. The two new
+runtime controls check early completion and failure reporting; they do not
+establish the protected cancellation result. Local CodeQL remains unsupported
+on Linux aarch64. The fixture correction needs its new hosted analysis.
+
+### Remaining macOS operand
+
 For Bristol, the characterized Kali assets are retained at
 `/Users/sy-agent/f1553-20261115/native/prepared/extract-kiyduh7b`.
 The source prototype is retained beside `macos_prepare.py` under that 1553 parent.
 Do not repeat its extraction for bookkeeping or call it the default guest.
-The current default input must be bound before the next runtime attempt. Use
-a fresh 1553 instance and the existing `/Users/sy-agent/bin/run-vz-test`.
+Bind the selected compatible published input and runtime before the next
+attempt. The issue does not require changing the characterized Kali profile to
+the default profile. Reuse the Kali preparation at its recorded scope; keep
+the original default-manifest refusal and its approval prerequisite separate.
+Use a fresh 1553 instance and the existing `/Users/sy-agent/bin/run-vz-test`.
 Check current capacity first: preparation left 22,567,608,320 free bytes; the
 operator-home reserve is 20 gibibytes (GiB). Record actual peak headroom for the
 runtime. Preserve `/Users/sy-agent/s500d`, both held 1104 roots and unrelated processes.
@@ -429,6 +511,21 @@ No Bristol root, elevation, personal account or policy change is permitted.
 The canonical readiness input found only ports 46372/46374 free. This does not
 prove a port blocker: the helper's shell/control transport uses Unix sockets,
 and the selected runtime/configuration must determine actual listener needs.
+
+Ordinary UID502 inspection at 07:55 UTC on 15 November verifies the complete
+compatible `c6dd3b8b` debug installation at `/Users/sy-agent/h1552`.
+`macos-observed.json::runtime_readiness` retains current hashes, allocation,
+owners and modes for the prepared Kali files and that installation's retained
+`share-kali-failed-1050` files. All three file hashes match across the two
+directories. The directory name supplies no startup diagnosis. The prepared
+image hash is `5d2286d5deb330073b9af96b54a62ee1982707308a52223e2e714fc642f0063f`.
+Current free space is 23,087,058,944 bytes. Temporary bind-and-close probes
+again find only 46372/46374 available; other permitted ports return address in
+use. Broad process listing is denied by confinement. No VM, proxy or Coord
+was started, and no registry request was repeated. These observations bind
+available operands; they neither prove a missing platform nor settle runtime
+feasibility. A physical runtime attempt still needs serialization and its actual
+listener/configuration selection within the existing account's authority.
 
 ## Matrix and remaining interpretation
 
@@ -498,7 +595,9 @@ distinct-map operand. The original Mac registry disposition must be resolved
 and effective access read before a future retry. These gaps require scoped
 operations or changed inputs, not replay of the successful import or journey.
 Sylab retains precisely identified protected operations; no new Craig input is
-needed to interpret 18414. This continuation selects no further native effect.
+needed to interpret 18414. The selected continuation prepares the isolated
+Ubuntu packet above; actual protected execution and full macOS proof remain
+pending.
 M / High and the already reached cumulative 60-minute reassessment remain;
 there is no fresh allowance. Full independent go/no-go and all seven criteria
 remain open.
@@ -508,15 +607,14 @@ The complete output-3 rejection `work-6460c275ae88410a88b9afed14fc435b@3`
 supplies F1 and carries those reviews forward. Its earlier pending-runtime
 observation is superseded by the original 18413 receipts, not by a replay.
 
-At `0aa7b825`, Lint, Test CLI, Test Addons, Analyze and Blackbox assurance pass.
-Separate CodeQL check 132728825636/alert 567 and Proxy assurance workflow
-43686729911/job 132728651745 fail and remain unwaived. The executed producer/caller
-analysis supports a false-positive interpretation of the tuple assignment,
-not a waived or passing check. The Proxy assurance artifact compares against
+At `b2c4355f`, Lint, Test CLI, Test Addons, Analyze and Blackbox assurance pass.
+Separate CodeQL check 132737015687/alert 567 and Proxy assurance workflow
+43689446332/job 132736773402 fail and remain unwaived. The fixture assignment is
+now expressed without starred expansion; no new hosted result is claimed.
+The Proxy assurance artifact compares against
 accepted source `8ba22365616d83b8b8b18b87781f0e9b9ad1e439` and reports 55 changed
 mapped decisions and 10 stale symbols. This is unresolved drift, not an accepted
 baseline update. Local CodeQL is unsupported on this Linux aarch64 worker.
-This report-only correction does not claim its new hosted checks passed.
 Relay owns CI and integration.
 This candidate establishes no merge approval or issue acceptance.
 

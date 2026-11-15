@@ -23,7 +23,8 @@ def member(name, data=b"", *, uid=BASE, gid=BASE, mode=0o644, kind=tarfile.REGTY
            link="", pax=None, device=(0, 0)):
     info = tarfile.TarInfo("rootfs-tree" + ("/" + name if name else ""))
     info.uid, info.gid, info.mode, info.type = uid, gid, mode, kind
-    info.linkname, info.devmajor, info.devminor = link, *device
+    info.linkname = link
+    info.devmajor, info.devminor = device
     info.pax_headers = pax or {}
     info.size = len(data)
     return info, data
