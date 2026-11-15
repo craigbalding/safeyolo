@@ -695,7 +695,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/nested-linux/live_mount_backend_proof.py::run_proof](../tests/nested-linux/live_mount_backend_proof.py#L131) — Linux nested installed live mount; user/root backend-specific probes. Evidence: Real nested guests; manual venue.
+- [tests/nested-linux/live_mount_backend_proof.py::run_proof](../tests/nested-linux/live_mount_backend_proof.py#L107) — Linux nested installed live mount; user/root backend-specific probes. Evidence: Real nested guests; manual venue.
   Selection: default `systrap` section `mounts`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `kvm` section `mounts`; default `vz` section `mounts`.
 
 ### BB-23 — Desktop / service sharing
@@ -3022,6 +3022,12 @@ second agent and unrelated configuration throughout.
 
 The optional --native-test-binary retains the earlier Linux-only backend
 witness. Omit it for product acceptance through the public commands.
+
+The live-mount journey builds tests/fixtures/live-mount-holder.c with the Linux
+host's cc and static C library. To supply a prepared executable, use --holder-probe.
+On Mac, that option is required and must name a static Linux ARM64 executable.
+The holder exercises real file descriptors, cwd and mmap without guest Python.
+The --saved-retirement journey does not use the holder.
 
 ### `tests/blackbox/installed_workloads.py`
 

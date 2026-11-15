@@ -94,13 +94,17 @@ def run(args):
             else:
                 from tests.nested_linux_live_mount import run_proof
 
+                holder = os.environ.get("SAFEYOLO_MOUNT_HOLDER_PROBE")
+                if not holder and args.lane == "vz":
+                    raise ValueError("mount proof requires SAFEYOLO_MOUNT_HOLDER_PROBE built from tests/fixtures/live-mount-holder.c for the Linux guest architecture")
+                holder_probe = Path(holder).resolve(strict=True) if holder else None
                 copy_prepared_nats(base, root)
                 coord = [str(cli), "--root", str(root), "coord", "start"]
                 if args.lane == "vz":
                     coord += ["--client-port", "46370", "--monitor-port", "46372"]
                 subprocess.run(coord, check=True, timeout=60)
                 subprocess.run([str(cli), "--root", str(root), "start"], check=True, timeout=60)
-                run_proof(root, output / "mounts", candidate=args.revision, receipt=receipt)
+                run_proof(root, output / "mounts", candidate=args.revision, receipt=receipt, holder_probe=holder_probe)
         result["finished"] = True
         return 0
     except (AssertionError, OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:

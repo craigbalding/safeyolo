@@ -18,14 +18,22 @@ second agent and unrelated configuration throughout.
 
 The optional --native-test-binary retains the earlier Linux-only backend
 witness. Omit it for product acceptance through the public commands.
+
+The live-mount journey builds tests/fixtures/live-mount-holder.c with the Linux
+host's cc and static C library. To supply a prepared executable, use --holder-probe.
+On Mac, that option is required and must name a static Linux ARM64 executable.
+The holder exercises real file descriptors, cwd and mmap without guest Python.
+The --saved-retirement journey does not use the holder.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -37,53 +45,6 @@ from execution_receipt import ProcedureReceipt
 from harness.process_identity import process_start_token
 from installed_sections import owned_processes, surviving_processes
 
-GUEST_HOLDER = '''import json, mmap, os, sys, time
-from pathlib import Path
-mode, target, result = sys.argv[1:]
-result = Path(result)
-opened = mapped = None
-if mode == "file":
-    opened = open(target + "/host.txt", "r+b", buffering=0)
-elif mode == "cwd":
-    os.chdir(target)
-elif mode == "mmap":
-    opened = open(target + "/host.txt", "r+b", buffering=0)
-    mapped = mmap.mmap(opened.fileno(), 4096)
-elif mode != "marker":
-    raise ValueError(mode)
-identity = {"pid":os.getpid(), "start":Path("/proc/self/stat").read_text().split(") ")[1].split()[19]}
-if mapped is not None:
-    result.with_suffix(".mapped-before").write_text(mapped[:64].decode())
-result.with_suffix(".ready").write_text(json.dumps(identity))
-deadline = time.monotonic() + 300
-while not result.with_suffix(".release").exists():
-    if time.monotonic() > deadline:
-        raise TimeoutError("host did not release owned holder")
-    result.with_suffix(".heartbeat").write_text(str(time.monotonic()))
-    time.sleep(.1)
-try:
-    if mode == "file":
-        opened.seek(0); data=opened.read(64).decode()
-    elif mode == "cwd":
-        data=Path("host.txt").read_text()[:64]
-    elif mode == "mmap":
-        data=mapped[:64].decode()
-    else:
-        data="marker survived"
-    # Retain a successful read even if the following write signals SIGBUS.
-    result.with_suffix(".read-result").write_text(json.dumps({"identity":identity, "data":data}))
-    if mode == "file":
-        opened.seek(128); opened.write(b"guest-open-handle-write")
-    elif mode == "cwd":
-        Path("guest-cwd-write").write_text("guest-cwd-write")
-    elif mode == "mmap":
-        mapped[128:151]=b"guest-open-handle-write"; mapped.flush()
-    observation={"identity":identity, "accessible":True, "data":data}
-except OSError as error:
-    observation={"identity":identity, "accessible":False, "errno":error.errno, "error":str(error)}
-result.with_suffix(".result").write_text(json.dumps(observation))
-'''
-
 
 def wait_file(path, timeout=20):
     deadline = time.monotonic() + timeout
@@ -94,10 +55,25 @@ def wait_file(path, timeout=20):
     return path.read_text()
 
 
-def holder_command(script, mode, target, result):
-    invocation = shlex.join(["python3", "-I", "-B", str(script), mode, target, str(result)])
-    return (invocation + '; code=$?; printf \'%s\' "$code" > ' +
-            shlex.quote(str(result.with_suffix(".exit"))) + '; exit "$code"')
+def holder_command(probe, mode, target, result):
+    invocation = shlex.join([str(probe), mode, target, str(result)])
+    return ('{ ' + invocation + '; code=$?; printf \'%s\' "$code" > ' +
+            shlex.quote(str(result.with_suffix(".exit"))) + '; exit "$code"; } > ' +
+            shlex.quote(str(result.with_suffix(".log"))) + ' 2>&1')
+
+
+def holder_ready(result, timeout=20):
+    deadline = time.monotonic() + timeout
+    while not result.with_suffix(".ready").exists():
+        log = result.with_suffix(".log")
+        diagnostic = log.read_text(errors="replace")[-2048:] if log.exists() else ""
+        if result.with_suffix(".exit").exists():
+            code = result.with_suffix(".exit").read_text()
+            raise RuntimeError(f"holder exited {code} before ready: {diagnostic}")
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"missing probe result: {result}.ready; holder log: {diagnostic}")
+        time.sleep(.05)
+    return json.loads(result.with_suffix(".ready").read_text())
 
 
 def release_holder(result):
@@ -129,13 +105,18 @@ def assert_mount_removed(target, before, after):
 
 
 def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate: str | None = None,
-              saved_retirement: bool = False, receipt=None):
+              saved_retirement: bool = False, receipt=None, holder_probe: Path | None = None):
     if root == base or root in base.parents or base in root.parents:
         raise ValueError("ROOT and BASE must be separate owned directories")
     if list((root / "agents").glob("*")):
         raise RuntimeError("ROOT has retained agent state; use a fresh disposable instance")
     if saved_retirement and native_test is not None:
         raise ValueError("saved retirement uses the public commands, without a native test binary")
+    if not saved_retirement:
+        if holder_probe is None and sys.platform != "linux":
+            raise ValueError("live mount proof requires --holder-probe built from tests/fixtures/live-mount-holder.c for the Linux guest architecture")
+        if holder_probe is not None:
+            holder_probe = holder_probe.resolve(strict=True)
     process_kinds = ("backend",) if sys.platform == "darwin" else ("holder", "backend")
     receipt_backend = "macos" if sys.platform == "darwin" else "linux"
     base.mkdir(mode=0o755)
@@ -226,10 +207,10 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
 
     def holder(mode, target):
         result = base / "workspace" / (mode + "-holder")
-        guest("( " + holder_command("/workspace/holder.py", mode, target, Path("/workspace") / result.name) + " )" +
-              f" </dev/null > /workspace/{mode}.log 2>&1 &")
-        identity = json.loads(wait_file(result.with_suffix(".ready")))
         handles[mode] = result
+        guest("( " + holder_command("/workspace/mount-holder", mode, target, Path("/workspace") / result.name) + " )" +
+              " </dev/null >/dev/null 2>&1 &")
+        identity = holder_ready(result)
         return result, identity
 
     def share_processes(share):
@@ -261,7 +242,7 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
                 final["agents"][selected] = observation
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 final["agents"][selected] = {"error": str(error)}
-        if marker is not None:
+        if marker is not None and marker.with_suffix(".ready").exists():
             final["marker_ready"] = json.loads(marker.with_suffix(".ready").read_text())
             final["marker_heartbeat"] = marker.with_suffix(".heartbeat").read_text()
             final["marker_proc"] = guest("cat /proc/" + str(final["marker_ready"]["pid"]) + "/stat", check=False).stdout
@@ -281,7 +262,18 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
             directory = base / name
             directory.mkdir()
             (directory / "host.txt").write_text((name + ":host-before").ljust(4096, "."))
-        (base / "workspace/holder.py").write_text(GUEST_HOLDER)
+        if not saved_retirement:
+            installed_holder = base / "workspace/mount-holder"
+            if holder_probe is None:
+                source = Path(__file__).resolve().parents[1] / "fixtures/live-mount-holder.c"
+                command(["cc", "-std=c11", "-O2", "-static", "-Wall", "-Wextra", "-Werror",
+                         source, "-o", installed_holder], timeout=30)
+            else:
+                shutil.copyfile(holder_probe, installed_holder)
+                installed_holder.chmod(0o755)
+            with installed_holder.open("rb") as source:
+                report["holder_probe"] = {"path": str(installed_holder), "supplied": str(holder_probe) if holder_probe else None,
+                                          "sha256": hashlib.file_digest(source, "sha256").hexdigest()}
         report["os"] = command(["uname", "-a"]).stdout.strip()
         report["host_version"] = command([root / "bin/safeyolo", "--version"]).stdout.strip()
         report["candidate"] = candidate or command(["git", "-C", Path(__file__).resolve().parents[2], "rev-parse", "HEAD"]).stdout.strip()
@@ -339,8 +331,10 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
                  "--mount", f"{base}/startup-ro:/mnt/proof1042startupro:ro",
                  "--mount", f"{base}/unrelated:/mnt/proof1042unrelated"]
         if native_test is None and not saved_retirement:
+            marker = base / "workspace/marker-holder"
+            handles["marker"] = marker
             configure_primary.extend(["--launcher", "supervisor", "--command",
-                                      holder_command("/workspace/holder.py", "marker", "/workspace",
+                                      holder_command("/workspace/mount-holder", "marker", "/workspace",
                                                      Path("/workspace/marker-holder"))])
         command(configure_primary)
         created.append(agent)
@@ -434,9 +428,7 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
         assert refused.returncode != 0 and not (base / "startup-ro/forbidden").exists()
         receipt.checkpoint("startup")
         if native_test is None:
-            marker = base / "workspace/marker-holder"
-            marker_identity = json.loads(wait_file(marker.with_suffix(".ready")))
-            handles["marker"] = marker
+            marker_identity = holder_ready(marker)
             report["launch_before"] = json.loads(command([*cli, "agent", "status", agent]).stdout)
             assert report["launch_before"]["agent_state"] == "running"
             assert report["launch_before"]["launcher"]["kind"] == "supervisor"
@@ -481,7 +473,8 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
             handle, identity = holder(mode, "/mnt/proof1042live")
             removed = operation("remove", "/mnt/proof1042live")
             with (base / "live/host.txt").open("r+") as changed:
-                changed.write((mode + ":host-after-refusal").ljust(64, "."))
+                expected = (mode + ":host-after-refusal").ljust(64, ".")
+                changed.write(expected)
                 changed.flush()
                 os.fsync(changed.fileno())
             observation = release_holder(handle)
@@ -490,6 +483,11 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
             save()
             assert not removed["success"] and "busy" in removed["error"].lower()
             assert observation["accessible"] is True and observation["exit"] == 0
+            assert observation["identity"] == identity and observation["data"] == expected
+            if mode == "cwd":
+                assert (base / "live/guest-cwd-write").read_text() == "guest-cwd-write"
+            else:
+                assert (base / "live/host.txt").read_bytes()[128:151] == b"guest-open-handle-write"
             if mode == "file":
                 receipt.checkpoint("busy-file", observation=report["busy"][-1])
             elif mode == "cwd":
@@ -525,8 +523,8 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
                 offline.rename(socket)
             same_run()
         for target in ("/mnt/proof1042live", "/mnt/proof1042ro", "/mnt/proof1042startup", "/mnt/proof1042startupro"):
-            receipt = next(share for share in runtime(agent)[receipt_backend]["extra_shares"] if share["guest_path"] == target)
-            processes = share_processes(receipt)
+            share = next(share for share in runtime(agent)[receipt_backend]["extra_shares"] if share["guest_path"] == target)
+            processes = share_processes(share)
             if sys.platform != "darwin":
                 assert all(process["cgroup"] == report["sandbox_cgroup"] for process in processes)
             before = file_observation(target)
@@ -631,6 +629,10 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
             except (OSError, subprocess.SubprocessError) as error:
                 failures.append(f"cleanup failed: {arguments}: {error}")
         failures.extend(surviving_processes(processes))
+        report["holders"] = {mode: {suffix: result.with_suffix(suffix).read_text(errors="replace")
+                                  for suffix in (".ready", ".heartbeat", ".mapped-before", ".read-result", ".result", ".exit", ".log")
+                                  if result.with_suffix(suffix).exists()}
+                             for mode, result in handles.items()}
         report["cleanup_failures"] = failures
         save()
         if failures:
@@ -648,7 +650,9 @@ if __name__ == "__main__":
     parser.add_argument("--candidate")
     parser.add_argument("--saved-retirement", action="store_true",
                         help="Run the focused saved mount/restart/retirement lifecycle, reusing prior live-mount proof")
+    parser.add_argument("--holder-probe", type=Path,
+                        help="Static Linux guest executable built from tests/fixtures/live-mount-holder.c; required on Mac, otherwise built with host cc")
     args = parser.parse_args()
     run_proof(args.root.resolve(strict=True), args.base.resolve(),
               args.native_test_binary.resolve(strict=True) if args.native_test_binary else None, args.candidate,
-              args.saved_retirement)
+              args.saved_retirement, holder_probe=args.holder_probe)

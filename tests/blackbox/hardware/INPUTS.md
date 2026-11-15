@@ -108,6 +108,7 @@ The private SSH key stays in the trusted account. Transfer uses SSH stdin.
 | `VZ_NATS_BINARY` | Existing verified NATS test executable, available offline to `sy-agent` |
 | `VZ_RUNTIME_PATH` | Verified PATH for Bash, Git, tar and the offline Python/test tools |
 | `VZ_CA_BUNDLE` | Readable public CA bundle for absent inherited trust settings |
+| `SAFEYOLO_MOUNT_HOLDER_PROBE` | Static Linux ARM64 executable built from `tests/fixtures/live-mount-holder.c`, readable by `sy-agent`; use the [holder build recipe](../README.md#run-installed-sections-with-one-preparation) |
 | `VZ_LOCK` | Persistent host-local lock file, readable but protected from replacement by `sy-agent` |
 | `VZ_HELPER_TIMEOUT` | Positive per-helper deadline; set `900` to match the accepted full consumer; entry default is `120` seconds |
 | `VZ_OBSERVER_TIMEOUT` | Optional observer deadline; default 10800 seconds |

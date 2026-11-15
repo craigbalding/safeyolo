@@ -226,6 +226,27 @@ instance uses a parent proxy, set `SAFEYOLO_DOCKER_ORIGIN_BIND` to an owned host
 IPv4 address reachable through that route. The Docker observer binds two
 temporary TCP ports there and closes them after the journey.
 
+The mount journey uses a small static Linux holder for the guest's CPU
+architecture. On Linux, the driver builds it with the host's `cc` and static
+C library; the host needs those build tools. To prepare the holder in advance
+or for VZ, build it on a Linux host with the guest's CPU architecture. From the
+repository root, replace `/owned/mount-holder` with an output path in an existing
+disk-backed directory. The command creates that file.
+
+```sh
+cc -std=c11 -O2 -static -Wall -Wextra -Werror tests/fixtures/live-mount-holder.c -o /owned/mount-holder
+```
+
+For a prepared holder, transfer the executable to the acceptance host if needed. Set
+`SAFEYOLO_MOUNT_HOLDER_PROBE` to its absolute path before running installed
+sections. For VZ, build for Linux ARM64; the macOS host does not run the holder.
+The driver copies it into the owned workspace and records its hash. No guest
+Python or compiler is needed. Holder failures retain their exit code and log
+and leave the result incomplete. The direct mount driver accepts the same file
+through `--holder-probe`. For the physical hardware launcher, set the same
+variable in its host deployment environment; the path must be readable by the
+account that runs the lane.
+
 For a full VZ run, also set `SAFEYOLO_JOB_OBSERVER_PROBE` to the static Linux
 ARM64 executable built from [job-observer-probe.c](../fixtures/job-observer-probe.c).
 Use the existing physical-host runner and its authorized fixture ports.

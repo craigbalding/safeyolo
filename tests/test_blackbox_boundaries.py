@@ -399,6 +399,51 @@ def test_boundary_preparation_failure_is_incomplete_and_keeps_cleanup_result(tmp
     assert not receipts.section_execution(args.output, section, "systrap", "run")["complete"]
 
 
+@pytest.mark.parametrize("lane,probe", [("systrap", None), ("vz", None), ("systrap", "absent"),
+                                        ("systrap", "supplied"), ("vz", "supplied")])
+def test_installed_mounts_select_guest_holder_before_starting_services(tmp_path, monkeypatch, lane, probe):
+    base = tmp_path / "prepared"
+    (base / "share").mkdir(parents=True)
+    (base / "share/guest-selection.json").write_text('{"guest":"selected"}')
+    args = SimpleNamespace(output=tmp_path / "reports", prepared_config=base,
+                           root=tmp_path / "fresh", section="mounts", revision="a" * 40, lane=lane)
+    monkeypatch.setattr(boundaries, "_cli_identity", lambda _: {"source_revision": args.revision})
+    monkeypatch.setattr(boundaries, "controller_identity", lambda: {"controller_revision": "b" * 40, "controller_dirty": False})
+    monkeypatch.setattr(boundaries, "prepare", lambda *_: None)
+    calls, cleaned = [], []
+    monkeypatch.setattr(boundaries, "copy_prepared_nats", lambda *_: calls.append("nats"))
+    monkeypatch.setattr(boundaries.subprocess, "run", lambda argv, **_: calls.append(argv[-1]))
+    monkeypatch.setattr(boundaries, "cleanup_instance", lambda _, root: cleaned.append(root) or [])
+    supplied = tmp_path / "mount holder"
+    if probe == "supplied":
+        supplied.write_bytes(b"explicit guest executable")
+    if probe is None:
+        monkeypatch.delenv("SAFEYOLO_MOUNT_HOLDER_PROBE", raising=False)
+    else:
+        monkeypatch.setenv("SAFEYOLO_MOUNT_HOLDER_PROBE", str(supplied))
+
+    def run_proof(root, output, *, candidate, receipt, holder_probe):
+        expected = supplied.resolve() if probe == "supplied" else None
+        assert (root, output, candidate, holder_probe) == (args.root, args.output / "mounts", args.revision, expected)
+        assert receipt.path == args.output / "procedure.json"
+        calls.append("mounts")
+
+    monkeypatch.setitem(sys.modules, "tests.nested_linux_live_mount", SimpleNamespace(run_proof=run_proof))
+    ready = probe == "supplied" or (lane == "systrap" and probe is None)
+    if ready:
+        assert boundaries.run(args) == 0
+        assert calls == ["nats", "46372" if lane == "vz" else "start", "start", "mounts"]
+    else:
+        with pytest.raises((ValueError, FileNotFoundError)):
+            boundaries.run(args)
+        assert calls == []
+    result = json.loads((args.output / "boundary-result.json").read_text())
+    assert result["finished"] == ready
+    assert result["cleanup_failures"] == [] and cleaned == [args.root]
+    # Forwarding a supplied fixture cannot supply missing procedure checkpoints.
+    assert not receipts.section_execution(args.output, "mounts", "systrap", "run")["complete"]
+
+
 def test_installed_boundary_selection_uses_current_journeys_and_preserves_hardware_scope():
     assert set(BOUNDARY_SECTIONS) <= set(SECTIONS["systrap"])
     assert {"job-sandbox", "job-network", "mounts"} <= set(SECTIONS["kvm"]) & set(SECTIONS["vz"])
