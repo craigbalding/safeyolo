@@ -40,9 +40,9 @@ jobs:
     if: ${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}
     name: Test Addons (Python ${{ matrix.python-version }})${{ matrix.os != 'ubuntu-latest' && format(' ({0})', matrix.os) || '' }}
     runs-on: ${{ matrix.os }}
-    # #911 records the supported-host timings and incomplete Mac measurement.
-    # Allow preparation headroom while bounding the whole job separately from tests.
-    timeout-minutes: 10
+    # Quick checks passed in 8m41s and also exhausted 10m at the same source (#1559).
+    # Give quick runs headroom; keep scheduled/manual deadlines unchanged.
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 10 || 15 }}
     strategy:
       fail-fast: false
       matrix:
