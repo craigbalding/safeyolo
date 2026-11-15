@@ -228,11 +228,11 @@ def test_provider_subordinate_bases_require_a_complete_owned_range(monkeypatch):
 
 
 @contextmanager
-def _provider_run(directory, monkeypatch):
+def _provider_run(directory, monkeypatch, *, name="proofspot"):
     # Match the owned namespace/process fixture in proxy/tests/support/owned_run.rs.
     # The fake runsc still connects to the existing host-side provider observer.
-    agent = directory / "agents/proofspot"
-    (agent / "config-share").mkdir(parents=True)
+    agent = directory / "agents" / name
+    (agent / "config-share").mkdir(parents=True, exist_ok=True)
     generation = "0123456789abcdef0123456789abcdef"
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(directory))
     monkeypatch.setenv("SAFEYOLO_RUNSC_ROOT", str(directory / "run"))
