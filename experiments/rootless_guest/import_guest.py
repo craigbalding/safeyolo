@@ -90,8 +90,14 @@ def namespace_command(host_root, program):
 @contextlib.contextmanager
 def import_namespace(host_root, uid_base, gid_base):
     """Reuse the runtime's unshare-holder, new*idmap and nsenter sequence."""
-    uid_map = import_ids(uid_base, os.getuid())
-    gid_map = import_ids(gid_base, os.getgid())
+    with mapped_namespace(host_root, import_ids(uid_base, os.getuid()),
+                          import_ids(gid_base, os.getgid())) as entered:
+        yield entered
+
+
+@contextlib.contextmanager
+def mapped_namespace(host_root, uid_map, gid_map):
+    """Enter the supplied delegated maps for import or metadata observation."""
     command = namespace_command(host_root, "unshare") + ["-U", "tail", "-f", "/dev/null"]
     with tempfile.TemporaryFile() as errors, subprocess.Popen(
         command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors,

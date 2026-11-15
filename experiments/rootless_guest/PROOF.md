@@ -256,6 +256,90 @@ uv run --frozen pytest -q experiments/rootless_guest/test_ubuntu_runtime_probe.p
 Expected result: 14 passed. No guest or namespace starts. The native result is
 reused after this observer correction; no product replay is needed.
 
+### Native supplementary comparison
+
+Generation 5 selects the remaining Ubuntu metadata and effective-access
+comparison in criterion 4. The native result is pending protected execution by
+Sylab. `ubuntu_metadata_probe.py` is a packet for that operation, not a new
+installer or a completed metadata result. The original runtime18413 proof and
+all prior independent findings carry forward. Lens's output-4 check
+`work-47dae4a3662841509e4147455f2b6cbf@3` accepts F1's repair and records partial
+ordinary-map Ubuntu observations; it abstains on full acceptance.
+
+The source trace identifies two different capability cases. The producer in
+`linux_host/ownership.rs::shift_attribute` converts revision-2 (V2) capabilities
+to revision 3 (V3) with an explicit canonical root when creating an archive.
+The current privileged importer shifts an explicit V3 root in the canonical
+range. Its V2 conversion is conditional on producer coordinates (`source_base
+== 0`), so importing the separate synthetic V2 specimen does not take that
+conversion. The prototype's import-namespace root maps to host 101000, while
+the runtime namespace root maps to host 100000. Native raw xattrs and actual
+post-exec capability masks must decide the effect; this source trace alone
+does not establish a regression or require arbitrary V2 archives to work.
+
+The packet reuses `make_fixture.py` and the existing delegated namespace entry.
+`import_namespace` now delegates its unchanged holder/mapping/reaping sequence
+to `mapped_namespace`, which also supplies the real runtime ID map for the
+comparison. Host UID/GID 0 is outside both maps. No policy, delegation, helper,
+package or production installer is changed.
+
+On `sy-1050-connected-8029-amd64`, Sylab stages this exact candidate's
+`experiments/rootless_guest` directory with its relative layout. Use ordinary
+UID/GID 1000, `/usr/bin/python3` 3.12 and the retained compatible package
+`/home/agent/1562-b682-installed` at `b6821094`. Check actual consumers and backing
+space first. The packet budgets both 64 MiB sparse specimens as fully allocated,
+plus small outputs: it requires the existing 5 GiB floor plus 192 MiB headroom.
+It refuses an existing output directory. With
+`/home/agent/1553-native-metadata-g5` absent, run from the staged source root:
+
+```sh
+/usr/bin/python3 experiments/rootless_guest/ubuntu_metadata_probe.py run /home/agent/1553-native-metadata-g5
+```
+
+The packet generates the existing small specimens using native `/bin/cat`.
+It attempts `canonical`, `v2-capability`, `devices` and `raw-acl42` independently
+through the prototype with sudo absent from the candidate PATH. Original
+failures and private-stage cleanup reports remain observations. It separately
+invokes host sudo for baseline tar extraction, the installed `host remap-rootfs`
+command and read-only raw host metadata collection. Those explicit privileged
+comparison operations are not a rootless pass or a candidate fallback.
+The published import, archive and existing instance are neither changed nor
+started. The published inventory and runtime18413 proof are reused.
+
+`host-metadata.json` retains raw capability/ACL bytes and numeric host ownership.
+`baseline-actions.json` retains each actual tar/remap outcome. `result.json`
+retains commands, exits and namespace observations: modes, contents, link
+identity, sparse logical/allocation bytes, FIFO/device results, user xattrs,
+capability root IDs, ACL principals/masks and default inheritance. Actual
+read/list/search/create attempts run as IDs 1000, 33 and 65535 after groups and
+namespace root are dropped. Execution of the native cat specimens records
+`/proc/self/status`, including UID/GID and permitted/effective capability masks.
+Access starts at the opened specimen tree, so unrelated private operator parent
+directories stay private. Unsupported synthetic cases remain separate results.
+
+These are Linux kernel observations with the runtime's UID/GID map. They do
+not establish gVisor's separate metadata enforcement. Compare candidate and
+baseline results before selecting any necessary isolated backend observation.
+Do not infer a capability regression from different raw V2/V3 encodings alone.
+No backend observation or native comparison has run in this generation.
+
+Eight new worker controls and the 18 existing import controls pass. The new
+controls exercise real metadata/contents, hardlinks, symlinks, FIFO handling,
+the direct snapshot CLI, raw capability IDs, ACL masks, relative execution and
+inspection-error propagation. Xattr decoder inputs and credential-drop calls
+are controlled in those worker tests; native ACL/capability effects remain
+unproved. The worker reports full allocation for a seek-created file, which
+does not decide the native ext4 sparse comparison. Configured Ruff and its
+focused complexity check pass; no production function changes.
+
+Return the original command output and the complete small output directory
+through `/evidence/operator/1553` with Lens-readable operands. If an operation
+fails, inspect that reached state before selecting a retry. Namespace holders
+are reaped by the existing helper. The new specimens and privileged baseline
+stages remain private comparison inputs for interpretation and any selected
+backend observation; they are disposable after their current consumer finishes.
+Do not remove them through an ordinary-account fallback. Sylab owns retirement.
+
 The following steps describe remaining full-issue proof. Completed inventory,
 import and ordinary-map startup observations carry forward. These steps do not
 select their replay or another platform attempt.
@@ -387,3 +471,9 @@ instance state, copied NATS bytes, workspace markers and compact results;
 no second guest image was created. Local `/home/agent/1553-runtime-pytest`
 contains disposable observer controls. Retain source, results and input
 identities under the existing storage policy; Sylab owns output retirement.
+The proposed `/home/agent/1553-native-metadata-g5` group contains small native
+specimens, candidate imports and privileged baseline stages. It is the next
+protected comparison input, not a new guest image. Local
+`/home/agent/1553-metadata-pytest` contains disposable observer controls. Keep
+the original M / High estimate and reached cumulative 60-minute reassessment;
+interpret the protected comparison or its exact failure before further work.
