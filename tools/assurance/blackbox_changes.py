@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 import tomllib
 from difflib import SequenceMatcher
 from pathlib import Path, PurePosixPath
@@ -170,6 +171,9 @@ def regression_definition(source: str) -> dict:
 
 
 def python_scope(nodes: list, prefix: str, units: dict, order: list) -> None:
+    # Python 3.13 omits empty AST fields by default. Keep the explicit fields
+    # used by Python 3.12 and the finite diagnostic fingerprints on both.
+    dump_options = {"show_empty": True} if sys.version_info >= (3, 13) else {}
     remainder = []
     for node in nodes:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -179,15 +183,15 @@ def python_scope(nodes: list, prefix: str, units: dict, order: list) -> None:
             order.append(key)
             if isinstance(node, ast.ClassDef):
                 children, node.body = node.body, []
-                units[key] = ast.dump(node, include_attributes=False, indent=2)
+                units[key] = ast.dump(node, include_attributes=False, indent=2, **dump_options)
                 python_scope(children, key + ".", units, order)
             else:
-                units[key] = ast.dump(node, include_attributes=False, indent=2)
+                units[key] = ast.dump(node, include_attributes=False, indent=2, **dump_options)
         else:
             remainder.append(node)
-            order.append(prefix + "<statement:" + digest(ast.dump(node, include_attributes=False)) + ">")
+            order.append(prefix + "<statement:" + digest(ast.dump(node, include_attributes=False, **dump_options)) + ">")
     if remainder:
-        units[prefix + "<module>"] = ast.dump(ast.Module(body=remainder, type_ignores=[]), include_attributes=False, indent=2)
+        units[prefix + "<module>"] = ast.dump(ast.Module(body=remainder, type_ignores=[]), include_attributes=False, indent=2, **dump_options)
 
 
 RUST_TOKEN = re.compile(

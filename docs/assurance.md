@@ -233,6 +233,10 @@ remains material. This exception does not normalize arbitrary embedded strings
 or establish general equivalence. Catalogue witnesses and discovered evidence
 retain their full executable definitions without this exception.
 
+Python normalization includes empty abstract syntax tree (AST) fields on both
+supported interpreters, Python 3.12 and 3.13. The finite diagnostic fingerprints
+therefore recognize the same inspected definitions on either interpreter.
+
 For the publisher, static name references from module statements select the
 notification decisions and their local helpers. The comparison retains event
 and report validation, the materiality threshold, deduplication, notice content,
