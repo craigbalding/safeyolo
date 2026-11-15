@@ -161,3 +161,168 @@ can reuse another job's check name, and an author's own pull-request approval
 does not establish independent approval. Operator authority selects and
 promotes trusted controls. This documentation does not enable an assurance
 gate or change release acceptance.
+
+## Blackbox assurance change notices
+
+The [blackbox change workflow](../.github/workflows/blackbox-changes.yml) reports
+changes to what the [control catalogue](blackbox-coverage.md) proves or selects.
+A material delta creates one new `github-actions[bot]` comment that mentions
+Craig. Pull requests (PRs) receive the comment in their conversation, including
+drafts, forks and Craig-authored PRs. Direct changes to `master` receive a
+comment on [the assurance epic](https://github.com/craigbalding/safeyolo/issues/1557).
+The notice identifies affected controls where mapped, changed definitions and
+exact base, head and comparison links. It requests no human approval.
+
+The read-only analyzer uses the accepted PR base, or the commit before a
+default-branch push, for its code, catalogue, assurance map and locked parser
+environment. For a PR, it compares the common ancestor with the exact head;
+an unrelated update to the base does not become a candidate change. Candidate
+files remain bounded Git blobs. The job does not check out, import, install
+or execute candidate code. Candidate edits to the maps and filters cannot
+change the rules used to analyze that same candidate.
+
+[The analyzer](../tools/assurance/blackbox_changes.py) reads the catalogue's
+witnesses and the assurance map's test references. It also discovers Python,
+Rust and shell evidence under `tests/blackbox`, `tests/proxy_contracts` and
+`proxy/tests`, test files under `proxy/src`, and fixtures in those test trees.
+New Cargo integration targets at `proxy/tests/NAME.rs` or
+`proxy/tests/NAME/main.rs` are discovered even before the catalogue names them.
+It follows static local Python imports, parent `conftest.py` files and literal
+test/script references. That includes shared helpers, origin observers,
+positive controls, installed procedures and embedded guest probes. Mapped
+native command-line interface (CLI) witnesses remain in scope outside the
+blackbox directory. Workflows, test configuration, catalogue and guard code
+are comparison inputs. Other changed paths remain visible as context or
+unclassified inputs. Path membership selects analysis; a changed path alone
+does not select a mention.
+An unreferenced new helper or fixture that is not automatically collected, and
+witnesses explicitly outside the trusted catalogue, remain unclassified. A
+linked fixture's parsed data changes are part of the oracle comparison.
+
+The comparison has these bounded rules:
+
+| Input or change | Result |
+|---|---|
+| Python assertion, parameter, decorator, fixture, helper or executable statement changes in a catalogue witness or discovered BB evidence and its helpers | Material; report added, removed or changed definitions. |
+| Python or shell script interpreter (`#!` line) changes | Material; a changed interpreter can change execution even when the body is identical. |
+| Rust test/helper tokens or inline test module changes | Material; retain literals, attributes, oracle and failure-handling tokens. Production code outside an inline test module remains context. |
+| Selected runner command, skip/filter, backend, user/root phase, dependency between jobs, required trigger or cadence changes | Material. Jobs that contain assurance commands and their prerequisite jobs are compared. |
+| Catalogue witness mapping, effective pytest/Cargo test configuration, analyzer or notification decision changes | Material. Cargo selection inputs and notification scope are described below. Candidate-authored labels or impact claims cannot suppress the result. |
+| Python comments, docstrings, formatting, parentheses or empty `pass` statements; Rust comments or token-preserving formatting | Quiet when the normalized executable definition is equal. Strings used by assertions remain executable input. |
+| An identical Python file moves within its directory, keeps test discovery, has no recognized location introspection, and all known static references are updated | Quiet after reference comparison. Other executable moves remain material. |
+| Daily or weekly cron time changes with the same frequency | Quiet for the supported single-time expressions. Other expressions are compared exactly. |
+| Lockfiles, dependency versions, action revision pins, same-platform runner-image versions, product/guest artifact or result refreshes | Context; a dependency or artifact refresh alone does not establish an assurance change. Changes to action identity, runner platform or executable test configuration remain material. |
+| Generated documentation, other prose and unclassified inputs | Visible in the check report; no automatic mention. |
+
+A general CI pytest command does not establish that each named regression test
+is a BB witness. For an unmapped test outside the discovered evidence trees,
+the comparison retains the full executable definition, including straight-line
+setup, assertions, exception expectations, skips, decorators, parameters,
+control flow and shared helpers. Changing an assigned expected status from
+403 to 200 remains material even when the assertion text is unchanged.
+
+One bounded exception recognizes the inspected GitHub command-line interface
+(CLI) fixture adaptation in `2ec26866..690549f1`. The adapter selects the `repos/`
+argument after `--include` is added and emits fixed success headers before the
+same JSON response. The analyzer pins the two complete normalized definitions
+of `test_recurring_git_changes_through_both_clis`, including all setup,
+assertions and selection. Only that exact pair compares equally and stays
+visible as unclassified input. A different setup statement, expected value,
+assertion, adapter operation or selection produces a different fingerprint and
+remains material. This exception does not normalize arbitrary embedded strings
+or establish general equivalence. Catalogue witnesses and discovered evidence
+retain their full executable definitions without this exception.
+
+Python normalization includes empty abstract syntax tree (AST) fields on both
+supported interpreters, Python 3.12 and 3.13. The finite diagnostic fingerprints
+therefore recognize the same inspected definitions on either interpreter.
+
+For the publisher, static name references from module statements select the
+notification decisions and their local helpers. The comparison retains event
+and report validation, the materiality threshold, deduplication, notice content,
+bot identity checks and top-level failure handling. The `api` adapter and its
+reachable helpers retain their complete executable definitions. One finite
+exception covers the inspected response-diagnostic adaptation at `2ec26866` and
+`690549f1`. Its fingerprints include both complete adapter/helper definitions
+and their order relative to module statements and selected functions. Only
+those fingerprints use the exception; the changed definitions remain visible as
+unclassified inputs. A changed payload filter, target, failure guard or helper falls outside
+the exception and remains material. Other unused helpers remain unclassified,
+but assertions retain a function even when it is otherwise unused. Decorators
+and defaults also retain a function because they execute at definition time.
+The exception does not establish general transport equivalence or delivery.
+The analyzer does not exempt the publisher file or execute its candidate code.
+
+Cargo comparison retains automatic target discovery (including
+`package.autotests`) and explicit library, binary, example, test and benchmark
+targets. The comparison also retains package and inherited workspace editions,
+the member's workspace path, and workspace membership, default selection and
+exclusions. These inputs can remove targets or packages from a required run.
+Explicit discovery defaults for literal package editions and workspace selection
+reordering stay quiet. Workspace dependency version and other package metadata
+changes alone do not create a material delta. The rules retain inherited edition declarations without
+resolving defaults across manifests.
+
+These rules establish limited mechanical equivalence. They do not establish
+arbitrary semantic equivalence or infer the effects of every dependency
+release. A changed executable witness or required selection that the rules
+cannot establish as mechanical remains material. Reviewers must inspect the
+reported context when a dependency or other input changes actual assertion,
+collection or coverage behavior. The rules use no language-model verdict.
+
+[The publisher](../tools/assurance/notify_blackbox.py) runs in a separate job
+with the trusted publisher checkout and this run's bounded, event-bound report.
+Only that job has `issues: write` and `pull-requests: write`; its other permissions
+are `contents: read` and `actions: read`. Pull-request conversation comments and
+ordinary issue comments use the same
+[issue-comment endpoint](https://docs.github.com/en/rest/issues/comments#create-an-issue-comment).
+The publisher requests write access for both target types. The analyzer retains
+read-only permissions. The publisher uses the job's `GITHUB_TOKEN`,
+never a personal token or provider secret. It validates report shape, revisions,
+control IDs and reasons before constructing the comment. It does not copy
+candidate explanations into a mention.
+
+The delta identity contains normalized assurance changes rather than commit
+IDs, timestamps or explanatory prose. Bot-authored comment markers record the
+delta, PR or push target, Actions run ID and exact commits. Publication of the
+same normalized delta is serialized across PR, retry and merge events.
+
+A PR compares its latest material notice. An ordinary commit or rebase with
+the same delta does not repeat its mention. A later different delta creates a
+new comment, including a return to an earlier delta after another notified
+change. A direct push uses its Actions run ID: retrying that event stays quiet,
+while a later occurrence receives a fresh mention even if its normalized delta
+matches an older one. A merge checks the latest notice on each associated PR.
+If the merge publisher finishes first, its exact merge commit binds the epic
+notice to the delayed PR event. An unrelated historical PR or epic notice
+cannot suppress a new occurrence. The publisher does not assume that editing
+an old comment sends a notification. Nightly execution is not an event for
+this workflow.
+
+For diagnosis, open the exact **Blackbox assurance changes** Actions run. Read
+its analysis summary and the `blackbox-changes-RUN_ID-ATTEMPT` artifact. A
+material run also retains `blackbox-notice-RUN_ID-ATTEMPT`, including the comment
+URL and ID or the explicit publication failure. Missing analysis, parse errors,
+unavailable history and preparation failures mean unknown impact, never “no
+change.” They fail the affected job without issuing a recurring change mention.
+
+For a GitHub API failure, the publication receipt identifies the request method
+and path. It retains the CLI exit code, HTTP status, GitHub request ID and bounded
+response message when available. It excludes raw headers, stderr and request
+bodies, and redacts `GH_TOKEN` and `GITHUB_TOKEN` values from the response message.
+An unavailable diagnostic field does not establish the failure cause or whether
+a comment was created.
+
+After an uncertain comment response, inspect canonical bot comments for the
+reported delta before retrying the run. The publisher performs that read before
+another post. No source rebuild or nightly product replay is needed.
+
+The workflow must first exist on the default branch with its trusted analyzer,
+publisher and catalogue. Its introduction does not run the new privileged
+path from an unaccepted PR head. Actual bot-comment receipts, fork/event
+availability under the repository's Actions policy, and Craig's notification
+settings require delivery observations. Source tests and a check summary do not
+prove that Craig received a notification. GitHub routes notifications according
+to the account's [configured settings](https://docs.github.com/en/subscriptions-and-notifications/concepts/about-notifications);
+the feature does not promise email. Repository-level protection against
+disabling or replacing the workflow remains unproved here and belongs to #838.

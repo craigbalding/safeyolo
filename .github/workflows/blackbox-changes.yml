@@ -1,0 +1,159 @@
+name: Blackbox assurance changes
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited, ready_for_review, converted_to_draft]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Blackbox assurance changes
+    if: >-
+      (github.event_name == 'pull_request_target' &&
+       github.event.pull_request.base.ref == github.event.repository.default_branch) ||
+      (github.event_name == 'push' && !github.event.created && !github.event.deleted)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      delta: ${{ steps.delta.outputs.delta }}
+    steps:
+      # For a push, the pre-change commit supplies the checker and locked tools.
+      # For a PR, the accepted default-branch base supplies them. Candidate files
+      # stay Git blobs; no candidate checkout, imports, installs or execution.
+      - name: Check out trusted comparison base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.before }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: trusted
+
+      - name: Install trusted locked parser environment
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.9.24"
+          enable-cache: false
+          prune-cache: true
+      - run: uv sync --frozen --only-group static --project trusted/tools/acceptance --python 3.12
+
+      - name: Fetch and validate event objects as data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 -I - <<'PY'
+          import importlib.util, json, os, pathlib, subprocess
+          path = pathlib.Path('trusted/tools/assurance/notify_blackbox.py').resolve()
+          spec = importlib.util.spec_from_file_location('notices', path)
+          notices = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(notices)
+          event = json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+          context = notices.event_context(event, os.environ['GITHUB_EVENT_NAME'])
+          actual = subprocess.check_output(['git', '-C', 'trusted', 'rev-parse', 'HEAD'], text=True).strip()
+          if actual != context['base']:
+              raise ValueError('trusted checkout differs from event base')
+          # gh supplies the scoped token through the credential helper, never a
+          # URL or stored Git configuration. The repository is fixed and trusted.
+          subprocess.run(['gh', 'auth', 'setup-git'], check=True)
+          subprocess.run(['git', '-C', 'trusted', 'fetch', '--no-tags', 'origin', context['head']], check=True)
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('NOTICE_BASE=' + context['base'] + '\nNOTICE_HEAD=' + context['head'] + '\n')
+          PY
+
+      - name: Compare executable assurance definitions
+        run: |
+          options=()
+          if test "$GITHUB_EVENT_NAME" = pull_request_target; then options+=(--merge-base); fi
+          trusted/tools/acceptance/.venv/bin/python -I trusted/tools/assurance/blackbox_changes.py \
+            --repository trusted --base "$NOTICE_BASE" --head "$NOTICE_HEAD" "${options[@]}" \
+            --json "$RUNNER_TEMP/blackbox-changes.json" --markdown "$RUNNER_TEMP/blackbox-changes.md"
+
+      - name: Select material publication
+        id: delta
+        run: |
+          python3 -I - <<'PY'
+          import json, os, pathlib, re
+          report = json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'blackbox-changes.json').read_text())
+          delta = report['delta_id']
+          if report['status'] != 'complete':
+              raise ValueError('analysis is incomplete')
+          if delta is not None:
+              if not re.fullmatch('[0-9a-f]{64}', delta):
+                  raise ValueError('invalid delta identity')
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                  output.write('delta=' + delta + '\n')
+          PY
+
+      - name: Report analysis and publication state
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/blackbox-changes.md"; then
+            cat "$RUNNER_TEMP/blackbox-changes.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '%s\n' 'Blackbox analysis unavailable: preparation or analysis failed. Assurance impact is unknown.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Retain exact analysis report
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: blackbox-changes-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/blackbox-changes.json
+            ${{ runner.temp }}/blackbox-changes.md
+          retention-days: 14
+          if-no-files-found: warn
+
+  publish:
+    name: Publish material assurance notice
+    needs: analyze
+    if: needs.analyze.outputs.delta != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+      pull-requests: write
+    # Serialize the SAME assurance delta across PR/retry/merge events. Distinct
+    # deltas use different groups, so a pending event cannot discard another
+    # assurance change. Do not cancel a possible comment POST.
+    concurrency:
+      group: blackbox-delta-${{ needs.analyze.outputs.delta }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out trusted publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.before }}
+          persist-credentials: false
+          path: trusted
+      - name: Read this run's trusted analysis
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: blackbox-changes-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/analysis
+      - name: Publish a new notice only for a material delta
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 -I trusted/tools/assurance/notify_blackbox.py \
+            --report "$RUNNER_TEMP/analysis/blackbox-changes.json" --result "$RUNNER_TEMP/blackbox-notice.json"
+      - name: Report publication state
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/blackbox-notice.json"; then
+            cat "$RUNNER_TEMP/blackbox-notice.json" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '%s\n' 'Notification unavailable: publisher preparation failed.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Retain publication receipt
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: blackbox-notice-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/blackbox-notice.json
+          retention-days: 14
+          if-no-files-found: warn

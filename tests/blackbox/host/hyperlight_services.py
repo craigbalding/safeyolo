@@ -21,12 +21,16 @@ import re
 import signal
 import socket
 import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import tomlkit
 from job_network import wait_ready
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from execution_receipt import ProcedureReceipt
 
 
 def digest(path):
@@ -277,6 +281,15 @@ def check_named_evidence(first, named, path, subject):
     assert execution["gate_principal"] == first["gate_principal"], execution
 
 
+def check_engine_identity(result, engine, path):
+    """Match host observations to the exact selected engine and artifact pins."""
+    selected = json.loads(path.read_bytes())["engine"]
+    code = selected["guest" if engine == "hyperlight" else "checker"]
+    assert result["engine"] == result["rootfs"]["kind"] == engine, result
+    assert result["rootfs"]["runtime_manifest_sha256"] == selected["runtime"]["sha256"], result
+    assert result["rootfs"]["artifact_sha256"] == code["sha256"], result
+
+
 def scope_and_limits(instance, engine, port):
     github = f"https://api.github.com/repos/{instance.args.repository}/issues/{instance.args.issue}"
     for call in [
@@ -362,6 +375,17 @@ def exercise(args):
     instance = Instance(args)
     observations = []
     engines = ("hyperlight-unikraft",) if args.unikraft_lifetimes_only else ("hyperlight", "hyperlight-unikraft")
+    receipt = ProcedureReceipt("hyperlight-services", args.scratch / "result.json")
+    receipt.document.update(boundary="real-hyperlight-engines", selected_engines=engines, agent="driver", guest=None,
+                            controller_sha256=digest(Path(__file__)),
+                            system=sys.platform, architecture=os.uname().machine,
+                            cli=digest(args.cli), proxy=digest(args.proxy), bundle=digest(args.bundle / "runtime.json"),
+                            engine_cases={engine: [] for engine in engines})
+    save(receipt.path, receipt.document)
+
+    def engine_case(engine, name):
+        receipt.document["engine_cases"][engine].append(name)
+        save(receipt.path, receipt.document)
 
     class Provider(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -403,13 +427,18 @@ def exercise(args):
                         wait_ready(instance.proxy, args.root, args.admin_port)
                         if args.unikraft_lifetimes_only:
                             held_lifetimes(instance, engine, origin, port)
+                            engine_case(engine, "lifetimes")
                             continue
                         spec = args.scratch / f"{engine}-adopted.json"
                         instance.command("job", "validate", str(spec))
                         request = {"subject": {"kind": "value", "value": str(args.issue)}, "inputs": {
                             "repository": args.repository, "expected_author_id": args.expected_author_id}}
                         first = instance.run_job(engine, request)
+                        check_engine_identity(first, engine, spec)
                         records = captured(first)
+                        receipt.document.setdefault("invocations", {})[engine] = {
+                            key: first[key] for key in ("run_id", "rootfs", "input_sha256", "gate_definition_sha256",
+                                                       "gate_principal", "started_unix_ms", "ended_unix_ms")}
                         assert len(records) == 1 and records[0]["service"] == "github"
                         assert records[0]["status"] == 200 and records[0]["error"] is None
                         evidence = json.loads(base64.b64decode(records[0]["retained_base64"], validate=True))
@@ -433,8 +462,15 @@ def exercise(args):
                         services["github"] = grant
                         instance.apply()
                         assert output(instance.run_job(engine, request))["finding"]["positive"] is True
+                        engine_case(engine, "permitted")
                         scope_and_limits(instance, engine, port)
+                        engine_case(engine, "scope-limits")
                         held_lifetimes(instance, engine, origin, port)
+                        engine_case(engine, "lifetimes")
+                        if engine == "hyperlight":
+                            receipt.checkpoint("hyperlight")
+                        else:
+                            receipt.checkpoint("hyperlight-unikraft")
                     finally:
                         origin.release.set()
                         stop(instance.proxy)
@@ -445,14 +481,19 @@ def exercise(args):
             thread.join(timeout=10)
             assert not thread.is_alive()
     assert all(row["credential_replaced"] and not row["gateway_token_leaked"] for row in observations), observations
+    receipt.checkpoint("provider")
     assert not (args.root / "data/ready.json").exists()
     assert not list((args.root / "data").glob("job-hyperlight-*"))
+    receipt.checkpoint("cleanup")
     checks = ("held deadline/cancel/revoke/shutdown lifetimes" if args.unikraft_lifetimes_only else
               "live GitHub, standing grant/removal, named input/typed mismatch, scope/limits, held lifetimes")
     save(args.scratch / "result.json", {"engines": engines, "checks": checks,
                                       "bundle": digest(args.bundle / "runtime.json"),
                                       "cli": digest(args.cli), "proxy": digest(args.proxy)})
+    receipt.checkpoint("finished")
     print(f"PASS {', '.join(engines)}: {checks}")
+    if not receipt.document["complete"]:
+        print("Incomplete two-engine receipt: only the selected Unikraft lifetimes were exercised")
 
 
 def main():

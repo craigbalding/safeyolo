@@ -588,7 +588,9 @@ def prepared_invocation(retained_invocation):
         context = {'platform':'systrap', 'agent':'bbtest', 'pid':123, 'start_token':'controlled-birth'}
         save(artifacts/'platform.json', context)
         os.environ['SAFEYOLO_BLACKBOX_GUEST_IDENTITY'] = json.dumps(context)
-        for phase in SECTION_DRIVERS[instance.name]:
+        phases = ('ingress-pair',) if instance.name == 'ingress' else SECTION_DRIVERS[instance.name]
+        fault = os.environ.get('READINESS_RECEIPT_FAULT')
+        for phase in phases:
             if phase in PYTEST_PHASES:
                 nodes = phase_functions(phase, root)
                 save(artifacts/f'pytest-{phase}.json', {
@@ -597,9 +599,20 @@ def prepared_invocation(retained_invocation):
                     'run_id':os.environ['SAFEYOLO_BLACKBOX_RUN_ID'], 'finished':True,
                     'exit':int(os.environ.get('FAIL_READINESS', '0')), 'collected':nodes, 'selected':nodes,
                     'tests':{node:dict.fromkeys(('setup','call','teardown'), 'passed') for node in nodes}})
+                if phase in {'guest-agent', 'guest-root'} and fault != f'missing-{phase}-observer':
+                    observer = {'phase':phase, 'run_id':os.environ['SAFEYOLO_BLACKBOX_RUN_ID'],
+                                'guest':context, 'status':'passed'}
+                    if fault == 'wrong-guest-observer':
+                        observer['guest'] = dict(context, start_token='previous-birth')
+                    # Match the host observer's private path; run_sections
+                    # exports it after stopping the owned fixture instance.
+                    save(instance/'data'/f'containment-{phase}.json', observer)
             else:
                 receipt = ProcedureReceipt(phase, artifacts/'procedure.json')
-                for checkpoint in PROCEDURES[phase][1]:
+                checkpoints = PROCEDURES[phase][1]
+                if phase == 'ingress-pair' and fault == 'partial-ingress':
+                    checkpoints = checkpoints[:-1]
+                for checkpoint in checkpoints:
                     receipt.checkpoint(checkpoint)
         if instance.name == 'isolation':
             # This Ubuntu caller fixture supplies Linux doctor/runsc inputs.
@@ -642,7 +655,7 @@ def test_missing_readiness_runs_maintained_sections_before_binding_and_preserves
         report = caller.run(args)
         assert report['exit'] == 0, report
         stages = [row['stage'] for row in events(controller)]
-        assert stages == ['doctor', 'init', 'isolation', 'doctor', 'stop', 'workloads', 'stop',
+        assert stages == ['doctor', 'init', 'isolation', 'doctor', 'stop', 'ingress', 'stop', 'workloads', 'stop',
                           'access', 'stop', 'lifecycle', 'stop', 'continuity', 'stop', 'binding', 'smoke']
         assert report['selection_mode'] == 'retained-manual' and report['readiness_reused'] is False
         assert report['readiness_origin'] is None
@@ -692,6 +705,22 @@ def test_prepared_readiness_failure_never_provisions(prepared_invocation, monkey
     else:
         assert not (args.output/'prepared').exists()
     assert 'PRIVATE' not in json.dumps(report)
+
+
+@pytest.mark.parametrize('fault', ['missing-guest-agent-observer', 'missing-guest-root-observer',
+                                 'wrong-guest-observer', 'partial-ingress'])
+def test_prepared_readiness_requires_observers_and_ingress_checkpoints(prepared_invocation, monkeypatch, fault):
+    args, controller = prepared_invocation
+    monkeypatch.setenv('READINESS_RECEIPT_FAULT', fault)
+    report = caller.run(args)
+    assert report['exit'] == 2 and report['stage'] == 'credential-free-installed', report
+    assert all(row['stage'] not in {'binding', 'smoke', 'selection'} for row in events(controller))
+    section = 'ingress' if fault == 'partial-ingress' else 'isolation'
+    row = next(row for row in report['readiness_sections']['sections'] if row['section'] == section)
+    assert row['result'] == 'incomplete' and row['cleanup'] == 'stopped'
+    problems = [problem for phase in row['execution']['phases'] for problem in phase['problems']]
+    assert any(('procedure checkpoints' if section == 'ingress' else 'containment observer') in problem
+               for problem in problems)
 
 
 @pytest.mark.parametrize('sections', [['isolation'], ['isolation', 'access']])

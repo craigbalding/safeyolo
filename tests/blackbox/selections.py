@@ -39,6 +39,28 @@ PYTEST_PHASES = {
         "tests/blackbox/isolation/test_vm_isolation.py::TestSandboxRootContainment::test_host_listener_stays_unreachable_as_sandbox_root",
         "tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_proxy_reachable",
     )),
+    "policy-recipe": ("host", (
+        "tests/proxy_contracts/test_native_policy_cli.py::test_candidate_evaluation_reports_actions_without_destination_contact",
+        "tests/proxy_contracts/test_native_policy_cli.py::test_candidate_evaluation_preserves_captured_scores",
+        "tests/proxy_contracts/test_policy_authoring.py::test_installed_authoring_feed_rdap_preview_activation_and_adverse_cases",
+    )),
+    "sudo-disclosure": ("host", (
+        "tests/test_host_sudo.py",
+        "tests/test_public_installer.py::test_guest_cache_is_prepared_during_host_extraction_without_early_activation",
+    )),
+}
+
+# These are native process boundaries. Real Hyperlight engines use the existing
+# hyperlight_services.py driver; rootless installation remains unimplemented.
+NATIVE_PHASES = {
+    "named-checks": (("lib", "policy::checks::tests"),
+                     ("lib", "policy::checks::fixture_tests"),
+                     ("lib", "policy::checks::composition_edge_tests"),
+                     ("lib", "policy::checks::execution::tests"),
+                     ("lib", "http::policy_checks::execution_tests")),
+    "managed-feeds": (("native_policy_feeds", ""),),
+    "before-after": (("lib", "coord_rooms::work::tests::automatic_tests"),),
+    "mediated-services": (("lib", "jobs::mediated::tests"),),
 }
 
 # A completed procedure records these names after the corresponding assertions.
@@ -50,6 +72,9 @@ PROCEDURES = {
     "access": ("installed_access.py", ("identity", "service", "contract", "flow-ownership", "coord", "host-secret-custody", "origin", "abrupt-failure", "finished")),
     "lifecycle": ("installed_lifecycle.py", ("identity", "listener", "tls", "restart", "drain", "recovery", "finished")),
     "continuity": ("installed_state_transition.py", ("initial", "restart", "replacement", "return", "cleanup", "finished")),
+    "hyperlight-services": ("host/hyperlight_services.py", (
+        "hyperlight", "hyperlight-unikraft", "provider", "cleanup", "finished",
+    )),
 }
 
 SECTION_DRIVERS = {

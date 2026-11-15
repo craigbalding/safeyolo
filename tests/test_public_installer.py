@@ -858,11 +858,11 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
     wrapper = tools / "tar"
     host_gate = resume if held_phase == "host-extraction" else entered
     wrapper.write_text(
-        '#!/bin/sh\ncase "$*" in\n'
-        f'*"{archive.name}"*|*/host) '
+        '#!/bin/sh\nfor argument do\ncase "$argument" in\n'
+        f'*"{archive.name}"|*/host) '
         + (f'echo $$ > "{entered}"; ' if held_phase == "host-extraction" else '')
-        + f'while [ ! -f "{host_gate}" ]; do sleep 0.01; done;;\n'
-        f'esac\nexec "{shutil.which("tar")}" "$@"\n')
+        + f'while [ ! -f "{host_gate}" ]; do sleep 0.01; done; break;;\n'
+        f'esac\ndone\nexec "{shutil.which("tar")}" "$@"\n')
     wrapper.chmod(0o755)
     if held_phase == "guest-preparation":
         wrapper = tools / "sudo"

@@ -9,6 +9,7 @@ dependencies = [
 static = [
     "mypy>=1.15",
     "pip-audit>=2.7",
+    "pyyaml>=6.0",
     "radon>=6",
     "semgrep>=1.100",
 ]
