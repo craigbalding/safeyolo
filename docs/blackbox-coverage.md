@@ -1085,7 +1085,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-managed-state-py).
 - [tests/test_host_sudo.py](../tests/test_host_sudo.py#L45) — Host command disclosure; controlled subprocess adapter. Evidence: Controlled command/consent executor; not installed sudo proof.
   Exact identities: [source inventory](#witness-tests-test-host-sudo-py).
-- [tests/test_public_installer.py::test_guest_cache_is_prepared_during_host_extraction_without_early_activation](../tests/test_public_installer.py#L823) — Public bootstrap composition; Linux ordinary account with guest sudo. Evidence: Owned registry, controlled host package and held native guest remapper; disclosure must precede early/background execution; no public release acquisition.
+- [tests/test_public_installer.py::test_guest_cache_is_prepared_during_host_extraction_without_early_activation](../tests/test_public_installer.py#L842) — Public bootstrap composition; Linux ordinary account with guest sudo. Evidence: Owned registry, controlled host package and held native guest remapper; disclosure must precede early/background execution; no public release acquisition.
   Exact identities: [source inventory](#witness-tests-test-public-installer-py-test-guest-cache-is-prepared-during-host-extraction-without-early-activation).
 
 ### BB-35 — Native target identity
@@ -2317,7 +2317,7 @@ Selection: phase `sudo-disclosure` (host); [test-addons](../.github/workflows/ci
 
 Selection: phase `sudo-disclosure` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`).
 
-- [`tests/test_public_installer.py::test_guest_cache_is_prepared_during_host_extraction_without_early_activation`](../tests/test_public_installer.py#L823)
+- [`tests/test_public_installer.py::test_guest_cache_is_prepared_during_host_extraction_without_early_activation`](../tests/test_public_installer.py#L842)
 
 <a id="witness-tests-test-hyperlight-adoption-py"></a>
 ### [`tests/test_hyperlight_adoption.py`](../tests/test_hyperlight_adoption.py)

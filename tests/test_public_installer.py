@@ -91,6 +91,19 @@ def test_native_host_package_save_failure_is_not_success(native_cli, tmp_path, f
         assert saved.read_bytes() == b"existing archive; keep unchanged"
 
 
+def authorize_preparation_namespace(root, environment):
+    """Supply already approved fixture entry before the consumer starts."""
+    restriction = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+    if restriction.exists() and restriction.read_text().strip() == "1":
+        entry = root / "host/namespace-entry"
+        entry.parent.mkdir(parents=True)
+        entry.symlink_to(Path(environment["SAFEYOLO_TEST_NAMESPACE_ROOT"]) / "host/namespace-entry")
+
+
+def only_host_preparation_remains(root):
+    return not root.exists() or {entry.name for entry in root.iterdir()} == {"host"}
+
+
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
 @pytest.mark.parametrize("decoder", ["native", "previous-native", "legacy"])
 @pytest.mark.parametrize("extractor", ["tar", "bsdtar"])
@@ -787,7 +800,8 @@ def test_guest_archive_arrives_before_host_transfer_finishes(public_release, nat
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
 @pytest.mark.parametrize("help_result", ["supported", "absent", "failed"])
-def test_bootstrap_consumes_complete_guest_help_and_preserves_failure(public_release, tmp_path, help_result):
+@pytest.mark.parametrize("custom_root", [False, True])
+def test_bootstrap_consumes_complete_guest_help_and_preserves_failure(public_release, tmp_path, help_result, custom_root):
     _contents, requests, _faults, environment, bootstrap, root, base, archive = public_release
     helper = tmp_path / "guest-help"
     completed = tmp_path / "help-completed"
@@ -807,9 +821,14 @@ def test_bootstrap_consumes_complete_guest_help_and_preserves_failure(public_rel
         f"print('sha256:{'b' * 64}')\n"
     )
     helper.chmod(0o755)
-    result = run("bash", str(bootstrap), env={**environment, "PACKAGE_GUEST_DOWNLOAD_CLI": str(helper)})
+    options = []
+    if custom_root:
+        root = tmp_path / "selected instance"
+        options = ["--root", str(root)]
+    result = run("bash", str(bootstrap), *options, env={**environment, "PACKAGE_GUEST_DOWNLOAD_CLI": str(helper)})
     assert result.returncode == 0, result.stderr
     assert completed.exists(), result.stderr
+    assert arguments.read_text().splitlines()[:4] == ["--root", str(root), "guest", "download"]
     assert "BrokenPipeError" not in result.stderr
     assert ("--prepare" in arguments.read_text().splitlines()) == (help_result == "supported")
     assert (root / "config.toml").is_file()
@@ -823,6 +842,7 @@ def test_bootstrap_consumes_complete_guest_help_and_preserves_failure(public_rel
 def test_guest_cache_is_prepared_during_host_extraction_without_early_activation(
         public_release, native_cli, guest_store, tmp_path, outcome, held_phase):
     contents, requests, _faults, environment, bootstrap, root, base, archive = public_release
+    authorize_preparation_namespace(root, environment)
     guest = compressed_archive()
     guest_release = release(guest)
     selected_index = digest(guest_release["manifests/compat-v1"])
@@ -865,12 +885,12 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
         f'esac\ndone\nexec "{shutil.which("tar")}" "$@"\n')
     wrapper.chmod(0o755)
     if held_phase == "guest-preparation":
-        wrapper = tools / "sudo"
+        wrapper = tools / "nsenter"
         wrapper.write_text(
             '#!/bin/sh\nset -e\n'
-            'if [ "$1" = -n ] && [ "${4:-}" = host ] && [ "${5:-}" = remap-rootfs ]; then\n'
+            'if [ "${6:-}" = host ] && [ "${7:-}" = validate-guest-import ]; then\n'
             f'echo $$ > "{entered}"; while [ ! -f "{resume}" ]; do sleep 0.01; done\nfi\n'
-            f'exec "{shutil.which("sudo")}" "$@"\n')
+            f'exec "{shutil.which("nsenter")}" "$@"\n')
         wrapper.chmod(0o755)
     host_calls, guest_calls = tmp_path / "host-calls", tmp_path / "guest-calls"
     environment = {**environment, "PATH": f"{tools}:{environment['PATH']}",
@@ -891,7 +911,7 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
             if held_phase == "host-extraction":
                 ready = entered.exists() and bool(list(trees.glob(prepared)))
             else:
-                message = ("stopping early guest preparation" if outcome in ("host-integrity", "binding", "declined")
+                message = ("stopping guest preparation" if outcome in ("host-integrity", "binding", "declined")
                            else "Verified SafeYolo package:")
                 log = stderr_log if outcome in ("host-integrity", "binding", "declined") else stdout_log
                 ready = entered.exists() and message in log.read_text()
@@ -907,18 +927,17 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
             inode = tree.stat().st_ino
         else:
             assert not list(trees.glob(prepared))
-            # The real remapper is held after its sudo wrapper starts. Both
-            # early command previews must already be visible on stderr.
-            disclosed = stderr_log.read_text()
-            assert "Host command: sudo -n tar " in disclosed
-            assert any(line.startswith("Host command: sudo -n -- ") and "host remap-rootfs" in line
-                       for line in disclosed.splitlines())
+            # Validation is held after extraction; its private stage must
+            # remain isolated and no guest-preparation sudo may run.
+            stage, = trees.glob("extract-*")
+            assert stage.stat().st_uid == os.getuid() and stage.stat().st_mode & 0o777 == 0o700
+            assert "Host command: sudo" not in stderr_log.read_text()
             assert host_calls.exists() == (outcome == "installed")
             assert not guest_calls.exists()
             # Discovery may advance while preparation is held. Installation
             # must still consume the index selected by the joined child.
             contents.update(release(compressed_archive(content=b"later guest")))
-        assert not root.exists() and process.poll() is None
+        assert only_host_preparation_remains(root) and process.poll() is None
         resume.touch()
         process.wait(timeout=15)
         stdout, stderr = stdout_log.read_text(), stderr_log.read_text()
@@ -934,7 +953,7 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
             assert sum(path.startswith(PREFIX + "blobs/") for path in requests) == 2
         else:
             assert process.returncode != 0, (stdout, stderr)
-            assert not root.exists() and not (Path(environment["HOME"]) / ".local/bin/safeyolo").exists()
+            assert only_host_preparation_remains(root) and not (Path(environment["HOME"]) / ".local/bin/safeyolo").exists()
             if outcome == "binding":
                 assert "Guest download inputs differ" in stderr
         if held_phase == "host-extraction":
@@ -959,6 +978,7 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
 @pytest.mark.parametrize(("phase", "scope"), [("download", "bootstrap"), ("preparation", "bootstrap"), ("preparation", "group")])
 def test_bootstrap_interrupt_reaps_active_guest_work(public_release, native_cli, guest_store, tmp_path, interruption, phase, scope):
     contents, _requests, faults, environment, bootstrap, root, base, archive = public_release
+    authorize_preparation_namespace(root, environment)
     guest = compressed_archive()
     contents.update(release(guest))
     faults["pause"] = "blobs/" + digest(guest)
@@ -972,12 +992,12 @@ def test_bootstrap_interrupt_reaps_active_guest_work(public_release, native_cli,
         store_link.symlink_to(guest_store, target_is_directory=True)
         tools = tmp_path / "tools"
         tools.mkdir()
-        wrapper = tools / "sudo"
+        wrapper = tools / "nsenter"
         wrapper.write_text(
             '#!/bin/sh\nset -e\n'
-            'if [ "$1" = -n ] && [ "${4:-}" = host ] && [ "${5:-}" = remap-rootfs ]; then\n'
+            'if [ "${6:-}" = host ] && [ "${7:-}" = validate-guest-import ]; then\n'
             f'touch "{entered}"; while [ ! -f "{resume}" ]; do sleep 0.01; done\nfi\n'
-            f'exec "{shutil.which("sudo")}" "$@"\n')
+            f'exec "{shutil.which("nsenter")}" "$@"\n')
         wrapper.chmod(0o755)
         environment["PATH"] = f"{tools}:{environment['PATH']}"
     process = subprocess.Popen(["bash", str(bootstrap)], env=environment, stdout=subprocess.PIPE,
@@ -997,7 +1017,7 @@ def test_bootstrap_interrupt_reaps_active_guest_work(public_release, native_cli,
                 chunk = os.read(process.stdout.fileno(), 65536)
                 assert chunk, "bootstrap exited before host verification completed"
                 stdout_prefix += chunk
-            assert not root.exists() and process.poll() is None
+            assert only_host_preparation_remains(root) and process.poll() is None
         if scope == "group":
             os.killpg(process.pid, interruption)
         else:
@@ -1006,7 +1026,7 @@ def test_bootstrap_interrupt_reaps_active_guest_work(public_release, native_cli,
         if phase == "preparation":
             if scope == "bootstrap":
                 deadline = time.monotonic() + 5
-                while b"stopping early guest preparation" not in stderr_prefix:
+                while b"stopping guest preparation" not in stderr_prefix:
                     assert select.select([process.stderr], [], [], max(0, deadline - time.monotonic()))[0], "guest preparation did not observe cancellation"
                     chunk = os.read(process.stderr.fileno(), 65536)
                     assert chunk, "guest preparation exited before joining extraction"
@@ -1019,7 +1039,7 @@ def test_bootstrap_interrupt_reaps_active_guest_work(public_release, native_cli,
         assert process.returncode == 128 + interruption, (stdout, stderr)
         if scope == "bootstrap":
             assert "interrupted" in stderr
-        assert not root.exists()
+        assert only_host_preparation_remains(root)
         assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
         store = Path(environment["HOME"]) / ".local/share/safeyolo/guests"
         assert not list((store / "trees").rglob("extract-*"))
@@ -1101,6 +1121,7 @@ def test_early_guest_download_package_preserves_trust_and_legacy_paths(public_re
 @pytest.mark.parametrize("fault", ["partial", "hash", "compatibility"])
 def test_composed_guest_download_failure_never_activates_and_can_retry(public_release, native_cli, tmp_path, fault):
     contents, requests, faults, environment, bootstrap, root, base, archive = public_release
+    authorize_preparation_namespace(root, environment)
     guest = compressed_archive()
     data = release(guest, compatibility="v2" if fault == "compatibility" else "v1")
     blob = "blobs/" + digest(guest)
@@ -1123,7 +1144,7 @@ def test_composed_guest_download_failure_never_activates_and_can_retry(public_re
             while not host_calls.exists():
                 assert time.monotonic() < deadline and process.poll() is None, "host preparation waited for guest transfer"
                 time.sleep(0.01)
-            assert not root.exists() and process.poll() is None
+            assert only_host_preparation_remains(root) and process.poll() is None
             faults["resume"].set()
         stdout, stderr = process.communicate(timeout=15)
         assert process.returncode != 0 and "Guest acquisition failed" in stderr, (stdout, stderr)
@@ -1133,7 +1154,7 @@ def test_composed_guest_download_failure_never_activates_and_can_retry(public_re
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=5)
-    assert not root.exists()
+    assert only_host_preparation_remains(root)
     assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
     assert not list(root.parent.glob("safeyolo-install.*"))
     assert not root.with_name(root.name + ".install-lock").exists()

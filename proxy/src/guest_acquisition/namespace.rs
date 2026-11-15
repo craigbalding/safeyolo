@@ -2,7 +2,7 @@
 
 use std::{
     fs,
-    os::unix::fs::MetadataExt,
+    os::unix::{fs::MetadataExt, process::CommandExt},
     path::Path,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -39,6 +39,9 @@ impl ImportNamespace {
         }
         let mut errors = tempfile::tempfile()?;
         let mut command = crate::linux_host::namespace_command(root, "unshare")?;
+        // Ctrl-C or a bootstrap process-group cancellation must leave the
+        // namespace available until extraction is reaped and staging is cleaned.
+        command.process_group(0);
         let holder = command
             .args(["-U", "tail", "-f", "/dev/null"])
             .stdin(Stdio::null())
