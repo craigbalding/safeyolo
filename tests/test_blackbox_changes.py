@@ -170,18 +170,57 @@ def test_github_cli_fixture_framing_keeps_other_setup_and_oracles(sources, githu
 
 def test_notification_transport_diagnostics_are_visible_without_a_mention(sources, github):
     publisher = (ROOT / changes.PUBLISHER).read_text()
-    files = sources | {changes.PUBLISHER: publisher}
-    report = compare(files, {changes.PUBLISHER: publisher.replace('message: {message}', 'diagnostic: {message}')})
+    # Complete inspected adapter before the included-header diagnostic change.
+    raw_api = '''def api(endpoint: str, payload: dict | None = None):
+    command = ["gh", "api", f"repos/{REPOSITORY}/{endpoint}"]
+    if payload is not None:
+        command.extend(["--method", "POST", "--input", "-"])
+    result = subprocess.run(command, input=json.dumps(payload) if payload is not None else None,
+                            capture_output=True, text=True, check=True, timeout=120)
+    if len(result.stdout) > 8 * MAX_REPORT:
+        raise ValueError("GitHub response exceeds byte bound")
+    return json.loads(result.stdout)
+'''
+    raw = publisher[:publisher.index("def api(")] + raw_api + "\n" + publisher[publisher.index("def pages("):]
+    raw = raw.replace(inspect.getsource(notices.api_failure), "")
+    files = sources | {changes.PUBLISHER: raw}
+    report = compare(files, {changes.PUBLISHER: publisher})
     assert report["delta_id"] is None
     assert report["changes"][0]["status"] == "unclassified"
-    assert report["changes"][0]["edits"] == [{"unit": "api_failure#0", "change": "changed"}]
+    assert {edit["unit"] for edit in report["changes"][0]["edits"]} == {"api#0", "api_failure#0"}
     assert notices.publish(report, event(), "pull_request_target")["status"] == "quiet"
     assert not github.posts
     # A later genuine assertion change in the same comparison still publishes.
-    material = compare(files, {changes.PUBLISHER: publisher.replace('message: {message}', 'diagnostic: {message}'),
+    material = compare(files, {changes.PUBLISHER: publisher,
                                TEST: ORIGINAL.replace("== 0", "== 1")})
     assert notices.publish(material, event(), "pull_request_target")["status"] == "published"
     assert len(github.posts) == 1
+
+
+@pytest.mark.parametrize(("before", "after"), [
+    ('    command = ["gh", "api",',
+     '    if payload is not None and "BB-01" in payload["body"]:\n        raise ValueError("BB-01 notice disabled")\n    command = ["gh", "api",'),
+    ('    command = ["gh", "api",',
+     '    if payload is not None:\n        return {}\n    command = ["gh", "api",'),
+    ('f"repos/{REPOSITORY}/{endpoint}"', 'f"repos/{REPOSITORY}/issues/999/comments"'),
+    ('    if result.returncode:', '    if not result.returncode:'),
+    ('        response = json.loads(body)', '        raise ValueError("notice disabled by helper")'),
+])
+def test_notification_api_decisions_reach_analyzer_cli(tmp_path, git_sources, before, after):
+    root, git = git_sources
+    publisher = (ROOT / changes.PUBLISHER).read_text()
+    path = root / changes.PUBLISHER
+    path.write_text(publisher)
+    git("add", ".")
+    git("commit", "-qm", "original notification adapter")
+    base = git("rev-parse", "HEAD")
+    assert before in publisher
+    path.write_text(publisher.replace(before, after))
+    git("add", ".")
+    git("commit", "-qm", "changed notification decision")
+    report = analyze_cli(root, base, git("rev-parse", "HEAD"), tmp_path)
+    assert report["delta_id"]
+    assert [(row["path"], row["status"]) for row in report["changes"]] == [(changes.PUBLISHER, "material")]
 
 
 @pytest.mark.parametrize(("before", "after"), [
@@ -212,6 +251,16 @@ def test_notification_helpers_reached_by_guard_and_definition_side_effects_stay_
     assert compare(files, {changes.PUBLISHER: publisher.replace('def api(endpoint: str, payload: dict | None = None):',
                                                                'def api(endpoint: str, payload: dict | None = None):\n    assert payload is None')})["delta_id"]
     assert compare(files, {changes.PUBLISHER: publisher + '\ndef unknown_oracle():\n    assert False\n'})["delta_id"]
+    adapter_helper = publisher.replace('    command = ["gh", "api",',
+                                       '    if reject_notice(payload):\n        return {}\n    command = ["gh", "api",')
+    adapter_helper += '\ndef reject_notice(payload):\n    return False\n'
+    files = sources | {changes.PUBLISHER: adapter_helper}
+    assert compare(files, {changes.PUBLISHER: adapter_helper.replace('    return False', '    return True')})["delta_id"]
+    # The finite diagnostic exception includes definition order. Calling the
+    # publisher before its error helper exists can change failure behavior.
+    helper = inspect.getsource(notices.api_failure)
+    reordered = publisher.replace(helper, "") + "\n" + helper
+    assert compare(sources | {changes.PUBLISHER: publisher}, {changes.PUBLISHER: reordered})["delta_id"]
 
 
 def test_removal_or_new_check_cannot_disappear_with_candidate_map(sources):

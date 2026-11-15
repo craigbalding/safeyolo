@@ -236,14 +236,18 @@ retain their full executable definitions without this exception.
 For the publisher, static name references from module statements select the
 notification decisions and their local helpers. The comparison retains event
 and report validation, the materiality threshold, deduplication, notice content,
-bot identity checks and top-level failure handling. The `api` adapter's signature
-remains part of that comparison. Its transport implementation and helpers used
-only by that implementation remain inspected, unclassified inputs. Assertions
-remain material even inside transport or an otherwise unused helper. Decorators
+bot identity checks and top-level failure handling. The `api` adapter and its
+reachable helpers retain their complete executable definitions. One finite
+exception covers the inspected response-diagnostic adaptation at `2ec26866` and
+`690549f1`. Its fingerprints include both complete adapter/helper definitions
+and their order relative to module statements and selected functions. Only
+those fingerprints use the exception; the changed definitions remain visible as
+unclassified inputs. A changed payload filter, target, failure guard or helper falls outside
+the exception and remains material. Other unused helpers remain unclassified,
+but assertions retain a function even when it is otherwise unused. Decorators
 and defaults also retain a function because they execute at definition time.
-Transport classification does not establish equivalent behavior or delivery;
-reviewers must inspect a concrete transport effect separately. The analyzer does
-not exempt the publisher file or execute its candidate code.
+The exception does not establish general transport equivalence or delivery.
+The analyzer does not exempt the publisher file or execute its candidate code.
 
 Cargo comparison retains automatic target discovery (including
 `package.autotests`) and explicit library, binary, example, test and benchmark

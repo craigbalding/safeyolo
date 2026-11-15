@@ -100,11 +100,11 @@ def python_definition(source: str) -> dict:
 
 
 def publisher_definition(source: str) -> dict:
-    """Compare notification decisions, with the GitHub adapter as transport.
+    """Retain reachable notification code except one inspected diagnostic pair.
 
-    Follow static names from module statements through local functions. Keep
-    the adapter's interface, but leave its implementation and private helpers
-    visible as unclassified input. This does not establish transport equivalence.
+    Follow static names through local functions, including the API adapter and
+    its helpers. Only the complete inspected adapter definitions and their
+    order at 2ec26866/690549f1 qualify for the diagnostic-only exception.
     """
     tree = ast.parse(source, type_comments=True)
     functions = {}
@@ -128,13 +128,20 @@ def publisher_definition(source: str) -> dict:
             continue
         selected.add(name)
         for function in functions[name]:
-            if name == "api" and not any(is_python_assertion(node) for node in ast.walk(function)):
-                function.body = [ast.Pass()]
             pending.extend(node.id for node in ast.walk(function) if isinstance(node, ast.Name))
     tree.body = [node for node in tree.body
                  if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name in selected]
     interpreter = source.splitlines()[0] + "\n" if source.startswith("#!") else ""
-    return python_definition(interpreter + ast.unparse(tree))
+    definitions = python_definition(interpreter + ast.unparse(tree))
+    adapter = {name: value for name, value in definitions.items()
+               if name.startswith(("api#", "api_failure#")) or name == "<order>"}
+    diagnostic_pair = {"70a8ef5846f05f98aa980d5b2ad7465c5f34b5660db2c12ff1261a31019b7e17",
+                       "9816ef4967142c5ba0577af5aaa417e6535b298e19d4148c4a43abdfd74fec08"}
+    if digest(adapter) in diagnostic_pair:
+        definitions["api#0"] = "<inspected raw/included-header GitHub API diagnostic adaptation>"
+        definitions.pop("api_failure#0", None)
+        definitions["<order>"] = [name for name in definitions["<order>"] if name != "api_failure#0"]
+    return definitions
 
 
 def is_python_assertion(node: ast.AST) -> bool:
@@ -627,10 +634,10 @@ def sequence_changes(subject: str, before: list[str], after: list[str], *, rust:
 
 
 def report_python_context(row: dict, before: str, after: str) -> None:
-    """Report changed setup/transport as unclassified, without calling it equal."""
+    """Keep inspected diagnostics and unselected helpers visible in the report."""
     delta, edits = definition_delta(row["path"], python_definition(before), python_definition(after))
     if delta:
-        reason = ("notification transport or unused helper changed; assurance effect not established" if row["path"] == PUBLISHER
+        reason = ("inspected GitHub API diagnostics or unused helper changed; material assurance effect not established" if row["path"] == PUBLISHER
                   else "GitHub CLI fixture response framing changed; remaining test definition is unchanged")
         row.update(status="unclassified", edits=edits, reason=reason)
 
