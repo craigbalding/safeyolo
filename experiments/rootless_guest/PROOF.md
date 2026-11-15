@@ -663,9 +663,11 @@ The reached feasibility conclusion is positive for the tested pinned
 ordinary-map Ubuntu payload and Mac image bundle. Their actual backends agree
 with the corresponding existing-path observations at the recorded scope.
 Native failed/cancelled preparation preserved external targets and usable guests.
-The full native distinct-map witness remains pending with Sylab under
-`sig-f4aacd2a8c0f47dd9a06c1c3b8e1838a@1`. Keep that operation suspended until its
-original result is supplied; no ordinary journey needs replay. Complete issue
+The distinct published/specimen imports completed in execution 18428. Its
+private-access observer failed before runtime because the dropped identity
+could not execute `id` through the private host PATH. Correcting that observer
+and resuming the retained imports supplies the remaining native witness;
+no ordinary journey or successful import needs replay. Complete issue
 acceptance and the final independent go/no-go remain pending. Production
 integration belongs to #1554 and is not implemented here.
 
@@ -701,15 +703,53 @@ with 65536 IDs. Original delegations and the prepared installation's config
 were preserved. The exact 1806-byte prerequisite receipt has SHA-256
 `44d56fdecd5b1a2ce43f57488c50aaf0fb0e917d6e435cddbaa6ec1f2f00f7ca`.
 
-From the staged source root, use an absent disk-backed output and run once:
+The initial exact command was:
 
 ```sh
 /usr/bin/python3 experiments/rootless_guest/ubuntu_runtime_probe.py \
   /home/agent/r1553g9 --distinct-maps
 ```
 
-The probe imports one published tree and the existing small canonical
-specimen with those distinct bases. It changes only its disposable instance's
+Execution 18428 completed both imports, then failed before the first private
+access observation and before runtime startup. Preserve its original six files
+under `/evidence/operator/1553/g9-5aeb-runtime-18428/` and the ordinary mirror
+`/home/agent/acceptance/1553-operator-receipts/g9-5aeb-runtime-18428/`.
+The original result is SHA-256
+`9de27a4ec5463a8103d2ac641e9521f98ed29f697e29f26e7c877212a6deeb65`.
+The importer source remains `5aeb1f51`.
+
+The reached published stage is
+`/home/agent/r1553g9/published/extract-ojthe36y`; the specimen is
+`/home/agent/r1553g9/specimen/extract-ykf3jnwx`. Numeric owners are correct:
+root 231072:296608, guest 1000 mapped to 1000:1000, daemon 231105:296641 and
+boundary 296607:362143. Both private parent and stage remain 1000:1000/0700.
+The failed observation's shell could execute after `setpriv`, but its bare
+`id` commands resolved through the private command directory and returned
+Permission denied. This is an observation failure, not an isolation verdict.
+Use absolute `/usr/bin/id`; do not broaden traversal permissions or the PATH.
+
+Sylab resumes only the remaining observation/runtime in a new absent output:
+
+```sh
+/usr/bin/python3 experiments/rootless_guest/ubuntu_runtime_probe.py \
+  /home/agent/r1553g9resume --resume-distinct /home/agent/r1553g9
+```
+
+This reads both retained `preparation.json` files and the original result.
+It creates a new owned runtime/report and never invokes extraction or the
+specimen producer. The original output and imports remain unchanged. The
+resumption input must be the selected pre-runtime failure; the probe refuses a
+record that already contains a guest/runtime identity. Cleanup stops only the
+new owned agent, proxy and Coord. Return its original `result.json`,
+`prepare.log` and caller output, preserving the initial failure/source binding.
+The current backing filesystem must have at least 5435817984 bytes free:
+the 5 GiB floor plus 64 MiB for the runtime, against prior observed 24,436,736-byte
+growth. No second 429 MB import or copy is needed. The initial operation ended
+with 5,545,783,296 bytes free. Refresh actual capacity before effects; do not
+remove protected inputs to meet the forecast.
+
+The initial probe imported one published tree and the existing small canonical
+specimen with those distinct bases; resumption reuses them. It changes only its disposable instance's
 mapping. The original `b6821094` config, existing imports and baseline remain
 unchanged. It checks host owners for root, 1000, 33 and 65535; private staging
 stays operator-owned 0700. Mapped identities 33 and 65535 must be unable to
@@ -719,7 +759,7 @@ writes, with the expected distinct host owners. Host UID/GID zero remains
 outside both import and runtime mappings. The existing finally block stops
 only its owned agent, proxy and Coord and retains failures and exact births.
 
-The temporary allowance is 576 MiB above the 5 GiB floor: 512 MiB for the
+The initial import allowance was 576 MiB above the 5 GiB floor: 512 MiB for the
 429,073,907-byte published payload, filesystem overhead and tiny specimen,
 plus 64 MiB for the runtime whose preceding observed growth was 24,436,736
 bytes. Check current backing capacity before effects; do not reuse the older

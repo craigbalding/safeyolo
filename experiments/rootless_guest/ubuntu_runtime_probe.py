@@ -33,6 +33,8 @@ STAGE = Path("/home/agent/1553-native-import-b/published/extract-5ls7iw5p")
 ARCHIVE = Path("/home/agent/1436-operator/guest-store/blobs/sha256") / ARCHIVE_SHA
 REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY / "tests/blackbox"))
+PRIVATE_PARENT_CHECK = ('test "$(/usr/bin/id -u):$(/usr/bin/id -g)" = "$2:$2"; '
+                        '/usr/bin/id; if test -x "$1"; then exit 1; fi')
 
 
 def compare_contents(archive, digest, stage, baseline):
@@ -213,7 +215,7 @@ def cancel_published_import(output):
     return result
 
 
-def qualify(output, metadata=None, *, distinct_maps=False):
+def qualify(output, metadata=None, *, distinct_maps=False, resume_distinct=None):
     # Keep the experimental packet on the maintained native instance, command,
     # token-redaction and process-birth helpers. No product helper is duplicated.
     import tomlkit
@@ -226,7 +228,7 @@ def qualify(output, metadata=None, *, distinct_maps=False):
     assert (os.getuid(), os.getgid()) == (1000, 1000)
     # The distinct witness imports one 429 MB published tree and a tiny
     # specimen. Prior runtime growth was 24 MB; keep 64 MiB for that runtime.
-    forecast = (576 if distinct_maps else 640 if metadata is not None else 128) * 1024**2
+    forecast = (64 if resume_distinct else 576 if distinct_maps else 640 if metadata is not None else 128) * 1024**2
     assert shutil.disk_usage(output.parent).free >= 5 * 1024**3 + forecast
     os.umask(0o022)  # New runtime directories must be traversable by mapped root.
     output.mkdir(mode=0o755)  # Existing output requires inspection, never replay.
@@ -300,10 +302,16 @@ def qualify(output, metadata=None, *, distinct_maps=False):
         assert f"commit={PRODUCT} profile=production" in run("cli-version", [cli, "--version"]).stdout
         run("runsc-version", [PREPARED / "libexec/runsc", "--version"])
         if distinct_maps:
-            run("distinct-published-import", [sys.executable, Path(__file__).with_name("import_guest.py"),
-                "prepare", "--archive", ARCHIVE, "--sha256", ARCHIVE_SHA, "--host-root", PREPARED,
-                "--output", output / "published", "--uid-base", uid_base, "--gid-base", gid_base])
-            preparation = json.loads((output / "published/preparation.json").read_text())
+            imported = resume_distinct if resume_distinct else output
+            if resume_distinct:
+                previous = json.loads((resume_distinct / "result.json").read_text())
+                report["resumed_from"] = str(resume_distinct)
+                assert not previous.get("runtime") and not previous.get("guest_status")
+            else:
+                run("distinct-published-import", [sys.executable, Path(__file__).with_name("import_guest.py"),
+                    "prepare", "--archive", ARCHIVE, "--sha256", ARCHIVE_SHA, "--host-root", PREPARED,
+                    "--output", output / "published", "--uid-base", uid_base, "--gid-base", gid_base])
+            preparation = json.loads((imported / "published/preparation.json").read_text())
             stage = Path(preparation["stage"])
         else:
             preparation = json.loads((stage.parent / "preparation.json").read_text())
@@ -342,17 +350,21 @@ def qualify(output, metadata=None, *, distinct_maps=False):
         if distinct_maps:
             # Reuse the specimen producer. Only its canonical case is imported;
             # device and out-of-range cases already have retained observations.
-            if __package__:
-                from .make_fixture import create
+            if resume_distinct:
+                specimen = previous["distinct_fixture"]
             else:
-                from make_fixture import create
-            specimen = create(output / "fixtures")["canonical"]
+                if __package__:
+                    from .make_fixture import create
+                else:
+                    from make_fixture import create
+                specimen = create(output / "fixtures")["canonical"]
+                run("distinct-specimen-import", [sys.executable, Path(__file__).with_name("import_guest.py"),
+                    "prepare", "--archive", specimen["path"], "--sha256", specimen["sha256"],
+                    "--host-root", PREPARED, "--output", output / "specimen",
+                    "--uid-base", uid_base, "--gid-base", gid_base])
             report["distinct_fixture"] = specimen
-            run("distinct-specimen-import", [sys.executable, Path(__file__).with_name("import_guest.py"),
-                "prepare", "--archive", specimen["path"], "--sha256", specimen["sha256"],
-                "--host-root", PREPARED, "--output", output / "specimen",
-                "--uid-base", uid_base, "--gid-base", gid_base])
-            prepared = json.loads((output / "specimen/preparation.json").read_text())
+            prepared = json.loads((imported / "specimen/preparation.json").read_text())
+            assert prepared["archive_sha256"] == specimen["sha256"] and prepared["result"].startswith("prepared;")
             specimen_root = Path(prepared["stage"]) / "rootfs-tree"
             report["distinct_host_files"] = {name: info(specimen_root / name) for name in (
                 ".", "private", "private/agent", "daemon", "boundary")}
@@ -361,7 +373,7 @@ def qualify(output, metadata=None, *, distinct_maps=False):
             for name, ids in expected.items():
                 observed = report["distinct_host_files"][name]
                 assert (observed["uid"], observed["gid"]) == ids
-            report["private_stage"] = {str(path): info(path) for path in (output / "published", stage)}
+            report["private_stage"] = {str(path): info(path) for path in (imported / "published", stage)}
             assert all((row["uid"], row["gid"], row["mode"]) == (1000, 1000, 0o700)
                        for row in report["private_stage"].values())
             with import_namespace(PREPARED, uid_base, gid_base) as (prefix, maps):
@@ -369,7 +381,7 @@ def qualify(output, metadata=None, *, distinct_maps=False):
                 for identity in (100033, 165535):
                     run(f"private-parent-denial/{identity}", prefix + ["setpriv", f"--reuid={identity}",
                         f"--regid={identity}", "--clear-groups", "/bin/sh", "-ec",
-                        'test "$(id -u):$(id -g)" = "$2:$2"; id; if test -x "$1"; then exit 1; fi',
+                        PRIVATE_PARENT_CHECK,
                         "--", stage, identity])
             mounts += ["--mount", str(specimen_root) + ":/distinct"]
         if metadata is not None:
@@ -481,10 +493,13 @@ def main():
     parser.add_argument("output", type=Path, help="absent disk-backed directory; retain original failures")
     parser.add_argument("--metadata", type=Path, help="retained native metadata-g5 directory; skips completed contents/I/O proof")
     parser.add_argument("--distinct-maps", action="store_true", help="fresh import/runtime with delegated UID231072/GID296608")
+    parser.add_argument("--resume-distinct", type=Path, help="retained pre-runtime distinct imports; creates no new import")
     args = parser.parse_args()
-    if args.distinct_maps and args.metadata:
+    if (args.distinct_maps or args.resume_distinct) and args.metadata:
         parser.error("select the distinct witness or retained metadata comparison")
-    qualify(args.output.absolute(), args.metadata.absolute() if args.metadata else None, distinct_maps=args.distinct_maps)
+    qualify(args.output.absolute(), args.metadata.absolute() if args.metadata else None,
+            distinct_maps=args.distinct_maps or bool(args.resume_distinct),
+            resume_distinct=args.resume_distinct.resolve(strict=True) if args.resume_distinct else None)
     return 0
 
 

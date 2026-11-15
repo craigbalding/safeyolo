@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -15,6 +16,30 @@ from experiments.rootless_guest import ubuntu_runtime_probe as probe
 from experiments.rootless_guest.test_import_guest import archive_file
 from experiments.rootless_guest.ubuntu_runtime_probe import __file__ as probe_path
 from experiments.rootless_guest.ubuntu_runtime_probe import compare_contents, observe_cleanup
+
+
+@pytest.mark.parametrize("case", ["private", "traversable", "wrong-identity"])
+def test_private_parent_observer_does_not_need_the_private_path(tmp_path, case):
+    """Real shell/identity checks survive an inaccessible PATH executable."""
+    if os.getuid() != os.getgid():
+        pytest.skip("The selected native account uses equal UID/GID")
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    bad_id = commands / "id"
+    bad_id.write_text("#!/bin/sh\nexit 99\n")
+    bad_id.chmod(0)
+    stage = tmp_path / "private"
+    stage.mkdir(mode=0o700 if case == "traversable" else 0)
+    identity = os.getuid() + int(case == "wrong-identity")
+    try:
+        result = subprocess.run(["/bin/sh", "-ec", probe.PRIVATE_PARENT_CHECK, "--", str(stage), str(identity)],
+                                env=dict(os.environ, PATH=str(commands)), capture_output=True, text=True, check=False)
+        assert result.returncode == (0 if case == "private" else 1), result.stderr
+        if case == "private":
+            assert f"uid={os.getuid()}" in result.stdout
+    finally:
+        stage.chmod(0o700)
+        bad_id.chmod(0o600)
 
 
 @pytest.mark.parametrize("mutation", [None, "imported", "baseline"])
