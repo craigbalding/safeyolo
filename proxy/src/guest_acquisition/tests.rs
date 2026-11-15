@@ -453,8 +453,19 @@ mod linux {
             0,
             "run acquisition as the ordinary host account"
         );
-        for (uid_base, gid_base) in [(100000, 100000), (231072, 400000)] {
+        // Exercise the account's actual delegation. The complete canonical
+        // mapping matrix has a separate unit control; native distinct-range
+        // filesystem/runtime proof uses its prepared acceptance host.
+        let mapping = crate::linux_host::current_mapping().unwrap();
+        let (uid_base, gid_base) = (mapping.uid_base, mapping.gid_base);
+        {
             let temp = tempfile::tempdir().unwrap();
+            let entry = temp.path().join("host/namespace-entry");
+            fs::create_dir(entry.parent().unwrap()).unwrap();
+            fs::write(&entry, "#!/bin/sh\nexec \"$@\"\n").unwrap();
+            fs::set_permissions(&entry, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .unwrap();
+            let _profile = crate::linux_host::TestNamespaceProfile::load(&entry);
             let release = release(linux_archive(temp.path()));
             let registry = Registry::new(&release);
             let package = registry.package();
@@ -466,6 +477,7 @@ mod linux {
                 None,
                 None,
                 crate::linux_host::Mapping::for_bases(uid_base, gid_base),
+                temp.path(),
             )
             .await
             .unwrap();
@@ -497,6 +509,7 @@ mod linux {
                 None,
                 None,
                 crate::linux_host::Mapping::for_bases(uid_base, gid_base),
+                temp.path(),
             )
             .await
             .unwrap();
@@ -514,7 +527,21 @@ mod linux {
                 2
             );
             drop(seen);
-            archive::remove_stage(&store, package.platform).unwrap();
+            let mut namespace = namespace::ImportNamespace::start(
+                temp.path(),
+                crate::linux_host::Mapping::for_bases(uid_base, gid_base),
+            )
+            .unwrap();
+            assert!(
+                namespace
+                    .command("rm")
+                    .unwrap()
+                    .args(["-rf", "--"])
+                    .arg(&store)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
         }
     }
 
@@ -533,7 +560,8 @@ mod linux {
                 &store,
                 None,
                 None,
-                crate::linux_host::Mapping::for_bases(100000, 100000)
+                crate::linux_host::Mapping::for_bases(100000, 100000),
+                temp.path(),
             )
             .await
             .is_err()
@@ -562,7 +590,8 @@ mod linux {
                 &store,
                 None,
                 None,
-                crate::linux_host::Mapping::for_bases(100000, 100000)
+                crate::linux_host::Mapping::for_bases(100000, 100000),
+                temp.path(),
             )
             .await
             .is_err()
@@ -606,11 +635,12 @@ mod linux {
             fs::write(&input, encoded).unwrap();
             let destination = temp.path().join(format!("prepared-{fault}"));
             let result = archive::prepare(
-                &input,
+                fs::File::open(&input).unwrap(),
                 None,
                 &destination,
                 ConsumerPlatform::DarwinArm64,
                 crate::linux_host::Mapping::for_bases(100000, 100000),
+                temp.path(),
                 None,
             );
             if fault != "none" {

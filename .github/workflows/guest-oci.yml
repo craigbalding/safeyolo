@@ -99,6 +99,25 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends \
             build-essential bc flex bison libelf-dev libssl-dev gnupg dirmngr \
             gcc-aarch64-linux-gnu busybox-static pax-utils cpio pkg-config
+      - name: Select the pinned archive normalizer toolchain
+        working-directory: proxy
+        run: |
+          rustup show active-toolchain
+          printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cmd-format: bash "${{ github.workspace }}/scripts/rust_cache_command.sh" {0}
+          workspaces: proxy -> target
+          shared-key: guest-archive-normalizer
+          cache-bin: false
+          cache-on-failure: true
+      - name: Build the current archive normalizer
+        env:
+          CARGO_BUILD_JOBS: '1'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+        run: |
+          scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo
+          printf 'SAFEYOLO_NATIVE_CLI=%s/proxy/target/debug/safeyolo\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
       - name: Build fresh finished default guest outputs
         env:
           ARCH: ${{ matrix.architecture }}

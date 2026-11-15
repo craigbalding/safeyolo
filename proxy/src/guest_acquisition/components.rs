@@ -474,6 +474,7 @@ async fn prepare_guest(
         Some(index),
         current,
         crate::linux_host::mapping_for_root(root)?,
+        root,
     )
     .await?;
     if let Some(current) = current.filter(|current| {

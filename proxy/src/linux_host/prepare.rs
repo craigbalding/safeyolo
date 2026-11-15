@@ -1312,6 +1312,9 @@ pub(super) fn run(root: &Path, args: &[String]) -> Result<(), Error> {
                 ).into()
             })
         }
+        [operation, tree] if operation == "validate-guest-import" => {
+            super::ownership::validate_imported_tree(Path::new(tree))
+        }
         [operation, tree, builder_uid] if operation == "archive-profile-tree" => {
             super::ownership::archive_profile_tree(Path::new(tree), builder_uid.parse()?)
         }

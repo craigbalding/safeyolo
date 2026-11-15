@@ -879,7 +879,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 - [tests/proxy_contracts/test_native_managed_state.py](../tests/proxy_contracts/test_native_managed_state.py#L22) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-managed-state-py).
-- [tests/test_guest_acquisition.py](../tests/test_guest_acquisition.py#L287) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
+- [tests/test_guest_acquisition.py](../tests/test_guest_acquisition.py#L318) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-guest-acquisition-py).
 - [tests/test_guest_upgrade.py](../tests/test_guest_upgrade.py#L67) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-guest-upgrade-py).
@@ -1052,7 +1052,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 - [tests/proxy_contracts/test_native_managed_state.py](../tests/proxy_contracts/test_native_managed_state.py#L22) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-managed-state-py).
-- [tests/test_guest_acquisition.py](../tests/test_guest_acquisition.py#L287) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
+- [tests/test_guest_acquisition.py](../tests/test_guest_acquisition.py#L318) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-guest-acquisition-py).
 - [tests/test_guest_upgrade.py](../tests/test_guest_upgrade.py#L67) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-guest-upgrade-py).
@@ -2212,30 +2212,31 @@ Selection: phase `host-lifecycle` (host); phase `listener-restart` (host).
 
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review')`).
 
-- [`tests/test_guest_acquisition.py::test_native_acquisition_omits_only_publisher_identical_config`](../tests/test_guest_acquisition.py#L287)
-- [`tests/test_guest_acquisition.py::test_native_acquisition_refuses_invalid_config_before_archive`](../tests/test_guest_acquisition.py#L329)
-- [`tests/test_guest_acquisition.py::test_copied_instance_keeps_installed_guest_binding`](../tests/test_guest_acquisition.py#L370)
-- [`tests/test_guest_acquisition.py::test_explicit_first_acquisition_selects_each_index_without_discovery`](../tests/test_guest_acquisition.py#L416)
-- [`tests/test_guest_acquisition.py::test_custom_profile_requires_explicit_index_and_reuses_native_preparation`](../tests/test_guest_acquisition.py#L452)
-- [`tests/test_guest_acquisition.py::test_guest_remap_failure_keeps_verified_archive_for_retry`](../tests/test_guest_acquisition.py#L476)
-- [`tests/test_guest_acquisition.py::test_linux_extraction_preserves_metadata_across_tar_records`](../tests/test_guest_acquisition.py#L505)
-- [`tests/test_guest_acquisition.py::test_native_selection_pins_one_index_and_keeps_existing_installation`](../tests/test_guest_acquisition.py#L543)
-- [`tests/test_guest_acquisition.py::test_native_acquisition_refuses_before_activation`](../tests/test_guest_acquisition.py#L598)
-- [`tests/test_guest_acquisition.py::test_guest_download_pins_index_and_reuses_verified_inputs`](../tests/test_guest_acquisition.py#L653)
-- [`tests/test_guest_acquisition.py::test_pinned_handoff_revalidates_retained_content`](../tests/test_guest_acquisition.py#L689)
-- [`tests/test_guest_acquisition.py::test_download_metadata_keeps_discovery_fresh_and_checks_package_compatibility`](../tests/test_guest_acquisition.py#L746)
-- [`tests/test_guest_acquisition.py::test_early_preparation_defers_unavailable_setup_and_reports_cleanup_failure`](../tests/test_guest_acquisition.py#L774)
-- [`tests/test_guest_acquisition.py::test_guest_download_interruption_removes_partial_blob_and_allows_retry`](../tests/test_guest_acquisition.py#L818)
-- [`tests/test_guest_acquisition.py::test_guest_download_timing_is_opt_in`](../tests/test_guest_acquisition.py#L844)
-- [`tests/test_guest_acquisition.py::test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes`](../tests/test_guest_acquisition.py#L877)
-- [`tests/test_guest_acquisition.py::test_first_acquisition_rejects_wrong_index_digest`](../tests/test_guest_acquisition.py#L999)
-- [`tests/test_guest_acquisition.py::test_invalid_acquisition_index_options_make_no_changes`](../tests/test_guest_acquisition.py#L1016)
-- [`tests/test_guest_acquisition.py::test_generated_malformed_acquisition_digests_make_no_changes`](../tests/test_guest_acquisition.py#L1028)
-- [`tests/test_guest_acquisition.py::test_pinned_acquisition_preserves_nonfresh_roots`](../tests/test_guest_acquisition.py#L1040)
-- [`tests/test_guest_acquisition.py::test_generated_archive_paths_cannot_escape_staging`](../tests/test_guest_acquisition.py#L1058)
-- [`tests/test_guest_acquisition.py::test_native_client_reports_bad_proxy_and_ca_without_panicking`](../tests/test_guest_acquisition.py#L1085)
-- [`tests/test_guest_acquisition.py::test_verified_bundle_installer_and_proxy_restart_retain_guest`](../tests/test_guest_acquisition.py#L1094)
-- [`tests/test_guest_acquisition.py::test_host_archive_smoke_runs_normal_native_guest_acquisition`](../tests/test_guest_acquisition.py#L1163)
+- [`tests/test_guest_acquisition.py::test_native_acquisition_omits_only_publisher_identical_config`](../tests/test_guest_acquisition.py#L318)
+- [`tests/test_guest_acquisition.py::test_native_acquisition_refuses_invalid_config_before_archive`](../tests/test_guest_acquisition.py#L360)
+- [`tests/test_guest_acquisition.py::test_copied_instance_keeps_installed_guest_binding`](../tests/test_guest_acquisition.py#L401)
+- [`tests/test_guest_acquisition.py::test_explicit_first_acquisition_selects_each_index_without_discovery`](../tests/test_guest_acquisition.py#L447)
+- [`tests/test_guest_acquisition.py::test_custom_profile_requires_explicit_index_and_reuses_native_preparation`](../tests/test_guest_acquisition.py#L483)
+- [`tests/test_guest_acquisition.py::test_guest_validation_failure_keeps_verified_archive_for_retry`](../tests/test_guest_acquisition.py#L507)
+- [`tests/test_guest_acquisition.py::test_linux_extraction_preserves_metadata_across_tar_records`](../tests/test_guest_acquisition.py#L535)
+- [`tests/test_guest_acquisition.py::test_native_selection_pins_one_index_and_keeps_existing_installation`](../tests/test_guest_acquisition.py#L581)
+- [`tests/test_guest_acquisition.py::test_native_acquisition_refuses_before_activation`](../tests/test_guest_acquisition.py#L636)
+- [`tests/test_guest_acquisition.py::test_guest_download_pins_index_and_reuses_verified_inputs`](../tests/test_guest_acquisition.py#L695)
+- [`tests/test_guest_acquisition.py::test_pinned_handoff_revalidates_retained_content`](../tests/test_guest_acquisition.py#L731)
+- [`tests/test_guest_acquisition.py::test_acquisition_reads_the_verified_file_and_refuses_nonregular_cache`](../tests/test_guest_acquisition.py#L789)
+- [`tests/test_guest_acquisition.py::test_download_metadata_keeps_discovery_fresh_and_checks_package_compatibility`](../tests/test_guest_acquisition.py#L818)
+- [`tests/test_guest_acquisition.py::test_early_preparation_defers_unavailable_setup_and_reports_cleanup_failure`](../tests/test_guest_acquisition.py#L846)
+- [`tests/test_guest_acquisition.py::test_guest_download_interruption_removes_partial_blob_and_allows_retry`](../tests/test_guest_acquisition.py#L893)
+- [`tests/test_guest_acquisition.py::test_guest_download_timing_is_opt_in`](../tests/test_guest_acquisition.py#L919)
+- [`tests/test_guest_acquisition.py::test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes`](../tests/test_guest_acquisition.py#L952)
+- [`tests/test_guest_acquisition.py::test_first_acquisition_rejects_wrong_index_digest`](../tests/test_guest_acquisition.py#L1074)
+- [`tests/test_guest_acquisition.py::test_invalid_acquisition_index_options_make_no_changes`](../tests/test_guest_acquisition.py#L1091)
+- [`tests/test_guest_acquisition.py::test_generated_malformed_acquisition_digests_make_no_changes`](../tests/test_guest_acquisition.py#L1103)
+- [`tests/test_guest_acquisition.py::test_pinned_acquisition_preserves_nonfresh_roots`](../tests/test_guest_acquisition.py#L1115)
+- [`tests/test_guest_acquisition.py::test_generated_archive_paths_cannot_escape_staging`](../tests/test_guest_acquisition.py#L1133)
+- [`tests/test_guest_acquisition.py::test_native_client_reports_bad_proxy_and_ca_without_panicking`](../tests/test_guest_acquisition.py#L1160)
+- [`tests/test_guest_acquisition.py::test_verified_bundle_installer_and_proxy_restart_retain_guest`](../tests/test_guest_acquisition.py#L1169)
+- [`tests/test_guest_acquisition.py::test_host_archive_smoke_runs_normal_native_guest_acquisition`](../tests/test_guest_acquisition.py#L1238)
 
 <a id="witness-tests-test-guest-upgrade-py"></a>
 ### [`tests/test_guest_upgrade.py`](../tests/test_guest_upgrade.py)

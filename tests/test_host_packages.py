@@ -1096,6 +1096,7 @@ def test_default_installer_calls_native_guest_before_creating_configuration(pack
     assert staging.parent == root.parent and staging.name.startswith("safeyolo-install.")
     assert arguments == ["--root", str(staging), "guest", "acquire", "--package-info", str(staging / "package-info"), "--write-selection", str(staging / "guest-selection.json"),
                          *(["--index", guest_index] if guest_index else []),
+                         "--namespace-root", str(root),
                          "--host-settings", str(staging / "host-settings.toml")]
     assert not staging.exists()
     assert not (root / "config.toml").exists()

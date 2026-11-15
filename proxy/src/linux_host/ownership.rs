@@ -194,10 +194,7 @@ fn shift_attribute(
                 _ => continue,
             };
             let id = u32::from_le_bytes(entry[4..8].try_into()?);
-            if source_base == 0 || (source_base..source_base + ID_COUNT).contains(&id) {
-                entry[4..8]
-                    .copy_from_slice(&shift_id(id, base, operator, source_base)?.to_le_bytes());
-            }
+            entry[4..8].copy_from_slice(&shift_id(id, base, operator, source_base)?.to_le_bytes());
         }
     } else if name.to_bytes() == b"security.capability" && bytes.len() == 20 && source_base == 0 {
         // Linux revision-2 file capabilities have implicit root ID 0. The
@@ -211,11 +208,11 @@ fn shift_attribute(
         bytes.extend_from_slice(&mapping.uid_base.to_le_bytes());
     } else if name.to_bytes() == b"security.capability" && bytes.len() == 24 {
         let root = u32::from_le_bytes(bytes[20..24].try_into()?);
-        if source_base == 0 || (source_base..source_base + ID_COUNT).contains(&root) {
-            bytes[20..24].copy_from_slice(
-                &shift_id(root, mapping.uid_base, mapping.host_uid, source_base)?.to_le_bytes(),
-            );
-        }
+        bytes[20..24].copy_from_slice(
+            &shift_id(root, mapping.uid_base, mapping.host_uid, source_base)?.to_le_bytes(),
+        );
+    } else if name.to_bytes() == b"security.capability" {
+        return Err("guest archive requires a revision-3 capability with a canonical root identity; rebuild it with the archive normalizer".into());
     }
     Ok(())
 }
@@ -223,6 +220,23 @@ fn shift_attribute(
 pub(super) fn remap_tree(tree: &Path, mapping: Mapping) -> Result<(), Error> {
     mapping.validate()?;
     rewrite_tree(tree, mapping, ARCHIVE_BASE, mapping.host_uid)
+}
+
+/// Validate the imported tree inside the archive-coordinate namespace. The
+/// kernel already assigned final host owners, ACLs and capability root IDs.
+/// Identity rewriting is a no-op, preserving inode modes and change times.
+pub(super) fn validate_imported_tree(tree: &Path) -> Result<(), Error> {
+    rewrite_tree(
+        tree,
+        Mapping {
+            uid_base: ARCHIVE_BASE,
+            gid_base: ARCHIVE_BASE,
+            host_uid: ARCHIVE_BASE + 1000,
+            host_gid: ARCHIVE_BASE + 1000,
+        },
+        ARCHIVE_BASE,
+        ARCHIVE_BASE + 1000,
+    )
 }
 
 /// Convert a stopped distro build to the published numeric ownership contract.
@@ -250,11 +264,16 @@ fn rewrite_tree(
 ) -> Result<(), Error> {
     let stage = tree.parent().ok_or("guest extraction stage is missing")?;
     let stage_metadata = fs::symlink_metadata(stage)?;
+    let stage_name = if stage == Path::new(".") {
+        std::env::current_dir()?
+    } else {
+        stage.to_owned()
+    };
     if tree.file_name().is_none_or(|name| name != "rootfs-tree")
         || !stage_metadata.is_dir()
         || stage_metadata.uid() != stage_uid
         || stage_metadata.mode() & 0o777 != 0o700
-        || stage
+        || stage_name
             .file_name()
             .is_none_or(|name| !name.as_encoded_bytes().starts_with(b"extract-"))
     {
@@ -546,6 +565,28 @@ mod tests {
         assert_eq!(&capability[..4], &0x0300_0001_u32.to_le_bytes());
         assert_eq!(&capability[4..20], &[7; 16]);
         assert_eq!(&capability[20..], &ARCHIVE_BASE.to_le_bytes());
+    }
+
+    #[test]
+    fn canonical_metadata_refuses_unmapped_principals_and_implicit_capability_root() {
+        let mapping = Mapping::for_bases(231072, 296608);
+        let acl_name = CString::new("system.posix_acl_access").unwrap();
+        for id in [42_u32, ARCHIVE_BASE + ID_COUNT] {
+            let mut acl = 2_u32.to_le_bytes().to_vec();
+            acl.extend_from_slice(&2_u16.to_le_bytes());
+            acl.extend_from_slice(&4_u16.to_le_bytes());
+            acl.extend_from_slice(&id.to_le_bytes());
+            assert!(shift_attribute(&acl_name, &mut acl, mapping, ARCHIVE_BASE).is_err());
+        }
+        let cap_name = CString::new("security.capability").unwrap();
+        let mut v2 = 0x0200_0001_u32.to_le_bytes().to_vec();
+        v2.extend_from_slice(&[0; 16]);
+        assert!(shift_attribute(&cap_name, &mut v2, mapping, ARCHIVE_BASE).is_err());
+        let mut v3 = 0x0300_0001_u32.to_le_bytes().to_vec();
+        v3.extend_from_slice(&[0; 16]);
+        v3.extend_from_slice(&ARCHIVE_BASE.to_le_bytes());
+        shift_attribute(&cap_name, &mut v3, mapping, ARCHIVE_BASE).unwrap();
+        assert_eq!(&v3[20..], &mapping.uid_base.to_le_bytes());
     }
 
     #[test]

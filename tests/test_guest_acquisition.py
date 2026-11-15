@@ -131,7 +131,7 @@ def guest_store():
 
 
 @pytest.fixture
-def registry(tmp_path):
+def registry(tmp_path, native_cli):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "ghcr.io")])
     now = datetime.now(UTC)
@@ -231,10 +231,34 @@ def registry(tmp_path):
     environment = dict(os.environ, HTTPS_PROXY=proxy, HTTP_PROXY=proxy,
                        https_proxy=proxy, http_proxy=proxy,
                        SSL_CERT_FILE=str(ca), REQUESTS_CA_BUNDLE=str(ca))
+    # Legitimate namespace authorization is fixture preparation, separate from
+    # the consumer PATH below. Direct acquire/download controls share this
+    # owned entry; the real installer controls still prepare their final root.
+    namespace_root = tmp_path / "authorized-host"
+    entry = namespace_root / "host/namespace-entry"
+    entry.parent.mkdir(parents=True)
+    entry.write_text('#!/bin/sh\nexec "$@"\n')
+    entry.chmod(0o755)
+    restriction = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+    profile = None
+    if restriction.exists() and restriction.read_text().strip() == "1":
+        profile = entry.with_suffix(".apparmor")
+        profile.write_text(f'profile safeyolo-test-{hashlib.sha256(str(entry).encode()).hexdigest()[:16]} "{entry}" flags=(unconfined) {{\n  userns,\n}}\n')
+        subprocess.run(["sudo", "-n", "apparmor_parser", "-r", str(profile)], check=True)
+    consumer_tools = tmp_path / "consumer-tools"
+    consumer_tools.mkdir()
+    refused_sudo = consumer_tools / "sudo"
+    refused_sudo.write_text('#!/bin/sh\necho "unexpected guest preparation sudo" >&2\nexit 93\n')
+    refused_sudo.chmod(0o755)
+    environment.update(PATH=f"{consumer_tools}:{os.environ['PATH']}",
+                       SAFEYOLO_TEST_NAMESPACE_ROOT=str(namespace_root),
+                       SAFEYOLO_TEST_HOST_PATH=os.environ["PATH"])
     try:
         yield contents, requests, faults, environment
     finally:
         faults["resume"].set()
+        if profile is not None:
+            subprocess.run(["sudo", "-n", "apparmor_parser", "-R", str(profile)], check=True)
         for fixture in (parent, server):
             fixture.shutdown()
             fixture.server_close()
@@ -246,9 +270,16 @@ def registry(tmp_path):
 def install(binary, root, store, environment, package_info, *arguments):
     result = subprocess.run([str(binary), "--root", str(root), "guest", "acquire",
                            "--package-info", str(package_info), "--store", str(store),
-                           "--write-selection", str(root / "prepared-selection.json"), *arguments],
+                           "--write-selection", str(root / "prepared-selection.json"),
+                           "--namespace-root", environment.get("SAFEYOLO_TEST_NAMESPACE_ROOT", str(root)), *arguments],
                           env=environment, capture_output=True, text=True, timeout=30)
     if result.returncode == 0:
+        restriction = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+        if restriction.exists() and restriction.read_text().strip() == "1":
+            entry = root / "host/namespace-entry"
+            if not entry.exists():
+                entry.parent.mkdir(parents=True, exist_ok=True)
+                entry.symlink_to(Path(environment["SAFEYOLO_TEST_NAMESPACE_ROOT"]) / "host/namespace-entry")
         # Exercise the same backend function used by the actual installer.
         record = root / "prepared-selection.json"
         if not (root / "share/guest-selection.json").exists():
@@ -473,24 +504,22 @@ def test_custom_profile_requires_explicit_index_and_reuses_native_preparation(
     assert not requests[before:]
 
 
-def test_guest_remap_failure_keeps_verified_archive_for_retry(native_cli, registry, package_info, tmp_path, guest_store):
+def test_guest_validation_failure_keeps_verified_archive_for_retry(native_cli, registry, package_info, tmp_path, guest_store):
     contents, requests, _faults, environment = registry
     archive = compressed_archive()
     contents.update(release(archive))
     tools = tmp_path / "tools"
     tools.mkdir()
-    sudo = shutil.which("sudo")
-    assert sudo
-    wrapper = tools / "sudo"
+    wrapper = tools / "nsenter"
     wrapper.write_text('#!/bin/sh\n'
-                       'if [ "$1" = -- ] && [ "$3" = host ] && [ "$4" = remap-rootfs ]; then\n'
-                       '  echo "fixture ownership preparation denied" >&2\n  exit 77\nfi\n'
-                       f'exec "{sudo}" "$@"\n')
+                       'if [ "${6:-}" = host ] && [ "${7:-}" = validate-guest-import ]; then\n'
+                       '  echo "fixture ownership validation denied" >&2\n  exit 77\nfi\n'
+                       f'exec "{shutil.which("nsenter")}" "$@"\n')
     wrapper.chmod(0o755)
     root = tmp_path / "first"
     denied = install(native_cli, root, guest_store,
-                     {**environment, "PATH": f"{tools}:{os.environ['PATH']}"}, package_info)
-    assert denied.returncode != 0 and "fixture ownership preparation denied" in denied.stderr
+                     {**environment, "PATH": f"{tools}:{environment['PATH']}"}, package_info)
+    assert denied.returncode != 0 and "fixture ownership validation denied" in denied.stderr
     assert not (root / "share/guest-selection.json").exists()
     assert not list((guest_store / "trees/sha256").iterdir())
     blob = guest_store / "blobs/sha256" / digest(archive).removeprefix("sha256:")
@@ -502,14 +531,22 @@ def test_guest_remap_failure_keeps_verified_archive_for_retry(native_cli, regist
 
 
 @pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("inherited_group", [False, True])
 def test_linux_extraction_preserves_metadata_across_tar_records(
-        native_cli, registry, package_info, tmp_path, guest_store, cached):
+        native_cli, registry, package_info, tmp_path, guest_store, cached, inherited_group):
     contents, requests, _faults, environment = registry
+    if inherited_group:
+        # An owned cache may inherit a shared host group outside the import
+        # mapping. This fixture setup is separate from the consumer's PATH.
+        guest_store.mkdir(parents=True)
+        subprocess.run(["sudo", "-n", "chown", f"{os.getuid()}:42", str(guest_store)], check=True)
+        guest_store.chmod(0o2700)
     # Cross several 128 KiB records and end inside a tar block.
     payload = hashlib.shake_256(b"guest extraction metadata").digest(384 * 1024 + 7)
     archive = compressed_archive(
         extra=[("host-state", tarfile.REGTYPE, b"unselected", "")], content=payload,
         command_pax_headers={
+            "org.safeyolo.fixture-note": "harmless unknown header",
             "SCHILY.xattr.user.safeyolo.fixture": "guest metadata",
             "SCHILY.acl.access": "user::rwx,user:101000:r--,group::r-x,group:101234:--x,mask::r-x,other::--x",
         })
@@ -517,11 +554,12 @@ def test_linux_extraction_preserves_metadata_across_tar_records(
     if cached:
         downloaded = subprocess.run(
             [str(native_cli), "guest", "download", "--package-info", str(package_info),
-             "--store", str(guest_store)], env=environment, capture_output=True, text=True, timeout=30)
+             "--namespace-root", environment["SAFEYOLO_TEST_NAMESPACE_ROOT"], "--store", str(guest_store)], env=environment, capture_output=True, text=True, timeout=30)
         assert downloaded.returncode == 0, downloaded.stderr
     root = tmp_path / "installed"
     result = install(native_cli, root, guest_store, environment, package_info)
     assert result.returncode == 0, result.stderr
+    assert "Ignoring unknown extended header keyword" in result.stderr
     tree = root / "share/rootfs-tree"
     uid_base, gid_base = owned_root_ids(tree)
     command = tree / "command"
@@ -591,13 +629,17 @@ def test_native_selection_pins_one_index_and_keeps_existing_installation(native_
 
 @pytest.mark.parametrize("fault,pinned", [
     (fault, pinned)
-    for fault in ("partial", "hash", "size", "compatibility", "missing-platform", "ambiguous-platform", "manifest-hash", "manifest-size", "zstd", "tar", "ownership", "child-owner", "missing-cache")
+    for fault in ("partial", "hash", "size", "compatibility", "missing-platform", "ambiguous-platform", "manifest-hash", "manifest-size", "zstd", "tar", "ownership", "child-owner", "missing-cache", "acl-principal")
     for pinned in (False, True, "download")
     if pinned != "download" or fault in ("partial", "hash", "size", "compatibility", "missing-platform", "ambiguous-platform", "manifest-hash", "manifest-size")
 ])
 def test_native_acquisition_refuses_before_activation(native_cli, registry, package_info, tmp_path, fault, guest_store, pinned):
     contents, _requests, faults, environment = registry
-    archive = compressed_archive(owner=0 if fault == "ownership" else 100000, missing_cache=fault == "missing-cache", child_owner=0 if fault == "child-owner" else None)
+    archive = compressed_archive(owner=0 if fault == "ownership" else 100000,
+                                 missing_cache=fault == "missing-cache",
+                                 child_owner=0 if fault == "child-owner" else None,
+                                 command_pax_headers={"SCHILY.acl.access": "user::rwx,user:42:r--,group::r-x,mask::r-x,other::--x"}
+                                 if fault == "acl-principal" else None)
     if fault == "zstd":
         archive = b"not a zstd archive"
     if fault == "tar":
@@ -633,11 +675,11 @@ def test_native_acquisition_refuses_before_activation(native_cli, registry, pack
         arguments = ["--index", index]
     root, store = tmp_path / "refused", guest_store
     if pinned == "download":
-        result = subprocess.run([str(native_cli), "guest", "download", "--package-info", str(package_info), "--store", str(store)],
+        result = subprocess.run([str(native_cli), "guest", "download", "--package-info", str(package_info), "--namespace-root", environment["SAFEYOLO_TEST_NAMESPACE_ROOT"], "--store", str(store)],
                                 env=environment, capture_output=True, text=True, timeout=30)
     else:
         result = install(native_cli, root, store, environment, package_info, *arguments)
-    assert result.returncode != 0
+    assert result.returncode != 0, result.stderr
     assert "panic" not in result.stderr.lower()
     assert not (root / "share").exists()
     assert not (root / "config.toml").exists()
@@ -659,7 +701,7 @@ def test_guest_download_pins_index_and_reuses_verified_inputs(
     contents.update(data)
     contents["manifests/" + index] = data["manifests/compat-v1"]
     root = tmp_path / "not-an-instance"
-    downloaded = subprocess.run([str(native_cli), "--root", str(root), "guest", "download", "--package-info", str(package_info), "--store", str(guest_store), *(["--prepare"] if prepare else [])],
+    downloaded = subprocess.run([str(native_cli), "--root", str(root), "guest", "download", "--package-info", str(package_info), "--namespace-root", environment["SAFEYOLO_TEST_NAMESPACE_ROOT"], "--store", str(guest_store), *(["--prepare"] if prepare else [])],
                                 env=environment, capture_output=True, text=True, timeout=30)
     assert downloaded.returncode == 0, downloaded.stderr
     assert downloaded.stdout.strip() == index
@@ -697,7 +739,7 @@ def test_pinned_handoff_revalidates_retained_content(
     contents["manifests/" + index] = index_bytes
     downloaded = subprocess.run(
         [str(native_cli), "guest", "download", "--prepare", "--package-info", str(package_info),
-         "--store", str(guest_store)], env=environment, capture_output=True, text=True, timeout=30)
+         "--namespace-root", environment["SAFEYOLO_TEST_NAMESPACE_ROOT"], "--store", str(guest_store)], env=environment, capture_output=True, text=True, timeout=30)
     assert downloaded.returncode == 0, downloaded.stderr
     architecture = package_info.read_text().split("platform=linux-", 1)[1].splitlines()[0]
     selected = next(child for child in json.loads(index_bytes)["manifests"]
@@ -743,6 +785,36 @@ def test_pinned_handoff_revalidates_retained_content(
     assert not list((guest_store / "trees").rglob("extract-*"))
 
 
+@pytest.mark.parametrize("replacement", ["fifo", "pathname"])
+def test_acquisition_reads_the_verified_file_and_refuses_nonregular_cache(
+        native_cli, registry, package_info, tmp_path, guest_store, replacement):
+    contents, _requests, _faults, environment = registry
+    archive = compressed_archive()
+    contents.update(release(archive))
+    downloaded = subprocess.run([str(native_cli), "guest", "download", "--package-info", str(package_info),
+                                 "--store", str(guest_store)], env=environment, capture_output=True, text=True, timeout=30)
+    assert downloaded.returncode == 0, downloaded.stderr
+    retained = guest_store / "blobs/sha256" / digest(archive).removeprefix("sha256:")
+    tools = tmp_path / "replace-tools"
+    tools.mkdir()
+    if replacement == "fifo":
+        retained.unlink()
+        os.mkfifo(retained)
+    else:
+        # Namespace entry occurs after verification. Replace the pathname at
+        # that real boundary; the importer must continue reading its open FD.
+        wrapper = tools / "unshare"
+        wrapper.write_text(f'#!/bin/sh\nrm -- "{retained}"\nprintf invalid > "{retained}"\nexec "{shutil.which("unshare")}" "$@"\n')
+        wrapper.chmod(0o755)
+        environment = {**environment, "PATH": f"{tools}:{environment['PATH']}"}
+    result = install(native_cli, tmp_path / "installed", guest_store, environment, package_info)
+    if replacement == "fifo":
+        assert result.returncode != 0 and "regular file" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert retained.read_bytes() == b"invalid"
+
+
 def test_download_metadata_keeps_discovery_fresh_and_checks_package_compatibility(
         native_cli, registry, package_info, tmp_path, guest_store):
     contents, requests, _faults, environment = registry
@@ -750,7 +822,7 @@ def test_download_metadata_keeps_discovery_fresh_and_checks_package_compatibilit
     index = digest(data["manifests/compat-v1"])
     contents.update(data)
     downloaded = subprocess.run(
-        [str(native_cli), "guest", "download", "--package-info", str(package_info), "--store", str(guest_store)],
+        [str(native_cli), "guest", "download", "--package-info", str(package_info), "--namespace-root", environment["SAFEYOLO_TEST_NAMESPACE_ROOT"], "--store", str(guest_store)],
         env=environment, capture_output=True, text=True, timeout=30)
     assert downloaded.returncode == 0, downloaded.stderr
     contents.update(release(compressed_archive(content=b"new compatible guest"), version="guest-2026-10-12.2"))
@@ -770,7 +842,7 @@ def test_download_metadata_keeps_discovery_fresh_and_checks_package_compatibilit
     assert not (refused_root / "share").exists()
 
 
-@pytest.mark.parametrize("fault", ["mapping", "extraction", "remap", "cleanup"])
+@pytest.mark.parametrize("fault", ["mapping", "namespace", "extraction", "validation", "cleanup"])
 def test_early_preparation_defers_unavailable_setup_and_reports_cleanup_failure(
         native_cli, registry, package_info, tmp_path, guest_store, fault):
     contents, requests, _faults, environment = registry
@@ -784,20 +856,23 @@ def test_early_preparation_defers_unavailable_setup_and_reports_cleanup_failure(
     if fault == "mapping":
         wrapper = tools / "getent"
         wrapper.write_text("#!/bin/sh\nexit 2\n")
+    elif fault == "namespace":
+        wrapper = tools / "unshare"
+        wrapper.write_text("#!/bin/sh\necho 'fixture namespace entry unavailable' >&2\nexit 77\n")
     else:
-        wrapper = tools / "sudo"
+        wrapper = tools / "nsenter"
         wrapper.write_text(
-            '#!/bin/sh\nif [ "$1" = -n ]; then\n'
-            + ('if [ "$2" = tar ]; then exit 77; fi\n' if fault == "extraction" else
-               'if [ "${4:-}" = host ] && [ "${5:-}" = remap-rootfs ]; then exit 77; fi\n')
-            + ('if [ "$2" = rm ]; then exit 78; fi\n' if fault == "cleanup" else '')
-            + f'fi\nexec "{shutil.which("sudo")}" "$@"\n')
+            '#!/bin/sh\n'
+            + ('if [ "${5:-}" = tar ]; then exit 77; fi\n' if fault == "extraction" else
+               'if [ "${6:-}" = host ] && [ "${7:-}" = validate-guest-import ]; then exit 77; fi\n')
+            + ('if [ "${5:-}" = rm ]; then exit 78; fi\n' if fault == "cleanup" else '')
+            + f'exec "{shutil.which("nsenter")}" "$@"\n')
     wrapper.chmod(0o755)
     root = tmp_path / "not-an-instance"
     downloaded = subprocess.run(
         [str(native_cli), "--root", str(root), "guest", "download", "--prepare",
-         "--package-info", str(package_info), "--store", str(guest_store)],
-        env={**environment, "PATH": f"{tools}:{os.environ['PATH']}"},
+         "--package-info", str(package_info), "--namespace-root", environment["SAFEYOLO_TEST_NAMESPACE_ROOT"], "--store", str(guest_store)],
+        env={**environment, "PATH": f"{tools}:{environment['PATH']}"},
         capture_output=True, text=True, timeout=30)
     assert not root.exists()
     assert (guest_store / "blobs/sha256" / digest(archive).removeprefix("sha256:")).read_bytes() == archive
@@ -821,7 +896,7 @@ def test_guest_download_interruption_removes_partial_blob_and_allows_retry(
     archive = compressed_archive()
     contents.update(release(archive))
     faults["pause"] = "blobs/" + digest(archive)
-    command = [str(native_cli), "guest", "download", "--package-info", str(package_info), "--store", str(guest_store)]
+    command = [str(native_cli), "guest", "download", "--package-info", str(package_info), "--namespace-root", environment["SAFEYOLO_TEST_NAMESPACE_ROOT"], "--store", str(guest_store)]
     process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         assert faults["entered"].wait(timeout=10)
@@ -848,7 +923,7 @@ def test_guest_download_timing_is_opt_in(native_cli, registry, package_info, gue
     environment = {key: value for key, value in environment.items() if key != "SAFEYOLO_GUEST_DOWNLOAD_TIMING"}
     if setting is not None:
         environment["SAFEYOLO_GUEST_DOWNLOAD_TIMING"] = setting
-    command = [str(native_cli), "guest", "download", "--package-info", str(package_info), "--store", str(guest_store)]
+    command = [str(native_cli), "guest", "download", "--package-info", str(package_info), "--namespace-root", environment["SAFEYOLO_TEST_NAMESPACE_ROOT"], "--store", str(guest_store)]
     result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == digest(contents["manifests/compat-v1"])
@@ -889,21 +964,21 @@ def test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes
     faults["pause_after"] = key
     tools = tmp_path / "tools"
     tools.mkdir()
-    extraction = tmp_path / "privileged-extraction"
+    extraction = tmp_path / "namespace-extraction"
     release_extraction = tmp_path / "release-extraction"
-    sudo = tools / "sudo"
-    sudo.write_text('#!/bin/sh\nif [ "$2" = tar ]; then\n'
+    entered = tools / "nsenter"
+    entered.write_text('#!/bin/sh\nif [ "${5:-}" = tar ]; then\n'
                     f'if [ -f /dev/stdin ]; then echo file > "{extraction}"; '
                     f'else echo pipe > "{extraction}"; fi\n'
                     + (f'while [ ! -f "{release_extraction}" ]; do sleep 0.01; done\n'
                        if fault == "extract-interrupt" else '')
                     + 'fi\n'
-                    f'exec "{shutil.which("sudo")}" "$@"\n')
-    sudo.chmod(0o755)
+                    f'exec "{shutil.which("nsenter")}" "$@"\n')
+    entered.chmod(0o755)
     environment = {**environment, "PATH": f"{tools}:{environment['PATH']}", "SAFEYOLO_GUEST_DOWNLOAD_TIMING": "1"}
     root = tmp_path / "not-an-instance"
     command = [str(native_cli), "--root", str(root), "guest", "download", "--prepare",
-               "--package-info", str(package_info), "--store", str(guest_store)]
+               "--package-info", str(package_info), "--namespace-root", environment["SAFEYOLO_TEST_NAMESPACE_ROOT"], "--store", str(guest_store)]
     process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         assert faults["entered"].wait(timeout=10)
@@ -1072,7 +1147,7 @@ def test_generated_archive_paths_cannot_escape_staging(native_cli, registry, pac
     if prepare:
         prepared = subprocess.run(
             [str(native_cli), "guest", "download", "--prepare", "--package-info", str(package_info),
-             "--store", str(store)], env=environment, capture_output=True, text=True, timeout=30)
+             "--namespace-root", environment["SAFEYOLO_TEST_NAMESPACE_ROOT"], "--store", str(store)], env=environment, capture_output=True, text=True, timeout=30)
         assert prepared.returncode == 0, prepared.stderr
         assert not list((store / "trees/sha256").iterdir())
     result = install(native_cli, root, store, environment, package_info)
@@ -1099,7 +1174,7 @@ def test_verified_bundle_installer_and_proxy_restart_retain_guest(native_cli, re
     contents, requests, _faults, environment = registry
     contents.update(release(compressed_archive()))
     root = tmp_path / "h"
-    environment = {**environment, "HOME": str(guest_store.parents[3]),
+    environment = {**environment, "PATH": environment["SAFEYOLO_TEST_HOST_PATH"], "HOME": str(guest_store.parents[3]),
                    "SAFEYOLO_NATS_TEST_INSTANCE": "guest-acquisition-installed", "TERM": "xterm-256color"}
     installer = Path(bundle) / "install.sh"
     result = subprocess.run([str(installer), "--root", str(root), "--command-dir", str(root / "commands"), "--yes"],
