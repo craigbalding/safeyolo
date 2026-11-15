@@ -51,7 +51,8 @@ PYTEST_PHASES = {
 }
 
 # These are native process boundaries. Real Hyperlight engines use the existing
-# hyperlight_services.py driver; rootless installation remains unimplemented.
+# hyperlight_services.py driver. rootless_preparation.py checks retained Linux
+# installation/storage evidence without replay; full BB-33 remains incomplete.
 NATIVE_PHASES = {
     "named-checks": (("lib", "policy::checks::tests"),
                      ("lib", "policy::checks::fixture_tests"),
