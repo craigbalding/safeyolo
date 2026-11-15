@@ -136,6 +136,46 @@ def _render(suites: list[tuple[str, list[tuple[Path, list[TestClass]]]]]) -> str
                "[#889](https://github.com/craigbalding/safeyolo/issues/889) owns hardware deployment; "
                "[#838](https://github.com/craigbalding/safeyolo/issues/838) owns protected acceptance.")
     out.append("")
+    out.append("## Focused policy, job and installation controls")
+    out.append("")
+    out.append("From a Linux or macOS test checkout, prepare the frozen development environment and the pinned Rust toolchain. "
+               "Use an ordinary account and a new disk-backed result directory. "
+               "Set `SAFEYOLO_BLACKBOX_ARTIFACTS_DIR` to that directory. "
+               "Native selections build through the existing Cargo space guard with one job. "
+               "Set its reserve and target directory for the actual host; `--cargo-profile release` selects optimized tests. "
+               "These commands create owned process fixtures and retain reports/build logs; they do not qualify an installed guest.")
+    out.append("")
+    out.append("```sh\n./tests/blackbox/run-controls.sh named-checks\n./tests/blackbox/run-controls.sh managed-feeds\n./tests/blackbox/run-controls.sh before-after\n./tests/blackbox/run-controls.sh mediated-services\n```")
+    out.append("")
+    out.append("Each native report records the selected and observed exact Cargo test names, executable digest, command, controller revision, "
+               "working-tree state, profile, host architecture and numeric identity. "
+               "A failed build, absent test, ignored case or failed observer leaves the phase incomplete. "
+               "The named-checks selection includes the accepted prepared-job case. "
+               "Without its explicitly supplied `SAFEYOLO_POLICY_CHECK_PREPARED` instance and `--include-ignored`, that phase remains incomplete. "
+               "Use the existing authorized host execution route for that case; do not substitute a mock or acquire privilege through the runner.")
+    out.append("")
+    out.append("With the matching native CLI/proxy/Coord binaries and existing fixture inputs prepared, "
+               "`./tests/blackbox/run-controls.sh policy-recipe` selects deterministic preview/composition/redirect cases. "
+               "It defaults to the accepted installed layout. `SAFEYOLO_AUTHORING_LAYOUT=source` explicitly selects source-layout proof, "
+               "which proves neither package integrity nor installer behavior. "
+               "`./tests/blackbox/run-controls.sh sudo-disclosure` selects the existing disclosure/consent/cleanup cases. "
+               "That Linux fixture needs its documented guest sudo, ACL and archive tools; authentication modes are controlled. "
+               "Its tiny metadata stages need the [native guest filesystem](../tests/test_linux_host.py); "
+               "a nested 9p workspace cannot supply ACLs. Keep bulk inputs, pytest scratch and reports on disk. "
+               "Use `SAFEYOLO_NATIVE_ARTIFACTS`, `SAFEYOLO_BUILD_PROFILE` and `SAFEYOLO_NATIVE_CLI` as their fixtures require. "
+               "Both selections reuse named pytest receipts; required skips and teardown failures remain incomplete.")
+    out.append("")
+    out.append("For BB-31's real engine boundary, use `./tests/blackbox/run-controls.sh hyperlight-services --help` "
+               "and the existing [two-engine driver](../tests/blackbox/host/hyperlight_services.py). "
+               "It requires a matching protocol-3 artifact bundle, accessible Linux KVM or entitled Apple-silicon HVF, "
+               "a new owned instance, empty private disk-backed scratch, authorized ports and a privately supplied scoped GitHub read credential. "
+               "Its `procedure.json` records permitted/scope/lifetime cases per engine, host-observed invocation/artifact/authority identities and cleanup. "
+               "A lifetimes-only run cannot complete the two-engine receipt. "
+               "The mediated-services native phase uses controlled adapters and does not prove that either engine ran. "
+               "These focused selectors are manual. Existing workflow selectors below retain their actual conditions; "
+               "no recurring real-engine deployment is inferred. BB-33 remains planned until #1553/#1554 have independent acceptance. "
+               "Accepted product evidence and its platform limits remain linked in the catalogue; a complete phase does not establish whole-control acceptance.")
+    out.append("")
     out.append(render_catalogue(REPO_ROOT))
     out.append("")
     out.append("## Maintained guest and host pytest descriptions")

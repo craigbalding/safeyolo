@@ -203,16 +203,55 @@ The comparison has these bounded rules:
 
 | Input or change | Result |
 |---|---|
-| Python assertion, parameter, decorator, fixture, helper or executable statement changes | Material; report added, removed or changed definitions. |
+| Python assertion, parameter, decorator, fixture, helper or executable statement changes in a catalogue witness or discovered BB evidence and its helpers | Material; report added, removed or changed definitions. |
 | Python or shell script interpreter (`#!` line) changes | Material; a changed interpreter can change execution even when the body is identical. |
 | Rust test/helper tokens or inline test module changes | Material; retain literals, attributes, oracle and failure-handling tokens. Production code outside an inline test module remains context. |
 | Selected runner command, skip/filter, backend, user/root phase, dependency between jobs, required trigger or cadence changes | Material. Jobs that contain assurance commands and their prerequisite jobs are compared. |
-| Catalogue witness mapping, effective pytest/Cargo test configuration, analyzer or publisher logic changes | Material. Cargo selection inputs are described below. Candidate-authored labels or impact claims cannot suppress the result. |
+| Catalogue witness mapping, effective pytest/Cargo test configuration, analyzer or notification decision changes | Material. Cargo selection inputs and notification scope are described below. Candidate-authored labels or impact claims cannot suppress the result. |
 | Python comments, docstrings, formatting, parentheses or empty `pass` statements; Rust comments or token-preserving formatting | Quiet when the normalized executable definition is equal. Strings used by assertions remain executable input. |
 | An identical Python file moves within its directory, keeps test discovery, has no recognized location introspection, and all known static references are updated | Quiet after reference comparison. Other executable moves remain material. |
 | Daily or weekly cron time changes with the same frequency | Quiet for the supported single-time expressions. Other expressions are compared exactly. |
 | Lockfiles, dependency versions, action revision pins, same-platform runner-image versions, product/guest artifact or result refreshes | Context; a dependency or artifact refresh alone does not establish an assurance change. Changes to action identity, runner platform or executable test configuration remain material. |
 | Generated documentation, other prose and unclassified inputs | Visible in the check report; no automatic mention. |
+
+A general CI pytest command does not establish that each named regression test
+is a BB witness. For an unmapped test outside the discovered evidence trees,
+the comparison retains the full executable definition, including straight-line
+setup, assertions, exception expectations, skips, decorators, parameters,
+control flow and shared helpers. Changing an assigned expected status from
+403 to 200 remains material even when the assertion text is unchanged.
+
+One bounded exception recognizes the inspected GitHub command-line interface
+(CLI) fixture adaptation in `2ec26866..690549f1`. The adapter selects the `repos/`
+argument after `--include` is added and emits fixed success headers before the
+same JSON response. The analyzer pins the two complete normalized definitions
+of `test_recurring_git_changes_through_both_clis`, including all setup,
+assertions and selection. Only that exact pair compares equally and stays
+visible as unclassified input. A different setup statement, expected value,
+assertion, adapter operation or selection produces a different fingerprint and
+remains material. This exception does not normalize arbitrary embedded strings
+or establish general equivalence. Catalogue witnesses and discovered evidence
+retain their full executable definitions without this exception.
+
+Python normalization includes empty abstract syntax tree (AST) fields on both
+supported interpreters, Python 3.12 and 3.13. The finite diagnostic fingerprints
+therefore recognize the same inspected definitions on either interpreter.
+
+For the publisher, static name references from module statements select the
+notification decisions and their local helpers. The comparison retains event
+and report validation, the materiality threshold, deduplication, notice content,
+bot identity checks and top-level failure handling. The `api` adapter and its
+reachable helpers retain their complete executable definitions. One finite
+exception covers the inspected response-diagnostic adaptation at `2ec26866` and
+`690549f1`. Its fingerprints include both complete adapter/helper definitions
+and their order relative to module statements and selected functions. Only
+those fingerprints use the exception; the changed definitions remain visible as
+unclassified inputs. A changed payload filter, target, failure guard or helper falls outside
+the exception and remains material. Other unused helpers remain unclassified,
+but assertions retain a function even when it is otherwise unused. Decorators
+and defaults also retain a function because they execute at definition time.
+The exception does not establish general transport equivalence or delivery.
+The analyzer does not exempt the publisher file or execute its candidate code.
 
 Cargo comparison retains automatic target discovery (including
 `package.autotests`) and explicit library, binary, example, test and benchmark
@@ -233,8 +272,12 @@ collection or coverage behavior. The rules use no language-model verdict.
 
 [The publisher](../tools/assurance/notify_blackbox.py) runs in a separate job
 with the trusted publisher checkout and this run's bounded, event-bound report.
-Only that job has `issues: write`; its other permissions are `contents: read`,
-`actions: read` and `pull-requests: read`. It uses the job's `GITHUB_TOKEN`,
+Only that job has `issues: write` and `pull-requests: write`; its other permissions
+are `contents: read` and `actions: read`. Pull-request conversation comments and
+ordinary issue comments use the same
+[issue-comment endpoint](https://docs.github.com/en/rest/issues/comments#create-an-issue-comment).
+The publisher requests write access for both target types. The analyzer retains
+read-only permissions. The publisher uses the job's `GITHUB_TOKEN`,
 never a personal token or provider secret. It validates report shape, revisions,
 control IDs and reasons before constructing the comment. It does not copy
 candidate explanations into a mention.
@@ -262,6 +305,14 @@ material run also retains `blackbox-notice-RUN_ID-ATTEMPT`, including the commen
 URL and ID or the explicit publication failure. Missing analysis, parse errors,
 unavailable history and preparation failures mean unknown impact, never “no
 change.” They fail the affected job without issuing a recurring change mention.
+
+For a GitHub API failure, the publication receipt identifies the request method
+and path. It retains the CLI exit code, HTTP status, GitHub request ID and bounded
+response message when available. It excludes raw headers, stderr and request
+bodies, and redacts `GH_TOKEN` and `GITHUB_TOKEN` values from the response message.
+An unavailable diagnostic field does not establish the failure cause or whether
+a comment was created.
+
 After an uncertain comment response, inspect canonical bot comments for the
 reported delta before retrying the run. The publisher performs that read before
 another post. No source rebuild or nightly product replay is needed.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import inspect
 import json
 import os
 import subprocess
@@ -51,7 +52,7 @@ def sources():
             TEST: ORIGINAL, RUST: '#[test]\nfn refresh() { assert_eq!(refresh_count(), 1); }\n',
             WORKFLOW: 'on:\n  schedule:\n    - cron: "17 3 * * *"\njobs:\n  guest:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: python tests/blackbox/installed_sections.py --lane systrap\n',
             changes.SELF: 'def filter_changes(rows):\n    return rows\n',
-            changes.PUBLISHER: 'def notify(rows):\n    return rows\n',
+            changes.PUBLISHER: 'def notify(rows):\n    return rows\n\nnotify([])\n',
             changes.WORKFLOW: 'on: [push]\njobs:\n  analyze:\n    steps:\n      - run: python tools/assurance/blackbox_changes.py\n'}
 
 
@@ -83,6 +84,227 @@ def test_material_definitions(sources, path, before, after):
 
 def test_oracle_change_with_unchanged_explanation_is_material(sources):
     assert compare(sources, {TEST: ORIGINAL.replace("== 0", "== 1")})["delta_id"]
+
+
+@pytest.mark.parametrize(("original", "before", "after"), [
+    ('def test_auth():\n    expected = 403\n    actual = request_as_guest()\n    assert actual == expected\n',
+     'expected = 403', 'expected = 200'),
+    ('def test_auth():\n    expected = 403\n    actual = request_as_guest()\n    assert actual == expected\n',
+     'request_as_guest()', 'request_as_admin()'),
+    ('def test_auth():\n    actual = request("guest")\n    assert actual == 403\n',
+     '"guest"', '"admin"'),
+    ('def test_auth():\n    tolerance = 0\n    observed = 1\n    assert observed <= tolerance\n',
+     'tolerance = 0', 'tolerance = 1'),
+    ('def test_auth():\n    options = {"role": "guest"}\n    actual = request(options)\n    assert actual == 403\n',
+     '"guest"', '"admin"'),
+    ('def test_auth():\n    options = {}\n    options["role"] = "guest"\n    assert request(options) == 403\n',
+     '"guest"', '"admin"'),
+    ('def test_auth():\n    run = lambda: request_as_guest()\n    assert run() == 403\n',
+     'request_as_guest()', 'request_as_admin()'),
+    ('def test_auth():\n    failure = PermissionError\n    with pytest.raises(failure):\n        request_as_guest()\n',
+     'PermissionError', 'Exception'),
+    ('def test_auth():\n    selected = "guest"\n    pytest.importorskip(selected)\n    assert request_as_guest() == 403\n',
+     '"guest"', '"admin"'),
+    ('def test_response():\n    protocol = "old framing"\n    assert response() == 1\n',
+     'old framing', 'new framing'),
+])
+def test_unmapped_ci_test_setup_and_oracles_remain_material(tmp_path, git_sources, original, before, after):
+    root, git = git_sources
+    path = "tests/test_ci_regression.py"
+    (root / path).write_text(original)
+    workflow = root / WORKFLOW
+    workflow.write_text(workflow.read_text() + f'      - run: pytest {path}\n')
+    git("add", ".")
+    git("commit", "-qm", "original ancillary regression")
+    base = git("rev-parse", "HEAD")
+    changed = original.replace(before, after)
+    assert changes.regression_definition(original) != changes.regression_definition(changed)
+    (root / path).write_text(changed)
+    git("add", ".")
+    git("commit", "-qm", "changed regression setup")
+    report = analyze_cli(root, base, git("rev-parse", "HEAD"), tmp_path)
+    assert report["delta_id"]
+    assert report["changes"][0]["status"] == "material"
+
+
+def test_unmapped_ci_test_selection_and_mapped_setup_remain_material(sources):
+    path = "tests/test_ci_regression.py"
+    original = 'def test_response():\n    protocol = "old framing"\n    assert response() == 1\n'
+    files = sources | {path: original, WORKFLOW: sources[WORKFLOW] + f'      - run: pytest {path}\n'}
+    assert compare(files, {path: original.replace("== 1", "== 2")})["delta_id"]
+    assert compare(files, {path: original.replace("assert response() == 1", "pytest.skip('disabled')")})["delta_id"]
+    assert compare(files, {path: original.replace("def test_response():", "@pytest.mark.parametrize('expected', [1, 2])\ndef test_response(expected):")})["delta_id"]
+    # The same setup belongs to the full oracle when the trusted catalogue
+    # identifies this test as BB evidence, including outside the BB tree.
+    files[changes.CATALOGUE] += f'[[witnesses]]\npaths = ["{path}"]\ncontrols = ["BB-01"]\nkind = "pytest"\n'
+    assert compare(files, {path: original.replace("old framing", "new framing")})["delta_id"]
+
+
+def test_github_cli_fixture_framing_keeps_other_setup_and_oracles(sources, github):
+    # Exercise the actual recurring CLI control's accepted diagnostic adaptation.
+    framed = inspect.getsource(test_recurring_git_changes_through_both_clis)
+    raw = framed.replace("next(arg for arg in sys.argv if arg.startswith('repos/'))", "sys.argv[2]").replace(
+        "if '--include' in sys.argv:\n    print('HTTP/2.0 200 OK')\n    print('X-Github-Request-Id: fixture')\n    print()\n", "")
+    assert raw != framed
+    path = "tests/test_ci_regression.py"
+    files = sources | {path: raw, WORKFLOW: sources[WORKFLOW] + f'      - run: pytest {path}\n'}
+    report = compare(files, {path: framed})
+    assert report["delta_id"] is None
+    assert report["changes"][0]["status"] == "unclassified"
+    assert notices.publish(report, event(), "pull_request_target")["status"] == "quiet"
+    assert not github.posts
+    for before, after in [
+        ('state = tmp_path / "comments.json"', 'state = tmp_path / "other.json"'),
+        ('enumerate((1, 0, 1)', 'enumerate((1, 1, 1)'),
+        ('assert len(comments) == 3', 'assert len(comments) == 2'),
+        ("arg.startswith('repos/')", "arg.startswith('issues/')"),
+        ("if '--method' in sys.argv:", "if False:"),
+        ("print('HTTP/2.0 200 OK')", "print('HTTP/2.0 403 Forbidden')"),
+    ]:
+        assert before in framed
+        assert compare(files, {path: framed.replace(before, after)})["delta_id"]
+    later = compare(files, {path: framed.replace('assert len(comments) == 3', 'assert len(comments) == 2')})
+    assert notices.publish(later, event(), "pull_request_target")["status"] == "published"
+    assert len(github.posts) == 1
+
+
+def test_notification_transport_diagnostics_are_visible_without_a_mention(sources, github):
+    publisher = (ROOT / changes.PUBLISHER).read_text()
+    # Complete inspected adapter before the included-header diagnostic change.
+    raw_api = '''def api(endpoint: str, payload: dict | None = None):
+    command = ["gh", "api", f"repos/{REPOSITORY}/{endpoint}"]
+    if payload is not None:
+        command.extend(["--method", "POST", "--input", "-"])
+    result = subprocess.run(command, input=json.dumps(payload) if payload is not None else None,
+                            capture_output=True, text=True, check=True, timeout=120)
+    if len(result.stdout) > 8 * MAX_REPORT:
+        raise ValueError("GitHub response exceeds byte bound")
+    return json.loads(result.stdout)
+'''
+    raw = publisher[:publisher.index("def api(")] + raw_api + "\n" + publisher[publisher.index("def pages("):]
+    raw = raw.replace(inspect.getsource(notices.api_failure), "")
+    files = sources | {changes.PUBLISHER: raw}
+    report = compare(files, {changes.PUBLISHER: publisher})
+    assert report["delta_id"] is None
+    assert report["changes"][0]["status"] == "unclassified"
+    assert {edit["unit"] for edit in report["changes"][0]["edits"]} == {"api#0", "api_failure#0"}
+    assert notices.publish(report, event(), "pull_request_target")["status"] == "quiet"
+    assert not github.posts
+    # A later genuine assertion change in the same comparison still publishes.
+    material = compare(files, {changes.PUBLISHER: publisher,
+                               TEST: ORIGINAL.replace("== 0", "== 1")})
+    assert notices.publish(material, event(), "pull_request_target")["status"] == "published"
+    assert len(github.posts) == 1
+
+
+@pytest.mark.parametrize(("before", "after"), [
+    ('    command = ["gh", "api",',
+     '    if payload is not None and "BB-01" in payload["body"]:\n        raise ValueError("BB-01 notice disabled")\n    command = ["gh", "api",'),
+    ('    command = ["gh", "api",',
+     '    if payload is not None:\n        return {}\n    command = ["gh", "api",'),
+    ('f"repos/{REPOSITORY}/{endpoint}"', 'f"repos/{REPOSITORY}/issues/999/comments"'),
+    ('    if result.returncode:', '    if not result.returncode:'),
+    ('        response = json.loads(body)', '        raise ValueError("notice disabled by helper")'),
+])
+def test_notification_api_decisions_reach_analyzer_cli(tmp_path, git_sources, before, after):
+    root, git = git_sources
+    publisher = (ROOT / changes.PUBLISHER).read_text()
+    path = root / changes.PUBLISHER
+    path.write_text(publisher)
+    git("add", ".")
+    git("commit", "-qm", "original notification adapter")
+    base = git("rev-parse", "HEAD")
+    assert before in publisher
+    path.write_text(publisher.replace(before, after))
+    git("add", ".")
+    git("commit", "-qm", "changed notification decision")
+    report = analyze_cli(root, base, git("rev-parse", "HEAD"), tmp_path)
+    assert report["delta_id"]
+    assert [(row["path"], row["status"]) for row in report["changes"]] == [(changes.PUBLISHER, "material")]
+
+
+@pytest.mark.parametrize("helper", [False, True])
+def test_notification_filter_effect_and_detection(sources, monkeypatch, helper):
+    publisher = (ROOT / changes.PUBLISHER).read_text()
+    guard = '    if payload is not None and "BB-01" in payload["body"]:\n        raise ValueError("BB-01 notice disabled")\n'
+    if helper:
+        publisher = publisher.replace('    command = ["gh", "api",',
+                                      '    if reject_notice(payload):\n        raise ValueError("BB-01 notice disabled")\n    command = ["gh", "api",')
+        publisher += '\ndef reject_notice(payload):\n    return False\n'
+        filtered = publisher.replace('def reject_notice(payload):\n    return False\n',
+                                     'def reject_notice(payload):\n    return payload is not None and "BB-01" in payload["body"]\n')
+    else:
+        filtered = publisher.replace('    command = ["gh", "api",', guard + '    command = ["gh", "api",')
+    files = sources | {changes.PUBLISHER: publisher}
+    material = compare(files, {TEST: ORIGINAL.replace("== 0", "== 1")})
+    assert material["delta_id"]
+    monkeypatch.setenv("GITHUB_RUN_ID", "1")
+    github = GitHub()
+
+    def run(command, *, input, **kwargs):
+        endpoint = next(arg for arg in command if arg.startswith("repos/")).removeprefix(f"repos/{notices.REPOSITORY}/")
+        response = github.api(endpoint, json.loads(input) if input is not None else None)
+        return subprocess.CompletedProcess(command, 0, "HTTP/2.0 200 OK\n\n" + json.dumps(response), "")
+
+    # Run the actual publisher and adapter against an in-memory GitHub response.
+    # The subprocess boundary cannot reach GitHub or a commenting credential.
+    with monkeypatch.context() as patch:
+        patch.setattr(subprocess, "run", run)
+        for source, suppressed in ((publisher, False), (filtered, True)):
+            github.comments.clear()
+            github.posts.clear()
+            namespace = {"__name__": "publisher_fixture"}
+            exec(compile(source, changes.PUBLISHER, "exec"), namespace)
+            if suppressed:
+                with pytest.raises(ValueError, match="BB-01 notice disabled"):
+                    namespace["publish"](material, event(), "pull_request_target")
+                assert not github.posts
+            else:
+                assert namespace["publish"](material, event(), "pull_request_target")["status"] == "published"
+                assert len(github.posts) == 1
+                assert "@craigbalding" in github.posts[0][1]["body"]
+    assert compare(files, {changes.PUBLISHER: filtered})["delta_id"]
+
+
+@pytest.mark.parametrize(("before", "after"), [
+    ('report.get("status") != "complete"', 'report.get("status") == "complete"'),
+    ('if not material:', 'if material:'),
+    ('if already_notified(context, delta, current):', 'if False:'),
+    ('comment.get("user", {}).get("login") != BOT', 'comment.get("user", {}).get("login") == BOT'),
+    ('@craigbalding {target}', 'quiet {target}'),
+    ('os.environ.get("GITHUB_ACTIONS") != "true"', 'os.environ.get("GITHUB_ACTIONS") == "true"'),
+    ('payload: dict | None = None', 'payload: dict | None = {}'),
+    ('REPOSITORY = "craigbalding/safeyolo"', 'REPOSITORY = "other/repo"'),
+    ('#!/usr/bin/env python3', '#!/bin/true'),
+])
+def test_notification_guards_and_transport_interface_stay_material(sources, before, after):
+    publisher = (ROOT / changes.PUBLISHER).read_text()
+    assert before in publisher
+    files = sources | {changes.PUBLISHER: publisher}
+    report = compare(files, {changes.PUBLISHER: publisher.replace(before, after)})
+    assert report["delta_id"]
+    assert report["changes"][0]["status"] == "material"
+
+
+def test_notification_helpers_reached_by_guard_and_definition_side_effects_stay_material(sources):
+    publisher = (ROOT / changes.PUBLISHER).read_text()
+    files = sources | {changes.PUBLISHER: publisher + '\ndef new_filter():\n    return True\n'}
+    assert compare(files, {changes.PUBLISHER: files[changes.PUBLISHER].replace('if not material:', 'if new_filter():')})["delta_id"]
+    assert compare(files, {changes.PUBLISHER: files[changes.PUBLISHER].replace('def new_filter():', '@disable_notices\ndef new_filter():')})["delta_id"]
+    assert compare(files, {changes.PUBLISHER: publisher.replace('def api(endpoint: str, payload: dict | None = None):',
+                                                               'def api(endpoint: str, payload: dict | None = None):\n    assert payload is None')})["delta_id"]
+    assert compare(files, {changes.PUBLISHER: publisher + '\ndef unknown_oracle():\n    assert False\n'})["delta_id"]
+    adapter_helper = publisher.replace('    command = ["gh", "api",',
+                                       '    if reject_notice(payload):\n        return {}\n    command = ["gh", "api",')
+    adapter_helper += '\ndef reject_notice(payload):\n    return False\n'
+    files = sources | {changes.PUBLISHER: adapter_helper}
+    assert compare(files, {changes.PUBLISHER: adapter_helper.replace('def reject_notice(payload):\n    return False\n',
+                                                                   'def reject_notice(payload):\n    return True\n')})["delta_id"]
+    # The finite diagnostic exception includes definition order. Calling the
+    # publisher before its error helper exists can change failure behavior.
+    helper = inspect.getsource(notices.api_failure)
+    reordered = publisher.replace(helper, "") + "\n" + helper
+    assert compare(sources | {changes.PUBLISHER: publisher}, {changes.PUBLISHER: reordered})["delta_id"]
 
 
 def test_removal_or_new_check_cannot_disappear_with_candidate_map(sources):
@@ -317,6 +539,7 @@ def test_craig_authored_draft_fork_later_revision_retry_and_merge(sources, githu
     later = compare(sources, {TEST: ORIGINAL.replace("== 0", "<= 2")})
     assert notices.publish(later, event(), "pull_request_target")["status"] == "published"
     assert len(github.posts) == 2  # NEW comments create NEW mentions.
+    assert {endpoint for endpoint, _ in github.posts} == {"issues/123/comments"}
     assert all(comment["body"].count("@craigbalding") == 1 for _, comment in github.posts)
     github.associated = [{"merged_at": "now", "number": 123, "base": {"repo": {"full_name": notices.REPOSITORY}}}]
     assert notices.publish(later, event("push"), "push")["status"] == "duplicate"
@@ -443,8 +666,9 @@ def test_workflow_does_not_execute_candidate_with_publication_token():
     assert "opened" in workflow["on"]["pull_request_target"]["types"]
     analyzer, publisher = workflow["jobs"]["analyze"], workflow["jobs"]["publish"]
     assert workflow["permissions"] == {"contents": "read"}
-    assert publisher["permissions"]["issues"] == "write"
-    assert publisher["permissions"]["contents"] == "read"
+    assert analyzer.get("permissions", workflow["permissions"]) == {"contents": "read"}
+    assert publisher["permissions"] == {"contents": "read", "actions": "read",
+                                        "issues": "write", "pull-requests": "write"}
     assert "needs.analyze.outputs.delta" in publisher["concurrency"]["group"]
     steps = json.dumps(analyzer["steps"])
     assert "candidate" not in " ".join(step.get("run", "") for step in analyzer["steps"])
@@ -766,7 +990,11 @@ def test_recurring_git_changes_through_both_clis(tmp_path, git_sources):
     fake_gh.write_text(f"#!{sys.executable}\n" + '''import json, pathlib, sys
 state = pathlib.Path(''' + repr(str(state)) + ''')
 rows = json.loads(state.read_text()) if state.exists() else []
-endpoint = sys.argv[2].split('?', 1)[0]
+endpoint = next(arg for arg in sys.argv if arg.startswith('repos/')).split('?', 1)[0]
+if '--include' in sys.argv:
+    print('HTTP/2.0 200 OK')
+    print('X-Github-Request-Id: fixture')
+    print()
 if '--method' in sys.argv:
     body = json.load(sys.stdin)['body']
     comment = {'id': len(rows) + 1, 'body': body, 'user': {'login': 'github-actions[bot]', 'type': 'Bot'},

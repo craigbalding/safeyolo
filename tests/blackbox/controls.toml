@@ -342,10 +342,10 @@ id = "BB-29"
 control = "Named policy checks"
 source = "https://github.com/craigbalding/safeyolo/issues/1543"
 what = "Composition, evidence type, freshness and subject binding govern actual requests."
-existing = "New/in progress under #1543; no complete integrated BB at the audited master."
-conformance = "Write/integrate conflict, unknown/error, expiry, redirect and pending-revocation cases; preview must not contact the assessed target, including via dependencies."
+existing = "Accepted #1543/#1544/#1546 fixtures; maintained named-checks and policy-recipe phases."
+conformance = "Maintained native named-checks and pytest policy-recipe phases cover composition, binding, freshness, unknown/error, redirect and pending revocation. Preview observes zero assessed-target/dependency contact. The prepared real-job case remains required and incomplete without its selected host."
 effort = "L"
-comments = "Reuse policy/origin fixtures and accepted #1543 increments; consume #1544/#1546 where applicable."
+comments = "Accepted product evidence: [typed/composition proof](https://github.com/craigbalding/safeyolo/issues/1543#issuecomment-6854609584), [job/service proof](https://github.com/craigbalding/safeyolo/issues/1544#issuecomment-6858612088) and #1546. These process/installed-layout selections boot no guest; no new installed-platform or live-provider pass is inferred."
 owner = "#1563"
 decisions = ["authorization"]
 
@@ -354,10 +354,10 @@ id = "BB-30"
 control = "Managed feeds"
 source = "https://github.com/craigbalding/safeyolo/issues/1545"
 what = "Invalid or stale refreshes cannot grant access contrary to configured policy."
-existing = "Managed-refresh repair under #1545; integrated regression needed."
-conformance = "Write/integrate valid refresh, malformed/partial updates, atomic activation, retained last-valid data and configured stale behavior."
+existing = "Accepted #1545 native CLI/proxy fixtures; maintained managed-feeds phase."
+conformance = "Owned feed server covers acquisition, automatic membership change, malformed/partial/rejected updates, atomic last-valid activation, configured expiry, restart, rollback and recovery. Named-feed and local-list paths remain distinct witnesses."
 effort = "M"
-comments = "Use an owned server; existing local-list regression can precede full named-check integration."
+comments = "Retain [feed proof](https://github.com/craigbalding/safeyolo/issues/1545#issuecomment-6858989106) and its scoped proof. The phase runs native processes in an installed layout, without a guest or public-package acquisition. Selection is manual; deployed recurring coverage is not established."
 owner = "#1563"
 decisions = ["policy_publication"]
 
@@ -366,10 +366,10 @@ id = "BB-31"
 control = "Hyperlight capabilities"
 source = "https://github.com/craigbalding/safeyolo/issues/1550"
 what = "Both engines receive only adopted scoped capabilities; revoked/expired invocations cannot retain authority."
-existing = "New under #1549/#1550."
-conformance = "Write/integrate allowed effects plus destination/socket/ABI bypass, limits, cancellation, late-completion and host-provenance cases."
+existing = "Accepted #1549/#1550/#1552 engine fixtures; manual two-engine driver and native mediated-services phase."
+conformance = "The shared real-engine driver covers permitted GitHub reads, destination/method/path/repository and socket/DNS/direct-IP/ABI refusal, finite limits, cancellation/revocation/shutdown and late completion. Per-engine checkpoints and owned cleanup are required. Native mediated-services tests alone establish no VM boundary."
 effort = "L"
-comments = "Share logical fixtures across both engines; reuse #1552 examples."
+comments = "Reuse [engine evidence](https://github.com/craigbalding/safeyolo/issues/1552#issuecomment-6877115753) and [installed adoption proof](https://github.com/craigbalding/safeyolo/issues/1552#issuecomment-6877595456) at their recorded Linux/Mac sources and limits. KVM/HVF, compatible artifacts and scoped GitHub credentials are explicit prerequisites. A missing engine or lifetimes-only run cannot complete the two-engine receipt. No recurring engine deployment is claimed."
 owner = "#1563"
 decisions = ["foreign_and_embedded"]
 
@@ -378,10 +378,10 @@ id = "BB-32"
 control = "Before/after enforcement"
 source = "https://github.com/craigbalding/safeyolo/issues/1551"
 what = "Required checks bind to the exact operation/output; follow-up effects are durable without unsafe external retry."
-existing = "Existing Coord foundation; new bindings under #1551."
-conformance = "Write/integrate omitted check, substituted/stale evidence, pending revocation, crash recovery and uncertain external effects."
+existing = "Accepted #1551 native transition fixtures; maintained before-after phase."
+conformance = "Real native Work/service boundaries cover omitted selectors, stale/substituted evidence, exact output replacement, pending revocation, committed-obligation recovery, crash after dispatch and explicit uncertainty without automatic replay. Follow-up failure cannot undo the committed transition."
 effort = "L"
-comments = "Observe actual effects; distinguish before-release verification from follow-up that cannot undo completed work."
+comments = "Owned effect counters and controlled providers observe enforcement. The process receipt does not establish an external GitHub merge/release boundary or repeat #1552 installed factory proof. Manual selection is distinct from deployed cadence."
 owner = "#1563"
 decisions = ["external_effects"]
 
@@ -390,10 +390,10 @@ id = "BB-33"
 control = "Rootless guest preparation"
 source = "https://github.com/craigbalding/safeyolo/issues/1553"
 what = "Install/update/cleanup needs no sudo after prerequisites and retains required metadata/usable guest behavior."
-existing = "Current path tests exist; new promise under #1553/#1554."
+existing = "Planned/incomplete: feasibility #1553 and implementation #1554 are open; their independent acceptance is required."
 conformance = "Extend/write sudo-unavailable, regular/special metadata, distinct UID/GID, cancellation and old-install preservation cases."
 effort = "L"
-comments = "Reuse archive fixtures; correct the privileged offline harness and accepted fixture semantics."
+comments = "Current acquisition/archive witnesses may invoke guest sudo and do not prove rootless preparation. Await #1553/#1554; preserve special metadata, distinct UID/GID, cancellation, cache/update and existing-installation requirements. Other controls do not wait."
 owner = "#1563"
 decisions = ["other_sinks_and_launch"]
 
@@ -402,10 +402,10 @@ id = "BB-34"
 control = "Sudo disclosure"
 source = "https://github.com/craigbalding/safeyolo/issues/1555"
 what = "Exact privileged commands and reasons appear before existing consent and execution."
-existing = "New under #1555."
-conformance = "Write preview/execution agreement, quoting, fresh/cached/passwordless sudo and refusal cases."
+existing = "Accepted #1555 fixtures; maintained sudo-disclosure pytest phase."
+conformance = "Reuse exact preview/execution argument agreement, quoting, helper effects, consent/decline, fresh/cached/passwordless/refused authentication, early cleanup, failure/retry and prepared-host no-op cases."
 effort = "M"
-comments = "Preserve existing consent policy; do not add a new approval mechanism."
+comments = "Retain [disclosure proof](https://github.com/craigbalding/safeyolo/issues/1555#issuecomment-6874142655). Authentication uses controlled executors; extraction/remapping uses real guest sudo. This is not production-host authentication, macOS qualification or rootless proof. Existing consent is unchanged."
 owner = "#1563"
 decisions = ["other_sinks_and_launch"]
 
@@ -624,6 +624,13 @@ controls = ["BB-34"]
 kind = "pytest"
 scope = "Host command disclosure; controlled subprocess adapter"
 adapter = "Controlled command/consent executor; not installed sudo proof"
+
+[[witnesses]]
+paths = ["tests/test_public_installer.py::test_guest_cache_is_prepared_during_host_extraction_without_early_activation"]
+controls = ["BB-34"]
+kind = "pytest"
+scope = "Public bootstrap composition; Linux ordinary account with guest sudo"
+adapter = "Owned registry, controlled host package and held native guest remapper; disclosure must precede early/background execution; no public release acquisition"
 
 [[witnesses]]
 paths = ["tests/test_hyperlight_adoption.py", "tests/test_hyperlight_service_checker.py", "tests/test_job_authoring.py"]
@@ -1104,3 +1111,63 @@ adapter = "Controlled runtime, artifact and credential fixtures; real native cap
 target = "lib"
 module = "jobs::mediated::tests"
 owner = "proxy/src/jobs/mediated.rs"
+
+[[witnesses]]
+paths = ["proxy/src/policy/checks.rs"]
+controls = ["BB-29"]
+kind = "cargo"
+scope = "Native evaluator; process fixtures"
+adapter = "Composition, three-valued results, type/subject/version/freshness binding and offline preview; actual HTTP enforcement is separate"
+target = "lib"
+module = "policy::checks::tests"
+owner = "proxy/src/policy/checks.rs"
+
+[[witnesses]]
+paths = ["proxy/src/policy/checks.rs"]
+controls = ["BB-29"]
+kind = "cargo"
+scope = "Native recorded-evidence and candidate preview; process fixtures"
+adapter = "Recorded allow/deny/unknown/expiry, effective native controls and no preview budget charge"
+target = "lib"
+module = "policy::checks::fixture_tests"
+owner = "proxy/src/policy/checks.rs"
+
+[[witnesses]]
+paths = ["proxy/src/policy/checks.rs"]
+controls = ["BB-29"]
+kind = "cargo"
+scope = "Native numeric composition; process fixture"
+adapter = "Non-finite aggregation cannot create a positive finding"
+target = "lib"
+module = "policy::checks::composition_edge_tests"
+owner = "proxy/src/policy/checks.rs"
+
+[[witnesses]]
+paths = ["proxy/src/policy/checks/execution/tests.rs"]
+controls = ["BB-29", "BB-31", "BB-32"]
+kind = "cargo"
+scope = "Native typed-result and captured-input boundary; process fixtures"
+adapter = "Exact captured GitHub evidence, adopted input mapping and caller-supplied provenance refusal; no live engine"
+target = "lib"
+module = "policy::checks::execution::tests"
+owner = "proxy/src/policy/checks/execution.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_policy_feeds.rs"]
+controls = ["BB-30"]
+kind = "cargo"
+scope = "Native CLI/proxy in an installed layout; owned feed server; no guest"
+adapter = "Real acquisition, refresh and request decisions with retained snapshot provenance and independent destination contact observations"
+target = "native_policy_feeds"
+module = ""
+owner = "proxy/tests/native_policy_feeds.rs"
+
+[[witnesses]]
+paths = ["proxy/src/coord_rooms/work/automatic_tests.rs"]
+controls = ["BB-29", "BB-32"]
+kind = "cargo"
+scope = "Native Work and HTTP service boundaries; process fixtures"
+adapter = "Real proxy/SQLite with owned service/effect counters; crash child and restart; uncertain dispatch is never automatically replayed"
+target = "lib"
+module = "coord_rooms::work::tests::automatic_tests"
+owner = "proxy/src/coord_rooms/work/tests.rs"
