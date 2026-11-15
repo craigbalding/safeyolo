@@ -7,12 +7,14 @@ disk-backed output. No acquisition, host sudo or production instance is used.
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import platform
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -56,7 +58,52 @@ def vm_processes():
     return observed
 
 
-def main(output):
+def preserve_during_runtime(output, environment):
+    """Fail and cancel small private preparations while the original VM waits.
+
+    The selected symlink tests cleanup of an external target. Cancellation is
+    explicitly after extraction children finish, not an active-tar witness.
+    """
+    target = output / "external-target"
+    target.write_bytes(b"external target must survive\n")
+    target.chmod(0o600)
+    before = file_info(target) | {"inode": target.stat().st_ino}
+    archive = output / "preservation.tar.zst"
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as entries:
+        for name in IMAGES:
+            member = tarfile.TarInfo(name)
+            if name == "Image":
+                member.type, member.linkname = tarfile.SYMTYPE, str(target)
+                entries.addfile(member)
+            else:
+                member.size = 8
+                entries.addfile(member, io.BytesIO(b"specimen"))
+    compressed = subprocess.run(["zstd", "-q", "-c"], input=raw.getvalue(),
+                                capture_output=True, check=True)
+    archive.write_bytes(compressed.stdout)
+    observed = {"scope": "small synthetic image bundle; cancellation after child completion", "attempts": []}
+    try:
+        for name, extra in (("failed", []), ("cancelled", ["--cancel-after-extract"])):
+            attempt = output / name
+            command = [sys.executable, str(Path(__file__).with_name("import_guest.py")), "prepare",
+                       "--platform", "darwin", "--archive", str(archive), "--sha256", file_info(archive)["sha256"],
+                       "--output", str(attempt), *extra]
+            result = subprocess.run(command, env=environment, text=True, capture_output=True, check=False, timeout=30)
+            row = {"command": command, "exit": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
+            observed["attempts"].append(row)
+            row["preparation"] = json.loads((attempt / "preparation.json").read_text())
+            after = file_info(target) | {"inode": target.stat().st_ino}
+            row["external_preserved"] = before == after
+            row["stage_removed"] = not Path(row["preparation"]["stage"]).exists()
+            if not result.returncode or not row["stage_removed"] or not row["external_preserved"]:
+                raise RuntimeError("Private preparation did not fail cleanly and preserve the external target")
+    finally:
+        (output / "preservation.json").write_text(json.dumps(observed, indent=2) + "\n")
+    return observed
+
+
+def main(output, *, baseline_preservation=False):
     if platform.system() != "Darwin" or platform.machine() != "arm64" or os.getuid() != 502:
         raise RuntimeError("Run this retained-input proof as ordinary Bristol UID 502")
     output.mkdir(mode=0o700)
@@ -127,13 +174,22 @@ def main(output):
         (config / "per-run-go").touch()
         (output / "tools/python3").symlink_to(sys.executable)
         environment = dict(os.environ, PATH=str(output / "tools"))
+        if baseline_preservation:
+            for name in ("tar", "zstd", "rm"):
+                selected = shutil.which(name)
+                if selected is None:
+                    raise RuntimeError(f"Missing existing preservation tool: {name}")
+                (output / "tools" / name).symlink_to(selected)
+            (config / "wait-for-preservation").touch()
         report["sudo_on_candidate_path"] = shutil.which("sudo", path=environment["PATH"])
         overlay = output / "overlay.ext4"
         with overlay.open("xb") as stream:
             stream.truncate(256 * 1024**2)
+        images = BASELINE if baseline_preservation else PREPARED
+        report["runtime_images"] = str(images)
         command = [str(WRAPPER), "--timeout-seconds", "150", "--", str(INSTALL / "bin/safeyolo-vm"),
-                   "run", "--kernel", str(PREPARED / "Image"), "--initrd", str(PREPARED / "initramfs.cpio.gz"),
-                   "--rootfs", str(PREPARED / "rootfs-base.ext4"), "--overlay", str(overlay),
+                   "run", "--kernel", str(images / "Image"), "--initrd", str(images / "initramfs.cpio.gz"),
+                   "--rootfs", str(images / "rootfs-base.ext4"), "--overlay", str(overlay),
                    "--cpus", "2", "--memory", "1024", "--no-terminal",
                    "--serial-log", str(output / "serial.log")]
         for name in ("config", "status", "home", "workspace"):
@@ -156,6 +212,11 @@ def main(output):
                         if info is not None and info.pbi_ppid == child.pid:
                             report["owned_helpers"].append(item)
                     save()
+                if baseline_preservation and (output / "status/preservation.ready").exists():
+                    if not (output / "status/preservation.done").exists():
+                        report["preservation"] = preserve_during_runtime(output, environment)
+                        save()
+                        (output / "status/preservation.done").touch()
                 if time.monotonic() >= deadline:
                     raise RuntimeError("Guest probe deadline; retain helper/serial/guest output")
                 time.sleep(0.1)
@@ -200,4 +261,6 @@ def main(output):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
-    main(parser.parse_args().output.resolve())
+    parser.add_argument("--baseline-preservation", action="store_true")
+    args = parser.parse_args()
+    main(args.output.resolve(), baseline_preservation=args.baseline_preservation)

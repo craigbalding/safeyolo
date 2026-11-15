@@ -2,12 +2,30 @@
 
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from experiments.rootless_guest import macos_runtime_probe as probe
+
+
+def test_failed_and_cancelled_preparations_preserve_external_target(tmp_path):
+    """Exercise real extraction/cleanup; native live-VM use remains separate."""
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    for name in ("tar", "zstd", "rm"):
+        (commands / name).symlink_to(shutil.which(name))
+    observed = probe.preserve_during_runtime(tmp_path, dict(os.environ, PATH=str(commands)))
+    assert len(observed["attempts"]) == 2
+    for row in observed["attempts"]:
+        assert row["exit"] != 0 and row["external_preserved"] and row["stage_removed"]
+        assert row["preparation"]["result"] == "failed/cancelled; private stage removed"
+    assert "Expected regular backend file: Image" in observed["attempts"][0]["stderr"]
+    assert "Requested cancellation after child completion" in observed["attempts"][1]["stderr"]
+    assert json.loads((tmp_path / "preservation.json").read_text()) == observed
 
 
 @pytest.mark.parametrize("case", ["success", "early-exit", "stop-error", "inspection-error", "foreign", "survivor"])

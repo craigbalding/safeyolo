@@ -97,6 +97,35 @@ printf 'ROOTLESS1553_GUEST_OK uid={expected}\\n'
 """
 
 
+def distinct_guest_script():
+    """Observe other/boundary identities through the existing runtime mount."""
+    return """set -eu
+cd /distinct
+test "$(stat -c '%u:%g' .)" = 0:0
+test "$(stat -c '%u:%g' private/agent)" = 1000:1000
+test "$(stat -c '%u:%g' daemon)" = 33:33
+test "$(stat -c '%u:%g' boundary)" = 65535:65535
+setpriv --reuid=1000 --regid=1000 --clear-groups cat private/agent
+mkdir /workspace/distinct
+chmod 0777 /workspace/distinct
+for identity in 33 65535; do
+    setpriv --reuid="$identity" --regid="$identity" --clear-groups /bin/bash -euc '
+        identity=$1
+        test "$(id -u):$(id -g)" = "$identity:$identity"
+        id
+        test "$(./executable)" = "fixture executed"
+        if cat private/agent; then exit 1; fi
+        path=/workspace/distinct/$identity
+        printf "#!/bin/sh\\nprintf distinct-ok\\n" > "$path"
+        chmod 0700 "$path"
+        test "$("$path")" = distinct-ok
+        stat -c "%n uid=%u gid=%g mode=%a" "$path"
+    ' -- "$identity"
+done
+echo DISTINCT1553_IDENTITIES_OK
+"""
+
+
 def observe_cleanup(root, tracked):
     """Distinguish stopped diagnostic files from live owned runtime state."""
     from installed_sections import surviving_processes
@@ -184,7 +213,7 @@ def cancel_published_import(output):
     return result
 
 
-def qualify(output, metadata=None):
+def qualify(output, metadata=None, *, distinct_maps=False):
     # Keep the experimental packet on the maintained native instance, command,
     # token-redaction and process-birth helpers. No product helper is duplicated.
     import tomlkit
@@ -195,7 +224,9 @@ def qualify(output, metadata=None):
 
     assert platform.system() == "Linux" and platform.machine() == "x86_64"
     assert (os.getuid(), os.getgid()) == (1000, 1000)
-    forecast = (640 if metadata is not None else 128) * 1024**2
+    # The distinct witness imports one 429 MB published tree and a tiny
+    # specimen. Prior runtime growth was 24 MB; keep 64 MiB for that runtime.
+    forecast = (576 if distinct_maps else 640 if metadata is not None else 128) * 1024**2
     assert shutil.disk_usage(output.parent).free >= 5 * 1024**3 + forecast
     os.umask(0o022)  # New runtime directories must be traversable by mapped root.
     output.mkdir(mode=0o755)  # Existing output requires inspection, never replay.
@@ -204,8 +235,10 @@ def qualify(output, metadata=None):
     report_path.touch(mode=0o600)
     report = {"result": "incomplete", "started": time.time(), "uid": os.getuid(), "gid": os.getgid(),
               "platform": platform.uname()._asdict(), "os_release": Path("/etc/os-release").read_text(),
-              "actions": [], "stage": str(STAGE), "cleanup_failures": []}
+              "actions": [], "stage": None if distinct_maps else str(STAGE), "cleanup_failures": []}
     tracked = []
+    stage = STAGE
+    uid_base, gid_base = (231072, 296608) if distinct_maps else (100000, 100000)
 
     def save():
         report_path.write_text(json.dumps(report, indent=2) + "\n")
@@ -246,11 +279,7 @@ def qualify(output, metadata=None):
         assert selected["archive"]["digest"] == "sha256:" + ARCHIVE_SHA
         assert selected["compatibility"] == report["package"]["guest_compatibility"]
         baseline = Path(selected.get("installed_assets") or PREPARED / "share").resolve(strict=True)
-        preparation = json.loads((STAGE.parent / "preparation.json").read_text())
-        assert preparation["stage"] == str(STAGE) and preparation["archive_sha256"] == ARCHIVE_SHA
-        assert preparation["result"].startswith("prepared;")
-        report.update(selection=selected, preparation=preparation, imported_root=info(STAGE / "rootfs-tree"),
-                      baseline=str(baseline), executables={name: sha(PREPARED / name) for name in (
+        report.update(selection=selected, baseline=str(baseline), executables={name: sha(PREPARED / name) for name in (
                           "bin/safeyolo", "bin/safeyolo-proxy", "libexec/runsc", "host/namespace-entry")})
         run("host-filesystem", ["findmnt", "--json", "--target", output])
         # Retain all ordinary host tools except sudo in the candidate's PATH.
@@ -270,11 +299,23 @@ def qualify(output, metadata=None):
         assert report["sudo_on_path"] is None
         assert f"commit={PRODUCT} profile=production" in run("cli-version", [cli, "--version"]).stdout
         run("runsc-version", [PREPARED / "libexec/runsc", "--version"])
-        if metadata is None:
+        if distinct_maps:
+            run("distinct-published-import", [sys.executable, Path(__file__).with_name("import_guest.py"),
+                "prepare", "--archive", ARCHIVE, "--sha256", ARCHIVE_SHA, "--host-root", PREPARED,
+                "--output", output / "published", "--uid-base", uid_base, "--gid-base", gid_base])
+            preparation = json.loads((output / "published/preparation.json").read_text())
+            stage = Path(preparation["stage"])
+        else:
+            preparation = json.loads((stage.parent / "preparation.json").read_text())
+        report.update(stage=str(stage), preparation=preparation, imported_root=info(stage / "rootfs-tree"))
+        assert preparation["stage"] == str(stage) and preparation["archive_sha256"] == ARCHIVE_SHA
+        assert preparation["result"].startswith("prepared;")
+        assert (report["imported_root"]["uid"], report["imported_root"]["gid"]) == (uid_base, gid_base)
+        if metadata is None and not distinct_maps:
             with import_namespace(PREPARED, 100000, 100000) as (prefix, maps):
                 report["content_observer_maps"] = maps
                 observed = run("content-comparison", prefix + [sys.executable, Path(__file__).resolve(), "contents",
-                               str(ARCHIVE), ARCHIVE_SHA, str(STAGE), str(baseline)], check=False)
+                               str(ARCHIVE), ARCHIVE_SHA, str(stage), str(baseline)], check=False)
                 if observed.returncode:
                     raise RuntimeError("Content observer failed; retain its exact result before runtime")
         prepare_log = output / "prepare.log"
@@ -285,18 +326,52 @@ def qualify(output, metadata=None):
         configuration = tomlkit.parse((root / "config.toml").read_text())
         mapping = configuration["linux"]
         assert dict(mapping) == report["linux_settings"]
+        mapping["uid_base"], mapping["gid_base"] = uid_base, gid_base
         configuration["admin_port"] = 0
         (root / "config.toml").write_text(tomlkit.dumps(configuration))
         # Replace only the disposable instance's borrowed alias. Boot reads
         # installed_assets from the selection, so bind that field explicitly.
         (root / "share").unlink()
         (root / "share").mkdir()
-        (root / "share/rootfs-tree").symlink_to(STAGE / "rootfs-tree")
-        shutil.copyfile(STAGE / "cache-paths.txt", root / "share/cache-paths.txt")
-        selected.update(assets=str(STAGE), installed_assets=str(STAGE))
+        (root / "share/rootfs-tree").symlink_to(stage / "rootfs-tree")
+        shutil.copyfile(stage / "cache-paths.txt", root / "share/cache-paths.txt")
+        selected.update(assets=str(stage), installed_assets=str(stage))
         (root / "share/guest-selection.json").write_text(json.dumps(selected, indent=2) + "\n")
         workspace.mkdir()
         mounts = []
+        if distinct_maps:
+            # Reuse the specimen producer. Only its canonical case is imported;
+            # device and out-of-range cases already have retained observations.
+            if __package__:
+                from .make_fixture import create
+            else:
+                from make_fixture import create
+            specimen = create(output / "fixtures")["canonical"]
+            report["distinct_fixture"] = specimen
+            run("distinct-specimen-import", [sys.executable, Path(__file__).with_name("import_guest.py"),
+                "prepare", "--archive", specimen["path"], "--sha256", specimen["sha256"],
+                "--host-root", PREPARED, "--output", output / "specimen",
+                "--uid-base", uid_base, "--gid-base", gid_base])
+            prepared = json.loads((output / "specimen/preparation.json").read_text())
+            specimen_root = Path(prepared["stage"]) / "rootfs-tree"
+            report["distinct_host_files"] = {name: info(specimen_root / name) for name in (
+                ".", "private", "private/agent", "daemon", "boundary")}
+            expected = {".": (uid_base, gid_base), "private": (1000, 1000), "private/agent": (1000, 1000),
+                        "daemon": (uid_base + 33, gid_base + 33), "boundary": (uid_base + 65535, gid_base + 65535)}
+            for name, ids in expected.items():
+                observed = report["distinct_host_files"][name]
+                assert (observed["uid"], observed["gid"]) == ids
+            report["private_stage"] = {str(path): info(path) for path in (output / "published", stage)}
+            assert all((row["uid"], row["gid"], row["mode"]) == (1000, 1000, 0o700)
+                       for row in report["private_stage"].values())
+            with import_namespace(PREPARED, uid_base, gid_base) as (prefix, maps):
+                report["distinct_import_maps"] = maps
+                for identity in (100033, 165535):
+                    run(f"private-parent-denial/{identity}", prefix + ["setpriv", f"--reuid={identity}",
+                        f"--regid={identity}", "--clear-groups", "/bin/sh", "-ec",
+                        'test "$(id -u):$(id -g)" = "$2:$2"; id; if test -x "$1"; then exit 1; fi',
+                        "--", stage, identity])
+            mounts += ["--mount", str(specimen_root) + ":/distinct"]
         if metadata is not None:
             # Reuse the exact canonical stages from 18414. Do not reimport or
             # copy them: copying would itself change the metadata under test.
@@ -327,7 +402,7 @@ def qualify(output, metadata=None):
             tracked.append({"pid": runtime[kind + "_pid"], "start_token": runtime[kind + "_token"]})
         report["runtime"] = {key: runtime[key] for key in ("run_id", "holder_pid", "holder_token", "backend_pid", "backend_token")}
         spec = json.loads((root / "agents/bbtest/config.json").read_text())
-        assert Path(spec["root"]["path"]).resolve() == STAGE / "rootfs-tree"
+        assert Path(spec["root"]["path"]).resolve() == stage / "rootfs-tree"
         for kind in ("uid", "gid"):
             run(kind + "-map", ["cat", f"/proc/{runtime['holder_pid']}/{kind}_map"])
         if metadata is None:
@@ -338,9 +413,18 @@ def qualify(output, metadata=None):
                                     for path in directory.glob("rootless1553-*")}
             assert len(report["host_files"]) == 4
             for path, details in report["host_files"].items():
-                expected = (100000, 100000) if path.endswith("-0") else (1000, 1000)
+                expected = (uid_base, gid_base) if path.endswith("-0") else (1000, 1000)
                 assert (details["uid"], details["gid"]) == expected
-            report["result"] = "retained import started; guest identity/read-write-execute passed"
+            if distinct_maps:
+                run("distinct-guest-identities", guest_command_args(
+                    str(cli), "bbtest", distinct_guest_script(), guest_root=True))
+                report["distinct_host_writes"] = {str(path): info(path) for path in (workspace / "distinct").iterdir()}
+                assert len(report["distinct_host_writes"]) == 2
+                for path, details in report["distinct_host_writes"].items():
+                    identity = int(Path(path).name)
+                    assert (details["uid"], details["gid"]) == (uid_base + identity, gid_base + identity)
+            report["result"] = ("distinct import/runtime/identity/private-stage checks passed" if distinct_maps else
+                                "retained import started; guest identity/read-write-execute passed")
         else:
             run("guest-canonical-metadata", guest_command_args(
                 str(cli), "bbtest", "exec /bin/bash /workspace/metadata.sh", guest_root=True))
@@ -396,8 +480,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, help="absent disk-backed directory; retain original failures")
     parser.add_argument("--metadata", type=Path, help="retained native metadata-g5 directory; skips completed contents/I/O proof")
+    parser.add_argument("--distinct-maps", action="store_true", help="fresh import/runtime with delegated UID231072/GID296608")
     args = parser.parse_args()
-    qualify(args.output.absolute(), args.metadata.absolute() if args.metadata else None)
+    if args.distinct_maps and args.metadata:
+        parser.error("select the distinct witness or retained metadata comparison")
+    qualify(args.output.absolute(), args.metadata.absolute() if args.metadata else None, distinct_maps=args.distinct_maps)
     return 0
 
 

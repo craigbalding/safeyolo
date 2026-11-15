@@ -87,6 +87,21 @@ for identity in 1000 33 65535; do
         done'
 done
 
+# A selected baseline comparison pauses before the required usability check.
+# The host performs only the new failed/cancelled private preparations here.
+if [[ -f /safeyolo/wait-for-preservation ]]; then
+    touch /safeyolo-status/preservation.ready
+    for ((attempt=0; attempt<600; attempt++)); do
+        [[ ! -f /safeyolo-status/preservation.done ]] || break
+        sleep 0.1
+    done
+    if [[ ! -f /safeyolo-status/preservation.done ]]; then
+        echo 'host preservation operation did not complete'
+        echo 1 > /safeyolo-status/probe.done
+        exit 1
+    fi
+fi
+
 # Root and ordinary-user operations must actually work; collection success
 # alone cannot establish the required usable guest. These writes stay in the
 # disposable overlay and the new private instance's shares.

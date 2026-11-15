@@ -14,7 +14,10 @@ installer.
 
 The trusted starting source is `6ee7e8bb308fcd865fa0a244b455c7dcc86b9bb6`.
 The assignment is [comment 6888425057](https://github.com/craigbalding/safeyolo/issues/1553#issuecomment-6888425057).
-Keep all issue criteria unchecked until independent review accepts their proof.
+Lens independently accepted criteria 1, 2 and 5 at `ea1040df` in
+[comment 6892180913](https://github.com/craigbalding/safeyolo/issues/1553#issuecomment-6892180913).
+Criteria 3, 4, 6 and 7 remain open. Preserve those decisions and the M/High
+estimate; the cumulative 60-minute reassessment has already been reached.
 
 ## Reached result
 
@@ -490,7 +493,27 @@ before a retry. Existing 18414 stages, original 18413 results and the successful
 published import remain current inputs. This packet adds no privileged setup,
 delegation, host policy change, production integration or new acceptance gate.
 
-The packet has not run natively. Local validation is 44 focused controls:
+Native execution 18425 completed this packet using `351b4d95` and product
+`b6821094`. The eight original files are retained under
+`/evidence/operator/1553/g7-351b-runtime-18425/`, with the ordinary worker/reviewer
+mirror `/home/agent/acceptance/1553-operator-receipts/g7-351b-runtime-18425/`.
+The complete result is SHA-256
+`37f1974ef9c72674a30653b6550ca0a2bf71d1b03429b9ca7dda6e90b948881f`.
+Candidate and corresponding gVisor baseline agree on 16 metadata entries,
+11 content hashes and effective operations for IDs 1000, 33 and 65535.
+Both gVisor trees deny the ACL operations and set-ID execution and suppress
+capability effects. These differ from the native-kernel baseline, so they
+do not establish a candidate regression or new required backend support.
+Missing `getfacl` and `getfattr` remain unknown coverage.
+
+Active-tar cancellation removed the private stage, left no survivors among
+three recorded child births and preserved external content, owner, mode and
+inode. The existing Ubuntu guest then passed ordinary identity and
+home/workspace read/write/execute. All owned stops returned zero; cleanup
+failures were empty. Preserve the original source binding and reuse this
+proof without running the ordinary-map packet again.
+
+Local validation for that packet was 44 focused controls:
 20 import, 16 runtime-observer and 8 metadata-observer cases. The two new
 runtime controls check early completion and failure reporting; they do not
 establish the protected cancellation result. Local CodeQL remains unsupported
@@ -524,7 +547,7 @@ four owned VirtioFS shares and a new 256 MiB sparse overlay. It copied only the
 installed guest assets. The normal installed two-phase init ran unchanged;
 a wrapper around its static phase started the Linux observation script.
 The candidate host PATH contained only the wrapper's Python interpreter.
-The helper was mode 0755, and no host sudo command ran. This is an account,
+The helper was mode 0700, and no host sudo command ran. This is an account,
 command and byte-bound observation, not a syscall trace or global sudo revocation.
 
 The VM reported Kali 2026.1, Linux 6.12.17/aarch64. Root and UID/GID 1000 passed
@@ -714,3 +737,72 @@ backend comparison. The original records and manifest are retained under
 `/home/agent/1553-metadata-pytest` contains disposable observer controls. Keep
 the original M / High estimate and reached cumulative 60-minute reassessment;
 select only a decision-changing remaining operation before further execution.
+
+### Remaining distinct-map witness
+
+Sylab executes this operation as ordinary UID/GID 1000 on the retained native
+Ubuntu host. The published archive, compatible `b6821094` installation and
+existing namespace entry are the operands already described above. Native
+prerequisite execution 18426 added UID base 231072 and GID base 296608, each
+with 65536 IDs. Original delegations and the prepared installation's config
+were preserved. The exact 1806-byte prerequisite receipt has SHA-256
+`44d56fdecd5b1a2ce43f57488c50aaf0fb0e917d6e435cddbaa6ec1f2f00f7ca`.
+
+From the staged source root, use an absent disk-backed output and run once:
+
+```sh
+/usr/bin/python3 experiments/rootless_guest/ubuntu_runtime_probe.py \
+  /home/agent/r1553g9 --distinct-maps
+```
+
+The probe imports one published tree and the existing small canonical
+specimen with those distinct bases. It changes only its disposable instance's
+mapping. The original `b6821094` config, existing imports and baseline remain
+unchanged. It checks host owners for root, 1000, 33 and 65535; private staging
+stays operator-owned 0700. Mapped identities 33 and 65535 must be unable to
+traverse that private host parent. Explicit runtime mounting must still allow
+guest root/1000 read/write/execute and other/boundary identity execution and
+writes, with the expected distinct host owners. Host UID/GID zero remains
+outside both import and runtime mappings. The existing finally block stops
+only its owned agent, proxy and Coord and retains failures and exact births.
+
+The temporary allowance is 576 MiB above the 5 GiB floor: 512 MiB for the
+429,073,907-byte published payload, filesystem overhead and tiny specimen,
+plus 64 MiB for the runtime whose preceding observed growth was 24,436,736
+bytes. Check current backing capacity before effects; do not reuse the older
+640 MiB cancellation forecast or discard active inputs. Return original
+`result.json`, `prepare.log`, and both import `preparation.json` files through
+the existing readable handoff. Keep credentials and the private instance remote.
+A failure is retained for interpretation, not automatically retried.
+
+### Remaining Mac baseline and preservation witness
+
+Run as Bristol UID 502 from the staged source root after checking current VM
+consumers. Use the unchanged `c6dd3b8b` helper and original baseline Kali images,
+an absent output, the existing wrapper and a fresh sparse overlay:
+
+```sh
+/opt/homebrew/bin/python3 experiments/rootless_guest/macos_runtime_probe.py \
+  /Users/sy-agent/f1553-20261115/runtime-g9 --baseline-preservation
+```
+
+This selects the existing baseline image paths for an actual Linux metadata
+comparison with the retained candidate `6ebd2f96` result. The guest pauses
+before its required root/user-1000 usability check. During that pause, the host
+runs two tiny synthetic image-bundle preparations: a selected external symlink
+fails regular-file validation; the other requests cancellation after extraction
+children finish. Both must remove their private stage and preserve the external
+target's bytes, owner, mode and inode. These are after-extraction cleanup cases,
+not proof of cancellation during live tar. The same VM must then pass its
+identity/read/write/execute checks. No published image is extracted or copied,
+and no package, helper, host policy or privilege changes are made. Missing
+Linux tools and unsupported capability effects remain recorded limitations.
+
+The existing 384 MiB allowance covers the 256 MiB sparse overlay and small
+assets above the 20 GiB operator-home reserve. Retain `result.json`,
+`preservation.json`, guest/helper/serial output and exact owned teardown.
+The prior candidate metadata prefix is unchanged apart from the optional wait;
+its original source, result and accepted usability proof remain authoritative
+at their actual revision. Reassess at the next native result or exact missing
+operand and consolidate the final go/no-go, rather than adding another proof
+framework or repeating accepted observations.
