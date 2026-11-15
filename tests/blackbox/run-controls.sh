@@ -14,6 +14,11 @@ case $phase in
   hyperlight-services)
     exec uv run --frozen python tests/blackbox/host/hyperlight_services.py "$@" ;;
   rootless-preparation)
+    if [[ ${1:-} == --execute ]]; then
+      shift
+      exec uv run --frozen python tests/blackbox/execution_receipt.py \
+        --phase rootless-preparation --lane process --run-id "$SAFEYOLO_BLACKBOX_RUN_ID" "$@"
+    fi
     exec uv run --frozen python tests/blackbox/rootless_preparation.py "$@" ;;
   named-checks|managed-feeds|before-after|mediated-services) selection=(--native-phase "$phase") ;;
   policy-recipe|sudo-disclosure) selection=(--phase "$phase"); set -- -- "$@" ;;

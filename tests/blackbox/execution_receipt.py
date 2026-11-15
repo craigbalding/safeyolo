@@ -245,7 +245,7 @@ class PytestReceipt:
         self.document["enabled_optional"] = [node for node, variable, value, _reason in OPTIONAL_CASES
                                              if (os.environ.get(variable) == value if value else bool(os.environ.get(variable)))]
         self.document["guest"] = json.loads(os.environ.get("SAFEYOLO_BLACKBOX_GUEST_IDENTITY", "null"))
-        if phase in {"policy-recipe", "sudo-disclosure"}:
+        if phase in {"policy-recipe", "sudo-disclosure", "rootless-preparation"}:
             self.document.update(focused_inputs(root, phase))
         save(self.path, self.document)
 
@@ -283,13 +283,20 @@ def focused_inputs(root: Path, phase: str) -> dict:
               "controller_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
               "working_tree_changed": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=root)),
               "product_binaries": {}}
-    if phase == "sudo-disclosure":
+    if phase in {"sudo-disclosure", "rootless-preparation"}:
         binaries = [Path(os.environ.get("SAFEYOLO_NATIVE_CLI", root / "proxy/target/release/safeyolo"))]
     else:
         from tests.proxy_contracts.test_native_policy_cli import native_inputs
 
         host, _guest, _profile = native_inputs()
         binaries = [host / name for name in ("safeyolo", "safeyolo-proxy", "safeyolo-coord")]
+    if phase == "rootless-preparation":
+        result.update(boundary="installed-cli/native-kernel", control_complete=False,
+                      prerequisites={name: os.environ.get(name) for name in (
+                          "SAFEYOLO_ROOTLESS_PREPARED_CONFIG", "SAFEYOLO_ROOTLESS_BASELINE",
+                          "SAFEYOLO_ROOTLESS_SPECIMENS")},
+                      remaining=["Booted guest/platform proof is separate from these process and native-kernel cases.",
+                                 "This manually selected phase establishes no deployed recurring cadence."])
     for binary in binaries:
         if binary.is_file():
             with binary.open("rb") as stream:
@@ -432,6 +439,8 @@ def main() -> int:
         return 2
 
     os.chdir(root)
+    if args.phase == "rootless-preparation":
+        os.environ["SAFEYOLO_BLACKBOX_ROOTLESS"] = "1"
     plugin = PytestReceipt(args.output.resolve(), args.phase, args.lane, args.run_id, root)
     # Keep the report reader usable in the stdlib-only installation bootstrap.
     PytestReceipt.pytest_collection_modifyitems = pytest.hookimpl(hookwrapper=True, tryfirst=True)(

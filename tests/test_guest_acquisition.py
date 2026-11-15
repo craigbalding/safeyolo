@@ -114,20 +114,51 @@ def native_cli():
         pytest.skip("build the candidate native CLI or set SAFEYOLO_NATIVE_CLI")
     if os.uname().sysname != "Linux":
         pytest.skip("Linux extraction controls; Mac installed proof belongs to #239")
-    assert subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode == 0, "owned Linux extraction fixture requires guest sudo"
+    if os.environ.get("SAFEYOLO_BLACKBOX_ROOTLESS") == "1":
+        prepared, _config = rootless_settings()
+        assert binary.samefile(prepared / "bin/safeyolo"), "select the prepared package's native CLI"
+    else:
+        assert subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode == 0, "owned Linux extraction fixture requires guest sudo"
     return binary.resolve()
 
 
+def rootless_settings():
+    """Reuse an operator-prepared entry and its actual account/ranges."""
+    prepared = Path(os.environ["SAFEYOLO_ROOTLESS_PREPARED_CONFIG"]).resolve()
+    config = tomllib.loads((prepared / "config.toml").read_text())["linux"]
+    assert os.getuid() != 0 and (config["host_uid"], config["host_gid"]) == (os.getuid(), os.getgid())
+    return prepared, config
+
+
+def read_guest_file(path, environment):
+    """Read a remapped fixture through its delegated namespace as an observer."""
+    if os.environ.get("SAFEYOLO_BLACKBOX_ROOTLESS") != "1":
+        return subprocess.check_output(["sudo", "-n", "cat", "--", str(path)])
+    from experiments.rootless_guest.import_guest import import_namespace
+
+    prepared, config = rootless_settings()
+    with import_namespace(prepared, config["uid_base"], config["gid_base"]) as (prefix, _maps):
+        return subprocess.check_output([*prefix, "cat", "--", str(path)], env=environment)
+
+
 @pytest.fixture
-def guest_store():
+def guest_store(tmp_path, registry):
     # Tiny synthetic blobs/trees need numeric ownership. The nested disk-backed
     # bind mount cannot supply that metadata; the guest filesystem can.
-    with tempfile.TemporaryDirectory(prefix="guest-acquisition-") as directory:
+    rootless = os.environ.get("SAFEYOLO_BLACKBOX_ROOTLESS") == "1"
+    with tempfile.TemporaryDirectory(prefix="guest-acquisition-", dir=tmp_path if rootless else None) as directory:
         store = Path(directory) / ".local/share/safeyolo/guests"
         try:
             yield store
         finally:
-            subprocess.run(["sudo", "-n", "rm", "-rf", "--", str(Path(directory) / ".local")], check=True)
+            if rootless:
+                from experiments.rootless_guest.import_guest import import_namespace
+
+                prepared, config = rootless_settings()
+                with import_namespace(prepared, config["uid_base"], config["gid_base"]) as (prefix, _maps):
+                    subprocess.run([*prefix, "rm", "-rf", "--", str(Path(directory) / ".local")], check=True)
+            else:
+                subprocess.run(["sudo", "-n", "rm", "-rf", "--", str(Path(directory) / ".local")], check=True)
 
 
 @pytest.fixture
@@ -234,25 +265,31 @@ def registry(tmp_path, native_cli):
     # Legitimate namespace authorization is fixture preparation, separate from
     # the consumer PATH below. Direct acquire/download controls share this
     # owned entry; the real installer controls still prepare their final root.
-    namespace_root = tmp_path / "authorized-host"
+    rootless = os.environ.get("SAFEYOLO_BLACKBOX_ROOTLESS") == "1"
+    namespace_root = rootless_settings()[0] if rootless else tmp_path / "authorized-host"
     entry = namespace_root / "host/namespace-entry"
-    entry.parent.mkdir(parents=True)
-    entry.write_text('#!/bin/sh\nexec "$@"\n')
-    entry.chmod(0o755)
+    if not rootless:
+        entry.parent.mkdir(parents=True)
+        entry.write_text('#!/bin/sh\nexec "$@"\n')
+        entry.chmod(0o755)
     restriction = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
     profile = None
-    if restriction.exists() and restriction.read_text().strip() == "1":
+    if not rootless and restriction.exists() and restriction.read_text().strip() == "1":
         profile = entry.with_suffix(".apparmor")
         profile.write_text(f'profile safeyolo-test-{hashlib.sha256(str(entry).encode()).hexdigest()[:16]} "{entry}" flags=(unconfined) {{\n  userns,\n}}\n')
         subprocess.run(["sudo", "-n", "apparmor_parser", "-r", str(profile)], check=True)
     consumer_tools = tmp_path / "consumer-tools"
     consumer_tools.mkdir()
     refused_sudo = consumer_tools / "sudo"
-    refused_sudo.write_text('#!/bin/sh\necho "unexpected guest preparation sudo" >&2\nexit 93\n')
+    sudo_attempts = tmp_path / "unexpected-consumer-sudo"
+    refused_sudo.write_text('#!/bin/sh\nprintf "unexpected guest preparation sudo\\n" >> "$SAFEYOLO_TEST_SUDO_ATTEMPTS"\nexit 93\n')
     refused_sudo.chmod(0o755)
     environment.update(PATH=f"{consumer_tools}:{os.environ['PATH']}",
                        SAFEYOLO_TEST_NAMESPACE_ROOT=str(namespace_root),
+                       SAFEYOLO_TEST_SUDO_ATTEMPTS=str(sudo_attempts),
                        SAFEYOLO_TEST_HOST_PATH=os.environ["PATH"])
+    if rootless:
+        environment["SAFEYOLO_TEST_HOST_SETTINGS"] = str(namespace_root / "config.toml")
     try:
         yield contents, requests, faults, environment
     finally:
@@ -265,9 +302,12 @@ def registry(tmp_path, native_cli):
         for thread in threads:
             thread.join(timeout=5)
             assert not thread.is_alive()
+        assert not sudo_attempts.exists(), "candidate attempted unavailable sudo"
 
 
 def install(binary, root, store, environment, package_info, *arguments):
+    if environment.get("SAFEYOLO_TEST_HOST_SETTINGS"):
+        arguments = (*arguments, "--host-settings", environment["SAFEYOLO_TEST_HOST_SETTINGS"])
     result = subprocess.run([str(binary), "--root", str(root), "guest", "acquire",
                            "--package-info", str(package_info), "--store", str(store),
                            "--write-selection", str(root / "prepared-selection.json"),
@@ -617,8 +657,7 @@ def test_native_selection_pins_one_index_and_keeps_existing_installation(native_
     assert newer["version"] == "guest-2026-10-12.2"
     assert newer["archive"]["digest"] != selection["archive"]["digest"]
     assert package_info.read_bytes() == host_metadata
-    read = subprocess.run(["sudo", "-n", "cat", str(tree / "command")], capture_output=True, check=True)
-    assert read.stdout == b"guest bytes"
+    assert read_guest_file(tree / "command", environment) == b"guest bytes"
     before = len(requests)
     inode = (fresh / "share/rootfs-tree").resolve().stat().st_ino
     result = install(native_cli, tmp_path / "third", store, environment, package_info)
@@ -1060,7 +1099,7 @@ def test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes
     assert extraction.exists()
     expected_stdin = "pipe\n" if fault == "extract-interrupt" else "file\n"
     assert extraction.read_text() == expected_stdin
-    assert subprocess.check_output(["sudo", "-n", "cat", "--", str(tree / "rootfs-tree/command")]) == payload
+    assert read_guest_file(tree / "rootfs-tree/command", environment) == payload
     owned_root_ids(tree / "rootfs-tree")
     inode = tree.stat().st_ino
     before = len(requests)
@@ -1155,6 +1194,18 @@ def test_generated_archive_paths_cannot_escape_staging(native_cli, registry, pac
     assert canary.read_bytes() == b"preserved host bytes"
     assert not (root / "share").exists()
     assert not list((store / "trees/sha256").iterdir())
+
+
+def test_rootless_production_metadata_and_distinct_mappings(tmp_path):
+    """Run the retained production-import witness, including native access effects."""
+    if os.environ.get("SAFEYOLO_BLACKBOX_ROOTLESS") != "1":
+        pytest.skip("select rootless-preparation --execute on a prepared host")
+    from tests.blackbox.rootless_metadata import qualify
+
+    prepared, _config = rootless_settings()
+    qualify(tmp_path / "metadata", prepared, REPO,
+            Path(os.environ["SAFEYOLO_ROOTLESS_BASELINE"]),
+            Path(os.environ["SAFEYOLO_ROOTLESS_SPECIMENS"]))
 
 
 def test_native_client_reports_bad_proxy_and_ca_without_panicking(native_cli, package_info, tmp_path):

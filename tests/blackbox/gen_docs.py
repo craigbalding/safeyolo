@@ -176,6 +176,34 @@ def _render(suites: list[tuple[str, list[tuple[Path, list[TestClass]]]]]) -> str
                "no recurring real-engine deployment is inferred. "
                "Accepted product evidence and its platform limits remain linked in the catalogue; a complete phase does not establish whole-control acceptance.")
     out.append("")
+    out.append("On an authorized prepared Linux AMD64 host, `rootless-preparation --execute` runs the maintained "
+               "install/update/cache, failure/cancellation and existing-install controls plus the production metadata witness. "
+               "Run as UID/GID 1000. Preparation must already provide the namespace entry, delegated UID/GID ranges "
+               "100000/100000 and 231072/296608, newuidmap/newgidmap, nsenter, GNU tar and zstd. "
+               "The fixture reuses preparation and makes sudo unavailable through the candidate's PATH. "
+               "The sudo recorder is not process tracing. "
+               "The selected installed CLI must match the prepared package; the checkout's four import/mapping source files "
+               "must match that package's source commit. The retained #1553 baseline and canonical, device, V2-capability "
+               "and raw-ACL42 specimens are verified against their accepted digests. These are fixture prerequisites, "
+               "not additional product restrictions. Obtain those inputs from the existing product acceptance records. "
+               "From this checkout, set the following paths to those local inputs and new disk-backed output/scratch locations:")
+    out.append("")
+    out.append('```sh\nexport SAFEYOLO_ROOTLESS_PREPARED_CONFIG=/path/to/prepared-instance\n'
+               'export SAFEYOLO_NATIVE_CLI="$SAFEYOLO_ROOTLESS_PREPARED_CONFIG/bin/safeyolo"\n'
+               'export SAFEYOLO_ROOTLESS_BASELINE=/path/to/metadata-18414/result.json\n'
+               'export SAFEYOLO_ROOTLESS_SPECIMENS=/path/to/retained/specimens\n'
+               './tests/blackbox/run-controls.sh rootless-preparation --execute \\\n'
+               '  --output /path/to/new/rootless.json -- -q --basetemp=/path/to/new/scratch\n```')
+    out.append("")
+    out.append("The existing pytest receipt records the installed binary hash, controller revision, selected inputs, "
+               "parameter cases and setup/call/teardown results. Metadata command output and comparison operands are retained "
+               "in scratch before assertions; owned remapped trees are removed through the delegated namespace. "
+               "A missing prerequisite, skipped/unselected obligation, observer failure or cleanup failure cannot complete the phase. "
+               "Exit 0 and `complete=true` cover only the executed native process/kernel boundary; `control_complete=false` "
+               "preserves separate booted guest/platform acceptance. Native capability, ACL and set-ID parity does not establish "
+               "new gVisor enforcement. The selector is manual and establishes no deployed recurring cadence. "
+               "Reuse existing installed and platform proof; do not repeat a completed product journey for bookkeeping.")
+    out.append("")
     out.append("For BB-33, #1553 feasibility and all seven #1554 product criteria have independent acceptance at "
                "[607d8488](https://github.com/craigbalding/safeyolo/issues/1554#issuecomment-6899892091). "
                "Maintained blackbox integration and control acceptance remain with #1563. "
