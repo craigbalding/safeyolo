@@ -2,9 +2,10 @@
 
 This is the bounded feasibility work for [#1553](https://github.com/craigbalding/safeyolo/issues/1553).
 The complete go/no-go result remains **unproved**. Native macOS extraction of
-one published Kali image bundle passed. Native Ubuntu import also passed with
-the ordinary mapping. Both backend journeys remain to run. This candidate
-changes no production installer.
+one published Kali image bundle passed. Native Ubuntu import and systrap startup
+passed with the ordinary mapping, including guest identity and read/write/execute.
+The macOS backend journey remains unproved. This candidate changes no production
+installer.
 #1554 owns production integration; #1563 owns maintained blackbox coverage.
 
 The trusted starting source is `6ee7e8bb308fcd865fa0a244b455c7dcc86b9bb6`.
@@ -158,7 +159,7 @@ and zstd exit 0. Cancellation occurred after extraction children completed.
 Asynchronous published-archive cancellation and preservation of an existing
 usable guest remain unproved.
 
-### Next protected operation: retained-tree runtime
+### Native Ubuntu retained-tree runtime
 
 The successful import remains at
 `/home/agent/1553-native-import-b/published/extract-5ls7iw5p` on
@@ -168,79 +169,102 @@ The independently retained #1562 receipt
 `/evidence/operator/1562/mounts-18389.json` identifies a compatible production
 runtime at `/home/agent/1562-b682-installed`, source
 `b6821094322e4ab261f4c149029839037fe43631`, using the same published archive.
-Its supplied native Python environment is
-`/home/agent/1562-a1fff-controller/.venv/bin/python`.
-These are dated operands; the next script verifies the selected package,
-executable source, archive selection, preparation and mapping before startup.
+The reached execution used `/usr/bin/python3` 3.12.3 with the required helper
+imports. The earlier supplied controller virtual environment was absent on this
+execution host. No product build or new host prerequisite was needed.
 
-Sylab stages this candidate's `experiments/rootless_guest` and `tests/blackbox`
-source directories together, preserving their repository-relative paths.
-Use the existing Python environment, which supplies `tomlkit`, from that
-staged source root. `ubuntu_runtime_probe.py` reuses the maintained instance,
-guest-command, token-redaction and process-birth helpers. The output path below
-must be absent. The short path limits native Unix socket path growth. The script
-requires the existing 5 GiB floor plus 128 MiB of headroom before new state.
+Original nonsecret records are retained at
+`/evidence/operator/1553/runtime-18413`: `result.json`,
+`setup-failure-18410.json`, `operator-continuation.py`, `prepare.log` and
+`operator-result.json`. Forge consumed all five files and confirmed the original
+action prefix and restored helper identity. Lens's supplied mirror is
+`/home/agent/acceptance/1553-operator-receipts/runtime-18413`.
+The 23,340-byte `result.json` has SHA-256
+`1b38f5722734b744fdfa06ef3714e34b9d4ac7a52deb93ef90e63d11e8690546`.
+Canonical operator direction backlog:16106 binds these files to source
+`9b25f7062ce1333ba47d1ebc60a84033410960ac` and the retained import.
+
+This was a resumed execution, not one uninterrupted successful command.
+Operator setup 18407 failed before guest execution because its wrapper was too
+large. Setup 18408 found the missing controller environment; 18409 verified the
+actual Python and imports. Execution 18410 passed content comparison, agent
+creation and proxy startup, then stopped before guest startup because the reduced
+source transfer omitted `tests/blackbox/harness/process_identity.py`.
+The preserved setup record contains exactly the first six actions of the final
+result. The operator restored that helper's exact `9b25f706` bytes. Operator
+compilation and source-hash checks 18411/18412 failed before guest execution.
+Execution 18413 resumed only the original driver's remaining actions, using its
+unchanged guest commands and original `finally` block. The retained continuation
+source makes that boundary reviewable. Import, content comparison and proxy
+bootstrap were not replayed.
+
+The read-only content observer checked all 5,892 regular rootfs payloads
+(429,073,907 bytes) against the verified archive and existing prepared baseline.
+It reported zero mismatches in 9.437 seconds. The baseline is the retained
+`1436-operator/guest-store/trees/sha256/` tree for this archive and mapping.
+The observer neither extracted the archive nor repeated its header inventory.
+Four local controls cover valid bytes, equal-size mutations in either tree and
+a compressed frame-checksum failure, including the direct command-line entry.
+No allocation, ACL or capability comparison is inferred from matching contents.
+
+The disposable `/home/agent/r1553a/instance` explicitly selected the retained
+stage through `installed_assets`. Its actual systrap run was
+`44805481760047fda27eeb52ad36eab5`, with holder PID 64446 and backend PID 64479.
+The result retains both process birth tokens and verifies them against the
+running processes. The UID and GID maps were each `0 -> 100000` for 1,000 IDs,
+`1000 -> 1000` for one ID, and `1001 -> 101001` for 64,535 IDs.
+Host UID/GID 0 remained outside those maps.
+
+Guest user 1000 and guest root each passed numeric identity and read/write/execute
+in `/home/agent` and `/workspace`. The four host marker files had mode 0700;
+ordinary-user markers mapped to 1000:1000 and root markers to 100000:100000.
+Guest root used the maintained guest sudo wrapper. Host sudo was absent from
+the candidate PATH. This is a PATH witness, not a syscall trace or system-wide
+sudo revocation. Guest output identified Debian 13.7 and gVisor Linux 4.19.0.
+Both guest commands reported `/usr/bin/id` as a regular empty file while the
+identity checks passed. Preserve that observation; no regression or complete
+runtime metadata comparison is established by it.
+
+Agent, proxy and Coord stop commands each returned 0. The original result has
+no cleanup failures. The operator's post-shutdown observation found no tracked
+process survivors, matching Unix listener rows or retained failure paths.
+The private whole instance remains on the native host; no credential bytes were
+copied into these records. The packet downloaded and built nothing, and changed
+no host policy, delegation, package or other instance.
+
+This successful run did not trigger or repair Lens finding F1 in
+`work-6460c275ae88410a88b9afed14fc435b@3`. The original observer falsely treated
+every retained proxy socket or stopped NATS process record as cleanup failure.
+The corrected `ubuntu_runtime_probe.py` reports those files as diagnostics.
+It retains the maintained process-birth survivor checks and the existing
+container/user-namespace PID and readiness-state checks. It also reads actual
+Unix listeners under the owned instance. Real survivors, listeners, retained
+active state, stop failures and inspection failures still fail cleanup.
+No diagnostic record is removed to manufacture success.
+
+Fourteen focused observer controls pass, including real closed/listening sockets,
+an unrelated listener, real live/stopped child processes, retained active state
+and an unreadable listener table. The content controls remain included.
+Run these controls from the task checkout using the locked development Python
+environment and a disposable disk-backed pytest directory:
 
 ```sh
-/home/agent/1562-a1fff-controller/.venv/bin/python \
-  experiments/rootless_guest/ubuntu_runtime_probe.py /home/agent/r1553a
+uv run --frozen pytest -q experiments/rootless_guest/test_ubuntu_runtime_probe.py --basetemp /disk/backed/1553-runtime-pytest
 ```
 
-The script creates a disposable instance with fresh private credentials and an
-automatically assigned Admin port. Its own guest selection explicitly binds
-`installed_assets` to the retained stage; changing a share symlink alone would
-not select that stage. Its command PATH retains ordinary tools and excludes
-sudo. This is a PATH witness, not a syscall trace or system-wide sudo revocation.
-The existing namespace entry and mapping remain unchanged.
+Expected result: 14 passed. No guest or namespace starts. The native result is
+reused after this observer correction; no product replay is needed.
 
-Before boot, a read-only observer compares all 5,892 regular rootfs payloads
-(429,073,907 bytes) with the verified archive and the existing prepared baseline.
-It does not extract the archive or repeat the header inventory. Four local
-controls pass, including equal-size mutations in either tree and a compressed
-frame-checksum failure. The command-line entry point was exercised directly.
-These controls establish observer behavior; the native content comparison
-remains pending. No allocation, ACL or capability comparison is inferred.
+The following steps describe remaining full-issue proof. Completed inventory,
+import and ordinary-map startup observations carry forward. These steps do not
+select their replay or another platform attempt.
 
-The runtime attempt uses the existing systrap backend and records its actual
-rootfs selection, live process births and UID/GID maps. Guest commands check
-numeric root and ordinary-user identity, create/read/execute files in the owned
-workspace and home, and report selected runtime metadata. Guest root uses the
-maintained guest sudo wrapper; host sudo remains absent from the candidate PATH.
-The script stops only its own guest, proxy and Coord in `finally`, including
-after startup failure, and reports remaining processes and runtime paths.
-It changes no retained tree, host policy, delegation, package or other instance.
-It downloads and builds nothing. It records the original failure without retry.
-
-Return `/home/agent/r1553a/result.json`, `prepare.log`, the original command
-exit/stdout/stderr and any failure-relevant owned runtime logs through the
-existing readable operator handoff. Keep runtime state and credentials private;
-do not copy tokens or whole instance directories into a proof handoff.
-The result must distinguish content-observer failure, startup failure, working
-guest operations and owned shutdown. The protected operation is pending.
-
-The following steps describe the remaining full-issue proof, after interpreting
-this runtime result. They do not select another import or platform expansion.
-
-1. Run `python3 experiments/rootless_guest/inspect_host.py --root PREPARED_ROOT`.
-   Record the current package, selected guest, delegated ranges, namespace entry,
-   tools, filesystem and capacity. The root is a separately owned prepared
-   installation; do not mutate another active instance.
-2. Use the maintained acquisition consumer to pin and verify a compatible
-   published archive. Run `import_guest.py inventory --archive ARCHIVE --sha256
-   DIGEST` and save its complete output. Inspect **all** selected rootfs header
-   owners, top-level cache-file owners, xattrs, capabilities, ACLs and special
-   files before interpreting a prototype failure.
-3. On Ubuntu, prepare the issue's permitted host prerequisites separately.
-   Reuse the existing namespace-entry/AppArmor mechanism. Record its effective
-   entry and delegated UID/GID ranges; do not weaken global policy. A second
-   mapping needs genuinely delegated, different nondefault UID/GID bases.
-4. With sudo unavailable to the candidate, run `import_guest.py prepare
-   --platform linux --archive ARCHIVE --sha256 DIGEST --host-root PREPARED_ROOT
-   --uid-base UID_BASE --gid-base GID_BASE --output NEW_ATTEMPT` for each mapping.
-   The prototype records namespace maps and the retained stage. Compare with
-   the separately recorded existing privileged extraction/remapping baseline.
-   Baseline or prerequisite privilege is not a rootless pass.
-5. Create the supplementary specimens with `make_fixture.py --output
+1. Reuse the reached Ubuntu inventory, import, contents and ordinary-map runtime.
+   Before a further native operation, inspect its actual retained inputs,
+   effective delegation, active consumers and capacity. A distinct mapping
+   needs genuinely delegated, different nondefault UID/GID bases. Record
+   legitimate prerequisite preparation separately; do not weaken global policy.
+2. Create the supplementary specimens with `make_fixture.py --output
    NEW_FIXTURE_DIRECTORY`. Its JSON output supplies each path and digest.
    Generate them on Ubuntu: the capability and set-ID specimens copy that host's
    `/bin/cat`, which must match the intended guest architecture.
@@ -248,10 +272,10 @@ this runtime result. They do not select another import or platform expansion.
    matrix below with the existing path. Observe numeric host metadata, namespace
    metadata, contents and effective access. A failed unsupported specimen must
    remain a failed observation; do not strip it from a successful archive.
-6. Exercise failed extraction and `--cancel-after-extract` in fresh attempts.
-   Verify stage absence and the unchanged external target and existing usable
-   guest. An incomplete/failed attempt must be inspected before any retry.
-7. Follow every successful **published** preparation into the existing backend.
+3. Resolve asynchronous cancellation and existing usable-guest preservation.
+   Carry forward the completed small missing-cache/after-extraction cancellation
+   controls. Inspect an incomplete or failed attempt before selecting any retry.
+4. Follow each remaining successful **published** preparation into the backend.
    Reuse `tests/blackbox/installed_sections.py::prepare_native_instance`, the
    existing installed-host/lifecycle fixtures and `guest_exec.py` commands.
    Bind the newly prepared assets explicitly and capture current guest identity,
@@ -276,7 +300,7 @@ and the selected runtime/configuration must determine actual listener needs.
 
 | Case | Specimen / reached observation | Native comparison still required |
 | --- | --- | --- |
-| Ordinary/private files, directories, executable and set-ID modes | `canonical`; exhaustive mapping controls. Mac outer files preserved modes and mapped 1000:1000 to 502:20. | Ubuntu host/runtime root, user 1000, another identity, boundary 65535; private staging and effective access. |
+| Ordinary/private files, directories, executable and set-ID modes | `canonical`; exhaustive mapping controls. Mac outer files preserved modes and mapped 1000:1000 to 502:20. Ubuntu ordinary-map root/user 1000 identity and home/workspace executable markers passed. | Another identity, boundary 65535, distinct maps, private staging/effective access and full published metadata comparison. |
 | Symbolic links and hardlinks | `canonical`, `escaping-link`; local external target and existing directory survived. Native published link targets/hardlink inode matched. | Supplementary confinement and existing **usable** guest preservation. |
 | Sparse files | `canonical` GNU 1.0 map/content control; real Mac image remained sparse. | Ubuntu allocation relative to baseline and image/VM contents. |
 | First in, first out (FIFO), character and block nodes | FIFO in `canonical`; `devices` contains character 1:3 and block 7:0. No such host-side node is in the published Linux archive. | Supplementary kernel privilege outcome and runtime requirement; do not assume mknod works in a user namespace. |
@@ -321,20 +345,29 @@ access before any future decision or retry. Network allow alone grants no
 credential or route permission. Do not change package metadata or classify the
 retained Kali archive as the default to compensate.
 
-The selected continuation uses the successful import for the smallest remaining
-runtime uncertainty. The original M / High estimate and reached cumulative
-60-minute reassessment remain unchanged. Interpret the protected runtime result
-before further platform expansion. The distinct mapping, full metadata/baseline
-matrix, complete rootless journeys, existing usable-guest preservation and final
-independent go/no-go remain unproved. All seven criteria remain unchecked.
+The retained-tree result resolves ordinary Ubuntu content/startup/identity/I/O
+uncertainty at its stated scope. At the reached reassessment, the next useful
+Ubuntu uncertainty is supplementary metadata and effective access against the
+existing baseline, including V2/V3 capability root identity. Matching regular
+payloads does not answer that question. Distinct maps also require actually
+delegated different UID/GID bases; the current account's equal bases do not
+supply them. This correction requests no protected replay or platform expansion.
+The original M / High estimate and reached cumulative 60-minute reassessment
+remain unchanged. Distinct mapping, the full metadata/baseline matrix, complete
+rootless journeys, existing usable-guest preservation and final independent
+go/no-go remain unproved. All seven criteria remain unchecked.
 Lens's complete checks `work-02b994e476b24b1ab60d8a287a60b041@3` and
 `work-ae9f361020754ce1ade43d65075f9f11@3` and `@5` retain prior controls and limits.
+The complete output-3 rejection `work-6460c275ae88410a88b9afed14fc435b@3`
+supplies F1 and carries those reviews forward. Its earlier pending-runtime
+observation is superseded by the original 18413 receipts, not by a replay.
 
-At `70f3d40a`, normal CI workflow 43677649512 and CodeQL Analyze workflow
-43677649482 succeeded. The separate CodeQL alert check 132701425255 still failed,
-with alert 567 open. The executing tuple assignment supports a false-positive
-interpretation, not a waived or passing check. Proxy assurance workflow
-43677649477 also remains failed and unwaived. Relay owns CI and integration.
+At `9b25f706`, CI workflow 43681382572 and CodeQL Analyze workflow
+43681382549 succeeded. The separate CodeQL alert check 132712786219 failed,
+with alert 567 still present. The executing tuple assignment supports a
+false-positive interpretation, not a waived or passing check. Proxy assurance
+workflow 43681382598 also failed and remains unwaived. Local CodeQL is unsupported
+on this Linux aarch64 worker. Relay owns CI and integration.
 This candidate establishes no merge approval or issue acceptance.
 
 ## Output retention
@@ -347,9 +380,9 @@ reproducible disposable outputs. The source and this compact external-platform
 result remain review inputs. No additional queue, proof service or guest image
 is introduced.
 The native `/home/agent/1553-native-import-b` group contains one reproducible
-imported tree, two tiny specimens and compact results. The tree is the actual
-input for the pending guest-startup step. Proposed `/home/agent/r1553a` contains
-small disposable instance state, copied NATS bytes, workspace markers and compact
-results; no second guest image is created. Local `/home/agent/1553-runtime-pytest`
+imported tree, two tiny specimens and compact results. Its tree supplied the
+completed ordinary-map runtime. `/home/agent/r1553a` contains small disposable
+instance state, copied NATS bytes, workspace markers and compact results;
+no second guest image was created. Local `/home/agent/1553-runtime-pytest`
 contains disposable observer controls. Retain source, results and input
 identities under the existing storage policy; Sylab owns output retirement.

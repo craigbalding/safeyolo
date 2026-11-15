@@ -32,6 +32,7 @@ PREPARED = Path("/home/agent/1562-b682-installed")
 STAGE = Path("/home/agent/1553-native-import-b/published/extract-5ls7iw5p")
 ARCHIVE = Path("/home/agent/1436-operator/guest-store/blobs/sha256") / ARCHIVE_SHA
 REPOSITORY = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPOSITORY / "tests/blackbox"))
 
 
 def compare_contents(archive, digest, stage, baseline):
@@ -96,15 +97,34 @@ printf 'ROOTLESS1553_GUEST_OK uid={expected}\\n'
 """
 
 
+def observe_cleanup(root, tracked):
+    """Distinguish stopped diagnostic files from live owned runtime state."""
+    from installed_sections import surviving_processes
+
+    failures = surviving_processes(tracked)
+    for line in Path("/proc/net/unix").read_text().splitlines()[1:]:
+        fields = line.split(maxsplit=7)
+        if len(fields) == 8 and int(fields[3], 16) & 0x10000 and fields[7].startswith(str(root) + "/"):
+            failures.append(f"live Unix listener: {line}")
+    failures += [str(path) for pattern in (
+        "agents/*/container.pid", "agents/*/userns.pid", "data/ready.json",
+    ) for path in root.glob(pattern)]
+    return {
+        "failures": failures,
+        "diagnostic_paths": [str(path) for pattern in (
+            "agents/*/proxy/proxy.sock", "data/sockets/*/proxy.sock", "data/coord/nats/process.json",
+        ) for path in root.glob(pattern)],
+    }
+
+
 def qualify(output):
     # Keep the experimental packet on the maintained native instance, command,
     # token-redaction and process-birth helpers. No product helper is duplicated.
-    sys.path.insert(0, str(REPOSITORY / "tests/blackbox"))
     import tomlkit
     from guest_exec import guest_command_args
     from installed_host_smoke import _process_start_token
     from installed_linux_update import info, redact, sha
-    from installed_sections import copy_prepared_nats, owned_processes, prepare_native_instance, surviving_processes
+    from installed_sections import copy_prepared_nats, owned_processes, prepare_native_instance
 
     assert platform.system() == "Linux" and platform.machine() == "x86_64"
     assert (os.getuid(), os.getgid()) == (1000, 1000)
@@ -254,11 +274,11 @@ def qualify(output):
                         report["cleanup_failures"].append(f"{label}: exit {result.returncode}")
                 except (OSError, subprocess.SubprocessError) as error:
                     report["cleanup_failures"].append(f"{label}: {error}")
-            report["cleanup_failures"] += surviving_processes(tracked)
-            report["cleanup_failures"] += [str(path) for pattern in (
-                "agents/*/container.pid", "agents/*/userns.pid", "data/ready.json",
-                "agents/*/proxy/proxy.sock", "data/sockets/*/proxy.sock", "data/coord/nats/process.json",
-            ) for path in root.glob(pattern)]
+            try:
+                report["cleanup_observation"] = observe_cleanup(root, tracked)
+                report["cleanup_failures"] += report["cleanup_observation"]["failures"]
+            except (OSError, ValueError) as error:
+                report["cleanup_failures"].append(f"cleanup inspection: {error}")
         if report["cleanup_failures"]:
             report["result"] = "cleanup_failed"
         report["finished"] = time.time()
