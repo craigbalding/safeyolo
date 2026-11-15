@@ -223,6 +223,49 @@ def test_notification_api_decisions_reach_analyzer_cli(tmp_path, git_sources, be
     assert [(row["path"], row["status"]) for row in report["changes"]] == [(changes.PUBLISHER, "material")]
 
 
+@pytest.mark.parametrize("helper", [False, True])
+def test_notification_filter_effect_and_detection(sources, monkeypatch, helper):
+    publisher = (ROOT / changes.PUBLISHER).read_text()
+    guard = '    if payload is not None and "BB-01" in payload["body"]:\n        raise ValueError("BB-01 notice disabled")\n'
+    if helper:
+        publisher = publisher.replace('    command = ["gh", "api",',
+                                      '    if reject_notice(payload):\n        raise ValueError("BB-01 notice disabled")\n    command = ["gh", "api",')
+        publisher += '\ndef reject_notice(payload):\n    return False\n'
+        filtered = publisher.replace('def reject_notice(payload):\n    return False\n',
+                                     'def reject_notice(payload):\n    return payload is not None and "BB-01" in payload["body"]\n')
+    else:
+        filtered = publisher.replace('    command = ["gh", "api",', guard + '    command = ["gh", "api",')
+    files = sources | {changes.PUBLISHER: publisher}
+    material = compare(files, {TEST: ORIGINAL.replace("== 0", "== 1")})
+    assert material["delta_id"]
+    monkeypatch.setenv("GITHUB_RUN_ID", "1")
+    github = GitHub()
+
+    def run(command, *, input, **kwargs):
+        endpoint = next(arg for arg in command if arg.startswith("repos/")).removeprefix(f"repos/{notices.REPOSITORY}/")
+        response = github.api(endpoint, json.loads(input) if input is not None else None)
+        return subprocess.CompletedProcess(command, 0, "HTTP/2.0 200 OK\n\n" + json.dumps(response), "")
+
+    # Run the actual publisher and adapter against an in-memory GitHub response.
+    # The subprocess boundary cannot reach GitHub or a commenting credential.
+    with monkeypatch.context() as patch:
+        patch.setattr(subprocess, "run", run)
+        for source, suppressed in ((publisher, False), (filtered, True)):
+            github.comments.clear()
+            github.posts.clear()
+            namespace = {"__name__": "publisher_fixture"}
+            exec(compile(source, changes.PUBLISHER, "exec"), namespace)
+            if suppressed:
+                with pytest.raises(ValueError, match="BB-01 notice disabled"):
+                    namespace["publish"](material, event(), "pull_request_target")
+                assert not github.posts
+            else:
+                assert namespace["publish"](material, event(), "pull_request_target")["status"] == "published"
+                assert len(github.posts) == 1
+                assert "@craigbalding" in github.posts[0][1]["body"]
+    assert compare(files, {changes.PUBLISHER: filtered})["delta_id"]
+
+
 @pytest.mark.parametrize(("before", "after"), [
     ('report.get("status") != "complete"', 'report.get("status") == "complete"'),
     ('if not material:', 'if material:'),
@@ -255,7 +298,8 @@ def test_notification_helpers_reached_by_guard_and_definition_side_effects_stay_
                                        '    if reject_notice(payload):\n        return {}\n    command = ["gh", "api",')
     adapter_helper += '\ndef reject_notice(payload):\n    return False\n'
     files = sources | {changes.PUBLISHER: adapter_helper}
-    assert compare(files, {changes.PUBLISHER: adapter_helper.replace('    return False', '    return True')})["delta_id"]
+    assert compare(files, {changes.PUBLISHER: adapter_helper.replace('def reject_notice(payload):\n    return False\n',
+                                                                   'def reject_notice(payload):\n    return True\n')})["delta_id"]
     # The finite diagnostic exception includes definition order. Calling the
     # publisher before its error helper exists can change failure behavior.
     helper = inspect.getsource(notices.api_failure)
