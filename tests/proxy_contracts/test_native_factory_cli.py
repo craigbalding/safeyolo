@@ -77,8 +77,8 @@ def cli(instance, *arguments):
 
 
 @contextmanager
-def prepared(directory, nats_binary):
-    with native_instance(directory, source=None, agent_api=True) as instance:
+def prepared(directory, nats_binary, *, source_fixture=False):
+    with native_instance(directory, source=None, agent_api=True, source_fixture=source_fixture) as instance:
         # Ordinary shell utilities are production prerequisites. No Python,
         # package import path or source-checkout helper is in the command PATH.
         tools = directory / "tools"
@@ -445,7 +445,7 @@ def test_installed_doctor_checks_actual_direct_and_wrapped_role_commands(tmp_pat
 
 @pytest.mark.skipif(os.uname().sysname != "Linux", reason="Guest supervision uses Linux process state")
 def test_doctor_rejects_the_paused_exact_command_with_a_healthy_supervisor(tmp_path, _binary_cache, monkeypatch):
-    with prepared(tmp_path, _binary_cache) as (instance, _):
+    with prepared(tmp_path, _binary_cache, source_fixture=True) as (instance, _):
         agent = "fixture-forge"
         home = instance.root / "agents" / agent / "home"
         state_path = home / ".safeyolo-command-supervisor.json"
