@@ -240,6 +240,7 @@ It retains the maintained process-birth survivor checks and the existing
 container/user-namespace PID and readiness-state checks. It also reads actual
 Unix listeners under the owned instance. Real survivors, listeners, retained
 active state, stop failures and inspection failures still fail cleanup.
+The separate `guest_result` field preserves the result before cleanup inspection.
 No diagnostic record is removed to manufacture success.
 
 Fourteen focused observer controls pass, including real closed/listening sockets,

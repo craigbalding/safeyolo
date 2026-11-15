@@ -258,6 +258,7 @@ def qualify(output):
         report["error"] = str(error)
         raise
     finally:
+        report["guest_result"] = report["result"]
         if (root / "config.toml").exists():
             try:
                 tracked += owned_processes(root)
