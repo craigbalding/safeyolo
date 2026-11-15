@@ -2,8 +2,9 @@
 
 This is the bounded feasibility work for [#1553](https://github.com/craigbalding/safeyolo/issues/1553).
 The complete go/no-go result remains **unproved**. Native macOS extraction of
-one published Kali image bundle passed. Native Ubuntu import and both backend
-journeys remain to run. This candidate changes no production installer.
+one published Kali image bundle passed. Native Ubuntu import also passed with
+the ordinary mapping. Both backend journeys remain to run. This candidate
+changes no production installer.
 #1554 owns production integration; #1563 owns maintained blackbox coverage.
 
 The trusted starting source is `6ee7e8bb308fcd865fa0a244b455c7dcc86b9bb6`.
@@ -88,7 +89,7 @@ because it cannot assign the cache owner. Separate missing-cache and cancellatio
 controls remove the private stage and preserve the external target's content,
 owner, mode and inode. Their namespace is replaced by the worker account for
 these controls; they do not establish native multi-ID cleanup.
-These controls do **not** prove native namespace entry, kernel metadata writes,
+These controls alone do **not** prove native namespace entry, kernel metadata writes,
 an existing usable guest, native macOS failure cleanup, or backend behavior.
 Worker tar reports that ACL writes are unsupported on this filesystem. Passing
 worker controls do not establish ACL preservation on the required native host.
@@ -131,37 +132,94 @@ The actual archive has 7,737 records: 1,011 directories, 831 symbolic links,
 header is present. PAX headers contain only modification times and paths.
 This inventory does not cover supplementary metadata or runtime enforcement.
 
-The next protected operation is the script below. On the existing native
-Ubuntu host, Sylab stages `ubuntu_import_probe.sh` and `import_guest.py` from
-the same immutable candidate in one source directory. Run as UID/GID 1000 from
-that directory. The archive and inventory already exist at the shown paths;
-the output directory must be absent. The script checks the selected hashes,
-existing namespace entry and current capacity against the existing 5 GiB floor
-plus its archive-based growth forecast before extracting anything.
+Native execution 18405 completed `ubuntu_import_probe.sh` from immutable
+`70f3d40a30838f4837a13aa5ec87c19d42c0c05b`, as ordinary UID/GID 1000.
+Its original command and all twelve result, preparation, metadata and log files
+are retained at `/evidence/operator/1553/native-import-18405`. The source hashes,
+command stdout, separate result and preparation files agree. Forge consumed all
+twelve original files. Lens independently consumed their byte-for-byte mirror
+under `/home/agent/acceptance/1553-operator-receipts/native-import-18405`.
+The mirror resolves that review's input gap; the original shared-view fault
+remains Sylab-owned. Reuse these results without replaying import or inventory.
+
+The packet ran from 05:04:07.515798 to 05:04:13.101603 UTC on 15 November 2026.
+Extraction took 4.296972 seconds. The candidate PATH contained no sudo.
+The namespace observer checked 7,736 rootfs records with zero mismatches for
+type, numeric owner, mode, regular-file size, symlink target and hardlink inode.
+The host rootfs was 100000:100000/0755. The readable cache was 1000:1000/0644,
+with the expected text. This observer does not compare file contents,
+allocation or runtime metadata. Lens's equal-size mutation control demonstrates
+that limit; it is not an established extraction defect.
+
+The small missing-cache and explicit-cancellation specimens each exited 1,
+removed their private stages and preserved the external target's content,
+owner, mode and inode. The original missing-cache error records tar exit 2
+and zstd exit 0. Cancellation occurred after extraction children completed.
+Asynchronous published-archive cancellation and preservation of an existing
+usable guest remain unproved.
+
+### Next protected operation: retained-tree runtime
+
+The successful import remains at
+`/home/agent/1553-native-import-b/published/extract-5ls7iw5p` on
+`sy-1050-connected-8029-amd64`. The exact source inputs remain under
+`/home/agent/1553-native-inputs-70f3d40a`. Preserve both.
+The independently retained #1562 receipt
+`/evidence/operator/1562/mounts-18389.json` identifies a compatible production
+runtime at `/home/agent/1562-b682-installed`, source
+`b6821094322e4ab261f4c149029839037fe43631`, using the same published archive.
+Its supplied native Python environment is
+`/home/agent/1562-a1fff-controller/.venv/bin/python`.
+These are dated operands; the next script verifies the selected package,
+executable source, archive selection, preparation and mapping before startup.
+
+Sylab stages this candidate's `experiments/rootless_guest` and `tests/blackbox`
+source directories together, preserving their repository-relative paths.
+Use the existing Python environment, which supplies `tomlkit`, from that
+staged source root. `ubuntu_runtime_probe.py` reuses the maintained instance,
+guest-command, token-redaction and process-birth helpers. The output path below
+must be absent. The short path limits native Unix socket path growth. The script
+requires the existing 5 GiB floor plus 128 MiB of headroom before new state.
 
 ```sh
-bash ubuntu_import_probe.sh \
-  /home/agent/1436-operator/guest-store/blobs/sha256/1fb64d224df243e24bddbab42a4b1c12b876712270ae5eb59822cdb4c5f8febe \
-  /home/agent/1553-native-first-a/archive-inventory.json \
-  /home/agent/1553-native-import-b
+/home/agent/1562-a1fff-controller/.venv/bin/python \
+  experiments/rootless_guest/ubuntu_runtime_probe.py /home/agent/r1553a
 ```
 
-Expected observations are a fresh published import, an operator-owned readable
-cache list, and a namespace comparison of all rootfs header types, owners,
-modes, regular-file sizes and links. Two small specimens then test a missing
-cache and explicit cancellation, stage removal and external-target preservation.
-The candidate PATH has no sudo. Only the successful new stage remains for a
-later backend operation; there is no backend, download, host setup, policy
-change or different delegated range in this packet. Preserve each original
-failure and inspect partial output before any retry. The packet has passed
-Bash syntax and both embedded Python compilation checks; native execution is
-still pending.
+The script creates a disposable instance with fresh private credentials and an
+automatically assigned Admin port. Its own guest selection explicitly binds
+`installed_assets` to the retained stage; changing a share symlink alone would
+not select that stage. Its command PATH retains ordinary tools and excludes
+sudo. This is a PATH witness, not a syscall trace or system-wide sudo revocation.
+The existing namespace entry and mapping remain unchanged.
 
-Return `result.json`, `published-metadata.json`, each `preparation.json`, and
-the corresponding stdout/stderr through the existing readable operator handoff.
-An import failure must retain its original logs even if no preparation report
-was created. Ordinary owner-home paths were unreadable to Lens on output 1;
-source controls and owner logs alone do not supply native proof.
+Before boot, a read-only observer compares all 5,892 regular rootfs payloads
+(429,073,907 bytes) with the verified archive and the existing prepared baseline.
+It does not extract the archive or repeat the header inventory. Four local
+controls pass, including equal-size mutations in either tree and a compressed
+frame-checksum failure. The command-line entry point was exercised directly.
+These controls establish observer behavior; the native content comparison
+remains pending. No allocation, ACL or capability comparison is inferred.
+
+The runtime attempt uses the existing systrap backend and records its actual
+rootfs selection, live process births and UID/GID maps. Guest commands check
+numeric root and ordinary-user identity, create/read/execute files in the owned
+workspace and home, and report selected runtime metadata. Guest root uses the
+maintained guest sudo wrapper; host sudo remains absent from the candidate PATH.
+The script stops only its own guest, proxy and Coord in `finally`, including
+after startup failure, and reports remaining processes and runtime paths.
+It changes no retained tree, host policy, delegation, package or other instance.
+It downloads and builds nothing. It records the original failure without retry.
+
+Return `/home/agent/r1553a/result.json`, `prepare.log`, the original command
+exit/stdout/stderr and any failure-relevant owned runtime logs through the
+existing readable operator handoff. Keep runtime state and credentials private;
+do not copy tokens or whole instance directories into a proof handoff.
+The result must distinguish content-observer failure, startup failure, working
+guest operations and owned shutdown. The protected operation is pending.
+
+The following steps describe the remaining full-issue proof, after interpreting
+this runtime result. They do not select another import or platform expansion.
 
 1. Run `python3 experiments/rootless_guest/inspect_host.py --root PREPARED_ROOT`.
    Record the current package, selected guest, delegated ranges, namespace entry,
@@ -219,15 +277,15 @@ and the selected runtime/configuration must determine actual listener needs.
 | Case | Specimen / reached observation | Native comparison still required |
 | --- | --- | --- |
 | Ordinary/private files, directories, executable and set-ID modes | `canonical`; exhaustive mapping controls. Mac outer files preserved modes and mapped 1000:1000 to 502:20. | Ubuntu host/runtime root, user 1000, another identity, boundary 65535; private staging and effective access. |
-| Symbolic links and hardlinks | `canonical`, `escaping-link`; local external target and existing directory survived. | Native link identity/confinement and existing **usable** guest preservation. |
+| Symbolic links and hardlinks | `canonical`, `escaping-link`; local external target and existing directory survived. Native published link targets/hardlink inode matched. | Supplementary confinement and existing **usable** guest preservation. |
 | Sparse files | `canonical` GNU 1.0 map/content control; real Mac image remained sparse. | Ubuntu allocation relative to baseline and image/VM contents. |
-| First in, first out (FIFO), character and block nodes | FIFO in `canonical`; `devices` contains character 1:3 and block 7:0. Archive headers only. | Actual published inventory, kernel privilege outcome and runtime requirement; do not assume mknod works in a user namespace. |
+| First in, first out (FIFO), character and block nodes | FIFO in `canonical`; `devices` contains character 1:3 and block 7:0. No such host-side node is in the published Linux archive. | Supplementary kernel privilege outcome and runtime requirement; do not assume mknod works in a user namespace. |
 | Extended attributes (xattrs) and capabilities | `canonical` has `user.*` and revision-3 (V3) capabilities rooted at 100000; revision-2 (V2) is separate in `v2-capability`. | V2/V3 root identity and capability effect in the intended runtime versus the existing path; other namespaces actually published. |
 | Access/default access control lists (ACLs) | Canonical principals/mask in `canonical`; out-of-range 42 in `raw-acl42` separately. | Host/runtime principals, masks and effective access. Raw 42 is characterization, not a host-ID passthrough requirement. |
 
 The actual Linux cache list uses build-account coordinates; the split extraction
 above removes that incidental owner from the namespace requirement. Native
-import remains pending. V2 capability root identity also needs observation:
+ordinary-map import passed. V2 capability root identity still needs observation:
 import root and runtime root intentionally have different mappings. No new
 delegated range or required arbitrary-archive compatibility is inferred.
 
@@ -246,28 +304,38 @@ A single-ID direct `unshare -Ur` failure is readiness evidence only. The later
 entry under `/home/agent/1562-b682-installed` succeeds for a single-ID namespace.
 Its SHA-256 is checked by the Ubuntu packet. No prerequisite is inferred from
 the earlier absent path. Execution 18403 later established the normal multi-ID
-namespace. A distinct nondefault mapping and actual import remain unproved.
+namespace, followed by the successful 18405 import. A distinct nondefault
+mapping remains unproved.
 
 The actual `compat-v1` discovery tag was resolved on15November to that same
 `67bcb6c5...` default index. The public index bytes are retained locally at
 `/home/agent/1553-native-inputs/default-index.json`. The darwin/arm64 manifest is
 `sha256:25a17227648078261bc331f751e5e11a33d4525cdaabeb9d3f64a0faec6c8ea1`.
-Fetching that immutable manifest returned HTTP428 through the proxy. Its error
-body/header were not retained, so no approval state or refusal cause is claimed.
-No identical request was retried. Effective network lookup allows `ghcr.io`;
-that does not grant credential or route access. Sylab must inspect the original
-private refusal at03:54UTC and effective access, or supply the verified default
-input through the existing authorized acquisition route. Do not change package
-metadata or classify the retained Kali archive as the default to compensate.
+Fetching that immutable manifest returned HTTP 428 through the proxy.
+Canonical operator backlog:16102 and the retained
+`/evidence/operator/1553/registry-refusal-0354.json` correlate the original refusal
+with the outer credential guard. Its private outer decision remains pending
+with Sylab/Craig. The separate #1560 refusal has its own disposition.
+No identical request was retried. Read the exact canonical approval and effective
+access before any future decision or retry. Network allow alone grants no
+credential or route permission. Do not change package metadata or classify the
+retained Kali archive as the default to compensate.
 
-The selected continuation resolves only the current selected-member import
-uncertainty. The original 60-minute reassessment has been reached; it is not
-restarted. Resume on the same work/branch with the protected import result.
-The original registry-refusal inspection remains separately pending and no
-retry is selected. The existing namespace entry and selected Bristol slot need
-no new permission or discovery; ordinary Bristol operations remain Forge-owned.
-The full privileged-use witness, failure cleanup, metadata comparison and both
-guest journeys remain unproved. No independent acceptance is claimed.
+The selected continuation uses the successful import for the smallest remaining
+runtime uncertainty. The original M / High estimate and reached cumulative
+60-minute reassessment remain unchanged. Interpret the protected runtime result
+before further platform expansion. The distinct mapping, full metadata/baseline
+matrix, complete rootless journeys, existing usable-guest preservation and final
+independent go/no-go remain unproved. All seven criteria remain unchecked.
+Lens's complete checks `work-02b994e476b24b1ab60d8a287a60b041@3` and
+`work-ae9f361020754ce1ade43d65075f9f11@3` and `@5` retain prior controls and limits.
+
+At `70f3d40a`, normal CI workflow 43677649512 and CodeQL Analyze workflow
+43677649482 succeeded. The separate CodeQL alert check 132701425255 still failed,
+with alert 567 open. The executing tuple assignment supports a false-positive
+interpretation, not a waived or passing check. Proxy assurance workflow
+43677649477 also remains failed and unwaived. Relay owns CI and integration.
+This candidate establishes no merge approval or issue acceptance.
 
 ## Output retention
 
@@ -278,7 +346,10 @@ Local supplementary archives,
 reproducible disposable outputs. The source and this compact external-platform
 result remain review inputs. No additional queue, proof service or guest image
 is introduced.
-The proposed native `/home/agent/1553-native-import-b` group contains one
-reproducible imported tree, two tiny specimens and compact results. If execution
-succeeds, the tree is an actual input for the remaining guest-startup step.
-Retain original results and input identities under the existing storage policy.
+The native `/home/agent/1553-native-import-b` group contains one reproducible
+imported tree, two tiny specimens and compact results. The tree is the actual
+input for the pending guest-startup step. Proposed `/home/agent/r1553a` contains
+small disposable instance state, copied NATS bytes, workspace markers and compact
+results; no second guest image is created. Local `/home/agent/1553-runtime-pytest`
+contains disposable observer controls. Retain source, results and input
+identities under the existing storage policy; Sylab owns output retirement.
