@@ -129,7 +129,10 @@ def main() -> int:
     parser.add_argument("--run-id", default=os.environ.get("SAFEYOLO_BLACKBOX_RUN_ID"), required=False)
     args = parser.parse_args()
     temporary = args.output.with_suffix(args.output.suffix + ".tmp")
-    if args.source_report.resolve() in {args.output.resolve(), temporary.resolve()}:
+    # Resolving paths does not detect a hard link at the writer's temporary path.
+    if args.source_report.resolve() in {args.output.resolve(), temporary.resolve()} or (
+        args.source_report.exists() and temporary.exists() and temporary.samefile(args.source_report)
+    ):
         parser.error("output would overwrite source evidence")
     report = {"phase": "rootless-preparation", "boundary": "retained-native-linux-storage",
               "run_id": args.run_id, "source_report": str(args.source_report), "source_sha256": args.source_sha256,

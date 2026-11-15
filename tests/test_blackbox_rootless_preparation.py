@@ -221,7 +221,11 @@ def test_retained_operands_cannot_hide_missing_or_failed_obligations(source, def
         assert observed == list(rootless.CASES)
 
 
-@pytest.mark.parametrize("damage", [None, "digest", "candidate", "missing", "malformed", "cleanup", "overwrite", "overwrite-temp"])
+@pytest.mark.parametrize(
+    "damage",
+    [None, "digest", "candidate", "missing", "malformed", "cleanup", "overwrite", "overwrite-temp",
+     "symlink-temp", "hardlink-temp"],
+)
 def test_shell_selector_reads_pinned_evidence_without_executing_it(tmp_path, source, damage):
     marker = tmp_path / "must-not-execute"
     source["actions"][0]["command"] = ["touch", str(marker)]
@@ -237,6 +241,10 @@ def test_shell_selector_reads_pinned_evidence_without_executing_it(tmp_path, sou
     if damage == "overwrite-temp":
         path = output.with_suffix(output.suffix + ".tmp")
         path.write_bytes(original)
+    elif damage == "symlink-temp":
+        output.with_suffix(output.suffix + ".tmp").symlink_to(path)
+    elif damage == "hardlink-temp":
+        output.with_suffix(output.suffix + ".tmp").hardlink_to(path)
     if damage == "missing":
         path.unlink()
     command = [
@@ -260,7 +268,9 @@ def test_shell_selector_reads_pinned_evidence_without_executing_it(tmp_path, sou
     )
     assert (result.returncode == 0) == (damage is None), result.stdout + result.stderr
     assert not marker.exists()
-    if damage in {"overwrite", "overwrite-temp"}:
+    if damage in {"overwrite", "overwrite-temp", "symlink-temp", "hardlink-temp"}:
+        assert result.returncode == 2
+        assert "output would overwrite source evidence" in result.stderr
         assert path.read_bytes() == original
         return
     report = json.loads(output.read_text())
