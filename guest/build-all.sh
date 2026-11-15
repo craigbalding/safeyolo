@@ -200,6 +200,7 @@ run_builds_via_lima() {
         BUILD_KERNEL=1 \
         OUTPUT_DIR="$lima_output_dir" \
         GUEST_INPUTS="$lima_guest_inputs" \
+        SAFEYOLO_NATIVE_CLI="${SAFEYOLO_NATIVE_CLI:-}" \
         bash "$LIMA_MOUNT_POINT/build-all.sh" --inside-lima
 
     echo ""

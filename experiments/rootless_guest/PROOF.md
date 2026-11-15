@@ -10,16 +10,18 @@ guest-root and user-1000 read/write/execute. Failed/cancelled private preparatio
 preserved an external target and a usable guest on each platform. The matrix
 below records baseline comparisons, unsupported synthetic cases and unavailable
 metadata coverage. Those limits prevent a general arbitrary-archive guarantee.
-Lens's independent final go/no-go decision remains pending.
-This candidate changes no production installer.
+Lens independently accepted the bounded go/no-go result at `8964761c` in
+[comment 6892802583](https://github.com/craigbalding/safeyolo/issues/1553#issuecomment-6892802583).
+The #1553 prototype changes no production installer.
 #1554 owns production integration; #1563 owns maintained blackbox coverage.
 
 The trusted starting source is `6ee7e8bb308fcd865fa0a244b455c7dcc86b9bb6`.
 The assignment is [comment 6888425057](https://github.com/craigbalding/safeyolo/issues/1553#issuecomment-6888425057).
 Lens independently accepted criteria 1, 2 and 5 at `ea1040df` in
 [comment 6892180913](https://github.com/craigbalding/safeyolo/issues/1553#issuecomment-6892180913).
-Criteria 3, 4, 6 and 7 remain open. Preserve those decisions and the M/High
-estimate; the cumulative 60-minute reassessment has already been reached.
+Criteria 3, 4, 6 and 7 were accepted at `8964761c` in the final receipt above;
+all seven #1553 criteria are independently accepted. Production integration and
+its separate platform proof remain owned by #1554.
 
 ## Reached result
 

@@ -4,12 +4,17 @@ For host installation and prepared platform inputs, see the
 [installation reference](../cli/README.md#installation). For default guest tools
 and custom distributions, see the [rootfs guide](../contrib/ROOTFS_SCRIPT_GUIDE.md).
 
+Normal users install [prebuilt host and guest artifacts](../README.md#quick-start).
+Guest preparation and ordinary execution need no host sudo after legitimate
+host preparation; the installation reference states its remaining exceptions.
+This guide is for optional custom-image builds, which use builder sudo.
+
 Builds the artifacts SafeYolo needs to run agent sandboxes:
 
 - `out/Image` — Linux kernel (macOS Virtualization.framework only)
 - `out/initramfs.cpio.gz` — minimal initramfs (macOS only)
 - `out/rootfs-base.ext4` — Debian trixie base image (macOS VZ mounts this read-only as /dev/vda; runtime writes use a separate overlay)
-- `out/rootfs-tree/` — Debian trixie rootfs as an unpacked directory (Linux gVisor uses this as OCI `root.path`; files are owned by uid 100000, the subuid-root for rootless userns)
+- `out/rootfs-tree/` — Debian trixie rootfs as an unpacked directory (Linux gVisor uses this as OCI `root.path`; guest IDs, named ACL principals and capability root identities use canonical base 100000)
 - `out/cache-paths.txt` — absolute in-rootfs paths SafeYolo bind-mounts to persistent per-agent cache dirs (apt cache, etc.)
 - `out/build-base.txt` — the actual digest-pinned Debian manifest used for OCI publication provenance
 
@@ -42,8 +47,11 @@ available choices. The blackbox runner installs its own Python test dependencies
 ## Quick start
 
 Use a source checkout and the [Linux prerequisites](#linux-setup), or install
-Lima on macOS as described below. The builder needs Python 3.11+ and GnuPG for
-shared resolution and upstream signature checks. These are builder tools; they
+Lima on macOS as described below. The Linux builder needs Python 3.11+, GnuPG and a current Linux `safeyolo` CLI
+for the shared archive normalizer. Set `SAFEYOLO_NATIVE_CLI` to its executable
+path, or place it on the builder PATH. On macOS the CLI must be available
+inside Lima; a macOS executable cannot normalize a Linux tree. Python and GnuPG
+perform shared resolution and upstream signature checks. These are builder tools; they
 do not add Python to the default guest. If an instance uses earlier build
 outputs, choose a new `OUTPUT_DIR` to preserve its referenced tree. On macOS,
 `OUTPUT_DIR` must resolve inside `guest/` so the existing narrow Lima mount can
@@ -188,7 +196,7 @@ The kernel and initramfs are ARM64-only (macOS Virtualization.framework on Apple
 
 ## Individual scripts
 
-- `build-rootfs.sh` — current official Debian Trixie resolved to a digest via `skopeo`, `umoci`, chroot apt and `rootfs-customize-hook.sh`; writes the ext4 image, UID 100000 tree, cache paths and actual build-base reference. `DEBIAN_IMAGE` overrides remain available for contributor builds. Floating tags and non-registry transports do not emit publication provenance. Each invocation builds fresh outputs.
+- `build-rootfs.sh` — current official Debian Trixie resolved to a digest via `skopeo`, `umoci`, chroot apt and `rootfs-customize-hook.sh`; writes the ext4 image, canonical base-100000 tree, cache paths and actual build-base reference. `DEBIAN_IMAGE` overrides remain available for contributor builds. Floating tags and non-registry transports do not emit publication provenance. Each invocation builds fresh outputs.
 - `archive-default.sh` — on a Linux builder with GNU tar, zstd and guest sudo, archives finished backend files with numeric owners, modes, links, extended attributes and sparse-image handling. Reports compressed bytes, apparent filesystem bytes and allocated disk bytes separately. A sparse ext4 image's apparent size includes its unused capacity. See the [OCI publication instructions](../docs/guest-oci.md#prepare-and-publish-a-default-guest-release).
 - `build-kernel.sh` — Linux kernel via native cross-compile (`aarch64-linux-gnu-gcc`)
 - `build-initramfs.sh` — minimal initramfs via `busybox-static` + `lddtree`
@@ -312,13 +320,15 @@ The publication workflow sets `TMPDIR` to disk-backed runner storage:
 2. `chroot ... apt-get install` — installs runtime packages, including socat and openssh-server, inside the unpacked tree. Package maintainer scripts need root-in-chroot semantics to mknod device nodes, chown root, and run their own install hooks.
 3. `mkfs.ext4 -d` on the packaged output — reads the root-owned tree.
 4. The SafeYolo `rootfs-customize-hook.sh` (mise/gh install, sshd config, agent user creation, apt-proxy config) — also needs root-in-chroot for the same reasons as (2).
-5. `chown -R 100000:100000` on the emitted `out/rootfs-tree/` — the tree ships pre-owned by the subuid-root so SafeYolo's rootless gVisor sandbox-root can write to tree paths via the overlay.
+5. The CLI’s `host archive-profile-tree` operation on a private emitted tree — the same normalizer used by profile export preserves each guest ID and translates named ACLs and capability root identities to canonical base 100000. Guest root becomes 100000 and user 1000 becomes 101000; installation maps these to the consumer's selected host IDs. The macOS ext4 image is made from the original tree and retains ordinary guest IDs.
 
 The selected output directory retains the finished artifacts and download
 cache. The ext4 image is owned by the builder user, and the tree is owned by
-UID/GID 100000. The temporary rootfs directory is removed on exit.
+canonical IDs beginning at UID/GID 100000. The temporary rootfs directory is removed on exit.
 
-Eliminating sudo entirely would require either a user-namespace chroot (rootless unshare, blocked on Ubuntu 24.04 by `kernel.apparmor_restrict_unprivileged_userns=1`) or `umoci --rootless` + xattr-aware packaging — the former needs a sysctl flip or an AppArmor profile, the latter isn't yet proven against our packaging step. We may add a rootless mode as a flag if there's demand.
+This builder's chroot and filesystem creation still use sudo. They are separate
+from consuming a published prebuilt guest; no builder or custom-image sudo is
+part of the normal installation path.
 
 ## Troubleshooting
 

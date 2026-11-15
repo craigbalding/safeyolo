@@ -194,6 +194,8 @@ pub fn read(path: &Path) -> Result<Config, Error> {
 }
 
 pub(crate) fn from_source(path: &Path, source: &str) -> Result<Config, Error> {
+    // Resolve config aliases before deriving listener and runtime paths.
+    let path = path.canonicalize()?;
     let root = path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -330,7 +332,7 @@ pub(crate) fn from_source(path: &Path, source: &str) -> Result<Config, Error> {
     config.native_product = true;
     config.native_settings = Some(settings);
     config.native_config_dir = Some(root.canonicalize()?);
-    config.native_config_path = Some(path.canonicalize()?);
+    config.native_config_path = Some(path);
     config.validate()?;
     Ok(config)
 }
@@ -540,8 +542,35 @@ mod tests {
     }
 
     #[test]
+    fn config_aliases_keep_listener_and_runtime_paths_consistent() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("instance");
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("config.toml");
+        std::fs::write(
+            &path,
+            "admin_port=0\n[[listeners]]\nagent_id='mobile'\nsocket_path='mobile.sock'\n",
+        )
+        .unwrap();
+        let alias = directory.path().join("config-alias");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        let file_alias = directory.path().join("selected.toml");
+        std::os::unix::fs::symlink(&path, &file_alias).unwrap();
+        let root = root.canonicalize().unwrap();
+        for selected in [path, alias.join("config.toml"), file_alias] {
+            let config = read(&selected).unwrap();
+            assert_eq!(config.native_config_dir, Some(root.clone()));
+            assert_eq!(config.native_config_path, Some(root.join("config.toml")));
+            assert_eq!(config.listeners[0].socket_path, root.join("mobile.sock"));
+            assert_eq!(config.data_dir, Some(root.join("data")));
+            assert_eq!(config.readiness_file, root.join("data/ready.json"));
+        }
+    }
+
+    #[test]
     fn fresh_loader_keeps_nondefault_settings_and_resolves_runtime_paths() {
         let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
         let path = directory.path().join("config.toml");
         std::fs::write(
             &path,
@@ -624,14 +653,11 @@ tailnet_port=8443
         std::fs::create_dir(directory.path().join("addons.yaml")).unwrap();
         std::fs::write(directory.path().join("config.yaml"), "not: [").unwrap();
         let config = read(&path).unwrap();
-        assert_eq!(config.data_dir, Some(directory.path().join("state")));
-        assert_eq!(
-            config.policy_file,
-            Some(directory.path().join("permissions.toml"))
-        );
+        assert_eq!(config.data_dir, Some(root.join("state")));
+        assert_eq!(config.policy_file, Some(root.join("permissions.toml")));
         assert_eq!(
             config.listeners[0].socket_path,
-            directory.path().join("state/alice.sock")
+            root.join("state/alice.sock")
         );
         assert_eq!(config.listeners[0].source_id.as_deref(), Some("10.0.0.2"));
         assert_eq!(config.admin_port, Some(19090));
@@ -657,12 +683,9 @@ tailnet_port=8443
             (&config.gateway_builtin_services_dir, "builtin"),
             (&config.gateway_services_dir, "services"),
         ] {
-            assert_eq!(actual.as_ref().unwrap(), &directory.path().join(expected));
+            assert_eq!(actual.as_ref().unwrap(), &root.join(expected));
         }
-        assert_eq!(
-            config.readiness_file,
-            directory.path().join("state/ready-marker.json")
-        );
+        assert_eq!(config.readiness_file, root.join("state/ready-marker.json"));
         assert!(
             serde_json::to_value(&config)
                 .unwrap()
@@ -684,7 +707,7 @@ tailnet_port=8443
         assert!(!config.flow_store_enabled);
         assert_eq!(
             config.flow_store_db_path,
-            directory.path().join("records/flows.sqlite3")
+            root.join("records/flows.sqlite3")
         );
         assert_eq!(
             (config.flow_pruner_max, config.flow_pruner_max_body_bytes),

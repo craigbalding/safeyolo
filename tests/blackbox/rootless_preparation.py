@@ -36,9 +36,9 @@ REMAINING = (
     "Full #1554 independent acceptance and BB-33 acceptance remain separate.",
     "Installation/repeat/upgrade commands are reported by the execution owner; the named actions cover storage only.",
     "Same-index cache reuse does not establish upgrade to changed guest bytes.",
-    "Distinct UID/GID bases, other identities and extended/special metadata need production-path proof.",
-    "Failure/cancellation and preservation of an existing usable installation need production-path proof.",
-    "macOS production installation and deployed recurring cadence remain unqualified.",
+    "This storage receipt does not establish distinct UID/GID bases, other identities or extended/special metadata.",
+    "This storage receipt does not establish failure/cancellation or preservation of an existing usable installation.",
+    "This storage receipt does not establish macOS production installation or deployed recurring cadence.",
 )
 
 
