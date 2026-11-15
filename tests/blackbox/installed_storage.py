@@ -163,7 +163,10 @@ def qualify(args: argparse.Namespace) -> None:
         assert downloaded.stdout.strip() == args.index
         selection = output / "selection.json"
         acquired = output / "acquired"
+        # Acquisition stages in a fresh root; authorization belongs to the
+        # supplied prepared instance, as it does for the normal installer.
         run("native-acquire", [cli, "--root", acquired, "guest", "acquire", *common,
+                              "--namespace-root", prepared,
                               "--host-settings", args.host_settings, "--write-selection", selection], timeout=300)
         selected = json.loads(selection.read_text())
         report["selection"] = selected
