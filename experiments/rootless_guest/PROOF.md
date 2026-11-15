@@ -4,6 +4,8 @@ This is the bounded feasibility work for [#1553](https://github.com/craigbalding
 The complete go/no-go result remains **unproved**. Native macOS extraction of
 one published Kali image bundle passed. Native Ubuntu import and systrap startup
 passed with the ordinary mapping, including guest identity and read/write/execute.
+The native supplementary canonical specimen matches the privileged baseline,
+including kernel runtime-map access, ACL inheritance and capability effects.
 The macOS backend journey remains unproved. This candidate changes no production
 installer.
 #1554 owns production integration; #1563 owns maintained blackbox coverage.
@@ -258,87 +260,136 @@ reused after this observer correction; no product replay is needed.
 
 ### Native supplementary comparison
 
-Generation 5 selects the remaining Ubuntu metadata and effective-access
-comparison in criterion 4. The native result is pending protected execution by
-Sylab. `ubuntu_metadata_probe.py` is a packet for that operation, not a new
-installer or a completed metadata result. The original runtime18413 proof and
-all prior independent findings carry forward. Lens's output-4 check
-`work-47dae4a3662841509e4147455f2b6cbf@3` accepts F1's repair and records partial
-ordinary-map Ubuntu observations; it abstains on full acceptance.
+Native execution 18414 completed `ubuntu_metadata_probe.py` from
+`0aa7b825107d9469da0f5a224825920ad818b315` on 15 November 2026. Canonical
+operator direction backlog:16111 supplies the reached observation and read-only
+collection recovery 18415. Forge verified all 12 original file sizes and hashes
+against `/evidence/operator/1553/metadata-18414/manifest.json`, then compared the
+complete actions, preparation records, host metadata and namespace observations.
+The original `result.json` is 120,817 bytes, SHA-256
+`a7ea2a4b1067a47ae7053390e28005c8db76245055690dbd84a97c4236e0a84a`.
+It equals original `caller.stdout`. The complete originals remain beside that
+manifest; Lens's mirror is
+`/home/agent/acceptance/1553-operator-receipts/metadata-18414`.
 
-The source trace identifies two different capability cases. The producer in
-`linux_host/ownership.rs::shift_attribute` converts revision-2 (V2) capabilities
-to revision 3 (V3) with an explicit canonical root when creating an archive.
-The current privileged importer shifts an explicit V3 root in the canonical
-range. Its V2 conversion is conditional on producer coordinates (`source_base
-== 0`), so importing the separate synthetic V2 specimen does not take that
-conversion. The prototype's import-namespace root maps to host 101000, while
-the runtime namespace root maps to host 100000. Native raw xattrs and actual
-post-exec capability masks must decide the effect; this source trace alone
-does not establish a regression or require arbitrary V2 archives to work.
+The host was the retained native Ubuntu 24.04.4/x86_64/kernel 6.8.0-147/ext4
+consumer, `sy-1050-connected-8029-amd64`. The ordinary account was UID/GID 1000,
+using `/usr/bin/python3` 3.12.3 and the installed production package
+`/home/agent/1562-b682-installed` at
+`b6821094322e4ab261f4c149029839037fe43631`. Namespace-entry and all three source
+hashes match the selected packet. The actual UID/GID bases were both 100000;
+this is not distinct-base proof. The command ran from 07:05:08.982559 to
+07:05:12.430889 UTC, a 3.448330-second observation, and exited 0. This exit does
+not establish that every specimen or observation succeeded.
 
-The packet reuses `make_fixture.py` and the existing delegated namespace entry.
-`import_namespace` now delegates its unchanged holder/mapping/reaping sequence
-to `mapped_namespace`, which also supplies the real runtime ID map for the
-comparison. Host UID/GID 0 is outside both maps. No policy, delegation, helper,
-package or production installer is changed.
+Preflight found no active owned consumer and no existing output directory.
+Free space was 5,656,707,072 bytes before and 5,655,658,496 bytes after the
+operation. Admission preserved the 5 GiB floor plus the 192 MiB forecast.
+The candidate PATH contained no sudo. Host sudo was used separately for the
+baseline tar extraction, installed `host remap-rootfs` and raw host metadata
+observation. All four baseline tar, decoder and remapper operations exited 0.
+These privileged comparison operations were not a candidate fallback.
 
-On `sy-1050-connected-8029-amd64`, Sylab stages this exact candidate's
-`experiments/rootless_guest` directory with its relative layout. Use ordinary
-UID/GID 1000, `/usr/bin/python3` 3.12 and the retained compatible package
-`/home/agent/1562-b682-installed` at `b6821094`. Check actual consumers and backing
-space first. The packet budgets both 64 MiB sparse specimens as fully allocated,
-plus small outputs: it requires the existing 5 GiB floor plus 192 MiB headroom.
-It refuses an existing output directory. With
-`/home/agent/1553-native-metadata-g5` absent, run from the staged source root:
+For reproduction on that host, the three source files must retain their relative
+layout and recorded hashes. Use ordinary UID/GID 1000, the package and entry
+above, native GNU tar 1.35, zstd, delegated-ID helpers and `/bin/cat`.
+The selected output must be absent, and current consumers/capacity must permit
+the operation. The recorded command from the staged source root was:
 
 ```sh
 /usr/bin/python3 experiments/rootless_guest/ubuntu_metadata_probe.py run /home/agent/1553-native-metadata-g5
 ```
 
-The packet generates the existing small specimens using native `/bin/cat`.
-It attempts `canonical`, `v2-capability`, `devices` and `raw-acl42` independently
-through the prototype with sudo absent from the candidate PATH. Original
-failures and private-stage cleanup reports remain observations. It separately
-invokes host sudo for baseline tar extraction, the installed `host remap-rootfs`
-command and read-only raw host metadata collection. Those explicit privileged
-comparison operations are not a rootless pass or a candidate fallback.
-The published import, archive and existing instance are neither changed nor
-started. The published inventory and runtime18413 proof are reused.
+Expected output is a set of observations with each exit and stderr preserved,
+including unsupported cases. Reuse the completed records; this command does not
+select a replay. The operation creates private synthetic specimens and baseline
+stages. It changes no published imported tree, existing runtime, delegation,
+namespace/AppArmor policy or installed package. Host UID/GID 0 remains outside
+both import and runtime maps.
 
-`host-metadata.json` retains raw capability/ACL bytes and numeric host ownership.
-`baseline-actions.json` retains each actual tar/remap outcome. `result.json`
-retains commands, exits and namespace observations: modes, contents, link
-identity, sparse logical/allocation bytes, FIFO/device results, user xattrs,
-capability root IDs, ACL principals/masks and default inheritance. Actual
-read/list/search/create attempts run as IDs 1000, 33 and 65535 after groups and
-namespace root are dropped. Execution of the native cat specimens records
-`/proc/self/status`, including UID/GID and permitted/effective capability masks.
-Access starts at the opened specimen tree, so unrelated private operator parent
-directories stay private. Unsupported synthetic cases remain separate results.
+The canonical import exited 0. All 15 host snapshot entries match the baseline
+in every recorded field except inode numbers. Each tree's regular/hardlink pair
+shares one inode, and its symlink targets `regular`. Numeric host owners include
+root 100000:100000, guest user 1000 at 1000:1000, daemon 100033:100033 and the
+range boundary 165535:165535. Modes, contents, FIFO type, `user.safeyolo.fixture`,
+and access/default ACL bytes match. The sparse file has 67,108,864 logical bytes,
+8,192 allocated bytes and identical contents in both trees. The mode-06751
+set-ID specimen is preserved.
 
-These are Linux kernel observations with the runtime's UID/GID map. They do
-not establish gVisor's separate metadata enforcement. Compare candidate and
-baseline results before selecting any necessary isolated backend observation.
-Do not infer a capability regression from different raw V2/V3 encodings alone.
-No backend observation or native comparison has run in this generation.
+Canonical raw host capabilities are revision 3 (V3), rooted at 100000 in both
+trees. The kernel runtime map exposes revision 2 (V2), rooted at namespace 0.
+For all three tested UID/GID pairs, native `cat` execution grants permitted and
+effective capability mask `0x400` in both trees. Set-ID execution changes
+effective/saved/filesystem UID/GID to 0 and gives the same `0x1ffffffffff`
+permitted/effective mask. These are namespace-root effects; host root is unmapped.
+Every access child first drops supplementary groups. Before specimen execution,
+its permitted/effective/inheritable/ambient capability masks are zero; its
+bounding mask is retained. The canonical results are identical for both trees:
 
-Eight new worker controls and the 18 existing import controls pass. The new
-controls exercise real metadata/contents, hardlinks, symlinks, FIFO handling,
-the direct snapshot CLI, raw capability IDs, ACL masks, relative execution and
-inspection-error propagation. Xattr decoder inputs and credential-drop calls
-are controlled in those worker tests; native ACL/capability effects remain
-unproved. The worker reports full allocation for a seek-created file, which
-does not decide the native ext4 sparse comparison. Configured Ruff and its
-focused complexity check pass; no production function changes.
+| Runtime UID/GID | Private read | ACL directory list | ACL path search | ACL create |
+| --- | --- | --- | --- | --- |
+| 1000:1000 | `private` content | `inherited` listed | EACCES | EACCES |
+| 33:33 | EACCES | EACCES | Success, child owner 0 | EACCES |
+| 65535:65535 | EACCES | EACCES | EACCES | EACCES |
 
-Return the original command output and the complete small output directory
-through `/evidence/operator/1553` with Lens-readable operands. If an operation
-fails, inspect that reached state before selecting a retry. Namespace holders
-are reaped by the existing helper. The new specimens and privileged baseline
-stages remain private comparison inputs for interpretation and any selected
-backend observation; they are disposable after their current consumer finishes.
-Do not remove them through an ordinary-account fallback. Sylab owns retirement.
+The ACL names runtime user 1000 with read permission and group 33 with search
+permission; its mask is read/search and other permissions are empty. Default
+inheritance under namespace root with umask 0077 creates the same mode-0640
+file and access ACL, with mask read-only, in each tree. Before/after namespace
+snapshots match except inode numbers. Access starts from an already opened
+specimen root. It does not broaden or prove unrelated host-parent traversal.
+
+Three separate unsupported characterizations retain material failures:
+
+- `devices` exits 1 with tar exit 2 and zstd exit 0. Both character 1:3 and block
+  7:0 creation fail with EPERM; namespace capabilities do not permit these host
+  device creations. The candidate removes its private failed stage. The explicit
+  privileged baseline creates both nodes. Neither node is opened by the observer.
+- `raw-acl42` exits 0 but tar reports `Invalid argument` while setting its ACL.
+  The candidate directory has no ACL. The baseline preserves raw host principal
+  42, outside the import/runtime maps; its namespace read exposes unmapped
+  principal 4294967295. Exit 0 does not mean this ACL was preserved.
+- `v2-capability` imports with exit 0. Its raw candidate xattr becomes V3 rooted
+  at host 101000, the import namespace's root, while the baseline remains V2 with
+  implicit host root 0. Candidate runtime snapshots fail twice with EOVERFLOW
+  while reading that xattr. Real execution still runs but has permitted/effective
+  masks 0; the baseline grants `0x400` for each of IDs 1000, 33 and 65535.
+  This is an observed effect difference, not merely a different encoding.
+  ENOENT access results for private/ACL paths in this one-file specimen indicate
+  absent paths, not permission enforcement.
+
+The source explains why V2 is a separate case. The producer's
+`linux_host/ownership.rs::shift_attribute` converts V2 to canonical V3 when
+`source_base == 0`. The privileged importer shifts explicit canonical V3 roots,
+but does not convert the standalone synthetic V2 input. The prototype preserves
+canonical V3 correctly; its different import-root mapping changes synthetic V2.
+The verified published Ubuntu archive contains no xattr, ACL, sparse, FIFO or
+device header. These synthetic differences establish no regression for that
+archive and supply no authority to add arbitrary-archive support or new input
+restrictions. No repair or archive-contract change is established for canonical
+V3 by this comparison.
+
+All runtime-map effects above are Linux kernel observations, not gVisor
+observations. gVisor capability/ACL/set-ID behavior, including any pre-existing
+limitation, remains unqualified. An isolated backend comparison is useful only
+for a still-required effect; retain the actual baseline comparison before
+classifying any backend difference as a candidate regression.
+
+The operator's first recursive collector hit EACCES on a private baseline
+descendant after the observation completed. Execution 18415 only read the named
+original files. `operator-result.json` retains that error and source/command
+bindings; `collection-result.json` records all files present, free space and
+absent namespace holder 65091. No observation was repeated for collection.
+The top-level result string also does not establish success of the two candidate
+xattr snapshots; their original exit-1 records remain authoritative.
+
+The prior 26 focused controls, configured Ruff, complexity checks and hooks
+remain valid because this continuation changes only this report. The
+worker controls used controlled xattr bytes and credential-drop calls; those
+controls alone do not prove native enforcement. Lens's complete
+output-5 check `work-aeac4cf2781840ff93efa43bee252df2@3`, all 16 evidence references
+and its full prior checks carry forward. Its pending-native-comparison gap is
+now supplied; its remaining limits and full-issue abstention persist.
 
 The following steps describe remaining full-issue proof. Completed inventory,
 import and ordinary-map startup observations carry forward. These steps do not
@@ -349,14 +400,12 @@ select their replay or another platform attempt.
    effective delegation, active consumers and capacity. A distinct mapping
    needs genuinely delegated, different nondefault UID/GID bases. Record
    legitimate prerequisite preparation separately; do not weaken global policy.
-2. Create the supplementary specimens with `make_fixture.py --output
-   NEW_FIXTURE_DIRECTORY`. Its JSON output supplies each path and digest.
-   Generate them on Ubuntu: the capability and set-ID specimens copy that host's
-   `/bin/cat`, which must match the intended guest architecture.
-   Import each specimen independently through the same prototype. Compare the
-   matrix below with the existing path. Observe numeric host metadata, namespace
-   metadata, contents and effective access. A failed unsupported specimen must
-   remain a failed observation; do not strip it from a successful archive.
+2. Reuse the completed supplementary comparison. Any selected isolated gVisor
+   observation should use the retained candidate and baseline canonical trees
+   under `/home/agent/1553-native-metadata-g5`, with the same installed runtime.
+   Compare required ACL/private access, capability/set-ID effects and identities
+   33/65535 without repeating import or the completed guest journey. Do not add
+   previously unsupported backend behavior merely to match kernel observations.
 3. Resolve asynchronous cancellation and existing usable-guest preservation.
    Carry forward the completed small missing-cache/after-extraction cancellation
    controls. Inspect an incomplete or failed attempt before selecting any retry.
@@ -385,17 +434,17 @@ and the selected runtime/configuration must determine actual listener needs.
 
 | Case | Specimen / reached observation | Native comparison still required |
 | --- | --- | --- |
-| Ordinary/private files, directories, executable and set-ID modes | `canonical`; exhaustive mapping controls. Mac outer files preserved modes and mapped 1000:1000 to 502:20. Ubuntu ordinary-map root/user 1000 identity and home/workspace executable markers passed. | Another identity, boundary 65535, distinct maps, private staging/effective access and full published metadata comparison. |
+| Ordinary/private files, directories, executable and set-ID modes | Native canonical host/kernel observations match baseline, including IDs 33/65535, private access and set-ID execution. Mac outer modes/owners and Ubuntu ordinary-map root/user-1000 I/O passed. | Distinct delegated bases, applicable gVisor metadata/access/identity observations and full Mac runtime. |
 | Symbolic links and hardlinks | `canonical`, `escaping-link`; local external target and existing directory survived. Native published link targets/hardlink inode matched. | Supplementary confinement and existing **usable** guest preservation. |
-| Sparse files | `canonical` GNU 1.0 map/content control; real Mac image remained sparse. | Ubuntu allocation relative to baseline and image/VM contents. |
-| First in, first out (FIFO), character and block nodes | FIFO in `canonical`; `devices` contains character 1:3 and block 7:0. No such host-side node is in the published Linux archive. | Supplementary kernel privilege outcome and runtime requirement; do not assume mknod works in a user namespace. |
-| Extended attributes (xattrs) and capabilities | `canonical` has `user.*` and revision-3 (V3) capabilities rooted at 100000; revision-2 (V2) is separate in `v2-capability`. | V2/V3 root identity and capability effect in the intended runtime versus the existing path; other namespaces actually published. |
-| Access/default access control lists (ACLs) | Canonical principals/mask in `canonical`; out-of-range 42 in `raw-acl42` separately. | Host/runtime principals, masks and effective access. Raw 42 is characterization, not a host-ID passthrough requirement. |
+| Sparse files | Native canonical contents and 64 MiB logical/8 KiB allocation match baseline; real Mac image remained sparse. | Applicable image/VM contents. |
+| First in, first out (FIFO), character and block nodes | Native FIFO matches baseline. Candidate device creation fails EPERM and cleans its stage; privileged baseline succeeds. Published Linux archive requires neither. | Applicable Linux special-file results inside the Mac image/VM. No arbitrary host mknod support is required. |
+| Extended attributes (xattrs) and capabilities | Canonical user xattr/V3 roots and kernel execution masks match baseline. Separate synthetic V2 has different raw root, EOVERFLOW reads and capability effects. Published Ubuntu archive has no xattrs. | Applicable gVisor and Mac VM effects against existing behavior; no inferred arbitrary V2 support. |
+| Access/default access control lists (ACLs) | Canonical host/runtime-map principals, masks, inheritance and actual access match baseline. Raw 42 fails ACL restoration despite import exit 0. | Applicable gVisor/Mac VM behavior. Raw 42 remains characterization, not a passthrough requirement. |
 
 The actual Linux cache list uses build-account coordinates; the split extraction
 above removes that incidental owner from the namespace requirement. Native
-ordinary-map import passed. V2 capability root identity still needs observation:
-import root and runtime root intentionally have different mappings. No new
+ordinary-map import passed. Canonical V3 preserves the correct runtime root;
+the separate synthetic V2 difference is now observed. No new
 delegated range or required arbitrary-archive compatibility is inferred.
 
 The current Ubuntu reads are
@@ -430,29 +479,45 @@ access before any future decision or retry. Network allow alone grants no
 credential or route permission. Do not change package metadata or classify the
 retained Kali archive as the default to compensate.
 
-The retained-tree result resolves ordinary Ubuntu content/startup/identity/I/O
-uncertainty at its stated scope. At the reached reassessment, the next useful
-Ubuntu uncertainty is supplementary metadata and effective access against the
-existing baseline, including V2/V3 capability root identity. Matching regular
-payloads does not answer that question. Distinct maps also require actually
-delegated different UID/GID bases; the current account's equal bases do not
-supply them. This correction requests no protected replay or platform expansion.
-The original M / High estimate and reached cumulative 60-minute reassessment
-remain unchanged. Distinct mapping, the full metadata/baseline matrix, complete
-rootless journeys, existing usable-guest preservation and final independent
-go/no-go remain unproved. All seven criteria remain unchecked.
+The reached reassessment supports ordinary-map Ubuntu rootless preparation and
+kernel canonical-metadata parity. No canonical candidate regression is established
+by the supplementary comparison. Full feasibility remains **unproved**;
+production integration is not selected. Its smallest known implementation path
+remains archive-coordinate namespace extraction plus separate ordinary host-cache
+extraction, while preserving production's existing validation and confinement.
+No new capability rewrite, arbitrary-device support or policy restriction is
+justified by these observations.
+
+Remaining inputs are genuinely delegated different nondefault UID/GID bases;
+any necessary isolated gVisor baseline/candidate metadata/access comparison;
+complete pinned macOS preparation/runtime with Linux metadata inside the VM;
+and asynchronous cancellation with external-target/existing usable-guest
+preservation. The native canonical stages and unchanged runtime supply operands
+for a selected backend comparison; current equal delegations do not supply the
+distinct-map operand. The original Mac registry disposition must be resolved
+and effective access read before a future retry. These gaps require scoped
+operations or changed inputs, not replay of the successful import or journey.
+Sylab retains precisely identified protected operations; no new Craig input is
+needed to interpret 18414. This continuation selects no further native effect.
+M / High and the already reached cumulative 60-minute reassessment remain;
+there is no fresh allowance. Full independent go/no-go and all seven criteria
+remain open.
 Lens's complete checks `work-02b994e476b24b1ab60d8a287a60b041@3` and
 `work-ae9f361020754ce1ade43d65075f9f11@3` and `@5` retain prior controls and limits.
 The complete output-3 rejection `work-6460c275ae88410a88b9afed14fc435b@3`
 supplies F1 and carries those reviews forward. Its earlier pending-runtime
 observation is superseded by the original 18413 receipts, not by a replay.
 
-At `9b25f706`, CI workflow 43681382572 and CodeQL Analyze workflow
-43681382549 succeeded. The separate CodeQL alert check 132712786219 failed,
-with alert 567 still present. The executing tuple assignment supports a
-false-positive interpretation, not a waived or passing check. Proxy assurance
-workflow 43681382598 also failed and remains unwaived. Local CodeQL is unsupported
-on this Linux aarch64 worker. Relay owns CI and integration.
+At `0aa7b825`, Lint, Test CLI, Test Addons, Analyze and Blackbox assurance pass.
+Separate CodeQL check 132728825636/alert 567 and Proxy assurance workflow
+43686729911/job 132728651745 fail and remain unwaived. The executed producer/caller
+analysis supports a false-positive interpretation of the tuple assignment,
+not a waived or passing check. The Proxy assurance artifact compares against
+accepted source `8ba22365616d83b8b8b18b87781f0e9b9ad1e439` and reports 55 changed
+mapped decisions and 10 stale symbols. This is unresolved drift, not an accepted
+baseline update. Local CodeQL is unsupported on this Linux aarch64 worker.
+This report-only correction does not claim its new hosted checks passed.
+Relay owns CI and integration.
 This candidate establishes no merge approval or issue acceptance.
 
 ## Output retention
@@ -471,9 +536,11 @@ instance state, copied NATS bytes, workspace markers and compact results;
 no second guest image was created. Local `/home/agent/1553-runtime-pytest`
 contains disposable observer controls. Retain source, results and input
 identities under the existing storage policy; Sylab owns output retirement.
-The proposed `/home/agent/1553-native-metadata-g5` group contains small native
-specimens, candidate imports and privileged baseline stages. It is the next
-protected comparison input, not a new guest image. Local
+The actual `/home/agent/1553-native-metadata-g5` group contains small native
+specimens, candidate imports and privileged baseline stages. Its current consumer
+is interpretation/review of 18414; retain these operands for any selected isolated
+backend comparison. The original records and manifest are retained under
+`/evidence/operator/1553/metadata-18414`; no new guest image was created. Local
 `/home/agent/1553-metadata-pytest` contains disposable observer controls. Keep
 the original M / High estimate and reached cumulative 60-minute reassessment;
-interpret the protected comparison or its exact failure before further work.
+select only a decision-changing remaining operation before further execution.
