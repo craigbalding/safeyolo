@@ -173,8 +173,32 @@ def _render(suites: list[tuple[str, list[tuple[Path, list[TestClass]]]]]) -> str
                "A lifetimes-only run cannot complete the two-engine receipt. "
                "The mediated-services native phase uses controlled adapters and does not prove that either engine ran. "
                "These focused selectors are manual. Existing workflow selectors below retain their actual conditions; "
-               "no recurring real-engine deployment is inferred. BB-33 remains planned until #1553/#1554 have independent acceptance. "
+               "no recurring real-engine deployment is inferred. "
                "Accepted product evidence and its platform limits remain linked in the catalogue; a complete phase does not establish whole-control acceptance.")
+    out.append("")
+    out.append("For BB-33, #1553 feasibility is accepted; full #1554 production acceptance is pending. "
+               "The read-only `rootless-preparation` selector checks the retained native Linux storage receipt. "
+               "Obtain its sanitized report, SHA-256 and exact candidate revision from the execution owner's canonical result. "
+               "Keep the report private and choose a separate disk-backed output path. "
+               "From this checkout, inspect the options before supplying those inputs:")
+    out.append("")
+    out.append("```sh\n./tests/blackbox/run-controls.sh rootless-preparation --help\n```")
+    out.append("")
+    out.append("Supply `--source-report`, `--source-sha256`, `--install-commit` and `--output`. "
+               "The selector uses the existing bounded report reader and checks the digest before interpreting the report. "
+               "It recomputes the named storage actions, cache/upgrade operands, persistence, reported host-sudo result and cleanup. "
+               "Its output retains the original candidate, platform, prerequisites, execution identity, commands, setup failures and limits. "
+               "A missing field, failed action, changed selection/inode, observer error or cleanup failure produces exit 2 and `complete=false`. "
+               "Exit 0 means only that this selected retained witness is complete; `control_complete` remains false. "
+               "The selector does not execute recorded commands, authenticate an arbitrary report author or independently accept the product. "
+               "Installation/repeat/upgrade invocation remains attributed to the execution owner, outside the 32 storage actions. "
+               "Changed guest bytes, distinct mappings, extended/special metadata, failure/cancellation, existing-install preservation, "
+               "macOS production and deployed recurring cadence remain separate requirements. "
+               "To collect new storage evidence on an authorized prepared Linux host, use the storage driver from the matching product revision. "
+               "The [pending #1554 driver](https://github.com/craigbalding/safeyolo/blob/607d8488a7fdc5c0c6ada605077ca99b4cb21682/tests/blackbox/installed_storage.py) "
+               "carries the prepared instance's namespace authorization through acquisition. "
+               "This report observer does not bring that pending product interface into its base. "
+               "Do not replay a completed operation for report formatting.")
     out.append("")
     out.append(render_catalogue(REPO_ROOT))
     out.append("")

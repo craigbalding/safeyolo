@@ -30,7 +30,15 @@ Each native report records the selected and observed exact Cargo test names, exe
 
 With the matching native CLI/proxy/Coord binaries and existing fixture inputs prepared, `./tests/blackbox/run-controls.sh policy-recipe` selects deterministic preview/composition/redirect cases. It defaults to the accepted installed layout. `SAFEYOLO_AUTHORING_LAYOUT=source` explicitly selects source-layout proof, which proves neither package integrity nor installer behavior. `./tests/blackbox/run-controls.sh sudo-disclosure` selects the existing disclosure/consent/cleanup cases. That Linux fixture needs its documented guest sudo, ACL and archive tools; authentication modes are controlled. Its tiny metadata stages need the [native guest filesystem](../tests/test_linux_host.py); a nested 9p workspace cannot supply ACLs. Keep bulk inputs, pytest scratch and reports on disk. Use `SAFEYOLO_NATIVE_ARTIFACTS`, `SAFEYOLO_BUILD_PROFILE` and `SAFEYOLO_NATIVE_CLI` as their fixtures require. Both selections reuse named pytest receipts; required skips and teardown failures remain incomplete.
 
-For BB-31's real engine boundary, use `./tests/blackbox/run-controls.sh hyperlight-services --help` and the existing [two-engine driver](../tests/blackbox/host/hyperlight_services.py). It requires a matching protocol-3 artifact bundle, accessible Linux KVM or entitled Apple-silicon HVF, a new owned instance, empty private disk-backed scratch, authorized ports and a privately supplied scoped GitHub read credential. Its `procedure.json` records permitted/scope/lifetime cases per engine, host-observed invocation/artifact/authority identities and cleanup. A lifetimes-only run cannot complete the two-engine receipt. The mediated-services native phase uses controlled adapters and does not prove that either engine ran. These focused selectors are manual. Existing workflow selectors below retain their actual conditions; no recurring real-engine deployment is inferred. BB-33 remains planned until #1553/#1554 have independent acceptance. Accepted product evidence and its platform limits remain linked in the catalogue; a complete phase does not establish whole-control acceptance.
+For BB-31's real engine boundary, use `./tests/blackbox/run-controls.sh hyperlight-services --help` and the existing [two-engine driver](../tests/blackbox/host/hyperlight_services.py). It requires a matching protocol-3 artifact bundle, accessible Linux KVM or entitled Apple-silicon HVF, a new owned instance, empty private disk-backed scratch, authorized ports and a privately supplied scoped GitHub read credential. Its `procedure.json` records permitted/scope/lifetime cases per engine, host-observed invocation/artifact/authority identities and cleanup. A lifetimes-only run cannot complete the two-engine receipt. The mediated-services native phase uses controlled adapters and does not prove that either engine ran. These focused selectors are manual. Existing workflow selectors below retain their actual conditions; no recurring real-engine deployment is inferred. Accepted product evidence and its platform limits remain linked in the catalogue; a complete phase does not establish whole-control acceptance.
+
+For BB-33, #1553 feasibility is accepted; full #1554 production acceptance is pending. The read-only `rootless-preparation` selector checks the retained native Linux storage receipt. Obtain its sanitized report, SHA-256 and exact candidate revision from the execution owner's canonical result. Keep the report private and choose a separate disk-backed output path. From this checkout, inspect the options before supplying those inputs:
+
+```sh
+./tests/blackbox/run-controls.sh rootless-preparation --help
+```
+
+Supply `--source-report`, `--source-sha256`, `--install-commit` and `--output`. The selector uses the existing bounded report reader and checks the digest before interpreting the report. It recomputes the named storage actions, cache/upgrade operands, persistence, reported host-sudo result and cleanup. Its output retains the original candidate, platform, prerequisites, execution identity, commands, setup failures and limits. A missing field, failed action, changed selection/inode, observer error or cleanup failure produces exit 2 and `complete=false`. Exit 0 means only that this selected retained witness is complete; `control_complete` remains false. The selector does not execute recorded commands, authenticate an arbitrary report author or independently accept the product. Installation/repeat/upgrade invocation remains attributed to the execution owner, outside the 32 storage actions. Changed guest bytes, distinct mappings, extended/special metadata, failure/cancellation, existing-install preservation, macOS production and deployed recurring cadence remain separate requirements. To collect new storage evidence on an authorized prepared Linux host, use the storage driver from the matching product revision. The [pending #1554 driver](https://github.com/craigbalding/safeyolo/blob/607d8488a7fdc5c0c6ada605077ca99b4cb21682/tests/blackbox/installed_storage.py) carries the prepared instance's namespace authorization through acquisition. This report observer does not bring that pending product interface into its base. Do not replay a completed operation for report formatting.
 
 ## Complete control catalogue
 
@@ -879,6 +887,8 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-test-component-upgrade-py).
 - [tests/test_linux_host.py](../tests/test_linux_host.py#L53) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-linux-host-py).
+- [tests/blackbox/installed_storage.py::qualify](../tests/blackbox/installed_storage.py#L95) — Prepared native Linux installation; fresh acquisition and two systrap boots with root/user persistence. Evidence: Real native CLI and guest; sudo availability and legitimate preparation must be recorded separately; no platform or rootless result inferred from source selection.
+  Selection: manual; no recurring selector resolved.
 
 ### BB-29 — Named policy checks
 
@@ -1028,11 +1038,11 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **What and why:** Install/update/cleanup needs no sudo after prerequisites and retains required metadata/usable guest behavior.
 
-**Audit coverage:** Planned/incomplete: feasibility #1553 and implementation #1554 are open; their independent acceptance is required.
+**Audit coverage:** Feasibility #1553 is independently accepted. Production #1554 remains pending independent acceptance; retained Linux production observations are available.
 
-**Conformance / action:** Extend/write sudo-unavailable, regular/special metadata, distinct UID/GID, cancellation and old-install preservation cases.
+**Conformance / action:** The manual rootless-preparation selector checks a digest-bound retained Linux receipt: exact candidate/guest selection, 32 named storage actions, repeat and same-index upgrade operands, root/user persistent-file ownership, reported unavailable host sudo and owned cleanup. It runs no product commands. The existing installed_storage.py supplies the acquisition/two-boot witness on a prepared native Linux host.
 
-**Effort:** L. **Comments:** Current acquisition/archive witnesses may invoke guest sudo and do not prove rootless preparation. Await #1553/#1554; preserve special metadata, distinct UID/GID, cancellation, cache/update and existing-installation requirements. Other controls do not wait.
+**Effort:** L. **Comments:** Retain [accepted feasibility and its limits](https://github.com/craigbalding/safeyolo/issues/1553#issuecomment-6892802583). The observed [#1554 candidate](https://github.com/craigbalding/safeyolo/pull/1594/commits/607d8488a7fdc5c0c6ada605077ca99b4cb21682) covers Linux AMD64/default mappings, installation, repeat/cache reuse, explicit same-index upgrade and two systrap boots; original setup failures remain recorded. Installation/repeat/upgrade invocation is execution-owner evidence, outside the 32 storage actions. This is not changed-guest upgrade, distinct-map/extended-metadata, cancellation/old-install preservation, macOS production or recurring-cadence proof. The selector preserves these gaps and cannot accept BB-33. Existing privileged acquisition fixtures do not establish a rootless pass. Other controls do not wait.
 
 **Owner / remaining work:** [#1563](https://github.com/craigbalding/safeyolo/issues/1563). [Audit source / evidence context](https://github.com/craigbalding/safeyolo/issues/1553).
 
@@ -1050,6 +1060,10 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-test-component-upgrade-py).
 - [tests/test_linux_host.py](../tests/test_linux_host.py#L53) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-linux-host-py).
+- [tests/blackbox/rootless_preparation.py::observe](../tests/blackbox/rootless_preparation.py#L50) — Retained native Linux storage observations; recorded ordinary host identity and systrap guest root/user. Evidence: Manual run-controls.sh rootless-preparation; canonical source/digest supplied separately; recorded operands checked without command replay or independent product acceptance.
+  Selection: manual; no recurring selector resolved.
+- [tests/blackbox/installed_storage.py::qualify](../tests/blackbox/installed_storage.py#L95) — Prepared native Linux installation; fresh acquisition and two systrap boots with root/user persistence. Evidence: Real native CLI and guest; sudo availability and legitimate preparation must be recorded separately; no platform or rootless result inferred from source selection.
+  Selection: manual; no recurring selector resolved.
 
 ### BB-34 — Sudo disclosure
 

@@ -46,7 +46,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 
 
-def read_json(path: Path) -> dict:
+def read_json(path: Path, *, sha256: str | None = None) -> dict:
     """Read bounded regular reports without following candidate symlinks."""
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
@@ -56,6 +56,8 @@ def read_json(path: Path) -> dict:
         data = stream.read(MAX_REPORT_BYTES + 1)
     if len(data) > MAX_REPORT_BYTES:
         raise ValueError("report grew beyond the read bound")
+    if sha256 is not None and hashlib.sha256(data).hexdigest() != sha256:
+        raise ValueError("report SHA-256 differs from the supplied evidence reference")
     document = json.loads(data)
     if not isinstance(document, dict):
         raise ValueError("report must contain a JSON mapping")
