@@ -14,6 +14,12 @@ case $phase in
   hyperlight-services)
     exec uv run --frozen python tests/blackbox/host/hyperlight_services.py "$@" ;;
   rootless-preparation)
+    if [[ ${1:-} == --boot ]]; then
+      shift
+      export SAFEYOLO_BLACKBOX_LANE=systrap
+      exec uv run --frozen python tests/blackbox/execution_receipt.py \
+        --phase rootless-guest --lane systrap --run-id "$SAFEYOLO_BLACKBOX_RUN_ID" "$@"
+    fi
     if [[ ${1:-} == --execute ]]; then
       shift
       exec uv run --frozen python tests/blackbox/execution_receipt.py \

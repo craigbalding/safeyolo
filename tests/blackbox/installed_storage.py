@@ -6,6 +6,10 @@ saved Linux settings, an immutable public guest index and its retained archive.
 The probe creates fresh state, uses native acquisition, boots one systrap agent
 twice, and stops only that instance. It retains the reports and persistent data.
 It does not prepare the host or interrupt WSL or Windows.
+
+The rootless pytest selector reuses the selected prepared guest through
+``qualify(..., reuse_prepared_guest=True)``. It verifies the same archive and
+selection, then runs only the two-boot workload with fresh instance state.
 """
 
 from __future__ import annotations
@@ -92,7 +96,7 @@ def observation(output: str) -> dict:
     return json.loads(lines[0])
 
 
-def qualify(args: argparse.Namespace) -> None:
+def qualify(args: argparse.Namespace, *, reuse_prepared_guest: bool = False) -> None:
     assert platform.system() == "Linux" and os.getuid() != 0
     prepared, output = args.prepared_config.resolve(), args.output.resolve()
     package = dict(line.split("=", 1) for line in (prepared / "package-info").read_text().splitlines())
@@ -110,6 +114,10 @@ def qualify(args: argparse.Namespace) -> None:
                SAFEYOLO_RUNSC_DEBUG="1", SAFEYOLO_NATS_TEST_INSTANCE=uuid.uuid4().hex)
     report = {"result": "incomplete", "controller_source": subprocess.check_output(
         ["git", "-C", str(REPOSITORY), "rev-parse", "HEAD"], text=True).strip(),
+        "working_tree_changed": bool(subprocess.check_output(
+            ["git", "-C", str(REPOSITORY), "status", "--porcelain"])),
+        "run_id": os.environ.get("SAFEYOLO_BLACKBOX_RUN_ID"),
+        "reused_prepared_guest": reuse_prepared_guest,
         "package": package, "platform": platform.uname()._asdict(), "uid": os.getuid(),
         "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
         "linux_settings": settings, "archive": {"sha256": args.archive_sha256,
@@ -154,20 +162,25 @@ def qualify(args: argparse.Namespace) -> None:
         username = pwd.getpwuid(os.getuid()).pw_name
         run("subuids", ["getsubids", username])
         run("subgids", ["getsubids", "-g", username])
-        blobs = store / "blobs/sha256"
-        blobs.mkdir(parents=True)
-        # Copy verified bytes, never hard-link a retained input into mutable state.
-        shutil.copyfile(args.archive, blobs / args.archive_sha256)
-        common = ["--package-info", prepared / "package-info", "--store", store, "--index", args.index]
-        downloaded = run("native-download", [cli, "guest", "download", *common], timeout=180)
-        assert downloaded.stdout.strip() == args.index
-        selection = output / "selection.json"
-        acquired = output / "acquired"
-        # Acquisition stages in a fresh root; authorization belongs to the
-        # supplied prepared instance, as it does for the normal installer.
-        run("native-acquire", [cli, "--root", acquired, "guest", "acquire", *common,
-                              "--namespace-root", prepared,
-                              "--host-settings", args.host_settings, "--write-selection", selection], timeout=300)
+        if reuse_prepared_guest:
+            # The rootless guest selector tests usability, not another download
+            # or import. Borrow the already selected immutable lower tree.
+            selection = prepared / "share/guest-selection.json"
+        else:
+            blobs = store / "blobs/sha256"
+            blobs.mkdir(parents=True)
+            # Copy verified bytes, never hard-link a retained input into mutable state.
+            shutil.copyfile(args.archive, blobs / args.archive_sha256)
+            common = ["--package-info", prepared / "package-info", "--store", store, "--index", args.index]
+            downloaded = run("native-download", [cli, "guest", "download", *common], timeout=180)
+            assert downloaded.stdout.strip() == args.index
+            selection = output / "selection.json"
+            acquired = output / "acquired"
+            # Acquisition stages in a fresh root; authorization belongs to the
+            # supplied prepared instance, as it does for the normal installer.
+            run("native-acquire", [cli, "--root", acquired, "guest", "acquire", *common,
+                                  "--namespace-root", prepared,
+                                  "--host-settings", args.host_settings, "--write-selection", selection], timeout=300)
         selected = json.loads(selection.read_text())
         report["selection"] = selected
         save()
@@ -176,8 +189,10 @@ def qualify(args: argparse.Namespace) -> None:
                                        "size": args.archive.stat().st_size}
         assert selected["platform"] == package["platform"].replace("-", "/", 1)
         assert selected["compatibility"] == package["guest_compatibility"]
-        index = json.loads((blobs / args.index.removeprefix("sha256:")).read_text())
-        report["guest_annotations"] = index["annotations"]
+        assert selected["repository"] == package["guest_repository"]
+        if not reuse_prepared_guest:
+            index = json.loads((blobs / args.index.removeprefix("sha256:")).read_text())
+            report["guest_annotations"] = index["annotations"]
         assets = Path(selected["assets"])
         tree = assets / "rootfs-tree"
         report["mapped_root"] = info(tree)
@@ -191,13 +206,14 @@ def qualify(args: argparse.Namespace) -> None:
         with prepare_log.open("w") as log:
             prepare_native_instance(prepared, root, log=log)
         copy_prepared_nats(prepared, root)
-        # Replace only this instance's borrowed share alias with the acquired selection.
-        (root / "share").unlink()
-        (root / "share").mkdir()
-        run("install-acquired-assets", ["bash", "-c",
-            'source "$1"; install_platform_assets "$2" "$3"', "install-assets",
-            REPOSITORY / "scripts/native_package.sh", assets, root / "share"])
-        shutil.copyfile(selection, root / "share/guest-selection.json")
+        if not reuse_prepared_guest:
+            # Replace only this instance's borrowed share alias with the acquired selection.
+            (root / "share").unlink()
+            (root / "share").mkdir()
+            run("install-acquired-assets", ["bash", "-c",
+                'source "$1"; install_platform_assets "$2" "$3"', "install-assets",
+                REPOSITORY / "scripts/native_package.sh", assets, root / "share"])
+            shutil.copyfile(selection, root / "share/guest-selection.json")
         workspace.mkdir()
         native("create-agent", "agent", "create", "bbtest", "--workspace", workspace)
         native("start-proxy", "start")

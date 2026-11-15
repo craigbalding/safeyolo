@@ -17,7 +17,8 @@ CANDIDATE = "a" * 40
 
 
 @pytest.mark.parametrize("sudo_attempt", [False, True])
-def test_executable_fixture_reuses_preparation_and_detects_unavailable_sudo(tmp_path, monkeypatch, sudo_attempt):
+@pytest.mark.parametrize("boot", [False, True])
+def test_executable_fixture_reuses_preparation_and_detects_unavailable_sudo(tmp_path, monkeypatch, sudo_attempt, boot):
     from tests import test_guest_acquisition as acquisition
 
     prepared = tmp_path / "prepared"
@@ -30,14 +31,23 @@ def test_executable_fixture_reuses_preparation_and_detects_unavailable_sudo(tmp_
     monkeypatch.setenv("SAFEYOLO_BLACKBOX_ROOTLESS", "1")
     monkeypatch.setenv("SAFEYOLO_ROOTLESS_PREPARED_CONFIG", str(prepared))
     assert acquisition.native_cli.__wrapped__() == cli
-    fixture = acquisition.registry.__wrapped__(tmp_path, cli)
-    *_unused, environment = next(fixture)
-    assert environment["SAFEYOLO_TEST_NAMESPACE_ROOT"] == str(prepared)
+    if boot:
+        for name, value in (("GUEST_ARCHIVE", str(tmp_path / "guest.tar.zst")),
+                            ("GUEST_SHA256", "a" * 64), ("GUEST_INDEX", "sha256:" + "b" * 64)):
+            monkeypatch.setenv("SAFEYOLO_ROOTLESS_" + name, value)
+        (prepared / "package-info").write_text("source_commit=" + "c" * 40 + "\n")
+        fixture = acquisition.prepared_rootless_guest.__wrapped__(tmp_path, monkeypatch)
+        assert next(fixture).prepared_config == prepared
+        environment = dict(os.environ)
+    else:
+        fixture = acquisition.registry.__wrapped__(tmp_path, cli)
+        *_unused, environment = next(fixture)
+        assert environment["SAFEYOLO_TEST_NAMESPACE_ROOT"] == str(prepared)
     assert not (prepared / "host").exists()  # Preparation is reused, never created here.
     if sudo_attempt:
         result = subprocess.run(["sudo", "-n", "true"], env=environment, capture_output=True)
         assert result.returncode == 93
-        with pytest.raises(AssertionError, match="candidate attempted unavailable sudo"):
+        with pytest.raises(AssertionError, match="candidate attempted unavailable (host )?sudo"):
             next(fixture)
     else:
         with pytest.raises(StopIteration):
@@ -45,18 +55,20 @@ def test_executable_fixture_reuses_preparation_and_detects_unavailable_sudo(tmp_
 
 
 @pytest.mark.parametrize("collect_only", [False, True])
-def test_executable_shell_selector_cannot_pass_without_prepared_inputs(tmp_path, collect_only):
+@pytest.mark.parametrize("boot", [False, True])
+def test_executable_shell_selector_cannot_pass_without_prepared_inputs(tmp_path, collect_only, boot):
     output = tmp_path / "phase.json"
     env = {key: value for key, value in os.environ.items()
            if not key.startswith("SAFEYOLO_ROOTLESS_")}
     env.update(SAFEYOLO_NATIVE_CLI=str(tmp_path / "missing-cli"), SAFEYOLO_BLACKBOX_RUN_ID="rootless-missing")
-    result = subprocess.run([str(ROOT / "tests/blackbox/run-controls.sh"), "rootless-preparation", "--execute",
+    result = subprocess.run([str(ROOT / "tests/blackbox/run-controls.sh"), "rootless-preparation", "--boot" if boot else "--execute",
                              "--output", str(output), "--", "-q", *(["--collect-only"] if collect_only else [])],
                             cwd=ROOT, env=env, capture_output=True, text=True, timeout=30)
     report = json.loads(output.read_text())
     assert result.returncode != 0 and report["complete"] is False, result.stdout + result.stderr
-    assert report["boundary"] == "installed-cli/native-kernel" and report["control_complete"] is False
-    assert report["run_id"] == "rootless-missing" and len(report["selected"]) >= 29
+    assert report["boundary"] == ("installed-cli/gvisor-systrap" if boot else "installed-cli/native-kernel")
+    assert report["control_complete"] is False
+    assert report["run_id"] == "rootless-missing" and len(report["selected"]) >= (1 if boot else 29)
     assert report["problems"]
 
 

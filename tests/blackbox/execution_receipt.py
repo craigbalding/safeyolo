@@ -245,7 +245,7 @@ class PytestReceipt:
         self.document["enabled_optional"] = [node for node, variable, value, _reason in OPTIONAL_CASES
                                              if (os.environ.get(variable) == value if value else bool(os.environ.get(variable)))]
         self.document["guest"] = json.loads(os.environ.get("SAFEYOLO_BLACKBOX_GUEST_IDENTITY", "null"))
-        if phase in {"policy-recipe", "sudo-disclosure", "rootless-preparation"}:
+        if phase in {"policy-recipe", "sudo-disclosure", "rootless-preparation", "rootless-guest"}:
             self.document.update(focused_inputs(root, phase))
         save(self.path, self.document)
 
@@ -283,7 +283,7 @@ def focused_inputs(root: Path, phase: str) -> dict:
               "controller_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
               "working_tree_changed": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=root)),
               "product_binaries": {}}
-    if phase in {"sudo-disclosure", "rootless-preparation"}:
+    if phase in {"sudo-disclosure", "rootless-preparation", "rootless-guest"}:
         binaries = [Path(os.environ.get("SAFEYOLO_NATIVE_CLI", root / "proxy/target/release/safeyolo"))]
     else:
         from tests.proxy_contracts.test_native_policy_cli import native_inputs
@@ -297,6 +297,14 @@ def focused_inputs(root: Path, phase: str) -> dict:
                           "SAFEYOLO_ROOTLESS_SPECIMENS")},
                       remaining=["Booted guest/platform proof is separate from these process and native-kernel cases.",
                                  "This manually selected phase establishes no deployed recurring cadence."])
+    if phase == "rootless-guest":
+        result.update(boundary="installed-cli/gvisor-systrap", control_complete=False,
+                      prerequisites={name: os.environ.get(name) for name in (
+                          "SAFEYOLO_ROOTLESS_PREPARED_CONFIG", "SAFEYOLO_ROOTLESS_GUEST_ARCHIVE",
+                          "SAFEYOLO_ROOTLESS_GUEST_INDEX", "SAFEYOLO_ROOTLESS_GUEST_SHA256")},
+                      remaining=["Process/native-metadata obligations use the separate rootless-preparation --execute phase.",
+                                 "Native metadata parity does not establish new gVisor ACL/capability enforcement.",
+                                 "This manually selected phase establishes no macOS or deployed recurring cadence proof."])
     for binary in binaries:
         if binary.is_file():
             with binary.open("rb") as stream:
@@ -439,7 +447,7 @@ def main() -> int:
         return 2
 
     os.chdir(root)
-    if args.phase == "rootless-preparation":
+    if args.phase in {"rootless-preparation", "rootless-guest"}:
         os.environ["SAFEYOLO_BLACKBOX_ROOTLESS"] = "1"
     plugin = PytestReceipt(args.output.resolve(), args.phase, args.lane, args.run_id, root)
     # Keep the report reader usable in the stdlib-only installation bootstrap.

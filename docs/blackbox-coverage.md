@@ -43,7 +43,19 @@ export SAFEYOLO_ROOTLESS_SPECIMENS=/path/to/retained/specimens
   --output /path/to/new/rootless.json -- -q --basetemp=/path/to/new/scratch
 ```
 
-The existing pytest receipt records the installed binary hash, controller revision, selected inputs, parameter cases and setup/call/teardown results. Metadata command output and comparison operands are retained in scratch before assertions; owned remapped trees are removed through the delegated namespace. A missing prerequisite, skipped/unselected obligation, observer failure or cleanup failure cannot complete the phase. Exit 0 and `complete=true` cover only the executed native process/kernel boundary; `control_complete=false` preserves separate booted guest/platform acceptance. Native capability, ACL and set-ID parity does not establish new gVisor enforcement. The selector is manual and establishes no deployed recurring cadence. Reuse existing installed and platform proof; do not repeat a completed product journey for bookkeeping.
+The existing pytest receipt records the installed binary hash, controller revision, selected inputs, parameter cases and setup/call/teardown results. Metadata command output and comparison operands are retained in scratch before assertions; owned remapped trees are removed through the delegated namespace. A missing prerequisite, skipped/unselected obligation, observer failure or cleanup failure cannot complete the phase. Exit 0 and `complete=true` cover only the executed native process/kernel boundary; `control_complete=false` preserves the separate booted-guest phase and independent control acceptance. Native capability, ACL and set-ID parity does not establish new gVisor enforcement. The selector is manual and establishes no deployed recurring cadence. Reuse existing installed and platform proof; do not repeat a completed product journey for bookkeeping.
+
+Use `rootless-preparation --boot` for the maintained guest-usability phase on the same authorized Linux host. Keep the prepared-instance and native-CLI variables above. The prepared package must include runsc, the selected public guest and a prepared NATS binary. Supply the retained archive and its verified digest/index from the product acceptance record. The procedure verifies those inputs, reuses the existing lower tree and creates fresh instance state. It performs no download, import or reinstall. From this checkout, set these local paths and immutable identities before selecting a new disk-backed result directory:
+
+```sh
+export SAFEYOLO_ROOTLESS_GUEST_ARCHIVE=/path/to/retained/guest.tar.zst
+export SAFEYOLO_ROOTLESS_GUEST_SHA256="<verified-archive-sha256>"
+export SAFEYOLO_ROOTLESS_GUEST_INDEX="sha256:<verified-index-sha256>"
+./tests/blackbox/run-controls.sh rootless-preparation --boot \
+  --output /path/to/new/rootless-guest.json -- -q --basetemp=/path/to/new/guest-scratch
+```
+
+The boot receipt requires successful setup/call/teardown for its guest-usability test. The storage report in scratch retains package/controller identities, executable hashes, actual runtime and UID/GID maps, two distinct guest lifetimes, root/user 1000 file effects in home/workspace, persistence and fresh-overlay checks, and owned cleanup. Host sudo is recorded and unavailable through PATH; guest sudo remains available for the root workload. Each phase keeps `control_complete=false`: carry matching process/native-kernel evidence alongside this boot result for independent BB-33 acceptance. A missing input, omitted case, failed observer or cleanup cannot complete the phase. This Linux usability phase adds no gVisor ACL/capability enforcement, macOS normal-shutdown, changed-public-guest upgrade or deployed-cadence claim.
 
 For BB-33, #1553 feasibility and all seven #1554 product criteria have independent acceptance at [607d8488](https://github.com/craigbalding/safeyolo/issues/1554#issuecomment-6899892091). Maintained blackbox integration and control acceptance remain with #1563. The read-only `rootless-preparation` selector checks the retained native Linux storage receipt. Obtain its sanitized report, SHA-256 and exact candidate revision from the execution owner's canonical result. Keep the report private and choose a separate disk-backed output path. From this checkout, inspect the options before supplying those inputs:
 
@@ -892,7 +904,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 - [tests/proxy_contracts/test_native_managed_state.py](../tests/proxy_contracts/test_native_managed_state.py#L22) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-managed-state-py).
-- [tests/test_guest_acquisition.py](../tests/test_guest_acquisition.py#L358) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
+- [tests/test_guest_acquisition.py](../tests/test_guest_acquisition.py#L360) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-guest-acquisition-py).
 - [tests/test_guest_upgrade.py](../tests/test_guest_upgrade.py#L67) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-guest-upgrade-py).
@@ -900,7 +912,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-test-component-upgrade-py).
 - [tests/test_linux_host.py](../tests/test_linux_host.py#L53) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-linux-host-py).
-- [tests/blackbox/installed_storage.py::qualify](../tests/blackbox/installed_storage.py#L95) — Prepared native Linux installation; fresh acquisition and two systrap boots with root/user persistence. Evidence: Real native CLI and guest; sudo availability and legitimate preparation must be recorded separately; no platform or rootless result inferred from source selection.
+- [tests/blackbox/installed_storage.py::qualify](../tests/blackbox/installed_storage.py#L99) — Prepared native Linux installation; acquisition or prepared-guest reuse and two systrap boots with root/user persistence. Evidence: Rootless --boot uses the maintained pytest receipt and unavailable host sudo; standalone acquisition keeps its original scope. Both record actual package/guest/maps and owned cleanup; manual selection establishes no recurring cadence.
   Selection: manual; no recurring selector resolved.
 
 ### BB-29 — Named policy checks
@@ -1053,9 +1065,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Audit coverage:** Feasibility #1553 and all seven #1554 product criteria at 607d8488 are independently accepted. Maintained blackbox integration and control acceptance remain with #1563.
 
-**Conformance / action:** The manual rootless-preparation --execute selector runs native install/update/cache, active cancellation, failed-stage cleanup and existing-install preservation controls with recorded preparation and unavailable candidate sudo. It also runs the accepted default/distinct-map production metadata witness against the retained baseline. Every selected parameter case and setup/call/teardown must pass. Without --execute, the selector remains a read-only digest-bound storage-receipt observer. installed_storage.py supplies the separate acquisition/two-boot witness.
+**Conformance / action:** The manual rootless-preparation --execute selector runs native install/update/cache, active cancellation, failed-stage cleanup and existing-install preservation controls with recorded preparation and unavailable candidate sudo. It also runs the accepted default/distinct-map production metadata witness against the retained baseline. Every selected parameter case and setup/call/teardown must pass. The separate --boot selection reuses installed_storage.py and the prepared public guest for two systrap boots, root/user persistence, fresh-overlay checks and owned cleanup with host sudo unavailable. Without --execute or --boot, the selector remains a read-only digest-bound storage-receipt observer.
 
-**Effort:** L. **Comments:** Retain [accepted feasibility](https://github.com/craigbalding/safeyolo/issues/1553#issuecomment-6892802583) and [all-seven product acceptance](https://github.com/craigbalding/safeyolo/issues/1554#issuecomment-6899892091). The executable fixture requires prepared Linux AMD64 UID/GID1000, delegated default/distinct ranges, the retained baseline and four verified specimens. It imports small synthetic trees, observes native ACL/xattr/capability/set-ID effects and specific unsupported refusals, then cleans owned trees without sudo. These are native-kernel/process results, not new gVisor or macOS enforcement. The retained storage receipt separately covers installation, repeat/cache, same-index upgrade and two usable systrap boots; its original setup failures and narrower metadata/failure limits remain. Product Mac usability does not prove normal shutdown; installed same-index upgrades do not prove changed guest bytes. Manual selection proves no deployed recurring cadence. Missing prerequisites, omitted cases, observer or cleanup failure remain incomplete. Independent BB-33 acceptance remains separate.
+**Effort:** L. **Comments:** Retain [accepted feasibility](https://github.com/craigbalding/safeyolo/issues/1553#issuecomment-6892802583) and [all-seven product acceptance](https://github.com/craigbalding/safeyolo/issues/1554#issuecomment-6899892091). The executable fixture requires prepared Linux AMD64 UID/GID1000, delegated default/distinct ranges, the retained baseline and four verified specimens. It imports small synthetic trees, observes native ACL/xattr/capability/set-ID effects and specific unsupported refusals, then cleans owned trees without sudo. The process phase proves native-kernel metadata; the separate boot phase proves gVisor usability, not new gVisor ACL/capability enforcement or macOS qualification. The boot phase verifies the retained archive/index, records package and runtime hashes, observes actual UID/GID maps and reuses the lower tree without download, import or reinstall. The retained storage receipt separately covers installation, repeat/cache, same-index upgrade and two usable systrap boots; its original setup failures and narrower metadata/failure limits remain. Product Mac usability does not prove normal shutdown; installed same-index upgrades do not prove changed guest bytes. Manual selection proves no deployed recurring cadence. Missing prerequisites, omitted cases, observer or cleanup failure remain incomplete. Independent BB-33 acceptance remains separate.
 
 **Owner / remaining work:** [#1563](https://github.com/craigbalding/safeyolo/issues/1563). [Audit source / evidence context](https://github.com/craigbalding/safeyolo/issues/1553).
 
@@ -1065,7 +1077,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 - [tests/proxy_contracts/test_native_managed_state.py](../tests/proxy_contracts/test_native_managed_state.py#L22) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-managed-state-py).
-- [tests/test_guest_acquisition.py](../tests/test_guest_acquisition.py#L358) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
+- [tests/test_guest_acquisition.py](../tests/test_guest_acquisition.py#L360) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-guest-acquisition-py).
 - [tests/test_guest_upgrade.py](../tests/test_guest_upgrade.py#L67) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-guest-upgrade-py).
@@ -1077,7 +1089,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Selection: manual; no recurring selector resolved.
 - [tests/blackbox/rootless_metadata.py::qualify](../tests/blackbox/rootless_metadata.py#L107) — Prepared Linux AMD64 ordinary UID/GID1000; native-kernel metadata and default/distinct UID/GID imports. Evidence: Manual rootless-preparation --execute; retained baseline/specimens, installed CLI and declared namespace preparation; no guest boot or deployed cadence inferred.
   Selection: manual; no recurring selector resolved.
-- [tests/blackbox/installed_storage.py::qualify](../tests/blackbox/installed_storage.py#L95) — Prepared native Linux installation; fresh acquisition and two systrap boots with root/user persistence. Evidence: Real native CLI and guest; sudo availability and legitimate preparation must be recorded separately; no platform or rootless result inferred from source selection.
+- [tests/blackbox/installed_storage.py::qualify](../tests/blackbox/installed_storage.py#L99) — Prepared native Linux installation; acquisition or prepared-guest reuse and two systrap boots with root/user persistence. Evidence: Rootless --boot uses the maintained pytest receipt and unavailable host sudo; standalone acquisition keeps its original scope. Both record actual package/guest/maps and owned cleanup; manual selection establishes no recurring cadence.
   Selection: manual; no recurring selector resolved.
 
 ### BB-34 — Sudo disclosure
@@ -2227,52 +2239,55 @@ Selection: phase `host-lifecycle` (host); phase `listener-restart` (host).
 
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review')`).
 
-- [`tests/test_guest_acquisition.py::test_native_acquisition_omits_only_publisher_identical_config`](../tests/test_guest_acquisition.py#L358)
-- [`tests/test_guest_acquisition.py::test_native_acquisition_refuses_invalid_config_before_archive`](../tests/test_guest_acquisition.py#L400)
-- [`tests/test_guest_acquisition.py::test_copied_instance_keeps_installed_guest_binding`](../tests/test_guest_acquisition.py#L441)
-- [`tests/test_guest_acquisition.py::test_explicit_first_acquisition_selects_each_index_without_discovery`](../tests/test_guest_acquisition.py#L487)
-- [`tests/test_guest_acquisition.py::test_custom_profile_requires_explicit_index_and_reuses_native_preparation`](../tests/test_guest_acquisition.py#L523)
+- [`tests/test_guest_acquisition.py::test_native_acquisition_omits_only_publisher_identical_config`](../tests/test_guest_acquisition.py#L360)
+- [`tests/test_guest_acquisition.py::test_native_acquisition_refuses_invalid_config_before_archive`](../tests/test_guest_acquisition.py#L402)
+- [`tests/test_guest_acquisition.py::test_copied_instance_keeps_installed_guest_binding`](../tests/test_guest_acquisition.py#L443)
+- [`tests/test_guest_acquisition.py::test_explicit_first_acquisition_selects_each_index_without_discovery`](../tests/test_guest_acquisition.py#L489)
+- [`tests/test_guest_acquisition.py::test_custom_profile_requires_explicit_index_and_reuses_native_preparation`](../tests/test_guest_acquisition.py#L525)
 Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review')`).
 
-- [`tests/test_guest_acquisition.py::test_guest_validation_failure_keeps_verified_archive_for_retry`](../tests/test_guest_acquisition.py#L547)
+- [`tests/test_guest_acquisition.py::test_guest_validation_failure_keeps_verified_archive_for_retry`](../tests/test_guest_acquisition.py#L549)
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review')`).
 
-- [`tests/test_guest_acquisition.py::test_linux_extraction_preserves_metadata_across_tar_records`](../tests/test_guest_acquisition.py#L575)
+- [`tests/test_guest_acquisition.py::test_linux_extraction_preserves_metadata_across_tar_records`](../tests/test_guest_acquisition.py#L577)
 Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review')`).
 
-- [`tests/test_guest_acquisition.py::test_native_selection_pins_one_index_and_keeps_existing_installation`](../tests/test_guest_acquisition.py#L621)
+- [`tests/test_guest_acquisition.py::test_native_selection_pins_one_index_and_keeps_existing_installation`](../tests/test_guest_acquisition.py#L623)
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review')`).
 
-- [`tests/test_guest_acquisition.py::test_native_acquisition_refuses_before_activation`](../tests/test_guest_acquisition.py#L675)
-- [`tests/test_guest_acquisition.py::test_guest_download_pins_index_and_reuses_verified_inputs`](../tests/test_guest_acquisition.py#L734)
-- [`tests/test_guest_acquisition.py::test_pinned_handoff_revalidates_retained_content`](../tests/test_guest_acquisition.py#L770)
-- [`tests/test_guest_acquisition.py::test_acquisition_reads_the_verified_file_and_refuses_nonregular_cache`](../tests/test_guest_acquisition.py#L828)
-- [`tests/test_guest_acquisition.py::test_download_metadata_keeps_discovery_fresh_and_checks_package_compatibility`](../tests/test_guest_acquisition.py#L857)
+- [`tests/test_guest_acquisition.py::test_native_acquisition_refuses_before_activation`](../tests/test_guest_acquisition.py#L677)
+- [`tests/test_guest_acquisition.py::test_guest_download_pins_index_and_reuses_verified_inputs`](../tests/test_guest_acquisition.py#L736)
+- [`tests/test_guest_acquisition.py::test_pinned_handoff_revalidates_retained_content`](../tests/test_guest_acquisition.py#L772)
+- [`tests/test_guest_acquisition.py::test_acquisition_reads_the_verified_file_and_refuses_nonregular_cache`](../tests/test_guest_acquisition.py#L830)
+- [`tests/test_guest_acquisition.py::test_download_metadata_keeps_discovery_fresh_and_checks_package_compatibility`](../tests/test_guest_acquisition.py#L859)
 Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review')`).
 
-- [`tests/test_guest_acquisition.py::test_early_preparation_defers_unavailable_setup_and_reports_cleanup_failure`](../tests/test_guest_acquisition.py#L885)
-- [`tests/test_guest_acquisition.py::test_guest_download_interruption_removes_partial_blob_and_allows_retry`](../tests/test_guest_acquisition.py#L932)
+- [`tests/test_guest_acquisition.py::test_early_preparation_defers_unavailable_setup_and_reports_cleanup_failure`](../tests/test_guest_acquisition.py#L887)
+- [`tests/test_guest_acquisition.py::test_guest_download_interruption_removes_partial_blob_and_allows_retry`](../tests/test_guest_acquisition.py#L934)
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review')`).
 
-- [`tests/test_guest_acquisition.py::test_guest_download_timing_is_opt_in`](../tests/test_guest_acquisition.py#L958)
+- [`tests/test_guest_acquisition.py::test_guest_download_timing_is_opt_in`](../tests/test_guest_acquisition.py#L960)
 Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review')`).
 
-- [`tests/test_guest_acquisition.py::test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes`](../tests/test_guest_acquisition.py#L991)
+- [`tests/test_guest_acquisition.py::test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes`](../tests/test_guest_acquisition.py#L993)
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review')`).
 
-- [`tests/test_guest_acquisition.py::test_first_acquisition_rejects_wrong_index_digest`](../tests/test_guest_acquisition.py#L1113)
-- [`tests/test_guest_acquisition.py::test_invalid_acquisition_index_options_make_no_changes`](../tests/test_guest_acquisition.py#L1130)
-- [`tests/test_guest_acquisition.py::test_generated_malformed_acquisition_digests_make_no_changes`](../tests/test_guest_acquisition.py#L1142)
-- [`tests/test_guest_acquisition.py::test_pinned_acquisition_preserves_nonfresh_roots`](../tests/test_guest_acquisition.py#L1154)
-- [`tests/test_guest_acquisition.py::test_generated_archive_paths_cannot_escape_staging`](../tests/test_guest_acquisition.py#L1172)
+- [`tests/test_guest_acquisition.py::test_first_acquisition_rejects_wrong_index_digest`](../tests/test_guest_acquisition.py#L1115)
+- [`tests/test_guest_acquisition.py::test_invalid_acquisition_index_options_make_no_changes`](../tests/test_guest_acquisition.py#L1132)
+- [`tests/test_guest_acquisition.py::test_generated_malformed_acquisition_digests_make_no_changes`](../tests/test_guest_acquisition.py#L1144)
+- [`tests/test_guest_acquisition.py::test_pinned_acquisition_preserves_nonfresh_roots`](../tests/test_guest_acquisition.py#L1156)
+- [`tests/test_guest_acquisition.py::test_generated_archive_paths_cannot_escape_staging`](../tests/test_guest_acquisition.py#L1174)
 Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review')`).
 
-- [`tests/test_guest_acquisition.py::test_rootless_production_metadata_and_distinct_mappings`](../tests/test_guest_acquisition.py#L1199)
+- [`tests/test_guest_acquisition.py::test_rootless_production_metadata_and_distinct_mappings`](../tests/test_guest_acquisition.py#L1201)
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review')`).
 
-- [`tests/test_guest_acquisition.py::test_native_client_reports_bad_proxy_and_ca_without_panicking`](../tests/test_guest_acquisition.py#L1211)
-- [`tests/test_guest_acquisition.py::test_verified_bundle_installer_and_proxy_restart_retain_guest`](../tests/test_guest_acquisition.py#L1220)
-- [`tests/test_guest_acquisition.py::test_host_archive_smoke_runs_normal_native_guest_acquisition`](../tests/test_guest_acquisition.py#L1289)
+- [`tests/test_guest_acquisition.py::test_native_client_reports_bad_proxy_and_ca_without_panicking`](../tests/test_guest_acquisition.py#L1213)
+- [`tests/test_guest_acquisition.py::test_verified_bundle_installer_and_proxy_restart_retain_guest`](../tests/test_guest_acquisition.py#L1222)
+- [`tests/test_guest_acquisition.py::test_host_archive_smoke_runs_normal_native_guest_acquisition`](../tests/test_guest_acquisition.py#L1291)
+Selection: phase `rootless-guest` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review')`).
+
+- [`tests/test_guest_acquisition.py::test_prepared_rootless_guest_remains_usable_after_restart`](../tests/test_guest_acquisition.py#L1369)
 
 <a id="witness-tests-test-guest-upgrade-py"></a>
 ### [`tests/test_guest_upgrade.py`](../tests/test_guest_upgrade.py)
