@@ -1,0 +1,326 @@
+{
+  "issue": "https://github.com/craigbalding/safeyolo/issues/1553",
+  "trusted_base": "6ee7e8bb308fcd865fa0a244b455c7dcc86b9bb6",
+  "os_release": "macOS 26.6.2 build 25G83",
+  "tool_versions": {
+    "tar": "bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 ",
+    "zstd": "*** Zstandard CLI (64-bit) v1.5.7, by Yann Collet ***"
+  },
+  "descriptor_chain": {
+    "repository": "ghcr.io/craigbalding/safeyolo-guest",
+    "index": {
+      "sha256": "0e8b83d2f81646f43ae401e4a1bb70b23055d396631661b4bc90bb3e02fb1ac7",
+      "bytes": 1580
+    },
+    "manifest": {
+      "sha256": "06be6bfb39b6c0d938fd0c8fbcad0a20aa499b6f9babc52e5279682d13aa29b9",
+      "bytes": 1159
+    },
+    "archive": {
+      "mediaType": "application/vnd.safeyolo.guest.v1.tar+zstd",
+      "digest": "sha256:01d3a982fc07370d73e31a0f5314416ce5af6511e5338e96bc63be2315e1fe8a",
+      "size": 803564415,
+      "annotations": {
+        "org.opencontainers.image.title": "guest.tar.zst"
+      }
+    },
+    "annotations": {
+      "dev.safeyolo.guest.build-base": "docker.io/kalilinux/kali-rolling@sha256:8bdf3d4362277054650a7a1aabb1324111111fcb946ff35bf38bb2257b884823",
+      "dev.safeyolo.guest.build-inputs": "sha256:0b5bdc05f1d1ee1131c1f27785f39137209074f985ee70e342345ffc49cc90b2",
+      "dev.safeyolo.guest.compatibility": "v1",
+      "dev.safeyolo.guest.profile": "kali-pentest",
+      "org.opencontainers.image.created": "2026-10-31T09:40:10.411462+00:00",
+      "org.opencontainers.image.revision": "fc3b28a8e5a304b0d6a0d79712298daa7c65794d",
+      "org.opencontainers.image.source": "https://github.com/craigbalding/safeyolo",
+      "org.opencontainers.image.version": "guest-2026-10-31.274"
+    },
+    "config": {
+      "mediaType": "application/vnd.safeyolo.guest.platform.v1+json",
+      "digest": "sha256:4de592d1cb9277f9323417054fa2f85eeb1bb94642d3028159dcf76c81b404c0",
+      "size": 38
+    },
+    "config_cached": false
+  },
+  "filesystem": {
+    "command": [
+      "/sbin/mount",
+      "-t",
+      "apfs"
+    ],
+    "exit": 0,
+    "data_volume": [
+      "/dev/disk3s5 on /System/Volumes/Data (apfs, local, journaled, nobrowse, protect, root data)"
+    ],
+    "stderr": ""
+  },
+  "inventory": {
+    "archive_sha256": "01d3a982fc07370d73e31a0f5314416ce5af6511e5338e96bc63be2315e1fe8a",
+    "counts": {
+      "0": 4
+    },
+    "owners": [
+      [
+        1000,
+        1000
+      ]
+    ],
+    "logical_regular_bytes": 3398864773,
+    "records": [
+      {
+        "name": "Image",
+        "type": "0",
+        "uid": 1000,
+        "gid": 1000,
+        "mode": "0o600",
+        "size": 8772096,
+        "link": "",
+        "device": [
+          0,
+          0
+        ],
+        "sparse": null,
+        "pax": {
+          "mtime": "1793438359.30842669"
+        }
+      },
+      {
+        "name": "initramfs.cpio.gz",
+        "type": "0",
+        "uid": 1000,
+        "gid": 1000,
+        "mode": "0o600",
+        "size": 2713140,
+        "link": "",
+        "device": [
+          0,
+          0
+        ],
+        "sparse": null,
+        "pax": {
+          "mtime": "1793438359.316426879"
+        }
+      },
+      {
+        "name": "rootfs-base.ext4",
+        "type": "0",
+        "uid": 1000,
+        "gid": 1000,
+        "mode": "0o644",
+        "size": 3387375616,
+        "link": "",
+        "device": [
+          0,
+          0
+        ],
+        "sparse": [
+          [
+            0,
+            1748992
+          ],
+          [
+            1789952,
+            10915840
+          ],
+          [
+            34361344,
+            99864576
+          ],
+          [
+            135876608,
+            266784768
+          ],
+          [
+            404312064,
+            266784768
+          ],
+          [
+            672747520,
+            266784768
+          ],
+          [
+            941182976,
+            266784768
+          ],
+          [
+            1209618432,
+            266907648
+          ],
+          [
+            1543503872,
+            603992064
+          ],
+          [
+            2147520512,
+            4096
+          ],
+          [
+            2167922688,
+            276226048
+          ],
+          [
+            3355443200,
+            8192
+          ],
+          [
+            3387375616,
+            0
+          ]
+        ],
+        "pax": {
+          "GNU.sparse.major": "1",
+          "GNU.sparse.minor": "0",
+          "GNU.sparse.name": "rootfs-base.ext4",
+          "GNU.sparse.realsize": "3387375616",
+          "mtime": "1793438391.273181202"
+        }
+      },
+      {
+        "name": "build-inputs.json",
+        "type": "0",
+        "uid": 1000,
+        "gid": 1000,
+        "mode": "0o644",
+        "size": 3921,
+        "link": "",
+        "device": [
+          0,
+          0
+        ],
+        "sparse": null,
+        "pax": {
+          "mtime": "1793438391.298181792"
+        }
+      }
+    ]
+  },
+  "preparation_witness": {
+    "observed_at": "2026-11-15T03:32:24.476482+00:00",
+    "platform": {
+      "system": "Darwin",
+      "node": "bristol.lan",
+      "release": "25.6.0",
+      "version": "Darwin Kernel Version 25.6.0: Fri Jul 31 19:17:26 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6041",
+      "machine": "arm64",
+      "processor": "arm"
+    },
+    "uid": 502,
+    "gid": 20,
+    "command": [
+      "/opt/homebrew/opt/python@3.14/bin/python3.14",
+      "/Users/sy-agent/f1553-20261115/import_guest.py",
+      "prepare",
+      "--platform",
+      "darwin",
+      "--archive",
+      "/Users/sy-agent/.local/share/safeyolo/guests/blobs/sha256/01d3a982fc07370d73e31a0f5314416ce5af6511e5338e96bc63be2315e1fe8a",
+      "--sha256",
+      "01d3a982fc07370d73e31a0f5314416ce5af6511e5338e96bc63be2315e1fe8a",
+      "--output",
+      "/Users/sy-agent/f1553-20261115/native/prepared"
+    ],
+    "prototype_sha256": "f12d280d6803b170aa2258f0d5bc334c78c7f66b65dee2ae3ff842368c15b90f",
+    "package_info": "source_commit=c6dd3b8bfef1a2e5f49e1fbc273c4b2ac2b46a52\nprofile=debug\nplatform=darwin-arm64\nminimum_runtime=26.0\nguest_compatibility=v1\nguest_repository=ghcr.io/craigbalding/safeyolo-guest\nguest_discovery_tag=compat-v1\n",
+    "sudo_in_candidate_path": null,
+    "tools": {
+      "tar": "/usr/bin/bsdtar",
+      "zstd": "/opt/homebrew/Cellar/zstd/1.5.7_1/bin/zstd",
+      "rm": "/bin/rm"
+    },
+    "result": "native extraction succeeded; VM startup and Linux metadata unproved",
+    "host_files": [
+      {
+        "name": "Image",
+        "uid": 502,
+        "gid": 20,
+        "mode": "0o100600",
+        "logical_bytes": 8772096,
+        "allocated_bytes": 8773632
+      },
+      {
+        "name": "initramfs.cpio.gz",
+        "uid": 502,
+        "gid": 20,
+        "mode": "0o100600",
+        "logical_bytes": 2713140,
+        "allocated_bytes": 2715648
+      },
+      {
+        "name": "rootfs-base.ext4",
+        "uid": 502,
+        "gid": 20,
+        "mode": "0o100644",
+        "logical_bytes": 3387375616,
+        "allocated_bytes": 2335162368
+      }
+    ],
+    "exit": 0,
+    "free_bytes_after": 22567608320,
+    "preparation": {
+      "uid": 502,
+      "gid": 20,
+      "maps": {},
+      "stage": "/Users/sy-agent/f1553-20261115/native/prepared/extract-kiyduh7b",
+      "archive_sha256": "01d3a982fc07370d73e31a0f5314416ce5af6511e5338e96bc63be2315e1fe8a",
+      "result": "prepared; backend startup and metadata comparison still required",
+      "tar": [
+        "tar",
+        "-xpf",
+        "-",
+        "-C",
+        "/Users/sy-agent/f1553-20261115/native/prepared/extract-kiyduh7b",
+        "--",
+        "Image",
+        "initramfs.cpio.gz",
+        "rootfs-base.ext4"
+      ],
+      "elapsed_seconds": 12.197793667204678
+    }
+  },
+  "limits": [
+    "Published Kali-pentest profile only; no default-guest claim.",
+    "Package c6dd3b8b was inspected for compatibility; no runtime executable or VZ guest was started.",
+    "sudo was absent from the candidate PATH; no system-wide revocation or syscall-trace claim.",
+    "Linux metadata inside ext4 and the VM remains unobserved.",
+    "Cached index and manifest hashes were verified and the pinned archive was verified on its open descriptor. The config blob was absent from the retained cache; no new full OCI admission claimed."
+  ],
+  "native_cancellation": {
+    "command": [
+      "/opt/homebrew/bin/python3",
+      "/Users/sy-agent/f1553-20261115/import_guest.py",
+      "prepare",
+      "--platform",
+      "darwin",
+      "--archive",
+      "/Users/sy-agent/f1553-20261115/cleanup-fixture.tar.zst",
+      "--sha256",
+      "c264ee8b6ca143a5912e20f806de4c121bc7f9106a69c4d15cae679316babed0",
+      "--output",
+      "/Users/sy-agent/f1553-20261115/cancelled",
+      "--cancel-after-extract"
+    ],
+    "exit": 1,
+    "preparation": {
+      "uid": 502,
+      "gid": 20,
+      "maps": {},
+      "stage": "/Users/sy-agent/f1553-20261115/cancelled/extract-f_b6pl1p",
+      "archive_sha256": "c264ee8b6ca143a5912e20f806de4c121bc7f9106a69c4d15cae679316babed0",
+      "result": "failed/cancelled; private stage removed",
+      "tar": [
+        "tar",
+        "-xpf",
+        "-",
+        "-C",
+        "/Users/sy-agent/f1553-20261115/cancelled/extract-f_b6pl1p",
+        "--",
+        "Image",
+        "initramfs.cpio.gz",
+        "rootfs-base.ext4"
+      ],
+      "error": "Requested cancellation after child completion",
+      "elapsed_seconds": 0.01540920790284872
+    },
+    "stage_absent": true,
+    "scope": "native macOS small-fixture cancellation cleanup; no VM/existing-usable-guest claim"
+  }
+}
