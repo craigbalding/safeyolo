@@ -1022,7 +1022,10 @@ def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, e
         assert admission.returncode == (0 if selected else 1), (name, condition, admission.stderr)
 
 
-def test_general_python_workflow_uses_quick_pr_and_full_overnight_selections():
+@pytest.mark.parametrize("event,timeout_minutes", [
+    ("push", 15), ("pull_request", 15), ("schedule", 10), ("workflow_dispatch", 10),
+])
+def test_general_python_workflow_uses_quick_pr_and_full_overnight_selections(event, timeout_minutes):
     workflow = yaml.safe_load(WORKFLOW.with_name("ci.yml").read_text())
     for job_name, quick_name, all_name, matrix_key in (
         ("test-addons", "Quick runner and workflow checks", "All retained Python tests overnight", "python-version"),
@@ -1034,6 +1037,13 @@ def test_general_python_workflow_uses_quick_pr_and_full_overnight_selections():
         assert steps[quick_name]["if"] == "github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'"
         assert "schedule" in job["strategy"]["matrix"][matrix_key]
         assert "install.sh" not in steps[quick_name]["run"]
+
+    timeout = str(workflow["jobs"]["test-addons"]["timeout-minutes"])
+    timeout = timeout.removeprefix("${{").removesuffix("}}")
+    timeout = timeout.replace("github.event_name", repr(event))
+    # These comparisons and nonzero numeric choices share Actions' truth table.
+    timeout = timeout.replace("&&", " and ").replace("||", " or ")
+    assert eval(timeout, {"__builtins__": {}}, {}) == timeout_minutes
 
 
 @pytest.mark.parametrize("failure,diagnostic_status", [
