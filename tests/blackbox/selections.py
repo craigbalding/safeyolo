@@ -60,11 +60,12 @@ PYTEST_PHASES = {
         "tests/test_guest_upgrade.py::test_failed_activation_is_retryable_and_bad_selected_inputs_can_be_rolled_back",
         "tests/test_guest_upgrade.py::test_killed_archive_pull_preserves_selection_and_next_upgrade_recovers",
     )),
+    "rootless-guest": ("host", ("tests/test_guest_acquisition.py::test_prepared_rootless_guest_remains_usable_after_restart",)),
 }
 
 # These are native process boundaries. Real Hyperlight engines use the existing
 # hyperlight_services.py driver. The rootless selector also offers a separate
-# retained-storage observer; neither boundary establishes whole BB-33 coverage.
+# retained-storage observer and a separate maintained booted-guest phase.
 NATIVE_PHASES = {
     "named-checks": (("lib", "policy::checks::tests"),
                      ("lib", "policy::checks::fixture_tests"),

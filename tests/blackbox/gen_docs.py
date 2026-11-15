@@ -200,9 +200,32 @@ def _render(suites: list[tuple[str, list[tuple[Path, list[TestClass]]]]]) -> str
                "in scratch before assertions; owned remapped trees are removed through the delegated namespace. "
                "A missing prerequisite, skipped/unselected obligation, observer failure or cleanup failure cannot complete the phase. "
                "Exit 0 and `complete=true` cover only the executed native process/kernel boundary; `control_complete=false` "
-               "preserves separate booted guest/platform acceptance. Native capability, ACL and set-ID parity does not establish "
+               "preserves the separate booted-guest phase and independent control acceptance. Native capability, ACL and set-ID parity does not establish "
                "new gVisor enforcement. The selector is manual and establishes no deployed recurring cadence. "
                "Reuse existing installed and platform proof; do not repeat a completed product journey for bookkeeping.")
+    out.append("")
+    out.append("Use `rootless-preparation --boot` for the maintained guest-usability phase on the same authorized "
+               "Linux host. Keep the prepared-instance and native-CLI variables above. The prepared package must include "
+               "runsc, the selected public guest and a prepared NATS binary. Supply the retained archive and its verified "
+               "digest/index from the product acceptance record. The procedure verifies those inputs, reuses the existing "
+               "lower tree and creates fresh instance state. It performs no download, import or reinstall. "
+               "From this checkout, set these local paths and immutable identities before selecting a new disk-backed result directory:")
+    out.append("")
+    out.append('```sh\nexport SAFEYOLO_ROOTLESS_GUEST_ARCHIVE=/path/to/retained/guest.tar.zst\n'
+               'export SAFEYOLO_ROOTLESS_GUEST_SHA256="<verified-archive-sha256>"\n'
+               'export SAFEYOLO_ROOTLESS_GUEST_INDEX="sha256:<verified-index-sha256>"\n'
+               './tests/blackbox/run-controls.sh rootless-preparation --boot \\\n'
+               '  --output /path/to/new/rootless-guest.json -- -q --basetemp=/path/to/new/guest-scratch\n```')
+    out.append("")
+    out.append("The boot receipt requires successful setup/call/teardown for its guest-usability test. "
+               "The storage report in scratch retains package/controller identities, executable hashes, actual runtime "
+               "and UID/GID maps, two distinct guest lifetimes, root/user 1000 file effects in home/workspace, "
+               "persistence and fresh-overlay checks, and owned cleanup. Host sudo is recorded and unavailable through PATH; "
+               "guest sudo remains available for the root workload. Each phase keeps `control_complete=false`: "
+               "carry matching process/native-kernel evidence alongside this boot result for independent BB-33 acceptance. "
+               "A missing input, omitted case, failed observer or cleanup cannot complete the phase. "
+               "This Linux usability phase adds no gVisor ACL/capability enforcement, macOS normal-shutdown, "
+               "changed-public-guest upgrade or deployed-cadence claim.")
     out.append("")
     out.append("For BB-33, #1553 feasibility and all seven #1554 product criteria have independent acceptance at "
                "[607d8488](https://github.com/craigbalding/safeyolo/issues/1554#issuecomment-6899892091). "

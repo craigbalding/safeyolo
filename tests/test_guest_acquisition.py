@@ -1,9 +1,11 @@
 """Drive native OCI acquisition through TLS, extraction and installed selection.
 
 The registry is an owned local fixture reached through the maintained CONNECT
-parent. These are source controls, not public GHCR or booted platform acceptance.
+parent. Acquisition cases are source controls. The explicit rootless guest
+selection reuses an installed public guest for two real systrap boots.
 """
 
+import argparse
 import copy
 import hashlib
 import io
@@ -1335,3 +1337,37 @@ def test_host_archive_smoke_runs_normal_native_guest_acquisition(registry, tmp_p
     assert continuity["result"] == "installed_native_continuity_passed"
     assert continuity["agents_started"] == 0 and continuity["cleanup"] == "stopped"
     assert f"sha256:{archive_digest}" in result.stdout
+
+
+@pytest.fixture
+def prepared_rootless_guest(tmp_path, monkeypatch):
+    if os.environ.get("SAFEYOLO_BLACKBOX_ROOTLESS") != "1":
+        pytest.skip("select rootless-preparation --boot on a prepared Linux host")
+    prepared, _settings = rootless_settings()
+    assert Path(os.environ["SAFEYOLO_NATIVE_CLI"]).samefile(prepared / "bin/safeyolo"), \
+        "select the prepared package's native CLI"
+    package = dict(line.split("=", 1) for line in (prepared / "package-info").read_text().splitlines())
+    tools = tmp_path / "host-tools"
+    tools.mkdir()
+    attempts = tmp_path / "unexpected-host-sudo"
+    sudo = tools / "sudo"
+    sudo.write_text('#!/bin/sh\nprintf "unexpected host sudo\\n" >> "$SAFEYOLO_TEST_SUDO_ATTEMPTS"\nexit 93\n')
+    sudo.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("SAFEYOLO_TEST_SUDO_ATTEMPTS", str(attempts))
+    try:
+        yield argparse.Namespace(
+            prepared_config=prepared, host_settings=prepared / "config.toml",
+            archive=Path(os.environ["SAFEYOLO_ROOTLESS_GUEST_ARCHIVE"]),
+            archive_sha256=os.environ["SAFEYOLO_ROOTLESS_GUEST_SHA256"],
+            index=os.environ["SAFEYOLO_ROOTLESS_GUEST_INDEX"],
+            install_commit=package["source_commit"], output=tmp_path / "guest")
+    finally:
+        assert not attempts.exists(), "candidate attempted unavailable host sudo"
+
+
+def test_prepared_rootless_guest_remains_usable_after_restart(prepared_rootless_guest):
+    """Keep root/user files and ownership; discard only the owned root overlay."""
+    from tests.blackbox.installed_storage import qualify
+
+    qualify(prepared_rootless_guest, reuse_prepared_guest=True)
