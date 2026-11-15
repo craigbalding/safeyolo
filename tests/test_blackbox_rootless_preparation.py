@@ -16,6 +16,50 @@ ROOT = Path(__file__).resolve().parents[1]
 CANDIDATE = "a" * 40
 
 
+@pytest.mark.parametrize("sudo_attempt", [False, True])
+def test_executable_fixture_reuses_preparation_and_detects_unavailable_sudo(tmp_path, monkeypatch, sudo_attempt):
+    from tests import test_guest_acquisition as acquisition
+
+    prepared = tmp_path / "prepared"
+    (prepared / "bin").mkdir(parents=True)
+    cli = prepared / "bin/safeyolo"
+    cli.touch()
+    (prepared / "config.toml").write_text(
+        f"[linux]\nhost_uid={os.getuid()}\nhost_gid={os.getgid()}\nuid_base=100000\ngid_base=100000\n")
+    monkeypatch.setenv("SAFEYOLO_NATIVE_CLI", str(cli))
+    monkeypatch.setenv("SAFEYOLO_BLACKBOX_ROOTLESS", "1")
+    monkeypatch.setenv("SAFEYOLO_ROOTLESS_PREPARED_CONFIG", str(prepared))
+    assert acquisition.native_cli.__wrapped__() == cli
+    fixture = acquisition.registry.__wrapped__(tmp_path, cli)
+    *_unused, environment = next(fixture)
+    assert environment["SAFEYOLO_TEST_NAMESPACE_ROOT"] == str(prepared)
+    assert not (prepared / "host").exists()  # Preparation is reused, never created here.
+    if sudo_attempt:
+        result = subprocess.run(["sudo", "-n", "true"], env=environment, capture_output=True)
+        assert result.returncode == 93
+        with pytest.raises(AssertionError, match="candidate attempted unavailable sudo"):
+            next(fixture)
+    else:
+        with pytest.raises(StopIteration):
+            next(fixture)
+
+
+@pytest.mark.parametrize("collect_only", [False, True])
+def test_executable_shell_selector_cannot_pass_without_prepared_inputs(tmp_path, collect_only):
+    output = tmp_path / "phase.json"
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("SAFEYOLO_ROOTLESS_")}
+    env.update(SAFEYOLO_NATIVE_CLI=str(tmp_path / "missing-cli"), SAFEYOLO_BLACKBOX_RUN_ID="rootless-missing")
+    result = subprocess.run([str(ROOT / "tests/blackbox/run-controls.sh"), "rootless-preparation", "--execute",
+                             "--output", str(output), "--", "-q", *(["--collect-only"] if collect_only else [])],
+                            cwd=ROOT, env=env, capture_output=True, text=True, timeout=30)
+    report = json.loads(output.read_text())
+    assert result.returncode != 0 and report["complete"] is False, result.stdout + result.stderr
+    assert report["boundary"] == "installed-cli/native-kernel" and report["control_complete"] is False
+    assert report["run_id"] == "rootless-missing" and len(report["selected"]) >= 29
+    assert report["problems"]
+
+
 @pytest.fixture
 def source():
     """Match the fields produced by installed_storage and the execution owner."""
