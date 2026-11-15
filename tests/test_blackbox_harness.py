@@ -2690,6 +2690,110 @@ def test_installed_sections_reuse_an_artifact_install_without_reinstalling_or_se
         assert row["prepared_config_dir"] == str(source)
 
 
+@pytest.mark.parametrize("lane,configured_parent,failure", [
+    ("systrap", False, None), ("systrap", True, None),
+    ("kvm", False, None), ("vz", False, None),
+    ("systrap", True, "assertion"), ("systrap", True, "cleanup"),
+])
+def test_installed_boundary_paths_fit_delegated_sockets_and_keep_owned_cleanup(
+    tmp_path, monkeypatch, installed_section_commands, lane, configured_parent, failure
+):
+    from tests.blackbox import execution_receipt as receipts
+    from tests.blackbox.selections import BOUNDARY_SECTIONS, PROCEDURES, SECTIONS
+
+    # Keep fixture state on disk. An alias must not hide the canonical length.
+    parent = Path("/var/tmp").resolve()
+    monkeypatch.setattr(Path, "home", lambda: parent)
+    alias = tmp_path / "state-parent"
+    alias.symlink_to(parent, target_is_directory=True)
+    if configured_parent:
+        monkeypatch.setenv("SAFEYOLO_BLACKBOX_STATE_PARENT", str(alias))
+    else:
+        monkeypatch.delenv("SAFEYOLO_BLACKBOX_STATE_PARENT", raising=False)
+    sections = tuple(section for section in BOUNDARY_SECTIONS if section in SECTIONS[lane])
+    artifacts = tmp_path / "reports"
+    monkeypatch.setattr(sys, "argv", ["run-installed", lane, "--artifacts", str(artifacts),
+                                     *[item for section in sections for item in ("--section", section)]])
+    monkeypatch.setattr(installed_sections.subprocess, "check_output",
+                        lambda args, **kwargs: "a" * 40 if "rev-parse" in args else "")
+    run_command, cleanup = subprocess.run, installed_sections.cleanup_instance
+    roots, cleaned, directories = [], [], []
+    make_directory = tempfile.mkdtemp
+
+    def state_directory(**kwargs):
+        directory = Path(make_directory(**kwargs))
+        directories.append(directory.resolve())
+        assert kwargs["dir"] == (alias if configured_parent else parent)
+        return str(directory)
+
+    def run_boundary(arguments, **kwargs):
+        if not arguments[1].endswith("installed_boundaries.py"):
+            return run_command(arguments, **kwargs)
+        selected = dict(zip(arguments[2::2], arguments[3::2], strict=True))
+        root, output = Path(selected["--root"]), Path(selected["--output"])
+        section, env = selected["--section"], kwargs["env"]
+        roots.append(root)
+        assert root.parent == directories[0] and not root.exists()
+        assert root == root.resolve() and root.parent.parent == parent
+        assert output == artifacts / section
+        assert env["SAFEYOLO_TEST_CONFIG_DIR"] == str(root)
+        assert env["SAFEYOLO_COORD_DATA_DIR"] == str(root / "data/coord")
+        assert selected["--prepared-config"] == str(root.parent / "prepared")
+        assert selected["--revision"] == "a" * 40 and selected["--lane"] == lane
+        # This is the full Linux delegated-job suffix from jobs.rs/network.rs.
+        suffix = Path("data/job-XXXXXX/agents") / ("job-" + "a" * 32) / "proxy/proxy.sock"
+        assert len(bytes(Path("/home/agent/sy-systrap-19p__oi_/job-network") / suffix)) == 120
+        normal_socket = Path("/home/agent") / root.parent.name / root.name / suffix
+        assert len(bytes(normal_socket)) < 108
+        # Darwin jobs use their separately selected TMPDIR. VZ instance sockets
+        # still use this root and must fit Darwin's 104-byte bound with NUL.
+        darwin_socket = lane == "vz" or sys.platform == "darwin"
+        path = root / ("data/vm-control/bbtest.sock" if darwin_socket else suffix)
+        if darwin_socket:
+            assert len(bytes(path)) + 1 <= 104
+        path.parent.mkdir(parents=True)
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(path))
+        path.unlink()
+        (root / "config.toml").write_text("owned boundary instance\n")
+        failed = section == "job-network" and failure is not None
+        receipts.save(output / "procedure.json", {
+            "section": section, "run_id": env["SAFEYOLO_BLACKBOX_RUN_ID"], "lane": lane,
+            "finished": not failed, "checkpoints": list(PROCEDURES[section][1])[:1 if failed else None],
+            "identities": {"product": {"source_revision": "a" * 40},
+                           "controller": {"controller_revision": "b" * 40, "controller_dirty": False},
+                           "guest_selection": {"index": "fixture"}},
+        })
+        receipts.save(output / "boundary-result.json", {
+            "finished": not failed, "cleanup_failures": ["owned fixture cleanup failed"]
+            if failed and failure == "cleanup" else [],
+        })
+        return subprocess.CompletedProcess(arguments, int(failed))
+
+    def clean_boundary(cli, root):
+        cleaned.append(root)
+        return cleanup(cli, root)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", state_directory)
+    monkeypatch.setattr(installed_sections.subprocess, "run", run_boundary)
+    monkeypatch.setattr(installed_sections, "cleanup_instance", clean_boundary)
+    try:
+        assert installed_sections.main() == {None: 0, "assertion": 1, "cleanup": 2}[failure]
+        rows = json.loads((artifacts / "installed-sections.json").read_text())["sections"]
+        expected = sections[:2] if failure == "cleanup" else sections
+        assert [row["section"] for row in rows] == list(expected)
+        assert [row["config_dir"] for row in rows] == list(map(str, roots))
+        assert len(set(roots)) == len(roots) and roots == cleaned
+        for row in rows:
+            failed = row["section"] == "job-network" and failure is not None
+            assert row["execution"]["complete"] is not failed
+            assert row["result"] == ("cleanup_failure" if failed and failure == "cleanup" else
+                                     "assertion_failure" if failed else "passed")
+    finally:
+        for directory in directories:
+            shutil.rmtree(directory)
+
+
 @pytest.mark.parametrize("runtime_present", [True, False])
 def test_installed_section_host_collection_uses_prepared_runtime(
     tmp_path, monkeypatch, installed_section_commands, runtime_present

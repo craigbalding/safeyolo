@@ -578,7 +578,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/host/job_network.py::main](../tests/blackbox/host/job_network.py#L412) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/host/job_network.py::main](../tests/blackbox/host/job_network.py#L420) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `job-network`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `kvm` section `job-network`; default `vz` section `job-network`.
 
 ### BB-18 — Local peer support

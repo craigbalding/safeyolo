@@ -19,6 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import tomlkit
 
 from tests.blackbox import execution_receipt as receipts
 from tests.blackbox import installed_boundaries as boundaries
@@ -29,6 +30,26 @@ from tests.blackbox.selections import BOUNDARY_SECTIONS, PROCEDURES, SECTIONS
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
+@pytest.mark.parametrize("grant,valid", [
+    ({"capability": "reader", "token": "job-secret"}, True),
+    ({"capability": "reader", "token": "job-secret", "account": "agent"}, True),
+    ({"capability": "reader", "token": "job-secret", "account": "foreign"}, False),
+    ({"capability": "reader", "token": "job-secret", "account": ""}, False),
+    ({"capability": "writer", "token": "job-secret", "account": "agent"}, False),
+    ({"capability": "reader", "token": "other", "account": "agent"}, False),
+    ({"capability": "reader", "account": "agent"}, False),
+    ({"token": "job-secret", "account": "agent"}, False),
+    ({"capability": "reader", "token": "job-secret", "account": "agent", "host": "foreign"}, False),
+])
+def test_restored_job_grant_preserves_effective_account_capability_and_credential(tmp_path, grant, valid):
+    # The explicit default is the native-authorized grant retained in execution 18382.
+    (tmp_path / "policy.toml").write_text(tomlkit.dumps({"agents": {"gate:proof": {"services": {"simple": grant}}}}))
+    if valid:
+        job_network.assert_restored_gate_grant(tmp_path)
+    else:
+        with pytest.raises(AssertionError, match="saved gate authority changed"):
+            job_network.assert_restored_gate_grant(tmp_path)
 
 @pytest.fixture
 def job_observer_cli(tmp_path):

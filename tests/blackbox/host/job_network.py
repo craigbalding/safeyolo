@@ -318,6 +318,15 @@ def lifecycle_job(args, mode, observations):
                                    check=True, capture_output=True, timeout=10)
 
 
+def assert_restored_gate_grant(root: Path) -> None:
+    """Check the fixture's saved authority after live revoke/authorize."""
+    settings = tomlkit.parse((root / "policy.toml").read_text())
+    grant = dict(settings["agents"]["gate:proof"]["services"]["simple"])
+    # Native authorization and authority compilation both default to agent.
+    grant.setdefault("account", "agent")
+    assert grant == {"capability": "reader", "token": "job-secret", "account": "agent"}, "saved gate authority changed"
+
+
 def run(args, receipt=None):
     observations = []
     original = {args.base_root / name: (args.base_root / name).read_bytes()
@@ -389,8 +398,7 @@ def run(args, receipt=None):
     # and reload metadata can change. The donor instance stays byte-identical.
     for path, content in original.items():
         assert path.read_bytes() == content, path
-    settings = tomlkit.parse((args.root / "policy.toml").read_text())
-    assert settings["agents"]["gate:proof"]["services"]["simple"] == {"capability": "reader", "token": "job-secret"}
+    assert_restored_gate_grant(args.root)
     assert len(observations) == 8 and all(row["credential_replaced"] and not row["gateway_token_leaked"] for row in observations)
     assert not (args.root / "data/ready.json").exists(), "proxy readiness remains after shutdown"
     rows = [json.loads(line) for line in (args.root / "logs/audit.jsonl").read_text().splitlines()]

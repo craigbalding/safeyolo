@@ -34,6 +34,9 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 # run-tests.sh reserves this result for failed cleanup when invoked by this
 # loop. Its ordinary public infrastructure/cleanup exit remains 2.
 INNER_CLEANUP_FAILURE_EXIT = 3
+# Linux jobs append data/job-XXXXXX/agents/job-<32hex>/proxy/proxy.sock.
+# Keep instance paths short; artifacts and reports retain the section names.
+BOUNDARY_INSTANCE_NAMES = {"job-sandbox": "j", "job-network": "n", "mounts": "m", "docker": "d"}
 
 
 def copy_prepared_nats(source: Path, root: Path) -> None:
@@ -212,7 +215,7 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
         env.pop("SAFEYOLO_RUNSC_PLATFORM", None)
     overall = 0
     for section in sections:
-        instance = directory / section
+        instance = directory / BOUNDARY_INSTANCE_NAMES.get(section, section)
         section_artifacts = artifacts / section
         section_env = dict(env, SAFEYOLO_TEST_CONFIG_DIR=str(instance), SAFEYOLO_TEST_AGENT="bbtest",
                            SAFEYOLO_BLACKBOX_SECTION_RUN="1",
@@ -374,9 +377,9 @@ def main() -> int:
         parser.error("--listener-restart requires --section isolation")
     # Keep downloaded/build inputs on disk-backed storage. Each invocation owns
     # a new parent; failed section logs remain available for diagnosis.
-    # Short roots also keep configured UDS paths within macOS's pathname limit.
-    directory = Path(tempfile.mkdtemp(prefix=f"sy-{args.lane}-", dir=Path(os.environ.get(
-        "SAFEYOLO_BLACKBOX_STATE_PARENT", Path.home()))))
+    # Short names leave room for delegated Linux job and VZ instance sockets.
+    directory = Path(tempfile.mkdtemp(prefix="sy-", dir=Path(os.environ.get(
+        "SAFEYOLO_BLACKBOX_STATE_PARENT", Path.home())))).resolve()
     print(f"Prepared product and section state: {directory}", flush=True)
     return run_sections(args.lane, sections, checkout, revision, directory, args.artifacts.resolve(),
                         operator_journey=args.operator_journey, prepared_config=prepared_config,

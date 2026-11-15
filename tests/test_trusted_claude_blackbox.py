@@ -582,13 +582,13 @@ def prepared_invocation(retained_invocation):
         instance.mkdir()
         source = pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR'])
         (instance/'config.toml').write_bytes((source/'config.toml').read_bytes())
-        with (root/'events').open('a') as output:
-            output.write(json.dumps({'stage':instance.name, 'instance':str(instance), 'umask':os.umask(0o022)})+'\\n')
         artifacts = pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR'])
+        with (root/'events').open('a') as output:
+            output.write(json.dumps({'stage':artifacts.name, 'instance':str(instance), 'umask':os.umask(0o022)})+'\\n')
         context = {'platform':'systrap', 'agent':'bbtest', 'pid':123, 'start_token':'controlled-birth'}
         save(artifacts/'platform.json', context)
         os.environ['SAFEYOLO_BLACKBOX_GUEST_IDENTITY'] = json.dumps(context)
-        for phase in SECTION_DRIVERS[instance.name]:
+        for phase in SECTION_DRIVERS[artifacts.name]:
             if phase in PYTEST_PHASES:
                 nodes = phase_functions(phase, root)
                 save(artifacts/f'pytest-{phase}.json', {
@@ -606,7 +606,7 @@ def prepared_invocation(retained_invocation):
                 for checkpoint in PROCEDURES[phase][1]:
                     receipt.checkpoint(checkpoint)
         save(artifacts/'boundary-result.json', {'finished':True, 'cleanup_failures':[]})
-        if instance.name == 'isolation':
+        if artifacts.name == 'isolation':
             # This Ubuntu caller fixture supplies Linux doctor/runsc inputs.
             # Select that branch only for substrate discovery on any test host.
             with patch('tests.blackbox.installed_host_smoke.platform.system', return_value='Linux'):
@@ -614,7 +614,7 @@ def prepared_invocation(retained_invocation):
             report = _base_report({'source_revision':'a'*40}, {}, substrate)
             report['status'] = 'attached_ready'
             (artifacts/'installed-rust-runtime.json').write_text(json.dumps(report))
-        if instance.name == 'continuity':
+        if artifacts.name == 'continuity':
             if os.environ.get('ADMISSION_HOME'):
                 (source/'agents/owner/home').mkdir(parents=True)
             if os.environ.get('ADMISSION_PID'):
