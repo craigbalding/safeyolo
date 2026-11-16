@@ -697,9 +697,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **What and why:** Extra guest privileges remain contained; Docker API scopes constrain actual effects.
 
-**Audit coverage:** Maintained installed section; scheduled systrap selector. Current installed execution and hardware cadence remain unaccepted.
+**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual gateway effects accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6913325766); [fresh-token provider-stop observation accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6914345354); [bounded build/initial application accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6918014934); [retained application continuation accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6922996148). Public pull, default wrapper, applicable platform proof and deployed cadence remain unqualified.
 
-**Conformance / action:** Pinned base workload, privileged inner containment, owned egress receivers, real Docker effects, adjacent refusal, revocation and daemon/provider failure; installed acceptance pending.
+**Conformance / action:** Partial Ubuntu systrap proof covers privileged inner containment, owned egress receivers, Docker effects, adjacent refusal, revocation, daemon/provider failure and application persistence/deletion. Prepared-image reuse does not prove public pull; complete recurring acceptance remains pending.
 
 **Effort:** L. **Comments:** This is a distinct privilege configuration.
 

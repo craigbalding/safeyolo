@@ -123,7 +123,7 @@ if [[ $trigger != collect ]]; then
         SAFEYOLO_BLACKBOX_STATE_PARENT="$states" SAFEYOLO_GUEST_TEST_INPUTS=/workspace/offline
         SAFEYOLO_COORD_NATS_BINARY="${VZ_NATS_BINARY:?Set the verified offline NATS executable}"
         SAFEYOLO_VZ_TEST_RUNNER=/Users/sy-agent/bin/run-vz-test SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS="${VZ_HELPER_TIMEOUT:-120}")
-    for name in SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS SAFEYOLO_MOUNT_HOLDER_PROBE; do
+    for name in SSL_CERT_FILE REQUESTS_CA_BUNDLE NODE_EXTRA_CA_CERTS SAFEYOLO_MOUNT_HOLDER_PROBE SAFEYOLO_JOB_OBSERVER_PROBE; do
         if declare -p "$name" >/dev/null 2>&1; then env_options+=("$name=${!name}"); fi
     done
     env_options+=(SSL_CERT_FILE="${SSL_CERT_FILE:-${VZ_CA_BUNDLE:?Set readable public CA trust}}" REQUESTS_CA_BUNDLE="${REQUESTS_CA_BUNDLE:-$VZ_CA_BUNDLE}")

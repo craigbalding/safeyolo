@@ -183,6 +183,7 @@ def test_hardware_entry_filters_credentials_and_uses_retained_inputs(tmp_path, l
 assert 'GH_TOKEN' not in os.environ and 'GITHUB_TOKEN' not in os.environ
 assert os.environ['SSL_CERT_FILE'] == 'public-ca-marker'
 assert os.environ['SAFEYOLO_MOUNT_HOLDER_PROBE'] == '/owned/mount holder'
+assert os.environ['SAFEYOLO_JOB_OBSERVER_PROBE'] == '/owned/job observer'
 assert os.environ['BASH_ENV'] == '/dev/null'
 assert '--guest-archive' in sys.argv and '--selection' in sys.argv
 pathlib.Path(sys.argv[sys.argv.index('--artifacts')+1]).write_text(json.dumps(sys.argv[1:]))
@@ -198,7 +199,8 @@ pathlib.Path(sys.argv[sys.argv.index('--artifacts')+1]).write_text(json.dumps(sy
     command = ["bash", str(ROOT / "tests/blackbox/hardware/run-hardware-lane.sh"), str(checkout), revision,
                lane, str(inputs), digest, str(tmp_path / "handoff.json")]
     environment = dict(os.environ, GH_TOKEN="private-test-marker", GITHUB_TOKEN="private-test-marker",
-                       SSL_CERT_FILE="public-ca-marker", SAFEYOLO_MOUNT_HOLDER_PROBE="/owned/mount holder")
+                       SSL_CERT_FILE="public-ca-marker", SAFEYOLO_MOUNT_HOLDER_PROBE="/owned/mount holder",
+                       SAFEYOLO_JOB_OBSERVER_PROBE="/owned/job observer")
     run = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
     assert run.returncode == 0, run.stdout + run.stderr
     assert "private-test-marker" not in run.stdout + run.stderr + (tmp_path / "handoff.json").read_text()
@@ -209,7 +211,7 @@ pathlib.Path(sys.argv[sys.argv.index('--artifacts')+1]).write_text(json.dumps(sy
     assert not (tmp_path / "handoff.json").exists()
 
 
-def test_vz_launcher_carries_explicit_linux_mount_holder_path(tmp_path):
+def test_vz_launcher_carries_explicit_linux_guest_probe_paths(tmp_path):
     wrapper = (ROOT / "tests/blackbox/hardware/run-vz.sh").read_text()
     block = wrapper[wrapper.index("    env_options=("):wrapper.index("    printf -v command '%q ' env -i")]
     prologue = '''set -euo pipefail
@@ -219,10 +221,12 @@ VZ_NATS_BINARY=/owned/nats
 VZ_CA_BUNDLE=/owned/ca.pem
 '''
     result = subprocess.run(["bash", "-c", prologue + block + '\nprintf "%s\\n" "${env_options[@]}"'],
-                            env=dict(os.environ, SAFEYOLO_MOUNT_HOLDER_PROBE="/owned/mount holder"),
+                            env=dict(os.environ, SAFEYOLO_MOUNT_HOLDER_PROBE="/owned/mount holder",
+                                     SAFEYOLO_JOB_OBSERVER_PROBE="/owned/job observer"),
                             capture_output=True, text=True, timeout=5)
     assert result.returncode == 0, result.stderr
     assert "SAFEYOLO_MOUNT_HOLDER_PROBE=/owned/mount holder" in result.stdout.splitlines()
+    assert "SAFEYOLO_JOB_OBSERVER_PROBE=/owned/job observer" in result.stdout.splitlines()
 
 
 @pytest.mark.parametrize("member", [False, True])
