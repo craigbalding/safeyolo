@@ -599,7 +599,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **What and why:** Gate/service scopes constrain job effects; teardown ends delegated authority.
 
-**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap procedure accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6905097277). Default shell wrapper remains unqualified; recurring deployment and KVM/VZ proof remain pending.
+**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap procedure accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6905097277); [public-shell Ubuntu systrap run against a prepared installation accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6924137097). Public acquisition, recurring deployment and KVM/VZ proof remain pending.
 
 **Conformance / action:** Retain scoped origin counts, credential replacement, live revocation, timeout/cancellation, old/new delegated-connection refusal, native audit attribution and listener cleanup; full recurring and platform acceptance remains pending.
 
