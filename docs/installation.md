@@ -10,7 +10,7 @@ draft-safe chat and room/harness-event observation.
 
 For the tested Ubuntu AMD64 two-command route, use the [README quick
 start](../README.md#quick-start). Everything below is optional reference:
-installation alternatives, earlier bundles, host preparation, builds and recovery.
+installation alternatives, host preparation, builds and recovery.
 The [tested scope](#tested-onboarding-scope) separates installed proof from
 current-source capabilities and remaining platform work.
 
@@ -28,31 +28,25 @@ for the warning, limits and diagnostics.
 
 ## Install and start
 
-This manual alternative retains the earlier `host-7a38` bundle instructions.
 Use your ordinary host account on Ubuntu 24.04 or Apple Silicon macOS 26.0
-or later. Download a production archive for your host from that earlier
-[release](https://github.com/craigbalding/safeyolo/releases/tag/host-7a38dff14e7e4eacb4095da732ffe06d7c7c5796).
-It supplies `linux-amd64`, `linux-arm64` and `darwin-arm64` bundles from host
-source `7a38dff14e7e4eacb4095da732ffe06d7c7c5796`. Use that explicit release
-for this manual alternative. The README uses the current host release instead.
-This guide also covers newer source builds. Check the source commit in your bundle: newer
-source features are absent from the linked older release.
-Source builds are an [alternative](#build-a-bundle).
-Existing wheel downloads belong to the earlier Python CLI.
+or later. Download the production archive for your host from the current
+[release](https://github.com/craigbalding/safeyolo/releases/latest):
+`linux-amd64`, `linux-arm64` or `darwin-arm64`.
+Normal installation uses prebuilt host and guest artifacts and needs no Linux
+guest build. Source builds are an [optional alternative](#build-a-bundle).
 A bundle's `package-info` records its source, profile, platform and actual
 minimum glibc or macOS version. A production bundle contains release Rust
 executables; a debug bundle contains dev executables. The macOS development
 helper has the `get-task-allow`
 entitlement for authorized debugging.
-Those archives require glibc 2.39 on Linux and macOS 26.0 on Apple Silicon.
+Use the minimum host version recorded in that package; Apple Silicon macOS needs 26.0 or later.
 Unpacking and installation need Bash, tar and
 the host's SHA-256 tool. They need no compiler, Python, wheel, virtual
 environment or uv tool installation.
 
 This Ubuntu example uses an arm64 production archive in your current directory.
 On x86_64 Ubuntu, use `linux-amd64`; on Apple Silicon macOS, use `darwin-arm64`.
-For this linked release, prepare the [host runtime](#guest-prerequisites) before installation.
-The tested newer release and current source use [automatic Linux host preparation](#linux-host-preparation-in-new-source-bundles).
+The installer performs [Linux host preparation](#linux-host-preparation-in-new-source-bundles) before preparing the guest.
 For an optional archive integrity check, save `SHA256SUMS` beside the archive
 and run `sha256sum --ignore-missing --check SHA256SUMS` on Ubuntu, or
 `shasum -a 256 --ignore-missing --check SHA256SUMS` on macOS. An `OK` result
@@ -60,8 +54,7 @@ checks the archive against that release's manifest; it does not independently
 authenticate the publisher. The installer still verifies the unpacked bundle
 internally.
 The published bundle obtains the compatible default guest anonymously from
-GitHub Container Registry (GHCR), using its guest discovery metadata. The initial
-guest release, `guest-2026-10-12.1`, is public. Prepared assets remain an explicit
+GitHub Container Registry (GHCR), using its guest discovery metadata. Prepared assets remain an explicit
 [offline or contributor alternative](#guest-prerequisites).
 Choose a root with no existing instance configuration. This example uses the
 CLI default `$HOME/.safeyolo`.
@@ -75,9 +68,7 @@ There is no separate init, build or setup command after unpacking.
 The installer creates the `safeyolo` command in `$HOME/.local/bin` when that
 directory is already on your normal PATH. Otherwise it uses `/usr/local/bin`
 on Linux and Mac. Creating the command directory and link uses sudo only when
-the nearest existing parent is not writable by your account. Linux guest
-acquisition uses sudo to extract the guest with its mapped owners and access
-permissions. The configuration remains owned by your account. New host
+the nearest existing parent is not writable by your account. Guest extraction, ownership preparation and failed-stage cleanup use no host sudo after the required host preparation. The configuration remains owned by your account. New host
 terminals can run `safeyolo` without selecting a root or changing PATH.
 An unrelated existing command is preserved and reported with its recovery.
 
@@ -232,22 +223,21 @@ bootstrap verifies it and downloads the compatible guest while the host archive
 arrives. When the early command supports `guest download --prepare`, it also
 attempts guest cache preparation through a private staging directory. On Linux,
 this needs existing validated UID/GID ranges and tar with numeric ownership,
-ACL and extended-attribute support. Extraction, remapping and any privileged
-cleanup use noninteractive sudo.
+ACL and extended-attribute support. Extraction and cleanup use the installation's
+already authorized user namespace, without sudo.
 On macOS, cached image extraction needs no elevation. Early preparation does not
 allocate ranges, change host settings or prompt for authentication. If setup, tools
-or extraction privilege is missing, the normal installer prepares the verified
+or namespace authorization is missing, the normal installer prepares the verified
 archive after host consent.
 If staging cleanup fails, installation stops and reports the remaining path.
 The bootstrap passes the selected immutable OCI index to the normal installer.
 The installer uses its actual host settings to select and check the mapped tree
 before activation. Full host-package and guest integrity checks still apply.
 An interruption removes partial transfers. During early extraction, the helper
-waits for extraction/remapping and private-stage cleanup before exit. Completed
-verified blobs and trees remain reusable. Earlier immutable releases retain
-their existing acquisition path.
-Guest preparation reports separate elapsed times for archive decoding/extraction
-and Linux ownership preparation.
+waits for extraction and private-stage cleanup before exit. Completed
+verified blobs and trees remain reusable.
+Guest preparation reports its elapsed extraction and validation time. Download
+decoding remains separate from interpreting the verified archive.
 The overlap does not establish the complete cold onboarding time; bandwidth
 contention, extraction, setup and coding-client readiness still contribute.
 
@@ -556,73 +546,15 @@ it prevents discovery; the new instance files remain available for recovery.
 
 ## Guest prerequisites
 
-The tested release prepares its missing Linux prerequisites automatically.
-The manual instructions below serve the earlier bundle and prepared/offline
-alternatives.
-
-### Manual Ubuntu preparation for the earlier bundle
-
-The following instructions apply only to the earlier `host-7a38` manual
-alternative, not the README quick start. Use your ordinary Ubuntu host account.
-
-On Ubuntu 24.04, these commands install gVisor and its host tools, add the signed
-gVisor package repository, and permit your account's required user namespaces.
-They need host sudo and change package sources, your subordinate user/group
-ID ranges and the AppArmor profile. That earlier installer does not perform this setup.
-First read your account identity and both allocation files:
-
-```sh
-id
-cat /etc/subuid
-cat /etc/subgid
-```
-
-Each row is `account:first-ID:count`; its last ID is `first-ID + count - 1`.
-Your account's name or numeric user ID from `id` needs a range covering
-100000–165535 in both files, for example `your-login:100000:65536`.
-If another account owns any part of that range, stop: that earlier release cannot
-select a different range. Use a host where the range is available;
-do not overlap another account's allocation. If your account already has a
-covering range, keep it. Only when a file lacks your range and the range is free,
-run its corresponding command:
-
-```sh
-sudo usermod --add-subuids 100000-165535 "$USER"
-sudo usermod --add-subgids 100000-165535 "$USER"
-```
-
-Then install the host tools and gVisor, and load the namespace profile:
-
-```sh
-sudo apt-get update
-sudo apt-get install -y curl ca-certificates gnupg uidmap acl iproute2 util-linux apparmor-utils
-curl -fL -o gvisor-archive.key https://gvisor.dev/archive.key
-sudo gpg --dearmor --yes -o /usr/share/keyrings/gvisor-archive-keyring.gpg gvisor-archive.key
-echo 'deb [signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main' | sudo tee /etc/apt/sources.list.d/gvisor.list
-sudo apt-get update
-sudo apt-get install -y runsc
-curl -fL -o apparmor-safeyolo-runsc https://raw.githubusercontent.com/craigbalding/safeyolo/7a38dff14e7e4eacb4095da732ffe06d7c7c5796/cli/src/safeyolo/templates/apparmor-safeyolo-runsc
-sed 's|/usr/local/bin/runsc|/usr/bin/runsc|' apparmor-safeyolo-runsc > safeyolo-runsc
-sudo install -m 0644 safeyolo-runsc /etc/apparmor.d/safeyolo-runsc
-sudo apparmor_parser -r /etc/apparmor.d/safeyolo-runsc
-```
+The installer prepares missing Linux prerequisites after displaying their
+commands and obtaining consent. Prepared/offline inputs use the same
+[host preparation](#linux-host-preparation-in-new-source-bundles).
 
 ### Prepared guests and offline inputs
 
-The earlier `host-7a38` bundle requires the manual preparation above. Its
-[retained runsc profile](../cli/src/safeyolo/templates/apparmor-safeyolo-runsc)
-permits user namespaces for `/usr/local/bin/runsc`. For another runtime path,
-adjust the profile before loading it; the Ubuntu package example above uses
-`/usr/bin/runsc`.
-
-For the Kernel-based Virtual Machine (KVM) platform, the host administrator
-grants the operator and subordinate UID 100000 read/write access to `/dev/kvm`.
-These steps preserve the existing namespace and hardware isolation setup.
-
 Automatic acquisition uses the [OCI guest contract](guest-oci.md) and the registry client. No registry account, Docker, ORAS or local guest build is
 needed. The installer stores verified blobs and prepared trees in
-`$HOME/.local/share/safeyolo/guests`. Blobs use their archive digest; new Linux
-source builds also distinguish prepared trees by their UID/GID mapping.
+`$HOME/.local/share/safeyolo/guests`. Blobs use their archive digest; Linux prepared trees also identify their UID/GID mapping and operator.
 Keep that directory: installed Linux instances reference its trees.
 `share/guest-selection.json` records the version, repository, compatibility,
 consumer platform and selected index, child-manifest and archive descriptors.
@@ -712,24 +644,33 @@ does not own. Activation uses the same access helper for the installed path.
 The selected KVM backend also needs device access for its sandbox IDs, as
 described below.
 
-Linux guest acquisition separately uses sudo to extract the selected guest
-files with numeric owners and access control lists (ACLs), inspect those owners
-and ACLs, and remap them to your account's selected sandbox mapping when needed.
-These operations prepare the rootless guest filesystem. They do not give the
-agent host root privilege. If ordinary cleanup cannot remove a failed extraction
-stage because of its mapped owners, cleanup uses `sudo -n` for that newly
-created stage only. Completed host preparation remains if guest acquisition
-fails; retry reuses valid inputs. Every elevated command is shown before it
-runs, including early cache preparation and noninteractive cleanup. If a new
-ID allocation or created path determines a later command, the final arguments
-appear before that command runs under the existing authorization. Helpers
-also identify their profile files, mapping ranges or ACL targets. These previews
-do not depend on a sudo password prompt and do not add approval prompts.
+Guest acquisition extracts Linux rootfs files in a delegated user namespace
+whose IDs match the canonical archive. The kernel assigns the final mapped
+owners, named ACL principals and capability root identities during extraction.
+Guest user 1000 maps to your host account; host UID/GID zero is not imported.
+The cache-path list is extracted separately as host text. macOS extracts the
+kernel, initramfs and ext4 image as your account; Linux metadata stays inside
+the image in ordinary guest coordinates.
 
-Already satisfied host prerequisites need no sudo. To avoid command-link
-elevation, select a user-writable directory already on PATH with `--command-dir`.
-An existing matching command link needs no privileged update. This does not
-remove the current Linux guest filesystem preparation operations.
+No extraction, ownership validation or failed-stage cleanup invokes sudo.
+Early preparation reuses existing delegation and authorization at the final
+installation root; when unavailable it defers until the installer has obtained
+host-preparation consent. Failed or interrupted extraction reaps its children
+and removes only its private unpublished stage through the same namespace.
+Completed host preparation and verified downloads remain reusable. An existing
+usable installation remains selected if acquisition or upgrade fails.
+
+Already satisfied host prerequisites need no sudo. For an ordinary run after
+preparation, use owned accessible runtime locations and the default backend
+selection. Runtime-path ACL changes need sudo only on paths you do not own;
+choose an owned accessible location to avoid them. Explicit
+`SAFEYOLO_RUNSC_PLATFORM=kvm` can require privileged `/dev/kvm` ACL changes;
+the default can use systrap when KVM access is unavailable. These conditional
+ACL operations remain host preparation, outside the no-sudo guest-preparation
+claim; they are not additional blanket privilege grants. Select a
+user-writable directory already on PATH with `--command-dir` to avoid elevation
+for the command link. Exact elevated commands, targets and effects precede
+execution under the existing consent, including `--yes` and cached credentials.
 
 Preparation installs missing host tools from the host's existing package sources.
 Alpine uses `shadow-subids`, `shadow-libs` and `util-linux-misc` for the

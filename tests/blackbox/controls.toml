@@ -345,7 +345,7 @@ what = "Composition, evidence type, freshness and subject binding govern actual 
 existing = "Accepted #1543/#1544/#1546 fixtures; maintained named-checks and policy-recipe phases."
 conformance = "Maintained native named-checks and pytest policy-recipe phases cover composition, binding, freshness, unknown/error, redirect and pending revocation. Preview observes zero assessed-target/dependency contact. The prepared real-job case remains required and incomplete without its selected host."
 effort = "L"
-comments = "Accepted product evidence: [typed/composition proof](https://github.com/craigbalding/safeyolo/issues/1543#issuecomment-6854609584), [job/service proof](https://github.com/craigbalding/safeyolo/issues/1544#issuecomment-6858612088) and #1546. These process/installed-layout selections boot no guest; no new installed-platform or live-provider pass is inferred."
+comments = "Retain accepted [typed/composition proof](https://github.com/craigbalding/safeyolo/issues/1543#issuecomment-6854609584), [job/service proof](https://github.com/craigbalding/safeyolo/issues/1544#issuecomment-6858612088), #1546 and [maintained BB-29 acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6901839101). The 30 nonignored native cases have [partial scheduled process evidence](https://github.com/craigbalding/safeyolo/actions/runs/43707854900/job/132807509327) at `d43ba93d`, before a later transport-test failure. The prepared real-job case was ignored. The focused receipt remains manual and incomplete without that case. These process/installed-layout selections boot no guest; no new installed-platform or live-provider pass is inferred."
 owner = "#1563"
 decisions = ["authorization"]
 
@@ -357,7 +357,7 @@ what = "Invalid or stale refreshes cannot grant access contrary to configured po
 existing = "Accepted #1545 native CLI/proxy fixtures; maintained managed-feeds phase."
 conformance = "Owned feed server covers acquisition, automatic membership change, malformed/partial/rejected updates, atomic last-valid activation, configured expiry, restart, rollback and recovery. Named-feed and local-list paths remain distinct witnesses."
 effort = "M"
-comments = "Retain [feed proof](https://github.com/craigbalding/safeyolo/issues/1545#issuecomment-6858989106) and its scoped proof. The phase runs native processes in an installed layout, without a guest or public-package acquisition. Selection is manual; deployed recurring coverage is not established."
+comments = "Retain [feed proof](https://github.com/craigbalding/safeyolo/issues/1545#issuecomment-6858989106) and [maintained BB-30 acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6901839101). All eight native feed cases have [partial scheduled process evidence](https://github.com/craigbalding/safeyolo/actions/runs/43707854900/job/132807509327) at `d43ba93d`, before a later transport-test failure. The focused receipt remains manual. Both paths run native processes in an installed layout, without a guest or public-package acquisition; no recurring installed-guest coverage is established."
 owner = "#1563"
 decisions = ["policy_publication"]
 
@@ -369,7 +369,7 @@ what = "Both engines receive only adopted scoped capabilities; revoked/expired i
 existing = "Accepted #1549/#1550/#1552 engine fixtures; manual two-engine driver and native mediated-services phase."
 conformance = "The shared real-engine driver covers permitted GitHub reads, destination/method/path/repository and socket/DNS/direct-IP/ABI refusal, finite limits, cancellation/revocation/shutdown and late completion. Per-engine checkpoints and owned cleanup are required. Native mediated-services tests alone establish no VM boundary."
 effort = "L"
-comments = "Reuse [engine evidence](https://github.com/craigbalding/safeyolo/issues/1552#issuecomment-6877115753) and [installed adoption proof](https://github.com/craigbalding/safeyolo/issues/1552#issuecomment-6877595456) at their recorded Linux/Mac sources and limits. KVM/HVF, compatible artifacts and scoped GitHub credentials are explicit prerequisites. A missing engine or lifetimes-only run cannot complete the two-engine receipt. No recurring engine deployment is claimed."
+comments = "Retain [maintained two-engine acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6902006974), [engine evidence](https://github.com/craigbalding/safeyolo/issues/1552#issuecomment-6877115753) and [installed adoption proof](https://github.com/craigbalding/safeyolo/issues/1552#issuecomment-6877595456) at their recorded sources, profiles and Linux/Mac limits. The maintained execution used pinned accepted debug artifacts; it is not current-production qualification. Six native bridge cases have [partial scheduled process evidence](https://github.com/craigbalding/safeyolo/actions/runs/43707854900/job/132807509327) at `d43ba93d`, before a later transport-test failure; these cases prove no VM boundary. KVM/HVF, compatible artifacts and scoped GitHub credentials are explicit prerequisites for the manual two-engine driver. A missing engine or lifetimes-only run cannot complete its receipt. No recurring engine deployment is claimed."
 owner = "#1563"
 decisions = ["foreign_and_embedded"]
 
@@ -381,7 +381,7 @@ what = "Required checks bind to the exact operation/output; follow-up effects ar
 existing = "Accepted #1551 native transition fixtures; maintained before-after phase."
 conformance = "Real native Work/service boundaries cover omitted selectors, stale/substituted evidence, exact output replacement, pending revocation, committed-obligation recovery, crash after dispatch and explicit uncertainty without automatic replay. Follow-up failure cannot undo the committed transition."
 effort = "L"
-comments = "Owned effect counters and controlled providers observe enforcement. The process receipt does not establish an external GitHub merge/release boundary or repeat #1552 installed factory proof. Manual selection is distinct from deployed cadence."
+comments = "Retain [maintained BB-32 acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6901839101). All eleven native transition cases have [partial scheduled process evidence](https://github.com/craigbalding/safeyolo/actions/runs/43707854900/job/132807509327) at `d43ba93d`, before a later transport-test failure. The focused receipt remains manual. Owned effect counters and controlled providers observe enforcement. These process results do not establish an external GitHub merge/release boundary or repeat #1552 installed factory proof."
 owner = "#1563"
 decisions = ["external_effects"]
 
@@ -390,10 +390,10 @@ id = "BB-33"
 control = "Rootless guest preparation"
 source = "https://github.com/craigbalding/safeyolo/issues/1553"
 what = "Install/update/cleanup needs no sudo after prerequisites and retains required metadata/usable guest behavior."
-existing = "Planned/incomplete: feasibility #1553 and implementation #1554 are open; their independent acceptance is required."
-conformance = "Extend/write sudo-unavailable, regular/special metadata, distinct UID/GID, cancellation and old-install preservation cases."
+existing = "Feasibility #1553 and all seven #1554 product criteria at 607d8488 are independently accepted. The maintained process/native-kernel and booted-guest phases at cb04eb10 have combined independent BB-33 acceptance under #1563."
+conformance = "The manual rootless-preparation --execute selector runs native install/update/cache, active cancellation, failed-stage cleanup and existing-install preservation controls with recorded preparation and unavailable candidate sudo. It also runs the accepted default/distinct-map production metadata witness against the retained baseline. Every selected parameter case and setup/call/teardown must pass. The separate --boot selection reuses installed_storage.py and the prepared public guest for two systrap boots, root/user persistence, fresh-overlay checks and owned cleanup with host sudo unavailable. Without --execute or --boot, the selector remains a read-only digest-bound storage-receipt observer."
 effort = "L"
-comments = "Current acquisition/archive witnesses may invoke guest sudo and do not prove rootless preparation. Await #1553/#1554; preserve special metadata, distinct UID/GID, cancellation, cache/update and existing-installation requirements. Other controls do not wait."
+comments = "Retain [accepted feasibility](https://github.com/craigbalding/safeyolo/issues/1553#issuecomment-6892802583), [all-seven product acceptance](https://github.com/craigbalding/safeyolo/issues/1554#issuecomment-6899892091) and [combined maintained BB-33 acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6901362593). The executable fixture requires prepared Linux AMD64 UID/GID1000, delegated default/distinct ranges, the retained baseline and four verified specimens. It imports small synthetic trees, observes native ACL/xattr/capability/set-ID effects and specific unsupported refusals, then cleans owned trees without sudo. The process phase proves native-kernel metadata; the separate boot phase proves gVisor usability, not new gVisor ACL/capability enforcement or macOS qualification. The boot phase verifies the retained archive/index, records package and runtime hashes, observes actual UID/GID maps and reuses the lower tree without download, import or reinstall. The retained storage receipt separately covers installation, repeat/cache, same-index upgrade and two usable systrap boots; its original setup failures and narrower metadata/failure limits remain. Product Mac usability does not prove normal shutdown; installed same-index upgrades do not prove changed guest bytes. Manual selection proves no deployed recurring cadence. Missing prerequisites, omitted cases, observer or cleanup failure remain incomplete. Phase completion remains separate from independent control acceptance."
 owner = "#1563"
 decisions = ["other_sinks_and_launch"]
 
@@ -405,7 +405,7 @@ what = "Exact privileged commands and reasons appear before existing consent and
 existing = "Accepted #1555 fixtures; maintained sudo-disclosure pytest phase."
 conformance = "Reuse exact preview/execution argument agreement, quoting, helper effects, consent/decline, fresh/cached/passwordless/refused authentication, early cleanup, failure/retry and prepared-host no-op cases."
 effort = "M"
-comments = "Retain [disclosure proof](https://github.com/craigbalding/safeyolo/issues/1555#issuecomment-6874142655). Authentication uses controlled executors; extraction/remapping uses real guest sudo. This is not production-host authentication, macOS qualification or rootless proof. Existing consent is unchanged."
+comments = "Retain [disclosure proof](https://github.com/craigbalding/safeyolo/issues/1555#issuecomment-6874142655) and [maintained BB-34 acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6901839101). Authentication uses controlled executors for current host preparation and command installation. Public-installer cases cover early rootless guest preparation without sudo; BB-33 owns its full metadata, cleanup and usability proof. The focused disclosure receipt remains manual; no complete recurring disclosure selection is established. This is not production-host authentication or macOS qualification. Existing consent is unchanged."
 owner = "#1563"
 decisions = ["other_sinks_and_launch"]
 
@@ -619,6 +619,27 @@ scope = "Ordinary native CLI; Linux/macOS; host identity"
 adapter = "Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers"
 
 [[witnesses]]
+paths = ["tests/blackbox/rootless_preparation.py::observe"]
+controls = ["BB-33"]
+kind = "procedure"
+scope = "Retained native Linux storage observations; recorded ordinary host identity and systrap guest root/user"
+adapter = "Manual run-controls.sh rootless-preparation; canonical source/digest supplied separately; recorded operands checked without command replay or independent product acceptance"
+
+[[witnesses]]
+paths = ["tests/blackbox/rootless_metadata.py::qualify"]
+controls = ["BB-33"]
+kind = "procedure"
+scope = "Prepared Linux AMD64 ordinary UID/GID1000; native-kernel metadata and default/distinct UID/GID imports"
+adapter = "Manual rootless-preparation --execute; retained baseline/specimens, installed CLI and declared namespace preparation; no guest boot or deployed cadence inferred"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_storage.py::qualify"]
+controls = ["BB-28", "BB-33"]
+kind = "procedure"
+scope = "Prepared native Linux installation; acquisition or prepared-guest reuse and two systrap boots with root/user persistence"
+adapter = "Rootless --boot uses the maintained pytest receipt and unavailable host sudo; standalone acquisition keeps its original scope. Both record actual package/guest/maps and owned cleanup; manual selection establishes no recurring cadence"
+
+[[witnesses]]
 paths = ["tests/test_host_sudo.py"]
 controls = ["BB-34"]
 kind = "pytest"
@@ -630,7 +651,7 @@ paths = ["tests/test_public_installer.py::test_guest_cache_is_prepared_during_ho
 controls = ["BB-34"]
 kind = "pytest"
 scope = "Public bootstrap composition; Linux ordinary account with guest sudo"
-adapter = "Owned registry, controlled host package and held native guest remapper; disclosure must precede early/background execution; no public release acquisition"
+adapter = "Owned registry, controlled host package and held rootless guest validation; no guest-preparation sudo or early activation; no public release acquisition"
 
 [[witnesses]]
 paths = ["tests/test_hyperlight_adoption.py", "tests/test_hyperlight_service_checker.py", "tests/test_job_authoring.py"]

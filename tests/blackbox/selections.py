@@ -48,10 +48,24 @@ PYTEST_PHASES = {
         "tests/test_host_sudo.py",
         "tests/test_public_installer.py::test_guest_cache_is_prepared_during_host_extraction_without_early_activation",
     )),
+    "rootless-preparation": ("host", (
+        "tests/test_guest_acquisition.py::test_native_selection_pins_one_index_and_keeps_existing_installation",
+        "tests/test_guest_acquisition.py::test_guest_validation_failure_keeps_verified_archive_for_retry",
+        "tests/test_guest_acquisition.py::test_early_preparation_defers_unavailable_setup_and_reports_cleanup_failure",
+        "tests/test_guest_acquisition.py::test_guest_download_interruption_removes_partial_blob_and_allows_retry",
+        "tests/test_guest_acquisition.py::test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes",
+        "tests/test_guest_acquisition.py::test_rootless_production_metadata_and_distinct_mappings",
+        "tests/test_guest_upgrade.py::test_explicit_upgrade_pins_reuses_and_rolls_back_without_changing_host_or_state",
+        "tests/test_guest_upgrade.py::test_upgrade_refusals_preserve_active_and_previous_selection",
+        "tests/test_guest_upgrade.py::test_failed_activation_is_retryable_and_bad_selected_inputs_can_be_rolled_back",
+        "tests/test_guest_upgrade.py::test_killed_archive_pull_preserves_selection_and_next_upgrade_recovers",
+    )),
+    "rootless-guest": ("host", ("tests/test_guest_acquisition.py::test_prepared_rootless_guest_remains_usable_after_restart",)),
 }
 
 # These are native process boundaries. Real Hyperlight engines use the existing
-# hyperlight_services.py driver; rootless installation remains unimplemented.
+# hyperlight_services.py driver. The rootless selector also offers a separate
+# retained-storage observer and a separate maintained booted-guest phase.
 NATIVE_PHASES = {
     "named-checks": (("lib", "policy::checks::tests"),
                      ("lib", "policy::checks::fixture_tests"),

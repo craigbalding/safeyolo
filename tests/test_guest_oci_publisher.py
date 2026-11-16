@@ -775,7 +775,7 @@ elif name=='rsync':
     shutil.copytree(args[-2],args[-1],dirs_exist_ok=True)
 # chroot/mkfs/chown are controlled no-ops for this producer-wiring test.
 """
-    for name in ("sudo", "skopeo", "umoci", "curl", "rsync", "chroot", "mkfs.ext4", "chown"):
+    for name in ("sudo", "skopeo", "umoci", "curl", "rsync", "chroot", "mkfs.ext4", "chown", "safeyolo"):
         path = tools / name
         path.write_text(script)
         path.chmod(0o755)
@@ -797,7 +797,7 @@ elif name=='rsync':
     env = {**os.environ, "PATH": f"{tools}:{Path(os.sys.executable).parent}:{os.environ['PATH']}",
            "SAFEYOLO_BUILD_PYTHON": sys.executable, "SSL_CERT_FILE": certifi.where(),
            "ARCH": architecture, "OUTPUT_DIR": str(output), "TMPDIR": str(work), "BUILD_CALLS": str(calls_path),
-           "SKOPEO_PARSER": real_skopeo, "GUEST_INPUTS": str(inputs),
+           "SKOPEO_PARSER": real_skopeo, "GUEST_INPUTS": str(inputs), "SAFEYOLO_NATIVE_CLI": str(tools / "safeyolo"),
            "MISE_SHA256_AMD64": digest, "MISE_SHA256_ARM64": digest,
            "GH_SHA256_AMD64": digest, "GH_SHA256_ARM64": digest, "ROOTFS_SIZE_MB": "1"}
     env.pop("DEBIAN_IMAGE", None)
@@ -810,6 +810,10 @@ elif name=='rsync':
     assert f"--override-arch={architecture}" in copies[0]
     assert any(arg.startswith("docker://docker.io/library/debian@sha256:") for arg in copies[0])
     assert (output / "build-base.txt").read_text() == "docker.io/library/debian@sha256:" + "d" * 64 + "\n"
+    normalizers = [call for call in calls if call[0] == "safeyolo"]
+    assert len(normalizers) == 1 and normalizers[0][1:3] == ["host", "archive-profile-tree"]
+    assert Path(normalizers[0][3]).parent.name.startswith("extract-default.")
+    assert normalizers[0][4] == str(os.getuid())
     assert (output / "rootfs-tree").is_dir()
     assert not (output / "rootfs-tree/tmp/safeyolo-build-ca.pem").exists()
     assert (output / "rootfs-base.ext4").is_file()

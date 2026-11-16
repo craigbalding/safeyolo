@@ -48,7 +48,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 
 
-def read_json(path: Path) -> dict:
+def read_json(path: Path, *, sha256: str | None = None) -> dict:
     """Read bounded regular reports without following candidate symlinks."""
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
@@ -58,6 +58,8 @@ def read_json(path: Path) -> dict:
         data = stream.read(MAX_REPORT_BYTES + 1)
     if len(data) > MAX_REPORT_BYTES:
         raise ValueError("report grew beyond the read bound")
+    if sha256 is not None and hashlib.sha256(data).hexdigest() != sha256:
+        raise ValueError("report SHA-256 differs from the supplied evidence reference")
     document = json.loads(data)
     if not isinstance(document, dict):
         raise ValueError("report must contain a JSON mapping")
@@ -260,7 +262,7 @@ class PytestReceipt:
         self.document["enabled_optional"] = [node for node, variable, value, _reason in OPTIONAL_CASES
                                              if (os.environ.get(variable) == value if value else bool(os.environ.get(variable)))]
         self.document["guest"] = json.loads(os.environ.get("SAFEYOLO_BLACKBOX_GUEST_IDENTITY", "null"))
-        if phase in {"policy-recipe", "sudo-disclosure"}:
+        if phase in {"policy-recipe", "sudo-disclosure", "rootless-preparation", "rootless-guest"}:
             self.document.update(focused_inputs(root, phase))
         save(self.path, self.document)
 
@@ -298,13 +300,28 @@ def focused_inputs(root: Path, phase: str) -> dict:
               "controller_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
               "working_tree_changed": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=root)),
               "product_binaries": {}}
-    if phase == "sudo-disclosure":
+    if phase in {"sudo-disclosure", "rootless-preparation", "rootless-guest"}:
         binaries = [Path(os.environ.get("SAFEYOLO_NATIVE_CLI", root / "proxy/target/release/safeyolo"))]
     else:
         from tests.proxy_contracts.test_native_policy_cli import native_inputs
 
         host, _guest, _profile = native_inputs()
         binaries = [host / name for name in ("safeyolo", "safeyolo-proxy", "safeyolo-coord")]
+    if phase == "rootless-preparation":
+        result.update(boundary="installed-cli/native-kernel", control_complete=False,
+                      prerequisites={name: os.environ.get(name) for name in (
+                          "SAFEYOLO_ROOTLESS_PREPARED_CONFIG", "SAFEYOLO_ROOTLESS_BASELINE",
+                          "SAFEYOLO_ROOTLESS_SPECIMENS")},
+                      remaining=["Booted guest/platform proof is separate from these process and native-kernel cases.",
+                                 "This manually selected phase establishes no deployed recurring cadence."])
+    if phase == "rootless-guest":
+        result.update(boundary="installed-cli/gvisor-systrap", control_complete=False,
+                      prerequisites={name: os.environ.get(name) for name in (
+                          "SAFEYOLO_ROOTLESS_PREPARED_CONFIG", "SAFEYOLO_ROOTLESS_GUEST_ARCHIVE",
+                          "SAFEYOLO_ROOTLESS_GUEST_INDEX", "SAFEYOLO_ROOTLESS_GUEST_SHA256")},
+                      remaining=["Process/native-metadata obligations use the separate rootless-preparation --execute phase.",
+                                 "Native metadata parity does not establish new gVisor ACL/capability enforcement.",
+                                 "This manually selected phase establishes no macOS or deployed recurring cadence proof."])
     for binary in binaries:
         if binary.is_file():
             with binary.open("rb") as stream:
@@ -447,6 +464,8 @@ def main() -> int:
         return 2
 
     os.chdir(root)
+    if args.phase in {"rootless-preparation", "rootless-guest"}:
+        os.environ["SAFEYOLO_BLACKBOX_ROOTLESS"] = "1"
     plugin = PytestReceipt(args.output.resolve(), args.phase, args.lane, args.run_id, root)
     # Keep the report reader usable in the stdlib-only installation bootstrap.
     PytestReceipt.pytest_collection_modifyitems = pytest.hookimpl(hookwrapper=True, tryfirst=True)(

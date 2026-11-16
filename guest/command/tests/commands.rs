@@ -217,16 +217,16 @@ impl Supervisor {
             thread::sleep(Duration::from_millis(20));
         }
     }
-    fn pause(&self) -> ResumeSupervisor {
+    fn pause(&self) -> ResumeProcess {
         let pid = self.0.id() as i32;
         assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
-        ResumeSupervisor(pid)
+        ResumeProcess(pid)
     }
 }
 
-struct ResumeSupervisor(i32);
+struct ResumeProcess(i32);
 
-impl Drop for ResumeSupervisor {
+impl Drop for ResumeProcess {
     fn drop(&mut self) {
         unsafe { libc::kill(self.0, libc::SIGCONT) };
     }
@@ -567,6 +567,104 @@ int clock_gettime(clockid_t id, struct timespec *value) {
         drop(resume);
         supervisor.stop();
     }
+}
+
+#[test]
+fn supervisor_check_rejects_paused_commands_and_accepts_the_same_identity_after_resume() {
+    for (command, expected_state) in [("while :; do :; done", 'R'), ("exec sleep 60", 'S')] {
+        let guest = Guest::new();
+        guest.publish(command);
+        let mut supervisor = Supervisor::start(&guest);
+        let running = guest.wait(|state| state["state"] == "running");
+        let pid = running["command_pid"].as_i64().unwrap() as i32;
+        let process_state = || {
+            fs::read_to_string(format!("/proc/{pid}/stat"))
+                .unwrap()
+                .rsplit_once(')')
+                .unwrap()
+                .1
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .chars()
+                .next()
+                .unwrap()
+        };
+        let wait_for_state = |expected| {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while process_state() != expected {
+                assert!(
+                    Instant::now() < deadline,
+                    "command did not reach {expected}"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+        };
+        let check = || {
+            guest
+                .command()
+                .args(["supervise", "check"])
+                .output()
+                .unwrap()
+        };
+        wait_for_state(expected_state);
+        assert_eq!(
+            success(check())["command_start_token"],
+            running["command_start_token"]
+        );
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
+        let resume = ResumeProcess(pid);
+        wait_for_state('T');
+        // The outer supervisor remains live and advances its heartbeat while
+        // the exact command cannot execute. Freshness alone is insufficient.
+        let paused = guest.wait(|state| state["heartbeat_at"] != running["heartbeat_at"]);
+        assert!(supervisor.0.try_wait().unwrap().is_none());
+        assert_eq!(
+            paused["supervisor_start_token"],
+            running["supervisor_start_token"]
+        );
+        assert_eq!(
+            paused["command_start_token"],
+            running["command_start_token"]
+        );
+        let rejected = check();
+        assert!(!rejected.status.success());
+        assert!(rejected.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("command is paused"));
+        // Readiness failure cannot permit a second owner to replace it.
+        let occupied = guest.command().arg("supervise").output().unwrap();
+        assert!(!occupied.status.success());
+        assert!(String::from_utf8_lossy(&occupied.stderr).contains("occupied"));
+        assert_eq!(guest.read()["command_pid"], running["command_pid"]);
+        drop(resume);
+        wait_for_state(expected_state);
+        let resumed = success(check());
+        for key in [
+            "command_pid",
+            "command_start_token",
+            "supervisor_pid",
+            "supervisor_start_token",
+            "restart_count",
+        ] {
+            assert_eq!(resumed[key], running[key], "changed {key}");
+        }
+        supervisor.stop();
+    }
+}
+
+#[test]
+fn paused_command_remains_owned_and_is_terminated_on_stop() {
+    let guest = Guest::new();
+    guest.publish("exec sleep 60");
+    let mut supervisor = Supervisor::start(&guest);
+    let running = guest.wait(|state| state["state"] == "running");
+    let pid = running["command_pid"].as_i64().unwrap() as i32;
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
+    supervisor.stop();
+    assert_eq!(guest.read()["state"], "stopped");
+    assert_eq!(guest.read()["last_exit_reason"], "intentional-stop");
+    assert!(guest.read()["command_pid"].is_null());
+    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
 }
 
 #[test]

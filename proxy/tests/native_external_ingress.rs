@@ -91,8 +91,26 @@ fn health(address: &str) -> Value {
 }
 #[test]
 fn named_foreground_binding_reloads_stops_and_restarts_on_the_same_address() {
+    check_foreground_binding_reload(false);
+}
+
+#[test]
+fn named_foreground_binding_reloads_stops_and_restarts_through_a_directory_alias() {
+    check_foreground_binding_reload(true);
+}
+
+fn check_foreground_binding_reload(through_alias: bool) {
+    use std::os::unix::fs::MetadataExt;
+
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
+    let config_path = if through_alias {
+        let alias = root.join("config-alias");
+        std::os::unix::fs::symlink(root, &alias).unwrap();
+        alias.join("config.toml")
+    } else {
+        root.join("config.toml")
+    };
     for path in ["data", "logs", "services", "builtin-services"] {
         fs::create_dir_all(root.join(path)).unwrap();
     }
@@ -113,7 +131,7 @@ fn named_foreground_binding_reloads_stops_and_restarts_on_the_same_address() {
     let mut process = Process(
         Command::new(env!("CARGO_BIN_EXE_safeyolo-proxy"))
             .arg("--config")
-            .arg(root.join("config.toml"))
+            .arg(config_path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log)
@@ -121,6 +139,8 @@ fn named_foreground_binding_reloads_stops_and_restarts_on_the_same_address() {
             .unwrap(),
     );
     let initial = ready(root, &mut process, "initial");
+    let socket = fs::metadata(root.join("mobile.sock")).unwrap();
+    let socket_identity = (socket.dev(), socket.ino());
     assert_eq!(initial["ingress_bindings"][0]["name"], "mobile-test");
     assert_eq!(initial["ingress_bindings"][0]["agent"], "mobile");
     let address = initial["ingress_bindings"][0]["address"].as_str().unwrap();
@@ -135,6 +155,8 @@ fn named_foreground_binding_reloads_stops_and_restarts_on_the_same_address() {
         json!([])
     );
     assert!(std::net::TcpStream::connect(address).is_err());
+    let socket = fs::metadata(root.join("mobile.sock")).unwrap();
+    assert_eq!((socket.dev(), socket.ino()), socket_identity);
     assert!(std::os::unix::net::UnixStream::connect(root.join("mobile.sock")).is_ok());
     write_config(root, "restarted", Some(address));
     assert_eq!(
@@ -146,6 +168,8 @@ fn named_foreground_binding_reloads_stops_and_restarts_on_the_same_address() {
         address
     );
     assert_eq!(health(address)["agent_api"], "ok");
+    let socket = fs::metadata(root.join("mobile.sock")).unwrap();
+    assert_eq!((socket.dev(), socket.ino()), socket_identity);
     assert_eq!(
         unsafe { libc::kill(process.0.id() as i32, libc::SIGTERM) },
         0

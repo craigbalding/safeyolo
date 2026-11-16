@@ -86,6 +86,7 @@ async fn upgrade(
         index,
         Some(&current),
         crate::linux_host::mapping_for_root(root)?,
+        root,
     )
     .await?;
     if selected.index == current.index

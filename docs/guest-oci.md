@@ -353,11 +353,15 @@ is `HOME/.local/share/safeyolo/guests`, with `blobs/sha256` and `trees/sha256`
 directories. Completed trees are renamed into their digest-addressed location;
 failed extraction removes its owned staging directory. The host's maintained
 tar extracts the selected backend members, preserving its path/link safeguards;
-Linux extraction uses sudo for numeric ownership. The ownership operation
-checks every source owner, hard link and attribute before changing a fresh
-stage. It then reopens only inodes that need ownership or attribute changes,
-relative to the pinned root without following symlinks. Hard links that leave
-that stage are refused. Existing prepared trees
+Linux extracts canonical archive IDs in the installation's authorized delegated
+user namespace without sudo. Host UID/GID zero is excluded; guest user 1000 maps
+to the operator. The kernel translates owners, named ACLs and revision-3
+capability root identities. The cache-path list is host text and uses a separate
+ordinary-account extraction. Validation checks every source owner, hard link,
+mount and attribute through pinned descriptors before publication; it does not
+remap the tree again. Hard links that leave the private stage are refused.
+Failure or interruption waits for extraction and removes only that stage in
+the same namespace. Existing prepared trees
 are checked against the selected mapping and remain unchanged. Native zstd decoding needs
 no separately installed zstd program. Explicit/offline inputs remain available
 with `--platform-assets`; `--no-guest-download` retains proxy-only/contributor use.
@@ -436,8 +440,9 @@ On the consumer host, run `guest acquire` as the installation owner from any
 working directory. Use a verified host package for that platform and a fresh
 root without configuration or guest inputs. Registry access uses the configured
 proxy, if present, and needs usable system or configured CA trust. Linux also needs the
-host account's subordinate UID/GID ranges and sudo for numeric ownership, as
-prepared by `safeyolo host prepare`.
+host account's delegated UID/GID ranges and the final root's namespace
+authorization, prepared by `safeyolo host prepare`. Acquisition uses no sudo;
+missing authorization is an error with a host-preparation recovery command.
 
 Before running the example, replace `/path/to/host-package` with the verified
 unpacked host package. Replace `/owned/fresh-root` and `/owned/guest-store` with
@@ -467,8 +472,8 @@ release. Use `guest upgrade --index sha256:DIGEST` to change an installed guest.
 On the installed host, run these commands as the instance owner from any working
 directory. The instance must have a default guest acquired through OCI and an
 installed `package-info`. The commands use the installed host's compatibility
-identifier and trusted repository. Linux extraction retains the installer's sudo
-requirement for numeric ownership; Mac staging uses APFS image clones.
+identifier and trusted repository. Linux reuses that installation's delegated IDs and namespace authorization
+without sudo; Mac staging uses APFS image clones.
 
 Upgrade downloads changed guest bytes and selects the complete guest for the next
 sandbox boot. Running guests keep their current inputs until you stop and start

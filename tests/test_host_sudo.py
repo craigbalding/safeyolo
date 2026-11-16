@@ -1,7 +1,7 @@
 """Exercise command disclosure through the installer and native CLI.
 
 Authentication modes and missing host prerequisites are controlled fixtures.
-Guest extraction/ownership uses real guest sudo, not production host privilege.
+Rootless guest preparation is exercised by the acquisition and installer tests.
 """
 
 import json
@@ -16,14 +16,10 @@ import pytest
 from tests import test_guest_acquisition as acquisition
 from tests import test_host_packages as packages
 from tests import test_linux_host as linux_host
-from tests.test_guest_acquisition import PREFIX, compressed_archive, install, release
 from tests.test_host_packages import build_bundle
 from tests.test_linux_host import command, own, payload
 
 native_cli = acquisition.native_cli
-guest_store = acquisition.guest_store
-package_info = acquisition.package_info
-registry = acquisition.registry
 package_inputs = packages.package_inputs
 owned_stage = linux_host.owned_stage
 
@@ -174,6 +170,14 @@ def test_acl_sudo_preview_precedes_authentication_and_prepared_retry_is_a_noop(n
     parent, _stage = owned_stage
     private = parent / "private 'quotes' $value; &"
     runtime = payload(private / "runtime")
+    settings = parent / "settings.toml"
+    arguments = ("--root", parent / "instance", "host", "prepare", "--system-runsc", runtime, "--write-settings", settings)
+    # Prepare profiles, namespaces and mappings before introducing the ACL gap.
+    # Otherwise an earlier host prerequisite consumes the controlled password
+    # or refusal before this test reaches the ACL operation it observes.
+    baseline = command(native_cli, *arguments, "--yes")
+    assert baseline.returncode == 0, baseline.stderr
+    settings.unlink()
     own(private, 0, os.getgid())
     subprocess.run(["sudo", "-n", "chmod", "0710", str(private)], check=True)
     tools = parent / "tools"
@@ -187,14 +191,12 @@ def test_acl_sudo_preview_precedes_authentication_and_prepared_retry_is_a_noop(n
         + f"os.execv({shutil.which('sudo')!r}, ['sudo', *sys.argv[1:]])\n")
     (tools / "sudo").chmod(0o755)
     environment = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}"}
-    settings = parent / "settings.toml"
-    arguments = ("--root", parent / "instance", "host", "prepare", "--system-runsc", runtime, "--write-settings", settings)
     declined = command(native_cli, *arguments, env=environment, input="n\n")
     assert "declined" in declined.stderr and not disclosed_calls(declined.stderr)[1]
     prepared = command(native_cli, *arguments, "--yes", env=environment,
                        input="fixture-password\n" if state == "fresh" else "")
     previews, calls = disclosed_calls(prepared.stderr)
-    assert calls and any(call[:4] == ["--", "setfacl", "--no-mask", "-m"] for call in calls)
+    assert calls and any(call[:4] == ["--", "setfacl", "--no-mask", "-m"] for call in calls), prepared.stderr
     if state == "fresh":
         assert prepared.stderr.index("Host command:") < prepared.stderr.index("fixture fresh sudo password:")
     if state == "refused":
@@ -211,56 +213,3 @@ def test_acl_sudo_preview_precedes_authentication_and_prepared_retry_is_a_noop(n
     assert repeated.returncode == 0, repeated.stderr
     assert json.loads(repeated.stdout)["applied"] == []
     assert disclosed_calls(repeated.stderr) == ([], [])
-
-
-@pytest.mark.parametrize("early", [False, True])
-@pytest.mark.parametrize("failure", [None, "tar", "remap", "cleanup"])
-def test_guest_commands_are_disclosed_before_real_guest_sudo_and_retry_reuses_archive(
-        registry, native_cli, guest_store, package_info, tmp_path, early, failure):
-    contents, requests, _faults, environment = registry
-    guest = compressed_archive()
-    contents.update(release(guest))
-    tools = tmp_path / "tools"
-    tools.mkdir()
-    sudo = tools / "sudo"
-    sudo.write_text(
-        f"#!{sys.executable}\nimport json, os, sys\n"
-        "print('SUDO_EXEC ' + json.dumps(sys.argv[1:]), file=sys.stderr, flush=True)\n"
-        "failure = os.environ.get('SUDO_FIXTURE_FAILURE')\n"
-        "if (failure == 'tar' and 'tar' in sys.argv) or (failure in ('remap', 'cleanup') and 'remap-rootfs' in sys.argv) or (failure == 'cleanup' and 'rm' in sys.argv):\n    raise SystemExit(77)\n"
-        f"os.execv({shutil.which('sudo')!r}, ['sudo', *sys.argv[1:]])\n")
-    sudo.chmod(0o755)
-    environment = {**environment, "PATH": f"{tools}:{os.environ['PATH']}"}
-    if failure:
-        environment["SUDO_FIXTURE_FAILURE"] = failure
-    store, root = guest_store / "literal 'quotes' $value; &", tmp_path / "instance"
-    if early:
-        result = subprocess.run([str(native_cli), "guest", "download", "--package-info", str(package_info),
-                                 "--store", str(store), "--prepare"], env=environment, capture_output=True, text=True, timeout=30)
-    else:
-        result = install(native_cli, root, store, environment, package_info)
-    previews, calls = disclosed_calls(result.stderr)
-    assert calls and len(previews) >= len(calls)
-    assert any("tar" in call for call in calls)
-    if early:
-        assert all(call[0] == "-n" for call in calls)
-    if failure in ("remap", "cleanup"):
-        assert any("rm" in call for call in calls)
-        assert "remove only this failed private guest stage" in result.stderr
-    if failure != "tar":
-        assert "from published IDs 100000..165535 to UID" in result.stderr
-        assert f"host {os.getuid()}:{os.getgid()}" in result.stderr
-    if failure == "cleanup":
-        assert result.returncode != 0 and "staging cleanup failed" in result.stderr
-        assert "before retrying" in result.stderr
-        for stage in (store / "trees/sha256").glob("extract-*"):
-            subprocess.run([shutil.which("sudo"), "-n", "rm", "-rf", "--", str(stage)], check=True)
-    elif early or failure is None:
-        assert result.returncode == 0, result.stderr
-    else:
-        assert result.returncode != 0
-    environment.pop("SUDO_FIXTURE_FAILURE", None)
-    retry = install(native_cli, root, store, environment, package_info)
-    assert retry.returncode == 0, retry.stderr
-    # Both config and archive fetches happen only once; retries reuse blobs.
-    assert len([path for path in requests if path.startswith(PREFIX + "blobs/")]) == 2

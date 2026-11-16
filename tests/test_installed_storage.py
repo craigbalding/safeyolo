@@ -51,7 +51,8 @@ def test_storage_guest_script_requires_persistence_and_disposable_overlay(tmp_pa
             assert len(row["files"]) == 4 and row["overlay_present"] is False
 
 
-def test_storage_refuses_retained_attempt_before_product_effects(tmp_path):
+@pytest.mark.parametrize("reuse", [False, True])
+def test_storage_refuses_retained_attempt_before_product_effects(tmp_path, reuse):
     prepared = tmp_path / "prepared"
     prepared.mkdir()
     (prepared / "package-info").write_text("source_commit=" + "a" * 40 + "\n")
@@ -67,12 +68,13 @@ def test_storage_refuses_retained_attempt_before_product_effects(tmp_path):
                               host_settings=settings, archive=archive,
                               archive_sha256=hashlib.sha256(archive.read_bytes()).hexdigest())
     with pytest.raises(FileExistsError):
-        storage.qualify(args)
+        storage.qualify(args, reuse_prepared_guest=reuse)
     assert list(output.iterdir()) == [saved]
     assert saved.read_text() == "recover this result"
 
 
-def test_storage_queries_subids_by_actual_account_name(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reuse", [False, True])
+def test_storage_queries_subids_by_actual_account_name(tmp_path, monkeypatch, reuse):
     prepared = tmp_path / "prepared"
     for name, code in (("bin/safeyolo", "echo controlled-acquisition-boundary >&2; exit 73"),
                        ("bin/safeyolo-proxy", "exit 0"), ("libexec/runsc", "exit 0")):
@@ -81,12 +83,22 @@ def test_storage_queries_subids_by_actual_account_name(tmp_path, monkeypatch):
         path.write_text("#!/bin/sh\n" + code + "\n")
         path.chmod(0o755)
     (prepared / "native_package.sh").write_text('verify_native_package() { echo verified; }\n')
-    package = {"source_commit": "a" * 40}
-    (prepared / "package-info").write_text("source_commit=" + package["source_commit"] + "\n")
+    package = {"source_commit": "a" * 40, "platform": "linux-amd64", "guest_compatibility": "v1",
+               "guest_repository": "owned"}
+    (prepared / "package-info").write_text("".join(f"{key}={value}\n" for key, value in package.items()))
     archive = tmp_path / "guest.tar.zst"
     archive.write_bytes(b"retained archive control")
     settings = tmp_path / "settings.toml"
-    settings.write_text(f"[linux]\nhost_uid={os.getuid()}\nhost_gid={os.getgid()}\n")
+    settings.write_text(f"[linux]\nhost_uid={os.getuid()}\nhost_gid={os.getgid()}\n"
+                        f"uid_base={os.getuid()}\ngid_base={os.getgid()}\n")
+    assets = tmp_path / "assets"
+    (assets / "rootfs-tree/home/agent").mkdir(parents=True)
+    (prepared / "share").mkdir()
+    selection = {"assets": str(assets), "index": {"digest": "sha256:" + "d" * 64},
+                 "archive": {"digest": "sha256:" + storage.sha(archive), "size": archive.stat().st_size},
+                 "platform": "linux/amd64", "compatibility": "v1", "repository": "owned"}
+    original = json.dumps(selection)
+    (prepared / "share/guest-selection.json").write_text(original)
     username = subprocess.check_output(["id", "-un"], text=True).strip()
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -95,14 +107,17 @@ def test_storage_queries_subids_by_actual_account_name(tmp_path, monkeypatch):
                         f'[ "$#" -eq 1 ] && [ "$1" = {shlex.quote(username)} ] || exit 1\n'
                         'printf "0: %s 100000 65536\\n" "$1"\n')
     getsubids.chmod(0o755)
+    getfacl = tools / "getfacl"
+    getfacl.write_text('#!/bin/sh\nexit 0\n')
+    getfacl.chmod(0o755)
     monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("USER", "unrelated-account")
     monkeypatch.setenv("LOGNAME", "unrelated-account")
     args = argparse.Namespace(prepared_config=prepared, output=tmp_path / "continuation",
                               install_commit=package["source_commit"], host_settings=settings, archive=archive,
                               archive_sha256=storage.sha(archive), index="sha256:" + "d" * 64)
-    with pytest.raises(RuntimeError, match="native-download: exit 73"):
-        storage.qualify(args)
+    with pytest.raises(subprocess.CalledProcessError if reuse else RuntimeError):
+        storage.qualify(args, reuse_prepared_guest=reuse)
     report = json.loads((args.output / "observed.json").read_text())
     assert report["result"] == "incomplete" and report["cleanup_failures"] == []
     actions = {row["label"]: row for row in report["actions"]}
@@ -110,5 +125,11 @@ def test_storage_queries_subids_by_actual_account_name(tmp_path, monkeypatch):
     assert actions["subgids"]["command"] == ["getsubids", "-g", username]
     assert actions["subuids"]["exit"] == actions["subgids"]["exit"] == 0
     assert actions["verify-host-package"]["exit"] == actions["runsc-version"]["exit"] == 0
-    assert actions["native-download"]["exit"] == 73
-    assert "controlled-acquisition-boundary" in actions["native-download"]["stderr"]
+    if reuse:
+        assert "native-download" not in actions and "native-acquire" not in actions
+        assert report["selection"] == selection and report["reused_prepared_guest"] is True
+        assert not (args.output / "guests").exists()
+        assert (prepared / "share/guest-selection.json").read_text() == original
+    else:
+        assert actions["native-download"]["exit"] == 73
+        assert "controlled-acquisition-boundary" in actions["native-download"]["stderr"]

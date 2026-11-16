@@ -213,7 +213,7 @@ nodes:
       obtain_from: "the trusted-base installer and harness; Python dependencies are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: install.sh
-          sha256: dfb8215a4898a01dc79acba65d0cf99bf0da57201ff86e470cf88153843e9d2e
+          sha256: 756a1e58fccf61c35868812c42143c8b30fdc6d1a48932050b27b45eba4477ca
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: tests/blackbox/run-tests.sh
@@ -258,7 +258,7 @@ nodes:
         - path: proxy/src/host_boot.rs
           sha256: df26d2abc5c2a753222d789ff577dffe994f9cc3b171ef41aabb739bffa05dae
         - path: guest/build-rootfs.sh
-          sha256: 31ab9b5883222b0f43dfff80dfa7ac83ab4908b9b6ff8234d36abf6b0b1b8139
+          sha256: 4855fe106af9c53a85f5517906c05631f79da8fa5b5df8f22cbac134dbe4d965
         - path: proxy/src/jobs.rs
           sha256: b1dea76b55686de2e3fb632bb064bf1c59ddca31f74abadc7c283cd445902183
         - path: proxy/src/jobs/input.rs
@@ -284,7 +284,7 @@ nodes:
         - path: tests/blackbox/installed_ingress_pair.py
           sha256: 7528dc814fa524b27b960e9e1ec8efbd0f1ae649344e55486c73d98ab052fc3f
         - path: tests/blackbox/installed_storage.py
-          sha256: 3379b6140df6f4e425bfc309a7483a8364373332d049f005cc1d4a050176de41
+          sha256: 9c1d44a18200acc4c5f32b2c2bc97742a66a9827852aa13974a806362208f5e4
         - path: tests/blackbox/isolation/installed_ingress.py
           sha256: 501b133f084764fae135e214ceebce8a939f298715b623aa11c3cdd7b3d31dbe
         - path: tests/blackbox/retained_inputs.py
@@ -858,7 +858,7 @@ nodes:
         - path: cli/tests/test_agent_command_supervisor.py
           sha256: 28d366827ecc041bac7f87f419e1728329beeb8ee93ed9f27d262f8f2bd2d9f2
         - path: tests/proxy_contracts/test_native_factory_cli.py
-          sha256: 2816c91d5acdc388983cd98db7657bf9a3c44da5769696a12efde30443e934ce
+          sha256: ddd2a87ecd98ae0d2cba19cef89275e71222ba8530f64c3f42fba8be18a99448
       setup: "Use the trusted base's locked Python test environment and warm native production artifacts. Set SAFEYOLO_GUEST_ARTIFACTS to the verified guest artifact directory. Source fixtures start no guest or model; the optional launch case requires a separately owned installed Ubuntu host."
       verify: "sha256sum cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py tests/proxy_contracts/test_native_factory_cli.py"
       run: "uv run pytest -q cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py tests/proxy_contracts/test_native_factory_cli.py"
@@ -939,12 +939,12 @@ nodes:
       obtain_from: "trusted-base build scripts; skopeo, umoci, and e2fsprogs from operator-approved signed OS repositories or the checksum-pinned umoci fallback in safeyolo bootstrap"
       sources:
         - path: guest/build-all.sh
-          sha256: 16c67862eec323060c15afa4d215f16d076e087eb04c6661123aba6d75b0ee70
+          sha256: 5fe3081a5e20285dc06585b21ff3baaf85f68660ae222d400053e8000af5240a
         - path: guest/build-rootfs.sh
-          sha256: 31ab9b5883222b0f43dfff80dfa7ac83ab4908b9b6ff8234d36abf6b0b1b8139
+          sha256: 4855fe106af9c53a85f5517906c05631f79da8fa5b5df8f22cbac134dbe4d965
         - path: guest/rootfs-customize-hook.sh
           sha256: 84333056f8957049ae511cc3e9565342ddf8fd4cbf265e2e8dcfffd36736da15
-      setup: "Use an approved Linux builder or the repository's narrow Lima builder; set OUTPUT_DIR to a disposable acceptance directory."
+      setup: "Use an approved Linux builder or the repository's narrow Lima builder, with SAFEYOLO_NATIVE_CLI naming the current Linux CLI for archive normalization; set OUTPUT_DIR to a disposable acceptance directory."
       verify: "sha256sum guest/build-all.sh guest/build-rootfs.sh guest/rootfs-customize-hook.sh && skopeo --version && umoci --version && mkfs.ext4 -V"
       run:
         linux_rootfs: "OUTPUT_DIR=<disposable-output-dir> ./guest/build-rootfs.sh"
