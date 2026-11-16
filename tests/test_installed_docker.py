@@ -4,6 +4,7 @@ These exercise the observer's refusal handling. They do not establish the
 installed sandbox's network enforcement.
 """
 
+import base64
 import hashlib
 import http.client
 import io
@@ -15,10 +16,12 @@ import shutil
 import subprocess
 import sys
 import threading
+from contextlib import contextmanager
 from copy import deepcopy
 from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import ThreadingUnixStreamServer
 from types import SimpleNamespace
 from unittest.mock import create_autospec
 from urllib.error import HTTPError, URLError
@@ -39,6 +42,7 @@ from tests.blackbox.installed_docker_preflight import (
     gateway_notes_command,
     gateway_recovery_receipt,
     main,
+    public_pull_token,
     pull_public_image,
     run,
     verify_gateway_client_failure,
@@ -1212,12 +1216,22 @@ def test_fresh_image_input_copies_image_directories_before_start(tmp_path, monke
 
 
 @pytest.mark.parametrize("prepared_image,reused_root", [(False, False), (True, False), (False, True)])
-def test_compose_journey_inspects_the_pin_after_optional_public_pull(tmp_path, prepared_image, reused_root):
+def test_compose_journey_inspects_the_pin_after_optional_public_pull(tmp_path, monkeypatch, prepared_image, reused_root):
     workspace, output = tmp_path / "workspace", tmp_path / "output"
     workspace.mkdir()
     output.mkdir()
     steps = []
     pin = (PROBE.parent / "Dockerfile").read_text().splitlines()[0].split()[1]
+
+    # The token carrier has its own file/command controls below. This caller
+    # check observes which input path selects it without performing networking.
+    @contextmanager
+    def token_input(actual_workspace, *_):
+        assert actual_workspace == workspace and not prepared_image and not reused_root
+        steps.append("private-token")
+        yield
+
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.public_pull_token", token_input)
 
     def native(*arguments, instance=None):
         if arguments[:2] == ("approvals", "list"):
@@ -1236,6 +1250,8 @@ def test_compose_journey_inspects_the_pin_after_optional_public_pull(tmp_path, p
         if label == "fresh-ca-reader":
             return hashlib.sha256(b"fixture bytes").hexdigest()
         if label == "image-pull":
+            assert command.startswith("sudo -n env DOCKER_BUILDKIT=0 DOCKER_CONFIG=/home/agent/docker-journey/client "
+                                      "docker --host=unix:///run/safeyolo-nested-docker/docker.sock pull ")
             assert command.endswith(" pull " + pin)
         if label == "image-identity":
             assert command.endswith(" image inspect " + pin)
@@ -1249,8 +1265,152 @@ def test_compose_journey_inspects_the_pin_after_optional_public_pull(tmp_path, p
     with pytest.raises(RuntimeError, match="end of setup control"):
         compose_journey(args, tmp_path / "root", output, workspace, native, guest, registry_background, report)
     assert ("image-pull" in steps) is not prepared_image
+    assert ("private-token" in steps) is (not prepared_image and not reused_root)
     assert report["base_image"] == [{"Id": "qualified-image"}]
     assert report["reused_image_data"] == args.docker_data
+
+
+@pytest.mark.parametrize("failure", [None, "challenge", "issuer", "scope", "token", "fetch", "install", "pull"])
+def test_public_pull_token_is_private_stable_and_removed(tmp_path, failure):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    installed = tmp_path / "guest-client/config.json"
+    token = "private-anonymous-read-token"
+    report, calls, pulled = {}, [], []
+    pin = (PROBE.parent / "Dockerfile").read_text().splitlines()[0].split()[1]
+
+    def guest(command, label):
+        calls.append((label, command))
+        assert token not in command
+        private = next(workspace.glob(".docker-pull-*"))
+        assert private.stat().st_mode & 0o777 == 0o700
+        shared = "/workspace/" + private.name
+        if label == "registry-token-challenge":
+            assert "/v2/library/debian/manifests/" + pin.split("@")[1] in command
+            assert f"--dump-header {shared}/challenge --output /dev/null" in command
+            realm = "https://other.invalid/token" if failure == "issuer" else "https://auth.docker.io/token"
+            scope = "repository:library/debian:pull,push" if failure == "scope" else "repository:library/debian:pull"
+            (private / "challenge").write_text('HTTP/1.1 200 Connection established\n\nHTTP/2 401\n'
+                                               f'WWW-Authenticate: Bearer realm="{realm}",'
+                                               f'service="registry.docker.io",scope="{scope}"\n\n')
+            return "403" if failure == "challenge" else "401"
+        if label == "registry-token-fetch":
+            assert "https://auth.docker.io/token?service=registry.docker.io&scope=repository%3Alibrary%2Fdebian%3Apull" in command
+            assert f"--output {shared}/response.json" in command and "--fail" in command
+            if failure == "fetch":
+                raise GuestStepFailed(label, 22)
+            (private / "response.json").write_text(json.dumps({"token": None if failure == "token" else token}))
+        elif label == "registry-token-install":
+            source = private / "config.json"
+            assert source.stat().st_mode & 0o777 == 0o600
+            assert not (private / "response.json").exists()
+            assert f"install -m 0600 {shared}/config.json /home/agent/docker-journey/client/config.json" in command
+            if failure == "install":
+                raise GuestStepFailed(label, 1)
+            installed.parent.mkdir(mode=0o700)
+            shutil.copy2(source, installed)
+        else:
+            assert label == "registry-token-remove"
+            assert command == "sudo -n rm -f -- /home/agent/docker-journey/client/config.json"
+            installed.unlink(missing_ok=True)
+        return ""
+
+    def docker(command, label):
+        assert command.endswith(" version --format '{{json .}}'") and label == "registry-token-version"
+        return '{"Client":{"Version":"26.1.5+dfsg1"},"Server":{"Version":"26.1.5+dfsg1"}}'
+
+    def consume():
+        with public_pull_token(workspace, guest, docker, report, pin):
+            assert not list(workspace.glob(".docker-pull-*/config.json"))
+            for _ in range(2):
+                pulled.append(json.loads(installed.read_text())["auths"]["https://index.docker.io/v1/"]["registrytoken"])
+                if failure == "pull":
+                    raise GuestStepFailed("image-pull-authorized", 1)
+
+    if failure is None:
+        consume()
+        assert pulled == [token, token]
+    else:
+        with pytest.raises((AssertionError, GuestStepFailed)):
+            consume()
+    assert not installed.exists() and not list(workspace.iterdir())
+    assert report["public_pull_token"]["removed"] is True
+    assert token not in json.dumps(report) and token not in str(calls)
+    assert len([label for label, _ in calls if label == "registry-token-fetch"]) == (
+        0 if failure in {"challenge", "issuer", "scope"} else 1)
+
+
+def test_public_pull_token_reaches_docker_cli_carrier(tmp_path):
+    """A real Docker CLI must forward the file's same bearer on both pulls."""
+    if not shutil.which("docker"):
+        pytest.skip("Docker CLI is required for the RegistryToken consumer control")
+    workspace, state = tmp_path / "workspace", tmp_path / "state"
+    workspace.mkdir()
+    received = []
+    token = "private-fixture-registry-token"
+
+    class Engine(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass  # Do not record the Docker API's authorization headers.
+
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Api-Version", "1.45")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):
+            body = b'{"ApiVersion":"1.45","Version":"26.1.5","Os":"linux","Arch":"arm64"}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            assert self.path.startswith("/v1.45/images/create?")
+            received.append(json.loads(base64.urlsafe_b64decode(self.headers["X-Registry-Auth"])))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    socket = tmp_path / "docker.sock"
+    server = ThreadingUnixStreamServer(str(socket), Engine)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def guest(command, label):
+        private = next(workspace.glob(".docker-pull-*"))
+        if label == "registry-token-challenge":
+            (private / "challenge").write_text('WWW-Authenticate: Bearer realm="https://auth.docker.io/token",'
+                                               'service="registry.docker.io",scope="repository:library/debian:pull"\n')
+            return "401"
+        if label == "registry-token-fetch":
+            (private / "response.json").write_text(json.dumps({"token": token}))
+            return ""
+        # Execute the actual install/remove commands with paths mapped to this
+        # owned host fixture. Guest sudo itself is outside this consumer check.
+        command = command.replace("/workspace", str(workspace)).replace("/home/agent/docker-journey", str(state))
+        return subprocess.check_output(["bash", "-ec", command.replace("sudo -n ", "")], text=True)
+
+    def docker(command, _label):
+        command = command.replace("unix:///run/safeyolo-nested-docker/docker.sock", "unix://" + str(socket))
+        env = {**os.environ, "DOCKER_CONFIG": str(state / "client"), "DOCKER_BUILDKIT": "0"}
+        return subprocess.check_output(shlex.split(command), env=env, text=True)
+
+    report = {}
+    pin = (PROBE.parent / "Dockerfile").read_text().splitlines()[0].split()[1]
+    try:
+        with public_pull_token(workspace, guest, docker, report, pin):
+            for _ in range(2):
+                docker(f"docker --host=unix://{socket} pull {pin}", "pull")
+        assert len(received) == 2 and all(row["registrytoken"] == token for row in received)
+        assert report["public_pull_token"]["docker_version"]["Client"]["Version"]
+        assert not (state / "client/config.json").exists() and not list(workspace.iterdir())
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 @pytest.mark.parametrize("failure", [None, "success", "transport", "non-428", "no-event", "old-event", "two-events",

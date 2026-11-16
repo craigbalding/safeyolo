@@ -45,6 +45,11 @@ approve or retry a failed operation in a reused instance. In a fresh journey,
 the pinned public pull may consume one new canonical registry credential
 approval for the owned notes run. The driver checks the offered run scope and
 active grant before retrying that pull once. Other failures stop the journey.
+Both pulls use one anonymous DockerHub bearer through Docker's RegistryToken
+config field. The driver resolves the pinned Debian input's read challenge
+through the guest proxy and CA. Token responses and config files stay private;
+the driver removes them after the pull sequence, including on failure. Reports
+retain only the input, issuer, service, read scope and Docker versions.
 This operator fixture decision permits the current fingerprints at
 registry-1.docker.io across ports, methods and paths for the current notes run.
 Network and service controls still apply. Shared baseline credential policy
@@ -76,10 +81,12 @@ import shutil
 import subprocess
 import threading
 import uuid
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlsplit
+from tempfile import TemporaryDirectory
+from urllib.parse import urlencode, urlsplit
+from urllib.request import parse_http_list, parse_keqv_list
 
 import tomlkit
 
@@ -162,6 +169,56 @@ class GuestStepFailed(RuntimeError):
         super().__init__(f"guest step {label} exited {exit_code}; inspect {label}.log")
         self.label = label
         self.exit_code = exit_code
+
+
+@contextmanager
+def public_pull_token(workspace, guest, docker, report, base_image):
+    """Keep one anonymous read token in the fresh fixture's private Docker config."""
+    reference, separator, digest = base_image.partition("@")
+    assert separator and digest.startswith("sha256:") and reference.split(":")[0] == "debian", (
+        "public pull requires the pinned DockerHub Debian input")
+    manifest = f"https://registry-1.docker.io/v2/library/debian/manifests/{digest}"
+    observation = report["public_pull_token"] = {"image": base_image, "manifest": manifest,
+                                               "carrier": "registrytoken", "removed": False}
+    observation["docker_version"] = json.loads(docker(f"{DOCKER} version --format '{{{{json .}}}}'",
+                                                    "registry-token-version"))
+    with TemporaryDirectory(prefix=".docker-pull-", dir=workspace) as directory:
+        private = Path(directory)
+        shared = "/workspace/" + private.name
+        try:
+            status = guest(f"umask 077; curl --silent --show-error --max-time 30 "
+                           f"--dump-header {shared}/challenge --output /dev/null --write-out '%{{http_code}}' "
+                           f"{shlex.quote(manifest)}", "registry-token-challenge")
+            assert status.strip() == "401", "pinned registry input did not return an authentication challenge"
+            [challenge] = [line.partition(":")[2].strip() for line in (private / "challenge").read_text().splitlines()
+                           if line.lower().startswith("www-authenticate:")]
+            scheme, parameters = challenge.split(" ", 1)
+            assert scheme.lower() == "bearer", "registry did not offer bearer authentication"
+            authority = parse_keqv_list(parse_http_list(parameters))
+            assert authority == {"realm": "https://auth.docker.io/token", "service": "registry.docker.io",
+                                 "scope": "repository:library/debian:pull"}, "unexpected registry read authority"
+            observation["authority"] = authority
+            endpoint = authority["realm"] + "?" + urlencode({key: authority[key] for key in ("service", "scope")})
+            # The guest's curl uses its existing proxy and CA. Its response body
+            # goes only to the private shared directory, never captured output.
+            guest(f"umask 077; curl --silent --show-error --fail --max-time 30 "
+                  f"--output {shared}/response.json {shlex.quote(endpoint)}", "registry-token-fetch")
+            response = json.loads((private / "response.json").read_text())
+            token = response.get("token") or response.get("access_token")
+            assert isinstance(token, str) and token, "registry supplied no bearer token"
+            config = private / "config.json"
+            config.touch(mode=0o600)
+            config.write_text(json.dumps({"auths": {"https://index.docker.io/v1/": {"registrytoken": token}}}))
+            (private / "response.json").unlink()
+            guest(f"sudo -n install -d -m 0700 {STATE}/client && "
+                  f"sudo -n install -m 0600 {shared}/config.json {STATE}/client/config.json", "registry-token-install")
+            config.unlink()
+            # Both ordinary pull commands read this same file through the
+            # existing DOCKER_CONFIG. No new token is fetched after a refusal.
+            yield
+        finally:
+            guest(f"sudo -n rm -f -- {STATE}/client/config.json", "registry-token-remove")
+            observation["removed"] = True
 
 
 def pull_public_image(root, output, native, docker, report, base_image):
@@ -809,7 +866,8 @@ def compose_journey(args, root, output, workspace, native, guest, background, re
             if getattr(args, "reuse_root", False):
                 docker(f"{DOCKER} pull {base_image}", "image-pull", timeout=180)
             else:
-                pull_public_image(root, output, native, docker, report, base_image)
+                with public_pull_token(workspace, guest, docker, report, base_image):
+                    pull_public_image(root, output, native, docker, report, base_image)
         report["base_image"] = json.loads(docker(f"{DOCKER} image inspect {base_image}", "image-identity"))
         report["reused_image_data"] = args.docker_data
         # Keep an unexpected 428 or transport error as a failure, not a denial pass.
