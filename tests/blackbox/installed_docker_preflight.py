@@ -597,7 +597,9 @@ def gateway_management(args, root, output, native, guest, background, report, re
     """Exercise the real inner Engine over the existing sandbox-provider route."""
     caller = root / "docker-caller"
     assert caller.is_dir(), "reuse the qualified #1436 caller and workspace"
-    assert json.loads(native("agent", "status", "dockercaller"))["runtime_state"] == "stopped"
+    report["gateway_caller_status"] = json.loads(native("agent", "status", "dockercaller"))
+    (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
+    assert report["gateway_caller_status"]["runtime_state"] == "stopped", "stop dockercaller before gateway configuration"
     service = root / "services/notes.yaml"
     policy = root / "policy.toml"
     originals = {path: path.read_bytes() for path in (service, policy)}
@@ -1008,6 +1010,7 @@ def provider_controls(root, output, native, guest, background, docker, report):
         native("agent", "stop", "notes")
         phase("stopped", {"stopped": {502, 503}})
         assert worker.wait(timeout=20) == 0
+        native("agent", "stop", "dockercaller")
         report["parent_fallback_accepts"] = parent.accepts
         control = http.client.HTTPConnection("127.0.0.1", parent.server_port, timeout=5)
         try:

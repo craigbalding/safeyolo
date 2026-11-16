@@ -42,6 +42,7 @@ from tests.blackbox.installed_docker_preflight import (
     gateway_notes_command,
     gateway_recovery_receipt,
     main,
+    provider_controls,
     public_pull_token,
     pull_public_image,
     run,
@@ -1518,6 +1519,77 @@ def test_public_pull_consumes_only_one_current_run_approval(tmp_path, failure):
         assert observed["authorized_exit"] == 0 and policy.read_text() == '[credential]\nunknown = "prompt"\n'
     if failure == "success":
         assert observed["initial_exit"] == 0 and "pending" not in observed
+
+
+@pytest.mark.parametrize("failure", [None, "caller-stop", "caller-running", "caller-status", "worker"])
+def test_provider_completion_stops_caller_before_gateway_configuration(tmp_path, monkeypatch, failure):
+    output = tmp_path / "output"
+    output.mkdir()
+    config = tmp_path / "config.toml"
+    config.write_text('parent_proxy = "http://retained-proxy"\n')
+    original = config.read_bytes()
+    service = tmp_path / "services/notes.yaml"
+    service.parent.mkdir()
+    service.write_text("retained application service\n")
+    (tmp_path / "policy.toml").write_text("")
+    calls, report = [], {}
+    caller_state, provider_finished = "running", False
+
+    def native(*arguments):
+        nonlocal caller_state
+        calls.append(arguments)
+        if arguments == ("agent", "stop", "dockercaller"):
+            if failure == "caller-stop":
+                raise RuntimeError("caller stop failed")
+            if failure != "caller-running":
+                caller_state = "stopped"
+        if arguments == ("agent", "status", "dockercaller"):
+            if provider_finished and failure == "caller-status":
+                raise RuntimeError("caller status failed")
+            return json.dumps({"runtime_state": caller_state})
+        if provider_finished and arguments == ("stop",):
+            raise RuntimeError("gateway configuration reached")
+        return ""
+
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.running_guest", lambda *_: {"agent_id": "caller"})
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.wait_file", lambda *_: None)
+    clients = {name: {"status": status, "body_sha256": "same-body"}
+               for name, status in [("method", 403), ("path", 403), ("destination", 403), ("port", 403),
+                                    ("allowed", 200), ("revoked", 403), ("recovered", 200), ("closed", 502), ("stopped", 502)]}
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.client_observation", lambda *_: clients)
+    requests = [{"role": "api", "method": "GET", "path": "/api/v1/notes", "caller_ids": ids,
+                 "caller_names": ["dockercaller"] if ids else [], "authorization_count": 0, "legacy_identity_count": 0}
+                for ids in ([], ["caller"], ["caller"])]
+    worker = SimpleNamespace(wait=lambda **_: 1 if failure == "worker" else 0)
+
+    def provider():
+        provider_controls(tmp_path, output, native, lambda *_args, **_kwargs: "403",
+                          lambda *_: (worker,), lambda *_: "\n".join(map(json.dumps, requests)), report)
+
+    if failure in {"caller-stop", "worker"}:
+        with pytest.raises(RuntimeError if failure == "caller-stop" else AssertionError):
+            provider()
+        assert config.read_bytes() == original
+        assert (("agent", "stop", "dockercaller") in calls) == (failure == "caller-stop")
+        return
+    provider()
+    provider_finished = True
+    assert config.read_bytes() == original and report["parent_fallback_accepts"] == 0 and report["parent_control_accepts"] == 1
+    native("agent", "start", "notes", "--sandbox-only")
+    gateway_start = len(calls)
+    with pytest.raises(AssertionError if failure == "caller-running" else RuntimeError,
+                       match={None: "gateway configuration reached", "caller-running": "stop dockercaller",
+                              "caller-status": "caller status failed"}[failure]):
+        gateway_management(SimpleNamespace(docker_data="/home/agent/retained/data"), tmp_path, output,
+                           native, lambda *_: pytest.fail("unexpected gateway guest command"), None, report)
+    assert calls.index(("agent", "stop", "dockercaller")) < calls.index(("agent", "start", "notes", "--sandbox-only"))
+    if failure == "caller-status":
+        assert "gateway_caller_status" not in report
+    else:
+        assert json.loads((output / "result.json").read_text())["gateway_caller_status"] == {"runtime_state": caller_state}
+    if failure:
+        assert calls[gateway_start:] == [("agent", "status", "dockercaller")]
+    assert service.read_text() == "retained application service\n"
 
 
 @pytest.mark.parametrize("with_receipt", [False, True])
