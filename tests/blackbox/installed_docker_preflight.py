@@ -11,7 +11,8 @@ one local daemon/pull/container and stops. --journey additionally runs the
 Compose lifecycle, sandbox recovery and application-bound provider controls.
 --gateway reuses the stopped qualified fixture for Docker management through
 its provider route. It restores ephemeral guest tools, but does not repeat image
-pulls or the application lifecycle.
+pulls or the application lifecycle. The single-container journey also checks
+adjacent-operation refusal and live revocation against independent daemon reads.
 --gateway-lifecycle adds the missing Compose lifecycle through that same route.
 It seeds an owned loopback registry from the retained nested-notes image, then
 pulls that image through the gateway before building and running the application.
@@ -566,27 +567,29 @@ printf 'Authorization: Bearer %s\\n' "$agent_token" |
             assert "exec-half-close" in echoed
             attached = client_command(f"printf 'attach-half-close\\n' | /workspace/docker-client attach --sig-proxy=false {name}", "gateway-attach")
             assert "internal:attach-half-close" in attached
+            native("services", "authorize", "dockercaller", "notes", "--capability", "reader")
+            guest(prepare, "gateway-reader-client-config", agent="dockercaller")
+            # Independent daemon inspection must still observe the
+            # container after the narrowed caller's refused deletion.
+            denied = gateway_client_failure(client_command, "gateway-adjacent-delete", "rm " + name)
+            verify_gateway_client_failure(denied)
+            assert denied["http"]["status"] == 200, "reader positive failed"
+            actual = json.loads(guest(f"sudo -n {DOCKER} inspect {name}", "gateway-adjacent-host-inspect").strip().removeprefix("\x1b[2K"))
+            assert len(actual) == 1 and actual[0]["Name"] == "/" + name
+            report["gateway_adjacent"] = {"client": denied, "container_id": actual[0]["Id"]}
             if receipt is not None:
-                native("services", "authorize", "dockercaller", "notes", "--capability", "reader")
-                guest(prepare, "gateway-reader-client-config", agent="dockercaller")
-                # Independent daemon inspection must still observe the
-                # container after the narrowed caller's refused deletion.
-                denied = gateway_client_failure(client_command, "gateway-adjacent-delete", "rm " + name)
-                verify_gateway_client_failure(denied)
-                assert denied["http"]["status"] == 200, "reader positive failed"
-                actual = json.loads(guest(f"sudo -n {DOCKER} inspect {name}", "gateway-adjacent-host-inspect").strip().removeprefix("\x1b[2K"))
-                assert len(actual) == 1 and actual[0]["Name"] == "/" + name
-                report["gateway_adjacent"] = {"client": denied, "container_id": actual[0]["Id"]}
                 receipt.checkpoint("gateway-effects", observation=report["gateway_adjacent"])
-                native("services", "revoke", "dockercaller", "notes")
-                revoked = gateway_client_failure(client_command, "gateway-revoked-delete", "rm " + name)
-                verify_gateway_client_failure(revoked)
-                assert revoked["http"]["status"] == 403
-                remaining = json.loads(guest(f"sudo -n {DOCKER} inspect {name}", "gateway-revoked-host-inspect").strip().removeprefix("\x1b[2K"))
-                assert remaining[0]["Id"] == actual[0]["Id"]
+            native("services", "revoke", "dockercaller", "notes")
+            revoked = gateway_client_failure(client_command, "gateway-revoked-delete", "rm " + name)
+            verify_gateway_client_failure(revoked)
+            assert revoked["http"]["status"] == 403
+            remaining = json.loads(guest(f"sudo -n {DOCKER} inspect {name}", "gateway-revoked-host-inspect").strip().removeprefix("\x1b[2K"))
+            assert remaining[0]["Id"] == actual[0]["Id"]
+            report["gateway_revoked"] = {"client": revoked, "container_id": remaining[0]["Id"]}
+            if receipt is not None:
                 receipt.checkpoint("gateway-revocation", observation=revoked, container_id=remaining[0]["Id"])
-                native("services", "authorize", "dockercaller", "notes", "--capability", "engine")
-                guest(prepare, "gateway-engine-client-config", agent="dockercaller")
+            native("services", "authorize", "dockercaller", "notes", "--capability", "engine")
+            guest(prepare, "gateway-engine-client-config", agent="dockercaller")
             client_command(f"/workspace/docker-client rm {name}", "gateway-remove")
             names = guest(f"sudo -n {DOCKER} ps --all --format '{{{{.Names}}}}'", "gateway-removed-host-inspect")
             assert name not in [line.removeprefix("\x1b[2K").strip() for line in names.splitlines()]
@@ -609,7 +612,8 @@ printf 'Authorization: Bearer %s\\n' "$agent_token" |
         if receipt is not None:
             receipt.checkpoint("gateway-failures", observations=report["gateway_failures"])
         report["gateway_result"] = ("daemon failure and unavailable provider passed" if failures_only else
-                                    "version, create/inspect, exec/attach half-close, removal, daemon failure and unavailable provider passed")
+                                    "version, create/inspect, exec/attach half-close, adjacent refusal, revocation, removal, "
+                                    "daemon failure and unavailable provider passed")
     finally:
         # Stop before restoring the retained application service and its
         # authorizations. Keep failure diagnostics and uncertain resources.

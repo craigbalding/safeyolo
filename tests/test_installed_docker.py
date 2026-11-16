@@ -862,6 +862,75 @@ def test_docker_product_selection_preserves_the_stopped_donor(tmp_path, monkeypa
     assert result["cleanup"] == ("stopped" if interruption == "start" else "not-started")
 
 
+@pytest.mark.parametrize("with_receipt", [False, True])
+@pytest.mark.parametrize("failure", [None, "reader-positive", "adjacent-effect", "revoked-http", "revoked-effect", "blank-diagnostic"])
+def test_gateway_management_checks_scoped_effects_without_a_recurring_receipt(tmp_path, monkeypatch, with_receipt, failure):
+    (tmp_path / "docker-caller").mkdir()
+    provider = tmp_path / "provider"
+    provider.mkdir()
+    (provider / "docker-gateway-client").write_text("synthetic client, never executed\n")
+    service = tmp_path / "services/notes.yaml"
+    service.parent.mkdir()
+    service.write_text("retained application service\n")
+    policy = tmp_path / "policy.toml"
+    policy.write_text('[hosts."notes.safeyolo.internal"]\nservice = "notes"\n'
+                      + f'[agents.notes]\nfolder = "{provider}"\n')
+    originals = {path: path.read_bytes() for path in (service, policy)}
+    output = tmp_path / "output"
+    output.mkdir()
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.running_guest", lambda *_: {})
+    steps, native_calls, checkpoints = [], [], []
+    report = {}
+
+    def native(*arguments):
+        native_calls.append(arguments)
+        return '{"runtime_state":"stopped"}' if arguments[:2] == ("agent", "status") else ""
+
+    def guest(_command, label, **kwargs):
+        steps.append(label)
+        if label in {"gateway-adjacent-host-inspect", "gateway-revoked-host-inspect", "gateway-removed-host-inspect"}:
+            assert kwargs.get("agent", "notes") == "notes", "effect read must bypass the scoped caller"
+        if label == "gateway-adjacent-host-inspect":
+            return json.dumps([] if failure == "adjacent-effect" else [{"Id": "owned-id", "Name": "/" + report["gateway_container"]}])
+        if label == "gateway-revoked-host-inspect":
+            return json.dumps([{"Id": "changed" if failure == "revoked-effect" else "owned-id"}])
+        if label in {"gateway-adjacent-delete", "gateway-revoked-delete", "gateway-daemon-failed", "gateway-closed", "gateway-stopped"}:
+            status = {"gateway-adjacent-delete": 200, "gateway-revoked-delete": 403}.get(label, 503)
+            if failure == "reader-positive" and label == "gateway-adjacent-delete":
+                status = 403
+            if failure == "revoked-http" and label == "gateway-revoked-delete":
+                status = 200
+            if label == "gateway-revoked-delete":
+                assert native_calls[-1] == ("services", "revoke", "dockercaller", "notes")
+                assert "gateway-engine-client-config" not in steps
+            return json.dumps({"exit": 1, "stderr": "" if failure == "blank-diagnostic" else "scope refused or provider unavailable",
+                               "http": {"status": status, "body": "controlled reply"}})
+        return {"gateway-unapproved": "403", "gateway-inspect": "true", "gateway-exec": "exec-half-close\n",
+                "gateway-attach": "internal:attach-half-close\n"}.get(label, "")
+
+    def background(*_):
+        return (SimpleNamespace(poll=lambda: None, wait=lambda **_: 0),)
+
+    receipt = SimpleNamespace(checkpoint=lambda name, **_: checkpoints.append(name)) if with_receipt else None
+    args = SimpleNamespace(docker_data="/home/agent/retained/data")
+    if failure:
+        with pytest.raises(AssertionError):
+            gateway_management(args, tmp_path, output, native, guest, background, report, receipt)
+        assert "gateway_result" not in report and "gateway-remove" not in steps
+    else:
+        gateway_management(args, tmp_path, output, native, guest, background, report, receipt)
+        assert report["gateway_adjacent"]["container_id"] == report["gateway_revoked"]["container_id"] == "owned-id"
+        assert report["gateway_revoked"]["client"]["http"]["status"] == 403
+        assert steps.index("gateway-adjacent-host-inspect") < steps.index("gateway-revoked-delete")
+        assert steps.index("gateway-revoked-host-inspect") < steps.index("gateway-engine-client-config") < steps.index("gateway-remove")
+        assert list(report["gateway_failures"]) == ["gateway-daemon-failed", "gateway-closed", "gateway-stopped"]
+        assert checkpoints == (["gateway-effects", "gateway-revocation", "gateway-failures"] if with_receipt else [])
+    assert steps.count("gateway-create") == steps.count("gateway-exec") == steps.count("gateway-attach") == 1
+    assert native_calls[-1] == ("stop",)
+    for path, original in originals.items():
+        assert path.read_bytes() == original
+
+
 @pytest.mark.parametrize("interruption", ["gateway-create", "gateway-exec"])
 def test_gateway_observer_preserves_uncertain_mutations_and_restores_the_fixture(tmp_path, monkeypatch, interruption):
     caller = tmp_path / "docker-caller"
