@@ -661,43 +661,110 @@ def test_gateway_failure_only_retains_diagnostics_without_replaying_mutations(tm
 
 
 @pytest.mark.parametrize("linked", [False, True])
-def test_gateway_binary_selection_restores_the_retained_entry_after_staging_failure(tmp_path, monkeypatch, linked):
+@pytest.mark.parametrize("gateway", [False, True])
+@pytest.mark.parametrize("interruption", ["selection", "staging", "start", "live-owner"])
+def test_docker_product_selection_preserves_the_stopped_donor(tmp_path, monkeypatch, linked, gateway, interruption):
     prepared = tmp_path / "prepared"
-    for part in ("bin", "assets/guest", "share/rootfs-tree"):
+    for part in ("bin", "assets/guest", "share/rootfs-tree", "libexec", "host"):
         (prepared / part).mkdir(parents=True, exist_ok=True)
     for name in ("bin/safeyolo", "bin/safeyolo-proxy", "assets/guest/safeyolo-guest"):
-        (prepared / name).write_text("synthetic source identity\n")
+        (prepared / name).write_text("#!/bin/sh\nprintf 'selected commit=revision\\n'\n")
+        (prepared / name).chmod(0o755)
+    (prepared / "package-info").write_text("selected package\n")
     root = tmp_path / "instance"
     root.mkdir()
     workspace = root / "workspace"
     workspace.mkdir()
-    retained = root / "retained-binaries" if linked else root / "bin"
-    retained.mkdir()
-    (retained / "sentinel").write_text("original binary bytes\n")
+    originals = {}
+    for name in ("bin", "assets", "share", "host"):
+        path = root / name
+        retained = root / ("retained-" + name) if linked else path
+        retained.mkdir()
+        (retained / "sentinel").write_text("original " + name)
+        if linked:
+            path.symlink_to(retained, target_is_directory=True)
+        originals[name] = path.readlink() if linked else None
+    pair = root / "versions/retained"
     if linked:
-        (root / "bin").symlink_to(retained, target_is_directory=True)
+        pair.mkdir(parents=True)
+        (pair / "host").symlink_to(root / "retained-host")
+        (pair / "share").symlink_to(root / "retained-share")
+        (root / "current").symlink_to("versions/retained")
+    home = root / "agents/notes/home"
+    home.mkdir(parents=True)
+    data = home / "docker-data"
+    data.write_bytes(b"retained image bytes")
+    home_inode, data_inode = home.stat().st_ino, data.stat().st_ino
     (root / "config.toml").write_text("")
     (root / "policy.toml").write_text(f'[agents.notes]\nnested_docker = true\nfolder = "{workspace}"\n')
+    (root / "services").mkdir()
+    calls = []
+
+    def selected_inputs():
+        assert (root / "current").resolve().parent == root / "versions"
+        assert (root / "current/host").resolve() == prepared
+        assert (root / "current/share/rootfs-tree").resolve() == prepared / "share/rootfs-tree"
+        for path in (root / "bin/safeyolo-proxy", root / "assets/guest/safeyolo-guest",
+                     root / "current/host/assets/guest/safeyolo-guest"):
+            assert subprocess.check_output([str(path), "--version"], text=True) == "selected commit=revision\n"
+        assert data.read_bytes() == b"retained image bytes" and data.stat().st_ino == data_inode
 
     def checked(command, **_):
         if command[-1] == "--version":
-            return "synthetic commit=revision"
+            return subprocess.check_output(command, text=True)
+        calls.append(command[3:])
+        if command[3:] == ["start"]:
+            selected_inputs()
+            raise RuntimeError("start interrupted")
         return '{"runtime_state":"stopped"}' if "status" in command else ""
 
     def failed_copy(*_):
-        assert (root / "bin").resolve() == prepared / "bin"
-        raise RuntimeError("staging interrupted")
+        selected_inputs()
+        if interruption == "staging":
+            raise RuntimeError("staging interrupted")
+
+    original_link = Path.symlink_to
+
+    def symlink(path, *arguments, **options):
+        if interruption == "selection" and path == root / "assets":
+            raise OSError("selection interrupted")
+        return original_link(path, *arguments, **options)
 
     monkeypatch.setattr("tests.blackbox.installed_docker_preflight.checked", checked)
     monkeypatch.setattr("tests.blackbox.installed_docker_preflight.shutil.copy2", failed_copy)
+    monkeypatch.setattr(Path, "symlink_to", symlink)
     args = SimpleNamespace(prepared_config=prepared, root=root, output=tmp_path / "output", revision="revision",
-                           proxy_revision=None, guest_revision=None, reuse_root=True, gateway=True,
-                           journey=False, nested_docker=True)
-    with pytest.raises(RuntimeError, match="staging interrupted"):
-        run(args)
-    assert (root / "bin").is_symlink() is linked
-    assert (root / "bin/sentinel").read_text() == "original binary bytes\n"
-    assert not list(root.glob("bin-docker-gateway-*"))
+                           proxy_revision=None, guest_revision=None, reuse_root=True, gateway=gateway,
+                           journey=not gateway, nested_docker=True, docker_data="/home/agent/docker-data")
+    with subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]) as owner:
+        try:
+            if interruption == "live-owner":
+                (root / "agents/notes/container.pid").write_text(str(owner.pid))
+            with pytest.raises((OSError, RuntimeError, AssertionError),
+                               match="stop the retained fixture" if interruption == "live-owner" else interruption + " interrupted"):
+                run(args)
+            assert owner.poll() is None
+        finally:
+            owner.terminate()
+            owner.wait(timeout=5)
+    for name, target in originals.items():
+        assert (root / name).is_symlink() is linked
+        if linked:
+            assert (root / name).readlink() == target
+        assert (root / name / "sentinel").read_text() == "original " + name
+    if linked:
+        assert (root / "current").readlink() == Path("versions/retained")
+    else:
+        assert not (root / "current").exists()
+    assert not (root / "libexec").exists() and not (root / "package-info").exists()
+    assert not list(root.glob("*-docker-proof-*"))
+    assert list((root / "versions").glob("*")) == ([pair] if linked else [])
+    assert home.stat().st_ino == home_inode and data.stat().st_ino == data_inode
+    assert data.read_bytes() == b"retained image bytes"
+    assert ["agent", "stop", "notes"] in calls if interruption == "start" else not any("stop" in call for call in calls)
+    result = json.loads((args.output / "result.json").read_text())
+    assert result["status"] == "incomplete"
+    assert result["cleanup"] == ("stopped" if interruption == "start" else "not-started")
 
 
 @pytest.mark.parametrize("interruption", ["gateway-create", "gateway-exec"])

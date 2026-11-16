@@ -296,7 +296,7 @@ nodes:
         - path: tests/blackbox/selections.py
           sha256: 80a234e24271c34395706a4fc7982c6c4819872466c841268908ad624ab139d3
         - path: tests/blackbox/installed_docker_preflight.py
-          sha256: bb98eb1c4059fab7a84e66aa934539c78947475aa3f448f13c82e8b77aca260c
+          sha256: 8e957655d71e26d0fc647aca7e01eab9a4104e1efe9ccd80e9b980c61fe1e6a8
         - path: tests/blackbox/installed_provider.py
           sha256: 775dfed9d0277f72b895fa05727225a1b27c6a916d4c99c579dd36ce7538a768
         - path: tests/blackbox/fixtures/nested-docker/Dockerfile

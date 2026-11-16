@@ -599,9 +599,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **What and why:** Gate/service scopes constrain job effects; teardown ends delegated authority.
 
-**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap observations qualified](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6887367276). Full procedure, recurring deployment and KVM/VZ proof remain pending.
+**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap procedure accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6905097277). Default shell wrapper remains unqualified; recurring deployment and KVM/VZ proof remain pending.
 
-**Conformance / action:** Retain scoped origin counts, credential replacement, live revocation, timeout/cancellation and old/new delegated-connection refusal; final audit and listener cleanup checkpoints remain unproved.
+**Conformance / action:** Retain scoped origin counts, credential replacement, live revocation, timeout/cancellation, old/new delegated-connection refusal, native audit attribution and listener cleanup; full recurring and platform acceptance remains pending.
 
 **Effort:** M. **Comments:** Origin counts and credential replacement already exist.
 
@@ -709,7 +709,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/installed_docker_preflight.py::main](../tests/blackbox/installed_docker_preflight.py#L1157) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_docker_preflight.py::main](../tests/blackbox/installed_docker_preflight.py#L1183) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `docker`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections).
 
 ### BB-22 — Live mounts / removal
@@ -3024,8 +3024,10 @@ client recovery instead of starting workloads or reading the application again.
 The receipt must identify the same source receipt, workloads and saved data.
 --gateway-failures-only retains the earlier management proof and runs only the
 daemon, closed-port and stopped-provider failure controls with --gateway.
---reuse-root continues this probe's stopped disposable instance without
-replacing its policy, registry approvals or prepared inputs. The driver does not
+--reuse-root continues this probe's stopped disposable instance and persistent
+home. It temporarily selects --prepared-config's executable and guest inputs,
+then restores the donor's input paths after stopping. It preserves unrelated
+policy entries and registry approvals. The driver does not
 approve or retry a failed operation. Independent acceptance remains separate.
 
 --recurring runs a fresh application journey followed by the scoped Docker API

@@ -28,8 +28,10 @@ client recovery instead of starting workloads or reading the application again.
 The receipt must identify the same source receipt, workloads and saved data.
 --gateway-failures-only retains the earlier management proof and runs only the
 daemon, closed-port and stopped-provider failure controls with --gateway.
---reuse-root continues this probe's stopped disposable instance without
-replacing its policy, registry approvals or prepared inputs. The driver does not
+--reuse-root continues this probe's stopped disposable instance and persistent
+home. It temporarily selects --prepared-config's executable and guest inputs,
+then restores the donor's input paths after stopping. It preserves unrelated
+policy entries and registry approvals. The driver does not
 approve or retry a failed operation. Independent acceptance remains separate.
 
 --recurring runs a fresh application journey followed by the scoped Docker API
@@ -910,7 +912,9 @@ def run(args, receipt=None):
     processes = []
     children = []
     capture_failures = []
-    original_bin = None
+    original_inputs = {}
+    selected_pair = None
+    started = False
 
     def native(*arguments, timeout=90, instance=root):
         return checked([cli, "--root", str(instance), *arguments], env=env, timeout=timeout,
@@ -955,19 +959,33 @@ def run(args, receipt=None):
         if receipt is not None:
             receipt.checkpoint("identity", inputs=report["inputs"], controller=report["driver"])
         if args.reuse_root:
+            assert base != root, "prepared inputs must be separate from the retained fixture"
+            assert not owned_processes(root), "stop the retained fixture before continuing"
             status = json.loads(native("agent", "status", "notes"))
             assert status["runtime_state"] == "stopped", "stop the retained fixture before continuing"
             policy = tomlkit.parse((root / "policy.toml").read_text())
             assert policy["agents"]["notes"]["nested_docker"] is True
             workspace = Path(policy["agents"]["notes"]["folder"])
-            if args.gateway:
-                # Preserve either a directory or a prepared-installation link
-                # on the same filesystem. Never copy through a donor link.
-                saved_bin = root / ("bin-docker-gateway-" + uuid.uuid4().hex)
-                (root / "bin").rename(saved_bin)
-                original_bin = saved_bin
-                (output / "original-bin-path.txt").write_text(str(saved_bin) + "\n")
-                (root / "bin").symlink_to(base / "bin", target_is_directory=True)
+            # Boot selects a complete host/guest pair through current, while
+            # proxy startup and namespace entry also use root-relative paths.
+            # Link the prepared bytes; never copy through a donor link or copy
+            # its home, credentials, config or guest tree into a new instance.
+            selected_pair = root / "versions" / ("docker-proof-" + uuid.uuid4().hex)
+            selected_pair.mkdir(parents=True)
+            (selected_pair / "host").symlink_to(base, target_is_directory=True)
+            (selected_pair / "share").symlink_to(base / "share", target_is_directory=True)
+            inputs = {name: base / name for name in (
+                "bin", "assets", "lib", "libexec", "share", "host", "package-info", "SHA256SUMS")
+                if (base / name).exists()}
+            inputs["current"] = selected_pair
+            for name, source in inputs.items():
+                path = root / name
+                saved = root / (name + "-docker-proof-" + uuid.uuid4().hex)
+                original_inputs[name] = str(saved) if path.exists() or path.is_symlink() else None
+                (output / "original-input-paths.json").write_text(json.dumps(original_inputs, indent=2) + "\n")
+                if original_inputs[name] is not None:
+                    path.rename(saved)
+                path.symlink_to(source, target_is_directory=source.is_dir())
         else:
             prepare_native_instance(base, root)
             root.chmod(0o755)
@@ -1007,6 +1025,7 @@ def run(args, receipt=None):
             policy.setdefault("hosts", {})["notes.safeyolo.internal"] = {"service": "notes", "egress": "deny"}
             policy["hosts"]["notes.safeyolo.internal:8088"] = {"egress": "allow"}
             (root / "policy.toml").write_text(tomlkit.dumps(policy))
+        started = True
         native("start")
         native("agent", "start", "notes", "--sandbox-only")
         status = json.loads(native("agent", "status", "notes"))
@@ -1039,25 +1058,32 @@ def run(args, receipt=None):
             report["status"] = "container-ran" if child.returncode == 0 else "preflight-failed"
     finally:
         failures = []
-        if (root / "config.toml").is_file():
+        if started and (root / "config.toml").is_file():
             try:
                 processes.extend(owned_processes(root))
             except (OSError, ValueError, KeyError) as error:
                 failures.append(f"cannot inspect owned process receipts: {error}")
         for name in ("notes", "dockercaller"):
-            if (root / "agents" / name).is_dir():
+            if started and (root / "agents" / name).is_dir():
                 try:
                     native("agent", "stop", name)
                 except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                     failures.append(f"guest stop {name}: {error}")
-        if (root / "config.toml").exists():
+        if started and (root / "config.toml").exists():
             try:
                 native("stop")
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                 failures.append(f"instance stop: {error}")
-        if original_bin is not None:
-            (root / "bin").unlink(missing_ok=True)
-            original_bin.rename(root / "bin")
+        for name, saved in reversed(original_inputs.items()):
+            path = root / name
+            if saved is None or Path(saved).exists() or Path(saved).is_symlink():
+                path.unlink(missing_ok=True)
+                if saved is not None:
+                    Path(saved).rename(path)
+        if selected_pair is not None and selected_pair.is_dir():
+            for name in ("share", "host"):
+                (selected_pair / name).unlink(missing_ok=True)
+            selected_pair.rmdir()
         report["commands"] = []
         for label, child, reader, finished in children:
             try:
@@ -1081,10 +1107,10 @@ def run(args, receipt=None):
             if not args.journey and (observations / "outcome.txt").is_file():
                 report["outcome"] = (observations / "outcome.txt").read_text().strip()
         failures.extend(surviving_processes(processes))
-        report.update(cleanup="failed" if failures else "stopped", cleanup_failures=failures,
+        report.update(cleanup="failed" if failures else "stopped" if started else "not-started", cleanup_failures=failures,
                       finished_at=datetime.now(UTC).isoformat())
         (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
-        if receipt is not None and not failures:
+        if receipt is not None and started and not failures:
             receipt.checkpoint("cleanup", failures=failures)
     if args.journey and report["status"] == "journey-ran" and report["cleanup"] == "stopped":
         # stop flushes the current audit writer. Match these real request IDs,
