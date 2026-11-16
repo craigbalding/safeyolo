@@ -41,7 +41,16 @@ new sandbox run. A passed continuation does not establish recurring coverage.
 home. It temporarily selects --prepared-config's executable and guest inputs,
 then restores the donor's input paths after stopping. It preserves unrelated
 policy entries and registry approvals. The driver does not
-approve or retry a failed operation. Independent acceptance remains separate.
+approve or retry a failed operation in a reused instance. In a fresh journey,
+the pinned public pull may consume one new canonical registry credential
+approval for the owned notes run. The driver checks the offered run scope and
+active grant before retrying that pull once. Other failures stop the journey.
+This operator fixture decision permits the current fingerprints at
+registry-1.docker.io across ports, methods and paths for the current notes run.
+Network and service controls still apply. Shared baseline credential policy
+stays unchanged. The report retains the first refusal and canonical decision
+separately.
+Independent acceptance remains separate.
 
 --recurring runs a fresh application journey followed by the scoped Docker API
 controls, live revocation and daemon/provider failures. It uses owned allowed
@@ -144,6 +153,78 @@ capabilities:
       - methods: [GET]
         path: /v1.45/**
 '''
+
+
+class GuestStepFailed(RuntimeError):
+    """A completed guest command returned a nonzero exit status."""
+
+    def __init__(self, label, exit_code):
+        super().__init__(f"guest step {label} exited {exit_code}; inspect {label}.log")
+        self.label = label
+        self.exit_code = exit_code
+
+
+def pull_public_image(root, output, native, docker, report, base_image):
+    """Consume only this fresh fixture's pinned-pull credential approval."""
+    observation = report["public_pull"] = {"image": base_image, "root": str(root)}
+    try:
+        before = json.loads(native("approvals", "list", "--agent", "notes", "--json"))["approvals"]
+        observation["prior_approval_ids"] = [row["approval_id"] for row in before]
+        try:
+            docker(f"{DOCKER} pull {base_image}", "image-pull", timeout=180)
+            observation["initial_exit"] = 0
+            return
+        except GuestStepFailed as error:
+            observation["initial_exit"] = error.exit_code
+            assert error.label == "image-pull" and "428" in (output / "image-pull.log").read_text(), (
+                "public image pull failed without a credential approval refusal")
+        pending = json.loads(native("approvals", "list", "--agent", "notes", "--json"))["approvals"]
+        new = observation["new_approvals"] = [row for row in pending if row["approval_id"] not in observation["prior_approval_ids"]]
+        assert len(new) == 1, "public pull did not produce one new canonical approval"
+        identifier = new[0]["approval_id"]
+        current = running_guest(root, "notes", json.loads(native("agent", "status", "notes")))
+        assert current == report["runtime"], "notes run changed during the public pull"
+        run = {"agent": "notes", "agent_id": current["agent_id"], "run_id": current["run_id"]}
+        canonical = observation["pending"] = json.loads(native("approvals", "show", identifier, "--agent", "notes", "--json"))
+        action = canonical["action"]
+        assert canonical["approval_id"] == identifier and canonical["request_id"] == new[0]["request_id"]
+        assert action == new[0]["action"] and canonical["authority"]["action"] == action, "pull approval changed after listing"
+        assert canonical["status"] == "pending" and action["kind"] == "credential_allow"
+        assert action["agent"] == "notes" and action["agent_id"] == current["agent_id"] and action["run"] == run
+        assert action["host"] == "registry-1.docker.io", "pull approval targets another registry"
+        assert canonical["authority"]["scheme"] == "https" and canonical["authority"]["port"] == 443
+        assert canonical["authority"]["method"] in {"GET", "HEAD"}, "approval is not a public registry read"
+        fingerprints = action["credentials"]
+        assert fingerprints and all(isinstance(value, str) and value.startswith("hmac:") and len(value) > 5
+                                    for value in fingerprints), "canonical credential fingerprints unavailable"
+        assert any(option["id"] == "run" and option["status"] == "available" for option in canonical["options"]), (
+            "current run approval is unavailable")
+        baseline = tomlkit.parse((root / "policy.toml").read_text()).get("credential")
+        try:
+            observation["decision"] = json.loads(native("approvals", "approve", identifier, "--option", "run",
+                                                        "--agent", "notes", "--json"))
+        finally:
+            # A lost decision reply must still retain the canonical outcome.
+            # Propagate the failed call; never repeat the decision or pull.
+            observation["effective"] = json.loads(native("approvals", "show", identifier, "--agent", "notes", "--json"))
+        effective = observation["effective"]
+        for granted in (observation["decision"], effective):
+            assert granted["approval_id"] == identifier and granted["request_id"] == canonical["request_id"]
+            assert granted["action"] == action and granted["status"] == "approved" and granted["option"] == "run"
+            assert granted["grant_active"] is True and granted["result"]["lifetime"] == "worker_run"
+            issued = granted["result"]["issued_access"]
+            assert issued["approval_id"] == identifier and issued["beneficiary"] == run and issued["action"] == action
+            assert issued["option"] == "run", "grant does not match the inspected run permission"
+        assert tomlkit.parse((root / "policy.toml").read_text()).get("credential") == baseline, (
+            "run approval changed shared credential policy")
+        assert running_guest(root, "notes", json.loads(native("agent", "status", "notes"))) == current, (
+            "notes run changed before the pull retry")
+        # This second command follows a verified authorization change. Any
+        # subsequent refusal or failure propagates without another decision.
+        docker(f"{DOCKER} pull {base_image}", "image-pull-authorized", timeout=180)
+        observation["authorized_exit"] = 0
+    finally:
+        (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
 
 
 def verify_gateway_client_failure(observation):
@@ -725,7 +806,10 @@ def compose_journey(args, root, output, workspace, native, guest, background, re
     else:
         base_image = shlex.quote((fixture / "Dockerfile").read_text().splitlines()[0].split()[1])
         if not args.docker_data:
-            docker(f"{DOCKER} pull {base_image}", "image-pull", timeout=180)
+            if getattr(args, "reuse_root", False):
+                docker(f"{DOCKER} pull {base_image}", "image-pull", timeout=180)
+            else:
+                pull_public_image(root, output, native, docker, report, base_image)
         report["base_image"] = json.loads(docker(f"{DOCKER} image inspect {base_image}", "image-identity"))
         report["reused_image_data"] = args.docker_data
         # Keep an unexpected 428 or transport error as a failure, not a denial pass.
@@ -1011,7 +1095,7 @@ def run(args, receipt=None):
         if reader.is_alive():
             raise RuntimeError(f"guest output capture remained live: {label}")
         if child.returncode:
-            raise RuntimeError(f"guest step {label} exited {child.returncode}; inspect {path.name}")
+            raise GuestStepFailed(label, child.returncode)
         return path.read_text()
 
     def background(agent, command, label):

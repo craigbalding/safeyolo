@@ -29,6 +29,7 @@ import pytest
 import tomlkit
 
 from tests.blackbox.installed_docker_preflight import (
+    GuestStepFailed,
     application_resume_input,
     compose_journey,
     gateway_client_failure,
@@ -38,11 +39,13 @@ from tests.blackbox.installed_docker_preflight import (
     gateway_notes_command,
     gateway_recovery_receipt,
     main,
+    pull_public_image,
     run,
     verify_gateway_client_failure,
     verify_outbound,
     verify_provider_origin,
 )
+from tests.blackbox.installed_host_smoke import _process_start_token
 from tests.blackbox.installed_provider import capture_guest_command, wait_file
 from tests.blackbox.registry_fixture import distribution_registry
 
@@ -224,7 +227,8 @@ def test_build_installs_and_probes_in_final_dockerfile_step(tmp_path, failed_com
     assert (lists / "package-index").exists() == failed_command.startswith("apt-get")
 
 
-def test_guest_timeout_keeps_capture_until_owned_stop(tmp_path, monkeypatch):
+@pytest.mark.parametrize("completed_exit", [None, 7])
+def test_guest_failure_keeps_capture_until_owned_stop(tmp_path, monkeypatch, completed_exit):
     prepared, root, release = (tmp_path / name for name in ("prepared", "fresh", "stop"))
     for name in ("bin", "assets/guest", "share/rootfs-tree"):
         (prepared / name).mkdir(parents=True)
@@ -264,6 +268,8 @@ def test_guest_timeout_keeps_capture_until_owned_stop(tmp_path, monkeypatch):
     program = ('import pathlib, time\nprint("build-started", flush=True)\n'
                f'while not pathlib.Path({str(release)!r}).exists(): time.sleep(0.01)\n'
                'print("drained-during-stop", flush=True)\n')
+    if completed_exit is not None:
+        program = f'import sys\nprint("command-failed", flush=True)\nsys.exit({completed_exit})\n'
     monkeypatch.setattr("tests.blackbox.installed_docker_preflight.prepare_native_instance", prepare)
     monkeypatch.setattr("tests.blackbox.installed_docker_preflight.copy_prepared_nats", lambda *_: None)
     monkeypatch.setattr("tests.blackbox.installed_docker_preflight.checked", checked)
@@ -282,7 +288,7 @@ def test_guest_timeout_keeps_capture_until_owned_stop(tmp_path, monkeypatch):
                            proxy_revision=None, guest_revision=None, reuse_root=False, gateway=False,
                            journey=True, nested_docker=True, docker_data=None, admin_port=12345)
     try:
-        with pytest.raises(subprocess.TimeoutExpired):
+        with pytest.raises(subprocess.TimeoutExpired if completed_exit is None else GuestStepFailed) as raised:
             run(args)
     finally:
         release.touch()
@@ -290,11 +296,16 @@ def test_guest_timeout_keeps_capture_until_owned_stop(tmp_path, monkeypatch):
             child.wait(timeout=5)
             finished.set()
             reader.join(timeout=5)
-    assert stops == [{"running": True, "capturing": True, "finished": False}]
-    assert (args.output / "compose-build.log").read_text() == "build-started\ndrained-during-stop\n"
+    if completed_exit is None:
+        assert stops == [{"running": True, "capturing": True, "finished": False}]
+        assert (args.output / "compose-build.log").read_text() == "build-started\ndrained-during-stop\n"
+    else:
+        assert raised.value.label == "compose-build" and raised.value.exit_code == completed_exit
+        assert stops == [{"running": False, "capturing": False, "finished": True}]
+        assert (args.output / "compose-build.log").read_text() == "command-failed\n"
     report = json.loads((args.output / "result.json").read_text())
     assert report["status"] == "incomplete" and report["cleanup"] == "stopped"
-    assert report["cleanup_failures"] == [] and report["commands"] == [{"step": "compose-build", "exit": 0}]
+    assert report["cleanup_failures"] == [] and report["commands"] == [{"step": "compose-build", "exit": completed_exit or 0}]
 
 
 @pytest.mark.parametrize("disk_backed", [False, True])
@@ -1200,15 +1211,19 @@ def test_fresh_image_input_copies_image_directories_before_start(tmp_path, monke
         assert ["agent", "stop", "notes"] in calls and result["cleanup"] == "stopped"
 
 
-@pytest.mark.parametrize("prepared_image", [False, True])
-def test_compose_journey_inspects_the_pin_after_optional_public_pull(tmp_path, prepared_image):
+@pytest.mark.parametrize("prepared_image,reused_root", [(False, False), (True, False), (False, True)])
+def test_compose_journey_inspects_the_pin_after_optional_public_pull(tmp_path, prepared_image, reused_root):
     workspace, output = tmp_path / "workspace", tmp_path / "output"
     workspace.mkdir()
     output.mkdir()
     steps = []
     pin = (PROBE.parent / "Dockerfile").read_text().splitlines()[0].split()[1]
 
-    def native(*_, instance):
+    def native(*arguments, instance=None):
+        if arguments[:2] == ("approvals", "list"):
+            assert not reused_root
+            return '{"approvals":[]}'
+        assert arguments == ("init",)
         for name, mode in {"certs/mitmproxy-ca-cert.pem": 0o644, "certs/mitmproxy-ca.pem": 0o600,
                            "data/admin_token": 0o600, "data/agent_token": 0o600}.items():
             path = instance / name
@@ -1229,13 +1244,120 @@ def test_compose_journey_inspects_the_pin_after_optional_public_pull(tmp_path, p
             raise RuntimeError("end of setup control")
         return ""
 
-    args = SimpleNamespace(docker_data="/home/agent/docker-image-data" if prepared_image else None)
+    args = SimpleNamespace(docker_data="/home/agent/docker-image-data" if prepared_image else None, reuse_root=reused_root)
     report = {}
     with pytest.raises(RuntimeError, match="end of setup control"):
         compose_journey(args, tmp_path / "root", output, workspace, native, guest, registry_background, report)
     assert ("image-pull" in steps) is not prepared_image
     assert report["base_image"] == [{"Id": "qualified-image"}]
     assert report["reused_image_data"] == args.docker_data
+
+
+@pytest.mark.parametrize("failure", [None, "success", "transport", "non-428", "no-event", "old-event", "two-events",
+                                     "network", "registry", "agent", "run", "fingerprints", "unavailable", "not-pending",
+                                     "method", "port", "changed-event", "changed-run", "lost-decision", "inactive",
+                                     "wrong-grant", "baseline", "retry-refused"])
+def test_public_pull_consumes_only_one_current_run_approval(tmp_path, failure):
+    root, output = tmp_path / "root", tmp_path / "output"
+    (root / "agents/notes").mkdir(parents=True)
+    output.mkdir()
+    policy = root / "policy.toml"
+    policy.write_text('[credential]\nunknown = "prompt"\n')
+    run = {"agent": "notes", "agent_id": "ag-owned", "run_id": "current-run"}
+    runtime = {"name": "notes", "agent_id": run["agent_id"], "run_id": run["run_id"],
+               "backend_pid": os.getpid(), "backend_token": _process_start_token(os.getpid())}
+    (root / "agents/notes/runtime.json").write_text(json.dumps(runtime))
+    status = {**runtime, "runtime_state": "running"}
+    action = {"kind": "credential_allow", "agent": "notes", "agent_id": run["agent_id"], "run": run,
+              "host": "registry-1.docker.io", "credentials": ["hmac:actual-event"]}
+    if failure in {"network", "registry", "agent", "run", "fingerprints"}:
+        key, value = {"network": ("kind", "network_allow"), "registry": ("host", "other.invalid"),
+                      "agent": ("agent_id", "ag-peer"), "run": ("run", {**run, "run_id": "stopped-run"}),
+                      "fingerprints": ("credentials", [])}[failure]
+        action[key] = value
+    canonical = {"approval_id": "apr-owned", "request_id": "req-pull", "status": "pending", "action": action,
+                 "authority": {"action": action, "scheme": "https", "port": 443, "method": "GET"},
+                 "options": [{"id": "persistent", "status": "available"}, {"id": "run", "status": "available"}]}
+    if failure == "unavailable":
+        canonical["options"][1]["status"] = "superseded"
+    if failure == "not-pending":
+        canonical["status"] = "rejected"
+    if failure == "method":
+        canonical["authority"]["method"] = "POST"
+    if failure == "port":
+        canonical["authority"]["port"] = 80
+    granted = {**deepcopy(canonical), "status": "approved", "option": "run", "grant_active": True,
+               "result": {"lifetime": "worker_run", "issued_access": {
+                   "approval_id": "apr-owned", "beneficiary": run, "action": action, "option": "run"}}}
+    calls, attempts = [], []
+    report = {"runtime": runtime}
+    pin = (PROBE.parent / "Dockerfile").read_text().splitlines()[0].split()[1]
+
+    def native(*arguments):
+        calls.append(arguments)
+        if arguments[:2] == ("approvals", "list"):
+            assert arguments == ("approvals", "list", "--agent", "notes", "--json")
+            first = len([call for call in calls if call[:2] == ("approvals", "list")]) == 1
+            rows = [] if first or failure == "no-event" else [canonical]
+            if failure == "old-event":
+                rows = [canonical]
+            if not first and failure == "two-events":
+                rows = [canonical, {**canonical, "approval_id": "apr-another"}]
+            return json.dumps({"approvals": rows})
+        if arguments == ("agent", "status", "notes"):
+            if failure == "changed-run" and any(call[:2] == ("approvals", "approve") for call in calls):
+                status["run_id"] = "replacement-run"
+                (root / "agents/notes/runtime.json").write_text(json.dumps({**runtime, "run_id": status["run_id"]}))
+            return json.dumps(status)
+        if arguments[:2] == ("approvals", "approve"):
+            assert arguments == ("approvals", "approve", "apr-owned", "--option", "run", "--agent", "notes", "--json")
+            if failure == "baseline":
+                policy.write_text('[credential]\nunknown = "allow"\n')
+            if failure == "lost-decision":
+                raise RuntimeError("decision reply lost")
+            return json.dumps(granted)
+        assert arguments == ("approvals", "show", "apr-owned", "--agent", "notes", "--json")
+        decided = any(call[:2] == ("approvals", "approve") for call in calls)
+        view = deepcopy(granted if decided else canonical)
+        if failure == "changed-event" and not decided:
+            view["request_id"] = "req-different"
+        if decided and failure == "inactive":
+            view["grant_active"] = False
+        if decided and failure == "wrong-grant":
+            view["result"]["issued_access"]["action"]["credentials"] = ["hmac:uninspected"]
+        return json.dumps(view)
+
+    def docker(command, label, *, timeout):
+        attempts.append(label)
+        assert command == f"docker --host=unix:///run/safeyolo-nested-docker/docker.sock pull {pin}" and timeout == 180
+        if failure == "transport":
+            raise subprocess.TimeoutExpired(command, timeout)
+        if label == "image-pull" and failure != "success":
+            (output / "image-pull.log").write_text("ordinary failure" if failure == "non-428" else "unexpected status: 428")
+            raise GuestStepFailed(label, 1)
+        if failure == "retry-refused":
+            raise GuestStepFailed(label, 1)
+        return "image pulled"
+
+    if failure in {None, "success"}:
+        pull_public_image(root, output, native, docker, report, pin)
+    else:
+        with pytest.raises((AssertionError, RuntimeError, subprocess.TimeoutExpired)):
+            pull_public_image(root, output, native, docker, report, pin)
+    observed = json.loads((output / "result.json").read_text())["public_pull"]
+    approvals = [call for call in calls if call[:2] == ("approvals", "approve")]
+    decision_cases = {None, "lost-decision", "inactive", "wrong-grant", "baseline", "changed-run", "retry-refused"}
+    assert len(approvals) == (1 if failure in decision_cases else 0)
+    assert attempts == (["image-pull", "image-pull-authorized"] if failure in {None, "retry-refused"} else ["image-pull"])
+    if failure in decision_cases:
+        assert observed["pending"]["approval_id"] == "apr-owned" and observed["initial_exit"] == 1
+        assert observed["effective"]["status"] == "approved"
+    if failure == "lost-decision":
+        assert "decision" not in observed and "effective" in observed
+    if failure is None:
+        assert observed["authorized_exit"] == 0 and policy.read_text() == '[credential]\nunknown = "prompt"\n'
+    if failure == "success":
+        assert observed["initial_exit"] == 0 and "pending" not in observed
 
 
 @pytest.mark.parametrize("with_receipt", [False, True])

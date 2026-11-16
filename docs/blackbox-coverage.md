@@ -709,7 +709,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/installed_docker_preflight.py::main](../tests/blackbox/installed_docker_preflight.py#L1286) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_docker_preflight.py::main](../tests/blackbox/installed_docker_preflight.py#L1370) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `docker`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections).
 
 ### BB-22 — Live mounts / removal
@@ -3037,7 +3037,16 @@ new sandbox run. A passed continuation does not establish recurring coverage.
 home. It temporarily selects --prepared-config's executable and guest inputs,
 then restores the donor's input paths after stopping. It preserves unrelated
 policy entries and registry approvals. The driver does not
-approve or retry a failed operation. Independent acceptance remains separate.
+approve or retry a failed operation in a reused instance. In a fresh journey,
+the pinned public pull may consume one new canonical registry credential
+approval for the owned notes run. The driver checks the offered run scope and
+active grant before retrying that pull once. Other failures stop the journey.
+This operator fixture decision permits the current fingerprints at
+registry-1.docker.io across ports, methods and paths for the current notes run.
+Network and service controls still apply. Shared baseline credential policy
+stays unchanged. The report retains the first refusal and canonical decision
+separately.
+Independent acceptance remains separate.
 
 --recurring runs a fresh application journey followed by the scoped Docker API
 controls, live revocation and daemon/provider failures. It uses owned allowed
