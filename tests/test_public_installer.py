@@ -893,6 +893,12 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
             f'exec "{shutil.which("nsenter")}" "$@"\n')
         wrapper.chmod(0o755)
     host_calls, guest_calls = tmp_path / "host-calls", tmp_path / "guest-calls"
+    # Exercise installation beside a foreign command without selecting it as
+    # this fixture's command location or changing the host's existing command.
+    foreign_command = tools / "safeyolo"
+    foreign_command.write_text("#!/bin/sh\nexit 93\n")
+    foreign_command.chmod(0o755)
+    commands = tmp_path / "selected commands"
     environment = {**environment, "PATH": f"{tools}:{environment['PATH']}",
                    "PACKAGE_GUEST_DOWNLOAD_CLI": str(native_cli), "PACKAGE_HOST_CALLS": str(host_calls),
                    "PACKAGE_GUEST_ACQUIRE_CLI": str(native_cli),
@@ -903,7 +909,7 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
     prepared = digest(guest).removeprefix("sha256:") + "*/rootfs-tree"
     stdout_log, stderr_log = tmp_path / "bootstrap.stdout", tmp_path / "bootstrap.stderr"
     with stdout_log.open("w") as stdout, stderr_log.open("w") as stderr:
-        process = subprocess.Popen(["bash", str(bootstrap)], env=environment, stdout=stdout,
+        process = subprocess.Popen(["bash", str(bootstrap), "--command-dir", str(commands)], env=environment, stdout=stdout,
                                    stderr=stderr, text=True, start_new_session=True)
     try:
         deadline = time.monotonic() + 10
@@ -944,6 +950,7 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
         if outcome == "installed":
             assert process.returncode == 0, stderr
             assert (root / "config.toml").exists()
+            assert (commands / "safeyolo").resolve() == root / "bin/safeyolo"
             arguments = guest_calls.read_text().splitlines()
             assert arguments[arguments.index("--index") + 1] == selected_index
             selection = json.loads((root / "share/guest-selection.json").read_text())
@@ -953,7 +960,8 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
             assert sum(path.startswith(PREFIX + "blobs/") for path in requests) == 2
         else:
             assert process.returncode != 0, (stdout, stderr)
-            assert only_host_preparation_remains(root) and not (Path(environment["HOME"]) / ".local/bin/safeyolo").exists()
+            assert only_host_preparation_remains(root)
+            assert not (commands / "safeyolo").exists() and not (commands / "safeyolo").is_symlink()
             if outcome == "binding":
                 assert "Guest download inputs differ" in stderr
         if held_phase == "host-extraction":
@@ -965,6 +973,7 @@ def test_guest_cache_is_prepared_during_host_extraction_without_early_activation
         assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
         assert not list(root.parent.glob("safeyolo-install.*"))
         assert not root.with_name(root.name + ".install-lock").exists()
+        assert foreign_command.read_text() == "#!/bin/sh\nexit 93\n"
         assert requests.count("/v2/craigbalding/safeyolo-guest/blobs/" + digest(guest)) == 1
     finally:
         resume.touch()
