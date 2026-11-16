@@ -397,7 +397,8 @@ sudo rsync -aHAX --numeric-ids "$ROOTFS/" "$TREE_STAGE/rootfs-tree/"
 # and leaves embedded ACL/capability IDs in ordinary guest coordinates.
 sudo -n "$NATIVE_CLI" host archive-profile-tree "$TREE_STAGE/rootfs-tree" "$(id -u)"  # DOC: guest/README.md, SECURITY.md
 sudo rm -rf "$OUTPUT_TREE"
-mv -- "$TREE_STAGE/rootfs-tree" "$OUTPUT_TREE"
+# Moving the normalized directory to another parent requires write access to it.
+sudo -n mv -- "$TREE_STAGE/rootfs-tree" "$OUTPUT_TREE"
 rmdir -- "$TREE_STAGE"
 TREE_STAGE=
 echo "tree:  $OUTPUT_TREE/ ($(sudo du -sh "$OUTPUT_TREE" | cut -f1))"
