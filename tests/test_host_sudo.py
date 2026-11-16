@@ -170,6 +170,14 @@ def test_acl_sudo_preview_precedes_authentication_and_prepared_retry_is_a_noop(n
     parent, _stage = owned_stage
     private = parent / "private 'quotes' $value; &"
     runtime = payload(private / "runtime")
+    settings = parent / "settings.toml"
+    arguments = ("--root", parent / "instance", "host", "prepare", "--system-runsc", runtime, "--write-settings", settings)
+    # Prepare profiles, namespaces and mappings before introducing the ACL gap.
+    # Otherwise an earlier host prerequisite consumes the controlled password
+    # or refusal before this test reaches the ACL operation it observes.
+    baseline = command(native_cli, *arguments, "--yes")
+    assert baseline.returncode == 0, baseline.stderr
+    settings.unlink()
     own(private, 0, os.getgid())
     subprocess.run(["sudo", "-n", "chmod", "0710", str(private)], check=True)
     tools = parent / "tools"
@@ -183,14 +191,12 @@ def test_acl_sudo_preview_precedes_authentication_and_prepared_retry_is_a_noop(n
         + f"os.execv({shutil.which('sudo')!r}, ['sudo', *sys.argv[1:]])\n")
     (tools / "sudo").chmod(0o755)
     environment = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}"}
-    settings = parent / "settings.toml"
-    arguments = ("--root", parent / "instance", "host", "prepare", "--system-runsc", runtime, "--write-settings", settings)
     declined = command(native_cli, *arguments, env=environment, input="n\n")
     assert "declined" in declined.stderr and not disclosed_calls(declined.stderr)[1]
     prepared = command(native_cli, *arguments, "--yes", env=environment,
                        input="fixture-password\n" if state == "fresh" else "")
     previews, calls = disclosed_calls(prepared.stderr)
-    assert calls and any(call[:4] == ["--", "setfacl", "--no-mask", "-m"] for call in calls)
+    assert calls and any(call[:4] == ["--", "setfacl", "--no-mask", "-m"] for call in calls), prepared.stderr
     if state == "fresh":
         assert prepared.stderr.index("Host command:") < prepared.stderr.index("fixture fresh sudo password:")
     if state == "refused":
