@@ -1,10 +1,8 @@
 //! Display host elevation from the invocation that will actually execute.
 
-use std::{
-    ffi::OsStr,
-    io::{self, Write},
-    process::Command,
-};
+#[cfg(target_os = "linux")]
+use std::io::{self, Write};
+use std::{ffi::OsStr, process::Command};
 
 fn quote(argument: &OsStr) -> String {
     if let Some(text) = argument.to_str()
@@ -30,6 +28,7 @@ pub(crate) fn display(command: &Command) -> String {
         .join(" ")
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn preview(command: &Command, purpose: &str) -> io::Result<()> {
     let mut stderr = io::stderr().lock();
     writeln!(stderr, "Host command: {}\n  {purpose}", display(command))?;
