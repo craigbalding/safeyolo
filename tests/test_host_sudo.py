@@ -169,6 +169,7 @@ int {name}(const char *path, int flags, ...) {{
 def test_acl_sudo_preview_precedes_authentication_and_prepared_retry_is_a_noop(native_cli, owned_stage, state):
     parent, _stage = owned_stage
     private = parent / "private 'quotes' $value; &"
+    private.mkdir(mode=0o700)
     runtime = payload(private / "runtime")
     settings = parent / "settings.toml"
     arguments = ("--root", parent / "instance", "host", "prepare", "--system-runsc", runtime, "--write-settings", settings)
@@ -179,6 +180,9 @@ def test_acl_sudo_preview_precedes_authentication_and_prepared_retry_is_a_noop(n
     assert baseline.returncode == 0, baseline.stderr
     settings.unlink()
     own(private, 0, os.getgid())
+    # Baseline preparation grants the mapped UID an extended ACL. Remove it
+    # before chmod: with an ACL, 0710 sets its mask, not group:: traversal.
+    subprocess.run(["sudo", "-n", "setfacl", "-b", str(private)], check=True)
     subprocess.run(["sudo", "-n", "chmod", "0710", str(private)], check=True)
     tools = parent / "tools"
     tools.mkdir()
@@ -192,7 +196,7 @@ def test_acl_sudo_preview_precedes_authentication_and_prepared_retry_is_a_noop(n
     (tools / "sudo").chmod(0o755)
     environment = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}"}
     declined = command(native_cli, *arguments, env=environment, input="n\n")
-    assert "declined" in declined.stderr and not disclosed_calls(declined.stderr)[1]
+    assert "declined" in declined.stderr and not disclosed_calls(declined.stderr)[1], declined.stderr
     prepared = command(native_cli, *arguments, "--yes", env=environment,
                        input="fixture-password\n" if state == "fresh" else "")
     previews, calls = disclosed_calls(prepared.stderr)
