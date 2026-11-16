@@ -494,9 +494,11 @@ def gateway_management(args, root, output, native, guest, background, report, re
             guest("set -eu; plugin=$(dpkg-query -L docker-compose | sed -n '\\|/cli-plugins/docker-compose$|p'); "
                   "test -n \"$plugin\"; cp -- \"$plugin\" /workspace/docker-gateway-compose", "gateway-compose-plugin")
             shutil.copy2(Path(settings["agents"]["notes"]["folder"]) / "docker-gateway-compose", caller / "docker-compose")
-            guest("if ! command -v python3 >/dev/null; then sudo -n apt-get update && "
-                  "sudo -n apt-get install -y --no-install-recommends python3; fi",
-                  "gateway-caller-tools", agent="dockercaller", timeout=300)
+        # Every gateway mode uses Python for scoped client configuration and
+        # failure diagnostics. The supported base guest does not include it.
+        guest("if ! command -v python3 >/dev/null; then sudo -n apt-get update && "
+              "sudo -n apt-get install -y --no-install-recommends python3; fi",
+              "gateway-caller-tools", agent="dockercaller", timeout=300)
         daemon = background("notes", f"exec sudo -n env SAFEYOLO_DOCKER_DATA_ROOT={shlex.quote(args.docker_data)} "
                             f"bash /workspace/docker-preflight.sh {state} --daemon", "gateway-daemon")[0]
         guest(f"for ((i=0;i<150;i++)); do version=$(sudo -n {DOCKER} info --format '{{{{.ServerVersion}}}}' "

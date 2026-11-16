@@ -606,6 +606,101 @@ def test_gateway_failure_capture_keeps_client_exit_separate_from_raw_http(tmp_pa
     verify_gateway_client_failure(observation)
 
 
+@pytest.mark.parametrize("mode", ["ordinary", "failures", "lifecycle", "resume"])
+@pytest.mark.parametrize("python_state", ["absent", "installed", "update-failed", "install-failed"])
+def test_gateway_prepares_caller_python_before_configuration(tmp_path, monkeypatch, mode, python_state):
+    """Run the real caller shell with controlled package and Agent API replies."""
+    caller = tmp_path / "docker-caller"
+    caller.mkdir()
+    provider = tmp_path / "provider"
+    provider.mkdir()
+    for name in ("docker-gateway-client", "docker-gateway-compose"):
+        (provider / name).write_text("synthetic client, never executed\n")
+    service = tmp_path / "services/notes.yaml"
+    service.parent.mkdir()
+    service.write_text("retained application service\n")
+    policy = tmp_path / "policy.toml"
+    policy.write_text('[hosts."notes.safeyolo.internal"]\nservice = "notes"\n'
+                      + f'[agents.notes]\nfolder = "{provider}"\n')
+    originals = {path: path.read_bytes() for path in (service, policy)}
+    output = tmp_path / "output"
+    output.mkdir()
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name in ("cat", "mkdir"):
+        (tools / name).symlink_to(shutil.which(name))
+    if python_state == "installed":
+        (tools / "python3").symlink_to(sys.executable)
+    installer = tools / "sudo"
+    installer.write_text('#!/bin/bash\n'
+                         'printf "%s\\n" "$*" >> "$CALLER_PACKAGE_LOG"\n'
+                         'if [[ "$CALLER_PYTHON_STATE" == "$3-failed" ]]; then exit 73; fi\n'
+                         'if [[ "$3" == install ]]; then /bin/ln -s -- "$CALLER_PYTHON" "$CALLER_TOOLS/python3"; fi\n')
+    installer.chmod(0o700)
+    curl = tools / "curl"
+    curl.write_text('#!/bin/sh\nprintf \'%s\\n\' \'{"authorized":{"notes":{"token":"synthetic-scoped-token"}}}\'\n')
+    curl.chmod(0o700)
+    token = tmp_path / "synthetic-token"
+    token.write_text("synthetic-agent-token\n")
+    config = caller / "client-config"
+    package_log = tmp_path / "package.log"
+    environment = os.environ | {"PATH": str(tools), "BASH_ENV": "", "CALLER_PACKAGE_LOG": str(package_log),
+                                 "CALLER_PYTHON_STATE": python_state, "CALLER_PYTHON": sys.executable,
+                                 "CALLER_TOOLS": str(tools)}
+    args = SimpleNamespace(docker_data="/home/agent/retained/data", gateway_failures_only=mode == "failures",
+                           gateway_lifecycle=mode == "lifecycle")
+    if mode == "resume":
+        args.gateway_lifecycle_resume = tmp_path / "previous.json"
+        args.gateway_lifecycle_resume.write_text(json.dumps({
+            "cleanup": "stopped", "registry": {"registry_cleanup": "removed"},
+            "reached_step": "gateway-notes-recovered", "lifecycle": {"state": "incomplete"},
+            "source_driver": "retained-driver", "driver_sha256": "a" * 64}))
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.running_guest", lambda *_: {})
+    steps = []
+    native_calls = []
+
+    def native(*arguments):
+        native_calls.append(arguments)
+        return '{"runtime_state":"stopped"}' if arguments[:2] == ("agent", "status") else ""
+
+    def guest(command, label, **kwargs):
+        steps.append(label)
+        if label in {"gateway-caller-tools", "gateway-client-config"}:
+            assert kwargs["agent"] == "dockercaller"
+            command = command.replace("/app/agent_token", shlex.quote(str(token)))
+            command = command.replace("/home/agent/docker-gateway-client", str(config))
+            return subprocess.check_output(["/bin/bash", "-c", command], env=environment, text=True, stderr=subprocess.PIPE)
+        if label == "gateway-version":
+            assert json.loads((config / "config.json").read_text()) == {"HttpHeaders": {
+                "X-SafeYolo-Docker-Service": "notes", "Authorization": "Bearer synthetic-scoped-token"}}
+            assert (config / "config.json").stat().st_mode & 0o777 == 0o600
+            raise RuntimeError("caller configured before Engine effects")
+        return "403" if label == "gateway-unapproved" else ""
+
+    def background(_agent, _command, label):
+        steps.append(label)
+        return (SimpleNamespace(poll=lambda: None),)
+
+    failed = python_state.endswith("-failed")
+    if failed:
+        with pytest.raises(subprocess.CalledProcessError) as error:
+            gateway_management(args, tmp_path, output, native, guest, background, {})
+        assert error.value.returncode == 73
+        assert "gateway-daemon" not in steps and "gateway-client-config" not in steps
+        assert not any(call[0] == "services" for call in native_calls)
+    else:
+        with pytest.raises(RuntimeError, match="caller configured before Engine effects"):
+            gateway_management(args, tmp_path, output, native, guest, background, {})
+        if python_state == "absent":
+            assert steps.index("gateway-caller-tools") < steps.index("gateway-daemon") < steps.index("gateway-client-config")
+    packages = package_log.read_text().splitlines() if package_log.exists() else []
+    assert packages == ([] if python_state == "installed" else ["-n apt-get update"] +
+                        ([] if python_state == "update-failed" else ["-n apt-get install -y --no-install-recommends python3"]))
+    assert native_calls[-1] == ("stop",)
+    for path, original in originals.items():
+        assert path.read_bytes() == original
+
+
 @pytest.mark.parametrize("blank", [False, True])
 def test_gateway_failure_only_retains_diagnostics_without_replaying_mutations(tmp_path, monkeypatch, blank):
     (tmp_path / "docker-caller").mkdir()
