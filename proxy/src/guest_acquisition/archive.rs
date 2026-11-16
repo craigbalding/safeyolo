@@ -278,6 +278,16 @@ fn extract(
     commands: &mut ExtractionCommands,
     cancellation: Option<&AtomicBool>,
 ) -> Result<(), Error> {
+    #[cfg(target_os = "linux")]
+    if platform != ConsumerPlatform::DarwinArm64 {
+        use std::os::fd::AsRawFd;
+        let directory = fs::File::open(stage)?;
+        // A setgid parent can assign an unrelated host group. This owned
+        // private directory must use the operator group present in the map.
+        if unsafe { libc::fchown(directory.as_raw_fd(), u32::MAX, mapping.host_gid) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
     let extraction_started = Instant::now();
     let linux = platform != ConsumerPlatform::DarwinArm64;
     let mut command = commands.command("tar")?;
@@ -361,27 +371,15 @@ pub(super) fn prepare(
         .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in(parent)?
         .keep();
-    let result = (|| -> Result<(), Error> {
-        #[cfg(target_os = "linux")]
-        if platform != ConsumerPlatform::DarwinArm64 {
-            use std::os::fd::AsRawFd;
-            let directory = fs::File::open(&stage)?;
-            // A setgid parent can assign an unrelated host group. This owned
-            // private directory must use the operator group present in the map.
-            if unsafe { libc::fchown(directory.as_raw_fd(), u32::MAX, mapping.host_gid) } != 0 {
-                return Err(std::io::Error::last_os_error().into());
-            }
-        }
-        extract(
-            &mut input,
-            &mut decoded,
-            &stage,
-            platform,
-            mapping,
-            &mut commands,
-            cancellation,
-        )
-    })()
+    let result = extract(
+        &mut input,
+        &mut decoded,
+        &stage,
+        platform,
+        mapping,
+        &mut commands,
+        cancellation,
+    )
     .and_then(|()| {
         if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
             Err("guest preparation interrupted".into())
