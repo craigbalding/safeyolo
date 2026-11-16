@@ -211,6 +211,18 @@ to reuse the inspected image. The driver preserves each operation's output and
 stops the fixture on failure. Its local observer controls do not establish
 installed support or independent acceptance.
 
+For a fresh `--journey --recurring` instance, `--docker-image-data` selects a
+host-prepared image-only VFS store. Prepare a dedicated qualified input that
+resolves the fixture's digest-pinned Debian base. Do not select a donor's Docker
+data root: its VFS directory can contain container writable layers as well as
+image layers. The driver copies only `image` and `vfs` into the new guest home
+before startup. It preserves layer symlinks and leaves the source unchanged.
+Container, volume, network and daemon credential directories are not copied.
+The journey still inspects the pinned image and exercises the build,
+application, containment, egress and cleanup controls. Its report records the
+input path and image identity and marks image reuse. This selection does not
+establish a fresh public image pull or transfer an earlier registry approval.
+
 The installed journey used CLI revision `90545121`, source-equivalent proxy
 revision `f8d1037f`, guest helper revision `0d3332e6` and runsc
 `release-20261005.0-safeyolo.1`. The observer reused the retained image/data and

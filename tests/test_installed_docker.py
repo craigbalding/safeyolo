@@ -28,6 +28,7 @@ from urllib.response import addinfourl
 import pytest
 
 from tests.blackbox.installed_docker_preflight import (
+    compose_journey,
     gateway_client_failure,
     gateway_compose_journey,
     gateway_compose_resume,
@@ -860,6 +861,111 @@ def test_docker_product_selection_preserves_the_stopped_donor(tmp_path, monkeypa
     result = json.loads((args.output / "result.json").read_text())
     assert result["status"] == "incomplete"
     assert result["cleanup"] == ("stopped" if interruption == "start" else "not-started")
+
+
+@pytest.mark.parametrize("copy_failure", [False, True])
+def test_fresh_image_input_copies_image_directories_before_start(tmp_path, monkeypatch, copy_failure):
+    prepared, root, source = (tmp_path / name for name in ("prepared", "fresh", "images"))
+    for name in ("bin", "assets/guest", "share/rootfs-tree"):
+        (prepared / name).mkdir(parents=True)
+    for name in ("bin/safeyolo", "bin/safeyolo-proxy", "assets/guest/safeyolo-guest"):
+        (prepared / name).write_text("selected bytes")
+    (prepared / "config.toml").write_text("[linux]\n")
+    for name in ("image/vfs", "vfs/dir/layer"):
+        (source / name).mkdir(parents=True)
+        (source / name / "sentinel").write_text(name)
+    (source / "vfs/dir/layer/guest-link").symlink_to("/missing-guest-path")
+    os.link(source / "vfs/dir/layer/sentinel", source / "vfs/dir/layer/hard-link")
+    # These are never part of a qualified image input or selected for copying.
+    for name in ("containers", "volumes", "network"):
+        (source / name).mkdir()
+        (source / name / "excluded").write_text("unrelated state")
+    (source / "key.pem").write_text("excluded daemon credential")
+    calls = []
+
+    def prepare(_base, destination):
+        (destination / "data").mkdir(parents=True)
+        (destination / "services").mkdir()
+        (destination / "config.toml").write_text("[linux]\n")
+
+    def checked(command, **_):
+        if command[0] == "cp":
+            if copy_failure:
+                subprocess.run(["cp", "-a", "--", str(source / "image"), command[-1]], check=True)
+                raise OSError("copy interrupted")
+            subprocess.run(command, check=True)
+            return ""
+        if command[-1] == "--version":
+            return "commit=revision"
+        arguments = command[3:]
+        calls.append(arguments)
+        if arguments == ["start"]:
+            target = root / "agents/notes/home/docker-image-data"
+            assert (target / "image/vfs/sentinel").read_text() == "image/vfs"
+            assert (target / "vfs/dir/layer/guest-link").readlink() == Path("/missing-guest-path")
+            assert (target / "vfs/dir/layer/sentinel").stat().st_ino == (target / "vfs/dir/layer/hard-link").stat().st_ino
+            assert set(target.iterdir()) == {target / "image", target / "vfs"}
+            raise RuntimeError("start interrupted")
+        return ""
+
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.prepare_native_instance", prepare)
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.copy_prepared_nats", lambda *_: None)
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.checked", checked)
+    args = SimpleNamespace(prepared_config=prepared, root=root, output=tmp_path / "output", revision="revision",
+                           proxy_revision=None, guest_revision=None, reuse_root=False, gateway=False,
+                           journey=True, nested_docker=True, docker_data=None, docker_image_data=source, admin_port=12345)
+    with pytest.raises((OSError, RuntimeError), match="copy interrupted" if copy_failure else "start interrupted"):
+        run(args)
+    assert (source / "vfs/dir/layer/sentinel").read_text() == "vfs/dir/layer"
+    assert (source / "vfs/dir/layer/guest-link").is_symlink()
+    assert (source / "containers/excluded").read_text() == "unrelated state"
+    result = json.loads((args.output / "result.json").read_text())
+    assert result["initial_reused_image"] is True and result["image_data_source"] == str(source)
+    assert result["status"] == "incomplete"
+    if copy_failure:
+        assert ["start"] not in calls and not any("stop" in call for call in calls)
+        assert result["cleanup"] == "not-started"
+    else:
+        assert args.docker_data == "/home/agent/docker-image-data"
+        assert ["agent", "stop", "notes"] in calls and result["cleanup"] == "stopped"
+
+
+@pytest.mark.parametrize("prepared_image", [False, True])
+def test_compose_journey_inspects_the_pin_after_optional_public_pull(tmp_path, prepared_image):
+    workspace, output = tmp_path / "workspace", tmp_path / "output"
+    workspace.mkdir()
+    output.mkdir()
+    steps = []
+    pin = (PROBE.parent / "Dockerfile").read_text().splitlines()[0].split()[1]
+
+    def native(*_, instance):
+        for name, mode in {"certs/mitmproxy-ca-cert.pem": 0o644, "certs/mitmproxy-ca.pem": 0o600,
+                           "data/admin_token": 0o600, "data/agent_token": 0o600}.items():
+            path = instance / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("fixture bytes")
+            path.chmod(mode)
+
+    def guest(command, label, **_):
+        steps.append(label)
+        if label == "fresh-ca-reader":
+            return hashlib.sha256(b"fixture bytes").hexdigest()
+        if label == "image-pull":
+            assert command.endswith(" pull " + pin)
+        if label == "image-identity":
+            assert command.endswith(" image inspect " + pin)
+            return '[{"Id":"qualified-image"}]'
+        if label == "image-denied":
+            raise RuntimeError("end of setup control")
+        return ""
+
+    args = SimpleNamespace(docker_data="/home/agent/docker-image-data" if prepared_image else None)
+    report = {}
+    with pytest.raises(RuntimeError, match="end of setup control"):
+        compose_journey(args, tmp_path / "root", output, workspace, native, guest, registry_background, report)
+    assert ("image-pull" in steps) is not prepared_image
+    assert report["base_image"] == [{"Id": "qualified-image"}]
+    assert report["reused_image_data"] == args.docker_data
 
 
 @pytest.mark.parametrize("with_receipt", [False, True])

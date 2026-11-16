@@ -39,6 +39,11 @@ approve or retry a failed operation. Independent acceptance remains separate.
 controls, live revocation and daemon/provider failures. It uses owned allowed
 and denied origins and retains named checkpoints. With a parent route for the
 test origin, SAFEYOLO_DOCKER_ORIGIN_BIND selects an owned routable IPv4 address.
+For a fresh instance, --docker-image-data copies a host-prepared image-only VFS
+store into its new guest home. Supply a dedicated qualified input, not a donor's
+Docker data root. Only image and vfs directories are copied; container, volume,
+network and daemon credential state are excluded. The pinned base image must
+still resolve through image inspect. This selection does not prove a public pull.
 """
 
 from __future__ import annotations
@@ -907,6 +912,7 @@ def verify_outbound(events, report, *, reused_image):
 
 def run(args, receipt=None):
     base, root, output = args.prepared_config.resolve(), args.root.resolve(), args.output.resolve()
+    image_data = getattr(args, "docker_image_data", None)
     assert root.is_dir() if args.reuse_root else not root.exists(), "--reuse-root requires the retained disposable root"
     if output.exists() and receipt is not None:
         assert list(output.iterdir()) == [receipt.path], "recurring output must be fresh"
@@ -919,7 +925,7 @@ def run(args, receipt=None):
               "nested_docker": args.nested_docker, "revision": args.revision,
               "driver": {"path": str(Path(__file__).resolve()), "sha256": _sha256(Path(__file__))},
               "root": str(root), "cleanup": "unverified"}
-    report["initial_reused_image"] = bool(args.docker_data)
+    report["initial_reused_image"] = bool(args.docker_data or image_data)
     processes = []
     children = []
     capture_failures = []
@@ -1020,6 +1026,15 @@ def run(args, receipt=None):
             workspace.mkdir(mode=0o755)
             native("agent", "create", "notes", "--workspace", str(workspace), "--memory", "1536",
                    "--nested-docker", str(args.nested_docker).lower())
+            if image_data is not None:
+                report["image_data_source"] = str(image_data.resolve(strict=True))
+                # Preserve layer ownership, hard links and guest symlinks.
+                # Do not copy a donor's container, volume or daemon state.
+                destination = root / "agents/notes/home/docker-image-data"
+                destination.mkdir(parents=True)
+                checked(["cp", "-a", "--", str(image_data / "image"), str(image_data / "vfs"), str(destination)],
+                        diagnostics=output / "image-copy.log")
+                args.docker_data = "/home/agent/docker-image-data"
         source = Path(__file__).parent / "isolation/docker-preflight.sh"
         shutil.copy2(source, workspace / source.name)
         if getattr(args, "gateway_lifecycle", False):
@@ -1214,7 +1229,10 @@ def main():
     parser.add_argument("--gateway-recovery-receipt", type=Path, metavar="RECEIPT",
                         help="with --gateway-lifecycle-resume, reuse captured successful recovery and continue only teardown")
     parser.add_argument("--reuse-root", action="store_true")
-    parser.add_argument("--docker-data", help="existing guest Docker data root; reuse its qualified image instead of pulling again")
+    image = parser.add_mutually_exclusive_group()
+    image.add_argument("--docker-data", help="existing guest Docker data root; reuse its qualified image instead of pulling again")
+    image.add_argument("--docker-image-data", type=Path,
+                       help="host-prepared image-only VFS data root to copy into a fresh guest; excludes a fresh public pull")
     parser.add_argument("--host-address", help="unapproved real venue host address for the inner network negative control")
     parser.add_argument("--host-port", type=int, help="unapproved real host TCP port for the negative control")
     args = parser.parse_args()
@@ -1237,6 +1255,8 @@ def main():
         parser.error("a fresh instance requires --admin-port")
     if args.reuse_root and not args.docker_data:
         parser.error("--reuse-root requires the retained --docker-data path")
+    if args.docker_image_data and not args.journey:
+        parser.error("--docker-image-data requires a fresh --journey")
     if args.journey and (not args.nested_docker or not args.recurring and (not args.host_address or not args.host_port)):
         parser.error("--journey requires --nested-docker, --host-address and --host-port")
     receipt = ProcedureReceipt("docker", args.output / "result.json") if args.recurring else None
