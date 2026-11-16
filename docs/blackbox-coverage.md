@@ -709,7 +709,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/installed_docker_preflight.py::main](../tests/blackbox/installed_docker_preflight.py#L1215) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_docker_preflight.py::main](../tests/blackbox/installed_docker_preflight.py#L1286) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `docker`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections).
 
 ### BB-22 — Live mounts / removal
@@ -3025,6 +3025,14 @@ client recovery instead of starting workloads or reading the application again.
 The receipt must identify the same source receipt, workloads and saved data.
 --gateway-failures-only retains the earlier management proof and runs only the
 daemon, closed-port and stopped-provider failure controls with --gateway.
+--application-resume RESULT continues a stopped --journey interrupted at
+privileged-network. Supply its result.json and sibling notes-written.log with
+--reuse-root, --journey and the retained --docker-data path. It inspects the
+same image, containers and volume before starting the application, then runs
+the remaining containment, lifecycle, provider and owned-origin checks.
+It does not pull, build, rewrite the saved note or repeat management-gateway
+proof. Old request IDs remain in the referenced result; new probes bind the
+new sandbox run. A passed continuation does not establish recurring coverage.
 --reuse-root continues this probe's stopped disposable instance and persistent
 home. It temporarily selects --prepared-config's executable and guest inputs,
 then restores the donor's input paths after stopping. It preserves unrelated

@@ -328,12 +328,14 @@ def test_boundary_receipt_recomputes_required_cases_and_selected_context(tmp_pat
 
 
 @pytest.mark.parametrize("defect", [None, "allowed-missing", "denied-delivered", "direct-delivered", "receiver-cleanup"])
-def test_docker_origins_require_exact_independent_effects_and_cleanup(tmp_path, monkeypatch, defect):
+@pytest.mark.parametrize("application_resume", [False, True])
+def test_docker_origins_require_exact_independent_effects_and_cleanup(tmp_path, monkeypatch, defect, application_resume):
     base = tmp_path / "base"
     base.mkdir()
     (base / "config.toml").write_text("")
-    args = SimpleNamespace(prepared_config=base, output=tmp_path / "docker")
-    receipt = receipts.ProcedureReceipt("docker", tmp_path / "receipt/result.json")
+    args = SimpleNamespace(prepared_config=base, output=tmp_path / "docker",
+                           application_resume=tmp_path / "prior.json" if application_resume else None)
+    receipt = None if application_resume else receipts.ProcedureReceipt("docker", tmp_path / "receipt/result.json")
     servers = []
     original_server = docker.ParentObserver
 
@@ -354,7 +356,8 @@ def test_docker_origins_require_exact_independent_effects_and_cleanup(tmp_path, 
     def journey(selected, supplied):
         assert supplied is receipt
         args.output.mkdir()
-        count = 2 if defect == "allowed-missing" else 3
+        expected = 2 if application_resume else 3
+        count = expected - 1 if defect == "allowed-missing" else expected
         for destination in ([selected.owned_origins["PROBE_ALLOWED"]] * count +
                             [selected.owned_origins["PROBE_DENIED"]] * (defect == "denied-delivered") +
                             [f"http://{selected.host_address}:{selected.host_port}/direct"] * (defect == "direct-delivered")):
@@ -368,19 +371,25 @@ def test_docker_origins_require_exact_independent_effects_and_cleanup(tmp_path, 
                 response.read()
             finally:
                 connection.close()
-        return {"cleanup": "stopped"}
+        return {"cleanup": "stopped", "status": "application-resume-ran" if application_resume else "journey-passed"}
 
     monkeypatch.setattr(docker, "run", journey)
     monkeypatch.delenv("SAFEYOLO_DOCKER_ORIGIN_BIND", raising=False)
     if defect:
         with pytest.raises((AssertionError, OSError)):
             docker.recurring_journey(args, receipt)
-        assert not receipt.document["finished"]
+        if receipt is not None:
+            assert not receipt.document["finished"]
+        else:
+            assert json.loads((args.output / "result.json").read_text())["status"] == "application-resume-ran"
     else:
         result = docker.recurring_journey(args, receipt)
-        assert result["owned_origins"]["allowed_accepts"] == 5
+        assert result["owned_origins"]["allowed_accepts"] == (4 if application_resume else 5)
         assert result["owned_origins"]["denied_accepts"] == 2
-        assert receipt.document["finished"]
+        if receipt is not None:
+            assert receipt.document["finished"]
+        else:
+            assert result["status"] == "application-resume-passed"
     assert len(servers) == 2 and all(server.closed for server in servers)
 
 

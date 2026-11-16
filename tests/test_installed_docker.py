@@ -26,8 +26,10 @@ from urllib.request import urlopen
 from urllib.response import addinfourl
 
 import pytest
+import tomlkit
 
 from tests.blackbox.installed_docker_preflight import (
+    application_resume_input,
     compose_journey,
     gateway_client_failure,
     gateway_compose_journey,
@@ -35,6 +37,7 @@ from tests.blackbox.installed_docker_preflight import (
     gateway_management,
     gateway_notes_command,
     gateway_recovery_receipt,
+    main,
     run,
     verify_gateway_client_failure,
     verify_outbound,
@@ -44,6 +47,143 @@ from tests.blackbox.installed_provider import capture_guest_command, wait_file
 from tests.blackbox.registry_fixture import distribution_registry
 
 PROBE = Path(__file__).parent / "blackbox/fixtures/nested-docker/network_probe.py"
+
+
+@pytest.mark.parametrize("defect", [None, "reuse-root", "journey", "recurring", "gateway"])
+def test_application_resume_cli_selects_owned_receivers_without_recurring_gateway_replay(tmp_path, monkeypatch, defect):
+    arguments = ["--prepared-config", str(tmp_path / "prepared"), "--root", str(tmp_path / "retained"),
+                 "--output", str(tmp_path / "output"), "--revision", "product", "--nested-docker",
+                 "--docker-data", "/home/agent/docker-image-data", "--reuse-root", "--journey",
+                 "--application-resume", str(tmp_path / "previous/result.json")]
+    if defect in {"reuse-root", "journey"}:
+        arguments.remove("--" + defect)
+    elif defect:
+        arguments.append("--" + defect)
+    calls = []
+
+    def observed(args, receipt):
+        calls.append((args, receipt))
+        return {"status": "application-resume-passed", "cleanup": "stopped"}
+
+    monkeypatch.setattr(sys, "argv", ["installed_docker_preflight.py", *arguments])
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.recurring_journey", observed)
+    if defect:
+        with pytest.raises(SystemExit) as result:
+            main()
+        assert result.value.code == 2 and not calls
+    else:
+        assert main() == 0 and len(calls) == 1
+        args, receipt = calls[0]
+        assert receipt is None and not args.recurring and not args.gateway
+        assert args.application_resume == tmp_path / "previous/result.json"
+
+
+@pytest.mark.parametrize("defect", [None, "root", "step", "cleanup", "marker"])
+def test_application_resume_reads_original_result_without_assigning_old_probes_to_new_run(tmp_path, defect):
+    root = tmp_path / "root"
+    previous = {"root": str(root), "status": "incomplete", "step": "privileged-network",
+                "cleanup": "stopped", "cleanup_failures": [], "runtime": {"agent_id": "notes", "run_id": "old"},
+                "containers": [{"Id": "api"}, {"Id": "store"}], "network_probes": [{"request_id": "old-request"}]}
+    if defect == "root":
+        previous["root"] += "-other"
+    elif defect == "step":
+        previous["step"] = "compose-build"
+    elif defect == "cleanup":
+        previous["cleanup_failures"] = ["owned process survived"]
+    path = tmp_path / "result.json"
+    path.write_text(json.dumps(previous))
+    path.with_name("notes-written.log").write_text(json.dumps([] if defect == "marker" else ["saved-note"]))
+    if defect:
+        with pytest.raises(AssertionError):
+            application_resume_input(path, root)
+    else:
+        result = application_resume_input(path, root)
+        assert result["runtime"] == previous["runtime"] and result["marker"] == "saved-note"
+        assert result["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+        assert "network_probes" not in result
+
+
+@pytest.mark.parametrize("defect", [None, "run", "image", "binding", "selection", "volume", "marker", "privileged"])
+def test_application_resume_runs_remaining_checks_without_pull_build_or_rewriting_data(tmp_path, monkeypatch, defect):
+    workspace, output, root = (tmp_path / name for name in ("workspace", "output", "root"))
+    (workspace / "nested-docker").mkdir(parents=True)
+    output.mkdir()
+    guest_input = root / "agents/notes/config-share/safeyolo-guest"
+    guest_input.parent.mkdir(parents=True)
+    guest_input.write_text("guest bytes")
+    mount = {"Type": "volume", "Name": "nested-notes_notes", "Source": "/data/notes", "Destination": "/data"}
+    containers = [{"Id": name, "Image": "sha256:retained", "Name": name,
+                   "Mounts": [mount] if name == "store" else [],
+                   "State": {"Running": True, "Pid": 10}, "HostConfig": {"NetworkMode": "host"}}
+                  for name in ("api", "store")]
+    previous = {"runtime": {"agent_id": "ag-notes", "run_id": "old"},
+                "containers": deepcopy(containers), "marker": "saved-note"}
+    report = {"resumed_application": previous,
+              "runtime": {"agent_id": "ag-notes", "run_id": "old" if defect == "run" else "new",
+                          "backend_pid": 1, "backend_token": "birth"},
+              "inputs": {"guest": {"sha256": hashlib.sha256(guest_input.read_bytes()).hexdigest()}}}
+    commands, native_calls, provider = [], [], []
+
+    def native(*arguments):
+        native_calls.append(arguments)
+        return "{}"
+
+    def guest(command, label, **_):
+        commands.append((label, command))
+        assert " build " not in command and " pull " not in command and "--data " not in command
+        assert label not in {"context", "compose-create", "notes-empty", "notes-write", "fresh-ca-reader"}
+        if label == "retained-image":
+            return json.dumps([{"Id": "other" if defect == "image" else "sha256:retained"}])
+        if label in {"retained-containers", "compose-inspect"}:
+            actual = deepcopy(containers)
+            if defect == "binding":
+                actual[1]["Mounts"] = []
+            return json.dumps(actual)
+        if label in {"retained-compose-containers", "compose-ps"}:
+            return "api other" if defect == "selection" else "api store"
+        if label == "retained-volume":
+            return json.dumps([{"Name": "nested-notes_notes", "Mountpoint": "/other" if defect == "volume" else "/data/notes"}])
+        if label in {"retained-notes", "after-container-restart", "after-recreation", "after-sandbox-restart"}:
+            return json.dumps([] if defect == "marker" else ["saved-note"])
+        if label == "after-data-deletion":
+            return "[]"
+        if label == "docker-info":
+            return '{"Driver":"vfs"}'
+        if label in {"application-network", "privileged-network"}:
+            if label == "privileged-network":
+                assert "--privileged" in command and "--pull=never" in command
+                if defect == "privileged":
+                    raise RuntimeError("interrupted privileged command")
+            phase = label.removesuffix("-network")
+            return "\n".join(json.dumps({"phase": phase, "status": status, "request_id": f"new-{phase}-{status}"})
+                             for status in (200, 403))
+        return ""
+
+    child = SimpleNamespace(poll=lambda: None, wait=lambda **_: 0)
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.running_guest",
+                        lambda *_: {"agent_id": "ag-notes", "run_id": "recovered"})
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.surviving_processes", lambda *_: [])
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.provider_controls", lambda *_: provider.append(True))
+    args = SimpleNamespace(docker_data="/home/agent/docker-image-data", host_address="127.0.0.1", host_port=12345,
+                           owned_origins={"PROBE_ALLOWED": "http://allowed", "PROBE_DENIED": "http://denied"})
+    if defect:
+        with pytest.raises((AssertionError, RuntimeError)):
+            compose_journey(args, root, output, workspace, native, guest, lambda *_: (child,), report)
+        assert not provider and not any(label == "explicit-data-deletion" for label, _ in commands)
+        if defect != "privileged":
+            assert not any(label == "privileged-network" for label, _ in commands)
+    else:
+        compose_journey(args, root, output, workspace, native, guest, lambda *_: (child,), report)
+        labels = [label for label, _ in commands]
+        for label in ("retained-image", "retained-containers", "retained-compose-containers", "retained-volume"):
+            assert labels.index(label) < labels.index("retained-start")
+        assert labels.index("retained-notes") < labels.index("privileged-network") < labels.index("explicit-data-deletion")
+        assert {row["request_id"] for row in report["network_probes"]} == {
+            f"new-{phase}-{status}" for phase in ("application", "privileged") for status in (200, 403)}
+        assert report["resumed_application"]["runtime"]["run_id"] == "old"
+        assert report["recovery"]["before"]["run_id"] == "new" and report["recovery"]["after"]["run_id"] == "recovered"
+        assert provider == [True] and native_calls == [
+            ("agent", "stop", "notes"), ("agent", "start", "notes", "--sandbox-only"), ("agent", "status", "notes")]
 
 
 @pytest.mark.parametrize("failed_command", ["", "apt-get update", "apt-get install", "python3"])
@@ -868,9 +1008,10 @@ def test_gateway_failure_only_retains_diagnostics_without_replaying_mutations(tm
 
 
 @pytest.mark.parametrize("linked", [False, True])
-@pytest.mark.parametrize("gateway", [False, True])
+@pytest.mark.parametrize("gateway", [False, True, "application"])
 @pytest.mark.parametrize("interruption", ["selection", "staging", "start", "live-owner"])
 def test_docker_product_selection_preserves_the_stopped_donor(tmp_path, monkeypatch, linked, gateway, interruption):
+    application_resume, gateway = gateway == "application", gateway is True
     prepared = tmp_path / "prepared"
     for part in ("bin", "assets/guest", "share/rootfs-tree", "libexec", "host"):
         (prepared / part).mkdir(parents=True, exist_ok=True)
@@ -904,6 +1045,14 @@ def test_docker_product_selection_preserves_the_stopped_donor(tmp_path, monkeypa
     home_inode, data_inode = home.stat().st_ino, data.stat().st_ino
     (root / "config.toml").write_text("")
     (root / "policy.toml").write_text(f'[agents.notes]\nnested_docker = true\nfolder = "{workspace}"\n')
+    original_policy = (root / "policy.toml").read_bytes()
+    previous_path = tmp_path / "previous/result.json"
+    if application_resume:
+        previous_path.parent.mkdir()
+        previous_path.write_text(json.dumps({"root": str(root), "status": "incomplete", "step": "privileged-network",
+                                            "cleanup": "stopped", "cleanup_failures": [],
+                                            "containers": [{"Id": "api"}, {"Id": "store"}], "runtime": {"run_id": "old"}}))
+        previous_path.with_name("notes-written.log").write_text('["saved-note"]')
     (root / "services").mkdir()
     calls = []
 
@@ -922,6 +1071,10 @@ def test_docker_product_selection_preserves_the_stopped_donor(tmp_path, monkeypa
         calls.append(command[3:])
         if command[3:] == ["start"]:
             selected_inputs()
+            if application_resume:
+                selected_policy = tomlkit.parse((root / "policy.toml").read_text())
+                assert selected_policy["hosts"]["127.0.0.1:12401"]["egress"] == "allow"
+                assert selected_policy["hosts"]["127.0.0.1:12402"]["egress"] == "deny"
             raise RuntimeError("start interrupted")
         return '{"runtime_state":"stopped"}' if "status" in command else ""
 
@@ -942,7 +1095,10 @@ def test_docker_product_selection_preserves_the_stopped_donor(tmp_path, monkeypa
     monkeypatch.setattr(Path, "symlink_to", symlink)
     args = SimpleNamespace(prepared_config=prepared, root=root, output=tmp_path / "output", revision="revision",
                            proxy_revision=None, guest_revision=None, reuse_root=True, gateway=gateway,
-                           journey=not gateway, nested_docker=True, docker_data="/home/agent/docker-data")
+                           journey=not gateway, nested_docker=True, docker_data="/home/agent/docker-data",
+                           application_resume=previous_path if application_resume else None,
+                           owned_origins={"PROBE_ALLOWED": "http://127.0.0.1:12401/allowed",
+                                          "PROBE_DENIED": "http://127.0.0.1:12402/denied"})
     with subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]) as owner:
         try:
             if interruption == "live-owner":
@@ -968,6 +1124,8 @@ def test_docker_product_selection_preserves_the_stopped_donor(tmp_path, monkeypa
     assert list((root / "versions").glob("*")) == ([pair] if linked else [])
     assert home.stat().st_ino == home_inode and data.stat().st_ino == data_inode
     assert data.read_bytes() == b"retained image bytes"
+    if application_resume:
+        assert (root / "policy.toml").read_bytes() == original_policy
     assert ["agent", "stop", "notes"] in calls if interruption == "start" else not any("stop" in call for call in calls)
     result = json.loads((args.output / "result.json").read_text())
     assert result["status"] == "incomplete"
@@ -1281,7 +1439,13 @@ def test_outbound_joins_current_producers_with_a_retained_stopped_run(outbound_j
     events, report = outbound_journey
     stopped = deepcopy(events[0])
     stopped["details"]["sandbox_run"]["run_id"] = "stopped"
-    verify_outbound([stopped, *events], report, reused_image=True)
+    old_events = deepcopy(events)
+    for row in old_events:
+        row["request_id"] = "old-" + row["request_id"]
+        if row["event"] == "security.network_guard.evaluated":
+            row["details"]["sandbox_run"]["run_id"] = "stopped"
+    report["resumed_application"] = {"runtime": {"agent_id": "ag-host", "run_id": "stopped"}}
+    verify_outbound([stopped, *old_events, *events], report, reused_image=True)
     assert len(report["outbound"]) == len(events)
     assert all(row["details"]["sandbox_run"]["run_id"] == "current" for row in report["outbound"]
                if row["event"] == "security.network_guard.evaluated")

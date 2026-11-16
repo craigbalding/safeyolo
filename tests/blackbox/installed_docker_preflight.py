@@ -29,6 +29,14 @@ client recovery instead of starting workloads or reading the application again.
 The receipt must identify the same source receipt, workloads and saved data.
 --gateway-failures-only retains the earlier management proof and runs only the
 daemon, closed-port and stopped-provider failure controls with --gateway.
+--application-resume RESULT continues a stopped --journey interrupted at
+privileged-network. Supply its result.json and sibling notes-written.log with
+--reuse-root, --journey and the retained --docker-data path. It inspects the
+same image, containers and volume before starting the application, then runs
+the remaining containment, lifecycle, provider and owned-origin checks.
+It does not pull, build, rewrite the saved note or repeat management-gateway
+proof. Old request IDs remain in the referenced result; new probes bind the
+new sandbox run. A passed continuation does not establish recurring coverage.
 --reuse-root continues this probe's stopped disposable instance and persistent
 home. It temporarily selects --prepared-config's executable and guest inputs,
 then restores the donor's input paths after stopping. It preserves unrelated
@@ -639,26 +647,27 @@ printf 'Authorization: Bearer %s\\n' "$agent_token" |
 def compose_journey(args, root, output, workspace, native, guest, background, report, receipt=None):
     """Run one finite application journey against the hosting guest's daemon."""
     fixture = workspace / "nested-docker"
-    shutil.copytree(Path(__file__).parent / "fixtures/nested-docker", fixture)
-    base_image = shlex.quote((fixture / "Dockerfile").read_text().splitlines()[0].split()[1])
-    # Exercise freshly initialized certificate bytes and permissions without
-    # altering the retained instance's CA or copying its private material.
-    fresh = output / "fresh-init"
-    native("init", instance=fresh)
-    certificate = fresh / "certs/mitmproxy-ca-cert.pem"
-    report["fresh_init_modes"] = {name: (fresh / name).stat().st_mode & 0o777 for name in (
-        "certs/mitmproxy-ca-cert.pem", "certs/mitmproxy-ca.pem", "data/admin_token", "data/agent_token")}
-    assert report["fresh_init_modes"] == {
-        "certs/mitmproxy-ca-cert.pem": 0o644, "certs/mitmproxy-ca.pem": 0o600,
-        "data/admin_token": 0o600, "data/agent_token": 0o600}
-    shutil.copy2(certificate, fixture / "fresh-ca.crt")
-    # The hosting workspace can be private; let _apt read only a temporary
-    # public certificate copy without changing any workspace permissions.
-    reader = guest("set -eu; public_ca=$(mktemp /tmp/safeyolo-docker-ca.XXXXXX); "
-                   "trap 'rm -f -- \"$public_ca\"' EXIT; "
-                   "install -m 0644 -- /workspace/nested-docker/fresh-ca.crt \"$public_ca\"; "
-                   "sudo -n -u _apt sha256sum \"$public_ca\"", "fresh-ca-reader")
-    assert reader.split()[0] == _sha256(certificate), "_apt could not read the fresh public CA"
+    previous = report.get("resumed_application")
+    if previous is None:
+        shutil.copytree(Path(__file__).parent / "fixtures/nested-docker", fixture)
+        # Exercise freshly initialized certificate bytes and permissions without
+        # altering the retained instance's CA or copying its private material.
+        fresh = output / "fresh-init"
+        native("init", instance=fresh)
+        certificate = fresh / "certs/mitmproxy-ca-cert.pem"
+        report["fresh_init_modes"] = {name: (fresh / name).stat().st_mode & 0o777 for name in (
+            "certs/mitmproxy-ca-cert.pem", "certs/mitmproxy-ca.pem", "data/admin_token", "data/agent_token")}
+        assert report["fresh_init_modes"] == {
+            "certs/mitmproxy-ca-cert.pem": 0o644, "certs/mitmproxy-ca.pem": 0o600,
+            "data/admin_token": 0o600, "data/agent_token": 0o600}
+        shutil.copy2(certificate, fixture / "fresh-ca.crt")
+        # The hosting workspace can be private; let _apt read only a temporary
+        # public certificate copy without changing any workspace permissions.
+        reader = guest("set -eu; public_ca=$(mktemp /tmp/safeyolo-docker-ca.XXXXXX); "
+                       "trap 'rm -f -- \"$public_ca\"' EXIT; "
+                       "install -m 0644 -- /workspace/nested-docker/fresh-ca.crt \"$public_ca\"; "
+                       "sudo -n -u _apt sha256sum \"$public_ca\"", "fresh-ca-reader")
+        assert reader.split()[0] == _sha256(certificate), "_apt could not read the fresh public CA"
     guest("sudo -n -u _apt cat /usr/local/share/ca-certificates/safeyolo.crt >/dev/null", "installed-ca-reader")
 
     def packages(label):
@@ -684,29 +693,56 @@ def compose_journey(args, root, output, workspace, native, guest, background, re
         assert json.loads(body) == expected, f"unexpected notes during {label}"
 
     packages("packages")
-    guest(f"test ! -e {STATE}; mkdir -p {STATE}; cp -a /workspace/nested-docker {STATE}/context; "
-          f"cp /usr/local/share/ca-certificates/safeyolo.crt {STATE}/context/safeyolo.crt", "context")
+    if previous is None:
+        guest(f"test ! -e {STATE}; mkdir -p {STATE}; cp -a /workspace/nested-docker {STATE}/context; "
+              f"cp /usr/local/share/ca-certificates/safeyolo.crt {STATE}/context/safeyolo.crt", "context")
     daemon = start_daemon("daemon-initial")
-    if not args.docker_data:
-        docker(f"{DOCKER} pull {base_image}", "image-pull", timeout=180)
-    report["base_image"] = json.loads(docker(f"{DOCKER} image inspect {base_image}", "image-identity"))
-    report["reused_image_data"] = args.docker_data
-    # Keep an unexpected 428 or transport error as a failure, not a denial pass.
-    denied = guest(f"sudo -n {DOCKER} pull denied.invalid/safeyolo/never:qualification "
-                   f">{STATE}/denied-image.log 2>&1 && exit 1; "
-                   f"cat {STATE}/denied-image.log; grep -Eq '403|Forbidden' {STATE}/denied-image.log", "image-denied")
-    assert "428" not in denied, "image refusal requires operator diagnosis"
     probes = getattr(args, "owned_origins", {})
-    build_options = " ".join(f"--build-arg {shlex.quote(key + '=' + value)}" for key, value in probes.items())
-    build = docker(f"{COMPOSE} build --no-cache {build_options} store", "compose-build", timeout=240)
-    docker(f"{COMPOSE} create", "compose-create")
-    docker(f"{COMPOSE} start", "compose-start")
-    notes([], "notes-empty")
-    marker = "persist-" + uuid.uuid4().hex
-    body = shlex.quote(json.dumps({"text": marker}))
-    guest(f"curl --silent --show-error --fail -H 'Content-Type: application/json' --data {body} "
-          "http://127.0.0.1:8088/api/v1/notes", "notes-write")
-    notes([marker], "notes-written")
+    build = ""
+    if previous is not None:
+        assert report["runtime"]["agent_id"] == previous["runtime"]["agent_id"]
+        assert report["runtime"]["run_id"] != previous["runtime"]["run_id"], "continuation reused the old run"
+        retained = previous["containers"]
+        image = json.loads(docker(f"{DOCKER} image inspect nested-notes:qualification", "retained-image"))
+        assert len(image) == 1 and all(row["Image"] == image[0]["Id"] for row in retained), "retained image changed"
+        identifiers = [row["Id"] for row in retained]
+        actual = json.loads(docker(f"{DOCKER} inspect " + shlex.join(identifiers), "retained-containers"))
+        report["retained_containers"] = actual
+        assert {row["Id"] for row in actual} == set(identifiers), "retained containers changed"
+        for row in actual:
+            before = next(item for item in retained if item["Id"] == row["Id"])
+            assert all(row[key] == before[key] for key in ("Image", "Name", "Mounts")), "retained application binding changed"
+        selected = docker(f"{COMPOSE} ps --all --quiet", "retained-compose-containers").split()
+        assert set(selected) == set(identifiers), "Compose selected different retained containers"
+        report["retained_volume"] = json.loads(docker(f"{DOCKER} volume inspect nested-notes_notes", "retained-volume"))
+        [volume] = report["retained_volume"]
+        assert volume["Name"] == "nested-notes_notes" and any(
+            mount["Type"] == "volume" and mount["Name"] == volume["Name"] and mount["Source"] == volume["Mountpoint"] and
+            mount["Destination"] == "/data" for row in actual for mount in row["Mounts"]), "retained volume binding changed"
+        docker(f"{COMPOSE} start", "retained-start")
+        marker = previous["marker"]
+        notes([marker], "retained-notes")
+    else:
+        base_image = shlex.quote((fixture / "Dockerfile").read_text().splitlines()[0].split()[1])
+        if not args.docker_data:
+            docker(f"{DOCKER} pull {base_image}", "image-pull", timeout=180)
+        report["base_image"] = json.loads(docker(f"{DOCKER} image inspect {base_image}", "image-identity"))
+        report["reused_image_data"] = args.docker_data
+        # Keep an unexpected 428 or transport error as a failure, not a denial pass.
+        denied = guest(f"sudo -n {DOCKER} pull denied.invalid/safeyolo/never:qualification "
+                       f">{STATE}/denied-image.log 2>&1 && exit 1; "
+                       f"cat {STATE}/denied-image.log; grep -Eq '403|Forbidden' {STATE}/denied-image.log", "image-denied")
+        assert "428" not in denied, "image refusal requires operator diagnosis"
+        build_options = " ".join(f"--build-arg {shlex.quote(key + '=' + value)}" for key, value in probes.items())
+        build = docker(f"{COMPOSE} build --no-cache {build_options} store", "compose-build", timeout=240)
+        docker(f"{COMPOSE} create", "compose-create")
+        docker(f"{COMPOSE} start", "compose-start")
+        notes([], "notes-empty")
+        marker = "persist-" + uuid.uuid4().hex
+        body = shlex.quote(json.dumps({"text": marker}))
+        guest(f"curl --silent --show-error --fail -H 'Content-Type: application/json' --data {body} "
+              "http://127.0.0.1:8088/api/v1/notes", "notes-write")
+        notes([marker], "notes-written")
     report["docker_info"] = json.loads(docker(f"{DOCKER} info --format '{{{{json .}}}}'", "docker-info"))
     assert report["docker_info"]["Driver"] == "vfs"
     identifiers = docker(f"{COMPOSE} ps --quiet", "compose-ps").split()
@@ -729,7 +765,7 @@ def compose_journey(args, root, output, workspace, native, guest, background, re
         f"PROBE_HOST_PORT={args.host_port}", f"PROBE_HOST_FILE={host_file}",
         *(key + "=" + value for key, value in probes.items()))) +
         " api python3 /app/network_probe.py", "application-network")
-    privileged = docker(f"{DOCKER} run --rm --privileged --network=host "
+    privileged = docker(f"{DOCKER} run --pull=never --rm --privileged --network=host "
                         "--env HTTP_PROXY --env HTTPS_PROXY " +
                         " ".join(f"--env {shlex.quote(value)}" for value in probe_environment) +
                         " nested-notes:qualification python3 /app/network_probe.py", "privileged-network")
@@ -738,9 +774,10 @@ def compose_journey(args, root, output, workspace, native, guest, background, re
         for line in log.splitlines():
             if '{"phase":' in line:
                 report["network_probes"].append(json.loads(line[line.index('{"phase":'):]))
-    assert len(report["network_probes"]) == 6, "build, application and privileged probes must each test both destinations"
+    phases = ("application", "privileged") if previous is not None else ("build", "application", "privileged")
+    assert len(report["network_probes"]) == len(phases) * 2, "each executed phase must test both destinations"
     assert {(row["phase"], row["status"]) for row in report["network_probes"]} == {
-        (phase, status) for phase in ("build", "application", "privileged") for status in (200, 403)}
+        (phase, status) for phase in phases for status in (200, 403)}
     if receipt is not None:
         receipt.checkpoint("containment", probes=report["network_probes"], host_file=str(host_file))
     docker(f"{COMPOSE} logs --no-color", "compose-logs")
@@ -912,6 +949,21 @@ def verify_outbound(events, report, *, reused_image):
             "image pull lacks hosting-principal policy evidence"
 
 
+def application_resume_input(path, root):
+    """Read the stopped application's original result and saved note."""
+    previous = json.loads(path.read_text())
+    assert Path(previous["root"]).resolve() == root, "application result belongs to another root"
+    assert previous["status"] == "incomplete" and previous["step"] == "privileged-network"
+    assert previous["cleanup"] == "stopped" and not previous["cleanup_failures"]
+    assert len(previous["containers"]) == 2, "application result lacks both containers"
+    written = path.with_name("notes-written.log")
+    markers = json.loads(written.read_text())
+    assert len(markers) == 1 and isinstance(markers[0], str), "application result lacks the saved note"
+    return {"path": str(path), "sha256": _sha256(path), "runtime": previous["runtime"],
+            "containers": previous["containers"], "marker": markers[0],
+            "notes_written": {"path": str(written), "sha256": _sha256(written)}}
+
+
 def run(args, receipt=None):
     base, root, output = args.prepared_config.resolve(), args.root.resolve(), args.output.resolve()
     image_data = getattr(args, "docker_image_data", None)
@@ -928,12 +980,16 @@ def run(args, receipt=None):
               "driver": {"path": str(Path(__file__).resolve()), "sha256": _sha256(Path(__file__))},
               "root": str(root), "cleanup": "unverified"}
     report["initial_reused_image"] = bool(args.docker_data or image_data)
+    resume_path = getattr(args, "application_resume", None)
+    if resume_path is not None:
+        report["resumed_application"] = application_resume_input(resume_path.resolve(), root)
     processes = []
     children = []
     capture_failures = []
     original_inputs = {}
     selected_pair = None
     started = False
+    original_policy = None
 
     def native(*arguments, timeout=90, instance=root):
         return checked([cli, "--root", str(instance), *arguments], env=env, timeout=timeout,
@@ -988,6 +1044,12 @@ def run(args, receipt=None):
             policy = tomlkit.parse((root / "policy.toml").read_text())
             assert policy["agents"]["notes"]["nested_docker"] is True
             workspace = Path(policy["agents"]["notes"]["folder"])
+            if resume_path is not None:
+                original_policy = (root / "policy.toml").read_bytes()
+                for name, destination in args.owned_origins.items():
+                    authority = urlsplit(destination).netloc
+                    policy.setdefault("hosts", {})[authority] = {"egress": "allow" if name == "PROBE_ALLOWED" else "deny"}
+                (root / "policy.toml").write_text(tomlkit.dumps(policy))
             # Boot selects a complete host/guest pair through current, while
             # proxy startup and namespace entry also use root-relative paths.
             # Link the prepared bytes; never copy through a donor link or copy
@@ -1106,6 +1168,8 @@ def run(args, receipt=None):
                 native("stop")
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                 failures.append(f"instance stop: {error}")
+        if original_policy is not None:
+            (root / "policy.toml").write_bytes(original_policy)
         for name, saved in reversed(original_inputs.items()):
             path = root / name
             if saved is None or Path(saved).exists() or Path(saved).is_symlink():
@@ -1152,7 +1216,7 @@ def run(args, receipt=None):
             verify_outbound(events, report, reused_image=report["initial_reused_image"])
         finally:
             (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
-        report["status"] = "journey-passed"
+        report["status"] = "application-resume-ran" if resume_path is not None else "journey-passed"
         (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
         if receipt is not None:
             receipt.checkpoint("origin", outbound=report["outbound"], application=report["provider_origin"])
@@ -1203,12 +1267,19 @@ def recurring_journey(args, receipt):
         # receiver comparison and receiver cleanup have both succeeded.
         report = run(args, receipt)
         positives()
-        assert allowed.accepts == 5 and denied.accepts == 2, "refused/direct probes reached an origin or an allowed phase was missing"
         report["owned_origins"] = {"destinations": args.owned_origins, "allowed_accepts": allowed.accepts,
                                    "denied_accepts": denied.accepts}
         (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
-    receipt.checkpoint("receivers", observation=report["owned_origins"])
-    receipt.checkpoint("finished")
+        expected_allowed = 4 if getattr(args, "application_resume", None) else 5
+        assert allowed.accepts == expected_allowed and denied.accepts == 2, \
+            "refused/direct probes reached an origin or an allowed phase was missing"
+    if receipt is not None:
+        receipt.checkpoint("receivers", observation=report["owned_origins"])
+        receipt.checkpoint("finished")
+    else:
+        assert report["status"] == "application-resume-ran" and report["cleanup"] == "stopped"
+        report["status"] = "application-resume-passed"
+        (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
     return report
 
 
@@ -1235,6 +1306,8 @@ def main():
     parser.add_argument("--gateway-recovery-receipt", type=Path, metavar="RECEIPT",
                         help="with --gateway-lifecycle-resume, reuse captured successful recovery and continue only teardown")
     parser.add_argument("--reuse-root", action="store_true")
+    parser.add_argument("--application-resume", type=Path, metavar="RESULT",
+                        help="with --reuse-root --journey, continue the stopped privileged-network checkpoint without pull/build")
     image = parser.add_mutually_exclusive_group()
     image.add_argument("--docker-data", help="existing guest Docker data root; reuse its qualified image instead of pulling again")
     image.add_argument("--docker-image-data", type=Path,
@@ -1245,6 +1318,8 @@ def main():
     if args.recurring:
         if args.gateway or args.reuse_root or not args.journey or args.output.exists():
             parser.error("--recurring requires a fresh --journey")
+    if args.application_resume and (not args.reuse_root or not args.journey):
+        parser.error("--application-resume requires --reuse-root --journey")
     if args.gateway_failures_only and not args.gateway:
         parser.error("--gateway-failures-only requires --gateway")
     if args.gateway_lifecycle and (not args.gateway or args.gateway_failures_only):
@@ -1263,12 +1338,14 @@ def main():
         parser.error("--reuse-root requires the retained --docker-data path")
     if args.docker_image_data and not args.journey:
         parser.error("--docker-image-data requires a fresh --journey")
-    if args.journey and (not args.nested_docker or not args.recurring and (not args.host_address or not args.host_port)):
+    if args.journey and (not args.nested_docker or not (args.recurring or args.application_resume) and
+                         (not args.host_address or not args.host_port)):
         parser.error("--journey requires --nested-docker, --host-address and --host-port")
     receipt = ProcedureReceipt("docker", args.output / "result.json") if args.recurring else None
-    report = recurring_journey(args, receipt) if receipt is not None else run(args)
+    report = recurring_journey(args, receipt) if receipt is not None or args.application_resume else run(args)
     print(json.dumps({key: report.get(key) for key in ("status", "cleanup", "outcome")}))
-    return int(report["status"] not in {"container-ran", "journey-passed", "gateway-passed"} or report["cleanup"] != "stopped")
+    return int(report["status"] not in {"container-ran", "journey-passed", "gateway-passed", "application-resume-passed"} or
+               report["cleanup"] != "stopped")
 
 
 if __name__ == "__main__":
