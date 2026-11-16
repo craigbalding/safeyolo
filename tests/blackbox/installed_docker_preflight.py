@@ -947,8 +947,11 @@ def run(args, receipt=None):
         try:
             child.wait(timeout=timeout)
         finally:
-            finished.set()
-            reader.join(timeout=5)
+            if child.poll() is not None:
+                finished.set()
+                reader.join(timeout=5)
+            # A timed-out command is still running. Keep draining its pipe
+            # until owned teardown stops it and settles capture below.
         if reader.is_alive():
             raise RuntimeError(f"guest output capture remained live: {label}")
         if child.returncode:

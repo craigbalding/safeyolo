@@ -40,10 +40,121 @@ from tests.blackbox.installed_docker_preflight import (
     verify_outbound,
     verify_provider_origin,
 )
-from tests.blackbox.installed_provider import wait_file
+from tests.blackbox.installed_provider import capture_guest_command, wait_file
 from tests.blackbox.registry_fixture import distribution_registry
 
 PROBE = Path(__file__).parent / "blackbox/fixtures/nested-docker/network_probe.py"
+
+
+@pytest.mark.parametrize("failed_command", ["", "apt-get update", "apt-get install", "python3"])
+def test_build_installs_and_probes_in_final_dockerfile_step(tmp_path, failed_command):
+    instructions = [line for line in (PROBE.parent / "Dockerfile").read_text().replace("\\\n", "").splitlines()
+                    if line and not line.startswith("#")]
+    # All source and metadata preparation precedes the single populated layer.
+    [command] = [line.removeprefix("RUN ") for line in instructions if line.startswith("RUN ")]
+    assert instructions[-1] == "RUN " + command
+    assert "COPY network_probe.py notes.py /app/" in instructions
+    assert 'CMD ["python3", "-u", "/app/notes.py"]' in instructions
+    tools, calls, config, lists = (tmp_path / name for name in ("bin", "calls", "proxy.conf", "lists"))
+    tools.mkdir()
+    lists.mkdir()
+    (lists / "package-index").touch()
+    for name in ("apt-get", "python3"):
+        tool = tools / name
+        tool.write_text('#!/bin/sh\n'
+                        f'printf "%s\\n" "{name} $*" >> "$BUILD_CALLS"\n'
+                        f'case "{name} $*" in "$FAILED_COMMAND"*) exit 17;; esac\n')
+        tool.chmod(0o755)
+    # Execute the actual RUN chain with only package/network tools substituted.
+    # Redirect its two absolute write paths into this disposable fixture.
+    command = command.replace("/etc/apt/apt.conf.d/80-safeyolo-proxy", shlex.quote(str(config)))
+    command = command.replace("/var/lib/apt/lists/*", shlex.quote(str(lists)) + "/*")
+    env = os.environ | {"PATH": str(tools) + os.pathsep + os.environ["PATH"], "BUILD_CALLS": str(calls),
+                        "FAILED_COMMAND": failed_command or "unused-command", "HTTP_PROXY": "http://proxy:3128",
+                        "HTTPS_PROXY": "http://proxy:3128", "SSL_CERT_FILE": "/fixture/ca.crt"}
+    result = subprocess.run(["/bin/sh", "-c", command], env=env, capture_output=True, text=True, timeout=5)
+    expected = ["apt-get update", "apt-get install -y --no-install-recommends python3", "python3 /app/network_probe.py"]
+    if failed_command:
+        expected = expected[:next(index for index, call in enumerate(expected) if call.startswith(failed_command)) + 1]
+    assert result.returncode == (17 if failed_command else 0), result.stderr
+    assert calls.read_text().splitlines() == expected
+    assert config.read_text() == ('Acquire::http::Proxy "http://proxy:3128";\n'
+                                  'Acquire::https::Proxy "http://proxy:3128";\n'
+                                  'Acquire::https::CaInfo "/fixture/ca.crt";\n')
+    assert (lists / "package-index").exists() == failed_command.startswith("apt-get")
+
+
+def test_guest_timeout_keeps_capture_until_owned_stop(tmp_path, monkeypatch):
+    prepared, root, release = (tmp_path / name for name in ("prepared", "fresh", "stop"))
+    for name in ("bin", "assets/guest", "share/rootfs-tree"):
+        (prepared / name).mkdir(parents=True)
+    for name in ("bin/safeyolo", "bin/safeyolo-proxy", "assets/guest/safeyolo-guest"):
+        (prepared / name).write_text("selected bytes")
+    (prepared / "config.toml").write_text("[linux]\n")
+    captures, stops = [], []
+
+    def prepare(_base, destination):
+        (destination / "data").mkdir(parents=True)
+        (destination / "services").mkdir()
+        (destination / "config.toml").write_text("[linux]\n")
+
+    def checked(command, **_):
+        if command[-1] == "--version":
+            return "commit=revision"
+        arguments = command[3:]
+        home = root / "agents/notes"
+        if arguments[:2] == ["agent", "create"]:
+            (home / "config-share").mkdir(parents=True)
+            (home / "config-share/safeyolo-guest").write_text("selected bytes")
+            (home / "config.json").write_text("{}")
+        if arguments == ["agent", "stop", "notes"]:
+            child, reader, finished = captures[0]
+            stops.append({"running": child.poll() is None, "capturing": reader.is_alive(), "finished": finished.is_set()})
+            release.touch()
+        return "{}"
+
+    def capture(*arguments):
+        result = capture_guest_command(*arguments)
+        captures.append(result)
+        return result
+
+    def journey(_args, _root, _output, _workspace, _native, guest, *_):
+        guest("build", "compose-build", timeout=0.2)
+
+    program = ('import pathlib, time\nprint("build-started", flush=True)\n'
+               f'while not pathlib.Path({str(release)!r}).exists(): time.sleep(0.01)\n'
+               'print("drained-during-stop", flush=True)\n')
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.prepare_native_instance", prepare)
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.copy_prepared_nats", lambda *_: None)
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.checked", checked)
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.running_guest", lambda *_: {})
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.owned_processes", lambda *_: [])
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight._agent_listeners",
+                        lambda *_: [{"agent_id": "notes", "path": str(tmp_path)}])
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.runsc_identity", lambda *_, **__: {})
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight._native_config", lambda *_: {})
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight._runtime_observation", lambda *_, **__: {})
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.guest_command_args",
+                        lambda *_, **__: [sys.executable, "-u", "-c", program])
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.capture_guest_command", capture)
+    monkeypatch.setattr("tests.blackbox.installed_docker_preflight.compose_journey", journey)
+    args = SimpleNamespace(prepared_config=prepared, root=root, output=tmp_path / "output", revision="revision",
+                           proxy_revision=None, guest_revision=None, reuse_root=False, gateway=False,
+                           journey=True, nested_docker=True, docker_data=None, admin_port=12345)
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            run(args)
+    finally:
+        release.touch()
+        for child, reader, finished in captures:
+            child.wait(timeout=5)
+            finished.set()
+            reader.join(timeout=5)
+    assert stops == [{"running": True, "capturing": True, "finished": False}]
+    assert (args.output / "compose-build.log").read_text() == "build-started\ndrained-during-stop\n"
+    report = json.loads((args.output / "result.json").read_text())
+    assert report["status"] == "incomplete" and report["cleanup"] == "stopped"
+    assert report["cleanup_failures"] == [] and report["commands"] == [{"step": "compose-build", "exit": 0}]
 
 
 @pytest.mark.parametrize("disk_backed", [False, True])

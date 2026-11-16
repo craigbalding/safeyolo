@@ -296,11 +296,11 @@ nodes:
         - path: tests/blackbox/selections.py
           sha256: 80a234e24271c34395706a4fc7982c6c4819872466c841268908ad624ab139d3
         - path: tests/blackbox/installed_docker_preflight.py
-          sha256: 738b9f0bed9b81b8ebb1ea92f60968ef9cfc8989d26cb5187c84523d336df4e9
+          sha256: 4f33ca2a266f61f87514148ee43e081c66f7ac5d67fa10a99b652e3fc922b2fd
         - path: tests/blackbox/installed_provider.py
           sha256: 775dfed9d0277f72b895fa05727225a1b27c6a916d4c99c579dd36ce7538a768
         - path: tests/blackbox/fixtures/nested-docker/Dockerfile
-          sha256: 5fe5d23af297c9bf4d5ba435723419e7cd9d7fe59260527aa7c132c0da0ddaca
+          sha256: bde9ccf0daedc45e5d2af8586c66f8c25064332008287d2e700dfe6b7cd83caa
         - path: tests/blackbox/fixtures/nested-docker/network_probe.py
           sha256: 7a8177b2592ecca627a9eb2a4465c5d12a0eb2e535d6d1011291d7512585bbda
         - path: tests/nested-linux/live_mount_backend_proof.py
