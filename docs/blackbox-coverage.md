@@ -709,7 +709,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/installed_docker_preflight.py::main](../tests/blackbox/installed_docker_preflight.py#L1189) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_docker_preflight.py::main](../tests/blackbox/installed_docker_preflight.py#L1191) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `docker`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections).
 
 ### BB-22 — Live mounts / removal

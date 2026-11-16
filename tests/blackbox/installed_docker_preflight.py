@@ -507,7 +507,9 @@ def gateway_management(args, root, output, native, guest, background, report, re
         assert daemon.poll() is None, "inner daemon exited after readiness"
         # Guest root can open the root-owned daemon socket. The listener stays
         # on guest loopback and adds no host listener or outer privilege.
-        relay_command = f"echo $$ >{state}/relay.pid; exec socat " \
+        # Keep delayed exec output after stdin EOF, within the proxy tunnel's
+        # existing idle limit rather than socat's default 0.5-second wait.
+        relay_command = f"echo $$ >{state}/relay.pid; exec socat -t 600 " \
                         "TCP4-LISTEN:2375,bind=127.0.0.1,reuseaddr,fork " \
                         "UNIX-CONNECT:/run/safeyolo-nested-docker/docker.sock"
         relay = background("notes", "exec sudo -n bash -c " + shlex.quote(relay_command), "gateway-port")[0]
