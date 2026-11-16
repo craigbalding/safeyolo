@@ -216,7 +216,10 @@ host-prepared image-only VFS store. Prepare a dedicated qualified input that
 resolves the fixture's digest-pinned Debian base. Do not select a donor's Docker
 data root: its VFS directory can contain container writable layers as well as
 image layers. The driver copies only `image` and `vfs` into the new guest home
-before startup. It preserves layer symlinks and leaves the source unchanged.
+before startup. This explicit option requires noninteractive host sudo and
+`rsync -aHAX --numeric-ids` to read subordinate-owned files and preserve numeric
+ownership, hard links, modes, access-control lists, extended attributes and
+symlinks. It leaves the source unchanged.
 Container, volume, network and daemon credential directories are not copied.
 The journey still inspects the pinned image and exercises the build,
 application, containment, egress and cleanup controls. Its report records the

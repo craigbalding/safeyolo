@@ -44,6 +44,8 @@ store into its new guest home. Supply a dedicated qualified input, not a donor's
 Docker data root. Only image and vfs directories are copied; container, volume,
 network and daemon credential state are excluded. The pinned base image must
 still resolve through image inspect. This selection does not prove a public pull.
+The explicit image input uses noninteractive host sudo and rsync to preserve
+subordinate numeric ownership, hard links, modes, ACLs, xattrs and symlinks.
 """
 
 from __future__ import annotations
@@ -1032,7 +1034,8 @@ def run(args, receipt=None):
                 # Do not copy a donor's container, volume or daemon state.
                 destination = root / "agents/notes/home/docker-image-data"
                 destination.mkdir(parents=True)
-                checked(["cp", "-a", "--", str(image_data / "image"), str(image_data / "vfs"), str(destination)],
+                checked(["sudo", "-n", "rsync", "-aHAX", "--numeric-ids", "--",
+                         str(image_data / "image"), str(image_data / "vfs"), str(destination)],
                         diagnostics=output / "image-copy.log")
                 args.docker_data = "/home/agent/docker-image-data"
         source = Path(__file__).parent / "isolation/docker-preflight.sh"
@@ -1232,7 +1235,7 @@ def main():
     image = parser.add_mutually_exclusive_group()
     image.add_argument("--docker-data", help="existing guest Docker data root; reuse its qualified image instead of pulling again")
     image.add_argument("--docker-image-data", type=Path,
-                       help="host-prepared image-only VFS data root to copy into a fresh guest; excludes a fresh public pull")
+                       help="host-prepared image-only VFS store; requires host sudo/rsync for a fresh journey; no public pull proof")
     parser.add_argument("--host-address", help="unapproved real venue host address for the inner network negative control")
     parser.add_argument("--host-port", type=int, help="unapproved real host TCP port for the negative control")
     args = parser.parse_args()

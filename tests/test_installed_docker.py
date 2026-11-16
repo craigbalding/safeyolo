@@ -889,11 +889,12 @@ def test_fresh_image_input_copies_image_directories_before_start(tmp_path, monke
         (destination / "config.toml").write_text("[linux]\n")
 
     def checked(command, **_):
-        if command[0] == "cp":
+        if command[0] == "sudo":
+            assert command[:6] == ["sudo", "-n", "rsync", "-aHAX", "--numeric-ids", "--"]
             if copy_failure:
-                subprocess.run(["cp", "-a", "--", str(source / "image"), command[-1]], check=True)
+                subprocess.run(["rsync", "-aHAX", "--numeric-ids", "--", str(source / "image"), command[-1]], check=True)
                 raise OSError("copy interrupted")
-            subprocess.run(command, check=True)
+            subprocess.run(command[2:], check=True)
             return ""
         if command[-1] == "--version":
             return "commit=revision"

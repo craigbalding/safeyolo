@@ -709,7 +709,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/installed_docker_preflight.py::main](../tests/blackbox/installed_docker_preflight.py#L1209) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_docker_preflight.py::main](../tests/blackbox/installed_docker_preflight.py#L1212) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `docker`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections).
 
 ### BB-22 — Live mounts / removal
@@ -3040,6 +3040,8 @@ store into its new guest home. Supply a dedicated qualified input, not a donor's
 Docker data root. Only image and vfs directories are copied; container, volume,
 network and daemon credential state are excluded. The pinned base image must
 still resolve through image inspect. This selection does not prove a public pull.
+The explicit image input uses noninteractive host sudo and rsync to preserve
+subordinate numeric ownership, hard links, modes, ACLs, xattrs and symlinks.
 
 ### `tests/blackbox/installed_ingress.py`
 
