@@ -580,7 +580,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **What and why:** Jobs receive only declared inputs/privilege, without inherited agent authority or persistent state.
 
-**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap observations qualified](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6886804289). Wrapper identity remains incomplete; recurring deployment and KVM/VZ proof remain pending.
+**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap observations qualified](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6886804289); [prepared public-shell run 18869 accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6925236509) at controller 0422caec, production 607d8488, original runsc 65645198 and sentry f29a1416. Public installation acquisition is unverified; catalogue qualification, recurring deployment and KVM/VZ proof remain pending.
 
 **Conformance / action:** Retain named privilege/input/state/signal/timeout cases and direct network-off attempts at an owned functioning receiver; full recurring and platform acceptance remains pending.
 
@@ -599,7 +599,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **What and why:** Gate/service scopes constrain job effects; teardown ends delegated authority.
 
-**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap procedure accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6905097277); [public-shell Ubuntu systrap run against a prepared installation accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6924137097). Public acquisition, recurring deployment and KVM/VZ proof remain pending.
+**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap procedure accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6905097277); [prepared public-shell run 18861 accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6924137097) at controller 50c62547, production 607d8488, original runsc 65645198 and sentry f29a1416. Public installation acquisition is unverified; catalogue qualification, recurring deployment and KVM/VZ proof remain pending.
 
 **Conformance / action:** Retain scoped origin counts, credential replacement, live revocation, timeout/cancellation, old/new delegated-connection refusal, native audit attribution and listener cleanup; full recurring and platform acceptance remains pending.
 
@@ -697,9 +697,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **What and why:** Extra guest privileges remain contained; Docker API scopes constrain actual effects.
 
-**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual gateway effects accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6913325766); [fresh-token provider-stop observation accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6914345354); [bounded build/initial application accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6918014934); [retained application continuation accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6922996148). Public pull, default wrapper, applicable platform proof and deployed cadence remain unqualified.
+**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual gateway effects accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6913325766); [fresh-token provider-stop observation accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6914345354); [bounded build/initial application accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6918014934); [retained application continuation accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6922996148); [bounded public pull accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6928512058); [gateway continuation accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6929891544); [prepared public-wrapper run 18935 accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6930793693) at controller 5893892b, production 607d8488 and complete qualified ae76 runtime. Default shipped-runtime equivalence, applicable platform proof, catalogue qualification and deployed cadence remain unqualified.
 
-**Conformance / action:** Partial Ubuntu systrap proof covers privileged inner containment, owned egress receivers, Docker effects, adjacent refusal, revocation, daemon/provider failure and application persistence/deletion. Prepared-image reuse does not prove public pull; complete recurring acceptance remains pending.
+**Conformance / action:** Prepared Ubuntu systrap proof covers the uninterrupted ten-checkpoint wrapper, provider-to-gateway transition, privileged inner containment, joined outbound/origin observations, Docker effects, adjacent refusal, revocation, daemon/provider failure and application persistence/deletion. The qualified-runtime pass does not establish the default shipped runtime or public installation acquisition; complete recurring acceptance remains pending. Failed run 18910 remains failed.
 
 **Effort:** L. **Comments:** This is a distinct privilege configuration.
 
