@@ -291,12 +291,18 @@ def test_publisher_preparation_validates_inputs_before_exporting_paths(inputs, d
         data["receipt"]["files"]["verify_guest_oci"] = packages.sha256(verifier)
     (directory / selection.INPUT_RECEIPT).write_text(json.dumps(data["receipt"]))
     installer = data["source"] / "scripts/install_oras.sh"
-    installer.write_text("#!/bin/sh\nexit " + ("42" if defect == "oras" else "0") + "\n")
+    installer.write_text('#!/bin/sh\n[ "$GH_TOKEN" = "controlled-publisher-token" ] || exit 43\nexit '
+                         + ("42" if defect == "oras" else "0") + "\n")
     installer.chmod(0o755)
     environment = dict(data["environment"], GITHUB_ENV=str(directory.parent / "consumer-env"))
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
     steps = workflow["jobs"]["test-addons"]["steps"]
     prepare = next(step for step in steps if step.get("name") == "Prepare Linux publisher tools")
+    context = {"${{ github.sha }}": environment["SAFEYOLO_BUILD_REVISION"],
+               "${{ secrets.GITHUB_TOKEN }}": "controlled-publisher-token"}
+    environment.pop("GH_TOKEN", None)
+    environment.pop("GITHUB_TOKEN", None)
+    environment.update({name: context[value] for name, value in prepare["env"].items()})
     result = run("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", prepare["run"],
                  cwd=data["source"], env=environment)
     exports = Path(environment["GITHUB_ENV"])
