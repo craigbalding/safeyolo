@@ -121,6 +121,7 @@ jobs:
       - name: Prepare Linux publisher tools
         if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SAFEYOLO_BUILD_REVISION: ${{ github.sha }}
         run: |
           scripts/install_oras.sh "$RUNNER_TEMP/test-tools"

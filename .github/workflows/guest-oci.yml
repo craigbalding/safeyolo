@@ -260,7 +260,9 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: |
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
           scripts/install_oras.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Build the shared native OCI verifier
@@ -287,6 +289,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install the maintained publisher
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           scripts/install_oras.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
@@ -334,6 +338,8 @@ jobs:
               (reports / name).write_bytes(texts[name].encode("utf-8"))
           PY
       - name: Install the maintained publisher
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           scripts/install_oras.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
@@ -363,7 +369,9 @@ jobs:
           repository: craigbalding/safeyolo
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: ${{ runner.temp }}/seed
-      - run: |
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
           scripts/install_oras.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - env:
@@ -418,7 +426,9 @@ jobs:
             gh api --header 'Accept: application/octet-stream' \
               "repos/craigbalding/safeyolo/releases/assets/$asset" >> "$RUNNER_TEMP/custom-profile-layout.tar"
           done < "$RUNNER_TEMP/custom-profile-assets.txt"
-      - run: |
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
           scripts/install_oras.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Build the shared native OCI verifier
