@@ -580,9 +580,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **What and why:** Jobs receive only declared inputs/privilege, without inherited agent authority or persistent state.
 
-**Audit coverage:** Maintained installed section; scheduled systrap selector. Current installed execution and hardware cadence remain unaccepted.
+**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap observations qualified](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6886804289). Wrapper identity remains incomplete; recurring deployment and KVM/VZ proof remain pending.
 
-**Conformance / action:** Named privilege/input/state/signal/timeout cases and direct network-off attempts at an owned functioning receiver; installed acceptance pending.
+**Conformance / action:** Retain named privilege/input/state/signal/timeout cases and direct network-off attempts at an owned functioning receiver; full recurring and platform acceptance remains pending.
 
 **Effort:** M. **Comments:** Missing proxy environment variables alone do not prove containment; foundation for new engines.
 
@@ -599,9 +599,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **What and why:** Gate/service scopes constrain job effects; teardown ends delegated authority.
 
-**Audit coverage:** Maintained installed section; scheduled systrap selector. Current installed execution and hardware cadence remain unaccepted.
+**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap observations qualified](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6887367276). Full procedure, recurring deployment and KVM/VZ proof remain pending.
 
-**Conformance / action:** Scoped origin counts, credential replacement, live revocation, timeout/cancellation and old/new delegated-connection refusal; installed acceptance pending.
+**Conformance / action:** Retain scoped origin counts, credential replacement, live revocation, timeout/cancellation and old/new delegated-connection refusal; final audit and listener cleanup checkpoints remain unproved.
 
 **Effort:** M. **Comments:** Origin counts and credential replacement already exist.
 
@@ -716,9 +716,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **What and why:** Only approved paths/modes are exposed; removal truthfully reports remaining access.
 
-**Audit coverage:** Maintained installed section; scheduled systrap selector. Current installed execution and hardware cadence remain unaccepted.
+**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap journey accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6887897586). Recurring deployment and KVM/VZ proof remain pending.
 
-**Conformance / action:** Preserved public-command journey with busy fd/cwd/mmap refusal, real detach, saved/live intent and unaffected peers; installed acceptance pending.
+**Conformance / action:** Preserve the accepted public-command journey with busy fd/cwd/mmap refusal, real detach, saved/live intent and unaffected peers; full recurring and platform acceptance remains pending.
 
 **Effort:** M. **Comments:** Retain busy-file refusal, real detach and unaffected-peer evidence.
 

@@ -292,9 +292,9 @@ nodes:
         - path: tests/blackbox/installed_boundaries.py
           sha256: 4813203e7778f8f28a3f0aaf02ddcb8a0b13cdbc81c834e3a658bfe644c8c940
         - path: tests/blackbox/execution_receipt.py
-          sha256: 3f4fb8b2b81f239a80378f857f69abca133eac6b9415e2868ba675bbb2fa6c74
+          sha256: fc132c81b0dc9f77efd122e8d3125bb5d6491648cc12339fba9b457eb933cd3e
         - path: tests/blackbox/selections.py
-          sha256: b3485381fbc6ba4d7e47ddf704fc24184b8108e906aff80123e76d0e33680d55
+          sha256: 80a234e24271c34395706a4fc7982c6c4819872466c841268908ad624ab139d3
         - path: tests/blackbox/installed_docker_preflight.py
           sha256: bb98eb1c4059fab7a84e66aa934539c78947475aa3f448f13c82e8b77aca260c
         - path: tests/blackbox/installed_provider.py
@@ -383,9 +383,9 @@ nodes:
         - path: tests/blackbox/installed_boundaries.py
           sha256: 4813203e7778f8f28a3f0aaf02ddcb8a0b13cdbc81c834e3a658bfe644c8c940
         - path: tests/blackbox/execution_receipt.py
-          sha256: 3f4fb8b2b81f239a80378f857f69abca133eac6b9415e2868ba675bbb2fa6c74
+          sha256: fc132c81b0dc9f77efd122e8d3125bb5d6491648cc12339fba9b457eb933cd3e
         - path: tests/blackbox/selections.py
-          sha256: b3485381fbc6ba4d7e47ddf704fc24184b8108e906aff80123e76d0e33680d55
+          sha256: 80a234e24271c34395706a4fc7982c6c4819872466c841268908ad624ab139d3
         - path: tests/nested-linux/live_mount_backend_proof.py
           sha256: 62c2250117183cc02b109cbe76b8ac3e737077240b71285f870f08ddcaca91a8
         - path: tests/fixtures/live-mount-holder.c
