@@ -863,7 +863,8 @@ def test_docker_product_selection_preserves_the_stopped_donor(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("with_receipt", [False, True])
-@pytest.mark.parametrize("failure", [None, "reader-positive", "adjacent-effect", "revoked-http", "revoked-effect", "blank-diagnostic"])
+@pytest.mark.parametrize("failure", [None, "reader-positive", "adjacent-effect", "revoked-http", "revoked-effect",
+                                    "blank-diagnostic", "refresh", "stopped-403"])
 def test_gateway_management_checks_scoped_effects_without_a_recurring_receipt(tmp_path, monkeypatch, with_receipt, failure):
     (tmp_path / "docker-caller").mkdir()
     provider = tmp_path / "provider"
@@ -881,13 +882,24 @@ def test_gateway_management_checks_scoped_effects_without_a_recurring_receipt(tm
     monkeypatch.setattr("tests.blackbox.installed_docker_preflight.running_guest", lambda *_: {})
     steps, native_calls, checkpoints = [], [], []
     report = {}
+    token_generation, client_token_generation = 0, None
 
     def native(*arguments):
+        nonlocal token_generation
         native_calls.append(arguments)
+        if arguments == ("agent", "stop", "notes"):
+            # Native stop removes the listener through a full proxy reload.
+            token_generation += 1
         return '{"runtime_state":"stopped"}' if arguments[:2] == ("agent", "status") else ""
 
-    def guest(_command, label, **kwargs):
+    def guest(command, label, **kwargs):
+        nonlocal client_token_generation
         steps.append(label)
+        if "http://_safeyolo.proxy.internal/gateway/services" in command:
+            assert kwargs.get("agent") == "dockercaller"
+            if token_generation and failure == "refresh":
+                raise RuntimeError("gateway token refresh failed")
+            client_token_generation = token_generation
         if label in {"gateway-adjacent-host-inspect", "gateway-revoked-host-inspect", "gateway-removed-host-inspect"}:
             assert kwargs.get("agent", "notes") == "notes", "effect read must bypass the scoped caller"
         if label == "gateway-adjacent-host-inspect":
@@ -896,6 +908,9 @@ def test_gateway_management_checks_scoped_effects_without_a_recurring_receipt(tm
             return json.dumps([{"Id": "changed" if failure == "revoked-effect" else "owned-id"}])
         if label in {"gateway-adjacent-delete", "gateway-revoked-delete", "gateway-daemon-failed", "gateway-closed", "gateway-stopped"}:
             status = {"gateway-adjacent-delete": 200, "gateway-revoked-delete": 403}.get(label, 503)
+            if label == "gateway-stopped" and (client_token_generation != token_generation or failure == "stopped-403"):
+                return json.dumps({"exit": 1, "stderr": "Error response from daemon: INVALID_TOKEN\n",
+                                   "http": {"status": 403, "body": '{"error":"INVALID_TOKEN"}'}})
             if failure == "reader-positive" and label == "gateway-adjacent-delete":
                 status = 403
             if failure == "revoked-http" and label == "gateway-revoked-delete":
@@ -914,9 +929,14 @@ def test_gateway_management_checks_scoped_effects_without_a_recurring_receipt(tm
     receipt = SimpleNamespace(checkpoint=lambda name, **_: checkpoints.append(name)) if with_receipt else None
     args = SimpleNamespace(docker_data="/home/agent/retained/data")
     if failure:
-        with pytest.raises(AssertionError):
+        with pytest.raises(RuntimeError if failure == "refresh" else AssertionError):
             gateway_management(args, tmp_path, output, native, guest, background, report, receipt)
-        assert "gateway_result" not in report and "gateway-remove" not in steps
+        assert "gateway_result" not in report
+        assert ("gateway-remove" in steps) is (failure in {"refresh", "stopped-403"})
+        if failure == "refresh":
+            assert "gateway-stopped" not in steps
+        if failure == "stopped-403":
+            assert json.loads((output / "gateway-stopped.json").read_text())["http"]["status"] == 403
     else:
         gateway_management(args, tmp_path, output, native, guest, background, report, receipt)
         assert report["gateway_adjacent"]["container_id"] == report["gateway_revoked"]["container_id"] == "owned-id"

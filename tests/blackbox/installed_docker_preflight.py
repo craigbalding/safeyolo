@@ -610,6 +610,9 @@ printf 'Authorization: Bearer %s\\n' "$agent_token" |
         report["gateway_port_exit"] = relay.wait(timeout=20)
         failure("gateway-closed")
         native("agent", "stop", "notes")
+        # Stop reloads the proxy and invalidates cached gateway tokens.
+        # Refresh before testing transport to the unavailable provider.
+        guest(prepare, "gateway-stopped-client-config", agent="dockercaller")
         failure("gateway-stopped")
         if receipt is not None:
             receipt.checkpoint("gateway-failures", observations=report["gateway_failures"])
