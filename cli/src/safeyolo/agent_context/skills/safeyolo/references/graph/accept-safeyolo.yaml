@@ -258,7 +258,7 @@ nodes:
         - path: proxy/src/host_boot.rs
           sha256: df26d2abc5c2a753222d789ff577dffe994f9cc3b171ef41aabb739bffa05dae
         - path: guest/build-rootfs.sh
-          sha256: 4855fe106af9c53a85f5517906c05631f79da8fa5b5df8f22cbac134dbe4d965
+          sha256: f61d285ef806d47f6fca6c747bdae018ca786a039adde63800bd8bd33bba421c
         - path: proxy/src/jobs.rs
           sha256: b1dea76b55686de2e3fb632bb064bf1c59ddca31f74abadc7c283cd445902183
         - path: proxy/src/jobs/input.rs
@@ -941,7 +941,7 @@ nodes:
         - path: guest/build-all.sh
           sha256: 5fe3081a5e20285dc06585b21ff3baaf85f68660ae222d400053e8000af5240a
         - path: guest/build-rootfs.sh
-          sha256: 4855fe106af9c53a85f5517906c05631f79da8fa5b5df8f22cbac134dbe4d965
+          sha256: f61d285ef806d47f6fca6c747bdae018ca786a039adde63800bd8bd33bba421c
         - path: guest/rootfs-customize-hook.sh
           sha256: 84333056f8957049ae511cc3e9565342ddf8fd4cbf265e2e8dcfffd36736da15
       setup: "Use an approved Linux builder or the repository's narrow Lima builder, with SAFEYOLO_NATIVE_CLI naming the current Linux CLI for archive normalization; set OUTPUT_DIR to a disposable acceptance directory."

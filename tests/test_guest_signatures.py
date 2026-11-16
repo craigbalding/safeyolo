@@ -54,7 +54,7 @@ def sign(common, fingerprint, raw):
 
 
 @pytest.mark.parametrize("key_format", ["binary", "armor"])
-def test_kernel_complete_key_and_provenance(tmp_path, monkeypatch, signing_keys, key_format):
+def test_kernel_complete_key_and_provenance(tmp_path, monkeypatch, signing_keys, key_format, capsys):
     common, keys = signing_keys
     signer = keys["signer"]
     raw = b"controlled kernel tar bytes"
@@ -68,6 +68,7 @@ def test_kernel_complete_key_and_provenance(tmp_path, monkeypatch, signing_keys,
     monkeypatch.setattr(inputs, "fetch", responses.__getitem__)
     target = tmp_path / "kernel.tar.xz"
     inputs.download(record, target, kernel_signature=True)
+    assert f"Preparing kernel signing key {signer['fingerprint']}: {key_url!r}" in capsys.readouterr().err
     provenance = json.loads(target.with_suffix(".xz.verification.json").read_bytes())
     assert provenance["signers"] == [signer["fingerprint"]]
     assert provenance["key_url"] == key_url
@@ -80,7 +81,7 @@ def test_kernel_complete_key_and_provenance(tmp_path, monkeypatch, signing_keys,
 
 @pytest.mark.parametrize("fault", ["altered-content", "corrupt-signature", "wrong-key", "unknown-signer",
                                   "missing-user-ids", "malformed-key", "unavailable-key", "checksum-mismatch"])
-def test_kernel_refuses_failed_verification(tmp_path, monkeypatch, signing_keys, fault):
+def test_kernel_refuses_failed_verification(tmp_path, monkeypatch, signing_keys, fault, capsys):
     common, keys = signing_keys
     signer = keys["signer"]
     raw = b"controlled signed tar bytes"
@@ -100,15 +101,20 @@ def test_kernel_refuses_failed_verification(tmp_path, monkeypatch, signing_keys,
         responses[record["signature_url"]] = b"invalid signature"
     elif fault == "checksum-mismatch":
         record["sha256"] = "0" * 64
+    key_failure = URLError(OSError(101, "Network is unreachable"))
     def fetch(url):
         if fault == "unavailable-key" and url == key_url:
-            raise URLError("key unavailable")
+            raise key_failure
         return responses[url]
     monkeypatch.setattr(inputs, "KERNEL_KEYS", {signer["fingerprint"]: key_url})
     monkeypatch.setattr(inputs, "fetch", fetch)
     target = tmp_path / "kernel.tar.xz"
-    with pytest.raises((subprocess.CalledProcessError, ValueError, URLError)):
+    with pytest.raises((subprocess.CalledProcessError, ValueError, URLError)) as error:
         inputs.download(record, target, kernel_signature=True)
+    if fault == "unavailable-key":
+        assert error.value is key_failure
+        assert "[Errno 101] Network is unreachable" in str(error.value)
+        assert f"Preparing kernel signing key {signer['fingerprint']}: {key_url!r}" in capsys.readouterr().err
     assert not target.with_suffix(".xz.verification.json").exists()
 
 
