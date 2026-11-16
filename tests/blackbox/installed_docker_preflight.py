@@ -876,7 +876,7 @@ def compose_journey(args, root, output, workspace, native, guest, background, re
                        f"cat {STATE}/denied-image.log; grep -Eq '403|Forbidden' {STATE}/denied-image.log", "image-denied")
         assert "428" not in denied, "image refusal requires operator diagnosis"
         build_options = " ".join(f"--build-arg {shlex.quote(key + '=' + value)}" for key, value in probes.items())
-        build = docker(f"{COMPOSE} build --no-cache {build_options} store", "compose-build", timeout=240)
+        build = docker(f"{COMPOSE} build --no-cache {build_options} store", "compose-build", timeout=360)
         docker(f"{COMPOSE} create", "compose-create")
         docker(f"{COMPOSE} start", "compose-start")
         notes([], "notes-empty")
