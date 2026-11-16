@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import shlex
@@ -26,10 +27,11 @@ def run(*args, **kwargs):
     return subprocess.run(args, capture_output=True, text=True, timeout=30, **kwargs)
 
 
-@pytest.fixture(params=["guest", "host", "guest-oci-verifier"])
-def inputs(tmp_path, request):
+@pytest.fixture(scope="module", params=["guest", "host", "guest-oci-verifier"])
+def input_template(tmp_path_factory, request):
     if sys.platform != "linux":
         pytest.skip("controlled executable consumer runs on Linux")
+    tmp_path = tmp_path_factory.mktemp(f"native-input-{request.param}")
     source = tmp_path / "source"
     (source / "scripts").mkdir(parents=True)
     for name in ("select_blackbox_artifacts.py", "build_host_packages.py", "native_package.sh"):
@@ -119,21 +121,57 @@ def inputs(tmp_path, request):
         f"repos/{selection.REPOSITORY}/actions/runs/10/attempts/1": run_record,
         f"repos/{selection.REPOSITORY}/actions/runs/10/attempts/1/jobs?per_page=100": [{"jobs": [job]}],
     }
-
-    def prepare():
-        payload[selection.INPUT_RECEIPT] = json.dumps(receipt, indent=2).encode() + b"\n"
-        with zipfile.ZipFile(environment["ARTIFACT_ZIP"], "w") as archive:
-            for filename, content in payload.items():
-                archive.writestr(filename, content)
-        artifact["digest"] = "sha256:" + packages.sha256(Path(environment["ARTIFACT_ZIP"]))
-        Path(environment["API_ROUTES"]).write_text(json.dumps(routes))
-
-    prepare()
     step_id = "reuse_verifier" if kind == "guest-oci-verifier" else f"reuse_{kind}"
     step = next(step for step in steps if step.get("id") == step_id)
-    return {"source": source, "environment": environment, "kind": kind, "directory": directory, "receipt": receipt,
-            "payload": payload, "artifact": artifact, "routes": routes,
-            "producer": run_record, "job": job, "prepare": prepare, "step": step}
+    return {"root": tmp_path, "source": source, "environment": environment, "kind": kind,
+            "directory": directory, "receipt": receipt, "payload": payload, "artifact": artifact,
+            "routes": routes, "producer": run_record, "job": job, "step": step}
+
+
+@pytest.fixture
+def inputs(tmp_path, input_template):
+    # Reuse compiled templates; every row still mutates its own source,
+    # executable bytes, receipt and API records before running the real caller.
+    data = copy.deepcopy(input_template)
+    root = data.pop("root")
+    shutil.copytree(root, tmp_path, symlinks=True, dirs_exist_ok=True)
+    for key in ("source", "directory"):
+        data[key] = tmp_path / data[key].relative_to(root)
+    environment = data["environment"] = {
+        key: value.replace(str(root), str(tmp_path)) for key, value in data["environment"].items()
+    }
+
+    def prepare():
+        data["payload"][selection.INPUT_RECEIPT] = json.dumps(data["receipt"], indent=2).encode() + b"\n"
+        with zipfile.ZipFile(environment["ARTIFACT_ZIP"], "w") as archive:
+            for filename, content in data["payload"].items():
+                archive.writestr(filename, content)
+        data["artifact"]["digest"] = "sha256:" + packages.sha256(Path(environment["ARTIFACT_ZIP"]))
+        Path(environment["API_ROUTES"]).write_text(json.dumps(data["routes"]))
+
+    prepare()
+    data["prepare"] = prepare
+    return data
+
+
+def test_input_rows_keep_private_files_and_records(inputs, input_template):
+    source = inputs["source"] / "scripts/select_blackbox_artifacts.py"
+    original = input_template["source"] / "scripts/select_blackbox_artifacts.py"
+    source.write_text("changed row source\n")
+    assert original.read_text() != source.read_text()
+    name = ("guest/command/target/release/safeyolo-guest" if inputs["kind"] == "host"
+            else "proxy/target/release/safeyolo")
+    binary = inputs["source"] / name
+    binary.write_bytes(b"changed row executable")
+    assert (input_template["source"] / name).read_bytes() != binary.read_bytes()
+    inputs["receipt"]["settings"]["profile"] = "changed row profile"
+    assert input_template["receipt"]["settings"]["profile"] != "changed row profile"
+    inputs["artifact"]["name"] = "changed row artifact"
+    endpoint = next(key for key in inputs["routes"] if "/artifacts?" in key)
+    assert inputs["routes"][endpoint][0]["artifacts"][0] is inputs["artifact"]
+    assert input_template["routes"][endpoint][0]["artifacts"][0]["name"] != "changed row artifact"
+    inputs["payload"]["changed row member"] = b"changed bytes"
+    assert "changed row member" not in input_template["payload"]
 
 
 @pytest.mark.parametrize("case", ["match", "missing", "expired", "failed-run", "unfinished-run", "source",
@@ -266,7 +304,7 @@ def test_guest_input_receipt_records_target_and_c_compiler(monkeypatch, platform
     assert selection.native_input_identity("guest", platform, "production", revision) != identity
 
 
-@pytest.mark.parametrize("inputs", ["guest-oci-verifier"], indirect=True)
+@pytest.mark.parametrize("input_template", ["guest-oci-verifier"], indirect=True)
 @pytest.mark.parametrize("defect", [None, "source_revision", "profile", "platform", "kind", "settings", "bytes", "missing", "architecture", "oras"])
 def test_publisher_preparation_validates_inputs_before_exporting_paths(inputs, defect):
     data = inputs
@@ -338,7 +376,7 @@ def test_reuse_keeps_independent_schedules_tests_and_package_assembly():
     assert steps.index(guest_build) < steps.index(host_select)
 
 
-@pytest.mark.parametrize("inputs", ["host"], indirect=True)
+@pytest.mark.parametrize("input_template", ["host"], indirect=True)
 @pytest.mark.parametrize("failure", [False, True])
 def test_mac_selection_uses_its_platform_job_and_propagates_failure(inputs, failure):
     data = inputs
@@ -361,7 +399,7 @@ def test_mac_selection_uses_its_platform_job_and_propagates_failure(inputs, fail
         assert (data["directory"] / selection.INPUT_RECEIPT).read_bytes() == data["payload"][selection.INPUT_RECEIPT]
 
 
-@pytest.mark.parametrize("inputs", ["guest"], indirect=True)
+@pytest.mark.parametrize("input_template", ["guest"], indirect=True)
 @pytest.mark.parametrize("archive_kind", ["current", "legacy", "current-extra", "legacy-extra", "legacy-damaged"])
 def test_guest_producer_zip_members_allow_reuse_or_legacy_build(inputs, tmp_path, archive_kind):
     data = inputs
