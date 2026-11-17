@@ -264,9 +264,9 @@ nodes:
         - path: proxy/src/jobs/input.rs
           sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
         - path: tests/blackbox/host/job_sandbox.py
-          sha256: d0636a2c40ebea884bf7eafdc701960f8db7e0586db64f3dd6264820b9678741
+          sha256: ce1fec2dda673ad7e185d8bdaef3f4cf444f0d984e613adbce079d12988f1cfb
         - path: tests/blackbox/host/job_network.py
-          sha256: 50e5875eb2e8c62cd8277c90a338228d631762bf25a49d04f0f5f78d25f0c64b
+          sha256: 007ab1317bc355bdaf2bffecb0fccf04055ee78ae4ec826c9e6c1bd7b341fbb3
         - path: proxy/Cargo.toml
           sha256: 14ba0c41411f4b9589b3395204b1f0557336a035c807fc660355512f439ce9c3
         - path: proxy/Cargo.lock
@@ -280,7 +280,7 @@ nodes:
         - path: tests/blackbox/claude_smoke.py
           sha256: 98a1ded436d5c4f395c9014e4d270efcbc9834732b0d0f8049c3c5ba51df1f06
         - path: tests/blackbox/installed_sections.py
-          sha256: 7c992f0c1a51a0ce5878da5d1a1d764ce0ffc58c9d3e45e85e16175a0dfae54a
+          sha256: d054c772480653503abd2f3a7290dcfe3d405e8cf2af05b31d201211531abc80
         - path: tests/blackbox/installed_ingress_pair.py
           sha256: 7528dc814fa524b27b960e9e1ec8efbd0f1ae649344e55486c73d98ab052fc3f
         - path: tests/blackbox/installed_storage.py
@@ -289,7 +289,25 @@ nodes:
           sha256: 501b133f084764fae135e214ceebce8a939f298715b623aa11c3cdd7b3d31dbe
         - path: tests/blackbox/retained_inputs.py
           sha256: f78e88fcbe2026b7873ec172918201c2387a66ca9839254b4b6df7705eebd1c2
-      setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Retained manual Claude reuse requires the same host and selected installed bytes; see tests/blackbox/README.md. The caller verifies runtime settings, creates separate writable state and runs credential-free systrap sections before provisioning. Optional --readiness reuses applicable successful original reports and their retained isolation config.toml. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
+        - path: tests/blackbox/installed_boundaries.py
+          sha256: 0d11b2568a08405abd58e79c51f88b6a2d7e299707babc4eaac5d769ee720b4b
+        - path: tests/blackbox/execution_receipt.py
+          sha256: fc132c81b0dc9f77efd122e8d3125bb5d6491648cc12339fba9b457eb933cd3e
+        - path: tests/blackbox/selections.py
+          sha256: 80a234e24271c34395706a4fc7982c6c4819872466c841268908ad624ab139d3
+        - path: tests/blackbox/installed_docker_preflight.py
+          sha256: 4f7f2eae9ec99a2a8d33815ebe606f7c4dfdfcf1c1d99fa2f12d67cdd78bfc66
+        - path: tests/blackbox/installed_provider.py
+          sha256: 775dfed9d0277f72b895fa05727225a1b27c6a916d4c99c579dd36ce7538a768
+        - path: tests/blackbox/fixtures/nested-docker/Dockerfile
+          sha256: bde9ccf0daedc45e5d2af8586c66f8c25064332008287d2e700dfe6b7cd83caa
+        - path: tests/blackbox/fixtures/nested-docker/network_probe.py
+          sha256: 7a8177b2592ecca627a9eb2a4465c5d12a0eb2e535d6d1011291d7512585bbda
+        - path: tests/nested-linux/live_mount_backend_proof.py
+          sha256: 62c2250117183cc02b109cbe76b8ac3e737077240b71285f870f08ddcaca91a8
+        - path: tests/fixtures/live-mount-holder.c
+          sha256: 009420c469c4804a5d110190570a587b3b448b875664cb32346ca96626c2d26b
+      setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Retained manual Claude reuse requires the same host and selected installed bytes; see tests/blackbox/README.md. The caller verifies runtime settings, creates separate writable state and runs credential-free systrap sections before provisioning. Optional --readiness reuses applicable successful original reports and their retained isolation config.toml. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance. Mount checks build tests/fixtures/live-mount-holder.c with the Linux host cc and static C library. SAFEYOLO_MOUNT_HOLDER_PROBE can supply a prepared executable for the guest architecture; see tests/blackbox/README.md. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
       verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh proxy/src/host_platform.rs proxy/src/host_boot.rs guest/build-rootfs.sh && safeyolo doctor"
       run:
         trusted_claude: ".venv/bin/python scripts/run_claude_blackbox.py nightly --ref refs/heads/<default-branch> --provision <operator-helper> --credential <host-credential-name> --output <new-private-attempt-directory>"
@@ -345,9 +363,9 @@ nodes:
         - path: proxy/src/jobs/macos.rs
           sha256: 1b9b3798f9dba8d169b983ba9a1c610e2fb2a2f827f4d04bd8a41b3fcdc833f8
         - path: tests/blackbox/host/job_sandbox.py
-          sha256: d0636a2c40ebea884bf7eafdc701960f8db7e0586db64f3dd6264820b9678741
+          sha256: ce1fec2dda673ad7e185d8bdaef3f4cf444f0d984e613adbce079d12988f1cfb
         - path: tests/blackbox/host/job_network.py
-          sha256: 50e5875eb2e8c62cd8277c90a338228d631762bf25a49d04f0f5f78d25f0c64b
+          sha256: 007ab1317bc355bdaf2bffecb0fccf04055ee78ae4ec826c9e6c1bd7b341fbb3
         - path: proxy/Cargo.toml
           sha256: 14ba0c41411f4b9589b3395204b1f0557336a035c807fc660355512f439ce9c3
         - path: proxy/Cargo.lock
@@ -362,7 +380,17 @@ nodes:
           sha256: 72e284a6b8cc9aae65870b97cdf9ab9f4c123dacebc78f3694bd2cb4203ff58a
         - path: tests/fixtures/job-observer-probe.c
           sha256: 0207c5417386d7022d0ffefeb9a6b4b9d162e5017a8684a5225c62533beb0e8b
-      setup: "Use the approved physical Apple Silicon host and a source-compatible signed helper. For snapshot smoke, select an extracted standard Darwin guest, current public staged guest assets and a new disk-backed run directory. Set SAFEYOLO_VZ_TEST_RUNNER to the maintained run-vz-test on Bristol; wrapped discovery uses Python 3.10+ and the two kernel observers listed in sources, at their checkout-relative paths. Full mode requires separate restore authority and a working VZ recipient. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance."
+        - path: tests/blackbox/installed_boundaries.py
+          sha256: 0d11b2568a08405abd58e79c51f88b6a2d7e299707babc4eaac5d769ee720b4b
+        - path: tests/blackbox/execution_receipt.py
+          sha256: fc132c81b0dc9f77efd122e8d3125bb5d6491648cc12339fba9b457eb933cd3e
+        - path: tests/blackbox/selections.py
+          sha256: 80a234e24271c34395706a4fc7982c6c4819872466c841268908ad624ab139d3
+        - path: tests/nested-linux/live_mount_backend_proof.py
+          sha256: 62c2250117183cc02b109cbe76b8ac3e737077240b71285f870f08ddcaca91a8
+        - path: tests/fixtures/live-mount-holder.c
+          sha256: 009420c469c4804a5d110190570a587b3b448b875664cb32346ca96626c2d26b
+      setup: "Use the approved physical Apple Silicon host and a source-compatible signed helper. For snapshot smoke, select an extracted standard Darwin guest, current public staged guest assets and a new disk-backed run directory. Set SAFEYOLO_VZ_TEST_RUNNER to the maintained run-vz-test on Bristol; wrapped discovery uses Python 3.10+ and the two kernel observers listed in sources, at their checkout-relative paths. Full mode requires separate restore authority and a working VZ recipient. Mount checks require SAFEYOLO_MOUNT_HOLDER_PROBE built from tests/fixtures/live-mount-holder.c on Linux ARM64 and transferred to the host; use the build command in tests/blackbox/README.md. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance."
       verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh vm/test/snapshot-scheduling.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
       run:
         full_vz: "./tests/blackbox/run-lane.sh vz --verbose"

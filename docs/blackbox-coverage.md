@@ -302,9 +302,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 - [tests/proxy_contracts/test_codex_approval_fallback.py](../tests/proxy_contracts/test_codex_approval_fallback.py#L132) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-codex-approval-fallback-py).
 - [tests/blackbox/installed_workloads.py::main](../tests/blackbox/installed_workloads.py#L286) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: default `systrap` section `workloads`; default `kvm` section `workloads`.
+  Selection: default `systrap` section `workloads`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `kvm` section `workloads`.
 - [tests/blackbox/installed_state_transition.py::main](../tests/blackbox/installed_state_transition.py#L503) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: default `systrap` section `continuity`; default `vz` section `continuity`.
+  Selection: default `systrap` section `continuity`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `continuity`.
 - [tests/proxy_contracts/test_github_git.py](../tests/proxy_contracts/test_github_git.py#L49) — Native gateway; owned Git server; host identity. Evidence: Real Git and owned gateway origin.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-github-git-py).
 - [proxy/tests/credential_http/boundary.rs](../proxy/tests/credential_http/boundary.rs#L55) — Native HTTP; host process; controlled credentials and upstream origins. Evidence: Real proxy wire with controlled credential/provider adapters.
@@ -343,7 +343,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 - [tests/proxy_contracts/test_guard_approval_audit.py](../tests/proxy_contracts/test_guard_approval_audit.py#L39) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-guard-approval-audit-py).
 - [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L467) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: default `systrap` section `access`; default `vz` section `access`.
+  Selection: default `systrap` section `access`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `access`.
 - [proxy/tests/credential_http/boundary.rs](../proxy/tests/credential_http/boundary.rs#L55) — Native HTTP; host process; controlled credentials and upstream origins. Evidence: Real proxy wire with controlled credential/provider adapters.
   Exact identities: [source inventory](#witness-proxy-tests-credential-http-boundary-rs).
 
@@ -393,7 +393,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 - [tests/proxy_contracts/test_codex_approval_fallback.py](../tests/proxy_contracts/test_codex_approval_fallback.py#L132) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-codex-approval-fallback-py).
 - [tests/blackbox/installed_state_transition.py::main](../tests/blackbox/installed_state_transition.py#L503) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: default `systrap` section `continuity`; default `vz` section `continuity`.
+  Selection: default `systrap` section `continuity`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `continuity`.
 - [tests/blackbox/claude_smoke.py::run](../tests/blackbox/claude_smoke.py#L258) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
 - [proxy/tests/credential_http/codex.rs](../proxy/tests/credential_http/codex.rs#L275) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Controlled OAuth provider and run-lifetime adapter; native HTTP.
@@ -422,9 +422,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 - [tests/blackbox/isolation/test_root_containment.py](../tests/blackbox/isolation/test_root_containment.py#L50) — Linux guest; gVisor systrap/KVM or VZ; guest root. Evidence: Real guest root with host-prepared controls.
   Exact identities: [source inventory](#witness-tests-blackbox-isolation-test-root-containment-py).
 - [tests/blackbox/installed_workloads.py::main](../tests/blackbox/installed_workloads.py#L286) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: default `systrap` section `workloads`; default `kvm` section `workloads`.
+  Selection: default `systrap` section `workloads`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `kvm` section `workloads`.
 - [tests/blackbox/installed_lifecycle.py::main](../tests/blackbox/installed_lifecycle.py#L394) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: default `systrap` section `lifecycle`; default `vz` section `lifecycle`.
+  Selection: default `systrap` section `lifecycle`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `lifecycle`.
 
 ### BB-12 — HTTP framing / authority / transitions
 
@@ -479,7 +479,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 - [tests/proxy_contracts/test_tunnel_audit_wait.py](../tests/proxy_contracts/test_tunnel_audit_wait.py#L14) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-tunnel-audit-wait-py).
 - [tests/blackbox/installed_workloads.py::main](../tests/blackbox/installed_workloads.py#L286) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: default `systrap` section `workloads`; default `kvm` section `workloads`.
+  Selection: default `systrap` section `workloads`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `kvm` section `workloads`.
 - [proxy/tests/credential_http/boundary.rs](../proxy/tests/credential_http/boundary.rs#L55) — Native HTTP; host process; controlled credentials and upstream origins. Evidence: Real proxy wire with controlled credential/provider adapters.
   Exact identities: [source inventory](#witness-proxy-tests-credential-http-boundary-rs).
 
@@ -535,7 +535,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 - [tests/proxy_contracts/test_operator_circuits.py](../tests/proxy_contracts/test_operator_circuits.py#L211) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-operator-circuits-py).
 - [tests/blackbox/installed_state_transition.py::main](../tests/blackbox/installed_state_transition.py#L503) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: default `systrap` section `continuity`; default `vz` section `continuity`.
+  Selection: default `systrap` section `continuity`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `continuity`.
 
 ### BB-15 — Restart / abrupt-failure recovery
 
@@ -570,9 +570,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 - [tests/blackbox/installed_ingress_pair.py::main](../tests/blackbox/installed_ingress_pair.py#L112) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: optional `systrap` section `ingress`.
 - [tests/blackbox/installed_lifecycle.py::main](../tests/blackbox/installed_lifecycle.py#L394) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: default `systrap` section `lifecycle`; default `vz` section `lifecycle`.
+  Selection: default `systrap` section `lifecycle`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `lifecycle`.
 - [tests/blackbox/installed_state_transition.py::main](../tests/blackbox/installed_state_transition.py#L503) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: default `systrap` section `continuity`; default `vz` section `continuity`.
+  Selection: default `systrap` section `continuity`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `continuity`.
 - [tests/blackbox/installed_shared_approvals.py::main](../tests/blackbox/installed_shared_approvals.py#L1315) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
 
@@ -580,9 +580,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **What and why:** Jobs receive only declared inputs/privilege, without inherited agent authority or persistent state.
 
-**Audit coverage:** Real installed tests; on demand.
+**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap observations qualified](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6886804289); [prepared public-shell run 18869 accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6925236509) at controller 0422caec, production 607d8488, original runsc 65645198 and sentry f29a1416. [Shipped systrap jobs accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6933305891) and [shipped KVM jobs accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6934606070) at controller b0fa383677936be1e32582bb440b26ccefa09451, Linux AMD64 production 1a8c698e6ca23f83655a2801c10e99f4d24a6829 and guest archive 1fb64d224df243e24bddbab42a4b1c12b876712270ae5eb59822cdb4c5f8febe. [Physical Apple Virtualization.framework (VZ) jobs accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6938258553) at controller 899cd7313865287e766311b054ba0b18af810615, Darwin ARM64 production 1a8c698e6ca23f83655a2801c10e99f4d24a6829, standard guest source e138ebefba90919311e9e60cc272b140e78b5d61, index 712ef9468f4383945b5a4484c45d6c8d20a062fbcf1cb3351bc4e9b86012d2db and archive 010efdf86315df1426bedb49d33834e9317abc455dcb738650fe2f6289552e93. Public installation acquisition and installed catalogue qualification remain unverified; deployed cadence remains with #1563 and venue automation with #889.
 
-**Conformance / action:** Wire and extend: retain input/state/signal/timeout checks; prove network-off non-delivery at an owned receiver.
+**Conformance / action:** Retain named default/explicit privilege, input, discarded-state, signal/exit and timeout cases and direct network-off attempts at a functioning owned receiver. Shipped systrap/KVM typed outcomes and output details rely on matching procedure assertions; separate raw records are absent. Physical VZ typed results and streams are retained. The failed Kali execution and earlier failed attempts remain failed. Accepted platform executions do not establish deployed recurrence.
 
 **Effort:** M. **Comments:** Missing proxy environment variables alone do not prove containment; foundation for new engines.
 
@@ -592,16 +592,16 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/host/job_sandbox.py::main](../tests/blackbox/host/job_sandbox.py#L246) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: manual; no recurring selector resolved.
+- [tests/blackbox/host/job_sandbox.py::main](../tests/blackbox/host/job_sandbox.py#L357) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+  Selection: default `systrap` section `job-sandbox`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `kvm` section `job-sandbox`; default `vz` section `job-sandbox`.
 
 ### BB-17 — Disposable-job network authority
 
 **What and why:** Gate/service scopes constrain job effects; teardown ends delegated authority.
 
-**Audit coverage:** Real installed tests; on demand.
+**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap procedure accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6905097277); [prepared public-shell run 18861 accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6924137097) at controller 50c62547, production 607d8488, original runsc 65645198 and sentry f29a1416. [Shipped systrap jobs accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6933305891) and [shipped KVM jobs accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6934606070) at controller b0fa383677936be1e32582bb440b26ccefa09451, Linux AMD64 production 1a8c698e6ca23f83655a2801c10e99f4d24a6829 and guest archive 1fb64d224df243e24bddbab42a4b1c12b876712270ae5eb59822cdb4c5f8febe. [Physical Apple Virtualization.framework (VZ) jobs accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6938258553) at controller 899cd7313865287e766311b054ba0b18af810615, Darwin ARM64 production 1a8c698e6ca23f83655a2801c10e99f4d24a6829, standard guest source e138ebefba90919311e9e60cc272b140e78b5d61, index 712ef9468f4383945b5a4484c45d6c8d20a062fbcf1cb3351bc4e9b86012d2db and archive 010efdf86315df1426bedb49d33834e9317abc455dcb738650fe2f6289552e93. Public installation acquisition and installed catalogue qualification remain unverified; deployed cadence remains with #1563 and venue automation with #889.
 
-**Conformance / action:** Wire and extend revocation, cancellation and socket/runtime lifetime.
+**Conformance / action:** Retain exact scoped origin counts, credential replacement, live revocation, timeout/cancellation, old/new delegated-connection refusal, native audit attribution and listener cleanup. Shipped systrap/KVM and physical VZ acceptance retains matching source assertions and completed checkpoints for lifecycle CLI exits, delegated refusal and audit; separate teardown/audit transcripts are absent. Earlier failed attempts remain failed; deployed recurrence remains unproved.
 
 **Effort:** M. **Comments:** Origin counts and credential replacement already exist.
 
@@ -611,8 +611,8 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/host/job_network.py::main](../tests/blackbox/host/job_network.py#L264) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: manual; no recurring selector resolved.
+- [tests/blackbox/host/job_network.py::main](../tests/blackbox/host/job_network.py#L420) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+  Selection: default `systrap` section `job-network`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `kvm` section `job-network`; default `vz` section `job-network`.
 
 ### BB-18 — Local peer support
 
@@ -664,7 +664,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 - [tests/proxy_contracts/test_guard_approval_audit.py](../tests/proxy_contracts/test_guard_approval_audit.py#L39) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-guard-approval-audit-py).
 - [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L467) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: default `systrap` section `access`; default `vz` section `access`.
+  Selection: default `systrap` section `access`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `access`.
 - [tests/blackbox/installed_shared_approvals.py::main](../tests/blackbox/installed_shared_approvals.py#L1315) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
 
@@ -689,7 +689,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 - [tests/proxy_contracts/test_native_provider_recovery.py](../tests/proxy_contracts/test_native_provider_recovery.py#L109) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-provider-recovery-py).
 - [tests/blackbox/installed_state_transition.py::main](../tests/blackbox/installed_state_transition.py#L503) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: default `systrap` section `continuity`; default `vz` section `continuity`.
+  Selection: default `systrap` section `continuity`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `continuity`.
 - [tests/blackbox/installed_provider.py::main](../tests/blackbox/installed_provider.py#L395) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
 
@@ -697,9 +697,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **What and why:** Extra guest privileges remain contained; Docker API scopes constrain actual effects.
 
-**Audit coverage:** Extensive real-sandbox tests; on demand.
+**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual gateway effects accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6913325766); [fresh-token provider-stop observation accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6914345354); [bounded build/initial application accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6918014934); [retained application continuation accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6922996148); [bounded public pull accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6928512058); [gateway continuation accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6929891544); [prepared public-wrapper run 18935 accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6930793693) at controller 5893892b, production 607d8488 and complete qualified ae76 runtime. [Shipped systrap Docker result accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6933640925) at controller b0fa383677936be1e32582bb440b26ccefa09451, Linux AMD64 production 1a8c698e6ca23f83655a2801c10e99f4d24a6829 and guest archive 1fb64d224df243e24bddbab42a4b1c12b876712270ae5eb59822cdb4c5f8febe. Applicable KVM/VZ proof remains unqualified. Public installation acquisition and installed catalogue qualification remain unverified; deployed cadence remains with #1563 and venue automation with #889.
 
-**Conformance / action:** Adapt and wire a bounded pinned workload: privileged inner-container negatives, allowed/denied management effects and revocation.
+**Conformance / action:** Prepared and shipped Ubuntu systrap proof cover the uninterrupted ten-checkpoint wrapper, provider-to-gateway transition, privileged inner containment, joined outbound/origin observations, Docker effects, adjacent refusal, revocation, daemon/provider failure and application persistence/deletion. Individual shipped Docker step output is checked by matching source assertions; raw stdout is not separately retained. Prepared-runtime acceptance and supplier comparison remain distinct from the shipped execution; neither establishes public installation acquisition or deployed recurrence. Failed run 18910 and earlier failed/setup attempts remain failed.
 
 **Effort:** L. **Comments:** This is a distinct privilege configuration.
 
@@ -709,16 +709,16 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/installed_docker_preflight.py::main](../tests/blackbox/installed_docker_preflight.py#L1033) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: manual; no recurring selector resolved.
+- [tests/blackbox/installed_docker_preflight.py::main](../tests/blackbox/installed_docker_preflight.py#L1431) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+  Selection: default `systrap` section `docker`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections).
 
 ### BB-22 — Live mounts / removal
 
 **What and why:** Only approved paths/modes are exposed; removal truthfully reports remaining access.
 
-**Audit coverage:** Strong Linux and physical-Mac tests; on demand.
+**Audit coverage:** Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap journey accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6887897586). [Prepared public-shell mounts accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6932179534) at controller b0fa383677936be1e32582bb440b26ccefa09451, production 607d8488a7fdc5c0c6ada605077ca99b4cb21682, original runsc 65645198 and sentry f29a1416, guest archive 1fb64d224df243e24bddbab42a4b1c12b876712270ae5eb59822cdb4c5f8febe. [Shipped systrap mounts accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6933640925) and [shipped KVM mounts accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6934606070) at controller b0fa383677936be1e32582bb440b26ccefa09451, Linux AMD64 production 1a8c698e6ca23f83655a2801c10e99f4d24a6829 and guest archive 1fb64d224df243e24bddbab42a4b1c12b876712270ae5eb59822cdb4c5f8febe. The physical VZ mount attempt stopped before invocation at third-listener admission; physical mount execution remains unproved. Public installation acquisition and installed catalogue qualification remain unverified; deployed cadence remains with #1563 and venue automation with #889.
 
-**Conformance / action:** Existing checks conformant: wire per supported backend.
+**Conformance / action:** Preserve the accepted public-command journey with read-only/protected/reserved/stale refusals, busy file, working directory and memory map refusals, four actual detachments and eight process exits, saved/live intent after restart and unaffected peers/host files. Busy refusal is not removal. Failed preparation 18949 and 19223, the earlier shipped setup failures and their observer limits remain. Physical VZ execution, installed catalogue qualification and deployed recurrence remain unproved.
 
 **Effort:** M. **Comments:** Retain busy-file refusal, real detach and unaffected-peer evidence.
 
@@ -728,8 +728,8 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/nested-linux/live_mount_backend_proof.py::run_proof](../tests/nested-linux/live_mount_backend_proof.py#L130) — Linux nested installed live mount; user/root backend-specific probes. Evidence: Real nested guests; manual venue.
-  Selection: manual; no recurring selector resolved.
+- [tests/nested-linux/live_mount_backend_proof.py::run_proof](../tests/nested-linux/live_mount_backend_proof.py#L107) — Linux nested installed live mount; user/root backend-specific probes. Evidence: Real nested guests; manual venue.
+  Selection: default `systrap` section `mounts`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `kvm` section `mounts`; default `vz` section `mounts`.
 
 ### BB-23 — Desktop / service sharing
 
@@ -750,7 +750,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 - [tests/proxy_contracts/test_desktop_waiting_page.py](../tests/proxy_contracts/test_desktop_waiting_page.py#L128) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-desktop-waiting-page-py).
 - [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L467) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: default `systrap` section `access`; default `vz` section `access`.
+  Selection: default `systrap` section `access`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `access`.
 
 ### BB-24 — Coord ownership / review / output authority
 
@@ -777,7 +777,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 - [tests/proxy_contracts/test_native_harness_attention.py](../tests/proxy_contracts/test_native_harness_attention.py#L87) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-harness-attention-py).
 - [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L467) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: default `systrap` section `access`; default `vz` section `access`.
+  Selection: default `systrap` section `access`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `access`.
 - [proxy/tests/native_coord/reviews.rs](../proxy/tests/native_coord/reviews.rs#L100) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real instances/NATS; controlled run adapters.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-reviews-rs).
 - [proxy/tests/native_coord/work.rs](../proxy/tests/native_coord/work.rs#L50) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real instances/NATS; controlled run adapters.
@@ -2443,11 +2443,11 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`).
 
 - [`tests/test_blackbox_catalogue.py::test_inline_rust_modules_keep_distinct_executable_identities`](../tests/test_blackbox_catalogue.py#L21)
-- [`tests/test_blackbox_catalogue.py::test_catalogue_rejects_structural_drift`](../tests/test_blackbox_catalogue.py#L89)
-- [`tests/test_blackbox_catalogue.py::test_current_catalogue_resolves_all_controls_and_external_families`](../tests/test_blackbox_catalogue.py#L125)
-- [`tests/test_blackbox_catalogue.py::test_workflow_selection_agrees_with_real_pytest_exclusions`](../tests/test_blackbox_catalogue.py#L140)
-- [`tests/test_blackbox_catalogue.py::test_unresolved_shared_phase_operand_cannot_pass_generation`](../tests/test_blackbox_catalogue.py#L167)
-- [`tests/test_blackbox_catalogue.py::test_cargo_identity_requires_its_real_module_and_keeps_ignore_selection`](../tests/test_blackbox_catalogue.py#L179)
+- [`tests/test_blackbox_catalogue.py::test_catalogue_rejects_structural_drift`](../tests/test_blackbox_catalogue.py#L90)
+- [`tests/test_blackbox_catalogue.py::test_current_catalogue_resolves_all_controls_and_external_families`](../tests/test_blackbox_catalogue.py#L126)
+- [`tests/test_blackbox_catalogue.py::test_workflow_selection_agrees_with_real_pytest_exclusions`](../tests/test_blackbox_catalogue.py#L141)
+- [`tests/test_blackbox_catalogue.py::test_unresolved_shared_phase_operand_cannot_pass_generation`](../tests/test_blackbox_catalogue.py#L168)
+- [`tests/test_blackbox_catalogue.py::test_cargo_identity_requires_its_real_module_and_keeps_ignore_selection`](../tests/test_blackbox_catalogue.py#L180)
 
 <a id="witness-proxy-tests-credential-http-codex-rs"></a>
 ### [`proxy/tests/credential_http/codex.rs`](../proxy/tests/credential_http/codex.rs)
@@ -2967,9 +2967,9 @@ This is a source inventory, not a passing execution receipt. The ordinary guest 
 
 | Actual lane | Selected sections |
 |---|---|
-| `systrap` | isolation, workloads, access, lifecycle, continuity |
-| `kvm` | isolation, ingress, workloads |
-| `vz` | isolation, access, lifecycle, continuity |
+| `systrap` | isolation, workloads, access, lifecycle, continuity, job-sandbox, job-network, mounts, docker |
+| `kvm` | isolation, ingress, workloads, job-sandbox, job-network, mounts |
+| `vz` | isolation, access, lifecycle, continuity, job-sandbox, job-network, mounts |
 
 ### `tests/blackbox/installed_access.py`
 
@@ -2993,6 +2993,78 @@ and enforce revocations before deliberately restoring access.
 The procedure uses four native process lifetimes. Historical cross-backend
 receipts remain recorded in the issue; they are not a current execution mode.
 
+### `tests/blackbox/installed_docker_preflight.py`
+
+Probe nested Docker in one disposable installed Linux/systrap sandbox.
+
+On an owned Linux host, supply a prepared installation, this source checkout,
+and Python 3.11+ with tomlkit. Use a new output directory and a new root unless
+--reuse-root is selected. A new instance also needs a free Admin port. Use
+disk-backed paths with traversable parents. --nested-docker selects the
+candidate's guest configuration; without it the driver records the default.
+The guest installs Debian Docker packages through its normal proxy, attempts
+one local daemon/pull/container and stops. --journey additionally runs the
+Compose lifecycle, sandbox recovery and application-bound provider controls.
+--gateway reuses the stopped qualified fixture for Docker management through
+its provider route. It restores ephemeral guest tools, but does not repeat image
+pulls or the application lifecycle. The single-container journey also checks
+adjacent-operation refusal and live revocation against independent daemon reads.
+--gateway-lifecycle adds the missing Compose lifecycle through that same route.
+It seeds an owned loopback registry from the retained nested-notes image, then
+pulls that image through the gateway before building and running the application.
+The registry uses Python in that same image and stores blobs on provider disk.
+Its container stops before the build. Failed mutations are retained without
+replay. This does not repair or retry an earlier registry credential.
+--gateway-lifecycle-resume RECEIPT continues only recovery and teardown from an
+operator receipt for a stopped run that reached gateway-notes-recovered. It inspects the
+same recreated containers and volume before starting any stopped container.
+It records the recovery command's output and exit in the caller workspace,
+separately from the native shell result. No pull, build or recreation is repeated.
+With --gateway-recovery-receipt RECEIPT, it consumes the retained successful
+client recovery instead of starting workloads or reading the application again.
+The receipt must identify the same source receipt, workloads and saved data.
+--gateway-failures-only retains the earlier management proof and runs only the
+daemon, closed-port and stopped-provider failure controls with --gateway.
+--application-resume RESULT continues a stopped --journey interrupted at
+privileged-network. Supply its result.json and sibling notes-written.log with
+--reuse-root, --journey and the retained --docker-data path. It inspects the
+same image, containers and volume before starting the application, then runs
+the remaining containment, lifecycle, provider and owned-origin checks.
+It does not pull, build, rewrite the saved note or repeat management-gateway
+proof. Old request IDs remain in the referenced result; new probes bind the
+new sandbox run. A passed continuation does not establish recurring coverage.
+--reuse-root continues this probe's stopped disposable instance and persistent
+home. It temporarily selects --prepared-config's executable and guest inputs,
+then restores the donor's input paths after stopping. It preserves unrelated
+policy entries and registry approvals. The driver does not
+approve or retry a failed operation in a reused instance. In a fresh journey,
+the pinned public pull may consume one new canonical registry credential
+approval for the owned notes run. The driver checks the offered run scope and
+active grant before retrying that pull once. Other failures stop the journey.
+Both pulls use one anonymous DockerHub bearer through Docker's RegistryToken
+config field. The driver resolves the pinned Debian input's read challenge
+through the guest proxy and CA. Token responses and config files stay private;
+the driver removes them after the pull sequence, including on failure. Reports
+retain only the input, issuer, service, read scope and Docker versions.
+This operator fixture decision permits the current fingerprints at
+registry-1.docker.io across ports, methods and paths for the current notes run.
+Network and service controls still apply. Shared baseline credential policy
+stays unchanged. The report retains the first refusal and canonical decision
+separately.
+Independent acceptance remains separate.
+
+--recurring runs a fresh application journey followed by the scoped Docker API
+controls, live revocation and daemon/provider failures. It uses owned allowed
+and denied origins and retains named checkpoints. With a parent route for the
+test origin, SAFEYOLO_DOCKER_ORIGIN_BIND selects an owned routable IPv4 address.
+For a fresh instance, --docker-image-data copies a host-prepared image-only VFS
+store into its new guest home. Supply a dedicated qualified input, not a donor's
+Docker data root. Only image and vfs directories are copied; container, volume,
+network and daemon credential state are excluded. The pinned base image must
+still resolve through image inspect. This selection does not prove a public pull.
+The explicit image input uses noninteractive host sudo and rsync to preserve
+subordinate numeric ownership, hard links, modes, ACLs, xattrs and symlinks.
+
 ### `tests/blackbox/installed_ingress.py`
 
 Check installed native ingress through one real gVisor/KVM guest.
@@ -3001,6 +3073,31 @@ Require the selected native installation and packaged executable, authenticated 
 actual KVM runsc argv/UID mapping. Bind guest localhost requests to its mounted
 agent UDS. Observe an exact allowed HTTP marker at the owned origin, a denied
 request with no origin delivery, and protected local API boundaries.
+
+### `tests/blackbox/host/job_network.py`
+
+Exercise scoped jobs, revocation and teardown through an owned proxy.
+
+Requires host Python 3.10+, tomlkit, OpenSSL, candidate CLI/proxy binaries and
+an installed shared Trixie guest. Supply a fresh --root with traversable parents
+and a disk-backed --scratch directory. --admin-port and --upstream-port must be
+free ports authorized for this run. On macOS use the approved physical VZ wrapper
+and a short, owned TMPDIR. This creates a separate instance and retains its saved
+grant, sanitized upstream observations and job results for inspection.
+Two ordinary runs check stable saved authority. Three further runs check live
+revocation, expiry and caller cancellation, including retained connections.
+
+### `tests/blackbox/host/job_sandbox.py`
+
+Exercise disposable jobs on a prepared Linux or physical macOS instance.
+
+On the selected host, supply the candidate CLI and a disposable installed root:
+python3 tests/blackbox/host/job_sandbox.py --cli /path/to/safeyolo --root /path/to/instance --scratch /disk/backed/directory
+The root must already select the shared Trixie guest and native launcher.
+For macOS, also supply --observer-probe /path/to/arm64-linux-static-probe.
+Build that small test executable on Linux as documented in tests/fixtures/job-observer-probe.c.
+This runs fixed local checks without starting a coding agent or contacting services.
+Successful output names each observed boundary. Failure retains the scratch path.
 
 ### `tests/blackbox/installed_lifecycle.py`
 
@@ -3012,6 +3109,33 @@ with origin/no-passthrough checks, scoped ignore_hosts removal across held and
 new connections, stable CA/upstream trust/policy and recovery. Keep mixed
 HTTP/SSE/WS/CONNECT drain, three subject cycles and a separate live owner whose
 process, policy and controls survive those cycles. Observe owned stop/cleanup.
+
+### `tests/nested-linux/live_mount_backend_proof.py`
+
+Check public live-directory actions on an owned Linux or physical Mac instance.
+
+Run as the prepared host account. ROOT must be a fresh candidate installation
+with its proxy and Coord running. BASE must not exist and must be outside ROOT.
+On Mac, use the signed candidate helper, the approved VZ runner and a positive
+SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS deadline. The guest helper must be this candidate.
+The driver creates two synthetic agents, starts no model, and stops its agents
+and proxy on every exit. It deliberately restarts the primary at the end to
+check saved versus live-only intent. The earlier same-session proof is retained.
+
+    python3 tests/nested-linux/live_mount_backend_proof.py         --root /owned/fresh-instance --base /owned/new-result-directory         --candidate FULL_COMMIT
+
+Use --saved-retirement for the focused saved add/update/remove, live change,
+explicit restart and retirement proof. It retains a home marker and checks the
+second agent and unrelated configuration throughout.
+
+The optional --native-test-binary retains the earlier Linux-only backend
+witness. Omit it for product acceptance through the public commands.
+
+The live-mount journey builds tests/fixtures/live-mount-holder.c with the Linux
+host's cc and static C library. To supply a prepared executable, use --holder-probe.
+On Mac, that option is required and must name a static Linux ARM64 executable.
+The holder exercises real file descriptors, cwd and mmap without guest Python.
+The --saved-retirement journey does not use the holder.
 
 ### `tests/blackbox/installed_workloads.py`
 

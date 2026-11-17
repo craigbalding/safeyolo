@@ -15,10 +15,10 @@ from pathlib import Path
 
 if __package__:
     from .catalogue import render as render_catalogue
-    from .selections import PYTEST_PHASES, SECTIONS
+    from .selections import PROCEDURES, PYTEST_PHASES, SECTIONS
 else:
     from catalogue import render as render_catalogue
-    from selections import PYTEST_PHASES, SECTIONS
+    from selections import PROCEDURES, PYTEST_PHASES, SECTIONS
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 BB_DIR = REPO_ROOT / "tests" / "blackbox"
@@ -299,7 +299,7 @@ def _render(suites: list[tuple[str, list[tuple[Path, list[TestClass]]]]]) -> str
         out.append(f"| `{lane}` | {', '.join(sections)} |")
     out.append("")
     for section in sorted({s for sections in SECTIONS.values() for s in sections} - {"isolation"}):
-        path = BB_DIR / ("installed_state_transition.py" if section == "continuity" else f"installed_{section}.py")
+        path = (BB_DIR / PROCEDURES[section][0]).resolve()
         doc = ast.get_docstring(ast.parse(path.read_text()))
         assert doc, f"selected procedure lacks a description: {path}"
         out.append(f"### `{path.relative_to(REPO_ROOT)}`")

@@ -3,7 +3,9 @@
 Use a disposable host from a clean checkout. systrap runs isolation, workloads,
 access, lifecycle and host continuity, with optional two-agent ingress.
 KVM runs isolation, guest ingress and workloads. Physical Apple Silicon VZ runs isolation, access, lifecycle and
-host continuity. Each section retains its own report and logs. No hosted
+host continuity. All three also select disposable jobs, job network authority
+and live mounts. Systrap additionally selects nested Docker/gateway controls.
+Each section retains its own report and logs. No hosted
 proxy or host-continuity result is an isolation result.
 """
 
@@ -23,15 +25,18 @@ from pathlib import Path
 
 if __package__:
     from .execution_receipt import section_execution
-    from .selections import OPTIONAL_SECTIONS, SECTIONS
+    from .selections import BOUNDARY_SECTIONS, OPTIONAL_SECTIONS, SECTIONS
 else:
     from execution_receipt import section_execution
-    from selections import OPTIONAL_SECTIONS, SECTIONS
+    from selections import BOUNDARY_SECTIONS, OPTIONAL_SECTIONS, SECTIONS
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 # run-tests.sh reserves this result for failed cleanup when invoked by this
 # loop. Its ordinary public infrastructure/cleanup exit remains 2.
 INNER_CLEANUP_FAILURE_EXIT = 3
+# Linux jobs append data/job-XXXXXX/agents/job-<32hex>/proxy/proxy.sock.
+# Keep instance paths short; artifacts and reports retain the section names.
+BOUNDARY_INSTANCE_NAMES = {"job-sandbox": "j", "job-network": "n", "mounts": "m", "docker": "d"}
 
 
 def copy_prepared_nats(source: Path, root: Path) -> None:
@@ -148,7 +153,9 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
 
 def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision: str,
                  directory: Path, artifacts: Path, *, operator_journey: bool = False,
-                 prepared_config: Path | None = None, listener_restart: bool = False) -> int:
+                 prepared_config: Path | None = None, listener_restart: bool = False,
+                 boundary_admin_port: int | None = None, boundary_upstream_port: int | None = None,
+                 boundary_nats_client_port: int | None = None, boundary_nats_monitor_port: int | None = None) -> int:
     """Prepare once; continue after a failed assertion only after owned cleanup."""
     source = prepared_config or directory / "prepared"
     env = os.environ.copy()
@@ -210,7 +217,7 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
         env.pop("SAFEYOLO_RUNSC_PLATFORM", None)
     overall = 0
     for section in sections:
-        instance = directory / section
+        instance = directory / BOUNDARY_INSTANCE_NAMES.get(section, section)
         section_artifacts = artifacts / section
         section_env = dict(env, SAFEYOLO_TEST_CONFIG_DIR=str(instance), SAFEYOLO_TEST_AGENT="bbtest",
                            SAFEYOLO_BLACKBOX_SECTION_RUN="1",
@@ -251,6 +258,20 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                     "--root", str(source), "--workspace", str(directory / "claude-workspace"),
                     "--credential", os.environ.get("SAFEYOLO_CLAUDE_SMOKE_CREDENTIAL", ""),
                     "--output", str(section_artifacts / "claude-smoke.json")]
+        if section in BOUNDARY_SECTIONS:
+            # This is the invocation's freshly created state parent. Mapped
+            # job UIDs must traverse it; individual credential files stay private.
+            directory.chmod(0o755)
+            args = [str(REPOSITORY / ".venv/bin/python"),
+                    str(REPOSITORY / "tests/blackbox/installed_boundaries.py"),
+                    "--section", section, "--lane", lane, "--prepared-config", str(source),
+                    "--root", str(instance), "--revision", revision, "--output", str(section_artifacts)]
+            for option, port in (("--admin-port", boundary_admin_port),
+                                 ("--upstream-port", boundary_upstream_port),
+                                 ("--nats-client-port", boundary_nats_client_port),
+                                 ("--nats-monitor-port", boundary_nats_monitor_port)):
+                if port is not None:
+                    args += [option, str(port)]
         print(f"=== Installed {section}: {instance} ===", flush=True)
         error = None
         claude_cleanup = None
@@ -281,6 +302,12 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                     failures = ["Claude section did not retain its cleanup result"]
             if section == "lifecycle":
                 failures += cleanup_instance(cli, directory / "lifecycle-owner", owner=True)
+            if section in BOUNDARY_SECTIONS:
+                try:
+                    boundary = json.loads((section_artifacts / "boundary-result.json").read_bytes())
+                    failures += boundary["cleanup_failures"]
+                except (OSError, ValueError, KeyError):
+                    failures.append("boundary runner did not retain its cleanup result")
         if section != "continuity" and section_exit == INNER_CLEANUP_FAILURE_EXIT:
             # An inner stop can remove its markers while leaving a process
             # live. A later empty inspection cannot clear that known failure.
@@ -326,6 +353,14 @@ def main() -> int:
     parser.add_argument("--install-checkout", type=Path, default=REPOSITORY)
     parser.add_argument("--prepared-config", type=Path,
                         help="Reuse an installed native package instead of installing source; the test checkout may differ from its source revision")
+    parser.add_argument("--boundary-admin-port", type=int,
+                        help="Boundary sections' admin port (default: VZ 46371, Linux ephemeral)")
+    parser.add_argument("--boundary-upstream-port", type=int,
+                        help="Boundary sections' receiver/upstream port (default: VZ 46373, Linux ephemeral)")
+    parser.add_argument("--boundary-nats-client-port", type=int,
+                        help="Mount section's NATS client port (default: VZ 46370, Linux Coord default)")
+    parser.add_argument("--boundary-nats-monitor-port", type=int,
+                        help="Mount section's NATS monitor port (default: VZ 46372, Linux Coord default)")
     parser.add_argument("--artifacts", type=Path, default=Path(os.environ.get(
         "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR", REPOSITORY / "tests/blackbox/artifacts")))
     args = parser.parse_args()
@@ -358,13 +393,16 @@ def main() -> int:
         parser.error("--listener-restart requires --section isolation")
     # Keep downloaded/build inputs on disk-backed storage. Each invocation owns
     # a new parent; failed section logs remain available for diagnosis.
-    # Short roots also keep configured UDS paths within macOS's pathname limit.
-    directory = Path(tempfile.mkdtemp(prefix=f"sy-{args.lane}-", dir=Path(os.environ.get(
-        "SAFEYOLO_BLACKBOX_STATE_PARENT", Path.home()))))
+    # Short names leave room for delegated Linux job and VZ instance sockets.
+    directory = Path(tempfile.mkdtemp(prefix="sy-", dir=Path(os.environ.get(
+        "SAFEYOLO_BLACKBOX_STATE_PARENT", Path.home())))).resolve()
     print(f"Prepared product and section state: {directory}", flush=True)
     return run_sections(args.lane, sections, checkout, revision, directory, args.artifacts.resolve(),
                         operator_journey=args.operator_journey, prepared_config=prepared_config,
-                        listener_restart=args.listener_restart)
+                        listener_restart=args.listener_restart,
+                        boundary_admin_port=args.boundary_admin_port, boundary_upstream_port=args.boundary_upstream_port,
+                        boundary_nats_client_port=args.boundary_nats_client_port,
+                        boundary_nats_monitor_port=args.boundary_nats_monitor_port)
 
 
 if __name__ == "__main__":

@@ -50,6 +50,9 @@ echo "[guest-proxy-forwarder] 127.0.0.1:${LISTEN_PORT} -> ${upstream} (running a
 # Linux uses the executed filename for /proc/PID/comm, inherited by forks.
 # Keep workload socat available while plain pkill/killall socat spare this relay.
 ln -sf "$(command -v socat)" /run/sy-proxy-relay
-exec /run/sy-proxy-relay \
+# Preserve reverse output after stdin EOF, including a quiet Docker exec
+# attachment. Match the proxy tunnel's existing 600-second idle limit instead
+# of socat's default 0.5-second wait. Active reverse output resets this wait.
+exec /run/sy-proxy-relay -t 600 \
     "TCP-LISTEN:${LISTEN_PORT},${listen_options}" \
     "${upstream}"
