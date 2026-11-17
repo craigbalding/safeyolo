@@ -582,13 +582,13 @@ def prepared_invocation(retained_invocation):
         instance.mkdir()
         source = pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR'])
         (instance/'config.toml').write_bytes((source/'config.toml').read_bytes())
-        with (root/'events').open('a') as output:
-            output.write(json.dumps({'stage':instance.name, 'instance':str(instance), 'umask':os.umask(0o022)})+'\\n')
         artifacts = pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR'])
+        with (root/'events').open('a') as output:
+            output.write(json.dumps({'stage':artifacts.name, 'instance':str(instance), 'umask':os.umask(0o022)})+'\\n')
         context = {'platform':'systrap', 'agent':'bbtest', 'pid':123, 'start_token':'controlled-birth'}
         save(artifacts/'platform.json', context)
         os.environ['SAFEYOLO_BLACKBOX_GUEST_IDENTITY'] = json.dumps(context)
-        for phase in SECTION_DRIVERS[instance.name]:
+        for phase in SECTION_DRIVERS[artifacts.name]:
             if phase in PYTEST_PHASES:
                 nodes = phase_functions(phase, root)
                 save(artifacts/f'pytest-{phase}.json', {
@@ -599,9 +599,14 @@ def prepared_invocation(retained_invocation):
                     'tests':{node:dict.fromkeys(('setup','call','teardown'), 'passed') for node in nodes}})
             else:
                 receipt = ProcedureReceipt(phase, artifacts/'procedure.json')
+                receipt.document['identities'] = {
+                    'product':{'source_revision':'a'*40},
+                    'controller':{'controller_revision':'b'*40, 'controller_dirty':False},
+                    'guest_selection':{'index':'controlled-selected-guest'}}
                 for checkpoint in PROCEDURES[phase][1]:
                     receipt.checkpoint(checkpoint)
-        if instance.name == 'isolation':
+        save(artifacts/'boundary-result.json', {'finished':True, 'cleanup_failures':[]})
+        if artifacts.name == 'isolation':
             # This Ubuntu caller fixture supplies Linux doctor/runsc inputs.
             # Select that branch only for substrate discovery on any test host.
             with patch('tests.blackbox.installed_host_smoke.platform.system', return_value='Linux'):
@@ -609,7 +614,7 @@ def prepared_invocation(retained_invocation):
             report = _base_report({'source_revision':'a'*40}, {}, substrate)
             report['status'] = 'attached_ready'
             (artifacts/'installed-rust-runtime.json').write_text(json.dumps(report))
-        if instance.name == 'continuity':
+        if artifacts.name == 'continuity':
             if os.environ.get('ADMISSION_HOME'):
                 (source/'agents/owner/home').mkdir(parents=True)
             if os.environ.get('ADMISSION_PID'):
@@ -619,7 +624,7 @@ def prepared_invocation(retained_invocation):
     (instruments / 'run-tests.sh').write_text(f'#!{sys.executable}\n' + section)
     (instruments / 'run-tests.sh').chmod(0o700)
     for driver in ('installed_state_transition.py', 'installed_authority.py',
-                   'installed_provider.py', 'installed_federation.py'):
+                   'installed_provider.py', 'installed_federation.py', 'installed_boundaries.py'):
         (instruments / driver).write_text(section)
     (controller / '.gitignore').write_text('__pycache__/\n/events\n/retained installation/\n/original reports/\n'
                                           '/original isolation state/\n/frozen selection.json\n')
@@ -647,7 +652,8 @@ def test_missing_readiness_runs_maintained_sections_before_binding_and_preserves
         assert stages == ['doctor', 'init', 'isolation', 'doctor', 'stop', 'workloads', 'stop',
                           'access', 'stop', 'peer-support', 'stop', 'shared-approvals', 'stop',
                           'provider', 'stop', 'federation', 'stop', 'lifecycle', 'stop',
-                          'continuity', 'stop', 'binding', 'smoke']
+                          'continuity', 'stop', 'job-sandbox', 'stop', 'job-network', 'stop',
+                          'mounts', 'stop', 'docker', 'stop', 'binding', 'smoke']
         assert report['selection_mode'] == 'retained-manual' and report['readiness_reused'] is False
         assert report['readiness_origin'] is None
         assert report['readiness']['controller_revision'] == subprocess.check_output(

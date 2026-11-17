@@ -1,0 +1,919 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 The Hyperlight Authors.
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use hyperlight_common::component::{Negative, Positive};
+use hyperlight_common::resource::BorrowedResourceGuard;
+use hyperlight_host::{GuestBinary, Sandbox, UninitializedSandbox};
+use hyperlight_testing::{
+    c_simple_guest_as_pathbuf, simple_guest_as_pathbuf, wit_guest_as_pathbuf,
+};
+
+extern crate alloc;
+mod bindings {
+    hyperlight_component_macro::host_bindgen!(wit: "../tests/rust_guests/witguest/guest.wit");
+}
+
+use bindings::test::wit::roundtrip::{Testcomposite, Testrecord, Testvariant};
+use bindings::*;
+
+impl PartialEq for Testrecord {
+    fn eq(&self, other: &Self) -> bool {
+        self.contents == other.contents && self.length == other.length
+    }
+}
+
+impl PartialEq for Testvariant {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Testvariant::VariantA, Testvariant::VariantA) => true,
+            (Testvariant::VariantB(s1), Testvariant::VariantB(s2)) => s1 == s2,
+            (Testvariant::VariantC(c1), Testvariant::VariantC(c2)) => c1 == c2,
+            (Testvariant::VariantD(r1), Testvariant::VariantD(r2)) => r1 == r2,
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq for Testcomposite {
+    fn eq(&self, other: &Self) -> bool {
+        self.nested == other.nested
+            && self.records == other.records
+            && self.fixed == other.fixed
+            && self.res == other.res
+            && self.tup == other.tup
+            && self.choice == other.choice
+            && self.kind == other.kind
+            && self.mask == other.mask
+            && self.c == other.c
+            && self.b == other.b
+    }
+}
+
+impl Clone for Testrecord {
+    fn clone(&self) -> Self {
+        Self {
+            contents: self.contents.clone(),
+            length: self.length,
+        }
+    }
+}
+
+impl Clone for Testvariant {
+    fn clone(&self) -> Self {
+        match self {
+            Self::VariantA => Self::VariantA,
+            Self::VariantB(s) => Self::VariantB(s.clone()),
+            Self::VariantC(c) => Self::VariantC(*c),
+            Self::VariantD(r) => Self::VariantD(r.clone()),
+        }
+    }
+}
+
+impl Clone for Testcomposite {
+    fn clone(&self) -> Self {
+        Self {
+            nested: self.nested,
+            records: self.records.clone(),
+            fixed: self.fixed,
+            res: self.res.clone(),
+            tup: self.tup.clone(),
+            choice: self.choice.clone(),
+            kind: self.kind,
+            mask: self.mask.clone(),
+            c: self.c,
+            b: self.b,
+        }
+    }
+}
+
+struct Host {}
+
+impl test::wit::Roundtrip<Negative> for Host {
+    fn roundtrip_bool(&mut self, x: bool) -> bool {
+        x
+    }
+    fn roundtrip_s8(&mut self, x: i8) -> i8 {
+        x
+    }
+    fn roundtrip_s16(&mut self, x: i16) -> i16 {
+        x
+    }
+    fn roundtrip_s32(&mut self, x: i32) -> i32 {
+        x
+    }
+    fn roundtrip_s64(&mut self, x: i64) -> i64 {
+        x
+    }
+    fn roundtrip_u8(&mut self, x: u8) -> u8 {
+        x
+    }
+    fn roundtrip_u16(&mut self, x: u16) -> u16 {
+        x
+    }
+    fn roundtrip_u32(&mut self, x: u32) -> u32 {
+        x
+    }
+    fn roundtrip_u64(&mut self, x: u64) -> u64 {
+        x
+    }
+    fn roundtrip_f32(&mut self, x: f32) -> f32 {
+        x
+    }
+    fn roundtrip_f64(&mut self, x: f64) -> f64 {
+        x
+    }
+    fn roundtrip_char(&mut self, x: char) -> char {
+        x
+    }
+    fn roundtrip_string(&mut self, x: alloc::string::String) -> alloc::string::String {
+        x
+    }
+    fn roundtrip_list(&mut self, x: alloc::vec::Vec<u8>) -> alloc::vec::Vec<u8> {
+        x
+    }
+    fn roundtrip_tuple(&mut self, x: (alloc::string::String, u8)) -> (alloc::string::String, u8) {
+        x
+    }
+    fn roundtrip_option(
+        &mut self,
+        x: ::core::option::Option<alloc::string::String>,
+    ) -> ::core::option::Option<alloc::string::String> {
+        x
+    }
+    fn roundtrip_result(
+        &mut self,
+        x: ::core::result::Result<char, alloc::string::String>,
+    ) -> ::core::result::Result<char, alloc::string::String> {
+        x
+    }
+    fn roundtrip_record(
+        &mut self,
+        x: test::wit::roundtrip::Testrecord,
+    ) -> test::wit::roundtrip::Testrecord {
+        x
+    }
+    fn roundtrip_flags_small(
+        &mut self,
+        x: test::wit::roundtrip::Smallflags,
+    ) -> test::wit::roundtrip::Smallflags {
+        x
+    }
+    fn roundtrip_flags_large(
+        &mut self,
+        x: test::wit::roundtrip::Largeflags,
+    ) -> test::wit::roundtrip::Largeflags {
+        x
+    }
+    fn roundtrip_variant(
+        &mut self,
+        x: test::wit::roundtrip::Testvariant,
+    ) -> test::wit::roundtrip::Testvariant {
+        x
+    }
+    fn roundtrip_enum(
+        &mut self,
+        x: test::wit::roundtrip::Testenum,
+    ) -> test::wit::roundtrip::Testenum {
+        x
+    }
+    fn roundtrip_fix_list(&mut self, x: [u8; 4]) -> [u8; 4] {
+        x
+    }
+    fn roundtrip_fix_list_u32(&mut self, x: [u32; 4]) -> [u32; 4] {
+        x
+    }
+    fn roundtrip_fix_list_u64(&mut self, x: [u64; 4]) -> [u64; 4] {
+        x
+    }
+    fn roundtrip_fix_list_i8(&mut self, x: [i8; 4]) -> [i8; 4] {
+        x
+    }
+    fn roundtrip_fix_list_i16(&mut self, x: [i16; 4]) -> [i16; 4] {
+        x
+    }
+    fn roundtrip_fix_list_i32(&mut self, x: [i32; 4]) -> [i32; 4] {
+        x
+    }
+    fn roundtrip_fix_list_i64(&mut self, x: [i64; 4]) -> [i64; 4] {
+        x
+    }
+    fn roundtrip_fix_list_f32(&mut self, x: [f32; 4]) -> [f32; 4] {
+        x
+    }
+    fn roundtrip_fix_list_f64(&mut self, x: [f64; 4]) -> [f64; 4] {
+        x
+    }
+    fn roundtrip_fix_list_u8_size8(&mut self, x: [u8; 8]) -> [u8; 8] {
+        x
+    }
+    fn roundtrip_fix_list_u64_size2(&mut self, x: [u64; 2]) -> [u64; 2] {
+        x
+    }
+    fn roundtrip_fix_list_string(&mut self, x: [String; 4]) -> [String; 4] {
+        x
+    }
+    fn roundtrip_fix_array_of_lists(&mut self, x: [Vec<u8>; 3]) -> [Vec<u8>; 3] {
+        x
+    }
+    fn roundtrip_fix_array_of_string_lists(&mut self, x: [Vec<String>; 2]) -> [Vec<String>; 2] {
+        x
+    }
+
+    fn roundtrip_no_result(&mut self, _x: u32) {}
+
+    fn roundtrip_flags_medium(
+        &mut self,
+        x: test::wit::roundtrip::Mediumflags,
+    ) -> test::wit::roundtrip::Mediumflags {
+        x
+    }
+    fn roundtrip_nested_option(&mut self, x: Option<Option<String>>) -> Option<Option<String>> {
+        x
+    }
+    fn roundtrip_nested_list(&mut self, x: Vec<Vec<String>>) -> Vec<Vec<String>> {
+        x
+    }
+    fn roundtrip_record_list(&mut self, x: Vec<Testrecord>) -> Vec<Testrecord> {
+        x
+    }
+    fn roundtrip_result_unit(&mut self, x: Result<(), String>) -> Result<(), String> {
+        x
+    }
+    fn roundtrip_result_empty(&mut self, x: Result<(), ()>) -> Result<(), ()> {
+        x
+    }
+    fn roundtrip_two_args(&mut self, first: u32, second: String) -> (u32, String) {
+        (first, second)
+    }
+    fn roundtrip_no_args(&mut self) -> u32 {
+        42
+    }
+    fn roundtrip_composite(&mut self, x: Testcomposite) -> Testcomposite {
+        x
+    }
+}
+
+struct TestResource {
+    n_calls: u32,
+    x: String,
+    last: char,
+}
+impl TestResource {
+    fn new(x: String, last: char) -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(TestResource {
+            n_calls: 0,
+            x,
+            last,
+        }))
+    }
+}
+
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::Relaxed;
+// We use some care below in the tests that use HAS_BEEN_DROPPED to
+// synchronise on this mutex to avoid them stepping on each other
+static SERIALIZE_TEST_RESOURCE_TESTS: Mutex<()> = Mutex::new(());
+static HAS_BEEN_DROPPED: AtomicBool = AtomicBool::new(false);
+
+impl Drop for TestResource {
+    fn drop(&mut self) {
+        assert_eq!(self.x, "strabc");
+        assert_eq!(self.last, 'c');
+        assert!(!HAS_BEEN_DROPPED.swap(true, Relaxed));
+    }
+}
+
+impl test::wit::host_resource::Testresource<Negative> for Host {
+    type T = Arc<Mutex<TestResource>>;
+    fn new(&mut self, x: String, last: char) -> Self::T {
+        TestResource::new(x, last)
+    }
+    fn append_char(&mut self, self_: BorrowedResourceGuard<'_, Self::T>, c: char) {
+        let mut self_ = self_.lock().unwrap();
+        match self_.n_calls {
+            // These line up to the initial values and calls made by
+            // witguest.rs. Mostly, this just checks that (even after
+            // round-tripping an owned reference through the host), we
+            // do always seem to get the correct structure.
+            0 => {
+                assert_eq!(self_.x, "str");
+                assert_eq!(self_.last, 'z');
+            }
+            1 => {
+                assert_eq!(self_.x, "stra");
+                assert_eq!(self_.last, 'a');
+            }
+            2 => {
+                assert_eq!(self_.x, "strab");
+                assert_eq!(self_.last, 'b');
+            }
+            _ => panic!(),
+        };
+        self_.n_calls += 1;
+        self_.x.push(c);
+        self_.last = c;
+    }
+}
+
+impl test::wit::HostResource<Negative> for Host {
+    fn roundtrip_own(&mut self, owned: Arc<Mutex<TestResource>>) -> Arc<Mutex<TestResource>> {
+        owned
+    }
+
+    fn return_own(&mut self, _: Arc<Mutex<TestResource>>) {
+        // Not much to do here other than let it be dropped
+    }
+}
+
+#[allow(refining_impl_trait)]
+impl test::wit::TestImports<Negative> for Host {
+    type Roundtrip = Self;
+    fn roundtrip(&mut self) -> &mut Self {
+        self
+    }
+    type HostResource = Self;
+    fn host_resource(&mut self) -> &mut Self {
+        self
+    }
+    fn now(&mut self) -> u64 {
+        7
+    }
+}
+
+fn sb() -> TestSandbox<Host, Sandbox> {
+    sb_from_guest(wit_guest_as_pathbuf())
+}
+
+fn sb_from_guest(path: PathBuf) -> TestSandbox<Host, Sandbox> {
+    let guest_path = GuestBinary::FilePath(path);
+    let uninit = UninitializedSandbox::new(guest_path, None).unwrap();
+    test::wit::Test::instantiate(uninit, Host {}).unwrap()
+}
+
+mod wit_test {
+    use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+    use hyperlight_host::HyperlightError;
+    use proptest::prelude::*;
+
+    use crate::bindings::test::wit::{
+        Failable, Roundtrip, TestExports, TestHostResource, roundtrip,
+    };
+    use crate::{
+        GuestBinary, UninitializedSandbox, c_simple_guest_as_pathbuf, sb, sb_from_guest,
+        simple_guest_as_pathbuf,
+    };
+
+    #[test]
+    fn restore_wit_snapshot_replaces_rust_and_c_guests() {
+        let mut source = sb();
+        assert_eq!(
+            source
+                .roundtrip()
+                .roundtrip_string("before snapshot".to_string())
+                .unwrap(),
+            "before snapshot"
+        );
+        let snapshot = source.sb.snapshot().unwrap();
+
+        let mut rust_target = sb_from_guest(simple_guest_as_pathbuf());
+        assert_eq!(
+            rust_target.sb.call::<i32>("AddToStatic", 17i32).unwrap(),
+            17
+        );
+        rust_target.sb.restore(snapshot.clone()).unwrap();
+        assert_eq!(
+            rust_target
+                .roundtrip()
+                .roundtrip_string("restored over Rust".to_string())
+                .unwrap(),
+            "restored over Rust"
+        );
+        assert!(matches!(
+            rust_target.sb.call::<i32>("GetStatic", ()),
+            Err(HyperlightError::GuestError(
+                ErrorCode::GuestFunctionNotFound,
+                name
+            )) if name == "GetStatic"
+        ));
+
+        let mut c_target = sb_from_guest(c_simple_guest_as_pathbuf());
+        assert_eq!(
+            c_target.sb.call::<i32>("StackAllocate", 256i32).unwrap(),
+            256
+        );
+        c_target.sb.restore(snapshot).unwrap();
+        assert_eq!(
+            c_target
+                .roundtrip()
+                .roundtrip_string("restored over C".to_string())
+                .unwrap(),
+            "restored over C"
+        );
+        assert!(matches!(
+            c_target.sb.call::<i32>("StackAllocate", 512i32),
+            Err(HyperlightError::GuestError(
+                ErrorCode::GuestFunctionNotFound,
+                name
+            )) if name == "StackAllocate"
+        ));
+    }
+
+    #[test]
+    fn restore_rust_and_c_snapshots_replace_wit_guest() {
+        let mut rust_source =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap()
+                .evolve()
+                .unwrap();
+        assert_eq!(rust_source.call::<i32>("AddToStatic", 42i32).unwrap(), 42);
+        let rust_snapshot = rust_source.snapshot().unwrap();
+
+        let mut rust_target = sb();
+        assert_eq!(
+            rust_target
+                .roundtrip()
+                .roundtrip_string("WIT before Rust".to_string())
+                .unwrap(),
+            "WIT before Rust"
+        );
+        rust_target.sb.restore(rust_snapshot).unwrap();
+        assert_eq!(rust_target.sb.call::<i32>("GetStatic", ()).unwrap(), 42);
+
+        let mut c_source =
+            UninitializedSandbox::new(GuestBinary::FilePath(c_simple_guest_as_pathbuf()), None)
+                .unwrap()
+                .evolve()
+                .unwrap();
+        assert_eq!(c_source.call::<i32>("StackAllocate", 256i32).unwrap(), 256);
+        let c_snapshot = c_source.snapshot().unwrap();
+
+        let mut c_target = sb();
+        assert_eq!(
+            c_target
+                .roundtrip()
+                .roundtrip_string("WIT before C".to_string())
+                .unwrap(),
+            "WIT before C"
+        );
+        c_target.sb.restore(c_snapshot).unwrap();
+        assert_eq!(
+            c_target.sb.call::<i32>("StackAllocate", 512i32).unwrap(),
+            512
+        );
+    }
+
+    #[test]
+    fn restore_chain_replaces_each_guest() {
+        let mut rust_source =
+            UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_as_pathbuf()), None)
+                .unwrap()
+                .evolve()
+                .unwrap();
+        assert_eq!(rust_source.call::<i32>("AddToStatic", 42i32).unwrap(), 42);
+        let rust_snapshot = rust_source.snapshot().unwrap();
+
+        let mut wit_source = sb();
+        assert_eq!(
+            wit_source
+                .roundtrip()
+                .roundtrip_string("WIT source".to_string())
+                .unwrap(),
+            "WIT source"
+        );
+        let wit_snapshot = wit_source.sb.snapshot().unwrap();
+
+        let mut target = sb_from_guest(c_simple_guest_as_pathbuf());
+        assert_eq!(target.sb.call::<i32>("StackAllocate", 256i32).unwrap(), 256);
+
+        target.sb.restore(rust_snapshot).unwrap();
+        assert_eq!(target.sb.call::<i32>("GetStatic", ()).unwrap(), 42);
+        assert!(matches!(
+            target.sb.call::<i32>("StackAllocate", 512i32),
+            Err(HyperlightError::GuestError(
+                ErrorCode::GuestFunctionNotFound,
+                name
+            )) if name == "StackAllocate"
+        ));
+
+        target.sb.restore(wit_snapshot).unwrap();
+        assert_eq!(
+            target
+                .roundtrip()
+                .roundtrip_string("WIT restored".to_string())
+                .unwrap(),
+            "WIT restored"
+        );
+        assert!(matches!(
+            target.sb.call::<i32>("GetStatic", ()),
+            Err(HyperlightError::GuestError(
+                ErrorCode::GuestFunctionNotFound,
+                name
+            )) if name == "GetStatic"
+        ));
+    }
+
+    prop_compose! {
+        fn arb_testrecord()(contents in ".*", length in any::<u64>()) -> roundtrip::Testrecord {
+            roundtrip::Testrecord { contents, length }
+        }
+    }
+
+    prop_compose! {
+        fn arb_smallflags()(flag_a: bool, flag_b: bool, flag_c: bool) -> roundtrip::Smallflags {
+            roundtrip::Smallflags { flag_a, flag_b, flag_c }
+        }
+    }
+
+    prop_compose! {
+        fn arb_largeflags()(
+            flag00: bool, flag01: bool, flag02: bool, flag03: bool, flag04: bool, flag05: bool, flag06: bool, flag07: bool,
+            flag08: bool, flag09: bool, flag0a: bool, flag0b: bool, flag0c: bool, flag0d: bool, flag0e: bool, flag0f: bool,
+
+            flag10: bool, flag11: bool, flag12: bool, flag13: bool, flag14: bool, flag15: bool, flag16: bool, flag17: bool,
+            flag18: bool, flag19: bool, flag1a: bool, flag1b: bool, flag1c: bool, flag1d: bool, flag1e: bool, flag1f: bool,
+       ) -> roundtrip::Largeflags {
+            roundtrip::Largeflags {
+                flag00, flag01, flag02, flag03, flag04, flag05, flag06, flag07,
+                flag08, flag09, flag0a, flag0b, flag0c, flag0d, flag0e, flag0f,
+
+                flag10, flag11, flag12, flag13, flag14, flag15, flag16, flag17,
+                flag18, flag19, flag1a, flag1b, flag1c, flag1d, flag1e, flag1f,
+            }
+        }
+    }
+
+    fn arb_testvariant() -> impl Strategy<Value = roundtrip::Testvariant> {
+        use roundtrip::Testvariant::*;
+        prop_oneof![
+            Just(VariantA),
+            any::<String>().prop_map(VariantB),
+            any::<char>().prop_map(VariantC),
+            arb_testrecord().prop_map(VariantD),
+        ]
+    }
+
+    fn arb_testenum() -> impl Strategy<Value = roundtrip::Testenum> {
+        use roundtrip::Testenum::*;
+        prop_oneof![Just(EnumA), Just(EnumB), Just(EnumC),]
+    }
+
+    prop_compose! {
+        fn arb_mediumflags()(
+            m0: bool, m1: bool, m2: bool, m3: bool, m4: bool,
+            m5: bool, m6: bool, m7: bool, m8: bool, m9: bool,
+        ) -> roundtrip::Mediumflags {
+            roundtrip::Mediumflags { m0, m1, m2, m3, m4, m5, m6, m7, m8, m9 }
+        }
+    }
+
+    fn arb_testrecords() -> impl Strategy<Value = Vec<roundtrip::Testrecord>> {
+        proptest::collection::vec(arb_testrecord(), 0..4)
+    }
+
+    fn arb_nested_list() -> impl Strategy<Value = Vec<Vec<String>>> {
+        proptest::collection::vec(proptest::collection::vec(".*", 0..4), 0..4)
+    }
+
+    prop_compose! {
+        fn arb_testcomposite()(
+            nested: Option<Option<u32>>,
+            records in arb_testrecords(),
+            fixed: [u8; 3],
+            res in prop_oneof![
+                arb_testrecord().prop_map(Ok),
+                any::<String>().prop_map(Err),
+            ],
+            tup in (any::<String>(), any::<u8>(), arb_testrecord()),
+            choice in arb_testvariant(),
+            kind in arb_testenum(),
+            mask in arb_mediumflags(),
+            c: char,
+            b: bool,
+        ) -> roundtrip::Testcomposite {
+            roundtrip::Testcomposite { nested, records, fixed, res, tup, choice, kind, mask, c, b }
+        }
+    }
+
+    /// 32 instead of default 256 to speed up ci
+    const ROUNDTRIP_CASES: u32 = 32;
+
+    macro_rules! make_test {
+        ($fn:ident, $($ty:tt)*) => {
+            proptest! {
+                #![proptest_config(ProptestConfig::with_cases(ROUNDTRIP_CASES))]
+                #[test]
+                fn $fn(x $($ty)*) {
+                    assert_eq!(x, sb().roundtrip().$fn(x.clone()).unwrap())
+                }
+            }
+        }
+    }
+
+    make_test! { roundtrip_bool,        : bool }
+    make_test! { roundtrip_u8,          : u8 }
+    make_test! { roundtrip_u16,         : u16 }
+    make_test! { roundtrip_u32,         : u32 }
+    make_test! { roundtrip_u64,         : u64 }
+    make_test! { roundtrip_s8,          : i8 }
+    make_test! { roundtrip_s16,         : i16 }
+    make_test! { roundtrip_s32,         : i32 }
+    make_test! { roundtrip_s64,         : i64 }
+    make_test! { roundtrip_f32,         : f32 }
+    make_test! { roundtrip_f64,         : f64 }
+    make_test! { roundtrip_char,        : char }
+    make_test! { roundtrip_string,      : String }
+
+    make_test! { roundtrip_list,        : Vec<u8> }
+    make_test! { roundtrip_tuple,       : (String, u8) }
+    make_test! { roundtrip_option,      : Option<String> }
+    make_test! { roundtrip_result,      : Result<char, String> }
+
+    make_test! { roundtrip_record,      in arb_testrecord() }
+    make_test! { roundtrip_flags_small, in arb_smallflags() }
+    make_test! { roundtrip_flags_large, in arb_largeflags() }
+    make_test! { roundtrip_variant,     in arb_testvariant() }
+    make_test! { roundtrip_enum,        in arb_testenum() }
+    make_test! { roundtrip_fix_list,    : [u8; 4] }
+    make_test! { roundtrip_fix_list_u32, : [u32; 4] }
+    make_test! { roundtrip_fix_list_u64, : [u64; 4] }
+    make_test! { roundtrip_fix_list_i8,  : [i8; 4] }
+    make_test! { roundtrip_fix_list_i16, : [i16; 4] }
+    make_test! { roundtrip_fix_list_i32, : [i32; 4] }
+    make_test! { roundtrip_fix_list_i64, : [i64; 4] }
+    make_test! { roundtrip_fix_list_f32, : [f32; 4] }
+    make_test! { roundtrip_fix_list_f64, : [f64; 4] }
+    make_test! { roundtrip_fix_list_u8_size8, : [u8; 8] }
+    make_test! { roundtrip_fix_list_u64_size2, : [u64; 2] }
+    make_test! { roundtrip_fix_list_string, : [String; 4] }
+    make_test! { roundtrip_fix_array_of_lists, : [Vec<u8>; 3] }
+    make_test! { roundtrip_fix_array_of_string_lists, : [Vec<String>; 2] }
+    make_test! { roundtrip_flags_medium, in arb_mediumflags() }
+    make_test! { roundtrip_nested_option, : Option<Option<String>> }
+    make_test! { roundtrip_nested_list, in arb_nested_list() }
+    make_test! { roundtrip_record_list, in arb_testrecords() }
+    make_test! { roundtrip_result_unit, : Result<(), String> }
+    make_test! { roundtrip_result_empty, : Result<(), ()> }
+    make_test! { roundtrip_composite, in arb_testcomposite() }
+
+    #[test]
+    fn test_roundtrip_two_args() {
+        let result = sb().roundtrip().roundtrip_two_args(5, "five".to_string());
+        assert_eq!(result.unwrap(), (5, "five".to_string()));
+    }
+
+    #[test]
+    fn test_roundtrip_no_args() {
+        assert_eq!(sb().roundtrip().roundtrip_no_args().unwrap(), 42);
+    }
+
+    #[test]
+    fn test_world_functions() {
+        use crate::bindings::Extra;
+
+        let mut sb = sb();
+        assert_eq!(sb.run("go".to_string()).unwrap(), Ok("go 7".to_string()));
+        assert_eq!(
+            sb.run(String::new()).unwrap(),
+            Err("empty input".to_string())
+        );
+        assert_eq!(sb.extra().ping(0xa5).unwrap(), 0xa5);
+    }
+
+    #[test]
+    fn test_roundtrip_no_result() {
+        sb().roundtrip().roundtrip_no_result(42).unwrap();
+    }
+
+    #[test]
+    fn test_guest_trap_returns_error() {
+        let err = sb().failable().will_trap().unwrap_err();
+        assert!(
+            format!("{err:?}").contains("Guest aborted"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    use std::sync::atomic::Ordering::Relaxed;
+
+    #[test]
+    fn test_host_resource_uses_locally() {
+        let guard = crate::SERIALIZE_TEST_RESOURCE_TESTS.lock();
+        crate::HAS_BEEN_DROPPED.store(false, Relaxed);
+        {
+            sb().test_host_resource().test_uses_locally().unwrap();
+        }
+        assert!(crate::HAS_BEEN_DROPPED.load(Relaxed));
+        drop(guard);
+    }
+    #[test]
+    fn test_host_resource_passed_in_out() {
+        let guard = crate::SERIALIZE_TEST_RESOURCE_TESTS.lock();
+        crate::HAS_BEEN_DROPPED.store(false, Relaxed);
+        {
+            let mut sb = sb();
+            let inst = sb.test_host_resource();
+            let r = inst.test_makes().unwrap();
+            inst.test_accepts_borrow(&r).unwrap();
+            inst.test_accepts_own(r).unwrap();
+            inst.test_returns().unwrap();
+        }
+        assert!(crate::HAS_BEEN_DROPPED.load(Relaxed));
+        drop(guard);
+    }
+}
+
+mod pick_world_bindings {
+    hyperlight_component_macro::host_bindgen!({
+        wit: "../tests/rust_guests/witguest/two_worlds.wit",
+        world: "firstworld",
+    });
+}
+mod pick_world_binding_test {
+    use crate::pick_world_bindings::r#twoworlds::r#wit::r#first_import::RecFirstImport;
+
+    impl crate::pick_world_bindings::r#twoworlds::r#wit::r#first_import::RecFirstImport {
+        fn new() -> Self {
+            Self {
+                r#key: String::from("dummyKey"),
+                r#value: String::from("dummyValue"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_first_import_instance() {
+        let first_import = RecFirstImport::new();
+        assert_eq!(first_import.r#key, "dummyKey");
+        assert_eq!(first_import.r#value, "dummyValue");
+    }
+}
+
+mod pick_world_bindings2 {
+    hyperlight_component_macro::host_bindgen!({
+        wit: "../tests/rust_guests/witguest/two_worlds.wit",
+        world: "secondworld",
+    });
+}
+mod pick_world_binding_test2 {
+    use crate::pick_world_bindings2::r#twoworlds::r#wit::r#second_export::RecSecondExport;
+
+    impl crate::pick_world_bindings2::r#twoworlds::r#wit::r#second_export::RecSecondExport {
+        fn new() -> Self {
+            Self {
+                r#key: String::from("dummyKey"),
+                r#value: String::from("dummyValue"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_second_export_instance() {
+        let first_import = RecSecondExport::new();
+        assert_eq!(first_import.r#key, "dummyKey");
+        assert_eq!(first_import.r#value, "dummyValue");
+    }
+}
+
+mod bindgen_test_case_bindings {
+    hyperlight_component_macro::host_bindgen!(wit: "../tests/rust_guests/witguest/bindgen-test-cases");
+}
+mod bindgen_test_cases {
+    use super::{Negative, Positive};
+    use crate::bindgen_test_case_bindings::*;
+
+    #[test]
+    fn plain_export_interface_types_are_generated() {
+        let result = test::bindgen_test_cases::executor::ExecutionResult {
+            message: String::from("executed"),
+        };
+        assert_eq!(result.message, "executed");
+    }
+
+    #[allow(dead_code)]
+    struct ExportHost;
+
+    impl test::bindgen_test_cases::Executor<Positive> for ExportHost {
+        fn execute(
+            &mut self,
+        ) -> anyhow::Result<test::bindgen_test_cases::executor::ExecutionResult> {
+            Ok(test::bindgen_test_cases::executor::ExecutionResult {
+                message: String::from("executed"),
+            })
+        }
+    }
+
+    impl test::bindgen_test_cases::Types<Positive> for ExportHost {
+        fn get_status(&mut self) -> anyhow::Result<test::bindgen_test_cases::types::Status> {
+            Ok(test::bindgen_test_cases::types::Status {
+                message: String::from("ok"),
+            })
+        }
+    }
+
+    impl
+        test::bindgen_test_cases::UsesExportedTypes<
+            Positive,
+            test::bindgen_test_cases::types::Status,
+        > for ExportHost
+    {
+        fn get_status(&mut self) -> anyhow::Result<test::bindgen_test_cases::types::Status> {
+            Ok(test::bindgen_test_cases::types::Status {
+                message: String::from("ok"),
+            })
+        }
+    }
+
+    #[allow(refining_impl_trait)]
+    impl<I: test::bindgen_test_cases::BindgenTestCasesImports<Negative> + Send>
+        test::bindgen_test_cases::BindgenTestCasesExports<Positive, I> for ExportHost
+    {
+        type Executor = Self;
+        fn executor(&mut self) -> &mut Self {
+            self
+        }
+
+        type Types = Self;
+        fn types(&mut self) -> &mut Self {
+            self
+        }
+
+        type UsesExportedTypes = Self;
+        fn uses_exported_types(&mut self) -> &mut Self {
+            self
+        }
+    }
+}
+
+mod inline_bindings {
+    hyperlight_component_macro::host_bindgen!({
+        inline: r#"
+            package test:inline-bindgen;
+
+            world inline-world {
+                export types;
+            }
+
+            interface types {
+                record inline-record {
+                    value: string,
+                }
+            }
+        "#,
+        world: "inline-world",
+    });
+}
+mod inline_bindgen_test {
+    use crate::inline_bindings::test::inline_bindgen::types::InlineRecord;
+
+    #[test]
+    fn inline_wit_types_are_generated() {
+        let result = InlineRecord {
+            value: String::from("inline"),
+        };
+        assert_eq!(result.value, "inline");
+    }
+}
+
+mod deeply_nested {
+    hyperlight_component_macro::host_bindgen!({
+        inline: r#"
+            (component
+              (type (export "world") (component
+                (export "test:deeply-nested/world" (component
+                  (import "test:deeply-nested/int1" (instance $I1
+                    (export "test:deeply-nested/int2" (instance
+                      (export "r" (type $R (sub resource)))
+                      (export "f" (func (param "r" (own $R))))))))
+                  (alias export $I1 "test:deeply-nested/int2" (instance $I2))
+                  (alias export $I2 "r" (type $R))
+                  (import "test:deeply-nested/int3" (instance
+                    (export "test:deeply-nested/int4" (instance
+                      (export "r4" (type $R4 (eq $R)))
+                      (export "g" (func (param "r4" (own $R4))))))))
+                  (export "h" (func (param "r" (own $R)))))))))
+        "#,
+    });
+}
+
+mod imports_exports_same_interface_with_host_resource {
+    hyperlight_component_macro::host_bindgen!({
+        inline: r#"
+          (component
+            (type (export "world") (component
+              (export "test:rie/world" (component
+                (import "test:rie/definer" (instance $DI
+                  (export "r" (type $R (sub resource)))
+                  (export "f" (func (param "r" (own $R))))))
+                (alias export $DI "r" (type $R))
+                (import "test:rie/user" (instance
+                  (export "r2" (type $R2 (eq $R)))
+                  (export "g" (func (param "r" (borrow $R2))))))
+                (export "test:rie/user" (instance
+                  (export "r2" (type $R2 (eq $R)))
+                  (export "g" (func (param "r" (borrow $R2)))))))))))
+        "#,
+    });
+}

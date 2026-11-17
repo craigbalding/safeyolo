@@ -412,7 +412,6 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
- "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -1874,12 +1873,9 @@ dependencies = [
 [[package]]
 name = "oci-client"
 version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddc7848d781053285280fcd35aab24c9c0a677e26db4aa4209bd5db57467de0f"
 dependencies = [
  "base64 0.22.1",
  "bytes",
- "chrono",
  "futures-util",
  "hex",
  "http",

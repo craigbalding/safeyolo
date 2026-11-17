@@ -1,0 +1,2028 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 The Hyperlight Authors.
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Barrier};
+use std::thread;
+use std::time::Duration;
+
+use hyperlight_common::flatbuffer_wrappers::guest_error::ErrorCode;
+use hyperlight_common::func::Bytes;
+use hyperlight_common::log_level::GuestLogFilter;
+use hyperlight_host::sandbox::SandboxConfiguration;
+use hyperlight_host::{HyperlightError, Sandbox, SandboxBuilder, UninitializedSandbox};
+use hyperlight_testing::simplelogger::{LOGGER, SimpleLogger};
+use serial_test::serial;
+use tracing_core::LevelFilter;
+
+pub mod common; // pub to disable dead_code warning
+use crate::common::{
+    build_rust_sandbox, new_rust_sandbox, with_all_sandboxes, with_c_sandbox, with_c_sandbox_from,
+    with_rust_sandbox, with_rust_sandbox_from, with_rust_uninit_sandbox_cfg,
+};
+
+/// The deprecated sandbox paths stay reachable from outside the crate.
+///
+/// This has to live in an integration test. Paths that resolve inside
+/// `hyperlight_host` prove nothing about what downstream crates can reach.
+#[test]
+#[allow(deprecated)]
+fn deprecated_sandbox_paths_stay_public() {
+    use hyperlight_host::sandbox::initialized_multi_use as legacy;
+
+    fn accepts_sandbox(_: Option<Sandbox>) {}
+    fn accepts_status(_: Option<hyperlight_host::SandboxStatus>) {}
+    fn accepts_finder(_: Option<hyperlight_host::sandbox::PtRootFinder>) {}
+
+    accepts_sandbox(None::<hyperlight_host::MultiUseSandbox>);
+    accepts_sandbox(None::<legacy::MultiUseSandbox>);
+    accepts_sandbox(None::<legacy::Sandbox>);
+    accepts_status(None::<legacy::SandboxStatus>);
+    accepts_finder(None::<legacy::PtRootFinder>);
+}
+
+// A host function cannot be interrupted, but we can at least make sure after requesting to interrupt a host call,
+// we don't re-enter the guest again once the host call is done
+#[test]
+fn interrupt_host_call() {
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
+
+    let spin = move || {
+        barrier2.wait();
+        thread::sleep(std::time::Duration::from_secs(1));
+        Ok(())
+    };
+
+    with_rust_sandbox_from(
+        |builder| builder.host_function("Spin", spin),
+        |mut sandbox| {
+            let snapshot = sandbox.snapshot().unwrap();
+            let interrupt_handle = sandbox.interrupt_handle();
+            assert!(!interrupt_handle.dropped()); // not yet dropped
+
+            let thread = thread::spawn({
+                move || {
+                    barrier.wait(); // wait for the host function to be entered
+                    interrupt_handle.kill(); // send kill once host call is in progress
+                }
+            });
+
+            let result = sandbox.call::<i32>("CallHostSpin", ()).unwrap_err();
+            assert!(
+                matches!(&result, HyperlightError::ExecutionCanceledByHost()),
+                "unexpected error: {result:?}"
+            );
+            assert!(sandbox.status().is_poisoned());
+
+            // Restore from snapshot to clear poison
+            sandbox.restore(snapshot.clone()).unwrap();
+            assert!(sandbox.status().is_ready());
+
+            thread.join().unwrap();
+        },
+    );
+}
+
+/// Makes sure a running guest call can be interrupted by the host
+#[test]
+fn interrupt_in_progress_guest_call() {
+    with_rust_sandbox(|mut sbox1| {
+        let snapshot = sbox1.snapshot().unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier2 = barrier.clone();
+        let interrupt_handle = sbox1.interrupt_handle();
+        assert!(!interrupt_handle.dropped()); // not yet dropped
+
+        // kill vm after 1 second
+        let thread = thread::spawn(move || {
+            thread::sleep(Duration::from_secs(1));
+            assert!(interrupt_handle.kill());
+            barrier2.wait(); // wait here until main thread has returned from the interrupted guest call
+            barrier2.wait(); // wait here until main thread has dropped the sandbox
+            assert!(interrupt_handle.dropped());
+        });
+
+        let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::ExecutionCanceledByHost()),
+            "unexpected error: {res:?}"
+        );
+        assert!(sbox1.status().is_poisoned());
+
+        // Restore from snapshot to clear poison
+        sbox1.restore(snapshot.clone()).unwrap();
+        assert!(sbox1.status().is_ready());
+
+        barrier.wait();
+        // Make sure we can still call guest functions after the VM was interrupted
+        sbox1.call::<String>("Echo", "hello".to_string()).unwrap();
+
+        // drop vm to make sure other thread can detect it
+        drop(sbox1);
+        barrier.wait();
+        thread.join().expect("Thread should finish");
+    });
+}
+
+/// Makes sure interrupting a vm before the guest call has started does not prevent the guest call from running
+#[test]
+fn interrupt_guest_call_in_advance() {
+    with_rust_sandbox(|mut sbox1| {
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier2 = barrier.clone();
+        let interrupt_handle = sbox1.interrupt_handle();
+        assert!(!interrupt_handle.dropped()); // not yet dropped
+
+        // kill vm before the guest call has started
+        let thread = thread::spawn(move || {
+            assert!(!interrupt_handle.kill()); // should return false since vcpu is not running yet
+            barrier2.wait();
+            barrier2.wait(); // wait here until main thread has dropped the sandbox
+            assert!(interrupt_handle.dropped());
+        });
+
+        barrier.wait(); // wait until `kill()` is called before starting the guest call
+        match sbox1.call::<String>("Echo", "hello".to_string()) {
+            Ok(_) => {}
+            Err(HyperlightError::ExecutionCanceledByHost()) => {
+                panic!("Unexpected Cancellation Error");
+            }
+            Err(_) => {}
+        }
+
+        // Make sure we can still call guest functions after the VM was interrupted early
+        // i.e. make sure we dont kill the next iteration.
+        sbox1.call::<String>("Echo", "hello".to_string()).unwrap();
+
+        // drop vm to make sure other thread can detect it
+        drop(sbox1);
+        barrier.wait();
+        thread.join().expect("Thread should finish");
+    });
+}
+
+/// Verifies that only the intended sandbox (`sbox2`) is interruptible,
+/// even when multiple sandboxes share the same thread.
+/// This test runs several interleaved iterations where `sbox2` is interrupted,
+/// and ensures that:
+/// - `sbox1` and `sbox3` are never affected by the interrupt.
+/// - `sbox2` either completes normally or fails with `ExecutionCanceledByHost`.
+///
+/// This test is not foolproof and may not catch
+/// all possible interleavings, but can hopefully increases confidence somewhat.
+#[test]
+fn interrupt_same_thread() {
+    let mut sbox1 = new_rust_sandbox();
+    let mut sbox2 = new_rust_sandbox();
+    let snapshot2 = sbox2.snapshot().unwrap();
+    let mut sbox3 = new_rust_sandbox();
+
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
+
+    let interrupt_handle = sbox2.interrupt_handle();
+    assert!(!interrupt_handle.dropped()); // not yet dropped
+
+    const NUM_ITERS: usize = 500;
+
+    // kill vm after 1 second
+    let thread = thread::spawn(move || {
+        for _ in 0..NUM_ITERS {
+            barrier2.wait();
+            interrupt_handle.kill();
+        }
+    });
+
+    for _ in 0..NUM_ITERS {
+        barrier.wait();
+        sbox1
+            .call::<String>("Echo", "hello".to_string())
+            .expect("Only sandbox 2 is allowed to be interrupted");
+        match sbox2.call::<String>("Echo", "hello".to_string()) {
+            // Only allow successful calls or interrupted.
+            // The call can be successful in case the call is finished before kill() is called.
+            Ok(_) | Err(HyperlightError::ExecutionCanceledByHost()) => {}
+            _ => panic!("Unexpected return"),
+        };
+        if sbox2.status().is_poisoned() {
+            sbox2.restore(snapshot2.clone()).unwrap();
+        }
+        sbox3
+            .call::<String>("Echo", "hello".to_string())
+            .expect("Only sandbox 2 is allowed to be interrupted");
+    }
+    thread.join().expect("Thread should finish");
+}
+
+/// Same test as above but with no per-iteration barrier, to get more possible interleavings.
+#[test]
+fn interrupt_same_thread_no_barrier() {
+    let mut sbox1 = new_rust_sandbox();
+    let mut sbox2 = new_rust_sandbox();
+    let snapshot2 = sbox2.snapshot().unwrap();
+    let mut sbox3 = new_rust_sandbox();
+
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
+    let workload_done = Arc::new(AtomicBool::new(false));
+    let workload_done2 = workload_done.clone();
+
+    let interrupt_handle = sbox2.interrupt_handle();
+    assert!(!interrupt_handle.dropped()); // not yet dropped
+
+    const NUM_ITERS: usize = 500;
+
+    // kill vm after 1 second
+    let thread = thread::spawn(move || {
+        barrier2.wait();
+        while !workload_done2.load(Ordering::Relaxed) {
+            interrupt_handle.kill();
+        }
+    });
+
+    barrier.wait();
+    for _ in 0..NUM_ITERS {
+        sbox1
+            .call::<String>("Echo", "hello".to_string())
+            .expect("Only sandbox 2 is allowed to be interrupted");
+        match sbox2.call::<String>("Echo", "hello".to_string()) {
+            // Only allow successful calls or interrupted.
+            // The call can be successful in case the call is finished before kill() is called.
+            Ok(_) | Err(HyperlightError::ExecutionCanceledByHost()) => {}
+            other => panic!("Unexpected return: {:?}", other),
+        };
+        if sbox2.status().is_poisoned() {
+            sbox2.restore(snapshot2.clone()).unwrap();
+        }
+        sbox3
+            .call::<String>("Echo", "hello".to_string())
+            .expect("Only sandbox 2 is allowed to be interrupted");
+    }
+    workload_done.store(true, Ordering::Relaxed);
+    thread.join().expect("Thread should finish");
+}
+
+// Verify that a sandbox moved to a different thread after initialization can still be killed,
+// and that anther sandbox on the original thread does not get incorrectly killed
+#[test]
+fn interrupt_moved_sandbox() {
+    let mut sbox1 = new_rust_sandbox();
+    let snapshot1 = sbox1.snapshot().unwrap();
+    let mut sbox2 = new_rust_sandbox();
+
+    let interrupt_handle = sbox1.interrupt_handle();
+    let interrupt_handle2 = sbox2.interrupt_handle();
+
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
+
+    let thread = thread::spawn(move || {
+        barrier2.wait();
+        let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::ExecutionCanceledByHost()),
+            "unexpected error: {res:?}"
+        );
+        assert!(sbox1.status().is_poisoned());
+        sbox1.restore(snapshot1.clone()).unwrap();
+        assert!(sbox1.status().is_ready());
+    });
+
+    let thread2 = thread::spawn(move || {
+        barrier.wait();
+        thread::sleep(Duration::from_secs(1));
+        assert!(interrupt_handle.kill());
+
+        // make sure this returns true, which means the sandbox wasn't killed incorrectly before
+        assert!(interrupt_handle2.kill());
+    });
+
+    let res = sbox2.call::<i32>("Spin", ()).unwrap_err();
+    assert!(
+        matches!(&res, HyperlightError::ExecutionCanceledByHost()),
+        "unexpected error: {res:?}"
+    );
+
+    thread.join().expect("Thread should finish");
+    thread2.join().expect("Thread should finish");
+}
+
+/// This tests exercises the behavior of killing vcpu with a long retry delay.
+/// This will exercise the ABA-problem, where the vcpu could be successfully interrupted,
+/// but restarted, before the interruptor-thread has a chance to see that the vcpu was killed.
+///
+/// The ABA-problem is solved by clearing CANCEL bit at the start of each VirtualCPU::run() call.
+#[test]
+#[cfg(target_os = "linux")]
+#[serial(thread_heavy)]
+fn interrupt_custom_signal_no_and_retry_delay() {
+    let configure = |builder: SandboxBuilder| {
+        builder
+            .interrupt_vcpu_sigrtmin_offset(0)
+            .unwrap()
+            .interrupt_retry_delay(Duration::from_secs(1))
+    };
+
+    with_rust_sandbox_from(configure, |mut sbox1| {
+        let snapshot1 = sbox1.snapshot().unwrap();
+        let interrupt_handle = sbox1.interrupt_handle();
+        assert!(!interrupt_handle.dropped()); // not yet dropped
+
+        const NUM_ITERS: usize = 3;
+
+        let thread = thread::spawn(move || {
+            for _ in 0..NUM_ITERS {
+                // wait for the guest call to start
+                thread::sleep(Duration::from_millis(3000));
+                assert!(interrupt_handle.kill());
+            }
+        });
+
+        for _ in 0..NUM_ITERS {
+            let res = sbox1.call::<i32>("Spin", ()).unwrap_err();
+            assert!(
+                matches!(&res, HyperlightError::ExecutionCanceledByHost()),
+                "unexpected error: {res:?}"
+            );
+            assert!(sbox1.status().is_poisoned());
+            // immediately reenter another guest function call after having being cancelled,
+            // so that the vcpu is running again before the interruptor-thread has a chance to see that the vcpu is not running
+            sbox1.restore(snapshot1.clone()).unwrap();
+            assert!(sbox1.status().is_ready());
+        }
+        thread.join().expect("Thread should finish");
+    });
+}
+
+#[test]
+fn interrupt_spamming_host_call() {
+    let configure = |builder: SandboxBuilder| {
+        builder.host_function("HostFunc1", || {
+            // do nothing
+        })
+    };
+
+    with_rust_sandbox_from(configure, |mut sbox1| {
+        let interrupt_handle = sbox1.interrupt_handle();
+
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier2 = barrier.clone();
+
+        let thread = thread::spawn(move || {
+            barrier2.wait();
+            thread::sleep(Duration::from_secs(1));
+            interrupt_handle.kill();
+        });
+
+        barrier.wait();
+        // This guest call calls "HostFunc1" in a loop
+        let res = sbox1
+            .call::<i32>("HostCallLoop", "HostFunc1".to_string())
+            .unwrap_err();
+
+        assert!(
+            matches!(&res, HyperlightError::ExecutionCanceledByHost()),
+            "unexpected error: {res:?}"
+        );
+
+        thread.join().expect("Thread should finish");
+    });
+}
+
+#[test]
+fn print_four_args_c_guest() {
+    with_c_sandbox(|mut sbox1| {
+        let res = sbox1.call::<i32>(
+            "PrintFourArgs",
+            ("Test4".to_string(), 3_i32, 4_i64, "Tested".to_string()),
+        );
+        assert!(matches!(&res, Ok(46)), "unexpected result: {res:?}");
+    });
+}
+
+// Checks that guest can abort with a specific code.
+#[test]
+fn guest_abort() {
+    with_all_sandboxes(|mut sbox1| {
+        let error_code: u8 = 13; // this is arbitrary
+        let res = sbox1
+            .call::<()>("GuestAbortWithCode", error_code as i32)
+            .unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, message) if (*code == error_code && message.is_empty())),
+            "unexpected error: {res:?}"
+        );
+    });
+}
+
+#[test]
+fn guest_abort_with_context1() {
+    with_all_sandboxes(|mut sbox1| {
+        let res = sbox1
+            .call::<()>("GuestAbortWithMessage", (25_i32, "Oh no".to_string()))
+            .unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, context) if (*code == 25 && context == "Oh no")),
+            "unexpected error: {res:?}"
+        );
+    });
+}
+
+#[test]
+fn guest_abort_with_context2() {
+    with_all_sandboxes(|mut sbox1| {
+        // The buffer size for the panic context is 1024 bytes.
+        // This test will see what happens if the panic message is longer than that
+        let abort_message = "Lorem ipsum dolor sit amet, \
+                                consectetur adipiscing elit, \
+                                sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. \
+                                Nec feugiat nisl pretium fusce. \
+                                Amet mattis vulputate enim nulla aliquet porttitor lacus. \
+                                Nunc congue nisi vitae suscipit tellus. \
+                                Erat imperdiet sed euismod nisi porta lorem mollis aliquam ut. \
+                                Amet tellus cras adipiscing enim eu turpis egestas. \
+                                Blandit volutpat maecenas volutpat blandit aliquam etiam erat velit scelerisque. \
+                                Tristique senectus et netus et malesuada. \
+                                Eu turpis egestas pretium aenean pharetra magna ac placerat vestibulum. \
+                                Adipiscing at in tellus integer feugiat. \
+                                Faucibus vitae aliquet nec ullamcorper sit amet risus. \
+                                \n\
+                                Eros in cursus turpis massa tincidunt dui. \
+                                Purus non enim praesent elementum facilisis leo vel fringilla. \
+                                Dolor sit amet consectetur adipiscing elit pellentesque habitant morbi. \
+                                Id leo in vitae turpis. At lectus urna duis convallis convallis tellus id interdum. \
+                                Purus sit amet volutpat consequat. Egestas purus viverra accumsan in. \
+                                Sodales ut etiam sit amet nisl. Lacus sed viverra tellus in hac. \
+                                Nec ullamcorper sit amet risus nullam eget. \
+                                Adipiscing bibendum est ultricies integer quis auctor. \
+                                Vitae elementum curabitur vitae nunc sed velit dignissim sodales ut. \
+                                Auctor neque vitae tempus quam pellentesque nec. \
+                                Non pulvinar neque laoreet suspendisse interdum consectetur libero. \
+                                Mollis nunc sed id semper. \
+                                Et sollicitudin ac orci phasellus egestas tellus rutrum tellus pellentesque. \
+                                Arcu felis bibendum ut tristique et. \
+                                Proin sagittis nisl rhoncus mattis rhoncus urna. Magna eget est lorem ipsum.";
+
+        let res = sbox1
+            .call::<()>("GuestAbortWithMessage", (60_i32, abort_message.to_string()))
+            .unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(_, context) if context.contains("Guest abort buffer overflowed")),
+            "unexpected error: {res:?}"
+        );
+    });
+}
+
+// Ensure abort with context works for c guests.
+// Just run this manually for now since we only build c guests on Windows and will
+// hopefully be removing the c guest library soon.
+#[test]
+fn guest_abort_c_guest() {
+    with_c_sandbox(|mut sbox1| {
+        let res = sbox1
+            .call::<()>(
+                "GuestAbortWithMessage",
+                (75_i32, "This is a test error message".to_string()),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, message) if (*code == 75 && message == "This is a test error message")),
+            "unexpected error: {res:?}"
+        );
+    });
+}
+
+#[test]
+fn guest_panic() {
+    // this test is rust-specific
+    with_rust_sandbox(|mut sbox1| {
+        let res = sbox1
+            .call::<()>("guest_panic", "Error... error...".to_string())
+            .unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, context) if *code == ErrorCode::UnknownError as u8 && context.contains("\nError... error...")),
+            "unexpected error: {res:?}"
+        );
+    });
+}
+
+#[test]
+fn guest_malloc() {
+    // this test is rust-only
+    with_rust_sandbox(|mut sbox1| {
+        let size_to_allocate = 2000_i32;
+        sbox1.call::<i32>("TestMalloc", size_to_allocate).unwrap();
+    });
+}
+
+#[test]
+fn guest_allocate_vec() {
+    with_all_sandboxes(|mut sbox1| {
+        let size_to_allocate = 2000_i32;
+
+        let res = sbox1
+            .call::<i32>(
+                "CallMalloc", // uses the rust allocator to allocate a vector on heap
+                size_to_allocate,
+            )
+            .unwrap();
+
+        assert_eq!(res, size_to_allocate);
+    });
+}
+
+#[test]
+fn guest_malloc_abort() {
+    with_rust_sandbox(|mut sbox| {
+        // Writing more heap memory than scratch holds exhausts scratch.
+        let res = sbox
+            .call::<()>("AllocAndWritePattern", 20_000_000_u64)
+            .unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "unexpected error: {res:?}"
+        );
+    });
+}
+
+/// Test that executing an OUT instruction with an invalid port causes an error and poisons the sandbox.
+#[test]
+fn guest_outb_with_invalid_port_poisons_sandbox() {
+    with_rust_sandbox(|mut sbox| {
+        // Port 0x1234 is not a valid hyperlight port
+        let res = sbox.call::<()>("OutbWithPort", (0x1234_u32, 0_u32));
+        assert!(res.is_err(), "Expected error from invalid OUT port");
+
+        // The sandbox should be poisoned because the guest didn't complete normally
+        assert!(
+            sbox.status().is_poisoned(),
+            "Sandbox should be poisoned after invalid OUT"
+        );
+    });
+}
+
+#[test]
+fn guest_heap_exhaustion_aborts() {
+    with_rust_sandbox(|mut sbox| {
+        let res = sbox.call::<()>("ExhaustHeap", ()).unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "unexpected error: {res:?}"
+        );
+    });
+}
+
+// Tests libc alloca
+#[test]
+fn dynamic_stack_allocate_c_guest() {
+    with_c_sandbox(|mut sbox1| {
+        let res: i32 = sbox1.call("StackAllocate", 100_i32).unwrap();
+        assert_eq!(res, 100);
+
+        let res = sbox1
+            .call::<i32>("StackAllocate", 0x800_0000_i32)
+            .unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "unexpected error: {res:?}"
+        );
+    });
+}
+
+// checks that a small buffer on stack works
+#[test]
+fn static_stack_allocate() {
+    with_all_sandboxes(|mut sbox1| {
+        let res: i32 = sbox1.call("SmallVar", ()).unwrap();
+        assert_eq!(res, 1024);
+    });
+}
+
+// checks that a huge buffer on stack fails with stackoverflow
+#[test]
+fn static_stack_allocate_overflow() {
+    with_all_sandboxes(|mut sbox1| {
+        let res = sbox1.call::<i32>("LargeVar", ()).unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "unexpected error: {res:?}"
+        );
+    });
+}
+
+// checks that a recursive function with stack allocation works, (that chkstk can be called without overflowing)
+#[test]
+fn recursive_stack_allocate() {
+    with_all_sandboxes(|mut sbox1| {
+        let iterations = 1_i32;
+        sbox1.call::<i32>("StackOverflow", iterations).unwrap();
+    });
+}
+
+#[test]
+fn guard_page_check_2() {
+    // this test is rust-guest only
+    with_rust_sandbox(|mut sbox1| {
+        let res = sbox1.call::<()>("InfiniteRecursion", ()).unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "unexpected error: {res:?}"
+        );
+    });
+}
+
+#[test]
+fn execute_on_heap() {
+    with_rust_sandbox(|mut sbox1| {
+        let result = sbox1.call::<String>("ExecuteOnHeap", ());
+
+        #[cfg(feature = "executable_heap")]
+        assert_eq!(
+            result.unwrap(),
+            "Executed on heap successfully",
+            "should execute successfully"
+        );
+
+        #[cfg(not(feature = "executable_heap"))]
+        assert!(
+            result.unwrap_err().to_string().contains(
+                #[cfg(target_arch = "x86_64")]
+                "PageFault",
+                #[cfg(target_arch = "aarch64")]
+                "Exception Syndrome: 0x86",
+            ),
+            "should get page fault"
+        );
+    });
+}
+
+// checks that a recursive function with stack allocation eventually fails with stackoverflow
+#[test]
+fn recursive_stack_allocate_overflow() {
+    with_all_sandboxes(|mut sbox1| {
+        let iterations = 32_i32;
+
+        let res = sbox1.call::<()>("StackOverflow", iterations).unwrap_err();
+        assert!(
+            matches!(&res, HyperlightError::GuestAborted(code, _) if *code == ErrorCode::MallocFailed as u8),
+            "unexpected error: {res:?}"
+        );
+    });
+}
+
+// Check that log messages are emitted correctly from the guest
+// This test is ignored as it sets a logger and therefore maybe impacted by other tests running concurrently
+// or it may impact other tests.
+// It will run from the command just test-rust as it is included in that target
+// It can also be run explicitly with `cargo test --test integration_test log_message -- --ignored`
+#[test]
+#[ignore]
+fn log_message() {
+    // Each of the six sandboxes emits eight fixed records at trace level.
+    // Dispatch and call spans emit four fixed records at info level.
+    let num_fixed_trace_log = 8 * 6;
+    let num_fixed_info_log = 4 * 6;
+
+    let tests = vec![
+        (LevelFilter::TRACE, 5 + num_fixed_trace_log),
+        (LevelFilter::DEBUG, 4 + num_fixed_info_log),
+        (LevelFilter::INFO, 3 + num_fixed_info_log),
+        (LevelFilter::WARN, 2),
+        (LevelFilter::ERROR, 1),
+        (LevelFilter::OFF, 0),
+    ];
+
+    // init
+    SimpleLogger::initialize_test_logger();
+
+    for test in tests {
+        let (level, expected) = test;
+
+        // Test setting max log level via method on uninit sandbox
+        log_test_messages(Some(level));
+        assert_eq!(expected, LOGGER.num_log_calls());
+
+        // Set the log level via env var
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("RUST_LOG", format!("hyperlight_guest={}", level)) };
+        log_test_messages(None);
+        assert_eq!(expected, LOGGER.num_log_calls());
+
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("RUST_LOG", format!("hyperlight_host={}", level)) };
+        log_test_messages(None);
+        assert_eq!(expected, LOGGER.num_log_calls());
+
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("RUST_LOG", format!("{}", level)) };
+        log_test_messages(None);
+        assert_eq!(expected, LOGGER.num_log_calls());
+
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("RUST_LOG") };
+    }
+
+    // Test that if no log level is set, the default is error
+    log_test_messages(None);
+    assert_eq!(1, LOGGER.num_log_calls());
+}
+
+fn log_test_messages(levelfilter: Option<tracing_core::LevelFilter>) {
+    LOGGER.clear_log_calls();
+    assert_eq!(0, LOGGER.num_log_calls());
+    let filters = [
+        LevelFilter::OFF,
+        LevelFilter::TRACE,
+        LevelFilter::DEBUG,
+        LevelFilter::INFO,
+        LevelFilter::WARN,
+        LevelFilter::ERROR,
+    ];
+    for level in filters.iter() {
+        // Only use Rust guest because the C guest has a different signature for LogMessage
+        // (Long vs Int for the level parameter)
+        let configure = |mut builder: SandboxBuilder| {
+            if let Some(levelfilter) = levelfilter {
+                builder = builder.guest_log_level(levelfilter);
+            }
+            builder
+        };
+
+        with_rust_sandbox_from(configure, |mut sbox1| {
+            let level: u64 = GuestLogFilter::from(*level).into();
+            let message = format!("Hello from log_message level {}", level as i32);
+            sbox1
+                .call::<()>("LogMessage", (message.to_string(), level as i32))
+                .unwrap();
+        });
+    }
+}
+
+#[test]
+#[ignore]
+fn virtq_repeated_log_delivery_small_ring() {
+    SimpleLogger::initialize_test_logger();
+    LOGGER.clear_log_calls();
+
+    let mut cfg = SandboxConfiguration::default();
+    cfg.set_g2h_queue_size(4);
+    cfg.set_g2h_pool_pages(2);
+
+    with_rust_uninit_sandbox_cfg(cfg, |mut sandbox| {
+        sandbox.set_max_guest_log_level(LevelFilter::INFO);
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        sandbox.call::<()>("LogMessageN", 20_i32).unwrap();
+
+        let count = (0..LOGGER.num_log_calls())
+            .filter_map(|index| LOGGER.get_log_call(index))
+            .filter(|call| call.target == "hyperlight_guest" && call.args.contains("log entry"))
+            .count();
+        assert_eq!(count, 20);
+        LOGGER.clear_log_calls();
+    });
+}
+
+/// Tests whether host is able to return Bool as return type
+/// or not
+#[test]
+fn test_if_guest_is_able_to_get_bool_return_values_from_host() {
+    let configure =
+        |builder: SandboxBuilder| builder.host_function("HostBool", |a: i32, b: i32| a + b > 10);
+    with_c_sandbox_from(configure, |mut sbox3| {
+        for i in 1..10 {
+            if i < 6 {
+                let res = sbox3
+                    .call::<bool>("GuestRetrievesBoolValue", (i, i))
+                    .unwrap();
+                assert!(!res);
+            } else {
+                let res = sbox3
+                    .call::<bool>("GuestRetrievesBoolValue", (i, i))
+                    .unwrap();
+                assert!(res);
+            }
+        }
+    });
+}
+
+/// Tests whether host is able to return Float/f32 as return type
+/// or not
+#[test]
+fn test_if_guest_is_able_to_get_float_return_values_from_host() {
+    let configure =
+        |builder: SandboxBuilder| builder.host_function("HostAddFloat", |a: f32, b: f32| a + b);
+    with_c_sandbox_from(configure, |mut sbox3| {
+        let res = sbox3
+            .call::<f32>("GuestRetrievesFloatValue", (1.34_f32, 1.34_f32))
+            .unwrap();
+        assert_eq!(res, 2.68_f32);
+    });
+}
+
+/// Tests whether host is able to return Double/f64 as return type
+/// or not
+#[test]
+fn test_if_guest_is_able_to_get_double_return_values_from_host() {
+    let configure =
+        |builder: SandboxBuilder| builder.host_function("HostAddDouble", |a: f64, b: f64| a + b);
+    with_c_sandbox_from(configure, |mut sbox3| {
+        let res = sbox3
+            .call::<f64>("GuestRetrievesDoubleValue", (1.34_f64, 1.34_f64))
+            .unwrap();
+        assert_eq!(res, 2.68_f64);
+    });
+}
+
+/// Tests whether host is able to return String as return type
+/// or not
+#[test]
+fn test_if_guest_is_able_to_get_string_return_values_from_host() {
+    let configure = |builder: SandboxBuilder| {
+        builder.host_function("HostAddStrings", |a: String| {
+            a + ", string added by Host Function"
+        })
+    };
+    with_c_sandbox_from(configure, |mut sbox3| {
+        let res = sbox3
+            .call::<String>("GuestRetrievesStringValue", ())
+            .unwrap();
+        assert_eq!(
+            res,
+            "Guest Function, string added by Host Function".to_string()
+        );
+    });
+}
+
+#[test]
+fn c_guest_accesses_byte_chunks() {
+    let configure = |builder: SandboxBuilder| {
+        builder.host_function("HostEchoByteChunks", |value: Vec<Bytes>| value)
+    };
+    with_c_sandbox_from(configure, |mut sandbox| {
+        let expected = (0..10 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+
+        let input = vec![
+            Bytes::copy_from_slice(&expected[..2047]),
+            Bytes::copy_from_slice(&expected[2047..4097]),
+            Bytes::copy_from_slice(&expected[4097..]),
+        ];
+
+        for _ in 0..2 {
+            let output: Vec<Bytes> = sandbox
+                .call("RoundTripHostByteChunks", input.clone())
+                .unwrap();
+
+            assert_eq!(
+                output
+                    .iter()
+                    .flat_map(|chunk| chunk.iter().copied())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+    });
+}
+
+/// Restore recovers the captured owner after the source guest releases it.
+#[test]
+fn retained_guest_call_bytes_survive_restore() {
+    with_rust_sandbox(|mut sandbox| {
+        let expected = vec![0x5a; 6 * 1024];
+        let retained: i32 = sandbox
+            .call(
+                "RetainGuestByteChunks",
+                vec![Bytes::copy_from_slice(&expected)],
+            )
+            .unwrap();
+
+        assert_eq!(retained as usize, expected.len());
+        let snapshot = sandbox.snapshot().unwrap();
+
+        let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+        assert_eq!(actual.concat(), expected);
+
+        let ret = sandbox.call::<i32>("ReleaseGuestByteChunks", ()).unwrap();
+        assert_eq!(ret, retained);
+
+        let after_release: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+        assert!(after_release.is_empty());
+
+        sandbox.restore(snapshot).unwrap();
+        let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+        assert_eq!(actual.concat(), expected);
+
+        let ret = sandbox.call::<i32>("ReleaseGuestByteChunks", ()).unwrap();
+        assert_eq!(ret, retained);
+    });
+}
+
+/// Both guest APIs keep host-reply buffers alive across calls and restore.
+#[test]
+fn retained_host_reply_bytes_survive_restore() {
+    common::with_all_guests(|path| {
+        let mut sandbox = SandboxBuilder::from_file(&path)
+            .host_function("HostEchoByteChunks", |value: Vec<Bytes>| value)
+            .build()
+            .unwrap();
+
+        let expected = vec![0xa5; 6 * 1024];
+        let retained: i32 = sandbox
+            .call(
+                "RetainHostByteChunks",
+                vec![Bytes::copy_from_slice(&expected)],
+            )
+            .unwrap();
+
+        assert_eq!(retained as usize, expected.len());
+        let snapshot = sandbox.snapshot().unwrap();
+
+        let echo: String = sandbox.call("Echo", "hello".to_string()).unwrap();
+        assert_eq!(echo, "hello");
+
+        let actual: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+        assert_eq!(actual.concat(), expected, "guest: {path:?}");
+
+        let ret = sandbox.call::<i32>("ReleaseHostByteChunks", ()).unwrap();
+        assert_eq!(ret, retained);
+
+        let after_release: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+        assert!(after_release.is_empty());
+
+        sandbox.restore(snapshot).unwrap();
+        let actual: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+        assert_eq!(actual.concat(), expected, "guest: {path:?}");
+
+        let ret = sandbox.call::<i32>("ReleaseHostByteChunks", ()).unwrap();
+        assert_eq!(ret, retained);
+    });
+}
+
+/// Captured aliases survive scratch reuse and further snapshot generations.
+#[test]
+fn retained_byte_chunks_survive_pool_swap() {
+    let mut sandbox = SandboxBuilder::from_file(hyperlight_testing::simple_guest_as_pathbuf())
+        .guest_log_level(tracing_core::LevelFilter::OFF)
+        .host_function("HostEchoByteChunks", |value: Vec<Bytes>| value)
+        .build()
+        .unwrap();
+
+    let expected = vec![0xa5; 8192];
+    let actual: i32 = sandbox
+        .call(
+            "RetainGuestByteChunks",
+            vec![Bytes::copy_from_slice(&expected)],
+        )
+        .unwrap();
+
+    assert_eq!(actual as usize, expected.len());
+
+    let actual: i32 = sandbox
+        .call(
+            "RetainHostByteChunks",
+            vec![Bytes::copy_from_slice(&expected)],
+        )
+        .unwrap();
+
+    assert_eq!(actual as usize, expected.len());
+
+    let snapshot = sandbox.snapshot().unwrap();
+    sandbox.restore(snapshot).unwrap();
+
+    let actual: i32 = sandbox
+        .call("ByteChunksLen", vec![Bytes::from(vec![0x5a; 12288])])
+        .unwrap();
+
+    assert_eq!(actual, 12288);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    // Capture recovered pools while their older retained aliases remain live.
+    let snapshot = sandbox.snapshot().unwrap();
+    sandbox.restore(snapshot).unwrap();
+
+    let actual: i32 = sandbox
+        .call("ByteChunksLen", vec![Bytes::from(vec![0x5a; 12288])])
+        .unwrap();
+
+    assert_eq!(actual, 12288);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedHostByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), expected);
+
+    let replacement = vec![0x3c; 6 * 4096];
+    let actual: i32 = sandbox
+        .call(
+            "RetainGuestByteChunks",
+            vec![Bytes::copy_from_slice(&replacement)],
+        )
+        .unwrap();
+
+    assert_eq!(actual as usize, replacement.len());
+
+    let actual: Vec<Bytes> = sandbox.call("ReadRetainedGuestByteChunks", ()).unwrap();
+    assert_eq!(actual.concat(), replacement);
+    assert_eq!(
+        sandbox.call::<i32>("ReleaseGuestByteChunks", ()).unwrap(),
+        6 * 4096
+    );
+    assert_eq!(
+        sandbox.call::<i32>("ReleaseHostByteChunks", ()).unwrap(),
+        8192
+    );
+}
+
+/// Test that validates interrupt behavior with random kill timing under concurrent load
+/// Uses a pool of 100 sandboxes, 100 threads, and 500 iterations per thread.
+/// Randomly decides to kill some calls at random times during execution.
+/// Validates that:
+/// - Calls we chose to kill can end in any state (including some cancelled)
+/// - Calls we did NOT choose to kill NEVER return ExecutionCanceledByHost
+/// - We get a mix of killed and non-killed outcomes (not 100% or 0%)
+#[test]
+#[serial(thread_heavy)]
+fn interrupt_random_kill_stress_test() {
+    // Wrapper to hold a sandbox and its snapshot together
+    struct SandboxWithSnapshot {
+        sandbox: Sandbox,
+        snapshot: Arc<Snapshot>,
+    }
+
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+
+    use hyperlight_host::sandbox::snapshot::Snapshot;
+    use tracing::{error, trace};
+
+    #[cfg(target_arch = "aarch64")]
+    const POOL_SIZE: usize = 64;
+    #[cfg(not(target_arch = "aarch64"))]
+    const POOL_SIZE: usize = 100;
+    const NUM_THREADS: usize = 100;
+    const ITERATIONS_PER_THREAD: usize = 500;
+    const KILL_PROBABILITY: f64 = 0.5; // 50% chance to attempt kill
+    const GUEST_CALL_DURATION_MS: u32 = 10; // SpinForMs duration
+
+    println!("Creating pool of {} sandboxes...", POOL_SIZE);
+    let mut sandbox_pool: Vec<SandboxWithSnapshot> = Vec::with_capacity(POOL_SIZE);
+    for i in 0..POOL_SIZE {
+        let mut sandbox = new_rust_sandbox();
+        // Create a snapshot for this sandbox
+        let snapshot = sandbox.snapshot().unwrap();
+        if (i + 1) % 10 == 0 {
+            println!("Created {}/{} sandboxes", i + 1, POOL_SIZE);
+        }
+        sandbox_pool.push(SandboxWithSnapshot { sandbox, snapshot });
+    }
+
+    // Wrap the pool in Arc<Mutex<VecDeque>> for thread-safe access
+    let pool = Arc::new(Mutex::new(VecDeque::from(sandbox_pool)));
+
+    // Counters for statistics
+    let total_iterations = Arc::new(AtomicUsize::new(0));
+    let kill_attempted_count = Arc::new(AtomicUsize::new(0)); // We chose to kill
+    let actually_killed_count = Arc::new(AtomicUsize::new(0)); // Got ExecutionCanceledByHost
+    let not_killed_completed_ok = Arc::new(AtomicUsize::new(0));
+    let not_killed_error = Arc::new(AtomicUsize::new(0)); // Non-cancelled errors
+    let killed_but_completed_ok = Arc::new(AtomicUsize::new(0));
+    let killed_but_error = Arc::new(AtomicUsize::new(0)); // Non-cancelled errors
+    let unexpected_cancelled = Arc::new(AtomicUsize::new(0)); // CRITICAL: non-killed calls that got cancelled
+    let sandbox_replaced_count = Arc::new(AtomicUsize::new(0)); // Sandboxes replaced due to restore failure
+
+    println!(
+        "Starting {} threads with {} iterations each...",
+        NUM_THREADS, ITERATIONS_PER_THREAD
+    );
+
+    // Spawn worker threads
+    let mut thread_handles = vec![];
+    for thread_id in 0..NUM_THREADS {
+        let pool_clone = Arc::clone(&pool);
+        let total_iterations_clone = Arc::clone(&total_iterations);
+        let kill_attempted_count_clone = Arc::clone(&kill_attempted_count);
+        let actually_killed_count_clone = Arc::clone(&actually_killed_count);
+        let not_killed_completed_ok_clone = Arc::clone(&not_killed_completed_ok);
+        let not_killed_error_clone = Arc::clone(&not_killed_error);
+        let killed_but_completed_ok_clone = Arc::clone(&killed_but_completed_ok);
+        let killed_but_error_clone = Arc::clone(&killed_but_error);
+        let unexpected_cancelled_clone = Arc::clone(&unexpected_cancelled);
+        let sandbox_replaced_count_clone = Arc::clone(&sandbox_replaced_count);
+
+        let handle = thread::spawn(move || {
+            // Use thread_id as seed for reproducible randomness per thread
+            use std::collections::hash_map::RandomState;
+            use std::hash::{BuildHasher, Hash};
+
+            let mut hasher = RandomState::new().build_hasher();
+            thread_id.hash(&mut hasher);
+            let mut rng_state = RandomState::new().hash_one(thread_id);
+
+            // Simple random number generator for reproducible randomness
+            let mut next_random = || -> u64 {
+                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                rng_state
+            };
+
+            for iteration in 0..ITERATIONS_PER_THREAD {
+                // === START OF ITERATION ===
+                // Get a sandbox from the pool for this iteration
+                let sandbox_with_snapshot = loop {
+                    let mut pool_guard = pool_clone.lock().unwrap();
+                    if let Some(sb) = pool_guard.pop_front() {
+                        break sb;
+                    }
+                    // Pool is empty, release lock and wait
+                    drop(pool_guard);
+                    trace!(
+                        "[THREAD-{}] Iteration {}: Pool empty, waiting for sandbox...",
+                        thread_id, iteration
+                    );
+                    thread::sleep(Duration::from_millis(1));
+                };
+
+                // Use a guard struct to ensure sandbox is always returned to pool
+                struct SandboxGuard<'a> {
+                    sandbox_with_snapshot: Option<SandboxWithSnapshot>,
+                    pool: &'a Arc<Mutex<VecDeque<SandboxWithSnapshot>>>,
+                }
+
+                impl<'a> Drop for SandboxGuard<'a> {
+                    fn drop(&mut self) {
+                        if let Some(sb) = self.sandbox_with_snapshot.take() {
+                            let mut pool_guard = self.pool.lock().unwrap();
+                            pool_guard.push_back(sb);
+                            trace!(
+                                "[GUARD] Returned sandbox to pool, pool size now: {}",
+                                pool_guard.len()
+                            );
+                        }
+                    }
+                }
+
+                let mut guard = SandboxGuard {
+                    sandbox_with_snapshot: Some(sandbox_with_snapshot),
+                    pool: &pool_clone,
+                };
+
+                // Decide randomly: should we attempt to kill this call?
+                let should_kill = (next_random() as f64 / u64::MAX as f64) < KILL_PROBABILITY;
+
+                if should_kill {
+                    kill_attempted_count_clone.fetch_add(1, Ordering::Relaxed);
+                }
+
+                let sandbox_wrapper = guard.sandbox_with_snapshot.as_mut().unwrap();
+                let sandbox = &mut sandbox_wrapper.sandbox;
+                let interrupt_handle = sandbox.interrupt_handle();
+
+                // If we decided to kill, spawn a thread that will kill at a random time
+                // Use a barrier to ensure the killer thread waits until we're about to call the guest
+                let killer_thread = if should_kill {
+                    use std::sync::{Arc, Barrier};
+
+                    let barrier = Arc::new(Barrier::new(2));
+                    let barrier_clone = Arc::clone(&barrier);
+
+                    // Generate random delay here before moving into thread
+                    let kill_delay_ms = next_random() % 16;
+                    let thread_id_clone = thread_id;
+                    let iteration_clone = iteration;
+                    let handle = thread::spawn(move || {
+                        trace!(
+                            "[KILLER-{}-{}] Waiting at barrier...",
+                            thread_id_clone, iteration_clone
+                        );
+                        // Wait at the barrier until the main thread is ready to call the guest
+                        barrier_clone.wait();
+                        trace!(
+                            "[KILLER-{}-{}] Passed barrier, sleeping for {}ms...",
+                            thread_id_clone, iteration_clone, kill_delay_ms
+                        );
+                        // Random delay between 0 and 15ms (guest runs for ~10ms)
+                        thread::sleep(Duration::from_millis(kill_delay_ms));
+                        trace!(
+                            "[KILLER-{}-{}] Calling kill()...",
+                            thread_id_clone, iteration_clone
+                        );
+                        interrupt_handle.kill();
+                        trace!(
+                            "[KILLER-{}-{}] kill() returned, exiting thread",
+                            thread_id_clone, iteration_clone
+                        );
+                    });
+                    Some((handle, barrier))
+                } else {
+                    None
+                };
+
+                // Call the guest function
+                trace!(
+                    "[THREAD-{}] Iteration {}: Calling guest function (should_kill={})...",
+                    thread_id, iteration, should_kill
+                );
+
+                // Release the barrier just before calling the guest function
+                if let Some((_, ref barrier)) = killer_thread {
+                    trace!(
+                        "[THREAD-{}] Iteration {}: Main thread waiting at barrier...",
+                        thread_id, iteration
+                    );
+                    barrier.wait();
+                    trace!(
+                        "[THREAD-{}] Iteration {}: Main thread passed barrier, calling guest...",
+                        thread_id, iteration
+                    );
+                }
+
+                let result = sandbox.call::<u64>("SpinForMs", GUEST_CALL_DURATION_MS);
+                trace!(
+                    "[THREAD-{}] Iteration {}: Guest call returned: {:?}",
+                    thread_id,
+                    iteration,
+                    result
+                        .as_ref()
+                        .map(|_| "Ok")
+                        .map_err(|e| format!("{:?}", e))
+                );
+
+                // Wait for killer thread to finish if it was spawned
+                if let Some((kt, _)) = killer_thread {
+                    trace!(
+                        "[THREAD-{}] Iteration {}: Waiting for killer thread to join...",
+                        thread_id, iteration
+                    );
+                    let _ = kt.join();
+                }
+
+                // Process the result based on whether we attempted to kill
+                match result {
+                    Err(HyperlightError::ExecutionCanceledByHost()) => {
+                        // Restore the sandbox from the snapshot
+                        trace!(
+                            "[THREAD-{}] Iteration {}: Restoring sandbox from snapshot after ExecutionCanceledByHost...",
+                            thread_id, iteration
+                        );
+                        let sandbox_wrapper = guard.sandbox_with_snapshot.as_mut().unwrap();
+
+                        // Make sure the sandbox is poisoned
+                        assert!(sandbox_wrapper.sandbox.status().is_poisoned());
+
+                        // Try to restore the snapshot
+                        if let Err(e) = sandbox_wrapper
+                            .sandbox
+                            .restore(sandbox_wrapper.snapshot.clone())
+                        {
+                            error!(
+                                "CRITICAL: Thread {} iteration {}: Failed to restore snapshot: {:?}",
+                                thread_id, iteration, e
+                            );
+                            trace!(
+                                "[THREAD-{}] Iteration {}: Creating new sandbox to replace failed one...",
+                                thread_id, iteration
+                            );
+
+                            // Create a new sandbox with snapshot
+                            let mut new_sandbox = new_rust_sandbox();
+                            match new_sandbox.snapshot() {
+                                Ok(new_snapshot) => {
+                                    // Replace the failed sandbox with the new one
+                                    sandbox_wrapper.sandbox = new_sandbox;
+                                    sandbox_wrapper.snapshot = new_snapshot;
+                                    sandbox_replaced_count_clone.fetch_add(1, Ordering::Relaxed);
+                                    trace!(
+                                        "[THREAD-{}] Iteration {}: Successfully replaced sandbox",
+                                        thread_id, iteration
+                                    );
+                                }
+                                Err(snapshot_err) => {
+                                    error!(
+                                        "CRITICAL: Thread {} iteration {}: Failed to create snapshot for new sandbox: {:?}",
+                                        thread_id, iteration, snapshot_err
+                                    );
+                                    // Still use the new sandbox even without snapshot
+                                    sandbox_wrapper.sandbox = new_sandbox;
+                                    sandbox_replaced_count_clone.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                        }
+
+                        if should_kill {
+                            // We attempted to kill and it was cancelled - SUCCESS
+                            actually_killed_count_clone.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            // We did NOT attempt to kill but got cancelled - CRITICAL FAILURE
+                            unexpected_cancelled_clone.fetch_add(1, Ordering::Relaxed);
+                            error!(
+                                "CRITICAL: Thread {} iteration {}: Got ExecutionCanceledByHost but did NOT attempt kill!",
+                                thread_id, iteration
+                            );
+                        }
+                    }
+                    Ok(_) => {
+                        if should_kill {
+                            // We attempted to kill but it completed OK - acceptable race condition
+                            killed_but_completed_ok_clone.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            // We did NOT attempt to kill and it completed OK - EXPECTED
+                            not_killed_completed_ok_clone.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    Err(_other_error) => {
+                        // Log the other error so we can see what it is
+                        error!(
+                            "Thread {} iteration {}: Got non-cancellation error: {:?}",
+                            thread_id, iteration, _other_error
+                        );
+                        if should_kill {
+                            // We attempted to kill and got some other error - acceptable
+                            killed_but_error_clone.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            // We did NOT attempt to kill and got some other error - acceptable
+                            not_killed_error_clone.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+
+                total_iterations_clone.fetch_add(1, Ordering::Relaxed);
+
+                // Progress reporting
+                let current_total = total_iterations_clone.load(Ordering::Relaxed);
+                if current_total.is_multiple_of(5000) {
+                    println!(
+                        "Progress: {}/{} iterations completed",
+                        current_total,
+                        NUM_THREADS * ITERATIONS_PER_THREAD
+                    );
+                }
+
+                // === END OF ITERATION ===
+                // SandboxGuard will automatically return sandbox to pool when it goes out of scope
+            }
+
+            trace!(
+                "[THREAD-{}] Completed all {} iterations!",
+                thread_id, ITERATIONS_PER_THREAD
+            );
+        });
+
+        thread_handles.push(handle);
+    }
+
+    trace!(
+        "All {} worker threads spawned, waiting for completion...",
+        NUM_THREADS
+    );
+
+    // Wait for all threads to complete
+    for (idx, handle) in thread_handles.into_iter().enumerate() {
+        trace!("Waiting for thread {} to join...", idx);
+        handle.join().unwrap();
+        trace!("Thread {} joined successfully", idx);
+    }
+
+    trace!("All threads joined successfully!");
+
+    // Collect final statistics
+    let total = total_iterations.load(Ordering::Relaxed);
+    let kill_attempted = kill_attempted_count.load(Ordering::Relaxed);
+    let actually_killed = actually_killed_count.load(Ordering::Relaxed);
+    let not_killed_ok = not_killed_completed_ok.load(Ordering::Relaxed);
+    let not_killed_err = not_killed_error.load(Ordering::Relaxed);
+    let killed_but_ok = killed_but_completed_ok.load(Ordering::Relaxed);
+    let killed_but_err = killed_but_error.load(Ordering::Relaxed);
+    let unexpected_cancel = unexpected_cancelled.load(Ordering::Relaxed);
+    let sandbox_replaced = sandbox_replaced_count.load(Ordering::Relaxed);
+
+    let no_kill_attempted = total - kill_attempted;
+
+    // Print detailed statistics
+    println!("\n=== Interrupt Random Kill Stress Test Statistics ===");
+    println!("Total iterations: {}", total);
+    println!();
+    println!(
+        "Kill Attempts: {} ({:.1}%)",
+        kill_attempted,
+        (kill_attempted as f64 / total as f64) * 100.0
+    );
+    println!(
+        "  - Actually killed (ExecutionCanceledByHost): {}",
+        actually_killed
+    );
+    println!("  - Completed OK despite kill attempt: {}", killed_but_ok);
+    println!(
+        "  - Error (non-cancelled) despite kill attempt: {}",
+        killed_but_err
+    );
+    if kill_attempted > 0 {
+        println!(
+            "  - Kill success rate: {:.1}%",
+            (actually_killed as f64 / kill_attempted as f64) * 100.0
+        );
+    }
+    println!();
+    println!(
+        "No Kill Attempts: {} ({:.1}%)",
+        no_kill_attempted,
+        (no_kill_attempted as f64 / total as f64) * 100.0
+    );
+    println!("  - Completed OK: {}", not_killed_ok);
+    println!("  - Error (non-cancelled): {}", not_killed_err);
+    println!(
+        "  - Cancelled (SHOULD BE 0): {} {}",
+        unexpected_cancel,
+        if unexpected_cancel == 0 {
+            "✅"
+        } else {
+            "❌ FAILURE"
+        }
+    );
+    println!();
+    println!("Sandbox Management:");
+    println!(
+        "  - Sandboxes replaced due to restore failure: {}",
+        sandbox_replaced
+    );
+
+    // CRITICAL VALIDATIONS
+    assert_eq!(
+        unexpected_cancel, 0,
+        "FAILURE: {} non-killed calls returned ExecutionCanceledByHost! This indicates false kills.",
+        unexpected_cancel
+    );
+
+    assert!(
+        actually_killed > 0,
+        "FAILURE: No calls were actually killed despite {} kill attempts!",
+        kill_attempted
+    );
+
+    assert!(
+        kill_attempted > 0,
+        "FAILURE: No kill attempts were made (expected ~50% of {} iterations)!",
+        total
+    );
+
+    assert!(
+        kill_attempted < total,
+        "FAILURE: All {} iterations were kill attempts (expected ~50%)!",
+        total
+    );
+
+    // Verify total accounting
+    assert_eq!(
+        total,
+        actually_killed
+            + not_killed_ok
+            + not_killed_err
+            + killed_but_ok
+            + killed_but_err
+            + unexpected_cancel,
+        "Iteration accounting mismatch!"
+    );
+
+    assert_eq!(
+        total,
+        NUM_THREADS * ITERATIONS_PER_THREAD,
+        "Not all iterations completed"
+    );
+
+    println!("\n✅ All validations passed!");
+}
+
+/// Ensures that `kill()` reliably interrupts a running guest
+///
+/// The test works by:
+/// 1. Guest calls a host function which waits on a barrier, ensuring the guest is "in-progress" and that `kill()` is not called prematurely to be ignored.
+/// 2. Once the guest has passed that host function barrier, the host calls `kill()`. The `kill()` could be delivered at any time after this point, for example while guest is still in the host func, or returning into guest vm.
+/// 3. The guest enters an infinite loop, so `kill()` is the only way to stop it.
+///
+/// This is repeated across multiple threads and iterations to stress test the cancellation mechanism.
+///
+/// **Failure Condition:** If this test hangs, it means `kill()` failed to stop the guest, leaving it spinning forever.
+#[test]
+#[serial(thread_heavy)]
+fn interrupt_infinite_loop_stress_test() {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    const NUM_THREADS: usize = 50;
+    const ITERATIONS_PER_THREAD: usize = 500;
+
+    let mut handles = vec![];
+
+    for i in 0..NUM_THREADS {
+        handles.push(thread::spawn(move || {
+            // Create a barrier for 2 threads:
+            // 1. The guest (executing a host function)
+            // 2. The killer thread
+            let barrier = Arc::new(Barrier::new(2));
+            let barrier_for_host = barrier.clone();
+
+            // Register a host function that waits on the barrier
+            let mut sandbox = build_rust_sandbox(|builder| {
+                builder.host_function("WaitForKill", move || {
+                    barrier_for_host.wait();
+                    Ok(())
+                })
+            });
+
+            // Take a snapshot to restore after each kill
+            let snapshot = sandbox.snapshot().unwrap();
+
+            for j in 0..ITERATIONS_PER_THREAD {
+                let barrier_for_killer = barrier.clone();
+                let interrupt_handle = sandbox.interrupt_handle();
+
+                // Spawn the killer thread
+                let killer_thread = std::thread::spawn(move || {
+                    // Wait for the guest to call WaitForKill
+                    barrier_for_killer.wait();
+
+                    // The guest is now waiting on the barrier (or just finished waiting).
+                    // We kill it immediately.
+                    interrupt_handle.kill();
+                });
+
+                // Call the guest function "CallHostThenSpin" which calls "WaitForKill" once then spins
+                // NOTE: If this test hangs, it means the guest was not successfully killed and is spinning forever.
+                // This indicates a bug in the cancellation mechanism.
+                let res = sandbox.call::<()>("CallHostThenSpin", "WaitForKill".to_string());
+
+                // Wait for killer thread to finish
+                killer_thread.join().unwrap();
+
+                // We expect the execution to be canceled
+                match res {
+                    Err(HyperlightError::ExecutionCanceledByHost()) => {
+                        // Success!
+                    }
+                    Ok(_) => {
+                        panic!(
+                            "Thread {} Iteration {}: Guest finished successfully but should have been killed!",
+                            i, j
+                        );
+                    }
+                    Err(e) => {
+                        panic!(
+                            "Thread {} Iteration {}: Guest failed with unexpected error: {:?}",
+                            i, j, e
+                        );
+                    }
+                }
+
+                // Restore the sandbox for the next iteration
+                sandbox.restore(snapshot.clone()).unwrap();
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+
+// Validates that kill delivery stays accurate when a sandbox hops between threads
+// mid-call and shares a thread ID with another sandbox, ensuring only the intended
+// VM is interrupted while bait sandboxes keep running.
+#[test]
+#[serial(thread_heavy)]
+fn interrupt_infinite_moving_loop_stress_test() {
+    use std::sync::Arc;
+    use std::thread;
+
+    // ARM64 WHP partitions include GICv3 state, limiting practical partition
+    // concurrency. Each thread creates two partitions.
+    #[cfg(target_arch = "aarch64")]
+    const NUM_THREADS: usize = 32;
+    #[cfg(not(target_arch = "aarch64"))]
+    const NUM_THREADS: usize = 200;
+
+    let mut handles = vec![];
+
+    for _ in 0..NUM_THREADS {
+        handles.push(thread::spawn(move || {
+            let entered_guest = Arc::new(AtomicBool::new(false));
+            let entered_guest_clone = entered_guest.clone();
+
+            // Register a host function that waits on the barrier
+            let sandbox = build_rust_sandbox(|builder| {
+                builder.host_function("WaitForKill", move || {
+                    entered_guest.store(true, Ordering::Relaxed);
+                    Ok(())
+                })
+            });
+
+            // These 2 sandboxes will have the same TID
+            let bait = new_rust_sandbox();
+
+            let interrupt = sandbox.interrupt_handle();
+
+            let kill_handle = thread::spawn(move || {
+                let entered_before_kill = entered_guest_clone.load(Ordering::Relaxed);
+                interrupt.kill();
+                entered_before_kill
+            });
+
+            let mut sandbox_slot = Some(sandbox);
+            let mut bait_slot = Some(bait);
+
+            // bait-sandbox should NEVER be interrupted which is why we can unwrap()
+            // sandbox may or may not be interrupted depending on whether `kill()` was called prematurely or not
+            let sandbox_res = match rand::random_range(..8u8) {
+                // sandbox on main thread, then bait on main thread
+                0 => {
+                    let res = sandbox_slot
+                        .as_mut()
+                        .unwrap()
+                        .call::<String>("Echo", "Real".to_string());
+                    bait_slot
+                        .as_mut()
+                        .unwrap()
+                        .call::<String>("Echo", "Bait".to_string())
+                        .expect("Bait call should never be interrupted");
+                    res
+                }
+                // bait on main thread, then sandbox on main thread
+                1 => {
+                    bait_slot
+                        .as_mut()
+                        .unwrap()
+                        .call::<String>("Echo", "Bait".to_string())
+                        .expect("Bait call should never be interrupted");
+                    sandbox_slot
+                        .as_mut()
+                        .unwrap()
+                        .call::<String>("Echo", "Real".to_string())
+                }
+                // sandbox on spawned thread, bait on main thread
+                2 => {
+                    let mut sandbox = sandbox_slot.take().unwrap();
+                    let sandbox_handle =
+                        thread::spawn(move || sandbox.call::<String>("Echo", "Real".to_string()));
+                    bait_slot
+                        .as_mut()
+                        .unwrap()
+                        .call::<String>("Echo", "Bait".to_string())
+                        .expect("Bait call should never be interrupted");
+                    sandbox_handle.join().unwrap()
+                }
+                // bait on spawned thread, sandbox on main thread
+                3 => {
+                    let mut bait = bait_slot.take().unwrap();
+                    let bait_handle = thread::spawn(move || {
+                        bait.call::<String>("Echo", "Bait".to_string())
+                            .expect("Bait call should never be interrupted");
+                    });
+                    let res = sandbox_slot
+                        .as_mut()
+                        .unwrap()
+                        .call::<String>("Echo", "Real".to_string());
+                    bait_handle.join().unwrap();
+                    res
+                }
+                // sandbox on main thread, bait on spawned thread
+                4 => {
+                    let res = sandbox_slot
+                        .as_mut()
+                        .unwrap()
+                        .call::<String>("Echo", "Real".to_string());
+                    let mut bait = bait_slot.take().unwrap();
+                    let bait_handle = thread::spawn(move || {
+                        bait.call::<String>("Echo", "Bait".to_string())
+                            .expect("Bait call should never be interrupted");
+                    });
+                    bait_handle.join().unwrap();
+                    res
+                }
+                // bait on main thread, sandbox on spawned thread
+                5 => {
+                    bait_slot
+                        .as_mut()
+                        .unwrap()
+                        .call::<String>("Echo", "Bait".to_string())
+                        .expect("Bait call should never be interrupted");
+                    let mut sandbox = sandbox_slot.take().unwrap();
+                    let sandbox_handle =
+                        thread::spawn(move || sandbox.call::<String>("Echo", "Real".to_string()));
+                    sandbox_handle.join().unwrap()
+                }
+                // sandbox on spawned thread, bait on spawned thread
+                6 => {
+                    let mut sandbox = sandbox_slot.take().unwrap();
+                    let sandbox_handle =
+                        thread::spawn(move || sandbox.call::<String>("Echo", "Real".to_string()));
+                    let mut bait = bait_slot.take().unwrap();
+                    let bait_handle = thread::spawn(move || {
+                        bait.call::<String>("Echo", "Bait".to_string())
+                            .expect("Bait call should never be interrupted");
+                    });
+                    bait_handle.join().unwrap();
+                    sandbox_handle.join().unwrap()
+                }
+                // bait on spawned thread, sandbox on spawned thread (spawn bait first)
+                7 => {
+                    let mut bait = bait_slot.take().unwrap();
+                    let bait_handle = thread::spawn(move || {
+                        bait.call::<String>("Echo", "Bait".to_string())
+                            .expect("Bait call should never be interrupted");
+                    });
+                    let mut sandbox = sandbox_slot.take().unwrap();
+                    let sandbox_handle =
+                        thread::spawn(move || sandbox.call::<String>("Echo", "Real".to_string()));
+                    bait_handle.join().unwrap();
+                    sandbox_handle.join().unwrap()
+                }
+                _ => unreachable!(),
+            };
+
+            let entered_before_kill = kill_handle.join().unwrap();
+
+            // If the guest entered before calling kill, then we know for a fact the call should have been canceled since kill() was NOT premature.
+            if entered_before_kill {
+                assert!(
+                    matches!(
+                        &sandbox_res,
+                        Err(HyperlightError::ExecutionCanceledByHost())
+                    ),
+                    "unexpected result: {sandbox_res:?}"
+                );
+            }
+
+            // If we did NOT enter the guest before calling kill, then the call may or may not have been canceled depending on timing.
+            match sandbox_res {
+                Err(HyperlightError::ExecutionCanceledByHost()) => {
+                    // OK!
+                }
+                Ok(_) => {
+                    // OK!
+                }
+                Err(e) => {
+                    panic!("Got unexpected error: {:?}", e);
+                }
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+
+#[test]
+#[cfg(target_arch = "x86_64")]
+fn exception_handler_installation_and_validation() {
+    with_rust_sandbox(|mut sandbox| {
+        // Verify handler count starts at 0
+        let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
+        assert_eq!(count, 0, "Handler should not have been called yet");
+
+        // Install handler for vector
+        sandbox.call::<()>("InstallHandler", 3i32).unwrap();
+
+        // Try to install again - should be able to overwrite
+        sandbox.call::<()>("InstallHandler", 3i32).unwrap();
+
+        // Trigger int3 exception
+        let trigger_result: i32 = sandbox.call("TriggerInt3", ()).unwrap();
+        assert_eq!(trigger_result, 0, "Exception should be handled gracefully");
+
+        // Verify handler was invoked
+        let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
+        assert_eq!(count, 1, "Handler should have been called once");
+
+        // Trigger int3 exception
+        let trigger_result: i32 = sandbox.call("TriggerInt3", ()).unwrap();
+        assert_eq!(trigger_result, 0, "Exception should be handled gracefully");
+
+        // Verify handler was invoked a second time
+        let count: i32 = sandbox.call("GetExceptionHandlerCallCount", ()).unwrap();
+        assert_eq!(count, 2, "Handler should have been called twice");
+    });
+}
+
+#[test]
+fn undef_instr_handler() {
+    with_rust_sandbox(|mut sandbox| {
+        // Install handler
+        sandbox.call::<()>("InstallUndefInstrHandler", ()).unwrap();
+
+        // Try to install again - should be able to overwrite
+        sandbox.call::<()>("InstallUndefInstrHandler", ()).unwrap();
+
+        // Trigger exception
+        let err = sandbox.call::<()>("TriggerException", ()).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                HyperlightError::GuestAborted(code, msg) if *code == ErrorCode::UnknownError as u8 && msg.contains("undefined instruction")
+            ),
+            "unexpected error: {err:?}"
+        );
+    });
+}
+
+#[test]
+fn page_fault_handler() {
+    with_rust_sandbox(|mut sandbox| {
+        // Install handler
+        sandbox.call::<()>("InstallPageFaultHandler", ()).unwrap();
+
+        // Try to install again - should be able to overwrite
+        sandbox.call::<()>("InstallPageFaultHandler", ()).unwrap();
+
+        // Trigger exception
+        let err = sandbox.call::<()>("TriggerPageFault", ()).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                HyperlightError::GuestAborted(code, msg) if *code == ErrorCode::UnknownError as u8 && msg.contains("page fault") && msg.contains("12884901888")
+            ),
+            "unexpected error: {err:?}"
+        );
+    });
+}
+
+/// This test is "likely" to catch a race condition where WHvCancelRunVirtualProcessor runs halfway, then the partition is deleted (by drop calling WHvDeletePartition),
+/// and WHvCancelRunVirtualProcessor continues, and tries to access freed memory.
+///
+/// Based on local observations, "likely" means that if the bug exist, running this test 5 times will catch it at least once.
+#[test]
+#[cfg(target_os = "windows")]
+#[serial(thread_heavy)]
+fn interrupt_cancel_delete_race() {
+    const NUM_THREADS: usize = 8;
+    const NUM_KILL_THREADS: usize = 4;
+    const ITERATIONS_PER_THREAD: usize = 1000;
+
+    let mut handles = vec![];
+
+    for _ in 0..NUM_THREADS {
+        handles.push(thread::spawn(|| {
+            for _ in 0..ITERATIONS_PER_THREAD {
+                let mut sandbox = new_rust_sandbox();
+                let interrupt_handle = sandbox.interrupt_handle();
+
+                let stop_flag = Arc::new(AtomicBool::new(false));
+
+                let kill_handles: Vec<_> = (0..NUM_KILL_THREADS)
+                    .map(|_| {
+                        let handle = interrupt_handle.clone();
+                        let stop = stop_flag.clone();
+                        thread::spawn(move || {
+                            while !stop.load(Ordering::Relaxed) {
+                                handle.kill();
+                            }
+                        })
+                    })
+                    .collect();
+
+                // Makes sure RUNNING_BIT is set when kill() is called
+                let _ = sandbox.call::<String>("Echo", "test".to_string());
+
+                // Drop the sandbox while kill threads are spamming
+                drop(sandbox);
+
+                // Signal kill threads to stop
+                stop_flag.store(true, Ordering::Relaxed);
+
+                // Wait for kill threads
+                for kill_handle in kill_handles {
+                    kill_handle.join().expect("Kill thread panicked!");
+                }
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+
+/// Compile-time regression guard for public visibility of memory
+/// region types.
+///
+/// This test MUST live in an integration test (not a unit test)
+/// because integration tests are compiled as separate crates and can
+/// only access items marked `pub`. A unit test inside the crate
+/// would also see `pub(crate)` items, defeating the purpose.
+///
+/// If any of these types or fields revert to `pub(crate)`, this test
+/// will fail to **compile** — catching the regression before CI even
+/// runs the test binary.
+#[test]
+fn memory_region_types_are_publicly_accessible() {
+    use hyperlight_host::mem::memory_region::{
+        HostGuestMemoryRegion, MemoryRegion_, MemoryRegionFlags, MemoryRegionKind, MemoryRegionType,
+    };
+
+    // This test is a compile-time guard. If it compiles, it passes.
+    // Every line below would cause a compile error if the referenced
+    // type, variant, or field reverted to pub(crate).
+
+    // MemoryRegionType enum and all its variants are pub
+    let _rt = MemoryRegionType::Code;
+    let _rt = MemoryRegionType::InitData;
+    let _rt = MemoryRegionType::Peb;
+    let _rt = MemoryRegionType::Heap;
+    let _rt = MemoryRegionType::Scratch;
+    let _rt = MemoryRegionType::Snapshot;
+    let _rt = MemoryRegionType::MappedFile;
+
+    // MemoryRegionFlags is pub and combinable
+    let _flags = MemoryRegionFlags::READ | MemoryRegionFlags::WRITE | MemoryRegionFlags::EXECUTE;
+
+    // SurrogateMapping enum and MemoryRegionType::surrogate_mapping()
+    // are pub (Windows only).
+    #[cfg(target_os = "windows")]
+    {
+        use hyperlight_host::mem::memory_region::SurrogateMapping;
+
+        let mapping = MemoryRegionType::MappedFile.surrogate_mapping();
+        let _: SurrogateMapping = mapping;
+        let _ = SurrogateMapping::SandboxMemory;
+        let _ = SurrogateMapping::ReadOnlyFile;
+    }
+
+    // MemoryRegion_ struct and all its fields are pub (struct literal
+    // construction requires every field to be pub).
+    #[cfg(not(target_os = "windows"))]
+    {
+        let base: <HostGuestMemoryRegion as MemoryRegionKind>::HostBaseType = 0x1000;
+        let _region = MemoryRegion_::<HostGuestMemoryRegion> {
+            guest_region: 0x1000..0x2000,
+            host_region: base..<HostGuestMemoryRegion as MemoryRegionKind>::add(base, 0x1000),
+            flags: MemoryRegionFlags::READ,
+            region_type: MemoryRegionType::Code,
+        };
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use hyperlight_host::hypervisor::wrappers::HandleWrapper;
+        use hyperlight_host::mem::memory_region::HostRegionBase;
+        use windows::Win32::Foundation::HANDLE;
+
+        let host_base = HostRegionBase {
+            from_handle: HandleWrapper::from(HANDLE(std::ptr::null_mut())),
+            handle_base: 0x1000,
+            handle_size: 0x1000,
+            offset: 0,
+        };
+        let _region = MemoryRegion_::<HostGuestMemoryRegion> {
+            guest_region: 0x1000..0x2000,
+            host_region: host_base
+                ..<HostGuestMemoryRegion as MemoryRegionKind>::add(host_base, 0x1000),
+            flags: MemoryRegionFlags::READ,
+            region_type: MemoryRegionType::Code,
+        };
+    }
+}
+
+/// Test that hardware timer interrupts are delivered to the guest via VmAction::PvTimerConfig port.
+///
+/// The guest function `TestTimerInterrupts`:
+///  1. Initializes the PIC (IRQ0 -> vector 0x20)
+///  2. Installs an IDT entry for vector 0x20
+///  3. Arms the timer via VmAction::PvTimerConfig port
+///  4. Enables interrupts and busy-waits
+///  5. Returns the number of timer interrupts received
+///
+/// Requires the `hw-interrupts` feature on the host side.
+#[test]
+#[cfg(feature = "hw-interrupts")]
+fn hw_timer_interrupts() {
+    with_rust_sandbox(|mut sbox| {
+        // 1ms period, up to 100M spin iterations (should fire well before that)
+        let count: i32 = sbox
+            .call("TestTimerInterrupts", (1000_i32, 100_000_000_i32))
+            .unwrap();
+        assert!(
+            count > 0,
+            "Expected at least one timer interrupt, got {count}"
+        );
+    });
+}
+
+#[test]
+fn non_pie_guest_hello_world() {
+    let path =
+        hyperlight_testing::simple_guest_non_pie_as_string().expect("non-PIE guest not found");
+    let sandbox =
+        UninitializedSandbox::new(hyperlight_host::GuestBinary::FilePath(path.into()), None)
+            .unwrap();
+    let mut multi_use_sandbox: Sandbox = sandbox.evolve().unwrap();
+    let result: i32 = multi_use_sandbox
+        .call("PrintOutput", "Hello from non-PIE guest!\n".to_string())
+        .unwrap();
+    assert_eq!(result, 26);
+}

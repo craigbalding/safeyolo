@@ -25,7 +25,7 @@ while (($#)); do
         --help)
             echo 'Usage: run-installed-package.sh [--package HOST.tar.gz --sha256 DIGEST [--platform-assets DIR | --guest-index sha256:DIGEST | --guest-archive FILE | --no-guest-download] [--yes] [--lane systrap|kvm|vz [--section NAME ...]]]'
             echo 'Use a supported disposable host, a checksum from the release, and this checkout’s prepared Python test environment. The archive’s installer acquires the default guest unless explicit offline or proxy-only inputs are selected. No source build is used with --package. --lane also runs the maintained isolation/lifecycle sections; the host must provide that backend’s runtime prerequisites.'
-            echo 'Repeat --section to select maintained sections for the lane. Omit --section to keep the lane’s isolation/lifecycle or isolation/ingress default.'
+            echo 'Repeat --section to select maintained sections for the lane. Omit --section to run all default sections, including jobs, live mounts and the systrap Docker journey.'
             echo '--yes accepts the installer’s host preparation changes on the supplied disposable host.'
             echo '--guest-index pins native acquisition. --guest-archive requires SAFEYOLO_BLACKBOX_INPUT_SELECTION from the retained-artifact runner.'
             echo 'Without --package, preserve the source-based proxy-only witness. Each run keeps its owned state under HOME and writes the existing smoke reports; no host-only result proves guest isolation.'

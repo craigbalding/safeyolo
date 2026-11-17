@@ -3,7 +3,11 @@
 The helper links Hyperlight and Hyperlight-Unikraft by The Hyperlight Authors
 under Apache-2.0. Their
 source releases and the complete Rust dependency versions are pinned in the
-two Cargo lockfiles. The Unikraft integration embeds its released kernel;
+two Cargo lockfiles. The host uses a repository-local patch to Hyperlight
+0.19.0 that removes only its informational build timestamp; its source,
+license and patch explanation are retained in
+[`hyperlight-host/vendor/hyperlight-host`](hyperlight-host/vendor/hyperlight-host/SAFEYOLO.md).
+The Unikraft integration embeds its released kernel;
 the kernel uses Unikraft's BSD-3-Clause sources and the licenses of its selected
 libraries. The Python image contains CPython and its runtime libraries.
 

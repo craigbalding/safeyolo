@@ -5,9 +5,9 @@ the same names. Platform exclusions are explicit and do not hide missing setup.
 """
 
 SECTIONS = {
-    "systrap": ("isolation", "workloads", "access", "peer-support", "shared-approvals", "provider", "federation", "lifecycle", "continuity"),
-    "kvm": ("isolation", "ingress", "workloads"),
-    "vz": ("isolation", "access", "lifecycle", "continuity"),
+    "systrap": ("isolation", "workloads", "access", "peer-support", "shared-approvals", "provider", "federation", "lifecycle", "continuity", "job-sandbox", "job-network", "mounts", "docker"),
+    "kvm": ("isolation", "ingress", "workloads", "job-sandbox", "job-network", "mounts"),
+    "vz": ("isolation", "access", "lifecycle", "continuity", "job-sandbox", "job-network", "mounts"),
 }
 OPTIONAL_SECTIONS = {"systrap": ("claude", "ingress"), "kvm": (), "vz": ()}
 
@@ -91,10 +91,18 @@ PROCEDURES = {
     "provider": ("installed_provider.py", ("identity", "scope", "delivery", "revoke-recover", "closed-stopped", "observer", "finished")),
     "native-authority": ("native_authority.py", ("selected-cases", "finished")),
     "federation": ("installed_federation.py", ("identity", "scope", "destination-effect", "revocation", "finished")),
+    "job-sandbox": ("host/job_sandbox.py", ("identity", "inputs", "privilege-state", "exit-signal", "timeout", "caller-signals", "network-off", "cleanup", "finished")),
+    "job-network": ("host/job_network.py", ("identity", "scoped-requests", "revocation", "expiry", "cancellation", "audit", "cleanup", "finished")),
+    "mounts": ("../nested-linux/live_mount_backend_proof.py", ("identity", "startup", "path-refusals", "busy-file", "busy-cwd", "busy-mmap", "detach", "saved-live", "cleanup", "finished")),
+    "docker": ("installed_docker_preflight.py", ("identity", "containment", "application", "gateway-effects", "gateway-revocation", "gateway-failures", "cleanup", "origin", "receivers", "finished")),
     "hyperlight-services": ("host/hyperlight_services.py", (
         "hyperlight", "hyperlight-unikraft", "provider", "cleanup", "finished",
     )),
 }
+
+# These procedures launch their own job/guest lifetimes and retain their actual
+# identities. They do not use the isolation section's bbtest platform receipt.
+BOUNDARY_SECTIONS = ("job-sandbox", "job-network", "mounts", "docker")
 
 SECTION_DRIVERS = {
     "isolation": tuple(PYTEST_PHASES)[:6],

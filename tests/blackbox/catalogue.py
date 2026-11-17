@@ -18,6 +18,7 @@ import yaml
 if __package__:
     from .execution_receipt import phase_functions, python_tests
     from .selections import (
+        BOUNDARY_SECTIONS,
         HOST_EXCLUSIONS,
         NATIVE_AUTHORITY,
         NATIVE_PHASES,
@@ -30,6 +31,7 @@ if __package__:
 else:
     from execution_receipt import phase_functions, python_tests
     from selections import (
+        BOUNDARY_SECTIONS,
         HOST_EXCLUSIONS,
         NATIVE_AUTHORITY,
         NATIVE_PHASES,
@@ -233,9 +235,9 @@ def selection(witness: dict, reference: str, node: dict, commands: list[dict], p
             selected.append("ignored by default")
     else:
         matches = []
-        filename = reference.split("::", 1)[0].removeprefix("tests/blackbox/")
+        filename = reference.split("::", 1)[0]
         for phase, (driver, _checkpoints) in PROCEDURES.items():
-            if filename != driver:
+            if (ROOT / filename).resolve() != (ROOT / "tests/blackbox" / driver).resolve():
                 continue
             if phase == "shared-approvals" and not reference.endswith("::deterministic_exchange"):
                 continue
@@ -243,10 +245,16 @@ def selection(witness: dict, reference: str, node: dict, commands: list[dict], p
             for lane, sections in SECTIONS.items():
                 if section in sections and not (section == "ingress" and phase == "ingress-pair"):
                     selected.append(f"default `{lane}` section `{section}`")
+                    for command in commands:
+                        tokens = command["tokens"]
+                        if ("--lane" in tokens and tokens[tokens.index("--lane") + 1] == lane
+                                and "--section" not in tokens
+                                and any(token.endswith("retained_inputs.py") for token in tokens)):
+                            selected.append(f"[{command['job']}]({link(command['path'])}) ({command['cadence']}; default `{lane}` sections)")
                 elif section in OPTIONAL_SECTIONS[lane]:
                     selected.append(f"optional `{lane}` section `{section}`")
         matches = [command for command in commands if any(
-            token.endswith(filename) or token == "tests.blackbox." + filename.removesuffix(".py")
+            token.endswith(filename) or token == filename.removesuffix(".py").replace("/", ".")
             for token in command["tokens"])]
     selected += [f"[{command['job']}]({link(command['path'])}) ({command['cadence']}; condition `{command['condition'] or 'none'}`)"
                  for command in matches]
@@ -281,7 +289,8 @@ def selector_problems(root: Path = ROOT) -> list[str]:
                   and node.func.attr == "checkpoint" and node.args and isinstance(node.args[0], ast.Constant)]
         if sorted(actual) != sorted(checkpoints):
             problems.append(f"{filename}: stale/missing procedure checkpoints for {section}")
-        drivers = shell + (root / "tests/blackbox/installed_sections.py").read_text()
+        installed = (root / "tests/blackbox/installed_sections.py").read_text()
+        drivers = shell + installed
         wrapper = root / "tests/blackbox/installed_authority.py"
         if wrapper.is_file():
             drivers += wrapper.read_text()
@@ -289,7 +298,11 @@ def selector_problems(root: Path = ROOT) -> list[str]:
         focused = root / "tests/blackbox/run-controls.sh"
         if focused.is_file():
             drivers += focused.read_text()
-        if filename not in drivers and "tests.blackbox." + filename.removesuffix(".py") not in drivers:
+        boundary = root / "tests/blackbox/installed_boundaries.py"
+        boundary_wired = (section in BOUNDARY_SECTIONS and "installed_boundaries.py" in installed
+                          and boundary.is_file() and Path(filename).stem in boundary.read_text())
+        if (filename not in drivers and "tests.blackbox." + filename.removesuffix(".py") not in drivers
+                and not boundary_wired):
             problems.append(f"unwired installed procedure: {filename}")
     explicit = [node for node, _variable, _value, _reason in OPTIONAL_CASES]
     explicit += [node for _system, node, _reason in HOST_EXCLUSIONS if "*" not in node]

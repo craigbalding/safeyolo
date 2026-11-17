@@ -1,0 +1,1067 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 The Hyperlight Authors.
+
+//! OCI Image Layout serde for [`Snapshot`]. See
+//! `docs/snapshot-oci-format.md` for the on-disk format.
+
+mod config;
+mod digest;
+mod fsutil;
+mod media_types;
+pub(crate) mod reference;
+mod transport;
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use hyperlight_common::flatbuffer_wrappers::host_function_details::HostFunctionDetails;
+use oci_spec::image::{
+    Descriptor, DescriptorBuilder, ImageIndex, ImageIndexBuilder, ImageManifest,
+    ImageManifestBuilder, MediaType, SCHEMA_VERSION,
+};
+
+use self::config::{
+    Arch, CpuVendor, HostFunction, Hypervisor, MemoryLayout, OciSnapshotConfig, OciSnapshotLayer,
+};
+use self::digest::{Digest256, oci_digest, parse_oci_digest, verify_blob_bytes, verify_blob_file};
+use self::fsutil::{put_blob, put_blob_if_absent, read_bounded, replace_file_atomic};
+use self::media_types::{
+    ANNOTATION_ARCH, ANNOTATION_CPU, ANNOTATION_HYPERVISOR, ANNOTATION_REF_NAME,
+};
+pub(super) use self::media_types::{
+    MT_CONFIG_CURRENT, MT_CONFIG_V1, MT_CONFIG_V2, MT_CONFIG_V3, MT_CONFIG_V4, MT_CONFIG_V5,
+    MT_SNAPSHOT_CURRENT, MT_SNAPSHOT_V2, MT_TRANSPORT_CURRENT, MT_TRANSPORT_V1,
+    SNAPSHOT_ABI_VERSION,
+};
+use self::reference::{OciDigest, OciReference, OciTag};
+use super::memory::{MAX_SNAPSHOT_LAYERS, host_page_size};
+use super::{NextAction, Snapshot, SnapshotBlob, SnapshotMemory};
+use crate::mem::layout::SandboxMemoryLayout;
+use crate::mem::memory_region::MemoryRegionFlags;
+use crate::mem::shared_mem::{ReadonlySharedMemory, SharedMemory};
+
+pub(super) const OCI_LAYOUT_VERSION: &str = "1.0.0";
+
+/// Short golden-tag token for the host CPU vendor, or `None` if the
+/// goldens do not cover it. Exposed for the snapshot golden tests so
+/// they share the host crate's vendor detection.
+#[doc(hidden)]
+pub fn host_cpu_vendor_golden_tag() -> Option<&'static str> {
+    CpuVendor::current().golden_tag()
+}
+
+/// Maximum size of any JSON blob read from disk during load:
+/// `oci-layout`, `index.json`, the OCI image manifest, and the
+/// Hyperlight config blob. Bounds the allocation done before parsing.
+const MAX_JSON_BLOB_SIZE: u64 = 1024 * 1024;
+
+/// Reject a JSON artifact larger than the cap the loader reads with
+/// [`read_bounded`]. The writer holds to the same cap so every layout
+/// it writes can be read back. `what` names the artifact in the error.
+fn check_json_blob_size(what: &str, len: usize) -> crate::Result<()> {
+    if len as u64 > MAX_JSON_BLOB_SIZE {
+        return Err(crate::new_error!(
+            "{} of {} bytes exceeds the {} byte maximum for a snapshot artifact",
+            what,
+            len,
+            MAX_JSON_BLOB_SIZE
+        ));
+    }
+    Ok(())
+}
+
+/// Select one manifest descriptor from `index` by `reference`.
+///
+/// A tag matches the `org.opencontainers.image.ref.name` annotation
+/// and must be unique. A digest matches the manifest content digest.
+/// Identical manifests shared across tags select the first, since
+/// they are byte-for-byte equal.
+fn select_manifest<'a>(
+    index: &'a ImageIndex,
+    reference: &OciReference,
+    path: &Path,
+) -> crate::Result<&'a Descriptor> {
+    match reference {
+        OciReference::Tag(tag) => {
+            let mut matching = index.manifests().iter().filter(|d| {
+                d.annotations()
+                    .as_ref()
+                    .and_then(|a| a.get(ANNOTATION_REF_NAME))
+                    .map(|s| s.as_str() == tag.as_str())
+                    .unwrap_or(false)
+            });
+            match (matching.next(), matching.next()) {
+                (None, _) => {
+                    let known: Vec<&str> = index
+                        .manifests()
+                        .iter()
+                        .filter_map(|d| {
+                            d.annotations()
+                                .as_ref()
+                                .and_then(|a| a.get(ANNOTATION_REF_NAME))
+                                .map(|s| s.as_str())
+                        })
+                        .collect();
+                    Err(crate::new_error!(
+                        "no manifest tagged {:?} in OCI layout {:?}. Available tags: {:?}",
+                        tag.as_str(),
+                        path,
+                        known
+                    ))
+                }
+                (Some(_), Some(_)) => Err(crate::new_error!(
+                    "OCI layout {:?} has multiple manifests tagged {:?}; tags must be unique",
+                    path,
+                    tag.as_str()
+                )),
+                (Some(d), None) => Ok(d),
+            }
+        }
+        OciReference::Digest(digest) => index
+            .manifests()
+            .iter()
+            .find(|d| d.digest().to_string() == digest.as_str())
+            .ok_or_else(|| {
+                crate::new_error!(
+                    "no manifest with digest {} in OCI layout {:?}",
+                    digest.as_str(),
+                    path
+                )
+            }),
+    }
+}
+
+fn read_layout_marker(path: &Path) -> crate::Result<()> {
+    let layout_bytes = read_bounded(&path.join("oci-layout"), MAX_JSON_BLOB_SIZE)
+        .map_err(|e| crate::new_error!("failed to read oci-layout: {}", e))?;
+    let layout_json: serde_json::Value = serde_json::from_slice(&layout_bytes)
+        .map_err(|e| crate::new_error!("oci-layout is not valid JSON: {}", e))?;
+    let v = layout_json
+        .get("imageLayoutVersion")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| crate::new_error!("oci-layout missing imageLayoutVersion field"))?;
+    if v != OCI_LAYOUT_VERSION {
+        return Err(crate::new_error!(
+            "unsupported OCI image layout version {:?} (expected {:?})",
+            v,
+            OCI_LAYOUT_VERSION
+        ));
+    }
+    Ok(())
+}
+
+fn load_manifest(
+    path: &Path,
+    blobs_dir: &Path,
+    reference: &OciReference,
+    verify_blobs: bool,
+) -> crate::Result<ImageManifest> {
+    let index_bytes = read_bounded(&path.join("index.json"), MAX_JSON_BLOB_SIZE)
+        .map_err(|e| crate::new_error!("failed to read index.json: {}", e))?;
+    let index: ImageIndex = serde_json::from_slice(&index_bytes)
+        .map_err(|e| crate::new_error!("failed to parse index.json: {}", e))?;
+    if index.schema_version() != SCHEMA_VERSION {
+        return Err(crate::new_error!(
+            "unsupported OCI index schemaVersion {} (expected {})",
+            index.schema_version(),
+            SCHEMA_VERSION
+        ));
+    }
+    if let Some(media_type) = index.media_type()
+        && !matches!(media_type, MediaType::ImageIndex)
+    {
+        return Err(crate::new_error!(
+            "OCI index has unexpected media type {} (expected {})",
+            media_type.to_string(),
+            MediaType::ImageIndex.to_string()
+        ));
+    }
+    let manifest_desc = select_manifest(&index, reference, path)?;
+    if !matches!(manifest_desc.media_type(), MediaType::ImageManifest) {
+        return Err(crate::new_error!(
+            "manifest descriptor for {} has unexpected media type {} (expected {})",
+            reference,
+            manifest_desc.media_type().to_string(),
+            MediaType::ImageManifest.to_string()
+        ));
+    }
+    let manifest_bytes = load_blob(
+        "manifest",
+        blobs_dir,
+        manifest_desc,
+        MAX_JSON_BLOB_SIZE,
+        verify_blobs,
+    )?;
+    let manifest: ImageManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|e| crate::new_error!("failed to parse OCI manifest JSON: {}", e))?;
+    if manifest.schema_version() != SCHEMA_VERSION {
+        return Err(crate::new_error!(
+            "unsupported OCI manifest schemaVersion {} (expected {})",
+            manifest.schema_version(),
+            SCHEMA_VERSION
+        ));
+    }
+    if let Some(media_type) = manifest.media_type()
+        && !matches!(media_type, MediaType::ImageManifest)
+    {
+        return Err(crate::new_error!(
+            "OCI manifest has unexpected media type {} (expected {})",
+            media_type.to_string(),
+            MediaType::ImageManifest.to_string()
+        ));
+    }
+    Ok(manifest)
+}
+
+fn load_config(
+    blobs_dir: &Path,
+    cfg_desc: &Descriptor,
+    verify_blobs: bool,
+) -> crate::Result<OciSnapshotConfig> {
+    let cfg_bytes = load_blob(
+        "config",
+        blobs_dir,
+        cfg_desc,
+        MAX_JSON_BLOB_SIZE,
+        verify_blobs,
+    )?;
+    let cfg: OciSnapshotConfig = serde_json::from_slice(&cfg_bytes)
+        .map_err(|e| crate::new_error!("failed to parse Hyperlight config JSON: {}", e))?;
+    cfg.validate_for_load()?;
+    Ok(cfg)
+}
+
+fn open_snapshot_blob(blobs_dir: &Path, snap_desc: &Descriptor) -> crate::Result<std::fs::File> {
+    let snap_hex = parse_oci_digest(snap_desc.digest())?;
+    let snap_path = blobs_dir.join(&snap_hex);
+
+    let snap_file = self::fsutil::open_no_follow(&snap_path)?;
+
+    let snap_file_len = snap_file
+        .metadata()
+        .map_err(|e| crate::new_error!("failed to stat snapshot blob: {}", e))?
+        .len();
+    if snap_file_len != snap_desc.size() {
+        return Err(crate::new_error!(
+            "snapshot blob size {} disagrees with OCI descriptor size {}",
+            snap_file_len,
+            snap_desc.size()
+        ));
+    }
+    Ok(snap_file)
+}
+
+/// The size validation in `open_snapshot_blob` stats the file before
+/// mapping. Nothing prevents the file from being truncated between that
+/// stat and the mmap, which would leave the mapping shorter than the
+/// descriptor claims and make restore read past the end. Compare the mapped
+/// length against the descriptor to reject a file mutated under us.
+fn map_snapshot_blob(
+    snap_file: &std::fs::File,
+    snap_desc: &Descriptor,
+    data_len: usize,
+) -> crate::Result<ReadonlySharedMemory> {
+    let memory = ReadonlySharedMemory::from_file(snap_file, data_len)?;
+    if memory.mem_size() as u64 != snap_desc.size() {
+        return Err(crate::new_error!(
+            "mapped snapshot size ({}) does not match descriptor size ({}); the blob may have changed during loading",
+            memory.mem_size(),
+            snap_desc.size()
+        ));
+    }
+    Ok(memory)
+}
+
+/// Read a bounded OCI blob and check its descriptor size and optional digest.
+fn load_blob(
+    label: &str,
+    blobs_dir: &Path,
+    descriptor: &Descriptor,
+    max_size: u64,
+    verify_blobs: bool,
+) -> crate::Result<Vec<u8>> {
+    let hex = parse_oci_digest(descriptor.digest())?;
+    let bytes = read_bounded(&blobs_dir.join(&hex), max_size)?;
+    if bytes.len() as u64 != descriptor.size() {
+        return Err(crate::new_error!(
+            "{label} blob size mismatch: descriptor says {}, file is {}",
+            descriptor.size(),
+            bytes.len()
+        ));
+    }
+    if verify_blobs {
+        verify_blob_bytes(label, &bytes, &hex)?;
+    }
+    Ok(bytes)
+}
+
+fn blob_descriptor(media_type: &str, digest: &Digest256, size: usize) -> crate::Result<Descriptor> {
+    DescriptorBuilder::default()
+        .media_type(MediaType::Other(media_type.to_string()))
+        .digest(oci_digest(digest)?)
+        .size(size as u64)
+        .build()
+        .map_err(|e| crate::new_error!("failed to build {media_type} descriptor: {e}"))
+}
+
+impl Snapshot {
+    /// Save this snapshot into an OCI Image Layout directory on disk.
+    /// The saved snapshot can be loaded later with
+    /// [`Snapshot::load`].
+    ///
+    /// Returns the [`OciDigest`] of the manifest that was written,
+    /// which [`Snapshot::load`] accepts as a stable handle to
+    /// this exact snapshot.
+    ///
+    /// # `path`
+    ///
+    /// The OCI Image Layout directory to write to. The directory at
+    /// `path` is created if absent. Its parent directory must exist.
+    ///
+    /// If `path` holds no OCI layout, a new one is created. If it
+    /// holds one, this snapshot is added alongside the others. If
+    /// `path` holds something that is not a readable OCI layout, the
+    /// call fails and the directory is left unchanged.
+    ///
+    /// # `tag`
+    ///
+    /// A standard OCI tag that names this snapshot within the layout.
+    /// [`Snapshot::load`] can load the snapshot back by this tag.
+    ///
+    /// A tag points to one snapshot at a time. If the layout has a
+    /// snapshot under this tag, the tag is moved to the new snapshot.
+    /// The old snapshot's data stays on disk, reachable by its
+    /// digest but not by this tag. Snapshots under other tags are
+    /// untouched.
+    ///
+    /// # Portability
+    ///
+    /// Snapshot images are bound to the specific CPU architecture,
+    /// hypervisor, and CPU vendor that the snapshot was created on.
+    /// For example, a snapshot taken on an Intel x86_64 host with KVM
+    /// can only be loaded on an Intel x86_64 host running KVM. Loading
+    /// on any other host is rejected. A future version may relax this
+    /// binding once a wider compatibility set is proven safe.
+    ///
+    /// # Compatibility
+    ///
+    /// While Hyperlight is at version 0.x.y the on-disk format is not
+    /// stable. A snapshot written by one Hyperlight version is not
+    /// guaranteed to load on a different Hyperlight version. An
+    /// incompatible snapshot is always rejected at load time with a
+    /// clear error. It can never load and then misbehave once the
+    /// guest is running. Any release that breaks the format is called
+    /// out in the Hyperlight changelog.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use hyperlight_host::SandboxBuilder;
+    /// # use hyperlight_host::sandbox::snapshot::OciTag;
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut sandbox = SandboxBuilder::from_file("guest.bin").build()?;
+    ///
+    /// // Capture the initialized state and write it to an OCI layout on disk.
+    /// let snapshot = sandbox.snapshot()?;
+    /// let tag = OciTag::new("latest")?;
+    /// let digest = snapshot.save("./guest_snapshot", &tag)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn save(&self, path: impl AsRef<Path>, tag: &OciTag) -> crate::Result<OciDigest> {
+        let path = path.as_ref();
+
+        // Building the config can reject the snapshot. Do it before
+        // writing any file.
+        let cfg = self.build_config()?;
+        let cfg_bytes = serde_json::to_vec_pretty(&cfg)
+            .map_err(|e| crate::new_error!("failed to serialise config JSON: {}", e))?;
+        check_json_blob_size("config blob", cfg_bytes.len())?;
+
+        // The parent directory must already exist. `path` itself is
+        // created if absent. An existing regular file at `path` is
+        // rejected by the underlying `create_dir`.
+        match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => {
+                let parent_meta = std::fs::metadata(p).map_err(|e| {
+                    crate::new_error!("save: parent directory {:?} not accessible: {}", p, e)
+                })?;
+                if !parent_meta.is_dir() {
+                    return Err(crate::new_error!(
+                        "save: parent of {:?} is not a directory",
+                        path
+                    ));
+                }
+            }
+            _ => {}
+        }
+        match std::fs::create_dir(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let meta = std::fs::metadata(path)
+                    .map_err(|e| crate::new_error!("save: failed to stat {:?}: {}", path, e))?;
+                if !meta.is_dir() {
+                    return Err(crate::new_error!(
+                        "save: {:?} exists and is not a directory",
+                        path
+                    ));
+                }
+            }
+            Err(e) => {
+                return Err(crate::new_error!(
+                    "save: failed to create layout dir {:?}: {}",
+                    path,
+                    e
+                ));
+            }
+        }
+
+        // Validate any pre-existing `oci-layout` marker before
+        // touching anything else, so a foreign layout (future
+        // version, hand-edited file) is reported without altering
+        // the directory.
+        let layout_marker = path.join("oci-layout");
+        let marker_existed = layout_marker
+            .try_exists()
+            .map_err(|e| crate::new_error!("save: failed to stat {:?}: {}", layout_marker, e))?;
+        if marker_existed {
+            let bytes = read_bounded(&layout_marker, MAX_JSON_BLOB_SIZE).map_err(|e| {
+                crate::new_error!("save: failed to read existing oci-layout: {}", e)
+            })?;
+            let v: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+                crate::new_error!("save: existing oci-layout is not valid JSON: {}", e)
+            })?;
+            match v.get("imageLayoutVersion").and_then(|s| s.as_str()) {
+                Some(s) if s == OCI_LAYOUT_VERSION => {}
+                Some(other) => {
+                    return Err(crate::new_error!(
+                        "save: existing imageLayoutVersion {:?} is unsupported (expected {:?})",
+                        other,
+                        OCI_LAYOUT_VERSION
+                    ));
+                }
+                None => {
+                    return Err(crate::new_error!(
+                        "save: existing oci-layout is missing imageLayoutVersion"
+                    ));
+                }
+            }
+        }
+
+        let index_path = path.join("index.json");
+        let index_existed = index_path
+            .try_exists()
+            .map_err(|e| crate::new_error!("save: failed to stat {:?}: {}", index_path, e))?;
+        let mut manifests: Vec<Descriptor> = if index_existed {
+            let bytes = read_bounded(&index_path, MAX_JSON_BLOB_SIZE).map_err(|e| {
+                crate::new_error!("save: failed to read existing index.json: {}", e)
+            })?;
+            let existing: ImageIndex = serde_json::from_slice(&bytes).map_err(|e| {
+                crate::new_error!(
+                    "save: existing index.json is not a valid OCI image index: {}",
+                    e
+                )
+            })?;
+            existing.manifests().to_vec()
+        } else {
+            Vec::new()
+        };
+
+        let new_desc = self.write_blobs_and_build_descriptor(path, tag, &cfg, &cfg_bytes)?;
+        let written_digest = OciDigest::from_oci_spec_digest(new_desc.digest());
+
+        // Replacement is by tag, not by digest: a new snapshot may
+        // hash to a different value but still claim the same logical
+        // ref. Blobs from the replaced manifest become orphans.
+        manifests.retain(|d| {
+            d.annotations()
+                .as_ref()
+                .and_then(|a| a.get(ANNOTATION_REF_NAME))
+                .map(|s| s.as_str() != tag.as_str())
+                .unwrap_or(true)
+        });
+        manifests.push(new_desc);
+
+        let index = ImageIndexBuilder::default()
+            .schema_version(SCHEMA_VERSION)
+            .media_type(MediaType::ImageIndex)
+            .manifests(manifests)
+            .build()
+            .map_err(|e| crate::new_error!("failed to build OCI index: {}", e))?;
+        let index_bytes = serde_json::to_vec_pretty(&index)
+            .map_err(|e| crate::new_error!("failed to serialise OCI index: {}", e))?;
+        check_json_blob_size("index.json", index_bytes.len())?;
+
+        // Write the marker before the index swap. A loader that sees
+        // the new index requires the marker; ordering them this way
+        // keeps the layout valid at every step.
+        if !marker_existed {
+            let layout_bytes = serde_json::to_vec(&serde_json::json!({
+                "imageLayoutVersion": OCI_LAYOUT_VERSION,
+            }))
+            .map_err(|e| crate::new_error!("failed to serialise oci-layout: {}", e))?;
+            replace_file_atomic(&layout_marker, &layout_bytes)?;
+        }
+
+        // Index swap is the commit point.
+        replace_file_atomic(&index_path, &index_bytes)?;
+
+        Ok(written_digest)
+    }
+
+    fn write_blobs_and_build_descriptor(
+        &self,
+        dir: &Path,
+        tag: &OciTag,
+        cfg: &OciSnapshotConfig,
+        cfg_bytes: &[u8],
+    ) -> crate::Result<Descriptor> {
+        let blobs_dir = dir.join("blobs").join("sha256");
+        std::fs::create_dir_all(&blobs_dir).map_err(|e| {
+            crate::new_error!("failed to create OCI blobs dir {:?}: {}", blobs_dir, e)
+        })?;
+
+        let mut descriptors = self
+            .state
+            .memory
+            .blobs()
+            .map(|blob| {
+                let bytes = blob.memory().as_slice();
+                let digest = Digest256::from_bytes(bytes);
+                put_blob_if_absent(&blobs_dir, &digest, bytes)?;
+                blob_descriptor(MT_SNAPSHOT_CURRENT, &digest, bytes.len())
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
+
+        // Transport blob: the canonical ring image omitted from memory.
+        let transport = self.state.virtq.as_ref().ok_or_else(|| {
+            crate::new_error!("initialized snapshot has no canonical transport state")
+        })?;
+        let transport_bytes = transport::encode(&self.state.layout, transport)?;
+        let transport_digest = Digest256::from_bytes(&transport_bytes);
+        put_blob(&blobs_dir, &transport_digest, &transport_bytes)?;
+        descriptors.push(blob_descriptor(
+            MT_TRANSPORT_CURRENT,
+            &transport_digest,
+            transport_bytes.len(),
+        )?);
+
+        // Config blob.
+        let cfg_digest = Digest256::from_bytes(cfg_bytes);
+        put_blob(&blobs_dir, &cfg_digest, cfg_bytes)?;
+
+        // Manifest blob.
+        let config_descriptor = blob_descriptor(MT_CONFIG_CURRENT, &cfg_digest, cfg_bytes.len())?;
+        // `artifactType` is set equal to `config.mediaType` per OCI
+        // image-spec "Guidelines for Artifact Usage". Registries
+        // surface this on the distribution-spec referrers API. Tools
+        // that read only `config.mediaType` see the same value.
+        let manifest = ImageManifestBuilder::default()
+            .schema_version(SCHEMA_VERSION)
+            .media_type(MediaType::ImageManifest)
+            .artifact_type(MediaType::Other(MT_CONFIG_CURRENT.to_string()))
+            .config(config_descriptor)
+            .layers(descriptors)
+            .build()
+            .map_err(|e| crate::new_error!("failed to build OCI manifest: {}", e))?;
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest)
+            .map_err(|e| crate::new_error!("failed to serialise OCI manifest: {}", e))?;
+        check_json_blob_size("manifest blob", manifest_bytes.len())?;
+        let manifest_digest = Digest256::from_bytes(&manifest_bytes);
+        put_blob(&blobs_dir, &manifest_digest, &manifest_bytes)?;
+
+        let mut anns = std::collections::HashMap::new();
+        anns.insert(ANNOTATION_REF_NAME.to_string(), tag.as_str().to_string());
+        anns.insert(ANNOTATION_ARCH.to_string(), cfg.arch.as_str().to_string());
+        anns.insert(
+            ANNOTATION_HYPERVISOR.to_string(),
+            cfg.hypervisor.as_str().to_string(),
+        );
+        anns.insert(
+            ANNOTATION_CPU.to_string(),
+            cfg.cpu_vendor.as_str().to_string(),
+        );
+        DescriptorBuilder::default()
+            .media_type(MediaType::ImageManifest)
+            .digest(oci_digest(&manifest_digest)?)
+            .size(manifest_bytes.len() as u64)
+            .annotations(anns)
+            .build()
+            .map_err(|e| crate::new_error!("failed to build manifest descriptor: {}", e))
+    }
+
+    fn build_config(&self) -> crate::Result<OciSnapshotConfig> {
+        let (entrypoint_addr, sregs) = match (self.state.next_action, self.state.sregs.as_ref()) {
+            (NextAction::Call(addr), Some(sregs)) => (addr, sregs),
+            (NextAction::Call(_), None) => {
+                return Err(crate::new_error!(
+                    "snapshot inconsistent: Call entrypoint must have sregs"
+                ));
+            }
+            (NextAction::Initialise(_), _) => {
+                return Err(crate::new_error!(
+                    "pre-init snapshots cannot be persisted. Only a snapshot taken after the guest has run can be saved to disk"
+                ));
+            }
+            #[cfg(test)]
+            (NextAction::None, _) => {
+                return Err(crate::new_error!(
+                    "snapshot with NextAction::None cannot be persisted"
+                ));
+            }
+        };
+
+        if self.state.virtq.is_none() {
+            return Err(crate::new_error!(
+                "initialized snapshot has no canonical transport state"
+            ));
+        }
+
+        let host_functions = match &self.state.host_functions.host_functions {
+            Some(v) => v.iter().map(HostFunction::from).collect(),
+            None => Vec::new(),
+        };
+
+        let l = &self.state.layout;
+        Ok(OciSnapshotConfig {
+            hyperlight_version: env!("CARGO_PKG_VERSION").to_string(),
+            arch: Arch::current(),
+            abi_version: SNAPSHOT_ABI_VERSION,
+            hypervisor: Hypervisor::current()
+                .ok_or_else(|| crate::new_error!("no hypervisor available to tag snapshot"))?,
+            cpu_vendor: CpuVendor::current(),
+            layer_alignment: host_page_size(),
+            stack_top_gva: self.state.stack_top_gva,
+            entrypoint_addr,
+            original_entrypoint_addr: self.state.original_entrypoint,
+            sregs: *sregs,
+            #[cfg(target_arch = "x86_64")]
+            msrs: self
+                .state
+                .msrs
+                .as_ref()
+                .ok_or_else(|| crate::new_error!("snapshot has no MSR state"))?
+                .clone(),
+            layout: MemoryLayout {
+                code_size: l.code_size(),
+                code_virt_base: l.get_guest_code_gva() as u64,
+                init_data_size: l.init_data_size(),
+                init_data_permissions: l.init_data_permissions().map(|f| f.bits()),
+                scratch_size: l.get_scratch_size(),
+                g2h_queue_size: l.get_g2h_queue_size(),
+                h2g_queue_size: l.get_h2g_queue_size(),
+                g2h_buffer_size: l.get_g2h_buffer_size(),
+                h2g_buffer_size: l.get_h2g_buffer_size(),
+                g2h_pool_pages: l.get_g2h_pool_pages(),
+                h2g_pool_pages: l.get_h2g_pool_pages(),
+            },
+            layers: self
+                .state
+                .memory
+                .blobs()
+                .map(OciSnapshotLayer::from)
+                .collect(),
+            page_table_layer: self
+                .state
+                .memory
+                .blobs()
+                .position(|blob| Arc::ptr_eq(blob, self.state.memory.page_table_blob()))
+                .ok_or_else(|| crate::new_error!("snapshot page-table blob is missing"))?,
+            host_functions,
+            snapshot_generation: self.state.snapshot_generation,
+            metadata: self.metadata.clone(),
+        })
+    }
+
+    /// Load a snapshot from an OCI Image Layout directory produced by
+    /// [`Snapshot::save`].
+    ///
+    /// # `path`
+    ///
+    /// The OCI Image Layout directory to read from. It must hold a
+    /// readable OCI layout containing at least one Hyperlight
+    /// snapshot.
+    ///
+    /// # `reference`
+    ///
+    /// Determines which snapshot in the layout to load, given as
+    /// either an [`OciTag`] or an [`OciDigest`]. Loading fails if no
+    /// snapshot in the layout has the given tag or digest.
+    ///
+    /// # Portability
+    ///
+    /// Snapshot images are bound to the specific CPU architecture,
+    /// hypervisor, and CPU vendor that the snapshot was created on.
+    /// For example, a snapshot taken on an Intel x86_64 host with KVM
+    /// can only be loaded on an Intel x86_64 host running KVM. Loading
+    /// on any other host is rejected. A future version may relax this
+    /// binding once a wider compatibility set is proven safe.
+    ///
+    /// # Compatibility
+    ///
+    /// While Hyperlight is at version 0.x.y the on-disk format is not
+    /// stable. A snapshot written by one Hyperlight version is not
+    /// guaranteed to load on a different Hyperlight version. An
+    /// incompatible snapshot is always rejected at load time with a
+    /// clear error. It can never load and then misbehave once the
+    /// guest is running. Any release that breaks the format is called
+    /// out in the Hyperlight changelog.
+    ///
+    /// # Verification
+    ///
+    /// This method does not check the manifest, config, memory, or transport
+    /// blobs against their recorded sha256 digests. Load only from a
+    /// layout you trust.
+    ///
+    /// To check the digests on load at the expense of some
+    /// performance, use [`Snapshot::checked_load`].
+    ///
+    /// # File-mutation hazard
+    ///
+    /// The snapshot blob stays memory-mapped while the returned
+    /// `Snapshot` or any sandbox built from it is alive. The existing
+    /// blob files in the layout at `path` must not be overwritten,
+    /// truncated, or deleted while the mapping is live. Doing so can
+    /// corrupt guest memory and can lead to undefined behavior.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use hyperlight_host::{HostFunctions, Sandbox};
+    /// # use hyperlight_host::sandbox::snapshot::{OciTag, Snapshot};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let tag = OciTag::new("latest")?;
+    /// let snapshot = Arc::new(Snapshot::load("./guest_snapshot", tag)?);
+    /// let mut sandbox = Sandbox::from_snapshot(snapshot, HostFunctions::default(), None)?;
+    /// let result: String = sandbox.call("Echo", "hello".to_string())?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn load(path: impl AsRef<Path>, reference: impl Into<OciReference>) -> crate::Result<Self> {
+        Self::load_inner(path.as_ref(), &reference.into(), false)
+    }
+
+    /// Loads a snapshot like [`Snapshot::load`]. See its rustdoc for
+    /// `path`, `reference`, portability, and the file-mutation
+    /// hazard. This method additionally checks the manifest, config,
+    /// memory, and transport blobs against their recorded sha256 digests
+    /// before use, at the expense of some performance.
+    ///
+    /// # Trust
+    ///
+    /// A digest check does not prove the bytes are authentic. Anyone
+    /// who edits a blob can recompute its digest to match, so a
+    /// hostile layout passes the check. Load only from a source you
+    /// trust.
+    pub fn checked_load(
+        path: impl AsRef<Path>,
+        reference: impl Into<OciReference>,
+    ) -> crate::Result<Self> {
+        Self::load_inner(path.as_ref(), &reference.into(), true)
+    }
+
+    fn load_inner(
+        path: &Path,
+        reference: &OciReference,
+        verify_blobs: bool,
+    ) -> crate::Result<Self> {
+        let meta = std::fs::metadata(path)
+            .map_err(|e| crate::new_error!("load failed to stat {:?}: {}", path, e))?;
+        if !meta.is_dir() {
+            return Err(crate::new_error!("load path {:?} is not a directory", path));
+        }
+
+        let blobs_dir: PathBuf = path.join("blobs").join("sha256");
+
+        // 1. oci-layout
+        read_layout_marker(path)?;
+
+        // 2. index.json -> manifest descriptor for `reference`.
+        //    Multiple manifests are valid in an OCI Image Layout. A
+        //    tag selects the one whose
+        //    `org.opencontainers.image.ref.name` annotation matches it
+        //    (two manifests sharing a tag is a malformed layout). A
+        //    digest selects the descriptor carrying that manifest
+        //    digest.
+        let manifest = load_manifest(path, &blobs_dir, reference, verify_blobs)?;
+        let cfg_desc = manifest.config();
+        // Loader dispatch on config media type.
+        let cfg_media = cfg_desc.media_type().to_string();
+        match cfg_media.as_str() {
+            MT_CONFIG_V5 => {}
+            MT_CONFIG_V1 | MT_CONFIG_V2 | MT_CONFIG_V3 | MT_CONFIG_V4 => {
+                return Err(crate::new_error!(
+                    "snapshot config media type {:?} is incompatible with snapshot ABI {}",
+                    cfg_media,
+                    SNAPSHOT_ABI_VERSION
+                ));
+            }
+            other => {
+                return Err(crate::new_error!(
+                    "unexpected config media type {:?} (supported: {:?})",
+                    other,
+                    MT_CONFIG_V5
+                ));
+            }
+        }
+        // `artifactType` mirrors `config.mediaType` (manifest.md
+        // "Guidelines for Artifact Usage"). The OCI spec leaves this
+        // field OPTIONAL. A Hyperlight snapshot requires it to be
+        // present and equal to `config.mediaType` so loaders can
+        // distinguish a Hyperlight artifact from an arbitrary
+        // manifest that happens to share blob layout.
+        match manifest.artifact_type() {
+            Some(at) if at.to_string() == cfg_media => {}
+            Some(at) => {
+                return Err(crate::new_error!(
+                    "OCI manifest artifactType {:?} does not match config media type {:?}",
+                    at.to_string(),
+                    cfg_media
+                ));
+            }
+            None => {
+                return Err(crate::new_error!(
+                    "OCI manifest is missing required artifactType (expected {:?})",
+                    cfg_media
+                ));
+            }
+        }
+        let layers = manifest.layers();
+        let (data_descs, tail) = layers.split_at(layers.len().saturating_sub(1));
+        let [transport_desc] = tail else {
+            return Err(crate::new_error!(
+                "expected snapshot layers and one transport layer, found {} layers",
+                layers.len()
+            ));
+        };
+        for snap_desc in data_descs {
+            let snap_media = snap_desc.media_type().to_string();
+            match snap_media.as_str() {
+                MT_SNAPSHOT_V2 => {}
+                other => {
+                    return Err(crate::new_error!(
+                        "unexpected snapshot layer media type {:?} (supported: {:?})",
+                        other,
+                        MT_SNAPSHOT_V2
+                    ));
+                }
+            }
+        }
+        let transport_media = transport_desc.media_type().to_string();
+        match transport_media.as_str() {
+            MT_TRANSPORT_V1 => {}
+            other => {
+                return Err(crate::new_error!(
+                    "unexpected transport layer media type {:?} (supported: {:?})",
+                    other,
+                    MT_TRANSPORT_V1
+                ));
+            }
+        }
+
+        // 4. config blob
+        let cfg = load_config(&blobs_dir, cfg_desc, verify_blobs)?;
+        // A snapshot taken on a host with smaller pages may have a scratch
+        // size this host cannot map: refuse it before reading the blobs.
+        let host_page = crate::mem::layout::SandboxMemoryLayout::host_page_size();
+        if !cfg.layout.scratch_size.is_multiple_of(host_page) {
+            return Err(crate::new_error!(
+                "snapshot scratch size {} is not a multiple of this host's {host_page}-byte pages",
+                cfg.layout.scratch_size
+            ));
+        }
+        // Each data layer has one mapping, and one more blob may hold only page
+        // tables. Reject before opening blobs.
+        if cfg.layers.len() > MAX_SNAPSHOT_LAYERS + 1 {
+            return Err(crate::new_error!(
+                "snapshot has {} data layers, limit is {}",
+                cfg.layers.len(),
+                MAX_SNAPSHOT_LAYERS + 1
+            ));
+        }
+        if data_descs.len() != cfg.layers.len() {
+            return Err(crate::new_error!(
+                "expected {} snapshot layers and one transport layer, found {} layers",
+                cfg.layers.len(),
+                layers.len()
+            ));
+        }
+        if cfg.page_table_layer >= cfg.layers.len() {
+            return Err(crate::new_error!(
+                "snapshot page_table_layer {} is out of range",
+                cfg.page_table_layer
+            ));
+        }
+
+        // Reject blob sizes no valid snapshot has before opening any blob.
+        // Guest data must fit between BASE_ADDRESS and scratch without
+        // overlapping. Page tables must fit in scratch, which is at most
+        // MAX_MEMORY_SIZE.
+        let data_space = hyperlight_common::layout::scratch_base_gpa(cfg.layout.scratch_size)
+            .saturating_sub(SandboxMemoryLayout::BASE_ADDRESS as u64);
+        let mut data_bytes = 0u64;
+        for (index, (layer, desc)) in cfg.layers.iter().zip(data_descs).enumerate() {
+            if layer.data_len == 0 && index != cfg.page_table_layer {
+                return Err(crate::new_error!("snapshot layer {} has no data", index));
+            }
+            let blob_len = layer
+                .data_len
+                .checked_add(layer.page_table_len)
+                .filter(|_| layer.page_table_len <= SandboxMemoryLayout::MAX_MEMORY_SIZE)
+                .and_then(|len| len.checked_next_multiple_of(host_page_size()));
+            if blob_len.is_none_or(|len| len as u64 != desc.size()) {
+                return Err(crate::new_error!(
+                    "snapshot layer {} size {} does not match its data and page-table lengths",
+                    index,
+                    desc.size()
+                ));
+            }
+            data_bytes = data_bytes
+                .checked_add(layer.data_len as u64)
+                .filter(|bytes| *bytes <= data_space)
+                .ok_or_else(|| {
+                    crate::new_error!(
+                        "snapshot data exceeds the {} bytes below scratch",
+                        data_space
+                    )
+                })?;
+        }
+
+        // 5. snapshot blobs: open each once, hash and mmap the same
+        //    handle so an attacker cannot swap the file between
+        //    verification and mapping.
+        let mut snap_files = data_descs
+            .iter()
+            .map(|desc| open_snapshot_blob(&blobs_dir, desc))
+            .collect::<crate::Result<Vec<_>>>()?;
+        let transport_bytes = load_blob(
+            "transport",
+            &blobs_dir,
+            transport_desc,
+            transport::MAX_BLOB_SIZE,
+            verify_blobs,
+        )?;
+
+        // 6. Reconstruct layout.
+        let mut sbox_cfg = crate::sandbox::SandboxConfiguration::default();
+        sbox_cfg.set_scratch_size(cfg.layout.scratch_size);
+        sbox_cfg.set_g2h_queue_size(cfg.layout.g2h_queue_size);
+        sbox_cfg.set_h2g_queue_size(cfg.layout.h2g_queue_size);
+        sbox_cfg.set_g2h_buffer_size(cfg.layout.g2h_buffer_size);
+        sbox_cfg.set_h2g_buffer_size(cfg.layout.h2g_buffer_size);
+        sbox_cfg.set_g2h_pool_pages(cfg.layout.g2h_pool_pages);
+        sbox_cfg.set_h2g_pool_pages(cfg.layout.h2g_pool_pages);
+        let init_data_perms = match cfg.layout.init_data_permissions {
+            None => None,
+            Some(bits) => Some(MemoryRegionFlags::from_bits(bits).ok_or_else(|| {
+                crate::new_error!(
+                    "snapshot init_data_permissions {:#x} contains unknown flag bits",
+                    bits
+                )
+            })?),
+        };
+        let mut layout = SandboxMemoryLayout::new(
+            sbox_cfg,
+            cfg.layout.code_size,
+            cfg.layout.init_data_size,
+            init_data_perms,
+        )?;
+        let code_gva = if cfg.layout.code_virt_base == 0 {
+            layout.get_guest_code_gpa() as u64
+        } else {
+            cfg.layout.code_virt_base
+        };
+        layout.set_code_gva(code_gva)?;
+        layout.ensure_page_tables_fit(cfg.layers[cfg.page_table_layer].page_table_len)?;
+
+        let virtq = transport::decode(&layout, &transport_bytes)?;
+
+        // 7. mmap the snapshot blobs (file-backed CoW). Each blob is
+        //    a raw memory image. `ReadonlySharedMemory::from_file`
+        //    surrounds it with host guard pages. The guest mapping
+        //    of each blob covers only the data prefix (`data_len`)
+        //    at its layer's GPA. The PT tail sits past that prefix
+        //    in the host mapping. Restore copies the tail of the
+        //    page-table layer into the scratch region. Keeping PT
+        //    tails out of the guest mapping avoids overlap with the
+        //    next layer and with `map_file_cow` regions installed
+        //    immediately after the snapshot in guest PA space.
+        let scratch_base = hyperlight_common::layout::scratch_base_gpa(layout.get_scratch_size());
+        let blobs = cfg
+            .layers
+            .iter()
+            .zip(data_descs)
+            .zip(&snap_files)
+            .map(|((layer, desc), file)| {
+                Ok(Arc::new(SnapshotBlob::new(
+                    map_snapshot_blob(file, desc, layer.data_len)?,
+                    layer.gpa_start,
+                    layer.page_table_len,
+                    scratch_base,
+                )?))
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
+        let page_tables = blobs[cfg.page_table_layer].clone();
+        let data_layers = blobs
+            .into_iter()
+            .filter(|blob| blob.data_len() > 0)
+            .collect();
+        let memory = Arc::new(SnapshotMemory::new(data_layers, page_tables)?);
+        // Hash after validating the layers so malformed snapshots fail
+        // cheaply.
+        if verify_blobs {
+            for (desc, file) in data_descs.iter().zip(&mut snap_files) {
+                verify_blob_file("snapshot", file, &parse_oci_digest(desc.digest())?)?;
+            }
+        }
+
+        // The snapshot GPA span must cover at least the regions the
+        // layout fields describe (code, PEB, init data),
+        // otherwise the guest mapping is too short to back them.
+        let required_memory_size = layout.get_memory_size()?;
+        if memory.gpa_span_len() < required_memory_size {
+            return Err(crate::new_error!(
+                "snapshot GPA span ({}) is smaller than the layout size ({})",
+                memory.gpa_span_len(),
+                required_memory_size
+            ));
+        }
+
+        // 8. Build the next action + sregs back from the config.
+        let next_action = NextAction::Call(cfg.entrypoint_addr);
+
+        // 9. Reconstitute host_functions metadata.
+        let snapshot_generation = cfg.snapshot_generation;
+        let host_funcs_vec: Vec<
+            hyperlight_common::flatbuffer_wrappers::host_function_definition::HostFunctionDefinition,
+        > = cfg.host_functions.into_iter().map(Into::into).collect();
+        let host_functions = if host_funcs_vec.is_empty() {
+            HostFunctionDetails {
+                host_functions: None,
+            }
+        } else {
+            HostFunctionDetails {
+                host_functions: Some(host_funcs_vec),
+            }
+        };
+
+        Ok(Snapshot {
+            state: std::sync::Arc::new(super::SnapshotState {
+                layout,
+                memory,
+                load_info: crate::mem::exe::LoadInfo::dummy(),
+                stack_top_gva: cfg.stack_top_gva,
+                sregs: Some(cfg.sregs),
+                #[cfg(target_arch = "x86_64")]
+                msrs: Some(cfg.msrs),
+                next_action,
+                original_entrypoint: cfg.original_entrypoint_addr,
+                snapshot_generation,
+                host_functions,
+                virtq: Some(virtq),
+            }),
+            metadata: cfg.metadata,
+        })
+    }
+}

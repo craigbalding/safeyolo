@@ -64,6 +64,7 @@ adapter = "controlled assertion"
     monkeypatch.setattr(execution_receipt, "PYTEST_PHASES", shared)
     shell = "\n".join("run_pytest_phase " + phase for phase in phases)
     for _section, (filename, checkpoints) in PROCEDURES.items():
+        (tmp_path / "tests/blackbox" / filename).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / "tests/blackbox" / filename).write_text(
             "def main():\n" + "\n".join(f"    receipt.checkpoint({name!r})" for name in checkpoints) + "\n")
         shell += "\npython3 " + filename
@@ -127,6 +128,19 @@ def test_current_catalogue_resolves_all_controls_and_external_families():
     assert len(controls) == 37
     assert {witness["kind"] for witness in witnesses} == {"pytest", "cargo", "procedure"}
     assert any("tests/test_guest_acquisition.py" in witness["paths"] for witness in witnesses)
+
+
+@pytest.mark.parametrize("tokens,selected", [
+    (["python", "-m", "tests.blackbox.installed_federation"], True),
+    (["python", "tests/blackbox/installed_federation.py"], True),
+    (["python", "-m", "tests.blackbox.installed_provider"], False),
+])
+def test_procedure_workflow_selection_preserves_repository_and_module_paths(tokens, selected):
+    command = {"tokens": tokens, "job": "fixture", "path": ".github/workflows/test.yml",
+               "cadence": "manual", "condition": ""}
+    result = catalogue.selection({"kind": "procedure"}, "tests/blackbox/installed_federation.py::run",
+                                 {}, [command], {})
+    assert any("[fixture]" in item for item in result) is selected
 
 
 @pytest.mark.parametrize("arguments", [

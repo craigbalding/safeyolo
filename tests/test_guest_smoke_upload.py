@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from scripts import guest_release as release
+from tests.blackbox.selections import SECTIONS
 from tests.test_guest_promotion import INDEX, candidate, evidence, report_files
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +23,7 @@ GATE = "https://github.com/craigbalding/safeyolo/issues/1105#issuecomment-123"
 
 
 def continuation_files(reports):
-    """Use the producer shape in the retained AMD64 installed-9af-d0ee observation."""
+    """Exercise same-installation continuation with the maintained sections."""
     frozen = json.loads((reports / "selection.json").read_bytes())
     installed = json.loads((reports / "installed-inputs.json").read_bytes())
     frozen["platform"] = installed["platform"] = "linux-amd64"
@@ -34,11 +35,12 @@ def continuation_files(reports):
                          "sections": [{"section": section, "config_dir": f"/b/original/{section}",
                                        "prepared_config_dir": prepared, "exit": 0, "result": "passed",
                                        "cleanup": "stopped", "cleanup_failures": []}
-                                      for section in ("isolation", "workloads", "access", "lifecycle", "continuity")]}
+                                      for section in SECTIONS["systrap"]]}
     resumed_sections = copy.deepcopy(original_sections)
-    resumed_sections["sections"] = [resumed_sections["sections"][-1]]
+    resumed_sections["sections"] = [row for row in resumed_sections["sections"] if row["section"] == "continuity"]
     resumed_sections["sections"][0]["config_dir"] = "/b/resumed/continuity"
-    original_sections["sections"][-1].update(exit=2, result="preparation_failure", error="Missing controller interpreter")
+    next(row for row in original_sections["sections"] if row["section"] == "continuity").update(
+        exit=2, result="preparation_failure", error="Missing controller interpreter")
     observed = {"controller": {"revision": "e" * 40, "dirty": False},
                 "original_execution": {"id": 1, "command": ["python", "/b/controller/tests/blackbox/retained_inputs.py",
                     "run", "--lane", "systrap", "--selection", "/b/inputs/selection.json"], "exit": 2,

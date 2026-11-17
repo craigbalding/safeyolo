@@ -299,7 +299,7 @@ def _render(suites: list[tuple[str, list[tuple[Path, list[TestClass]]]]]) -> str
         out.append(f"| `{lane}` | {', '.join(sections)} |")
     out.append("")
     for section in sorted({s for sections in SECTIONS.values() for s in sections} - {"isolation"}):
-        path = BB_DIR / PROCEDURES[section][0]
+        path = (BB_DIR / PROCEDURES[section][0]).resolve()
         doc = ast.get_docstring(ast.parse(path.read_text()))
         assert doc, f"selected procedure lacks a description: {path}"
         out.append(f"### `{path.relative_to(REPO_ROOT)}`")

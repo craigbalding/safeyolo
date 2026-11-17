@@ -86,9 +86,9 @@ def checked(command, *, env=None, timeout=90, diagnostics=None):
 class ParentObserver(HTTPServer):
     """Count TCP accepts, including attempts that never form an HTTP request."""
 
-    def __init__(self):
+    def __init__(self, address=("127.0.0.1", 0)):
         self.accepts = 0
-        super().__init__(("127.0.0.1", 0), ParentResponse)
+        super().__init__(address, ParentResponse)
 
     def get_request(self):
         connection, address = super().get_request()

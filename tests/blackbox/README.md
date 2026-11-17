@@ -226,6 +226,41 @@ commands or failed startup exit 2; the log stays at the access instance's
 `desktop-display.log`. The production action still probes the display and checks
 guest readiness. Guest desktop packages alone do not satisfy this host prerequisite.
 
+Default installed sections include disposable-job isolation, job network
+authority and live-mount removal. Linux systrap also runs the nested-Docker
+journey. That journey installs Debian Docker tools in its owned guest, pulls
+the fixture's digest-pinned base and builds/runs disposable inner containers.
+It needs the guest's approved package/registry network access. If the prepared
+instance uses a parent proxy, set `SAFEYOLO_DOCKER_ORIGIN_BIND` to an owned host
+IPv4 address reachable through that route. The Docker observer binds two
+temporary TCP ports there and closes them after the journey.
+
+The mount journey uses a small static Linux holder for the guest's CPU
+architecture. On Linux, the driver builds it with the host's `cc` and static
+C library; the host needs those build tools. To prepare the holder in advance
+or for VZ, build it on a Linux host with the guest's CPU architecture. From the
+repository root, replace `/owned/mount-holder` with an output path in an existing
+disk-backed directory. The command creates that file.
+
+```sh
+cc -std=c11 -O2 -static -Wall -Wextra -Werror tests/fixtures/live-mount-holder.c -o /owned/mount-holder
+```
+
+For a prepared holder, transfer the executable to the acceptance host if needed. Set
+`SAFEYOLO_MOUNT_HOLDER_PROBE` to its absolute path before running installed
+sections. For VZ, build for Linux ARM64; the macOS host does not run the holder.
+The driver copies it into the owned workspace and records its hash. No guest
+Python or compiler is needed. Holder failures retain their exit code and log
+and leave the result incomplete. The direct mount driver accepts the same file
+through `--holder-probe`. For the physical hardware launcher, set the same
+variable in its host deployment environment; the path must be readable by the
+account that runs the lane.
+
+For a full VZ run, also set `SAFEYOLO_JOB_OBSERVER_PROBE` to the static Linux
+ARM64 executable built from [job-observer-probe.c](../fixtures/job-observer-probe.c).
+Use the existing physical-host runner and its authorized fixture ports.
+Missing inputs or required cases produce incomplete results.
+
 Choose the host's actual mechanism. From the repository root, the following
 runs the checked-out HEAD; `--install-commit FULL_SHA` checks an explicit full
 commit before installing anything.
@@ -272,6 +307,22 @@ owner also gets its own instance. Sharing preparation does not share live
 scenario state. NATS executable bytes are prepared once and reverified by the
 installed launcher in each instance; credentials and JetStream data are private.
 Individual procedural compositions remain intact.
+
+To run only these boundary controls against an already verified installation,
+replace `/owned/prepared-instance` with its absolute root. From this checkout
+with the Python test environment prepared, run on the same disposable Linux
+host that owns that installation:
+
+```sh
+./tests/blackbox/run-installed.sh systrap --prepared-config /owned/prepared-instance --section job-sandbox --section job-network --section mounts --section docker
+```
+
+The runner retains each procedure's expected checkpoints and reached cases,
+observed backend lifetimes, product/controller/guest identities and cleanup.
+The nightly systrap workflow selects these default sections. KVM/VZ selection
+does not establish hardware deployment under #889. [Issue #1562](https://github.com/craigbalding/safeyolo/issues/1562)
+records accepted installed results and remaining platform, catalogue and
+recurring-deployment limits.
 
 For a guest without Debian or Python Package Index (PyPI) network access, first
 stage verified offline test inputs under the test checkout's `offline/`

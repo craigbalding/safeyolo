@@ -147,7 +147,7 @@ git -C /home/agent/source checkout --detach FETCH_HEAD
 cd /home/agent/source
 uv sync --frozen --group dev --python 3.13
 sudo -n apt-get update -qq
-sudo -n apt-get install -y -qq --no-install-recommends uidmap acl util-linux iproute2 openssh-server socat
+sudo -n apt-get install -y -qq --no-install-recommends uidmap acl util-linux iproute2 openssh-server socat gcc libc6-dev
 test -c /dev/kvm
 if ! id -nG agent | tr " " "\n" | grep -Fxq kvm; then
     sudo -n usermod -aG kvm agent
