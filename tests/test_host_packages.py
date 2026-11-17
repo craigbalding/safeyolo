@@ -930,7 +930,7 @@ def hyperlight_runtime(package_inputs, tmp_path):
     runtime = tmp_path / "hyperlight"
     runtime.mkdir()
     shutil.copy2(package_inputs[1] / "safeyolo-proxy", runtime / "safeyolo-hyperlight")
-    for name in ("runtime.json", "python.cpio", "core.elf", "checker.py", "service_checker.py", "artifact_checker.py",
+    for name in ("runtime.json", "python.cpio", "core.elf", "checker.py", "service_checker.py", "artifact_checker.py", "template_probe.py",
                  "hyperlight.json", "hyperlight-unikraft.json", "hyperlight-service.json", "hyperlight-unikraft-service.json",
                  "hyperlight-artifact.json", "hyperlight-unikraft-artifact.json"):
         (runtime / name).write_text("controlled runtime fixture\n")

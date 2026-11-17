@@ -501,7 +501,7 @@ def test_held_controls_reject_an_unreached_or_finished_call(host_driver, tmp_pat
 def test_remaining_window_skips_completed_phases_and_reports_its_actual_scope(host_driver, tmp_path, monkeypatch, capsys):
     args = SimpleNamespace(root=tmp_path / "root", scratch=tmp_path, admin_port=18450,
                            bundle=tmp_path, cli=tmp_path / "cli", proxy=tmp_path / "proxy",
-                           unikraft_lifetimes_only=True)
+                           unikraft_lifetimes_only=True, warm_templates_only=False, provider_port=0)
     for name in ("runtime.json", "cli", "proxy"):
         (tmp_path / name).write_text(name)
     calls = []

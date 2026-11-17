@@ -168,7 +168,7 @@ def _render(suites: list[tuple[str, list[tuple[Path, list[TestClass]]]]]) -> str
     out.append("")
     out.append("For BB-31's real engine boundary, use `./tests/blackbox/run-controls.sh hyperlight-services --help` "
                "and the existing [two-engine driver](../tests/blackbox/host/hyperlight_services.py). "
-               "It requires a matching protocol-3 artifact bundle, accessible Linux KVM or entitled Apple-silicon HVF, "
+               "It requires a matching protocol-4 artifact bundle, accessible Linux KVM or entitled Apple-silicon HVF, "
                "a new owned instance, empty private disk-backed scratch, authorized ports and a privately supplied scoped GitHub read credential. "
                "Its `procedure.json` records permitted/scope/lifetime cases per engine, host-observed invocation/artifact/authority identities and cleanup. "
                "A lifetimes-only run cannot complete the two-engine receipt. "

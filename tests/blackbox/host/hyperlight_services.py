@@ -2,7 +2,7 @@
 
 Use --unikraft-lifetimes-only to run just the four Unikraft lifetime controls.
 
-Requires matching candidate CLI/proxy, a protocol-3 bundle built on this host's
+Requires matching candidate CLI/proxy, a protocol-4 bundle built on this host's
 architecture, Python with tomlkit, and accessible KVM or entitled Apple-silicon
 HVF. The operator supplies an existing GitHub read credential in a private file.
 Only the new instance's standing grant is changed. Artifacts, captures and
@@ -23,6 +23,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -191,13 +192,14 @@ class Instance:
         return status, value
 
     @contextlib.contextmanager
-    def job(self, engine, request, *, probe=False, timeout=30, limits=None, retain=16384):
+    def job(self, engine, request, *, probe=False, timeout=30, limits=None, retain=16384, definition=None):
         self.index += 1
         prefix = self.scratch / f"job-{self.index}"
         inputs = prefix.with_suffix(".input")
         inputs.mkdir()
         save(inputs / "request.json", request)
-        spec = json.loads((self.scratch / f"{engine}-adopted.json").read_bytes())
+        spec = (json.loads((self.scratch / f"{engine}-adopted.json").read_bytes())
+                if definition is None else copy.deepcopy(definition))
         spec.update(timeout_seconds=timeout, retain_bytes=retain, max_input_bytes=100_000)
         if limits:
             spec["mediated_services"].update(limits)
@@ -209,13 +211,15 @@ class Instance:
         path = prefix.with_suffix(".spec.json")
         save(path, spec)
         with prefix.with_suffix(".stdout").open("wb") as stdout, prefix.with_suffix(".stderr").open("wb") as stderr:
+            started = time.perf_counter_ns()
             child = subprocess.Popen([str(self.args.cli), "--root", str(self.root), "job", "run", str(path),
                                       "--input", str(inputs)], stdout=stdout, stderr=stderr)
             try:
                 yield child, prefix
             finally:
                 stop(child)
-                save(prefix.with_suffix(".status.json"), {"returncode": child.returncode})
+                save(prefix.with_suffix(".status.json"), {"returncode": child.returncode,
+                     "command_wall_ms": (time.perf_counter_ns() - started) / 1_000_000})
 
     def run_job(self, engine, request, *, expected_outcome=None, **options):
         with self.job(engine, request, **options) as (child, prefix):
@@ -371,6 +375,118 @@ def held_lifetimes(instance, engine, origin, port):
         assert output(instance.run_job(engine, next_request, probe=True))[0]["ok"] is True
 
 
+def warm_templates(instance, engine):
+    """Observe actual construction, restored state, fresh calls and cold costs."""
+    spec = json.loads((instance.args.bundle / f"{engine}.json").read_bytes())
+    for name in ("runtime", "guest", "checker"):
+        if name in spec["engine"]:
+            spec["engine"][name]["path"] = str(instance.args.bundle / spec["engine"][name]["path"])
+    if engine == "hyperlight":
+        spec["engine"]["function"] = "TemplateProbe"
+    else:
+        path = instance.args.bundle / "template_probe.py"
+        spec["engine"]["checker"] = {"path": str(path), "sha256": digest(path)}
+    observations = []
+
+    def measured(request, definition, expected=None, timeout=30):
+        with instance.job(engine, request, definition=definition, timeout=timeout) as (child, prefix):
+            child.wait(timeout=60)
+        result = job_result(prefix, engine, "warm-template", expected_outcome=expected)
+        status = json.loads(prefix.with_suffix(".status.json").read_bytes())
+        observations.append({"full_invocation_ms": status["command_wall_ms"],
+                             "result": result, "provider_latency_ms": 0})
+        save(instance.scratch / f"{engine}-templates.json", {
+            "observations": observations,
+            "idle_worker_bytes": 0,
+            "memory_limit": "helper_max_rss_bytes is one helper's peak; it excludes CLI/proxy and page cache",
+            "latency_limit": "offline workload, no provider; preparation and cache save/load remain included",
+        })
+        return result
+
+    first = measured({"value": "first"}, spec)
+    initialized = first["runtime_report"]["initialization"]
+    assert initialized["mode"] == "constructed", first
+    assert initialized["initialization_events"] == 1, first
+    first_output = output(first)
+    assert first_output["calls"] == 1
+    spec["gate_id"] = "another-template-principal"
+    second = measured({"value": "second"}, spec)
+    restored = second["runtime_report"]["initialization"]
+    assert restored["mode"] == "restored" and restored["initialization_events"] == 0, second
+    assert initialized["template_key"] == restored["template_key"]
+    assert initialized["snapshot_digest"] == restored["snapshot_digest"]
+
+    def fresh(result):
+        value = output(result)
+        assert value["calls"] == 1 and not value.get("inherited_file", False), value
+        assert value["context"]["invocation_id"] == result["run_id"], value
+        assert result["started_unix_ms"] <= value["context"]["unix_ms"] <= result["ended_unix_ms"], value
+        assert value["context"]["random"] != first_output["context"]["random"], value
+        if result["runtime_report"]["initialization"]["mode"] == "restored":
+            assert value["initialized_at"] == first_output["initialized_at"], value
+        return value
+
+    assert fresh(second)["input"] != first_output["input"]
+    assert second["run_id"] != first["run_id"] and second["gate_principal"] != first["gate_principal"]
+    cold = copy.deepcopy(spec)
+    cold["engine"]["reuse_initialization"] = False
+    cold_result = measured({"value": "cold"}, cold)
+    assert cold_result["runtime_report"]["initialization"]["mode"] == "cold", cold_result
+    fresh(cold_result)
+    template_predecessors(instance, engine, spec, measured, fresh)
+    # All readers have exited. Alter an actual saved manifest, then require an
+    # explicit cold run of this engine instead of stale or unchecked bytes.
+    directory = instance.root / "data/hyperlight-templates"
+    matches = [path for path in directory.glob("template-*")
+               if json.loads((path / "receipt.json").read_bytes())["key"] == restored["template_key"]]
+    assert len(matches) == 1, matches
+    manifest = matches[0] / "blobs/sha256" / restored["snapshot_digest"].split(":")[1]
+    manifest.write_bytes(manifest.read_bytes() + b"corrupt")
+    invalid = measured({"value": "corrupt template"}, spec)
+    diagnostic = invalid["runtime_report"]["initialization"]
+    assert diagnostic["mode"] == "cold" and "invalid or incompatible" in diagnostic["cold_reason"], invalid
+    fresh(invalid)
+    assert invalid["engine"] == engine
+    return observations
+
+
+def template_predecessors(instance, engine, spec, measured, fresh):
+    """A failed, expired, cancelled or overlapping call cannot donate state."""
+    measured({"mode": "fail"}, spec, {"kind": "exit", "code": 1})
+    fresh(measured({"value": "after failure"}, spec))
+    timed = measured({"mode": "spin"}, spec, {"kind": "timeout"}, timeout=5)
+    assert b"template-spin-entered" in base64.b64decode(timed["stdout"]["retained_base64"], validate=True), timed
+    fresh(measured({"value": "after deadline"}, spec))
+    with instance.job(engine, {"mode": "spin"}, definition=spec) as (child, prefix):
+        time.sleep(2)
+        assert child.poll() is None, "spin predecessor ended before cancellation"
+        child.send_signal(signal.SIGINT)
+        child.wait(timeout=10)
+    cancelled = job_result(prefix, engine, "cancelled template", expected_outcome={"kind": "interrupted", "signal": int(signal.SIGINT)})
+    assert b"template-spin-entered" in base64.b64decode(cancelled["stdout"]["retained_base64"], validate=True), cancelled
+    fresh(measured({"value": "after cancellation"}, spec))
+    # Two helper lifetimes share only immutable template files and reader leases.
+    with instance.job(engine, {"mode": "hold", "value": "concurrent one"}, definition=spec) as (one, prefix_one):
+        with instance.job(engine, {"mode": "hold", "value": "concurrent two"}, definition=spec) as (two, prefix_two):
+            assert one.poll() is None and two.poll() is None
+            one.wait(timeout=60)
+            two.wait(timeout=60)
+    overlapping = [fresh(job_result(prefix, engine, "concurrent template")) for prefix in (prefix_one, prefix_two)]
+    assert max(row["context"]["unix_ms"] for row in overlapping) < min(row["completed_unix_ms"] for row in overlapping), overlapping
+    # A usable template cannot bypass verification of the selected code. Alter
+    # only an owned scratch copy, preserving the original artifact and pin.
+    changed = copy.deepcopy(spec)
+    code = changed["engine"]["guest" if engine == "hyperlight" else "checker"]
+    path = instance.scratch / f"{engine}-changed-artifact"
+    path.write_bytes(b"changed after adoption")
+    code["path"] = str(path)
+    with instance.job(engine, {"value": "changed artifact"}, definition=changed) as (child, prefix):
+        child.wait(timeout=60)
+    assert json.loads(prefix.with_suffix(".status.json").read_bytes())["returncode"] != 0
+    assert "digest mismatch" in prefix.with_suffix(".stderr").read_text(), prefix
+    fresh(measured({"value": "after rejected artifact"}, spec))
+
+
 def exercise(args):
     instance = Instance(args)
     observations = []
@@ -411,7 +527,7 @@ def exercise(args):
         def log_message(self, *_args):
             pass  # Only sanitized, private observations are retained.
 
-    with ThreadingHTTPServer(("127.0.0.1", 0), Provider) as origin:
+    with ThreadingHTTPServer(("127.0.0.1", args.provider_port), Provider) as origin:
         origin.entered, origin.release = threading.Event(), threading.Event()
         port = origin.server_address[1]
         thread = threading.Thread(target=origin.serve_forever)
@@ -425,6 +541,12 @@ def exercise(args):
                                                       stdout=log, stderr=log)
                     try:
                         wait_ready(instance.proxy, args.root, args.admin_port)
+                        if args.warm_templates_only:
+                            receipt.document.setdefault("warm_templates", {})[engine] = warm_templates(instance, engine)
+                            save(receipt.path, receipt.document)
+                            held_lifetimes(instance, engine, origin, port)
+                            engine_case(engine, "warm-templates-and-lifetimes")
+                            continue
                         if args.unikraft_lifetimes_only:
                             held_lifetimes(instance, engine, origin, port)
                             engine_case(engine, "lifetimes")
@@ -485,7 +607,8 @@ def exercise(args):
     assert not (args.root / "data/ready.json").exists()
     assert not list((args.root / "data").glob("job-hyperlight-*"))
     receipt.checkpoint("cleanup")
-    checks = ("held deadline/cancel/revoke/shutdown lifetimes" if args.unikraft_lifetimes_only else
+    checks = ("initialized templates, cold comparison and held lifetimes" if args.warm_templates_only else
+              "held deadline/cancel/revoke/shutdown lifetimes" if args.unikraft_lifetimes_only else
               "live GitHub, standing grant/removal, named input/typed mismatch, scope/limits, held lifetimes")
     save(args.scratch / "result.json", {"engines": engines, "checks": checks,
                                       "bundle": digest(args.bundle / "runtime.json"),
@@ -493,7 +616,7 @@ def exercise(args):
     receipt.checkpoint("finished")
     print(f"PASS {', '.join(engines)}: {checks}")
     if not receipt.document["complete"]:
-        print("Incomplete two-engine receipt: only the selected Unikraft lifetimes were exercised")
+        print("Incomplete two-engine receipt: only the selected focused controls were exercised")
 
 
 def main():
@@ -505,14 +628,22 @@ def main():
     parser.add_argument("--expected-author-id", required=True)
     parser.add_argument("--parent-proxy")
     parser.add_argument("--admin-port", type=int, required=True)
+    parser.add_argument("--provider-port", type=int, default=0,
+                        help="select an authorized loopback provider port; zero asks the OS on unrestricted test hosts")
     parser.add_argument("--unikraft-lifetimes-only", action="store_true",
                         help="run only the remaining Unikraft deadline/cancel/revoke/shutdown controls in a fresh instance")
+    parser.add_argument("--warm-templates-only", action="store_true",
+                        help="exercise initialized restores, fresh state, cold comparison and existing held lifetimes")
     args = parser.parse_args()
+    if args.unikraft_lifetimes_only and args.warm_templates_only:
+        parser.error("select one focused mode")
     for name in ("cli", "proxy", "bundle", "github_token_file", "scratch"):
         setattr(args, name, getattr(args, name).resolve(strict=True))
     args.root = args.root.absolute()
     if not 1 <= args.admin_port <= 65535:
         parser.error("--admin-port must be a nonzero authorized port")
+    if not 0 <= args.provider_port <= 65535:
+        parser.error("--provider-port must be zero or an authorized port")
     if args.root.exists() or any(args.scratch.iterdir()):
         parser.error("--root must be new and --scratch must be empty")
     args.scratch.chmod(0o700)

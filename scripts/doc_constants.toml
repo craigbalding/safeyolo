@@ -9,6 +9,27 @@
 # phrases over generic ones ("2048 MiB" beats "MiB").
 
 [[assertion]]
+name = "hyperlight-template-count"
+source = "jobs/hyperlight-host/src/template.rs"
+pattern = 'MAX_ENTRIES: usize = (?P<count>\d+)'
+docs = ["docs/hyperlight-jobs.md"]
+must_contain = "at most {count}"
+
+[[assertion]]
+name = "hyperlight-template-bytes"
+source = "jobs/hyperlight-host/src/template.rs"
+pattern = 'MAX_BYTES: u64 = (?P<gib>\d+) << 30'
+docs = ["docs/hyperlight-jobs.md"]
+must_contain = "{gib} GiB byte budget"
+
+[[assertion]]
+name = "hyperlight-template-age"
+source = "jobs/hyperlight-host/src/template.rs"
+pattern = 'MAX_AGE: Duration = Duration::from_secs\((?P<minutes>\d+) \* 60\)'
+docs = ["docs/hyperlight-jobs.md"]
+must_contain = "{minutes} minutes"
+
+[[assertion]]
 name = "hyperlight-guest-abi"
 source = "jobs/hyperlight-guest/Cargo.toml"
 pattern = 'hyperlight-guest-bin = "=(?P<version>[0-9.]+)"'

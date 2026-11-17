@@ -1,6 +1,7 @@
 //! Host-only disposable execution. JobSpec never contains a host mount path.
 
 mod hyperlight;
+pub(crate) use hyperlight::clear_templates as clear_hyperlight_templates;
 mod input;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -42,6 +43,7 @@ Hyperlight selects {"kind":"hyperlight","runtime":{"path":"runtime.json","sha256
 Hyperlight-Unikraft selects {"kind":"hyperlight-unikraft","runtime":{"path":"runtime.json","sha256":"..."},"checker":{"path":"checker.py","sha256":"..."}}.
 Artifact digests are full SHA-256 values. Relative paths resolve beside the trusted spec. The invocation directory cannot replace the engine or adopted artifacts.
 Both Hyperlight engines require KVM on Linux x86_64/aarch64 or entitled HVF on Apple-silicon macOS. validate checks pinned artifacts and runtime discovery without running the checker. No engine fallback occurs.
+Both engines default to reuse_initialization=true in the engine object. They restore clean initialized templates with fresh input, identity, deadline and capabilities. Set reuse_initialization=false for explicit cold execution of the same engine. runtime_report.initialization identifies construction, restore or a cold reason and stage timings. Templates retain no live worker or invocation authority.
 Hyperlight has no Unix process or guest-root semantics. Core calls the named function with argv as a JSON string and offers bounded ReadInput(relative_path); its returned string is ordinary stdout. Unikraft runs the pinned Python checker with argv, read-only /input, and fresh in-memory /work and rootfs. It supports a Linux subset, without fork or full Unix privilege semantics. Both reject network=true and guest-root. memory_mb sizes scratch memory; it is not a total helper RSS limit.
 For mediated service access, set mediated_services={services:[NAME],max_calls:N,max_request_bytes:N,max_response_bytes:N} in the adopted Hyperlight specification, with network=false. Core SYCall(JSON) and Unikraft hyperlight.call("sy.call", REQUEST) use the same named-service request. The host delegates gate:<gate_id> through the existing proxy, keeps credentials outside the guest, and retains service_evidence. Guest sockets stay disabled. Host-call messages are at most 49152 bytes; captured responses use handles and reads of at most 16384 bytes.
 Print observed execution evidence as JSON. A PASS string is ordinary output. engine identifies the selected backend; outcome_source distinguishes a guest process from a host helper. runtime_report retains VM completion or error separately. helper_process_status retains the actual OS exit or signal even after a watchdog deadline or cancellation.
@@ -76,11 +78,19 @@ pub enum JobEngine {
         runtime: PinnedArtifact,
         guest: PinnedArtifact,
         function: String,
+        #[serde(default = "reuse_initialization")]
+        reuse_initialization: bool,
     },
     HyperlightUnikraft {
         runtime: PinnedArtifact,
         checker: PinnedArtifact,
+        #[serde(default = "reuse_initialization")]
+        reuse_initialization: bool,
     },
+}
+
+fn reuse_initialization() -> bool {
+    true
 }
 
 impl JobEngine {
@@ -129,7 +139,9 @@ impl JobSpec {
         let pair = match &mut self.engine {
             JobEngine::Platform => return,
             JobEngine::Hyperlight { runtime, guest, .. } => (runtime, guest),
-            JobEngine::HyperlightUnikraft { runtime, checker } => (runtime, checker),
+            JobEngine::HyperlightUnikraft {
+                runtime, checker, ..
+            } => (runtime, checker),
         };
         for artifact in [pair.0, pair.1] {
             if artifact.path.is_relative() {

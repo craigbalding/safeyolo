@@ -57,14 +57,28 @@ enum Completion {
 struct RuntimeReport {
     completion: Option<Completion>,
     error: Option<String>,
+    initialization: Option<Value>,
+    helper_max_rss_bytes: Option<u64>,
 }
 
 fn artifacts(engine: &JobEngine) -> Option<(&PinnedArtifact, &PinnedArtifact)> {
     match engine {
         JobEngine::Platform => None,
         JobEngine::Hyperlight { runtime, guest, .. } => Some((runtime, guest)),
-        JobEngine::HyperlightUnikraft { runtime, checker } => Some((runtime, checker)),
+        JobEngine::HyperlightUnikraft {
+            runtime, checker, ..
+        } => Some((runtime, checker)),
     }
+}
+
+fn template_key(spec: &JobSpec) -> Result<String, Error> {
+    let (manifest, artifact) = artifacts(&spec.engine).ok_or("not a Hyperlight engine")?;
+    // The pinned helper covers initialization code, kernel and layout. Policy,
+    // input, principal and entry function do not determine frozen bytes.
+    Ok(digest(&serde_json::to_vec(&json!({
+        "engine":spec.engine.name(),"runtime":manifest.sha256,
+        "artifact":artifact.sha256,"memory_mb":spec.memory_mb,
+    }))?))
 }
 
 fn sha256(value: &str) -> bool {
@@ -148,7 +162,7 @@ async fn bundle(runtime: &PinnedArtifact) -> Result<Bundle, Error> {
         return Err("Hyperlight runtime manifest digest mismatch".into());
     }
     let bundle: Bundle = serde_json::from_slice(&bytes)?;
-    if bundle.protocol != 3 || bundle.hyperlight != "0.19.0" || bundle.unikraft != "0.21.0" {
+    if bundle.protocol != 4 || bundle.hyperlight != "0.19.0" || bundle.unikraft != "0.21.0" {
         return Err(
             "incompatible Hyperlight runtime/guest ABI version; rebuild a matching bundle".into(),
         );
@@ -319,6 +333,50 @@ fn monotonic_ms() -> Result<u64, Error> {
     Ok(time.tv_sec as u64 * 1000 + time.tv_nsec as u64 / 1_000_000)
 }
 
+/// Normal proxy shutdown releases idle disk templates after check tasks drain.
+/// A separate CLI invocation may still hold a mapped reader; preserve its lease.
+pub(crate) fn clear_templates(config: &Path) -> Result<(), Error> {
+    let directory = config
+        .parent()
+        .ok_or("job config has no parent")?
+        .join("data/hyperlight-templates");
+    let entries = match fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join("lock"))?;
+    lock.try_lock()?;
+    for entry in entries {
+        let entry = entry?;
+        if !entry
+            .file_name()
+            .as_encoded_bytes()
+            .starts_with(b"template-")
+            || !entry.file_type()?.is_dir()
+        {
+            continue;
+        }
+        let lease = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(entry.path().join("lease"))?;
+        match lease.try_lock() {
+            Ok(()) => fs::remove_dir_all(entry.path())?,
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
 async fn stop(helper: &mut Helper) -> Result<HelperProcessStatus, Error> {
     if let Some(group) = helper.group
         && unsafe { libc::kill(-(group as i32), libc::SIGKILL) } != 0
@@ -393,7 +451,7 @@ pub(super) async fn run(
     tokio::fs::create_dir_all(&parent).await?;
     let temporary = tempfile::Builder::new()
         .prefix("job-hyperlight-")
-        .tempdir_in(parent)?;
+        .tempdir_in(&parent)?;
     let root = temporary.path().to_owned();
     let input_sha256 = input::copy(
         source_input,
@@ -422,8 +480,11 @@ pub(super) async fn run(
     let mut bridge_task = None;
     let mut policy_hash = None;
     let mut socket_directory = None;
+    let mut preparation_ms = None;
     let work = async {
+        let preparation_started = std::time::Instant::now();
         let bundle = prepare(spec, &root).await?;
+        preparation_ms = Some(preparation_started.elapsed().as_millis());
         if let Some(limits) = &spec.mediated_services {
             // Only two sockets use TMPDIR. Artifacts and captured inputs stay
             // on disk under the instance; deep instance paths need not fit the
@@ -450,11 +511,25 @@ pub(super) async fn run(
         } else {
             None
         };
+        let reuse = match &spec.engine {
+            JobEngine::Hyperlight {
+                reuse_initialization,
+                ..
+            }
+            | JobEngine::HyperlightUnikraft {
+                reuse_initialization,
+                ..
+            } => *reuse_initialization,
+            JobEngine::Platform => unreachable!(),
+        };
+        let template_key = template_key(spec)?;
         let invocation = json!({"engine":spec.engine.name(),"artifact":root.join("code/checker"),
             "input":root.join("input"),"argv":spec.argv,"memory_mb":spec.memory_mb,
             "max_input_bytes":spec.max_input_bytes,"function":function,
             "parent_pid":std::process::id(),"deadline_monotonic_ms":deadline_monotonic_ms,
+            "invocation_id":format!("job-{generation}"),
             "service_bridge":socket_directory.as_ref().map(|directory| directory.path().join("s.sock")),
+            "template":if reuse {Some(json!({"directory":parent.join("hyperlight-templates"),"key":template_key}))} else {None},
             "rootfs":if function.is_some() {None} else {Some(root.join("python.cpio"))}});
         tokio::fs::write(
             root.join("invocation.json"),
@@ -629,6 +704,7 @@ pub(super) async fn run(
         service_evidence,
         rootfs: json!({"kind":spec.engine.name(),"runtime_manifest_sha256":manifest.sha256,
             "artifact_sha256":artifact.sha256,"bundle":runtime,"policy_hash":policy_hash,
+            "artifact_preparation_ms":preparation_ms,
             "service_access":if spec.mediated_services.is_some() {"mediated"} else {"disabled"},
             "console_encoding":if matches!(spec.engine,JobEngine::Hyperlight {..}) {"utf-8"} else {"utf-8-with-replacement"}}),
         input_sha256,

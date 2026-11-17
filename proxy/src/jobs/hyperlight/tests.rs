@@ -23,13 +23,14 @@ fn fixture(script: &str) -> (tempfile::TempDir, JobSpec, std::path::PathBuf) {
     )
     .unwrap();
     let manifest = root.path().join("runtime.json");
-    let value = json!({"protocol":3,"os":std::env::consts::OS,"architecture":std::env::consts::ARCH,
+    let value = json!({"protocol":4,"os":std::env::consts::OS,"architecture":std::env::consts::ARCH,
         "hyperlight":"0.19.0","unikraft":"0.21.0","kernel_contract":"fixture",
         "helper":{"file":"helper-source","sha256":digest(&fs::read(&helper).unwrap())},
         "rootfs":{"file":"python.cpio","sha256":digest(b"fixture, no VM")},"rootfs_source":"fixture"});
     fs::write(&manifest, serde_json::to_vec(&value).unwrap()).unwrap();
     let mut spec = super::super::tests::spec();
     spec.engine = JobEngine::HyperlightUnikraft {
+        reuse_initialization: true,
         runtime: PinnedArtifact {
             path: manifest.clone(),
             sha256: digest(&fs::read(&manifest).unwrap()),
@@ -283,4 +284,67 @@ fn unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec()
         unreachable!()
     };
     assert_eq!(runtime.path, root.path().join("runtime.json"));
+}
+
+#[test]
+fn template_identity_tracks_frozen_inputs_and_keeps_invocation_authority_separate() {
+    let (_root, mut spec, _) = fixture("exit 0");
+    let original = template_key(&spec).unwrap();
+    spec.gate_id = "another-principal".into();
+    spec.argv = vec!["different invocation input".into()];
+    spec.timeout_seconds += 1;
+    assert_eq!(template_key(&spec).unwrap(), original);
+    spec.memory_mb += 1;
+    assert_ne!(template_key(&spec).unwrap(), original);
+    spec.memory_mb -= 1;
+    let JobEngine::HyperlightUnikraft { checker, .. } = &mut spec.engine else {
+        unreachable!()
+    };
+    checker.sha256 = "a".repeat(64);
+    assert_ne!(template_key(&spec).unwrap(), original);
+    let JobEngine::HyperlightUnikraft { runtime, .. } = &mut spec.engine else {
+        unreachable!()
+    };
+    runtime.sha256 = "b".repeat(64);
+    assert_ne!(template_key(&spec).unwrap(), original);
+    let mut value = serde_json::to_value(&spec).unwrap();
+    value["engine"]
+        .as_object_mut()
+        .unwrap()
+        .remove("reuse_initialization");
+    let default: JobSpec = serde_json::from_value(value.clone()).unwrap();
+    assert!(matches!(
+        default.engine,
+        JobEngine::HyperlightUnikraft {
+            reuse_initialization: true,
+            ..
+        }
+    ));
+    value["engine"]["reuse_initialization"] = false.into();
+    let cold: JobSpec = serde_json::from_value(value).unwrap();
+    assert!(matches!(
+        cold.engine,
+        JobEngine::HyperlightUnikraft {
+            reuse_initialization: false,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn shutdown_removes_idle_templates_and_preserves_a_live_mapping_lease() {
+    let (root, _spec, config) = fixture("exit 0");
+    let directory = root.path().join("data/hyperlight-templates");
+    let idle = directory.join("template-idle");
+    let active = directory.join("template-active");
+    fs::create_dir_all(&idle).unwrap();
+    fs::create_dir(&active).unwrap();
+    let lease = fs::File::create(active.join("lease")).unwrap();
+    lease.try_lock_shared().unwrap();
+    clear_templates(&config).unwrap();
+    assert!(!idle.exists());
+    assert!(active.exists());
+    drop(lease);
+    clear_templates(&config).unwrap();
+    assert!(!active.exists());
 }
