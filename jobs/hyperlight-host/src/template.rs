@@ -374,6 +374,7 @@ mod tests {
 
     #[test]
     fn disabled_or_contended_cache_does_not_construct_or_wait() {
+        let _guard = crate::CHILD_FIXTURE_LOCK.lock().unwrap();
         let scratch = scratch();
         let directory = scratch.0.as_ref().unwrap();
         let mut observed = Observation::default();
@@ -401,6 +402,7 @@ mod tests {
 
     #[test]
     fn corrupt_snapshot_falls_back_without_using_a_tag_or_rebuilding() {
+        let _guard = crate::CHILD_FIXTURE_LOCK.lock().unwrap();
         let scratch = scratch();
         let directory = scratch.0.as_ref().unwrap();
         let path = saved(directory, "corrupt", "selected", seconds().unwrap());
@@ -425,6 +427,7 @@ mod tests {
 
     #[test]
     fn full_cache_evicts_an_idle_entry_but_never_an_active_reader() {
+        let _guard = crate::CHILD_FIXTURE_LOCK.lock().unwrap();
         let scratch = scratch();
         let directory = scratch.0.as_ref().unwrap();
         let mut readers = Vec::new();
@@ -445,9 +448,7 @@ mod tests {
                 .is_none()
         );
         assert!(observed.cold_reason.unwrap().contains("capacity is in use"));
-        // Concurrent child fixtures can inherit an open lease until exec.
-        // Explicitly unlock this synthetic reader before testing eviction.
-        readers.pop().unwrap().unlock().unwrap();
+        readers.pop();
         assert!(
             select(Some(&request), &mut Observation::default(), || Err(
                 "failed after eviction".into()
@@ -465,6 +466,7 @@ mod tests {
 
     #[test]
     fn expiry_and_eviction_preserve_mapped_readers_and_failed_builds_leave_no_entry() {
+        let _guard = crate::CHILD_FIXTURE_LOCK.lock().unwrap();
         let scratch = scratch();
         let directory = scratch.0.as_ref().unwrap();
         let old = seconds().unwrap() - MAX_AGE.as_secs();
@@ -509,7 +511,6 @@ mod tests {
                 .count(),
             1
         );
-        lease.unlock().unwrap();
         drop(lease);
         assert!(
             entries(directory, &host_boot().unwrap(), seconds().unwrap())

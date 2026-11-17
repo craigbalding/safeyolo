@@ -20,6 +20,11 @@ use std::{
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
+// Child fixtures briefly inherit other threads' file locks before exec.
+// Keep process spawning apart from tests that assert immediate lock release.
+#[cfg(test)]
+static CHILD_FIXTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Invocation {
@@ -564,6 +569,7 @@ mod tests {
 
     #[test]
     fn independent_guard_stops_spinning_and_blocked_work_and_lost_parent() {
+        let _guard = CHILD_FIXTURE_LOCK.lock().unwrap();
         for (mode, expected) in [
             ("spin", 124),
             ("blocked", 124),
