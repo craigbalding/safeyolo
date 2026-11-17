@@ -85,13 +85,6 @@ pub(super) fn validate_spec(spec: &JobSpec) -> Result<(), Error> {
                 .into(),
         );
     }
-    if spec.network {
-        // DOC: docs/hyperlight-jobs.md
-        return Err(
-            "Hyperlight jobs require network=false; use mediated_services for service access"
-                .into(),
-        );
-    }
     if spec.privilege != Privilege::Unprivileged {
         return Err("Hyperlight jobs cannot supply Unix guest-root privilege".into());
     }
@@ -406,7 +399,7 @@ pub(super) async fn run(
     let mut socket_directory = None;
     let work = async {
         let bundle = prepare(spec, &root).await?;
-        if let Some(limits) = &spec.mediated_services {
+        if spec.network || spec.mediated_services.is_some() {
             // Only two sockets use TMPDIR. Artifacts and captured inputs stay
             // on disk under the instance; deep instance paths need not fit the
             // platform's much shorter Unix socket address limit.
@@ -420,11 +413,33 @@ pub(super) async fn run(
             )
             .await?;
             policy_hash = Some(client.policy_hash.clone());
-            let listener = tokio::net::UnixListener::bind(sockets.path().join("s.sock"))?;
-            let bridge =
-                super::mediated::Bridge::new(listener, &client, limits.clone(), captures.clone())?;
-            bridge_task = Some(tokio::spawn(bridge.serve()));
             delegation = Some(client);
+            let listener = tokio::net::UnixListener::bind(sockets.path().join("s.sock"))?;
+            bridge_task = Some(if spec.network {
+                let ca = tokio::fs::read_to_string(
+                    config
+                        .parent()
+                        .ok_or("job instance config has no parent")?
+                        .join("certs/mitmproxy-ca-cert.pem"),
+                )
+                .await?;
+                let client = delegation.as_ref().ok_or("job delegation unavailable")?;
+                let bridge = super::proxy_stream::Bridge::new(listener, client, ca)?;
+                tokio::spawn(bridge.serve())
+            } else {
+                let client = delegation.as_ref().ok_or("job delegation unavailable")?;
+                let limits = spec
+                    .mediated_services
+                    .as_ref()
+                    .ok_or("missing service limits")?;
+                let bridge = super::mediated::Bridge::new(
+                    listener,
+                    client,
+                    limits.clone(),
+                    captures.clone(),
+                )?;
+                tokio::spawn(bridge.serve())
+            });
             socket_directory = Some(sockets);
         }
         let function = if let JobEngine::Hyperlight { function, .. } = &spec.engine {
@@ -611,7 +626,8 @@ pub(super) async fn run(
         service_evidence,
         rootfs: json!({"kind":spec.engine.name(),"runtime_manifest_sha256":manifest.sha256,
             "artifact_sha256":artifact.sha256,"bundle":runtime,"policy_hash":policy_hash,
-            "service_access":if spec.mediated_services.is_some() {"mediated"} else {"disabled"},
+            "network":spec.network,
+            "service_access":if spec.mediated_services.is_some() {"mediated"} else if spec.network {"in_guest"} else {"disabled"},
             "console_encoding":if matches!(spec.engine,JobEngine::Hyperlight {..}) {"utf-8"} else {"utf-8-with-replacement"}}),
         input_sha256,
         started_unix_ms,

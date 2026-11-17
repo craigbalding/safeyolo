@@ -108,7 +108,13 @@ Agent API token or Coord authority is supplied. Jobs run as UID/GID 1000 with
 cleared capabilities and `no_new_privs`. Set `"privilege": "guest-root"` only
 when the trusted definition needs guest root inside the sandbox.
 
-Network is disabled by default. For a credentialed gate, the operator first
+Network is disabled by default. A public endpoint needs the gate's network
+permission and `"network": true`; it needs no Service Gateway definition or
+service grant. The gate's authority is independent of the invoking agent.
+See the [Hyperlight client modes](hyperlight-jobs.md#network-access-through-the-delegated-proxy)
+when using Core or Unikraft.
+
+For a credentialed gate, the operator first
 approves the stable principal through the existing Service Gateway commands.
 For example, with the `github` service loaded and a stored credential named
 `github-reader`:

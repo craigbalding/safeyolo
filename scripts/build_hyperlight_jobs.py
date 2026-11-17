@@ -174,6 +174,13 @@ def write_job_definitions(output: Path) -> None:
             artifact_spec["engine"]["checker"] = {"path": "artifact_checker.py",
                                                 "sha256": file_digest(output / "artifact_checker.py")}
         (output / f"{kind}-artifact.json").write_text(json.dumps(artifact_spec, indent=2) + "\n", encoding="utf-8")
+        network_spec = {**spec, "gate_id": "hyperlight-network-check", "network": True, "engine": dict(engine)}
+        if kind == "hyperlight":
+            network_spec["engine"]["function"] = "NetworkCheck"
+        else:
+            network_spec["engine"]["checker"] = {"path": "network_checker.py",
+                                                "sha256": file_digest(output / "network_checker.py")}
+        (output / f"{kind}-network.json").write_text(json.dumps(network_spec, indent=2) + "\n", encoding="utf-8")
 
 
 def bundle(repository: Path, output: Path, profile: str) -> None:
@@ -238,6 +245,7 @@ def bundle(repository: Path, output: Path, profile: str) -> None:
         guest_target / f"{architecture}-hyperlight-none" / cargo_profile / "safeyolo-checker", output / "core.elf"
     )
     shutil.copyfile(repository / "jobs/checker.py", output / "checker.py")
+    shutil.copyfile(repository / "jobs/network_checker.py", output / "network_checker.py")
     shutil.copyfile(repository / "jobs/service_checker.py", output / "service_checker.py")
     shutil.copyfile(repository / "jobs/artifact_checker.py", output / "artifact_checker.py")
     source = rootfs(output, architecture)

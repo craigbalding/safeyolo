@@ -147,12 +147,12 @@ trusted definition, so copying the complete bundle preserves its bindings.
 | Mutable state | Fresh guest memory | Fresh writable RAM filesystem and `/work` |
 | Process model | No Unix process, PID, fork or guest-root authority | Single-vCPU cooperative Unikraft; `vfork`/PIE execution is a subset, `fork` is unsupported |
 | Privilege | No Unix privilege model | Guest user IDs do not supply full Linux privilege semantics |
-| Networking | No guest sockets; optional mediated service host call | Host-socket passthrough is disabled; the same optional mediated service host call |
+| Networking | Bounded byte I/O to the delegated proxy; optional separate mediated service host call | Same byte I/O; host-socket passthrough stays disabled |
 | Memory | `memory_mb` selects scratch size | `memory_mb` selects scratch size |
 | Cancellation | Kill the owning helper process group, then reap the helper | Same |
 | State reuse | No snapshots or warm templates | No snapshots or warm templates |
 
-Both engines reject `network=true` and `privilege=guest-root`. Core is not an
+Both engines reject `privilege=guest-root`. Core is not an
 ordinary Linux executable environment. Unikraft does not implement every Linux
 system call, signal, resource limit or Python extension. Neither scratch size
 is a total host-process resident-memory limit. Use the existing gVisor/VZ
@@ -196,6 +196,95 @@ provider latency. Compare with the host's existing engine using the same input,
 authority and output retention. Cold invocation currently starts a fresh
 helper and VM each time; there is no implemented warm lane or universal
 performance advantage.
+
+## Network access through the delegated proxy
+
+Set `network=true` in an adopted job to use the existing `gate:<gate_id>`
+network policy. That authority is independent of the invoking agent: a check
+can reach a dependency its caller cannot reach. Invocation inputs and headers
+cannot change the selected gate, run identity or dependency ancestry. Public
+destinations need no Service Gateway definition or service grant. Gateway
+credentials and capabilities remain separate requirements for protected services.
+
+For the installed network examples, select the owning host's instance. Keep
+its proxy running. Add the intended destination to its existing gate policy,
+then apply that policy with the [normal policy workflow](installation.md#check-show-and-apply).
+For example, the public HTTPS endpoint `https://example.com/` needs this gate
+network permission and no service grant:
+
+```toml
+[agents."gate:hyperlight-network-check".hosts."example.com"]
+egress = "allow"
+```
+
+Create `/absolute/path/to/input/request.json` on that host:
+
+```json
+{"subject":{"kind":"value","value":"https://example.com/"},"inputs":{"expected_status":200}}
+```
+
+From the same host, run either pinned example against that input directory:
+
+```sh
+safeyolo --root "$HOME/.safeyolo" job run "$HOME/.safeyolo/assets/hyperlight/hyperlight-network.json" --input /absolute/path/to/input
+safeyolo --root "$HOME/.safeyolo" job run "$HOME/.safeyolo/assets/hyperlight/hyperlight-unikraft-network.json" --input /absolute/path/to/input
+```
+
+Both examples return a typed finding that compares the HTTP status with
+`expected_status` (default 200). They issue one GET. They do not follow
+redirects or retry. Every later request a workload makes still passes through
+the delegated proxy. Removing the gate's permission denies the unchanged job.
+The same JobSpec can be the source of an
+[adopted named job check](policy-checks.md#execute-adopted-checks).
+
+Core's `NetworkCheck` uses reqwless for HTTP and Rustls/ring for TLS and
+certificate validation. Its byte adapter, TLS buffers and client execute in
+the Core guest. The guest obtains fresh clock and cryptographic entropy through
+bounded host calls. The build uses the narrow ring
+[Hyperlight target patch](../jobs/hyperlight-guest/vendor/ring/SAFEYOLO.md).
+The Unikraft helper supplies `safeyolo_proxy.open_url` from its pinned bytes;
+that adapter uses Python's `http.client` and OpenSSL `ssl.MemoryBIO` in the
+guest. Other client libraries need a compatible adapter; ordinary Linux socket
+APIs are not enabled. Both provided clients validate the server certificate
+and hostname. Core includes public roots and the selected proxy CA; Python uses
+its runtime roots and the selected proxy CA.
+
+For HTTP, the guest sends an absolute-form proxy request. For HTTPS, the guest
+performs CONNECT and TLS. DNS and destination connections remain with SafeYolo.
+The host transports bytes only to the invocation's selected proxy Unix socket.
+There is no guest-selected host path, general host dialer or host HTTP client
+in this path. Calls carry at most 49152 bytes; each stream read/write carries
+at most 16384 data bytes. Core's client bounds its TLS buffers at 65536 bytes.
+Ordinary proxy method/path/redirect checks apply where the proxy can inspect
+them; an opaque CONNECT tunnel does not expose those HTTP fields.
+
+For a Gateway-backed dependency, separately authorize `github` for
+`gate:hyperlight-network-check` using the existing
+[service commands](credentials.md), and permit its destination in gate network
+policy. The same examples accept this adopted input:
+
+```json
+{"subject":{"kind":"value","value":"https://api.github.com/repos/craigbalding/safeyolo/issues/1584"},"inputs":{"service":"github","expected_status":200}}
+```
+
+The guest receives only that gate's scoped Gateway tokens; provider credentials
+stay on the host. Network capability alone supplies no service credential,
+route capability or provider exception. The existing service examples below
+remain the choice when the check requires independently captured source data.
+
+Generic network findings remain guest-produced results. Normal proxy evidence
+records reached traffic under the gate/run identity and check ancestry. Stream
+bytes, a successful status, guest stdout or its hash do not establish an
+independently captured response body. In particular, the GitHub checked-input
+path still requires the host's `service_evidence`; missing capture cannot
+satisfy that binding. Named service sources remain Gateway-backed.
+
+Policy revocation, cancellation, expiry and teardown close the delegated
+listener and its connections. The helper's existing deadline and process-group
+cleanup still apply. No stream or token is donated to another invocation.
+Offline validation and preview do not open a proxy stream or query a dependency.
+CPU client checks and guest ELF builds alone do not establish installed VM
+execution or isolation on a different host.
 
 ## Mediated service access
 

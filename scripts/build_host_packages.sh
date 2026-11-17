@@ -82,9 +82,9 @@ fi
 [[ ! -e $directory ]] || { package_error "bundle directory already exists: $directory"; exit 1; }
 mkdir -p "$directory/bin" "$directory/libexec" "$directory/lib" "$directory/assets/guest" "$directory/assets/launchers" "$directory/assets/contrib/lib" "$directory/assets/docs"
 if [[ -n $hyperlight_artifacts ]]; then
-  hyperlight_files=(safeyolo-hyperlight runtime.json python.cpio core.elf checker.py service_checker.py artifact_checker.py
+  hyperlight_files=(safeyolo-hyperlight runtime.json python.cpio core.elf checker.py service_checker.py artifact_checker.py network_checker.py
     hyperlight.json hyperlight-unikraft.json hyperlight-service.json hyperlight-unikraft-service.json
-    hyperlight-artifact.json hyperlight-unikraft-artifact.json)
+    hyperlight-artifact.json hyperlight-unikraft-artifact.json hyperlight-network.json hyperlight-unikraft-network.json)
   for artifact in "${hyperlight_files[@]}"; do
     require_file "$hyperlight_artifacts/$artifact"
   done

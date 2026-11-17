@@ -206,7 +206,7 @@ async fn cancellation_stops_a_blocked_helper_and_preserves_no_runtime() {
 fn unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec() {
     let (root, mut spec, _) = fixture("exit 0");
     spec.network = true;
-    assert!(spec.validate().unwrap_err().to_string().contains("network"));
+    spec.validate().unwrap();
     spec.network = false;
     spec.privilege = Privilege::GuestRoot;
     assert!(

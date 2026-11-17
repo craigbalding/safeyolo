@@ -163,6 +163,17 @@ ignores guest-written source revisions and source observation timestamps.
 Missing source metadata remains explicit. A failed delegated call or absent
 capture cannot supply a favorable mediated finding.
 
+A job source can instead use ordinary
+[delegated proxy access](hyperlight-jobs.md#network-access-through-the-delegated-proxy)
+with `network=true`, including for a public endpoint without a Gateway service.
+The adopted gate's network policy is independent of the invoking agent's access.
+The guest runs its HTTP/TLS client; the host supplies only the selected proxy
+transport. Normal policy, dependency ancestry and cycle refusal still apply.
+This path supplies ordinary typed job findings, not independent source capture.
+It cannot replace the `service_evidence` required by GitHub checked-input
+admission. A missing required capture remains unavailable. Named service sources
+still require their service/capability grants.
+
 ### Invoke an adopted check as an agent
 
 An operator can add `invokers = ["forge"]` to a named job or service check.
