@@ -424,8 +424,11 @@ def operator_desktop(api: AdminAPI, agent_id: str, *, presentation=None, after_b
             assert re.fullmatch(rb"RFB [0-9]{3}\.[0-9]{3}\n", banner), (
                 f"desktop returned no live VNC banner: bytes_read={len(banner)}"
             )
+            observed = {"agent_id": agent_id, "page_status": 200, "page_bytes": len(page),
+                        "vnc_banner": banner.decode("ascii"),
+                        "observation_scope": "unlocked native desktop page and live VNC banner; no visual interaction"}
             if after_banner:
-                session = after_banner(websocket, cookie.split(";", 1)[0], url)
+                session = after_banner(websocket, cookie.split(";", 1)[0], url, observed)
     finally:
         connection.close()
     missing = "ag-" + uuid.uuid4().hex
@@ -435,9 +438,7 @@ def operator_desktop(api: AdminAPI, agent_id: str, *, presentation=None, after_b
         assert error.status_code == 404, f"missing desktop target did not report not found: status={error.status_code}"
     else:
         raise AssertionError("missing desktop target unexpectedly opened")
-    result = {"agent_id": agent_id, "url": presentation["url"], "page_status": 200,
-            "page_bytes": len(page), "vnc_banner": banner.decode("ascii"), "missing_target_status": 404,
-            "observation_scope": "unlocked native desktop page and live VNC banner; no visual interaction"}
+    result = {**observed, "url": presentation["url"], "missing_target_status": 404}
     if session is not None:
         result["session"] = session
     return result
@@ -458,6 +459,34 @@ def refused_viewer(url, cookie, *, retired=False):
         return "listener-closed"
 
 
+def desktop_action_observation(response: dict) -> dict:
+    """Retain bounded diagnostics without copying private response content."""
+    observed = {"http_status": response["status"], "reason": "unrecognized_response"}
+    try:
+        body = json.loads(response["body"])
+    except json.JSONDecodeError:
+        observed["reason"] = "non_json_response"
+        return observed
+    if not isinstance(body, dict):
+        return observed
+    diagnostic = body.get("diagnostic")
+    code = diagnostic.get("code") if isinstance(diagnostic, dict) else None
+    # These codes and errors come from the typed-action owner. Free text,
+    # operator_details and unknown fields can contain session material.
+    if code in ("host_settings_unavailable", "operator_preview_path_unavailable", "sandbox_unavailable",
+                "desktop_missing", "tailnet_serve_permission", "tailscale_command_unavailable",
+                "tailscale_disconnected", "tailnet_preview_unavailable"):
+        observed["reason"] = code
+    elif body.get("error") in ("Could not identify agent", "operator actions unavailable",
+                               "trusted current-run requester identity required",
+                               "requesting agent identity unavailable", "host agent registry unavailable",
+                               "host agent identity is ambiguous", "requesting agent was removed or replaced"):
+        observed["reason"] = body["error"]
+    elif body.get("status") == "pending_approval":
+        observed["reason"] = "pending_approval"
+    return observed
+
+
 def desktop_sharing(api, cli, root, worker, output):
     """Observe exact target/session binding and active viewer cessation."""
     from tests.blackbox.installed_shared_approvals import GUEST_REQUEST
@@ -476,13 +505,19 @@ def desktop_sharing(api, cli, root, worker, output):
         return json.loads(result.stdout)
 
     peer = operator_desktop(api, ids[PEER])
-    report["peer_positive"] = peer
+    report["peer_positive"] = {key: value for key, value in peer.items() if key != "url"}
+    save(path, report)
     for phase, ttl in (("revocation", 120), ("expiry", 10), ("stale-run", 120)):
         pending = request(worker, "POST", "/operator-actions",
                           {"action_id": "desktop.present", "parameters": {"ttl_seconds": ttl}})
-        assert pending["status"] == 202, "desktop capability unavailable in the selected guest"
-        identifier = pending["approval_id"]
+        phase_report = {"request": desktop_action_observation(pending)}
+        report["sessions"][phase] = phase_report
+        save(path, report)
+        assert pending["status"] == 202, f"desktop action request failed: {phase_report['request']}"
+        identifier = json.loads(pending["body"])["approval_id"]
         action = api.approval(identifier)["action"]
+        phase_report.update(approval_id=identifier, run=action["run"])
+        save(path, report)
         assert action["agent_id"] == ids[worker] and action["presentation"] == "local"
         delegation_path = "/admin/approval-delegations/bb-desktop"
         proposal = {"expected_revision": None, "delegation": {
@@ -511,11 +546,15 @@ def desktop_sharing(api, cli, root, worker, output):
                                {"decision": "approve", "delegation": "bb-desktop", "option": "once"})
             assert repeated["status"] == 200 and len(openings.read_text().splitlines()) == before + 1
 
-            def end_session(websocket, cookie, url):
+            def end_session(websocket, cookie, url, observed):
                 nonlocal revoked
-                observation = {"invalid_session": refused_viewer(url, "invalid=synthetic"),
-                               "wrong_target": refused_viewer(urlsplit(peer["url"]), cookie)}
-                report["sessions"][phase] = {"approval_id": identifier, "run": action["run"], **observation}
+                phase_report["positive"] = dict(observed)
+                save(path, report)
+                observation = {"invalid_session": refused_viewer(url, "invalid=synthetic")}
+                phase_report.update(observation)
+                save(path, report)
+                observation["wrong_target"] = refused_viewer(urlsplit(peer["url"]), cookie)
+                phase_report.update(observation)
                 save(path, report)
                 if phase == "revocation":
                     api._request("POST", delegation_path + "/revoke", json={"expected_revision": revision})
@@ -539,12 +578,12 @@ def desktop_sharing(api, cli, root, worker, output):
                 else:
                     raise AssertionError("retired desktop kept delivering viewer bytes")
                 observation["old_session"] = refused_viewer(url, cookie, retired=True)
-                report["sessions"][phase].update(observation)
+                phase_report.update(observation)
                 save(path, report)
                 return observation
 
             observed = operator_desktop(api, ids[worker], presentation=canonical["operator_preview"], after_banner=end_session)
-            report["sessions"][phase]["positive"] = observed
+            phase_report["positive"] = {key: value for key, value in observed.items() if key != "url"}
             save(path, report)
         finally:
             if not revoked:
@@ -710,7 +749,7 @@ def main() -> None:
         inspector = inspect_traffic(admin, args.output, args.agent, marker)
         receipt.checkpoint('origin')
         report = {
-            "status": "journeys_passed",
+            "status": "desktop_incomplete",
             "source_revision": args.install_commit,
             "platform": args.platform,
             "host": runtime["host"],
@@ -754,7 +793,7 @@ def main() -> None:
             report["operator"]["restart"] = operator_restart(
                 cli, config_dir, args.agent, marker, terminal, sinkhole, platform=args.platform,
             )
-            report["status"] = "journeys_passed"
+        report["status"] = "journeys_passed"
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         print(f"{args.platform} access: six installed guest journeys and operator effects verified ({args.output})")
     finally:

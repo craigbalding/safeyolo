@@ -2925,6 +2925,135 @@ def test_operator_traffic_distinguishes_policy_refusal_from_an_origin_response(m
     assert requests == [("GET", "http://evil.com/installed-flow/r3-owned/bbtest")]
 
 
+@pytest.mark.parametrize("status,body,reason", [
+    (409, {"diagnostic": {"code": "desktop_missing"}}, "desktop_missing"),
+    (409, {"diagnostic": {"code": "operator_preview_path_unavailable"}}, "operator_preview_path_unavailable"),
+    (403, {"error": "trusted current-run requester identity required"}, "trusted current-run requester identity required"),
+    (503, {"error": "operator actions unavailable"}, "operator actions unavailable"),
+    (400, {"error": "private-response"}, "unrecognized_response"),
+    (409, {"diagnostic": {"code": "private-response"}}, "unrecognized_response"),
+    (503, "private-response", "non_json_response"),
+    (503, ["private-response"], "unrecognized_response"),
+])
+def test_desktop_sharing_retains_peer_and_safe_request_failure(tmp_path, monkeypatch, status, body, reason):
+    (tmp_path / "policy.toml").write_text('[agents.worker]\nagent_id="ag-worker"\n[agents.bbpeer]\nagent_id="ag-peer"\n')
+    peer = {"agent_id": "ag-peer", "url": "http://peer.localhost:1234/?private-url",
+            "page_status": 200, "page_bytes": 100, "vnc_banner": "RFB 003.008\n"}
+    monkeypatch.setattr(installed_access, "operator_desktop", lambda api, agent: dict(peer))
+    if isinstance(body, dict):
+        body = {**body, "private": "private-response",
+                "diagnostic": {**body.get("diagnostic", {}), "message": "private-response",
+                               "operator_details": "private-response"}}
+    payload = body if isinstance(body, str) else json.dumps(body)
+
+    def command(arguments, *, timeout):
+        assert arguments[:4] == ["selected-cli", "agent", "shell", "worker"]
+        assert timeout == 60
+        words = shlex.split(arguments[-1])
+        assert words[:2] == ["python3", "-c"]
+        assert json.loads(words[-1]) == ["POST", "http://_safeyolo.proxy.internal/operator-actions",
+                                        {"action_id": "desktop.present", "parameters": {"ttl_seconds": 120}}]
+        return SimpleNamespace(stdout=json.dumps({"status": status, "body": payload, "approval_id": None}))
+
+    monkeypatch.delenv("SAFEYOLO_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(installed_access, "checked", command)
+    with pytest.raises(AssertionError, match="desktop action request failed") as error:
+        installed_access.desktop_sharing(SimpleNamespace(), "selected-cli", tmp_path, "worker", tmp_path / "access.json")
+    raw = (tmp_path / "desktop-effects.json").read_text()
+    report = json.loads(raw)
+    assert report["status"] == "incomplete"
+    assert report["peer_positive"] == {key: value for key, value in peer.items() if key != "url"}
+    assert report["sessions"] == {"revocation": {"request": {"http_status": status, "reason": reason}}}
+    assert "private-response" not in raw + str(error.value) and "private-url" not in raw
+
+
+@pytest.mark.parametrize("fail_cessation", [False, True])
+def test_desktop_sharing_uses_body_approval_and_saves_viewer_before_cessation(tmp_path, monkeypatch, fail_cessation):
+    (tmp_path / "policy.toml").write_text('[agents.worker]\nagent_id="ag-worker"\n[agents.bbpeer]\nagent_id="ag-peer"\n')
+    phases = ("revocation", "expiry", "stale-run")
+    current = {}
+    resolved = set()
+    revoked = []
+    approval_reads = []
+    observed = {"agent_id": "ag-worker", "page_status": 200, "page_bytes": 100, "vnc_banner": "RFB 003.008\n"}
+
+    def command(arguments, **kwargs):
+        if arguments[1:4] == ["agent", "shell", "worker"] or arguments[1:4] == ["agent", "shell", "bbpeer"]:
+            method, url, body = json.loads(shlex.split(arguments[-1])[-1])
+            if url.endswith("/operator-actions"):
+                assert method == "POST"
+                phase = phases[len(resolved)]
+                current.update(phase=phase, identifier="approval-" + phase, ending=False)
+                assert body["parameters"]["ttl_seconds"] == (10 if phase == "expiry" else 120)
+                payload = {"approval_id": current["identifier"], "status": "pending_approval"}
+                return SimpleNamespace(stdout=json.dumps({"status": 202, "body": json.dumps(payload),
+                                                          "approval_id": None}))
+            assert url.endswith("/approvals/" + current["identifier"] + "/resolve")
+            assert body == {"decision": "approve", "delegation": "bb-desktop", "option": "once"}
+            if current["identifier"] not in resolved:
+                with (tmp_path / "desktop-openings").open("a") as openings:
+                    openings.write("opened\n")
+                resolved.add(current["identifier"])
+            return SimpleNamespace(stdout=json.dumps({"status": 200, "body": "{}"}))
+        assert arguments[:3] == ["selected-cli", "--root", str(tmp_path)]
+        if arguments[3:5] == ["agent", "status"]:
+            return SimpleNamespace(stdout=json.dumps({"agent_id": "ag-worker", "run_id": "run-after"}))
+        assert arguments[3:5] in (["agent", "stop"], ["agent", "start"])
+        return SimpleNamespace(stdout="")
+
+    def approval(identifier):
+        approval_reads.append(identifier)
+        assert identifier == current["identifier"]
+        return {"action": {"agent_id": "ag-worker", "presentation": "local", "run": {"run_id": "run-before"}},
+                "result": {"status": "expired" if current["ending"] and current["phase"] == "expiry" else "started",
+                           "preview_active": True},
+                "operator_preview": {"private": "private-preview"}}
+
+    def admin(method, route, *, json):
+        if route.endswith("/preview"):
+            return {"after": json["delegation"], "acknowledgment": "owned", "authority": {}, "revision": 1}
+        if route.endswith("/revoke"):
+            revoked.append(current["phase"])
+        else:
+            assert route.endswith("/apply")
+
+    class Viewer:
+        def recv(self, *, timeout):
+            assert timeout == 8
+            assert json.loads((tmp_path / "desktop-effects.json").read_text())["sessions"][current["phase"]]["positive"] == observed
+            if fail_cessation:
+                return b"unexpected live bytes"
+            raise installed_access.ConnectionClosed(None, None)
+
+    def desktop(api, agent_id, *, presentation=None, after_banner=None):
+        if agent_id == "ag-peer":
+            return {**observed, "agent_id": agent_id, "url": "http://peer.localhost:1234/?private-url"}
+        assert presentation == {"private": "private-preview"}
+        current["ending"] = True
+        session = after_banner(Viewer(), "private-cookie", urlsplit("http://worker.localhost:1235"), observed)
+        return {**observed, "url": "http://worker.localhost:1235/?private-url", "session": session}
+
+    monkeypatch.delenv("SAFEYOLO_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(installed_access, "checked", command)
+    monkeypatch.setattr(installed_access, "operator_desktop", desktop)
+    monkeypatch.setattr(installed_access, "prepare_guest_tests", lambda *args: None)
+    monkeypatch.setattr(installed_access, "refused_viewer", lambda url, cookie, **kwargs: 410 if kwargs else 403)
+    api = SimpleNamespace(approval=approval, _request=admin)
+    if fail_cessation:
+        with pytest.raises(AssertionError, match="retired desktop kept delivering"):
+            installed_access.desktop_sharing(api, "selected-cli", tmp_path, "worker", tmp_path / "access.json")
+    else:
+        installed_access.desktop_sharing(api, "selected-cli", tmp_path, "worker", tmp_path / "access.json")
+    raw = (tmp_path / "desktop-effects.json").read_text()
+    report = json.loads(raw)
+    assert report["status"] == ("incomplete" if fail_cessation else "passed")
+    assert list(report["sessions"]) == list(phases[:1] if fail_cessation else phases)
+    assert report["sessions"]["revocation"]["positive"]["vnc_banner"] == "RFB 003.008\n"
+    assert len(revoked) == (1 if fail_cessation else 3)
+    assert approval_reads and None not in approval_reads
+    assert all(secret not in raw for secret in ("private-preview", "private-cookie", "private-url"))
+
+
 @pytest.mark.parametrize("failure,diagnosis", [
     (None, None),
     ("split-vnc", None),
@@ -3032,11 +3161,20 @@ def test_operator_desktop_reaches_unlocked_page_and_requires_vnc_and_missing_tar
             assert all(secret not in str(error.value) for secret in (
                 "synthetic-only", "fixture_preview=owned", "private response body"))
         else:
-            observed = installed_access.operator_desktop(api, "ag-owned")
+            callbacks = []
+
+            def after_banner(websocket, cookie, url, observed):
+                callbacks.append(dict(observed))
+                assert cookie == "fixture_preview=owned" and url.netloc == authority
+                assert observed["vnc_banner"] == "RFB 003.008\n" and "url" not in observed
+                return {"observed_before_cessation": True}
+
+            observed = installed_access.operator_desktop(api, "ag-owned", after_banner=after_banner)
             assert observed["agent_id"] == "ag-owned" and observed["missing_target_status"] == 404
             assert observed["page_status"] == 200 and observed["page_bytes"] == len(page)
             assert observed["vnc_banner"] == "RFB 003.008\n" and "unlock_code" not in observed
             assert observed["observation_scope"] == "unlocked native desktop page and live VNC banner; no visual interaction"
+            assert len(callbacks) == 1 and observed["session"] == {"observed_before_cessation": True}
         if failure in {"wrong-target", "nonlocal", "legacy-path"}:
             assert requests == []
         else:
