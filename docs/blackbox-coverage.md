@@ -2555,11 +2555,12 @@ Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; c
 - [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::substituted_artifacts_and_manifest_architecture_fail_before_spawn -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L106)
 - [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_artifacts_identify_role_path_and_os_error_before_discovery -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L135)
 - [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_or_failed_vm_report_cannot_make_a_successful_helper_exit_pass -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L193)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::deadline_kills_and_reaps_a_spinning_helper_before_returning -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L206)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::cancellation_stops_a_blocked_helper_and_preserves_no_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L236)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L262)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::template_identity_tracks_frozen_inputs_and_keeps_invocation_authority_separate -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L287)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::shutdown_removes_idle_templates_and_preserves_a_live_mapping_lease -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L332)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::reaped_helpers_never_signal_a_stale_process_group -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L206)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::deadline_kills_and_reaps_a_spinning_helper_before_returning -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L239)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::cancellation_stops_a_blocked_helper_and_preserves_no_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L269)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L295)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::template_identity_tracks_frozen_inputs_and_keeps_invocation_authority_separate -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L320)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::shutdown_removes_idle_templates_and_preserves_a_live_mapping_lease -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L365)
 
 <a id="witness-tests-proxy-contracts-test-agent-api-config-py"></a>
 ### [`tests/proxy_contracts/test_agent_api_config.py`](../tests/proxy_contracts/test_agent_api_config.py)

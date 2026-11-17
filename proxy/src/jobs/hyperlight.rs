@@ -306,6 +306,9 @@ impl Drop for Helper {
     fn drop(&mut self) {
         // Abort of the caller's future must also stop synchronous callbacks.
         // The unreaped leader pins this group ID until wait has completed.
+        if matches!(self.child.try_wait(), Ok(Some(_))) {
+            return;
+        }
         if let Some(group) = self.group {
             unsafe {
                 libc::kill(-(group as i32), libc::SIGKILL);
@@ -378,12 +381,25 @@ pub(crate) fn clear_templates(config: &Path) -> Result<(), Error> {
 }
 
 async fn stop(helper: &mut Helper) -> Result<HelperProcessStatus, Error> {
+    if let Some(status) = helper.child.try_wait()? {
+        helper.group = None;
+        return observed_status(status);
+    }
     if let Some(group) = helper.group
         && unsafe { libc::kill(-(group as i32), libc::SIGKILL) } != 0
     {
         let error = std::io::Error::last_os_error();
         if error.raw_os_error() != Some(libc::ESRCH) {
-            return Err(error.into());
+            // The helper can exit while delegated connections are closing,
+            // or between try_wait and kill. A signal error does not establish
+            // a live helper; only a reaped child proves disposal.
+            if let Some(status) = helper.child.try_wait()? {
+                helper.group = None;
+                return observed_status(status);
+            }
+            return Err(
+                format!("Hyperlight helper process group {group} SIGKILL failed: {error}").into(),
+            );
         }
     }
     let status = tokio::time::timeout(Duration::from_secs(5), helper.child.wait())
@@ -594,14 +610,18 @@ pub(super) async fn run(
         match task.await {
             Err(error) if error.is_cancelled() => {}
             Ok(Ok(())) => {}
-            Ok(Err(error)) => cleanup_errors.push(error.to_string()),
-            Err(error) => cleanup_errors.push(error.to_string()),
+            Ok(Err(error)) => cleanup_errors.push(format!(
+                "Hyperlight callback bridge cleanup failed: {error}"
+            )),
+            Err(error) => {
+                cleanup_errors.push(format!("Hyperlight callback bridge join failed: {error}"))
+            }
         }
     }
     if let Some(client) = delegation
         && let Err(error) = client.close().await
     {
-        cleanup_errors.push(error.to_string());
+        cleanup_errors.push(format!("Hyperlight delegation cleanup failed: {error}"));
     }
     if let Some(directory) = socket_directory {
         let path = directory.path().to_owned();

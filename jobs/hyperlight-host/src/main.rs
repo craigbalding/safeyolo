@@ -58,22 +58,37 @@ impl ServiceBridge {
             .deadline
             .checked_sub(monotonic_ms()?)
             .filter(|value| *value > 0)
-            .ok_or("host-call deadline exceeded")?;
+            .unwrap_or_else(|| unsafe { libc::_exit(124) });
         let mut stream = UnixStream::connect(path)?;
         stream.set_read_timeout(Some(Duration::from_millis(remaining)))?;
         stream.set_write_timeout(Some(Duration::from_millis(remaining)))?;
-        stream.write_all(&u32::try_from(message.len())?.to_be_bytes())?;
-        stream.write_all(message.as_bytes())?;
+        bridge_io(stream.write_all(&u32::try_from(message.len())?.to_be_bytes()))?;
+        bridge_io(stream.write_all(message.as_bytes()))?;
         let mut size = [0; 4];
-        stream.read_exact(&mut size)?;
+        bridge_io(stream.read_exact(&mut size))?;
         let size = u32::from_be_bytes(size) as usize;
         if size > LIMIT {
             return Err("host-call reply limit exceeded".into());
         }
         let mut bytes = vec![0; size];
-        stream.read_exact(&mut bytes)?;
+        bridge_io(stream.read_exact(&mut bytes))?;
         Ok(String::from_utf8(bytes)?)
     }
+}
+
+fn bridge_io<T>(result: io::Result<T>) -> io::Result<T> {
+    if result.as_ref().is_err_and(|error| {
+        matches!(
+            error.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+        )
+    }) {
+        // These blocking sockets use the invocation's remaining lifetime.
+        // Unix socket timeouts can report EAGAIN instead of ETIMEDOUT. End
+        // the helper like its watchdog, before a timeout becomes a VM error.
+        unsafe { libc::_exit(124) }
+    }
+    result
 }
 
 fn service_bridge(request: &Invocation) -> ServiceBridge {
@@ -519,9 +534,25 @@ mod tests {
         let parent = unsafe { libc::getppid() } as u32;
         guard_lifetime(
             if mode == "parent" { 0 } else { parent },
-            monotonic_ms().unwrap() + 200,
+            monotonic_ms().unwrap() + if mode.contains("bridge") { 2000 } else { 200 },
         )
         .unwrap();
+        if mode == "bridge" || mode == "expired-bridge" {
+            // Keep the watchdog later than the socket deadline so this child
+            // proves the callback's timeout outcome, including an expired call.
+            let path = std::env::temp_dir().join(format!("sy-held-{}.sock", std::process::id()));
+            let _listener = UnixListener::bind(&path).unwrap();
+            let bridge = ServiceBridge {
+                path: Some(path),
+                deadline: if mode == "bridge" {
+                    monotonic_ms().unwrap() + 40
+                } else {
+                    0
+                },
+            };
+            bridge.call("{}").unwrap();
+            panic!("held host call returned before its deadline");
+        }
         loop {
             if mode == "spin" {
                 std::hint::spin_loop();
@@ -533,7 +564,13 @@ mod tests {
 
     #[test]
     fn independent_guard_stops_spinning_and_blocked_work_and_lost_parent() {
-        for (mode, expected) in [("spin", 124), ("blocked", 124), ("parent", 125)] {
+        for (mode, expected) in [
+            ("spin", 124),
+            ("blocked", 124),
+            ("parent", 125),
+            ("bridge", 124),
+            ("expired-bridge", 124),
+        ] {
             let mut child = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "tests::lifetime_child", "--ignored"])
                 .env("SAFEYOLO_LIFETIME_TEST", mode)
@@ -553,6 +590,14 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(10));
             };
+            if mode.contains("bridge") {
+                fs::remove_file(std::env::temp_dir().join(format!("sy-held-{}.sock", child.id())))
+                    .unwrap();
+                assert!(
+                    started.elapsed() < Duration::from_secs(1),
+                    "{mode} reached the fallback watchdog"
+                );
+            }
             assert_eq!(status.code(), Some(expected), "{mode}");
         }
     }

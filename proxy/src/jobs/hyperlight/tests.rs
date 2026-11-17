@@ -206,6 +206,39 @@ async fn missing_or_failed_vm_report_cannot_make_a_successful_helper_exit_pass()
 }
 
 #[tokio::test]
+async fn reaped_helpers_never_signal_a_stale_process_group() {
+    for dropping in [false, true] {
+        // A completed wait releases the old group ID. Model its reuse with
+        // another owned process, so a stale signal is observable and contained.
+        let mut survivor = command(Path::new("/bin/sleep")).arg("999").spawn().unwrap();
+        let mut child = command(Path::new("/bin/sh"))
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        child.wait().await.unwrap();
+        let mut helper = Helper {
+            child,
+            group: survivor.id(),
+        };
+        if !dropping {
+            assert_eq!(
+                stop(&mut helper).await.unwrap(),
+                HelperProcessStatus::Exit { code: 0 }
+            );
+            assert!(helper.group.is_none());
+        }
+        drop(helper);
+        let survived = survivor.try_wait().unwrap().is_none();
+        survivor.kill().await.unwrap();
+        survivor.wait().await.unwrap();
+        assert!(
+            survived,
+            "reaped helper signalled the replacement group; drop={dropping}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn deadline_kills_and_reaps_a_spinning_helper_before_returning() {
     let (root, mut spec, config) = fixture("while :; do :; done");
     spec.timeout_seconds = 1;
