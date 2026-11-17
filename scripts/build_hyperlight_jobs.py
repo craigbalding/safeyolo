@@ -114,7 +114,7 @@ def copy_licenses(repository: Path, output: Path) -> None:
             )
         )
         for package in metadata["packages"]:
-            if package["source"] is None:
+            if package["id"] in metadata["workspace_members"]:
                 continue
             name = package["name"] + "-" + package["version"]
             dependencies[name] = {key: package[key] for key in ("name", "version", "license", "source")}

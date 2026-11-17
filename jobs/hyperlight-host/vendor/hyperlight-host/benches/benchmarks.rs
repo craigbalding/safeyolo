@@ -1,0 +1,908 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 The Hyperlight Authors.
+
+use std::sync::{Arc, Barrier, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use anyhow::{Result, bail};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use flatbuffers::FlatBufferBuilder;
+use hyperlight_common::flatbuffer_wrappers::ExternalValueSource;
+use hyperlight_common::flatbuffer_wrappers::function_call::{FunctionCall, FunctionCallType};
+use hyperlight_common::flatbuffer_wrappers::function_types::{Bytes, ParameterValue, ReturnType};
+use hyperlight_common::flatbuffer_wrappers::util::estimate_flatbuffer_capacity;
+use hyperlight_common::transport::ExternalValues;
+use hyperlight_common::vmem::PAGE_SIZE;
+use hyperlight_host::func::Registerable;
+use hyperlight_host::mem::shared_mem::ExclusiveSharedMemory;
+use hyperlight_host::sandbox::{Sandbox, SandboxConfiguration, UninitializedSandbox};
+use hyperlight_host::{GuestBinary, HostFunctions, SandboxBuilder};
+use hyperlight_testing::sandbox_sizes::{
+    LARGE_SCRATCH_SIZE, MEDIUM_SCRATCH_SIZE, SMALL_SCRATCH_SIZE,
+};
+use hyperlight_testing::{c_simple_guest_as_pathbuf, simple_guest_as_pathbuf};
+
+/// Sandbox scratch sizes for benchmarking.
+#[derive(Clone, Copy)]
+enum SandboxSize {
+    /// Default configuration (uses hyperlight defaults)
+    Default,
+    /// Small scratch: 8 MiB
+    Small,
+    /// Medium scratch: 64 MiB
+    Medium,
+    /// Large scratch: 256 MiB
+    Large,
+}
+
+impl SandboxSize {
+    /// Returns a builder for the simple guest, configured for this sandbox size.
+    fn builder(&self) -> SandboxBuilder {
+        SandboxBuilder::from_file(simple_guest_as_pathbuf()).scratch_size(self.scratch_size())
+    }
+
+    fn scratch_size(&self) -> usize {
+        match self {
+            Self::Default => SandboxConfiguration::DEFAULT_SCRATCH_SIZE,
+            Self::Small => SMALL_SCRATCH_SIZE,
+            Self::Medium => MEDIUM_SCRATCH_SIZE,
+            Self::Large => LARGE_SCRATCH_SIZE,
+        }
+    }
+
+    /// Returns the name of this size for use in benchmark identifiers.
+    fn name(&self) -> &str {
+        match self {
+            Self::Default => "default",
+            Self::Small => "small",
+            Self::Medium => "medium",
+            Self::Large => "large",
+        }
+    }
+
+    /// Returns all size variants for iteration.
+    const fn all() -> [SandboxSize; 4] {
+        [Self::Default, Self::Small, Self::Medium, Self::Large]
+    }
+}
+
+fn create_multiuse_sandbox_with_size(size: SandboxSize) -> Sandbox {
+    size.builder().build().unwrap()
+}
+
+// ============================================================================
+// Benchmark Category: Sandbox Lifecycle
+// ============================================================================
+
+fn bench_create_initialized(b: &mut criterion::Bencher, size: SandboxSize) {
+    // Ideally wanted to use b.iter_with_large_drop, but runs out of memory on windows runners: "The paging file is too small for this operation to complete."
+    b.iter_batched(
+        || (),
+        |_| create_multiuse_sandbox_with_size(size),
+        criterion::BatchSize::PerIteration,
+    );
+}
+
+fn bench_create_initialized_and_drop(b: &mut criterion::Bencher, size: SandboxSize) {
+    b.iter(|| create_multiuse_sandbox_with_size(size));
+}
+
+fn sandbox_lifecycle_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sandboxes");
+
+    for size in SandboxSize::all() {
+        group.bench_function(format!("create_initialized/{}", size.name()), |b| {
+            bench_create_initialized(b, size)
+        });
+    }
+
+    for size in SandboxSize::all() {
+        group.bench_function(
+            format!("create_initialized_and_drop/{}", size.name()),
+            |b| bench_create_initialized_and_drop(b, size),
+        );
+    }
+
+    // Isolates the cost of building a Sandbox from an
+    // already-resident Snapshot. The Snapshot is loaded outside the
+    // timed region.
+    for size in SandboxSize::all() {
+        group.bench_function(format!("sandbox_from_snapshot/{}", size.name()), |b| {
+            bench_sandbox_from_snapshot(b, size)
+        });
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// Benchmark Category: Guest Calls
+// ============================================================================
+
+fn bench_guest_call(b: &mut criterion::Bencher, size: SandboxSize) {
+    let mut sbox = create_multiuse_sandbox_with_size(size);
+    b.iter(|| sbox.call::<String>("Echo", "hello\n".to_string()).unwrap());
+}
+
+fn bench_guest_call_with_restore(b: &mut criterion::Bencher, size: SandboxSize) {
+    let mut sbox = create_multiuse_sandbox_with_size(size);
+    let snapshot = sbox.snapshot().unwrap();
+
+    b.iter(|| {
+        sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+        sbox.restore(snapshot.clone()).unwrap();
+    });
+}
+
+fn bench_guest_call_with_host_function(b: &mut criterion::Bencher, size: SandboxSize) {
+    let mut multiuse_sandbox = size
+        .builder()
+        .host_function("HostAdd", |a: i32, b: i32| Ok(a + b))
+        .build()
+        .unwrap();
+
+    b.iter(|| {
+        multiuse_sandbox
+            .call::<i32>("Add", (1_i32, 41_i32))
+            .unwrap()
+    });
+}
+
+fn bench_guest_call_different_thread(b: &mut criterion::Bencher, size: SandboxSize) {
+    b.iter_custom(|iters| {
+        let mut total_duration = Duration::ZERO;
+        let sbox = Arc::new(Mutex::new(create_multiuse_sandbox_with_size(size)));
+
+        for _ in 0..iters {
+            // Ensure vcpu is "bound" on this main thread
+            {
+                let mut sbox = sbox.lock().unwrap();
+                sbox.call::<String>("Echo", "warmup\n".to_string()).unwrap();
+            }
+
+            let barrier = Arc::new(Barrier::new(2));
+            let barrier_clone = Arc::clone(&barrier);
+            let sbox_clone = Arc::clone(&sbox);
+
+            let handle = thread::spawn(move || {
+                barrier_clone.wait();
+
+                let mut sbox = sbox_clone.lock().unwrap();
+                let start = Instant::now();
+                // Measure the first call after thread switch
+                sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+                start.elapsed()
+            });
+
+            barrier.wait();
+
+            total_duration += handle.join().unwrap();
+        }
+
+        total_duration
+    });
+}
+
+fn bench_guest_call_interrupt_latency(b: &mut criterion::Bencher, size: SandboxSize) {
+    b.iter_custom(|iters| {
+        let mut total_interrupt_latency = Duration::ZERO;
+
+        for _ in 0..iters {
+            let mut sbox = create_multiuse_sandbox_with_size(size);
+            let interrupt_handle = sbox.interrupt_handle();
+
+            let start_barrier = Arc::new(Barrier::new(2));
+            let start_barrier_clone = Arc::clone(&start_barrier);
+
+            let observer_thread = thread::spawn(move || {
+                start_barrier_clone.wait();
+
+                // Small delay to ensure the guest function is running in VM before interrupting
+                thread::sleep(std::time::Duration::from_millis(10));
+                let kill_start = Instant::now();
+                assert!(interrupt_handle.kill());
+                kill_start
+            });
+
+            start_barrier.wait();
+
+            let result = sbox.call::<i32>("Spin", ());
+
+            let call_end = Instant::now();
+            let kill_start = observer_thread.join().unwrap();
+
+            assert!(
+                matches!(
+                    result,
+                    Err(hyperlight_host::HyperlightError::ExecutionCanceledByHost())
+                ),
+                "Guest function should be interrupted"
+            );
+
+            total_interrupt_latency += call_end.duration_since(kill_start);
+        }
+
+        total_interrupt_latency
+    });
+}
+
+/// Writes half of scratch to heap the guest has not touched since the last restore.
+fn bench_guest_call_heap_first_touch(b: &mut criterion::Bencher, size: SandboxSize) {
+    let touch_size = (size.scratch_size() / 2) as u64;
+    let mut sbox = create_multiuse_sandbox_with_size(size);
+    let snapshot = sbox.snapshot().unwrap();
+
+    b.iter_custom(|iters| {
+        let mut total_duration = Duration::ZERO;
+        for _ in 0..iters {
+            sbox.restore(snapshot.clone()).unwrap();
+            let start = Instant::now();
+            sbox.call::<()>("AllocAndWritePattern", touch_size).unwrap();
+            total_duration += start.elapsed();
+        }
+        total_duration
+    });
+}
+
+fn guest_calls_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("guest_calls");
+
+    for size in SandboxSize::all() {
+        group.bench_function(format!("call/{}", size.name()), |b| {
+            bench_guest_call(b, size)
+        });
+    }
+
+    for size in SandboxSize::all() {
+        group.bench_function(format!("call_with_restore/{}", size.name()), |b| {
+            bench_guest_call_with_restore(b, size)
+        });
+    }
+
+    for size in SandboxSize::all() {
+        group.bench_function(format!("call_with_host_function/{}", size.name()), |b| {
+            bench_guest_call_with_host_function(b, size)
+        });
+    }
+
+    group.bench_function("different_thread".to_string(), |b| {
+        bench_guest_call_different_thread(b, SandboxSize::Default)
+    });
+
+    group.bench_function("interrupt_latency".to_string(), |b| {
+        bench_guest_call_interrupt_latency(b, SandboxSize::Default)
+    });
+
+    // Default scratch is mostly fixed reservations, so half of it does not fit.
+    for size in [SandboxSize::Small, SandboxSize::Medium, SandboxSize::Large] {
+        group.bench_function(format!("heap_first_touch/{}", size.name()), |b| {
+            bench_guest_call_heap_first_touch(b, size)
+        });
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// Benchmark Category: Snapshots
+// ============================================================================
+
+fn bench_snapshot_create(b: &mut criterion::Bencher, size: SandboxSize) {
+    b.iter_custom(|iters| {
+        let mut sbox = create_multiuse_sandbox_with_size(size);
+        let mut total_duration = Duration::ZERO;
+
+        for _ in 0..iters {
+            // Make a call to modify memory
+            sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+
+            // Measure only the snapshot creation time
+            let start = Instant::now();
+            let snapshot = sbox.snapshot().unwrap();
+            total_duration += start.elapsed();
+
+            std::hint::black_box(snapshot);
+        }
+
+        total_duration
+    });
+}
+
+fn bench_snapshot_restore(b: &mut criterion::Bencher, size: SandboxSize) {
+    b.iter_custom(|iters| {
+        let mut sbox = create_multiuse_sandbox_with_size(size);
+        // Create initial snapshot
+        let snapshot = sbox.snapshot().unwrap();
+        let mut total_duration = Duration::ZERO;
+
+        for _ in 0..iters {
+            // Make a call to modify memory
+            sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+
+            // Measure only the restore time
+            let start = Instant::now();
+            sbox.restore(snapshot.clone()).unwrap();
+            total_duration += start.elapsed();
+        }
+
+        total_duration
+    });
+}
+
+/// Includes the call, which pays for any memory remapping done by the previous snapshot.
+fn bench_snapshot_call_and_create(b: &mut criterion::Bencher, size: SandboxSize) {
+    b.iter_custom(|iters| {
+        let mut sbox = create_multiuse_sandbox_with_size(size);
+        let mut total_duration = Duration::ZERO;
+
+        for _ in 0..iters {
+            let start = Instant::now();
+            sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+            let snapshot = sbox.snapshot().unwrap();
+            total_duration += start.elapsed();
+
+            std::hint::black_box(snapshot);
+        }
+
+        total_duration
+    });
+}
+
+/// Restores alternate between two snapshots, so the target memory is never the current one.
+fn bench_snapshot_restore_alternate(b: &mut criterion::Bencher, size: SandboxSize) {
+    b.iter_custom(|iters| {
+        let mut sbox = create_multiuse_sandbox_with_size(size);
+        let first = sbox.snapshot().unwrap();
+        sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+        let snapshots = [first, sbox.snapshot().unwrap()];
+        let mut total_duration = Duration::ZERO;
+
+        for i in 0..iters {
+            sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+
+            let start = Instant::now();
+            sbox.restore(snapshots[(i % 2) as usize].clone()).unwrap();
+            total_duration += start.elapsed();
+        }
+
+        total_duration
+    });
+}
+
+fn bench_sandbox_from_snapshot(b: &mut criterion::Bencher, size: SandboxSize) {
+    use hyperlight_host::HostFunctions;
+    use hyperlight_host::sandbox::snapshot::{OciTag, Snapshot};
+
+    let dir = tempfile::tempdir().unwrap();
+    let snap_path = dir.path().join("bench");
+    let tag = OciTag::new("latest").unwrap();
+    {
+        let mut sbox = create_multiuse_sandbox_with_size(size);
+        let snapshot = sbox.snapshot().unwrap();
+        snapshot.save(&snap_path, &tag).unwrap();
+    }
+    let loaded = std::sync::Arc::new(Snapshot::checked_load(&snap_path, tag).unwrap());
+
+    // Drop is not included.
+    b.iter_batched(
+        || (),
+        |_| Sandbox::from_snapshot(loaded.clone(), HostFunctions::default(), None).unwrap(),
+        criterion::BatchSize::PerIteration,
+    );
+}
+
+fn snapshots_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("snapshots");
+
+    for size in SandboxSize::all() {
+        group.bench_function(format!("create/{}", size.name()), |b| {
+            bench_snapshot_create(b, size)
+        });
+    }
+
+    for size in SandboxSize::all() {
+        group.bench_function(format!("restore/{}", size.name()), |b| {
+            bench_snapshot_restore(b, size)
+        });
+    }
+
+    for size in SandboxSize::all() {
+        group.bench_function(format!("call_and_create/{}", size.name()), |b| {
+            bench_snapshot_call_and_create(b, size)
+        });
+    }
+
+    for size in SandboxSize::all() {
+        group.bench_function(format!("restore_alternate/{}", size.name()), |b| {
+            bench_snapshot_restore_alternate(b, size)
+        });
+    }
+
+    group.finish();
+}
+
+/// Measure sandbox creation from snapshots and restore latency.
+/// Capture and host-function registration stay outside the timed regions.
+fn retained_buffers_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("retained_buffers");
+    let host_funcs = || {
+        let mut fns = HostFunctions::default();
+        fns.register_host_function("HostEchoByteChunks", |input: Vec<Bytes>| Ok(input))
+            .unwrap();
+        fns
+    };
+
+    let new_sandbox = || {
+        SandboxBuilder::from_file(simple_guest_as_pathbuf())
+            .guest_log_level(tracing_core::LevelFilter::OFF)
+            .host_functions(host_funcs())
+            .build()
+            .unwrap()
+    };
+
+    let mut bench = |name: &str, mut sandbox: Sandbox| {
+        let snapshot = sandbox.snapshot().unwrap();
+        group.bench_function(BenchmarkId::new("from_snapshot", name), |b| {
+            b.iter_batched(
+                host_funcs,
+                |fns| Sandbox::from_snapshot(snapshot.clone(), fns, None).unwrap(),
+                criterion::BatchSize::PerIteration,
+            );
+        });
+
+        group.bench_function(BenchmarkId::new("restore", name), |b| {
+            b.iter_custom(|iterations| {
+                let mut elapsed = Duration::ZERO;
+
+                for _ in 0..iterations {
+                    sandbox.call::<String>("Echo", "hello".to_string()).unwrap();
+
+                    let start = Instant::now();
+                    sandbox.restore(snapshot.clone()).unwrap();
+                    elapsed += start.elapsed();
+                }
+
+                elapsed
+            });
+        });
+
+        group.bench_function(BenchmarkId::new("restore_and_first_request", name), |b| {
+            sandbox.call::<String>("Echo", "hello".to_string()).unwrap();
+            b.iter(|| {
+                sandbox.restore(snapshot.clone()).unwrap();
+                sandbox.call::<String>("Echo", "hello".to_string()).unwrap()
+            });
+        });
+    };
+
+    bench("none", new_sandbox());
+
+    let mut sandbox = new_sandbox();
+    let payload = vec![Bytes::from(vec![0xa5; 2 * PAGE_SIZE])];
+
+    for func in ["RetainGuestByteChunks", "RetainHostByteChunks"] {
+        let retained: i32 = sandbox.call(func, payload.clone()).unwrap();
+        assert_eq!(retained as usize, 2 * PAGE_SIZE);
+    }
+
+    bench("both", sandbox);
+
+    group.finish();
+}
+
+// ============================================================================
+// Benchmark Category: Guest Calls (Large Parameters)
+// ============================================================================
+
+fn guest_call_benchmark_large_param(c: &mut Criterion) {
+    let mut group = c.benchmark_group("guest_functions_with_large_parameters");
+    #[cfg(target_os = "windows")]
+    group.sample_size(10); // This benchmark is very slow on Windows, so we reduce the sample size to avoid long test runs.
+
+    group.bench_function("guest_call_with_large_parameters", |b| {
+        const SIZE: usize = 50 * 1024 * 1024; // 50 MB
+        const MIB: usize = 1024 * 1024;
+        let large_vec = vec![0u8; SIZE];
+        let large_string = String::from_utf8(large_vec.clone()).unwrap();
+
+        let mut config = SandboxConfiguration::default();
+        config.set_h2g_buffer_size(4 * MIB);
+        config.set_h2g_pool_pages((2 * SIZE + 8 * MIB).div_ceil(PAGE_SIZE));
+        config.set_scratch_size(9 * SIZE);
+
+        let sandbox = UninitializedSandbox::new(
+            GuestBinary::FilePath(simple_guest_as_pathbuf()),
+            Some(config),
+        )
+        .unwrap();
+        let mut sandbox = sandbox.evolve().unwrap();
+
+        b.iter_with_setup(
+            || (large_vec.clone(), large_string.clone()),
+            |(vec_clone, string_clone)| {
+                sandbox
+                    .call::<()>("LargeParameters", (vec_clone, string_clone))
+                    .unwrap()
+            },
+        );
+    });
+
+    group.finish();
+}
+
+// ============================================================================
+// Benchmark Category: Function Call Codec
+// ============================================================================
+
+enum BenchExternalValue<'a> {
+    Bytes(&'a [u8]),
+    Chunks(&'a [Bytes]),
+}
+
+struct BenchExternalSource<'a> {
+    value: Option<BenchExternalValue<'a>>,
+}
+
+impl<'a> BenchExternalSource<'a> {
+    fn new(value: BenchExternalValue<'a>) -> Self {
+        Self { value: Some(value) }
+    }
+}
+
+impl ExternalValueSource for BenchExternalSource<'_> {
+    fn take_bytes(&mut self, length: usize) -> Result<Vec<u8>> {
+        let Some(BenchExternalValue::Bytes(value)) = self.value.take() else {
+            bail!("expected external bytes");
+        };
+        if value.len() != length {
+            bail!(
+                "external byte length mismatch: expected {length}, got {}",
+                value.len()
+            );
+        }
+        Ok(value.to_vec())
+    }
+
+    fn take_chunks(&mut self, length: usize) -> Result<Vec<Bytes>> {
+        let Some(BenchExternalValue::Chunks(value)) = self.value.take() else {
+            bail!("expected external byte chunks");
+        };
+        let actual = value.iter().map(Bytes::len).sum::<usize>();
+        if actual != length {
+            bail!("external chunk length mismatch: expected {length}, got {actual}");
+        }
+        Ok(value.to_vec())
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        if self.value.is_some() {
+            bail!("external value was not consumed");
+        }
+        Ok(())
+    }
+}
+
+fn codec_benchmark_call(parameter: ParameterValue) -> FunctionCall {
+    FunctionCall::new(
+        "TestFunction".to_string(),
+        Some(vec![
+            parameter,
+            ParameterValue::String("argument".to_string()),
+            ParameterValue::Int(42),
+            ParameterValue::Bool(true),
+        ]),
+        FunctionCallType::Guest,
+        ReturnType::Int,
+    )
+}
+
+fn function_call_codec_benchmark(c: &mut Criterion) {
+    const PAYLOAD_SIZE: usize = 10 * 1024 * 1024;
+    const CHUNK_SIZE: usize = 256 * 1024;
+
+    let vec_bytes = vec![1; PAYLOAD_SIZE];
+    let byte_chunks = (0..PAYLOAD_SIZE / CHUNK_SIZE)
+        .map(|_| Bytes::from(vec![1; CHUNK_SIZE]))
+        .collect::<Vec<_>>();
+
+    let vec_call = codec_benchmark_call(ParameterValue::VecBytes(vec_bytes.clone()));
+    let chunk_call = codec_benchmark_call(ParameterValue::ByteChunks(byte_chunks.clone()));
+    let mut group = c.benchmark_group("function_call_codec");
+
+    for (name, function_call) in [("vec_bytes", &vec_call), ("byte_chunks", &chunk_call)] {
+        group.bench_function(BenchmarkId::new("encode_control", name), |b| {
+            b.iter(|| {
+                let estimated_capacity = estimate_flatbuffer_capacity(
+                    &function_call.function_name,
+                    function_call.parameters.as_deref().unwrap_or_default(),
+                );
+                let mut builder = FlatBufferBuilder::with_capacity(estimated_capacity);
+                let mut exts = ExternalValues::new();
+
+                let control = function_call.encode(&mut builder, &mut exts).unwrap();
+                std::hint::black_box((control, exts.total_len()));
+            });
+        });
+    }
+
+    let mut builder = FlatBufferBuilder::new();
+    let mut external_values = ExternalValues::new();
+
+    let vec_control = vec_call
+        .encode(&mut builder, &mut external_values)
+        .unwrap()
+        .to_vec();
+
+    group.bench_function("decode_vec_bytes_copy", |b| {
+        b.iter(|| {
+            let mut src = BenchExternalSource::new(BenchExternalValue::Bytes(&vec_bytes));
+            let function_call = FunctionCall::decode(&vec_control, &mut src).unwrap();
+            std::hint::black_box(function_call);
+        });
+    });
+
+    let mut builder = FlatBufferBuilder::new();
+    let mut external_values = ExternalValues::new();
+
+    let chunk_control = chunk_call
+        .encode(&mut builder, &mut external_values)
+        .unwrap()
+        .to_vec();
+
+    group.bench_function("decode_byte_chunks_owner_backed", |b| {
+        b.iter(|| {
+            let mut src = BenchExternalSource::new(BenchExternalValue::Chunks(&byte_chunks));
+            let function_call = FunctionCall::decode(&chunk_control, &mut src).unwrap();
+            std::hint::black_box(function_call);
+        });
+    });
+
+    group.finish();
+}
+
+// ============================================================================
+// Benchmark Category: Sample Workloads
+// ============================================================================
+
+fn sample_workloads_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sample_workloads");
+
+    fn bench_24k_in_8k_out(b: &mut criterion::Bencher, guest_path: std::path::PathBuf) {
+        let mut cfg = SandboxConfiguration::default();
+        cfg.set_h2g_pool_pages(8);
+
+        let mut sandbox = UninitializedSandbox::new(GuestBinary::FilePath(guest_path), Some(cfg))
+            .unwrap()
+            .evolve()
+            .unwrap();
+
+        b.iter_with_setup(
+            || vec![1; 24 * 1024],
+            |input| {
+                let ret: Vec<u8> = sandbox.call("24K_in_8K_out", (input,)).unwrap();
+                assert_eq!(ret.len(), 8 * 1024, "Expected output length to be 8K");
+                std::hint::black_box(ret);
+            },
+        );
+    }
+
+    group.bench_function("24K_in_8K_out_c", |b| {
+        bench_24k_in_8k_out(b, c_simple_guest_as_pathbuf());
+    });
+
+    group.bench_function("24K_in_8K_out_rust", |b| {
+        bench_24k_in_8k_out(b, simple_guest_as_pathbuf());
+    });
+
+    group.finish();
+}
+
+// ============================================================================
+// Benchmark Category: Shared Memory Operations
+// ============================================================================
+
+fn shared_memory_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("shared_memory");
+
+    let sizes: &[(usize, &str)] = &[(1024 * 1024, "1MB"), (64 * 1024 * 1024, "64MB")];
+
+    // Benchmark fill
+    for &(size, name) in sizes {
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(BenchmarkId::new("fill", name), &size, |b, &size| {
+            let eshm = ExclusiveSharedMemory::new(size).unwrap();
+            let (mut hshm, _) = eshm.build();
+            b.iter(|| {
+                hshm.fill(0xAB, 0, size).unwrap();
+            });
+        });
+    }
+
+    // Benchmark copy_to_slice (read from shared memory)
+    for &(size, name) in sizes {
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(
+            BenchmarkId::new("copy_to_slice", name),
+            &size,
+            |b, &size| {
+                let eshm = ExclusiveSharedMemory::new(size).unwrap();
+                let (hshm, _) = eshm.build();
+                let mut dst = vec![0u8; size];
+                b.iter(|| {
+                    hshm.copy_to_slice(&mut dst, 0).unwrap();
+                });
+            },
+        );
+    }
+
+    // Benchmark copy_from_slice (write to shared memory)
+    for &(size, name) in sizes {
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(
+            BenchmarkId::new("copy_from_slice", name),
+            &size,
+            |b, &size| {
+                let eshm = ExclusiveSharedMemory::new(size).unwrap();
+                let (hshm, _) = eshm.build();
+                let src = vec![0xCDu8; size];
+                b.iter(|| {
+                    hshm.copy_from_slice(&src, 0).unwrap();
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// ============================================================================
+// Benchmark Category: Snapshot Files
+// ============================================================================
+
+fn snapshot_file_benchmark(c: &mut Criterion) {
+    use hyperlight_host::HostFunctions;
+    use hyperlight_host::sandbox::snapshot::{OciTag, Snapshot};
+
+    let mut group = c.benchmark_group("snapshot_files");
+
+    // Pre-create OCI snapshot images for all sizes.
+    let dirs: Vec<_> = SandboxSize::all()
+        .iter()
+        .map(|size| {
+            let dir = tempfile::tempdir().unwrap();
+            let snap_path = dir.path().join(size.name());
+            let snapshot = {
+                let mut sbox = create_multiuse_sandbox_with_size(*size);
+                sbox.snapshot().unwrap()
+            };
+            snapshot
+                .save(&snap_path, &OciTag::new("latest").unwrap())
+                .unwrap();
+            (dir, snapshot, snap_path)
+        })
+        .collect();
+
+    // Benchmark: save_snapshot. Wipe the layout between iterations
+    // so each save measures a fresh write rather than a tag-append.
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_dir = tempfile::tempdir().unwrap();
+        let path = snap_dir.path().join("bench");
+        let snapshot = &dirs[i].1;
+        group.bench_function(format!("save_snapshot/{}", size.name()), |b| {
+            b.iter_batched(
+                || {
+                    let _ = std::fs::remove_dir_all(&path);
+                },
+                |_| {
+                    snapshot
+                        .save(&path, &OciTag::new("latest").unwrap())
+                        .unwrap()
+                },
+                criterion::BatchSize::PerIteration,
+            );
+        });
+    }
+
+    // Benchmark: load_snapshot (parse manifest + config + mmap blob).
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_path = dirs[i].2.clone();
+        group.bench_function(format!("load_snapshot/{}", size.name()), |b| {
+            b.iter(|| {
+                let _ = Snapshot::checked_load(&snap_path, OciTag::new("latest").unwrap()).unwrap();
+            });
+        });
+    }
+
+    // Benchmark: load_snapshot_unchecked (skip blob digest verification).
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_path = dirs[i].2.clone();
+        group.bench_function(format!("load_snapshot_unverified/{}", size.name()), |b| {
+            b.iter(|| {
+                let _ = Snapshot::load(&snap_path, OciTag::new("latest").unwrap()).unwrap();
+            });
+        });
+    }
+
+    // Benchmark: cold_start_via_evolve (new + evolve + call). Drop is not included.
+    for size in SandboxSize::all() {
+        group.bench_function(format!("cold_start_via_evolve/{}", size.name()), |b| {
+            b.iter_batched(
+                || (),
+                |_| {
+                    let mut sbox = create_multiuse_sandbox_with_size(size);
+                    sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+                    sbox
+                },
+                criterion::BatchSize::PerIteration,
+            );
+        });
+    }
+
+    // Benchmark: cold_start_via_snapshot (load + from_snapshot + call). Drop is not included.
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_path = dirs[i].2.clone();
+        group.bench_function(format!("cold_start_via_snapshot/{}", size.name()), |b| {
+            b.iter_batched(
+                || (),
+                |_| {
+                    let loaded =
+                        Snapshot::checked_load(&snap_path, OciTag::new("latest").unwrap()).unwrap();
+                    let mut sbox = Sandbox::from_snapshot(
+                        std::sync::Arc::new(loaded),
+                        HostFunctions::default(),
+                        None,
+                    )
+                    .unwrap();
+                    sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+                    sbox
+                },
+                criterion::BatchSize::PerIteration,
+            );
+        });
+    }
+
+    // Benchmark: cold_start_via_snapshot_unverified (load unverified + from_snapshot + call). Drop is not included.
+    for (i, size) in SandboxSize::all().iter().enumerate() {
+        let snap_path = dirs[i].2.clone();
+        group.bench_function(
+            format!("cold_start_via_snapshot_unverified/{}", size.name()),
+            |b| {
+                b.iter_batched(
+                    || (),
+                    |_| {
+                        let loaded =
+                            Snapshot::load(&snap_path, OciTag::new("latest").unwrap()).unwrap();
+                        let mut sbox = Sandbox::from_snapshot(
+                            std::sync::Arc::new(loaded),
+                            HostFunctions::default(),
+                            None,
+                        )
+                        .unwrap();
+                        sbox.call::<String>("Echo", "hello\n".to_string()).unwrap();
+                        sbox
+                    },
+                    criterion::BatchSize::PerIteration,
+                );
+            },
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group! {
+    name = benches;
+    config = Criterion::default();
+    targets =
+        sandbox_lifecycle_benchmark,
+        guest_calls_benchmark,
+        snapshots_benchmark,
+        retained_buffers_benchmark,
+        guest_call_benchmark_large_param,
+        function_call_codec_benchmark,
+        sample_workloads_benchmark,
+        shared_memory_benchmark,
+        snapshot_file_benchmark
+}
+criterion_main!(benches);

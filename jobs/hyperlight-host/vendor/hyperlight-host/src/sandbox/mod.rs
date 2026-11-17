@@ -1,0 +1,145 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 The Hyperlight Authors.
+
+/// Functionality for creating and configuring `Sandbox`es.
+pub mod builder;
+/// Configuration needed to establish a sandbox.
+pub mod config;
+/// Host-side file mapping preparation for `map_file_cow`.
+pub(crate) mod file_mapping;
+/// Functionality for reading, but not modifying host functions
+pub(crate) mod host_funcs;
+/// Functionality for dealing with initialized sandboxes that can
+/// call 0 or more guest functions
+mod initialized;
+/// Deprecated path for the items in the `initialized` module.
+#[deprecated(since = "0.18.0", note = "use hyperlight_host::sandbox")]
+pub mod initialized_multi_use {
+    #[allow(deprecated)]
+    pub use super::initialized::MultiUseSandbox;
+    pub use super::initialized::{PtRootFinder, Sandbox, SandboxStatus};
+}
+pub(crate) mod outb;
+/// Functionality for creating uninitialized sandboxes, manipulating them,
+/// and converting them to initialized sandboxes.
+pub mod uninitialized;
+/// Functionality for properly converting `UninitializedSandbox`es to
+/// initialized `Sandbox`es.
+pub(crate) mod uninitialized_evolve;
+
+/// Representation of a snapshot of a `Sandbox`.
+pub mod snapshot;
+
+/// Trait used by the macros to paper over the differences between hyperlight and hyperlight-wasm
+mod callable;
+
+/// Module for tracing guest execution
+#[cfg(feature = "trace_guest")]
+pub(crate) mod trace;
+
+/// Trait used by the macros to paper over the differences between hyperlight and hyperlight-wasm
+pub use callable::Callable;
+/// Re-export for `SandboxConfiguration` type
+pub use config::SandboxConfiguration;
+/// Re-export for the deprecated `MultiUseSandbox` name
+#[allow(deprecated)]
+pub use initialized::MultiUseSandbox;
+/// Re-export for the `Sandbox` type
+pub use initialized::{PtRootFinder, Sandbox, SandboxStatus, SnapshotMemoryReader};
+/// Re-export for `GuestBinary` type
+pub use uninitialized::GuestBinary;
+/// Re-export for `UninitializedSandbox` type
+pub use uninitialized::UninitializedSandbox;
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::thread;
+
+    use crossbeam_queue::ArrayQueue;
+    use hyperlight_testing::simple_guest_as_pathbuf;
+
+    use crate::sandbox::uninitialized::GuestBinary;
+    use crate::{Sandbox, UninitializedSandbox, new_error};
+
+    #[test]
+    fn check_create_and_use_sandbox_on_different_threads() {
+        let unintializedsandbox_queue = Arc::new(ArrayQueue::<UninitializedSandbox>::new(10));
+        let sandbox_queue = Arc::new(ArrayQueue::<Sandbox>::new(10));
+
+        for i in 0..10 {
+            let simple_guest_path = simple_guest_as_pathbuf();
+            let unintializedsandbox =
+                UninitializedSandbox::new(GuestBinary::FilePath(simple_guest_path), None)
+                    .unwrap_or_else(|_| panic!("Failed to create UninitializedSandbox {}", i));
+
+            unintializedsandbox_queue
+                .push(unintializedsandbox)
+                .unwrap_or_else(|_| panic!("Failed to push UninitializedSandbox {}", i));
+        }
+
+        let thread_handles = (0..10)
+            .map(|i| {
+                let uq = unintializedsandbox_queue.clone();
+                let sq = sandbox_queue.clone();
+                thread::spawn(move || {
+                    let uninitialized_sandbox = uq.pop().unwrap_or_else(|| {
+                        panic!("Failed to pop UninitializedSandbox thread {}", i)
+                    });
+                    let host_funcs = uninitialized_sandbox
+                        .host_funcs
+                        .try_lock()
+                        .map_err(|_| new_error!("Error locking"));
+
+                    assert!(host_funcs.is_ok());
+
+                    host_funcs
+                        .unwrap()
+                        .host_print(format!(
+                            "Printing from UninitializedSandbox on Thread {}\n",
+                            i
+                        ))
+                        .unwrap();
+
+                    let sandbox = uninitialized_sandbox.evolve().unwrap_or_else(|_| {
+                        panic!("Failed to initialize UninitializedSandbox thread {}", i)
+                    });
+
+                    sq.push(sandbox).unwrap_or_else(|_| {
+                        panic!("Failed to push UninitializedSandbox thread {}", i)
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in thread_handles {
+            handle.join().unwrap();
+        }
+
+        let thread_handles = (0..10)
+            .map(|i| {
+                let sq = sandbox_queue.clone();
+                thread::spawn(move || {
+                    let sandbox = sq
+                        .pop()
+                        .unwrap_or_else(|| panic!("Failed to pop Sandbox thread {}", i));
+                    let host_funcs = sandbox
+                        .host_funcs
+                        .try_lock()
+                        .map_err(|_| new_error!("Error locking"));
+
+                    assert!(host_funcs.is_ok());
+
+                    host_funcs
+                        .unwrap()
+                        .host_print(format!("Print from Sandbox on Thread {}\n", i))
+                        .unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in thread_handles {
+            handle.join().unwrap();
+        }
+    }
+}

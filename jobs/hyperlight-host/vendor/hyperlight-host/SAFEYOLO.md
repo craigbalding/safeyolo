@@ -1,0 +1,26 @@
+# Build metadata without a wall-clock timestamp
+
+Source: the Apache-2.0-licensed crates.io `hyperlight-host` 0.19.0 package,
+upstream commit `a03088470d822b538d2525ef9a5ae9e29daea1e8`.
+The published archive SHA-256 is
+`48ed7feb4bdb2ea3fe07de299f9fb1cbc4246c91991d6ccc2a29eb387f7c7625`.
+The upstream library, build script, tests, examples and benches are retained.
+Standalone debugger and host performance-tuning scripts are omitted.
+`LICENSE` and `NOTICE` contain the upstream texts also shipped in
+SafeYolo's `jobs/licenses` directory.
+Repository hooks normalize trailing whitespace in comments and README text.
+
+The patch removes built's `chrono` feature from both manifests and removes
+the sole `BUILT_TIME_UTC` log line in `src/lib.rs`. Builds no longer generate
+or log that informational timestamp. The `build-metadata` feature and built's
+`git2` feature remain enabled by the current Unikraft consumer. Package,
+compiler, target, profile and available Git metadata still use the existing
+build script. A local checkout can supply Git metadata from its containing
+repository; a source archive can have no Git metadata.
+
+Runtime code, backend selection, guest ABI and SafeYolo's helper identity are
+unchanged. Optional crashdump and upstream development features can still
+select chrono. The copied standalone lockfile includes those dependencies;
+it is separate from SafeYolo's selected normal/build feature graph.
+Upstream integration tests require their own guest fixtures and tools; the
+SafeYolo helper's focused tests do not require those fixtures or a guest boot.
