@@ -435,6 +435,56 @@ manual runs without `packages_only=true` keep the full contract matrix.
 
 ### Disposable development instance
 
+For an acceptance command, use `instance run --ephemeral`. Run it from the
+acceptance script's working directory, as the host account that owns the
+prepared guest assets. Build a matching candidate bundle first with the
+[bundle build instructions](installation.md#build-a-bundle). In this example,
+put that unpacked bundle at `$HOME/sy-candidate` and prepare
+`./acceptance-test.sh`. Keep the candidate bundle available until cleanup
+finishes; the runner selects its tools without copying the bundle.
+The script uses `safeyolo` from PATH. It can change
+the fresh configuration before calling `safeyolo start` or starting agents.
+The runner initializes the instance; the script starts the services it needs.
+The script runs as the host account. Agents that the script starts use the
+normal sandbox boundary.
+
+The command below reuses only the default installation's guest assets and
+existing host prerequisites. It creates fresh configuration, credentials,
+Coord state, logs, sockets and agent homes. Shared guest bytes are pinned by
+SHA-256 before the script runs and checked before each guest boot. The guest
+base stays read-only behind the existing private overlays. Reused assets
+cannot become a writable workspace or extra mount. The source installation's
+credentials, agent definitions and federation configuration are not copied.
+Cross-instance Coord access still needs an explicit authorized federation path.
+The runner removes its instance root after success, command failure or handled
+SIGINT/SIGTERM. Keep test results outside that root if they must survive cleanup;
+the script's working directory and external files are not removed.
+Here, `default` means `$HOME/.safeyolo`. Use
+`--reuse-guest-assets-from ROOT` for another installed asset source.
+The default parent is `/var/tmp`; `--directory PARENT` selects another short,
+disk-backed parent. Omit asset reuse for a command that needs no prepared guests.
+
+```sh
+safeyolo instance run --ephemeral --runtime "$HOME/sy-candidate" --reuse-guest-assets-from default -- ./acceptance-test.sh
+```
+
+The runner prints its private root to standard error. The command's exit
+status is the script's exit status, including 130 for SIGINT and 143 for
+SIGTERM. Socket paths that exceed the platform limit fail before
+guest startup and name the path to shorten. Guest fingerprints check the
+explicitly selected local bytes; they do not independently authenticate their
+publisher.
+
+If process ownership or shutdown cannot be verified, cleanup preserves the
+root and reports its recovery command. Inspect the reported instance, correct
+the specific ownership or configuration problem, then use
+`safeyolo --root ROOT instance cleanup` with that retained root. Cleanup refuses
+to remove an instance whose runner is still live. SIGKILL and a host crash
+cannot run cleanup; use the same retained-root command after recovery.
+
+For a development instance that you want to retain between commands, install
+the bundle into a fresh root as below.
+
 Use the [bundle build and installation](installation.md#build-a-bundle)
 from a clean committed checkout. Choose a fresh development root; leave the
 operator's live instance intact. The bundle requires matching host and Linux
