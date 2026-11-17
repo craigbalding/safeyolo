@@ -270,6 +270,8 @@ async fn perform(
         .as_str()
         .or_else(|| request["subject"]["value"].as_str())
         .ok_or_else(|| error("missing URL"))?;
+    // Fragments are local client identifiers and never part of an HTTP target.
+    let url = url.split_once('#').map_or(url, |(target, _)| target);
     let parsed = Url::parse(url).map_err(error)?;
     if !matches!(parsed.scheme(), UrlScheme::HTTP | UrlScheme::HTTPS) {
         return Err(error("HTTP(S) URL required"));

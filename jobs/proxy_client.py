@@ -9,7 +9,7 @@ import http.client
 import io
 import ssl
 from contextlib import contextmanager
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 CHUNK = 16 * 1024
 
@@ -149,7 +149,7 @@ def open_url(url, method="GET", *, headers=None, body=None, service=None):
             if parsed.query:
                 path += "?" + parsed.query
         else:
-            path = url
+            path = urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", parsed.query, ""))
         connection.request(method, path, body=body, headers=request_headers)
         response = connection.getresponse()
         yield response

@@ -1013,7 +1013,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-test-hyperlight-service-checker-py).
 - [tests/test_job_authoring.py](../tests/test_job_authoring.py#L61) — Host job authoring and adoption; controlled adapters. Evidence: Controlled build/runner adapters; not a live Hyperlight boundary pass.
   Exact identities: [source inventory](#witness-tests-test-job-authoring-py).
-- [tests/test_hyperlight_proxy_client.py](../tests/test_hyperlight_proxy_client.py#L192) — HTTP/TLS client libraries on the host CPU. Evidence: Real HTTP/OpenSSL/Rustls over fragmented fixture proxy bytes; no VM, native delegation, gate policy or isolation claim.
+- [tests/test_hyperlight_proxy_client.py](../tests/test_hyperlight_proxy_client.py#L203) — HTTP/TLS client libraries on the host CPU. Evidence: Real HTTP/OpenSSL/Rustls over fragmented fixture proxy bytes; no VM, native delegation, gate policy or isolation claim.
   Exact identities: [source inventory](#witness-tests-test-hyperlight-proxy-client-py).
 - [proxy/src/jobs/proxy_stream.rs](../proxy/src/jobs/proxy_stream.rs#L148) — Native delegated proxy byte transport; host process. Evidence: Real proxy and owned origin; no guest client or VM execution.
   Exact identities: [source inventory](#witness-proxy-src-jobs-proxy-stream-rs-jobs-proxy-stream-tests).
@@ -2440,9 +2440,9 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`).
 
-- [`tests/test_hyperlight_proxy_client.py::test_maintained_clients_use_fragmented_proxy_streams`](../tests/test_hyperlight_proxy_client.py#L192)
-- [`tests/test_hyperlight_proxy_client.py::test_tls_refusal_precedes_application_request`](../tests/test_hyperlight_proxy_client.py#L210)
-- [`tests/test_hyperlight_proxy_client.py::test_adopted_status_input_controls_finding_and_invalid_input_never_contacts_origin`](../tests/test_hyperlight_proxy_client.py#L229)
+- [`tests/test_hyperlight_proxy_client.py::test_maintained_clients_use_fragmented_proxy_streams`](../tests/test_hyperlight_proxy_client.py#L203)
+- [`tests/test_hyperlight_proxy_client.py::test_tls_refusal_precedes_application_request`](../tests/test_hyperlight_proxy_client.py#L221)
+- [`tests/test_hyperlight_proxy_client.py::test_adopted_status_input_controls_finding_and_invalid_input_never_contacts_origin`](../tests/test_hyperlight_proxy_client.py#L248)
 
 <a id="witness-proxy-src-jobs-proxy-stream-rs-jobs-proxy-stream-tests"></a>
 ### [`proxy/src/jobs/proxy_stream.rs`](../proxy/src/jobs/proxy_stream.rs)
@@ -2450,7 +2450,7 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
 - [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::proxy_stream::tests::guest_cannot_select_host_transport_or_forge_authority -- --exact`](../proxy/src/jobs/proxy_stream.rs#L148)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::proxy_stream::tests::public_egress_needs_only_gate_policy_and_revocation_closes_streams -- --exact`](../proxy/src/jobs/proxy_stream.rs#L163)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::proxy_stream::tests::public_egress_needs_only_gate_policy_and_revocation_closes_streams -- --exact`](../proxy/src/jobs/proxy_stream.rs#L168)
 
 <a id="witness-tests-test-blackbox-execution-receipt-py"></a>
 ### [`tests/test_blackbox_execution_receipt.py`](../tests/test_blackbox_execution_receipt.py)

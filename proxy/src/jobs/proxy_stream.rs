@@ -20,14 +20,14 @@ const CHUNK_BYTES: usize = 16 * 1024;
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Call {
-    ProxyConfig,
+    ProxyConfig {},
     GatewayToken { service: String },
-    ProxyOpen,
+    ProxyOpen {},
     ProxyRead { id: u64, length: usize },
     ProxyWrite { id: u64, data_base64: String },
     ProxyClose { id: u64 },
     Random { length: usize },
-    Time,
+    Time {},
 }
 
 pub(super) struct Bridge {
@@ -87,7 +87,7 @@ impl Bridge {
 
     async fn call(&mut self, call: Call) -> Result<Value, Error> {
         match call {
-            Call::ProxyConfig => Ok(self.config.clone()),
+            Call::ProxyConfig {} => Ok(self.config.clone()),
             Call::GatewayToken { service } => {
                 let token = self
                     .tokens
@@ -95,7 +95,7 @@ impl Bridge {
                     .ok_or("service grant unavailable")?;
                 Ok(json!({"token":token.expose_secret()}))
             }
-            Call::ProxyOpen => {
+            Call::ProxyOpen {} => {
                 let id = self
                     .next_id
                     .checked_add(1)
@@ -131,7 +131,7 @@ impl Bridge {
                     .map_err(|_| "randomness unavailable")?;
                 Ok(json!({"data_base64":STANDARD.encode(bytes)}))
             }
-            Call::Time => Ok(json!({"unix_seconds":now()? / 1000})),
+            Call::Time {} => Ok(json!({"unix_seconds":now()? / 1000})),
         }
     }
 }
@@ -153,9 +153,14 @@ mod tests {
             json!({"kind":"proxy_open","path":"/host/socket"}),
             json!({"kind":"proxy_open","url":"https://example.com"}),
             json!({"kind":"proxy_open","gate_id":"other","run_id":"other"}),
+            json!({"kind":"proxy_config","path":"/host/certificate"}),
+            json!({"kind":"time","unix_seconds":0}),
             json!({"kind":"service","service":"github","method":"GET","url":"https://example.com"}),
         ] {
-            assert!(serde_json::from_value::<Call>(value).is_err());
+            assert!(
+                serde_json::from_value::<Call>(value.clone()).is_err(),
+                "{value}"
+            );
         }
         assert!(chunk(0).is_err());
         assert!(chunk(CHUNK_BYTES + 1).is_err());
@@ -227,7 +232,7 @@ action = 'warn'
                 .await
                 .is_err()
         );
-        let id = bridge.call(Call::ProxyOpen).await.unwrap()["id"]
+        let id = bridge.call(Call::ProxyOpen {}).await.unwrap()["id"]
             .as_u64()
             .unwrap();
         let request = format!(
@@ -270,7 +275,7 @@ action = 'warn'
                 .unwrap(),
             0
         );
-        assert!(bridge.call(Call::ProxyOpen).await.is_err());
+        assert!(bridge.call(Call::ProxyOpen {}).await.is_err());
         bridge.call(Call::ProxyClose { id }).await.unwrap();
         assert!(
             bridge

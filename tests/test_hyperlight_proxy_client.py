@@ -30,6 +30,11 @@ def certificates(directory, *, host="example.test", expired=False):
           .public_key(key.public_key()).serial_number(x509.random_serial_number())
           .not_valid_before(now - timedelta(days=30)).not_valid_after(now + timedelta(days=30))
           .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+          .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+          .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(key.public_key()), critical=False)
+          .add_extension(x509.KeyUsage(digital_signature=False, content_commitment=False,
+                         key_encipherment=False, data_encipherment=False, key_agreement=False,
+                         key_cert_sign=True, crl_sign=True, encipher_only=None, decipher_only=None), critical=True)
           .sign(key, hashes.SHA256()))
     leaf_key = ec.generate_private_key(ec.SECP256R1())
     leaf_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host)])
@@ -38,6 +43,11 @@ def certificates(directory, *, host="example.test", expired=False):
             .not_valid_before(now - timedelta(days=2))
             .not_valid_after(now + timedelta(days=-1 if expired else 2))
             .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()), critical=False)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(key.public_key()), critical=False)
+            .add_extension(x509.KeyUsage(digital_signature=True, content_commitment=False,
+                           key_encipherment=False, data_encipherment=False, key_agreement=False,
+                           key_cert_sign=False, crl_sign=False, encipher_only=None, decipher_only=None), critical=True)
             .add_extension(x509.SubjectAlternativeName([x509.DNSName(host)]), critical=False)
             .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
             .sign(key, hashes.SHA256()))
@@ -140,8 +150,8 @@ class ProxyBytes:
             assert not thread.is_alive()
 
 
-def run_client(client, bridge, directory, monkeypatch, *, https, service, expected="200"):
-    url = ("https" if https else "http") + "://example.test/value?x=1"
+def run_client(client, bridge, directory, monkeypatch, *, https, service, expected="200", fragment="", path_query="/value?x=1"):
+    url = ("https" if https else "http") + "://example.test" + path_query + fragment
     inputs = {"expected_status": expected}
     if service:
         inputs["service"] = "example"
@@ -189,16 +199,17 @@ def run_client(client, bridge, directory, monkeypatch, *, https, service, expect
 @pytest.mark.parametrize("client", ["python", "core"])
 @pytest.mark.parametrize("https", [False, True])
 @pytest.mark.parametrize("service", [False, True])
-def test_maintained_clients_use_fragmented_proxy_streams(tmp_path, monkeypatch, client, https, service):
+@pytest.mark.parametrize(("path_query", "fragment"), [("/value?x=1", ""), ("/value?x=1", "#client-only"), ("/", "#0")])
+def test_maintained_clients_use_fragmented_proxy_streams(tmp_path, monkeypatch, client, https, service, path_query, fragment):
     ca, context = certificates(tmp_path)
     bridge = ProxyBytes(ca, context, https=https)
     try:
-        result = run_client(client, bridge, tmp_path, monkeypatch, https=https, service=service)
+        result = run_client(client, bridge, tmp_path, monkeypatch, https=https, service=service, fragment=fragment, path_query=path_query)
         assert result["Ok"]["finding"]["positive"] is True, result
         assert bridge.streams == {}
         assert len(bridge.requests) == 1
         request = bridge.requests[0]
-        target = b"/value?x=1" if https else b"http://example.test/value?x=1"
+        target = path_query.encode() if https else ("http://example.test" + path_query).encode()
         assert request.startswith(b"GET " + target + b" HTTP/1.1\r\n")
         assert (b"Authorization: Bearer sgw_test_scoped" in request) == service
     finally:
@@ -218,6 +229,14 @@ def test_tls_refusal_precedes_application_request(tmp_path, monkeypatch, client,
     try:
         result = run_client(client, bridge, tmp_path, monkeypatch, https=True, service=False)
         assert "Err" in result, result
+        causes = {"expired": ("expired",),
+                  "hostname": ("notvalidforname", "hostname", "not valid for"),
+                  "untrusted": ("unknownissuer", "issuer certificate", "self-signed certificate"),
+                  "connect_denied": ("403",)}
+        # Python exposes certificate causes; reqwless maps stream errors to
+        # Network(Other). The positive TLS rows validate both client fixtures.
+        if client == "python" or failure == "connect_denied":
+            assert any(cause in result["Err"].lower() for cause in causes[failure]), result
         assert bridge.requests == []
         assert bridge.streams == {}
     finally:
