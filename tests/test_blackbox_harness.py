@@ -2943,7 +2943,11 @@ def test_operator_cli_selection_requires_one_supported_access_section(
     if valid:
         assert installed_sections.main() == 0
         assert calls[0][0][:2] == (platform, ("access",))
-        assert calls[0][1] == {"operator_journey": True, "prepared_config": None, "listener_restart": False}
+        assert calls[0][1] == {
+            "operator_journey": True, "prepared_config": None, "listener_restart": False,
+            "boundary_admin_port": None, "boundary_upstream_port": None,
+            "boundary_nats_client_port": None, "boundary_nats_monitor_port": None,
+        }
     else:
         with pytest.raises(SystemExit) as error:
             installed_sections.main()
