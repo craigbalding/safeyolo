@@ -837,7 +837,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 - [tests/blackbox/native_authority.py::main](../tests/blackbox/native_authority.py#L74) — Curated native Coord cases on Linux with real NATS and isolated instance roots. Evidence: Per-control procedure receipts and exact executed cases; process evidence, without a real guest or live tailnet.
   Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only); step matrix.os == 'ubuntu-latest'`).
-- [tests/blackbox/installed_federation.py::main](../tests/blackbox/installed_federation.py#L152) — Two actual systrap guests and a separate destination instance on the same Linux host. Evidence: Real TLS/NATS, destination operator history, exact delivery, wrong principal/instance and trust revocation; no live Tailscale claim.
+- [tests/blackbox/installed_federation.py::main](../tests/blackbox/installed_federation.py#L155) — Two actual systrap guests and a separate destination instance on the same Linux host. Evidence: Real TLS/NATS, destination operator history, exact delivery, wrong principal/instance and trust revocation; no live Tailscale claim.
   Selection: default `systrap` section `federation`.
 - [proxy/tests/native_coord/federation.rs](../proxy/tests/native_coord/federation.rs#L267) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real instances/NATS; controlled run adapters.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-federation-rs).
@@ -3031,7 +3031,7 @@ receipts remain recorded in the issue; they are not a current execution mode.
 Send from real systrap guests to a separate TLS/NATS instance owner.
 
 On a prepared disposable Linux host, supply the same installation and runtime
-prerequisites as installed_authority, plus OpenSSL for a private test CA.
+prerequisites as installed_authority, plus OpenSSL for a private test certificate.
 The new root owns two credential-free guests. A second root owns the destination
 room, broker, TLS key and peer credential. No peer credential enters a guest.
 Both roots must be new; output must be empty and disk-backed. The driver checks

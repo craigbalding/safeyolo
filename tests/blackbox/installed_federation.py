@@ -2,7 +2,7 @@
 """Send from real systrap guests to a separate TLS/NATS instance owner.
 
 On a prepared disposable Linux host, supply the same installation and runtime
-prerequisites as installed_authority, plus OpenSSL for a private test CA.
+prerequisites as installed_authority, plus OpenSSL for a private test certificate.
 The new root owns two credential-free guests. A second root owns the destination
 room, broker, TLS key and peer credential. No peer credential enters a guest.
 Both roots must be new; output must be empty and disk-backed. The driver checks
@@ -85,6 +85,9 @@ def run(args):
         certificate, key = destination / "server.pem", destination / "server.key"
         checked(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
                  "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1",
+                 "-addext", "basicConstraints=critical,CA:FALSE",
+                 "-addext", "keyUsage=critical,digitalSignature,keyEncipherment",
+                 "-addext", "extendedKeyUsage=serverAuth",
                  "-keyout", str(key), "-out", str(certificate)], diagnostics=output / "native.log")
         key.chmod(0o600)
         report["tls_certificate_sha256"] = _sha256(certificate)

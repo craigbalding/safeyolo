@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from tests.blackbox import installed_access, installed_sections, installed_shared_approvals
+from tests.blackbox import installed_access, installed_federation, installed_sections, installed_shared_approvals
 from tests.blackbox import installed_lifecycle as lifecycle
 from tests.blackbox import installed_state_transition as continuity
 from tests.blackbox.harness.vz_fixture import P2Fixture, Parent, VZRequest
@@ -40,6 +40,74 @@ from tests.blackbox.isolation import installed_workloads as guest_workloads
 from tests.blackbox.proxy_backend import SelectionError, identity
 from tests.proxy_contracts import harness as proxy_harness
 from tests.proxy_contracts.websocket_peer import Peer, read_head
+
+
+def test_installed_federation_generates_a_trusted_server_leaf_despite_host_ca_default(tmp_path, monkeypatch):
+    from cryptography import x509
+    from cryptography.x509.oid import ExtendedKeyUsageOID
+
+    configuration = tmp_path / "openssl.cnf"
+    configuration.write_text(
+        "[req]\ndistinguished_name=dn\nx509_extensions=ca\n[dn]\n"
+        "[ca]\nbasicConstraints=critical,CA:TRUE\n"
+    )
+    monkeypatch.setenv("OPENSSL_CONF", str(configuration))
+    root, output = tmp_path / "source", tmp_path / "output"
+    destination = tmp_path / "source-destination"
+    cleanups = []
+    checked = installed_federation.checked
+
+    def prepare(base, selected):
+        selected.mkdir()
+        (selected / "config.toml").touch()
+        (selected / ".safeyolo-platform-smoke").touch()
+        (selected / "data").mkdir()
+        (selected / "data/instance_id").write_text(selected.name)
+
+    def command(arguments, **kwargs):
+        if arguments[0] == "openssl":
+            return checked(arguments, **kwargs)
+        selected, words = Path(arguments[2]), arguments[3:]
+        if words == ["coord", "start"] and (selected / "coord-federation.json").exists():
+            raise RuntimeError("stop before starting TLS broker")
+        if words == ["agent", "status", "bbtest"]:
+            return json.dumps({"agent_id": "ag-source"})
+        return ""
+
+    def cleanup(cli, selected):
+        cleanups.append(selected)
+        return []
+
+    monkeypatch.setattr(installed_federation, "inputs", lambda *args: {})
+    monkeypatch.setattr(installed_federation, "prepare_authority_guests", lambda base, selected, native: prepare(base, selected))
+    monkeypatch.setattr(installed_federation, "prepare_native_instance", prepare)
+    monkeypatch.setattr(installed_federation, "copy_prepared_nats", lambda *args: None)
+    monkeypatch.setattr(installed_federation, "checked", command)
+    monkeypatch.setattr(installed_federation, "cleanup_instance", cleanup)
+    with pytest.raises(RuntimeError, match="stop before starting TLS broker"):
+        installed_federation.run(SimpleNamespace(prepared_config=tmp_path, root=root, output=output, revision="test"))
+
+    broker = json.loads((destination / "coord-federation.json").read_text())
+    certificate, key = Path(broker["cert_file"]), Path(broker["key_file"])
+    assert broker["ca_file"] == str(certificate) and broker["local_server_name"] == "127.0.0.1"
+    leaf = x509.load_pem_x509_certificate(certificate.read_bytes())
+    constraints = leaf.extensions.get_extension_for_class(x509.BasicConstraints)
+    assert constraints.critical and not constraints.value.ca
+    assert list(leaf.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value) == [ExtendedKeyUsageOID.SERVER_AUTH]
+    usage = leaf.extensions.get_extension_for_class(x509.KeyUsage)
+    assert usage.critical and usage.value.digital_signature and usage.value.key_encipherment
+    assert not usage.value.key_cert_sign
+    assert key.stat().st_mode & 0o777 == 0o600
+    for address, expected in (("127.0.0.1", 0), ("127.0.0.2", 2)):
+        result = subprocess.run(
+            ["openssl", "verify", "-CAfile", str(certificate), "-purpose", "sslserver", "-verify_ip", address, str(certificate)],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        assert result.returncode == expected, result.stderr
+    assert cleanups == [root, destination]
+    report = json.loads((output / "result.json").read_text())
+    assert report["status"] == "incomplete" and report["cleanup"] == "stopped"
+    assert report["tls_certificate_sha256"] == hashlib.sha256(certificate.read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize("outcome", ["native", "http403", "http428", "unrelated", "timeout", "origin", "active_grant", "wrong_approval", "http200", "native_with_http"])
