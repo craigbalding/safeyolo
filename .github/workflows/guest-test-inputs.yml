@@ -73,6 +73,8 @@ jobs:
           workspaces: |
             proxy -> target
             guest/command -> target
+            jobs/hyperlight-host -> target
+            jobs/hyperlight-guest -> target
           shared-key: ${{ inputs.profile }}-focused-pr
           cache-bin: false
       - name: Reuse matching Linux guest inputs
@@ -297,12 +299,23 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      - name: Build the pinned Linux Hyperlight bundle
+        if: inputs.retain_packages && inputs.profile == 'production'
+        run: |
+          rustup component add rust-src
+          CARGO_TARGET_DIR="$RUNNER_TEMP/hyperlight-tools-target" scripts/cargo_with_space.sh install \
+            --locked --version 0.1.15 cargo-hyperlight --root "$RUNNER_TEMP/hyperlight-tools"
+          export PATH="$RUNNER_TEMP/hyperlight-tools/bin:/usr/bin:$PATH"
+          uv run --no-project --python 3.12 python scripts/build_hyperlight_jobs.py \
+            --output "$RUNNER_TEMP/hyperlight" --profile production
+
       - name: Retain complete Linux production bundle
         if: inputs.retain_packages && inputs.profile == 'production'
         run: |
           scripts/build_host_packages.sh --output "$RUNNER_TEMP/host-package" \
             --artifacts proxy/target/release --guest-artifacts guest/command/target/release \
-            --runtime-artifacts "$(dirname "$(command -v tmux)")" --profile production
+            --runtime-artifacts "$(dirname "$(command -v tmux)")" \
+            --hyperlight-artifacts "$RUNNER_TEMP/hyperlight" --profile production
           python3 scripts/build_host_packages.py save-production --output "$RUNNER_TEMP/host-package"
       - name: Upload complete Linux production bundle
         if: inputs.retain_packages && inputs.profile == 'production'
@@ -341,6 +354,8 @@ jobs:
           workspaces: |
             proxy -> target
             guest/command -> target
+            jobs/hyperlight-host -> target
+            jobs/hyperlight-guest -> target
           shared-key: ${{ inputs.profile }}-focused-pr
           cache-bin: false
       - name: Reuse matching Mac host inputs
@@ -406,6 +421,22 @@ jobs:
         with:
           name: linux-guest-terminal-arm64-production
           path: ${{ runner.temp }}/host-vm
+      - name: Install uv for Hyperlight bundle preparation
+        if: inputs.retain_packages && inputs.profile == 'production'
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.9.24"
+          prune-cache: true
+      - name: Build the pinned macOS Hyperlight bundle
+        if: inputs.retain_packages && inputs.profile == 'production'
+        run: |
+          brew install llvm
+          rustup component add rust-src
+          CARGO_TARGET_DIR="$RUNNER_TEMP/hyperlight-tools-target" scripts/cargo_with_space.sh install \
+            --locked --version 0.1.15 cargo-hyperlight --root "$RUNNER_TEMP/hyperlight-tools"
+          export PATH="$RUNNER_TEMP/hyperlight-tools/bin:$(brew --prefix llvm)/bin:$PATH"
+          uv run --no-project --python 3.12 python scripts/build_hyperlight_jobs.py \
+            --output "$RUNNER_TEMP/hyperlight" --profile production
       - name: Retain complete macOS production bundle
         if: inputs.retain_packages && inputs.profile == 'production'
         run: |
@@ -415,7 +446,8 @@ jobs:
           scripts/build_host_packages.sh --output "$RUNNER_TEMP/host-package" \
             --artifacts proxy/target/release --guest-artifacts guest/command/target/release \
             --runtime-artifacts "$(dirname "$(command -v tmux)")" \
-            --vm-artifacts "$RUNNER_TEMP/host-vm" --profile production
+            --vm-artifacts "$RUNNER_TEMP/host-vm" \
+            --hyperlight-artifacts "$RUNNER_TEMP/hyperlight" --profile production
           python3 scripts/build_host_packages.py save-production --output "$RUNNER_TEMP/host-package"
       - name: Upload complete macOS production bundle
         if: inputs.retain_packages && inputs.profile == 'production'

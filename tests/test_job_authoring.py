@@ -39,7 +39,8 @@ existing="existing.txt"
     (root / "policy/existing.txt").write_text("example.test\n")
     (root / "assets/services").mkdir()
     shutil.copyfile(REPO / "cli/src/safeyolo/services/github.yaml", root / "assets/services/github.yaml")
-    for name in ("runtime.json", "core.elf", "checker.py", "service_checker.py", "artifact_checker.py"):
+    for name in ("runtime.json", "safeyolo-hyperlight", "python.cpio", "core.elf", "checker.py",
+                 "service_checker.py", "artifact_checker.py"):
         (runtime / name).write_text(name)
     spec = importlib.util.spec_from_file_location("builder", REPO / "scripts/build_hyperlight_jobs.py")
     builder = importlib.util.module_from_spec(spec)
@@ -70,7 +71,8 @@ def test_installed_helper_proposes_scoped_authority_without_applying(installed, 
     receipt = json.loads(result.stdout)
     assert receipt["root"] == str(installed)
     assert receipt["saved_policy"] == str(policy)
-    assert receipt["bundle"] == str(installed / "assets/hyperlight")
+    assert receipt["bundle"] == str((installed / "assets/hyperlight").resolve())
+    assert receipt["retained_bundle"] == str(output / "bundle")
     assert receipt["service_target"] == str(installed / "data/services/github.yaml")
     assert receipt["activation"] == "not applied"
     assert policy.read_bytes() == original
@@ -83,7 +85,7 @@ def test_installed_helper_proposes_scoped_authority_without_applying(installed, 
     author = candidate["checks"]["example_issue_author"]
     assert author["inputs"] == {"repository": "owner/repository", "expected_author_id": "42"}
     assert author.get("invokers", []) == []
-    assert author["source"]["spec"] == str(installed / f"assets/hyperlight/{engine}-service.json")
+    assert author["source"]["spec"] == str(output / f"bundle/{engine}-service.json")
     for name in ("example_issue_author", "example_artifact"):
         assert candidate["checks"][name]["source"]["limits"]["timeout_ms"] == (
             10000 if engine == "hyperlight" else 20000)
@@ -96,7 +98,64 @@ def test_installed_helper_proposes_scoped_authority_without_applying(installed, 
     assert candidate["agents"]["gate:hyperlight-service-check"]["services"]["github"] == {
         "capability": "read_example_issues", "token": "existing-github"}
     assert output.stat().st_mode & 0o777 == 0o700
-    assert all(path.stat().st_mode & 0o777 == 0o600 for path in output.iterdir())
+    assert all(path.stat().st_mode & 0o777 == 0o600 for path in output.iterdir() if path.is_file())
+
+
+@pytest.mark.parametrize("engine", ["hyperlight", "hyperlight-unikraft"])
+@pytest.mark.parametrize("already_upgraded", [False, True])
+def test_installed_check_keeps_its_package_bytes_when_upgrade_selects_new_assets(
+    installed, tmp_path, engine, already_upgraded,
+):
+    assets = installed / "assets"
+    previous = installed / "host-packages/previous/assets"
+    previous.parent.mkdir(parents=True)
+    if already_upgraded:
+        assets.rename(previous)
+        assets.symlink_to(previous, target_is_directory=True)
+    output = tmp_path / "candidate"
+    result = run(installed, output, engine)
+    assert result.returncode == 0, result.stderr
+    policy_bytes = (output / "candidate.toml").read_bytes()
+    policy = tomllib.loads(policy_bytes.decode())
+    check = policy["checks"]["example_issue_author"]
+    spec_path = Path(check["source"]["spec"])
+    assert spec_path == output / f"bundle/{engine}-service.json"
+    spec_bytes = spec_path.read_bytes()
+    selected = json.loads(spec_bytes)["engine"]["guest" if engine == "hyperlight" else "checker"]
+    artifact = spec_path.parent / selected["path"]
+    approved = artifact.read_bytes()
+
+    if not already_upgraded:
+        assets.rename(previous)
+    else:
+        assets.unlink()
+    # Component upgrade retains the old package and selects new assets via
+    # this link. A new package must not become the old check's implementation.
+    updated = installed / "host-packages/updated/assets"
+    shutil.copytree(previous, updated)
+    (updated / "hyperlight" / selected["path"]).write_bytes(b"new package checker")
+    assets.symlink_to(updated, target_is_directory=True)
+    assert (assets / "hyperlight" / selected["path"]).read_bytes() != approved
+    assert artifact.read_bytes() == approved
+    for source in (previous / "hyperlight").iterdir():
+        if source.is_file():
+            assert (output / "bundle" / source.name).read_bytes() == source.read_bytes()
+    assert check["implementation_version"] == hashlib.sha256(approved).hexdigest()
+    assert check["configuration_version"] == hashlib.sha256(spec_path.read_bytes()).hexdigest()
+    assert (output / "candidate.toml").read_bytes() == policy_bytes
+
+
+def test_missing_installed_bundle_explains_acquisition_and_preserves_instance(installed, tmp_path):
+    shutil.rmtree(installed / "assets/hyperlight")
+    original = (installed / "policy/current.toml").read_bytes()
+    output = tmp_path / "candidate"
+    result = run(installed, output)
+    assert result.returncode != 0
+    assert "Hyperlight bundle is unavailable" in result.stderr
+    assert str(installed / "assets/hyperlight") in result.stderr
+    assert "matching published SafeYolo host package" in result.stderr
+    assert not output.exists()
+    assert (installed / "policy/current.toml").read_bytes() == original
 
 
 @pytest.mark.parametrize("engine", ["hyperlight", "hyperlight-unikraft"])
@@ -129,7 +188,7 @@ def test_preparation_selects_developed_bundle_without_replacing_installed_bytes(
     assert json.loads(result.stdout)["bundle"] == str(proposed)
     candidate = tomllib.loads((output / "candidate.toml").read_text())
     author = candidate["checks"]["example_issue_author"]
-    assert author["source"]["spec"] == str(spec_path)
+    assert author["source"]["spec"] == str(output / f"bundle/{engine}-service.json")
     assert author["implementation_version"] == selected["sha256"]
     assert author["configuration_version"] == hashlib.sha256(spec_path.read_bytes()).hexdigest()
     assert (runtime / selected["path"]).read_bytes() == installed_bytes

@@ -11,45 +11,29 @@ the [job-authoring walkthrough](../cli/src/safeyolo/agent_context/skills/job-aut
 The [engine-selection guide](../cli/src/safeyolo/agent_context/skills/job-authoring/references/engines.md)
 compares these runtimes with existing gVisor/VZ jobs and states measurement limits.
 
-## Build and select a runtime
+## Install and select a runtime
 
-Build on Linux x86_64/aarch64 or Apple-silicon macOS as an ordinary user, from a
-SafeYolo source checkout. Install Rust 1.94, Clang/LLVM, Python 3.12 or newer,
-curl and cargo-hyperlight 0.1.15 first. The builder downloads hash-locked Rust
-dependencies and a pinned Python runtime layer from GitHub Container Registry.
-It creates the new output directory and keeps reusable Cargo targets under
-`jobs/`. On macOS it signs the helper with the Hypervisor.framework entitlement.
-It does not change an installed instance or its policy.
-
-From the checkout root, with those tools on `PATH`:
-
-```sh
-python3 scripts/build_hyperlight_jobs.py --output /absolute/path/to/new-job-bundle
-```
-
-The bundle contains a helper, a core Rust guest, the Python checker/runtime,
-their pinned job definitions and `runtime.json`. The manifest records the host
-architecture, Hyperlight 0.19.0 guest ABI, Unikraft integration 0.21.0, embedded
-kernel contract, runtime source and artifact digests. Build/package results
-identify exact bytes; a release tag is never resolved during execution.
-
-An installed host package can include that bundle through
-`scripts/build_host_packages.sh --hyperlight-artifacts DIRECTORY`, alongside
-the package builder's other required inputs. The bundle is installed under
-`host/assets/hyperlight`. Relative artifact paths follow their trusted job
-definition, so copying the complete bundle preserves its bindings.
+Use the [normal published-package installation](installation.md).
+The production host-package workflow builds and bundles the matching Hyperlight
+helper, core guest, Unikraft Python runtime, examples and license notices.
+Installation puts them in the selected instance's `assets/hyperlight`; it needs
+no source checkout, Rust, LLVM or upstream runtime build tools. Installing the
+bundle does not adopt policy or grant service access.
 
 For execution, select an existing SafeYolo instance with `--root`. Linux needs
-accessible KVM. Apple-silicon macOS needs Hypervisor.framework support and the
-signed helper. A macOS VM without nested hypervisor support can build the
+accessible Kernel-based Virtual Machine (KVM). Apple-silicon macOS needs
+Hypervisor.framework (HVF) support and the signed helper. A macOS VM without
+nested hypervisor support can build the
 bundle but cannot run these jobs.
 
-With `/absolute/path/to/input/request.json` containing the selected input, run
-the generated core definition:
+The commands below assume the instance is `$HOME/.safeyolo`. For another
+instance, replace that path throughout. With
+`/absolute/path/to/input/request.json` containing the selected input, validate
+and run the installed core definition:
 
 ```sh
-safeyolo --root /absolute/path/to/instance job validate /absolute/path/to/new-job-bundle/hyperlight.json
-safeyolo --root /absolute/path/to/instance job run /absolute/path/to/new-job-bundle/hyperlight.json --input /absolute/path/to/input
+safeyolo --root "$HOME/.safeyolo" job validate "$HOME/.safeyolo/assets/hyperlight/hyperlight.json"
+safeyolo --root "$HOME/.safeyolo" job run "$HOME/.safeyolo/assets/hyperlight/hyperlight.json" --input /absolute/path/to/input
 ```
 
 The example's decoded stdout is `{"input_bytes":N}`, where `N` is the byte
@@ -94,6 +78,65 @@ Discovery checks the selected artifact digests, host architecture, runtime
 versions and hypervisor availability. A missing device, entitlement, artifact
 or incompatible guest fails explicitly. Guest ABI validation also occurs in
 the Hyperlight loader. No path silently selects a different engine.
+
+The engine-selection guide records the support matrix and retained installed
+execution evidence. Both engines have runtime proof on Linux x86_64/KVM and
+physical Apple-silicon macOS/HVF. Linux aarch64 remains a build target with
+unqualified runtime execution. Building a bundle or passing discovery does not
+establish execution on another platform.
+
+## Inspect and upgrade the installed bundle
+
+The installed `package-info` identifies the source commit, platform and build
+profile. `SHA256SUMS` covers the packaged Hyperlight files and examples.
+`runtime.json` records the host architecture, Hyperlight 0.19.0 guest ABI,
+Unikraft integration 0.21.0, embedded kernel contract, runtime source and helper
+and Python runtime digests. Example definitions pin that manifest and their
+checker/guest bytes. A release tag is never resolved during execution.
+
+On the selected owning host:
+
+```sh
+cat "$HOME/.safeyolo/package-info"
+cat "$HOME/.safeyolo/assets/hyperlight/runtime.json"
+safeyolo --root "$HOME/.safeyolo" upgrade status
+```
+
+Use the [existing host upgrade](installation.md#upgrade-host-and-guest-components)
+to acquire a compatible published package. Acquisition and verification finish
+before selection; failure leaves the selected installation usable. After upgrade,
+repeat this readback and validate both installed examples. The new examples may
+select different pinned bytes. Adopted checks keep their own pins: the installed
+preparation helper copies the selected bundle into `candidate/bundle`. Keep that
+directory at its adopted path. Upgrading the host neither replaces this copy nor
+reapproves a checker. Changes require an explicit proposal and owner adoption
+through the walkthrough.
+
+| Failure | Next action |
+|---|---|
+| Missing bundle, manifest, checker or helper | Check the instance path and install or upgrade to its matching complete host package. Do not mix files from different packages. |
+| Digest, runtime/ABI or architecture mismatch | Restore the selected package's exact bytes or explicitly adopt a matching bundle for this host. Do not repin a changed file merely to pass validation. |
+| KVM unavailable | Check access to `/dev/kvm` on the Linux host; gVisor alone does not supply KVM. |
+| HVF unavailable or helper lacks its entitlement | Use a capable Apple-silicon host and its packaged signed helper; a Mac VM may lack nested virtualization. |
+
+## Contributor bundle builds
+
+Contributors building new runtime/checker bytes need a SafeYolo source checkout,
+Rust 1.94, Clang/LLVM, Python 3.12 or newer, curl and cargo-hyperlight 0.1.15.
+Build on Linux x86_64/aarch64 or Apple-silicon macOS as an ordinary user.
+From the checkout root, with those tools on `PATH`:
+
+```sh
+python3 scripts/build_hyperlight_jobs.py --output /absolute/path/to/new-job-bundle
+```
+
+The builder downloads hash-locked Rust dependencies and a pinned Python runtime
+layer from GitHub Container Registry. It creates the new output directory and
+keeps reusable Cargo targets under `jobs/`. On macOS it signs the helper with
+the Hypervisor.framework entitlement. It changes no installed instance or policy.
+The host-package producer supplies this bundle through its existing
+`--hyperlight-artifacts DIRECTORY` input. Relative artifact paths follow the
+trusted definition, so copying the complete bundle preserves its bindings.
 
 ## Execution semantics
 
