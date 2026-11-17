@@ -378,6 +378,28 @@ def test_inline_rust_oracles_are_distinct_from_product_context(sources):
     assert compare(files, {path: files[path].replace("product() {}", "product() { work(); }")})["delta_id"] is None
 
 
+def test_external_rust_test_module_declarations_preserve_selection_and_later_oracles(sources):
+    path = "proxy/src/check.rs"
+    declaration = '#[cfg(test)]\n#[path = "check_tests.rs"]\nmod tests;\n'
+    files = sources | {path: 'fn product() {}\n' + declaration}
+    files[changes.CATALOGUE] += f'[[witnesses]]\npaths = ["{path}"]\ncontrols = ["BB-10"]\nkind = "cargo"\n'
+    assert compare(files, {path: files[path].replace("product() {}", "product() { work(); }")})["delta_id"] is None
+    for before, after in [("check_tests.rs", "other_tests.rs"), ("mod tests;", "mod replacement;"),
+                          (declaration, "")]:
+        assert compare(files, {path: files[path].replace(before, after)})["delta_id"]
+    files[path] += '#[cfg(test)] mod inline_tests { #[test] fn denied() { assert!(true); } }'
+    assert compare(files, {path: files[path].replace("assert!(true)", "assert!(false)")})["delta_id"]
+    assert changes.rust_definition(declaration, inline=True) == changes.rust_tokens(declaration)
+
+
+def test_rust_test_item_prefix_keeps_nested_semicolons_and_rejects_unbalanced_bodies():
+    source = '#[cfg(test)] fn oracle(input: [u8; 3]) { assert_eq!(input, [0; 3]); }'
+    assert changes.rust_definition(source, inline=True) == changes.rust_tokens(source)
+    assert changes.rust_definition(source, inline=True) != changes.rust_definition(source.replace('[0; 3]', '[1; 3]'), inline=True)
+    with pytest.raises(ValueError, match="unbalanced inline Rust test module"):
+        changes.rust_definition('#[cfg(test)] mod tests { fn oracle() {}', inline=True)
+
+
 def test_rust_literals_are_not_comments_or_whitespace():
     assert changes.rust_tokens('assert_eq!(x, r#"// /*  a b */"#);') != changes.rust_tokens('assert_eq!(x, r#"// /* a b */"#);')
     assert changes.rust_tokens('x == y') != changes.rust_tokens('x = = y')

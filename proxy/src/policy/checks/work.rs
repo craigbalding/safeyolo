@@ -28,6 +28,15 @@ pub enum Failure {
 #[serde(rename_all = "snake_case")]
 pub enum Retry {
     Never,
+    Idempotent,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Recovery {
+    pub reconcilers: Vec<String>,
+    pub retryers: Vec<String>,
+    pub max_retries: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -43,6 +52,24 @@ pub struct Binding {
     pub require: Option<Condition>,
     pub repository: Option<String>,
     pub retry: Option<Retry>,
+    pub recovery: Option<Recovery>,
+}
+
+impl Binding {
+    pub(crate) fn effectful(&self, checks: &Checks) -> bool {
+        checks
+            .checks
+            .get(&self.job)
+            .is_some_and(|check| match &check.source {
+                EvidenceSource::Job { effects, .. } => {
+                    !matches!(effects, execution::Effects::Passive)
+                }
+                EvidenceSource::Service { operation, .. } => {
+                    !matches!(operation.effects, execution::Effects::Passive)
+                }
+                _ => false,
+            })
+    }
 }
 
 pub(super) fn validate(checks: &Checks) -> Result<()> {
@@ -73,6 +100,20 @@ pub(super) fn validate(checks: &Checks) -> Result<()> {
         if check.subject != SubjectKind::Value {
             return Err(invalid("work binding jobs require a value subject"));
         }
+        if let Some(recovery) = &binding.recovery
+            && (recovery
+                .reconcilers
+                .iter()
+                .chain(&recovery.retryers)
+                .any(|id| id.is_empty() || id == "*")
+                || (!recovery.retryers.is_empty()
+                    && (binding.retry != Some(Retry::Idempotent) || recovery.max_retries == 0))
+                || (recovery.retryers.is_empty() && recovery.max_retries != 0))
+        {
+            return Err(invalid(
+                "recovery requires named agents and a positive bound for adopted idempotent retries",
+            ));
+        }
         let expected_input = match binding.boundary {
             Boundary::AdmitIssue => Input::GithubIssue,
             Boundary::VerifyOutput => Input::PublishedArtifact,
@@ -86,6 +127,7 @@ pub(super) fn validate(checks: &Checks) -> Result<()> {
                 || binding.repository.is_some()
                 || binding.on_failure != Failure::Report
                 || binding.retry != Some(Retry::Never)
+                || binding.recovery.is_some()
             {
                 return Err(invalid(
                     "after_complete is an action: require on_failure=report and retry=never; no predicate",
@@ -93,27 +135,39 @@ pub(super) fn validate(checks: &Checks) -> Result<()> {
             }
             continue;
         }
-        if !matches!(effects, execution::Effects::Passive) {
-            return Err(invalid(
-                "required checks must declare passive effects; adopt effects as an explicit after_complete action",
-            ));
-        }
-        if binding.retry.is_some() || binding.on_failure != Failure::Hold {
+        let effectful = !matches!(effects, execution::Effects::Passive);
+        if binding.on_failure != Failure::Hold {
             return Err(invalid(
                 "before and verification bindings require on_failure=hold",
             ));
         }
-        let condition = binding
-            .require
-            .as_ref()
-            .ok_or_else(|| invalid("a required check must name its qualifying predicate"))?;
-        checks.validate_condition(condition)?;
-        let mut used = BTreeSet::new();
-        condition.names(&mut used);
-        if used != BTreeSet::from([binding.job.clone()]) {
-            return Err(invalid(
-                "a work binding predicate must use only its adopted job",
-            ));
+        if effectful {
+            if binding.boundary != Boundary::AdmitIssue
+                || binding.require.is_some()
+                || binding.retry.is_none()
+            {
+                return Err(invalid(
+                    "effectful prerequisites require admit_issue, no predicate and an explicit retry policy",
+                ));
+            }
+        } else {
+            if binding.retry.is_some() || binding.recovery.is_some() {
+                return Err(invalid(
+                    "passive bindings do not adopt action recovery or retry",
+                ));
+            }
+            let condition = binding
+                .require
+                .as_ref()
+                .ok_or_else(|| invalid("a required check must name its qualifying predicate"))?;
+            checks.validate_condition(condition)?;
+            let mut used = BTreeSet::new();
+            condition.names(&mut used);
+            if used != BTreeSet::from([binding.job.clone()]) {
+                return Err(invalid(
+                    "a work binding predicate must use only its adopted job",
+                ));
+            }
         }
         if binding.boundary == Boundary::AdmitIssue {
             let repository = binding

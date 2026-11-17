@@ -334,6 +334,32 @@ another obligation; do not attest old evidence onto the new generation.
 
 ## Inspect failures and follow-up effects
 
+For an external reservation before issue admission, an operator can instead
+adopt an effectful `admit_issue` source. It has `on_failure = "hold"`, no
+`require` predicate and explicit `retry = "never"` or `"idempotent"`.
+The source keeps its own artifact, limits and service capabilities. Before
+dispatch, Coord retains an invocation even when the protected Work does not
+exist. Its job input or service body includes `invocation_id`. A completed
+prerequisite survives a later failed protected commit. A preview dispatches
+nothing, and a caller cannot submit its own completion evidence.
+
+For delegated recovery, the operator can adopt, for example,
+`recovery = { reconcilers = ["ag-recovery"], retryers = ["ag-recovery"], max_retries = 1 }`
+on that binding with `retry = "idempotent"`. Replace `ag-recovery` with the
+named agent's durable ID. First establish that the external implementation
+deduplicates the same invocation ID and inputs. The recovery agent reads
+`read_work_prerequisite` (or
+`GET /api/coord/rooms/ROOM/work?invocation_id=ID`), then inspects that exact
+invocation at the external authority. It can record the observation with
+`resolve_prerequisite`. Separately adopted `retry_prerequisite` permission
+selects a bounded pending retry; the original requester resumes its unchanged
+operation. Both actions use the current invocation version, an operation ID,
+summary and external evidence references. Reconciliation also supplies the
+observed outcome. Uncertain effects are never blindly replayed, and a revoked
+actor cannot recover or execute the protected transition. These adopted
+operations add no recurring approval. The policy and Coord documentation
+give the complete fields and supported boundary.
+
 Read `automatic`, `acceptance_status`, `execution.outcome`, `runtime_report`,
 `observation_error`, captured digests and policy/service authority. The host
 audit's `ops.work_requirement` also retains rejected admission attempts by

@@ -181,7 +181,16 @@ impl Checks {
         runtime: &'a Runtime,
         state: &'a RuntimeState,
     ) -> futures_util::future::BoxFuture<'a, std::result::Result<Evidence, Error>> {
-        self.invoke_adopted(name, Some(caller), subject, runtime, state, false, false)
+        self.invoke_adopted(
+            name,
+            Some(caller),
+            subject,
+            runtime,
+            state,
+            false,
+            false,
+            None,
+        )
     }
 
     pub(crate) fn invoke_automatic<'a>(
@@ -190,10 +199,21 @@ impl Checks {
         subject: Subject,
         runtime: &'a Runtime,
         state: &'a RuntimeState,
-        action: bool,
-        capture_issue: bool,
+        boundary: super::work::Boundary,
+        invocation_id: Option<&'a str>,
     ) -> futures_util::future::BoxFuture<'a, std::result::Result<Evidence, Error>> {
-        self.invoke_adopted(name, None, subject, runtime, state, action, capture_issue)
+        let action = boundary == super::work::Boundary::AfterComplete || invocation_id.is_some();
+        let capture_issue = boundary == super::work::Boundary::AdmitIssue && !action;
+        self.invoke_adopted(
+            name,
+            None,
+            subject,
+            runtime,
+            state,
+            action,
+            capture_issue,
+            invocation_id,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -206,6 +226,7 @@ impl Checks {
         state: &'a RuntimeState,
         action: bool,
         capture_issue: bool,
+        invocation_id: Option<&'a str>,
     ) -> futures_util::future::BoxFuture<'a, std::result::Result<Evidence, Error>> {
         // This entry can itself be reached by a delegated proxy listener.
         // As with collect_live, box the boundary to keep its Send type finite.
@@ -259,6 +280,7 @@ impl Checks {
                 vec![name.into()],
                 action,
                 capture_issue,
+                invocation_id,
             )
             .await
         })
@@ -304,6 +326,7 @@ impl Checks {
                         stack,
                         false,
                         false,
+                        None,
                     )
                     .await;
                 match outcome {
@@ -326,6 +349,7 @@ impl Checks {
         stack: Vec<String>,
         action: bool,
         capture_issue: bool,
+        invocation_id: Option<&str>,
     ) -> std::result::Result<Evidence, Error> {
         let (limits, prepared) = match &check.source {
             EvidenceSource::Job { spec, limits, .. } => {
@@ -351,7 +375,7 @@ impl Checks {
             EvidenceSource::Service { operation, limits } => {
                 // Recheck the adopted capability even on a cache hit. The actual
                 // call still goes through all normal network and gateway controls.
-                let service = service_request(runtime, operation, check, &entry)?;
+                let service = service_request(runtime, operation, check, &entry, invocation_id)?;
                 (
                     limits,
                     Prepared::Service {
@@ -362,11 +386,13 @@ impl Checks {
             }
             _ => unreachable!(),
         };
-        let input = serde_json::to_vec(
-            &json!({"subject":entry.subject,"input_digest":entry.input_digest,
+        let mut input = json!({"subject":entry.subject,"input_digest":entry.input_digest,
             "inputs":check.inputs,"implementation_version":check.implementation_version,
-            "configuration_version":check.configuration_version}),
-        )?;
+            "configuration_version":check.configuration_version});
+        if let Some(id) = invocation_id {
+            input["invocation_id"] = json!(id);
+        }
+        let input = serde_json::to_vec(&input)?;
         if input.len() > limits.max_input_bytes {
             return Err("check input limit exceeded".into());
         }
@@ -580,6 +606,7 @@ fn service_request(
     operation: &ServiceOperation,
     check: &Check,
     entry: &Evidence,
+    invocation_id: Option<&str>,
 ) -> std::result::Result<ServiceRequest, Error> {
     let policy = runtime
         .policy
@@ -612,9 +639,12 @@ fn service_request(
     {
         Vec::new()
     } else {
-        serde_json::to_vec(
-            &json!({"subject":subject,"input_digest":entry.input_digest,"inputs":check.inputs}),
-        )?
+        let mut input =
+            json!({"subject":subject,"input_digest":entry.input_digest,"inputs":check.inputs});
+        if let Some(id) = invocation_id {
+            input["invocation_id"] = json!(id);
+        }
+        serde_json::to_vec(&input)?
     };
     let registry = gateway
         .registry()
