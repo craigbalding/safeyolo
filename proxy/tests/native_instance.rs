@@ -2,7 +2,7 @@
 
 use std::{
     fs,
-    os::unix::fs::symlink,
+    os::unix::fs::{PermissionsExt, symlink},
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
     time::{Duration, Instant},
@@ -147,12 +147,26 @@ impl Drop for Fixture {
 
 #[test]
 fn cleanup_stops_only_the_instances_private_tmux_server() {
+    for packaged in [false, true] {
+        check_private_tmux_cleanup(packaged);
+    }
+}
+
+fn check_private_tmux_cleanup(packaged: bool) {
     let mut fixture = Fixture::new();
     let tmux = std::env::split_paths(&std::env::var_os("PATH").unwrap())
         .map(|path| path.join("tmux"))
         .find(|path| path.is_file())
         .expect("install the existing tmux test prerequisite");
-    symlink(&tmux, fixture.runtime.join("bin/tmux")).unwrap();
+    let entrypoint = fixture.runtime.join("bin/tmux");
+    if packaged {
+        fs::create_dir(fixture.runtime.join("libexec")).unwrap();
+        symlink(&tmux, fixture.runtime.join("libexec/tmux")).unwrap();
+        fs::write(&entrypoint, include_bytes!("../../scripts/tmux_runtime.sh")).unwrap();
+        fs::set_permissions(&entrypoint, fs::Permissions::from_mode(0o755)).unwrap();
+    } else {
+        symlink(&tmux, &entrypoint).unwrap();
+    }
     let peer_socket = fixture.root().join("data/peer-tmux.sock");
     struct OwnedTmux(PathBuf, PathBuf);
     impl Drop for OwnedTmux {

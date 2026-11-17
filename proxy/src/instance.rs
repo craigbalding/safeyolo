@@ -471,7 +471,12 @@ async fn stop_tmux(root: &Path) -> Result<(), Error> {
         return Err("tmux ownership could not be read; root retained".into());
     }
     let pid: i64 = String::from_utf8(result.stdout)?.trim().parse()?;
-    if !host_platform::process_has_path_argument(pid, &binary, b"-S", &socket) {
+    // The packaged bin/tmux wrapper execs libexec/tmux. Loose development
+    // runtimes can instead put the executable directly in bin.
+    if ![root.join("libexec/tmux"), binary.clone()]
+        .iter()
+        .any(|executable| host_platform::process_has_path_argument(pid, executable, b"-S", &socket))
+    {
         return Err("tmux ownership differs from this instance; no server was stopped".into());
     }
     let token =
