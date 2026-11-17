@@ -67,8 +67,8 @@ def run(args):
             "guest_selection": json.loads((base / "share/guest-selection.json").read_text()),
         }
         save(receipt.path, receipt.document)
-        admin = 46371 if args.lane == "vz" else free_port()
-        upstream = 46373 if args.lane == "vz" else free_port()
+        admin = args.admin_port if args.admin_port is not None else (46371 if args.lane == "vz" else free_port())
+        upstream = args.upstream_port if args.upstream_port is not None else (46373 if args.lane == "vz" else free_port())
         if args.section == "job-network":
             scratch = output / "network"
             scratch.mkdir(mode=0o700)
@@ -90,7 +90,7 @@ def run(args):
                 if args.lane == "vz" and not observer:
                     raise ValueError("VZ job proof requires SAFEYOLO_JOB_OBSERVER_PROBE (static Linux guest executable)")
                 job_sandbox.run(cli, root, scratch, observer_probe=Path(observer) if observer else None,
-                                receipt=receipt, receiver_port=upstream if args.lane == "vz" else 0)
+                                receipt=receipt, receiver_port=upstream if args.lane == "vz" or args.upstream_port is not None else 0)
             else:
                 from tests.nested_linux_live_mount import run_proof
 
@@ -100,8 +100,11 @@ def run(args):
                 holder_probe = Path(holder).resolve(strict=True) if holder else None
                 copy_prepared_nats(base, root)
                 coord = [str(cli), "--root", str(root), "coord", "start"]
-                if args.lane == "vz":
-                    coord += ["--client-port", "46370", "--monitor-port", "46372"]
+                client_port = args.nats_client_port if args.nats_client_port is not None else (46370 if args.lane == "vz" else None)
+                monitor_port = args.nats_monitor_port if args.nats_monitor_port is not None else (46372 if args.lane == "vz" else None)
+                for option, port in (("--client-port", client_port), ("--monitor-port", monitor_port)):
+                    if port is not None:
+                        coord += [option, str(port)]
                 subprocess.run(coord, check=True, timeout=60)
                 subprocess.run([str(cli), "--root", str(root), "start"], check=True, timeout=60)
                 run_proof(root, output / "mounts", candidate=args.revision, receipt=receipt, holder_probe=holder_probe)
@@ -125,6 +128,10 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--revision", required=True)
+    parser.add_argument("--admin-port", type=int, help="Admin listener (default: VZ 46371, Linux ephemeral)")
+    parser.add_argument("--upstream-port", type=int, help="Receiver/upstream listener (default: VZ 46373, Linux ephemeral)")
+    parser.add_argument("--nats-client-port", type=int, help="Mount NATS client listener (default: VZ 46370, Linux Coord default)")
+    parser.add_argument("--nats-monitor-port", type=int, help="Mount NATS monitor listener (default: VZ 46372, Linux Coord default)")
     args = parser.parse_args()
     if args.section == "docker" and args.lane != "systrap":
         parser.error("the maintained nested-Docker journey uses Linux systrap")

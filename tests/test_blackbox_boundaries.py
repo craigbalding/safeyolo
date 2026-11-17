@@ -396,7 +396,8 @@ def test_docker_origins_require_exact_independent_effects_and_cleanup(tmp_path, 
 @pytest.mark.parametrize("section", BOUNDARY_SECTIONS)
 def test_boundary_preparation_failure_is_incomplete_and_keeps_cleanup_result(tmp_path, monkeypatch, section):
     args = SimpleNamespace(output=tmp_path / "reports", prepared_config=tmp_path / "prepared",
-                           root=tmp_path / "fresh", section=section, revision="a" * 40, lane="systrap")
+                           root=tmp_path / "fresh", section=section, revision="a" * 40, lane="systrap",
+                           admin_port=None, upstream_port=None, nats_client_port=None, nats_monitor_port=None)
     monkeypatch.setattr(boundaries, "_cli_identity", lambda _cli: {"source_revision": "b" * 40})
     stopped = []
     monkeypatch.setattr(boundaries, "cleanup_instance", lambda cli, root: stopped.append(root) or [])
@@ -410,18 +411,23 @@ def test_boundary_preparation_failure_is_incomplete_and_keeps_cleanup_result(tmp
 
 @pytest.mark.parametrize("lane,probe", [("systrap", None), ("vz", None), ("systrap", "absent"),
                                         ("systrap", "supplied"), ("vz", "supplied")])
-def test_installed_mounts_select_guest_holder_before_starting_services(tmp_path, monkeypatch, lane, probe):
+@pytest.mark.parametrize("explicit_ports", [False, True])
+def test_installed_mounts_select_guest_holder_before_starting_services(tmp_path, monkeypatch, lane, probe, explicit_ports):
     base = tmp_path / "prepared"
     (base / "share").mkdir(parents=True)
     (base / "share/guest-selection.json").write_text('{"guest":"selected"}')
     args = SimpleNamespace(output=tmp_path / "reports", prepared_config=base,
-                           root=tmp_path / "fresh", section="mounts", revision="a" * 40, lane=lane)
+                           root=tmp_path / "fresh", section="mounts", revision="a" * 40, lane=lane,
+                           admin_port=46374 if explicit_ports else None, upstream_port=None,
+                           nats_client_port=46375 if explicit_ports else None,
+                           nats_monitor_port=46378 if explicit_ports else None)
     monkeypatch.setattr(boundaries, "_cli_identity", lambda _: {"source_revision": args.revision})
     monkeypatch.setattr(boundaries, "controller_identity", lambda: {"controller_revision": "b" * 40, "controller_dirty": False})
-    monkeypatch.setattr(boundaries, "prepare", lambda *_: None)
+    monkeypatch.setattr(boundaries, "free_port", lambda: 43123)
     calls, cleaned = [], []
+    monkeypatch.setattr(boundaries, "prepare", lambda base, root, port: calls.append(("admin", port)))
     monkeypatch.setattr(boundaries, "copy_prepared_nats", lambda *_: calls.append("nats"))
-    monkeypatch.setattr(boundaries.subprocess, "run", lambda argv, **_: calls.append(argv[-1]))
+    monkeypatch.setattr(boundaries.subprocess, "run", lambda argv, **_: calls.append(argv))
     monkeypatch.setattr(boundaries, "cleanup_instance", lambda _, root: cleaned.append(root) or [])
     supplied = tmp_path / "mount holder"
     if probe == "supplied":
@@ -441,16 +447,118 @@ def test_installed_mounts_select_guest_holder_before_starting_services(tmp_path,
     ready = probe == "supplied" or (lane == "systrap" and probe is None)
     if ready:
         assert boundaries.run(args) == 0
-        assert calls == ["nats", "46372" if lane == "vz" else "start", "start", "mounts"]
+        coord = [str(base / "bin/safeyolo"), "--root", str(args.root), "coord", "start"]
+        if explicit_ports:
+            coord += ["--client-port", "46375", "--monitor-port", "46378"]
+        elif lane == "vz":
+            coord += ["--client-port", "46370", "--monitor-port", "46372"]
+        assert calls[0] == ("admin", 46374 if explicit_ports else 46371 if lane == "vz" else 43123)
+        assert calls[1:] == ["nats", coord, [str(base / "bin/safeyolo"), "--root", str(args.root), "start"], "mounts"]
     else:
         with pytest.raises((ValueError, FileNotFoundError)):
             boundaries.run(args)
-        assert calls == []
+        assert len(calls) == 1 and calls[0][0] == "admin"
     result = json.loads((args.output / "boundary-result.json").read_text())
     assert result["finished"] == ready
     assert result["cleanup_failures"] == [] and cleaned == [args.root]
     # Forwarding a supplied fixture cannot supply missing procedure checkpoints.
     assert not receipts.section_execution(args.output, "mounts", "systrap", "run")["complete"]
+
+
+@pytest.mark.parametrize("lane,section", [(lane, section) for lane in ("systrap", "kvm", "vz")
+                                        for section in ("job-sandbox", "job-network")] + [("systrap", "docker")])
+@pytest.mark.parametrize("explicit_ports", [False, True])
+def test_boundary_port_options_reach_job_and_docker_consumers(tmp_path, monkeypatch, lane, section, explicit_ports):
+    base, root, output = tmp_path / "prepared", tmp_path / "fresh", tmp_path / "reports"
+    (base / "share").mkdir(parents=True)
+    (base / "share/guest-selection.json").write_text('{}')
+    (base / "config.toml").write_text('admin_port = 9999\n')
+    revision = "a" * 40
+    monkeypatch.setattr(boundaries, "_cli_identity", lambda _: {"source_revision": revision})
+    monkeypatch.setattr(boundaries, "controller_identity", lambda: {"controller_revision": "b" * 40, "controller_dirty": False})
+    monkeypatch.setattr(boundaries, "free_port", lambda: 43123)
+    monkeypatch.setenv("SAFEYOLO_JOB_OBSERVER_PROBE", str(tmp_path / "observer"))
+    cleaned, observed = [], []
+    monkeypatch.setattr(boundaries, "cleanup_instance", lambda cli, path: cleaned.append(path) or [])
+
+    def initialize(base, root):
+        (root / "data").mkdir(parents=True)
+        (root / "config.toml").write_text('admin_port = 9999\n')
+
+    monkeypatch.setattr(boundaries, "prepare_native_instance", initialize)
+    admin = 46374 if explicit_ports else 46371 if lane == "vz" else 43123
+    upstream = 46372 if explicit_ports else 46373 if lane == "vz" else 43123
+
+    def sandbox(cli, path, scratch, **kwargs):
+        assert tomlkit.parse((path / "config.toml").read_text())["admin_port"] == admin
+        assert kwargs["receiver_port"] == (upstream if explicit_ports or lane == "vz" else 0)
+        observed.append("sandbox")
+
+    def network(args, receipt):
+        assert (args.admin_port, args.upstream_port) == (admin, upstream)
+        observed.append("network")
+
+    def nested_docker(args, receipt):
+        assert (args.admin_port, args.host_port) == (admin, upstream)
+        observed.append("docker")
+
+    monkeypatch.setattr(job_sandbox, "run", sandbox)
+    monkeypatch.setattr(job_network, "run", network)
+    monkeypatch.setattr(docker, "recurring_journey", nested_docker)
+    arguments = ["boundary", "--section", section, "--lane", lane, "--prepared-config", str(base),
+                 "--root", str(root), "--output", str(output), "--revision", revision]
+    if explicit_ports:
+        arguments += ["--admin-port", "46374", "--upstream-port", "46372"]
+    monkeypatch.setattr(sys, "argv", arguments)
+    assert boundaries.main() == 0
+    assert observed == [{"job-sandbox": "sandbox", "job-network": "network", "docker": "docker"}[section]]
+    assert cleaned == [root]
+    assert tomlkit.parse((base / "config.toml").read_text())["admin_port"] == 9999
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_explicit_boundary_receiver_binds_or_fails_without_complete_coverage(tmp_path, monkeypatch, busy):
+    base, root, output = tmp_path / "prepared", tmp_path / "fresh", tmp_path / "reports"
+    (base / "share").mkdir(parents=True)
+    (base / "share/guest-selection.json").write_text('{}')
+    revision = "a" * 40
+    monkeypatch.setattr(boundaries, "_cli_identity", lambda _: {"source_revision": revision})
+    monkeypatch.setattr(boundaries, "controller_identity", lambda: {"controller_revision": "b" * 40, "controller_dirty": False})
+    monkeypatch.setattr(boundaries, "prepare", lambda *_: None)
+    cleaned = []
+    monkeypatch.setattr(boundaries, "cleanup_instance", lambda cli, path: cleaned.append(path) or [])
+
+    def job(program, **kwargs):
+        assert not busy, "busy receiver must fail before any job"
+        assert f"/dev/tcp/127.0.0.1/{port}" in program
+        return 0, {"outcome": {"kind": "exit", "code": 0}}
+
+    def sandbox(cli, root, scratch, **kwargs):
+        job_sandbox.network_off(job, kwargs["receipt"], kwargs["receiver_port"])
+
+    monkeypatch.setattr(job_sandbox, "run", sandbox)
+    with socket.socket() as foreign:
+        foreign.bind(("127.0.0.1", 0))
+        foreign.listen()
+        port = foreign.getsockname()[1]
+        if not busy:
+            foreign.close()
+        monkeypatch.setattr(sys, "argv", ["boundary", "--section", "job-sandbox", "--lane", "systrap",
+                                         "--prepared-config", str(base), "--root", str(root), "--output", str(output),
+                                         "--revision", revision, "--upstream-port", str(port)])
+        assert boundaries.main() == (2 if busy else 0)
+        if busy:
+            assert foreign.getsockname()[1] == port and foreign.fileno() >= 0
+        else:
+            with socket.socket() as restored:
+                restored.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                restored.bind(("127.0.0.1", port))
+    result = json.loads((output / "boundary-result.json").read_text())
+    assert result["finished"] is not busy
+    if busy:
+        assert "OSError" in result["error"]
+    assert result["cleanup_failures"] == [] and cleaned == [root]
+    assert not receipts.section_execution(output, "job-sandbox", "systrap", "run")["complete"]
 
 
 def test_installed_boundary_selection_uses_current_journeys_and_preserves_hardware_scope():

@@ -2695,8 +2695,9 @@ def test_installed_sections_reuse_an_artifact_install_without_reinstalling_or_se
     ("kvm", False, None), ("vz", False, None),
     ("systrap", True, "assertion"), ("systrap", True, "cleanup"),
 ])
+@pytest.mark.parametrize("explicit_ports", [False, True])
 def test_installed_boundary_paths_fit_delegated_sockets_and_keep_owned_cleanup(
-    tmp_path, monkeypatch, installed_section_commands, lane, configured_parent, failure
+    tmp_path, monkeypatch, installed_section_commands, lane, configured_parent, failure, explicit_ports
 ):
     from tests.blackbox import execution_receipt as receipts
     from tests.blackbox.selections import BOUNDARY_SECTIONS, PROCEDURES, SECTIONS
@@ -2712,8 +2713,11 @@ def test_installed_boundary_paths_fit_delegated_sockets_and_keep_owned_cleanup(
         monkeypatch.delenv("SAFEYOLO_BLACKBOX_STATE_PARENT", raising=False)
     sections = tuple(section for section in BOUNDARY_SECTIONS if section in SECTIONS[lane])
     artifacts = tmp_path / "reports"
+    ports = {"admin-port": 46374, "upstream-port": 46372, "nats-client-port": 46375, "nats-monitor-port": 46378}
     monkeypatch.setattr(sys, "argv", ["run-installed", lane, "--artifacts", str(artifacts),
-                                     *[item for section in sections for item in ("--section", section)]])
+                                     *[item for section in sections for item in ("--section", section)],
+                                     *[item for name, port in ports.items() for item in ("--boundary-" + name, str(port))
+                                       if explicit_ports]])
     monkeypatch.setattr(installed_sections.subprocess, "check_output",
                         lambda args, **kwargs: "a" * 40 if "rev-parse" in args else "")
     run_command, cleanup = subprocess.run, installed_sections.cleanup_instance
@@ -2740,6 +2744,11 @@ def test_installed_boundary_paths_fit_delegated_sockets_and_keep_owned_cleanup(
         assert env["SAFEYOLO_COORD_DATA_DIR"] == str(root / "data/coord")
         assert selected["--prepared-config"] == str(root.parent / "prepared")
         assert selected["--revision"] == "a" * 40 and selected["--lane"] == lane
+        for name, port in ports.items():
+            if explicit_ports:
+                assert selected["--" + name] == str(port)
+            else:
+                assert "--" + name not in selected
         # This is the full Linux delegated-job suffix from jobs.rs/network.rs.
         suffix = Path("data/job-XXXXXX/agents") / ("job-" + "a" * 32) / "proxy/proxy.sock"
         assert len(bytes(Path("/home/agent/sy-systrap-19p__oi_/job-network") / suffix)) == 120

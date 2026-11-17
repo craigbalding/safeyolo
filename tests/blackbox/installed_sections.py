@@ -153,7 +153,9 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
 
 def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision: str,
                  directory: Path, artifacts: Path, *, operator_journey: bool = False,
-                 prepared_config: Path | None = None, listener_restart: bool = False) -> int:
+                 prepared_config: Path | None = None, listener_restart: bool = False,
+                 boundary_admin_port: int | None = None, boundary_upstream_port: int | None = None,
+                 boundary_nats_client_port: int | None = None, boundary_nats_monitor_port: int | None = None) -> int:
     """Prepare once; continue after a failed assertion only after owned cleanup."""
     source = prepared_config or directory / "prepared"
     env = os.environ.copy()
@@ -264,6 +266,12 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                     str(REPOSITORY / "tests/blackbox/installed_boundaries.py"),
                     "--section", section, "--lane", lane, "--prepared-config", str(source),
                     "--root", str(instance), "--revision", revision, "--output", str(section_artifacts)]
+            for option, port in (("--admin-port", boundary_admin_port),
+                                 ("--upstream-port", boundary_upstream_port),
+                                 ("--nats-client-port", boundary_nats_client_port),
+                                 ("--nats-monitor-port", boundary_nats_monitor_port)):
+                if port is not None:
+                    args += [option, str(port)]
         print(f"=== Installed {section}: {instance} ===", flush=True)
         error = None
         claude_cleanup = None
@@ -345,6 +353,14 @@ def main() -> int:
     parser.add_argument("--install-checkout", type=Path, default=REPOSITORY)
     parser.add_argument("--prepared-config", type=Path,
                         help="Reuse an installed native package instead of installing source; the test checkout may differ from its source revision")
+    parser.add_argument("--boundary-admin-port", type=int,
+                        help="Boundary sections' admin port (default: VZ 46371, Linux ephemeral)")
+    parser.add_argument("--boundary-upstream-port", type=int,
+                        help="Boundary sections' receiver/upstream port (default: VZ 46373, Linux ephemeral)")
+    parser.add_argument("--boundary-nats-client-port", type=int,
+                        help="Mount section's NATS client port (default: VZ 46370, Linux Coord default)")
+    parser.add_argument("--boundary-nats-monitor-port", type=int,
+                        help="Mount section's NATS monitor port (default: VZ 46372, Linux Coord default)")
     parser.add_argument("--artifacts", type=Path, default=Path(os.environ.get(
         "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR", REPOSITORY / "tests/blackbox/artifacts")))
     args = parser.parse_args()
@@ -383,7 +399,10 @@ def main() -> int:
     print(f"Prepared product and section state: {directory}", flush=True)
     return run_sections(args.lane, sections, checkout, revision, directory, args.artifacts.resolve(),
                         operator_journey=args.operator_journey, prepared_config=prepared_config,
-                        listener_restart=args.listener_restart)
+                        listener_restart=args.listener_restart,
+                        boundary_admin_port=args.boundary_admin_port, boundary_upstream_port=args.boundary_upstream_port,
+                        boundary_nats_client_port=args.boundary_nats_client_port,
+                        boundary_nats_monitor_port=args.boundary_nats_monitor_port)
 
 
 if __name__ == "__main__":
