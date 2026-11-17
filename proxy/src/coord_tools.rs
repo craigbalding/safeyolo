@@ -315,6 +315,8 @@ impl Client {
             | "release_work"
             | "complete_work"
             | "continue_work"
+            | "resolve_work_prerequisite"
+            | "retry_work_prerequisite"
             | "publish_work_output"
             | "cancel_work"
             | "request_check"
@@ -336,6 +338,8 @@ impl Client {
                     "set_work_requirements" => "set_requirements",
                     "select_work_review" => "select_review",
                     "decide_work_acceptance" => "decide_acceptance",
+                    "resolve_work_prerequisite" => "resolve_prerequisite",
+                    "retry_work_prerequisite" => "retry_prerequisite",
                     _ => name.trim_end_matches("_work"),
                 };
                 body.insert("action".into(), json!(action));
@@ -346,6 +350,15 @@ impl Client {
                     60.0,
                 )
             }
+            "read_work_prerequisite" => (
+                Method::GET,
+                format!(
+                    "{base}/work?invocation_id={}",
+                    segment(text(args, "invocation_id")?)
+                ),
+                Value::Null,
+                60.0,
+            ),
             "read_work" => (
                 Method::GET,
                 format!(
@@ -567,6 +580,37 @@ pub fn tools() -> Vec<Value> {
     let mut add = |name: &str, description: &str, properties: Value, required: &[&str]| {
         result.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}}));
     };
+    add(
+        "read_work_prerequisite",
+        "Read a durable before-admission action invocation, including before Work exists. Supply the invocation ID from the held protected operation. Current room receive authority is required. Inspect exact request, binding, reached state, attempts and version before recovery. The record does not imply exactly-once remote effects or protected completion.",
+        json!({"room_name":string,"invocation_id":string}),
+        &["room_name", "invocation_id"],
+    );
+    add(
+        "resolve_work_prerequisite",
+        "Reconcile a failed or uncertain prerequisite at its external authority under separately adopted named-agent permission. Supply the current invocation version and external observation references. Outcome completed satisfies only this exact invocation; current protected-operation authority is still required. Changed/revoked authority refuses recovery. This performs no effect and grants no retry permission. Choose an operation_id before writing; recover ambiguous results with the original inputs.",
+        json!({"room_name":string,"invocation_id":string,"expected_version":integer,"outcome":{"type":"string","enum":["completed","failed","uncertain"]},"summary":string,"evidence_refs":array,"operation_id":string}),
+        &[
+            "room_name",
+            "invocation_id",
+            "expected_version",
+            "outcome",
+            "summary",
+            "evidence_refs",
+        ],
+    );
+    add(
+        "retry_work_prerequisite",
+        "Select a bounded retry of one failed or uncertain prerequisite under separately adopted idempotent retry permission. Requires a current invocation version and external observation references. Selection dispatches no effect: the original requester resumes its unchanged protected operation and operation ID under current authority. Invocation ID and external inputs remain unchanged. No adoption, exhausted bound or revoked authority refuses selection. Choose an operation_id before writing and recover ambiguous results with original inputs.",
+        json!({"room_name":string,"invocation_id":string,"expected_version":integer,"summary":string,"evidence_refs":array,"operation_id":string}),
+        &[
+            "room_name",
+            "invocation_id",
+            "expected_version",
+            "summary",
+            "evidence_refs",
+        ],
+    );
     add(
         "create_signal",
         "Raise an attributed blocker, decision, result or correction. observed means the author reports observation; it is not platform attestation. Summary is 1..1024 UTF-8 bytes; refs are opaque, at most 16 strings of 1024 bytes. Corrections require supersedes with your own signal_id and expected_revision. Only current page_operator permission pages unresolved blocker/decision, subject to dedup and rate limits. Creation remains usable without that permission. Choose operation_id before writing; recover an ambiguous result using its exact original inputs.",

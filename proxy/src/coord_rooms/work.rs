@@ -144,6 +144,19 @@ pub(crate) enum Mutation {
         #[serde(default)]
         evidence_refs: Vec<String>,
     },
+    ResolvePrerequisite {
+        invocation_id: String,
+        expected_version: i64,
+        outcome: automatic::State,
+        summary: String,
+        evidence_refs: Vec<String>,
+    },
+    RetryPrerequisite {
+        invocation_id: String,
+        expected_version: i64,
+        summary: String,
+        evidence_refs: Vec<String>,
+    },
     Cancel {
         work_id: String,
         expected_version: i64,
@@ -609,6 +622,10 @@ pub(super) fn preflight(
     if let Some(result) = replay {
         return Ok(Preflight::Replay(result));
     }
+    if automatic::prerequisite::prepare_recovery(configured, &tx, room, actor, &mutation)?.is_some()
+    {
+        return Ok(Preflight::Ready(None));
+    }
     let work = automatic::current_work(&tx, &room_id, &input)?;
     let guard = automatic::guard(
         configured,
@@ -693,6 +710,16 @@ pub(crate) fn mutate_prepared(
     }
     let operation = operation.as_str();
     let action = input["action"].as_str().unwrap();
+    if let Some(mut invocation) =
+        automatic::prerequisite::prepare_recovery(&configured, &tx, room, actor, &mutation)?
+    {
+        let mut result = automatic::prerequisite::retain_recovery(&tx, &mut invocation)?;
+        result["operation_id"] = json!(operation);
+        tx.execute("INSERT INTO coord_operations(principal_kind,principal_id,operation_type,operation_id,request_hash,outcome_kind,outcome_json,created_at) VALUES(?1,?2,?3,?4,?5,'success',?6,?7)", params![actor.kind(),actor.id(),operation_type,operation,request_hash,result.to_string(),now()])?;
+        let _authority = prepared.map(automatic::Prepared::current).transpose()?;
+        tx.commit()?;
+        return Ok(result);
+    }
     let automatic = automatic::guard(
         &configured,
         &tx,
@@ -1174,6 +1201,8 @@ fn prepare_change(
                     }
                 }
                 Mutation::Create { .. }
+                | Mutation::ResolvePrerequisite { .. }
+                | Mutation::RetryPrerequisite { .. }
                 | Mutation::ReceiveAction { .. }
                 | Mutation::RequestCheck { .. }
                 | Mutation::RaiseChallenge { .. } => unreachable!(),

@@ -52,6 +52,7 @@ pub(super) async fn respond(
         "version",
         "actions",
         "include_received",
+        "invocation_id",
     ]
     .map(|key| query_parameter(request.path_and_query, key));
     let [
@@ -65,6 +66,7 @@ pub(super) async fn respond(
         Ok(version),
         Ok(actions),
         Ok(include_received),
+        Ok(invocation_id),
     ] = fields
     else {
         return response(400, json!({"error":"invalid work query"}));
@@ -211,6 +213,12 @@ pub(super) async fn respond(
                 actor,
                 mutation,
                 operation.as_deref(),
+            ),
+            None if invocation_id.is_some() => work::automatic::prerequisite::read(
+                &conn,
+                &room,
+                actor,
+                invocation_id.as_deref().unwrap(),
             ),
             None => match work_id {
                 Some(id) if actions => {
