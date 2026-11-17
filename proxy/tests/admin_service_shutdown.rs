@@ -308,6 +308,12 @@ async fn abrupt_kill_restarts_over_stale_paths_and_retains_completed_audit() {
         as u16;
     probe_agent_socket(&paths.agent_socket(), second_admin_port).await;
 
+    // Drain the restarted writer before reading the complete log strictly.
+    // A live append can expose a trailing fragment even after a prior audit
+    // event has completed; shutdown also finishes recovery of any crash tail.
+    stop_proxy(second, &mut second_guard).await;
+    wait_for_absent(&paths.readiness).await;
+    wait_for_absent(&paths.agent_socket()).await;
     let after_rows = read_audit(&paths.audit);
     assert_eq!(
         after_rows
@@ -321,9 +327,6 @@ async fn abrupt_kill_restarts_over_stale_paths_and_retains_completed_audit() {
         after_rows.iter().any(|row| row == &completed_event),
         "restart must retain the completed authorization event verbatim"
     );
-    stop_proxy(second, &mut second_guard).await;
-    wait_for_absent(&paths.readiness).await;
-    wait_for_absent(&paths.agent_socket()).await;
     assert!(
         !paths.fallback_audit().exists(),
         "explicit audit destination must not silently fall back after crash/restart"
