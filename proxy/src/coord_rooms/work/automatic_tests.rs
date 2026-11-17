@@ -101,6 +101,9 @@ impl Provider {
                         "action completed".to_owned()
                     } else if mode == 2 {
                         "malformed".into()
+                    } else if mode == 6 {
+                        json!({"finding":{"kind":"failure","reason":"controlled provider failure"}})
+                            .to_string()
                     } else {
                         json!({"finding":{"kind":"finding","positive":positive},"source_revision":"controlled-snapshot"}).to_string()
                     };
@@ -275,6 +278,370 @@ async fn post(root: &Path, uri: &str, token: &str, bytes: &str) -> (u16, Value) 
         head.split_whitespace().nth(1).unwrap().parse().unwrap(),
         serde_json::from_str(body).unwrap_or_else(|_| json!(body)),
     )
+}
+
+/// Use the real job supervisor with a pinned shell helper. No VM is involved.
+/// Its append-only launch count is independent of the HTTP provider's counter.
+fn adopt_counted_jobs(root: &Path, proxy: &crate::Proxy, provider: &Provider) {
+    use std::os::unix::fs::PermissionsExt;
+    let helper = root.join("counted-helper");
+    let marker = root.join("job-starts");
+    let script = format!(
+        r#"#!/bin/sh
+printf 'job\n' >> '{}'
+printf '%s' '{{"finding":{{"kind":"finding","positive":true}},"source_revision":"counted-helper"}}'
+printf '%s' '{{"completion":{{"kind":"guest_call_completed","reported_status":0}},"error":null}}' > "$2"
+"#,
+        marker.display()
+    );
+    fs::write(&helper, &script).unwrap();
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(&marker, "").unwrap();
+    fs::write(root.join("fixture.cpio"), "fixture, no VM").unwrap();
+    fs::write(root.join("checker.py"), "fixture, no Python execution").unwrap();
+    let manifest = json!({"protocol":3,"os":std::env::consts::OS,"architecture":std::env::consts::ARCH,
+        "hyperlight":"0.19.0","unikraft":"0.21.0","kernel_contract":"fixture",
+        "helper":{"file":"counted-helper","sha256":checks::content_digest(script.as_bytes())},
+        "rootfs":{"file":"fixture.cpio","sha256":checks::content_digest(b"fixture, no VM")},"rootfs_source":"fixture"});
+    let manifest = serde_json::to_vec(&manifest).unwrap();
+    fs::write(root.join("runtime.json"), &manifest).unwrap();
+    let spec = json!({"gate_id":"bound","argv":["/bin/true"],"timeout_seconds":5,
+        "max_input_bytes":32768,"max_input_entries":10,"retain_bytes":4096,
+        "engine":{"kind":"hyperlight-unikraft",
+            "runtime":{"path":"runtime.json","sha256":checks::content_digest(&manifest)},
+            "checker":{"path":"checker.py","sha256":checks::content_digest(b"fixture, no Python execution")}}});
+    fs::write(
+        root.join("counted-job.json"),
+        serde_json::to_vec(&spec).unwrap(),
+    )
+    .unwrap();
+    let mut definitions = definitions(provider.port);
+    for (name, boundary, input) in [
+        ("author", "admit_issue", "github_issue"),
+        ("verify", "verify_output", "published_artifact"),
+    ] {
+        let service_name = format!("provider_{name}");
+        definitions["checks"][&service_name] = definitions["checks"][name].clone();
+        definitions["work_bindings"]
+            .as_array_mut()
+            .unwrap()
+            .push(binding(&service_name, boundary, input));
+        let limits = definitions["checks"][name]["source"]["limits"].clone();
+        definitions["checks"][name]["source"] = json!({"kind":"job","spec":root.join("counted-job.json"),"effects":"passive","limits":limits});
+    }
+    let old: checks::Checks = serde_json::from_value(self::definitions(provider.port)).unwrap();
+    let new: checks::Checks = serde_json::from_value(definitions).unwrap();
+    let source = fs::read_to_string(root.join("policy.toml")).unwrap();
+    let changed = source.replace(
+        &toml::to_string(&old).unwrap(),
+        &toml::to_string(&new).unwrap(),
+    );
+    assert_ne!(changed, source);
+    fs::write(root.join("policy.toml"), &changed).unwrap();
+    crate::apply_native_policy(&proxy.runtime, &changed).unwrap();
+}
+fn counts(root: &Path, provider: &Provider) -> (usize, usize) {
+    (
+        fs::read_to_string(root.join("job-starts"))
+            .unwrap()
+            .lines()
+            .count(),
+        provider.calls.load(Ordering::SeqCst),
+    )
+}
+fn refresh_checks(root: &Path, proxy: &crate::Proxy) {
+    let source = fs::read_to_string(root.join("policy.toml")).unwrap();
+    let changed = source.replace("adopted-1", "adopted-2");
+    assert_ne!(source, changed);
+    fs::write(root.join("policy.toml"), &changed).unwrap();
+    crate::apply_native_policy(&proxy.runtime, &changed).unwrap();
+}
+
+#[tokio::test]
+async fn automatic_preflight_refuses_invalid_requests_before_jobs_or_provider_contacts() {
+    let provider = Provider::start().await;
+    let (root, proxy, _) = fixture_proxy(&provider).await;
+    adopt_counted_jobs(root.path(), &proxy, &provider);
+    let create = json!({"action":"create","title":"assigned issue","external_ref":"https://github.com/owner/repo/issues/1","assignee":{"kind":"agent","id":BOB},"operation_id":"create-assigned"});
+    let (status, receipt) = api(root.path(), &create).await;
+    assert_eq!(status, 200, "{receipt}");
+    assert_eq!(counts(root.path(), &provider), (1, 1));
+    let work = &receipt["work"];
+    let mut cases = vec![(
+        "other assignee",
+        input(work, "claim"),
+        403,
+        "assigned participant",
+    )];
+    let mut value = input(work, "reassign");
+    value["agent_id"] = json!(ALICE);
+    cases.push(("reassignment", value, 403, "only the operator"));
+    for (field, value) in [
+        ("expected_version", json!(0)),
+        ("expected_version", json!(999)),
+        ("expected_generation", json!(1)),
+    ] {
+        let mut request = input(work, "claim");
+        request[field] = value.clone();
+        cases.push((
+            field,
+            request,
+            if field == "expected_version" && value == 0 {
+                400
+            } else {
+                409
+            },
+            "version",
+        ));
+    }
+    let mut empty = create.clone();
+    empty.as_object_mut().unwrap().remove("operation_id");
+    empty["title"] = json!("");
+    cases.push(("empty title", empty, 400, "title"));
+    for (index, (label, mut request, expected, detail)) in cases.into_iter().enumerate() {
+        request["operation_id"] = json!(format!("invalid-{index}"));
+        let before = counts(root.path(), &provider);
+        let (status, result) = api(root.path(), &request).await;
+        assert_eq!(status, expected, "{label}: {result}");
+        assert!(result.to_string().contains(detail), "{label}: {result}");
+        assert_eq!(counts(root.path(), &provider), before, "{label}");
+    }
+    let before = counts(root.path(), &provider);
+    assert_eq!(api(root.path(), &create).await.1, receipt);
+    let mut changed = create.clone();
+    changed["title"] = json!("changed input");
+    assert_eq!(api(root.path(), &changed).await.0, 409);
+    assert_eq!(counts(root.path(), &provider), before);
+    let work = submit(
+        &proxy,
+        root.path(),
+        Actor::Agent(BOB),
+        input(work, "claim"),
+        "assigned-claim",
+    )
+    .await
+    .unwrap()["work"]
+        .clone();
+    assert_eq!(counts(root.path(), &provider), (2, 2));
+    let before = counts(root.path(), &provider);
+    assert_eq!(
+        submit(
+            &proxy,
+            root.path(),
+            Actor::Agent(BOB),
+            input(&work, "claim"),
+            "already-claimed"
+        )
+        .await
+        .unwrap_err()
+        .0,
+        409
+    );
+    assert_eq!(counts(root.path(), &provider), before);
+    submit(
+        &proxy,
+        root.path(),
+        Actor::Agent(BOB),
+        publication(&work, b"wanted"),
+        "output",
+    )
+    .await
+    .unwrap();
+    let work = current_value(root.path(), work["work_id"].as_str().unwrap());
+    assert_eq!(counts(root.path(), &provider), (3, 3));
+    // New policy makes the previous automatic findings inapplicable, so these
+    // acceptance attempts would otherwise launch fresh verifiers.
+    refresh_checks(root.path(), &proxy);
+    let mut cases = vec![
+        (Actor::Agent(ALICE), approval(&work), 403),
+        (Actor::Agent(BOB), approval(&work), 403),
+    ];
+    for (field, value) in [
+        ("expected_version", json!(1)),
+        ("expected_generation", json!(0)),
+        ("expected_target_generation", json!(0)),
+        ("expected_requirements_version", json!(0)),
+    ] {
+        let mut request = approval(&work);
+        request[field] = value;
+        cases.push((Actor::Agent(BOB), request, 409));
+    }
+    for (index, (actor, request, status)) in cases.into_iter().enumerate() {
+        let before = counts(root.path(), &provider);
+        assert_eq!(
+            submit(
+                &proxy,
+                root.path(),
+                actor,
+                request,
+                &format!("invalid-accept-{index}")
+            )
+            .await
+            .unwrap_err()
+            .0,
+            status
+        );
+        assert_eq!(counts(root.path(), &provider), before);
+    }
+    assert_eq!(
+        current_value(root.path(), work["work_id"].as_str().unwrap())["version"],
+        work["version"]
+    );
+    assert_eq!(provider.effects.load(Ordering::SeqCst), 0);
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn automatic_preflight_preserves_positive_negative_and_failed_findings() {
+    let provider = Provider::start().await;
+    let (root, proxy, _) = fixture_proxy(&provider).await;
+    adopt_counted_jobs(root.path(), &proxy, &provider);
+    let create = json!({"action":"create","title":"finding outcomes","external_ref":"https://github.com/owner/repo/issues/1"});
+    for (index, mode) in [1, 2, 6, 0].into_iter().enumerate() {
+        provider.mode.store(mode, Ordering::SeqCst);
+        let mut request = create.clone();
+        request["operation_id"] = json!(format!("finding-{mode}"));
+        let (status, result) = api(root.path(), &request).await;
+        assert_eq!(
+            status,
+            if mode == 0 { 200 } else { 409 },
+            "{mode}: {result}"
+        );
+        assert_eq!(counts(root.path(), &provider), (index + 1, index + 1));
+        let conn = super::super::super::open(root.path()).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM coord_work", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            if mode == 0 { 1 } else { 0 }
+        );
+    }
+    assert_eq!(provider.effects.load(Ordering::SeqCst), 0);
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn automatic_preflight_does_not_replace_transactional_state_or_requirement_validation() {
+    for change in ["assignment", "requirements"] {
+        let provider = Provider::start().await;
+        let (root, proxy, _) = fixture_proxy(&provider).await;
+        adopt_counted_jobs(root.path(), &proxy, &provider);
+        let work = submit(&proxy,root.path(),Actor::Agent(ALICE),json!({"action":"create","title":"race","external_ref":"https://github.com/owner/repo/issues/1","assignee":{"kind":"agent","id":BOB}}),"create").await.unwrap()["work"].clone();
+        provider.mode.store(4, Ordering::SeqCst);
+        let state = proxy.runtime.clone();
+        let path = root.path().to_owned();
+        let request = input(&work, "claim");
+        let pending = tokio::spawn(async move {
+            automatic::mutate(
+                &state,
+                &path,
+                "owned",
+                Actor::Agent(BOB),
+                serde_json::from_value(request).unwrap(),
+                Some("pending"),
+                None,
+            )
+            .await
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.reached.notified(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(counts(root.path(), &provider), (2, 2));
+        let mut conn = super::super::super::open(root.path()).unwrap();
+        conn.busy_timeout(std::time::Duration::from_millis(100))
+            .unwrap();
+        conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;").unwrap();
+        let mut mutation = if change == "assignment" {
+            input(&work, "reassign")
+        } else {
+            input(&work, "set_requirements")
+        };
+        if change == "assignment" {
+            mutation["agent_id"] = json!(ALICE);
+        } else {
+            let r = &work["acceptance_requirements"];
+            for field in ["authorities", "deciders", "independent"] {
+                mutation[field] = r[field].clone();
+            }
+            mutation["expected_requirements_version"] = r["version"].clone();
+            mutation["checks"] = json!([]);
+            mutation["challenges"] = json!([]);
+            mutation["reason"] = json!("Changed while the provider was pending");
+        }
+        let changed = mutate(
+            None,
+            &mut conn,
+            "owned",
+            Actor::Operator,
+            serde_json::from_value(mutation).unwrap(),
+            Some("concurrent-change"),
+        )
+        .unwrap()["work"]
+            .clone();
+        // A global policy writer must also remain available while the provider waits.
+        refresh_checks(root.path(), &proxy);
+        provider.release.notify_one();
+        assert_eq!(pending.await.unwrap().unwrap_err().0, 409);
+        assert_eq!(
+            current_value(root.path(), work["work_id"].as_str().unwrap())["version"],
+            changed["version"]
+        );
+        assert_eq!(counts(root.path(), &provider), (2, 2));
+        proxy.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn automatic_concurrent_exact_requests_share_the_committed_receipt_and_replay() {
+    let provider = Provider::start().await;
+    let (root, proxy, _) = fixture_proxy(&provider).await;
+    adopt_counted_jobs(root.path(), &proxy, &provider);
+    provider.mode.store(4, Ordering::SeqCst);
+    let request = json!({"action":"create","title":"concurrent","external_ref":"https://github.com/owner/repo/issues/1","operation_id":"same-operation"});
+    let mut pending = Vec::new();
+    for _ in 0..2 {
+        let path = root.path().to_owned();
+        let request = request.clone();
+        pending.push(tokio::spawn(async move { api(&path, &request).await }));
+    }
+    // Hold the first provider response until both requests passed preflight.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while counts(root.path(), &provider).0 != 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.reached.notified(),
+        )
+        .await
+        .unwrap();
+        provider.release.notify_one();
+    }
+    let first = pending.remove(0).await.unwrap();
+    let second = pending.remove(0).await.unwrap();
+    assert_eq!(first.0, 200, "{:?}", first);
+    assert_eq!(second, first);
+    assert_eq!(counts(root.path(), &provider), (2, 2));
+    assert_eq!(api(root.path(), &request).await, first);
+    assert_eq!(counts(root.path(), &provider), (2, 2));
+    let conn = super::super::super::open(root.path()).unwrap();
+    for table in ["coord_work", "coord_work_revisions", "coord_operations"] {
+        assert_eq!(
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1,
+            "{table}"
+        );
+    }
+    proxy.shutdown().await;
 }
 
 #[tokio::test]
