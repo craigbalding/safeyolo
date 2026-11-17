@@ -459,6 +459,10 @@ Cross-instance Coord access still needs an explicit authorized federation path.
 The runner removes its instance root after success, command failure or handled
 SIGINT/SIGTERM. Keep test results outside that root if they must survive cleanup;
 the script's working directory and external files are not removed.
+Here, `default` means `$HOME/.safeyolo`. Use
+`--reuse-guest-assets-from ROOT` for another installed asset source.
+The default parent is `/var/tmp`; `--directory PARENT` selects another short,
+disk-backed parent. Omit asset reuse for a command that needs no prepared guests.
 
 ```sh
 safeyolo instance run --ephemeral --runtime "$HOME/sy-candidate" --reuse-guest-assets-from default -- ./acceptance-test.sh
@@ -466,10 +470,7 @@ safeyolo instance run --ephemeral --runtime "$HOME/sy-candidate" --reuse-guest-a
 
 The runner prints its private root to standard error. The command's exit
 status is the script's exit status, including 130 for SIGINT and 143 for
-SIGTERM. `--reuse-guest-assets-from ROOT` selects another installed asset
-source. Omit that option for a command that needs no prepared guests.
-The default parent is `/var/tmp`; `--directory PARENT` selects another short,
-disk-backed parent. Socket paths that exceed the platform limit fail before
+SIGTERM. Socket paths that exceed the platform limit fail before
 guest startup and name the path to shorten. Guest fingerprints check the
 explicitly selected local bytes; they do not independently authenticate their
 publisher.
