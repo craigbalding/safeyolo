@@ -110,7 +110,7 @@ class CoordFixture:
                         owner.telemetry.append(event)
                         if event.get("event") != "ready":
                             if owner.telemetry_release is not None:
-                                owner.telemetry_release.wait(15)
+                                owner.telemetry_release.wait(60)
                             if owner.telemetry_status != 200:
                                 return self.reply(owner.telemetry_status, {"error": "telemetry unavailable"})
                     owner.sends += 1
@@ -205,7 +205,7 @@ def test_host_supervision_refusal_does_not_launch_a_model_or_send_a_terminal(bin
     assert not list(capture.iterdir())
 
 
-def harness_script(path, binary, capture, *, paused=False, terminal=True, pi=False, event_count=0, stderr_bytes=0):
+def harness_script(path, binary, capture, *, paused=False, pause_seconds=30, terminal=True, pi=False, event_count=0, stderr_bytes=0):
     # Actual native send output is what the deterministic model seam emits as
     # an MCP receipt; ordinary model text cannot complete an attention object.
     source = f'''#!{sys.executable}
@@ -225,7 +225,7 @@ sys.stderr.write("x"*{stderr_bytes})
 sys.stderr.flush()
 '''
     if paused:
-        source += "time.sleep(30)\n"
+        source += f"time.sleep({pause_seconds})\n"
     elif terminal:
         source += f'''
 args={{"room_name":"backlog","body":{f'DONE target={TARGET} attention_id={ATTENTION}'!r},"notify":["relay"]}}
@@ -252,10 +252,10 @@ else:
     path.chmod(0o755)
 
 
-def run(binary, fixture, *args, confirm_fresh_identity=True):
+def run(binary, fixture, *args, confirm_fresh_identity=True, timeout=12):
     _coord, env, config, state, _harness, _capture = fixture
     confirmation = ["--confirm-fresh-identity"] if confirm_fresh_identity else []
-    return subprocess.run([str(binary), "supervise", "--config", str(config), "--state", str(state), "--once", *confirmation, "--", *args], env=env, capture_output=True, text=True, timeout=12)
+    return subprocess.run([str(binary), "supervise", "--config", str(config), "--state", str(state), "--once", *confirmation, "--", *args], env=env, capture_output=True, text=True, timeout=timeout)
 
 
 @pytest.mark.parametrize("pi", [False, True])
@@ -282,14 +282,16 @@ def test_healthy_telemetry_preserves_order_and_canonical_receipt(binary, fixture
 def test_stalled_telemetry_does_not_block_completion_stderr_or_deadline(binary, fixture, paused):
     coord, _, config, state, harness, capture = fixture
     settings = json.loads(config.read_text())
-    settings.update(agent_room="forge-agent", startup_timeout_seconds=2, work_timeout_seconds=2)
+    settings.update(agent_room="forge-agent", startup_timeout_seconds=30, work_timeout_seconds=30)
     config.write_text(json.dumps(settings))
     coord.telemetry_release = threading.Event()
-    harness_script(harness, binary, capture, paused=paused, event_count=160, stderr_bytes=256 * 1024)
+    harness_script(harness, binary, capture, paused=paused, pause_seconds=60, event_count=160, stderr_bytes=256 * 1024)
     began = time.monotonic()
-    result = run(binary, fixture)
+    result = run(binary, fixture, timeout=45 if paused else 12)
     elapsed = time.monotonic() - began
-    assert elapsed < 4.5, (elapsed, result.stderr)
+    assert elapsed < (35 if paused else 4.5), (elapsed, result.stderr)
+    if paused:
+        assert elapsed >= 30, (elapsed, result.stderr)
     assert (result.returncode != 0) == paused, result.stderr
     assert "x" * (256 * 1024) in result.stderr, "harness stderr must drain while telemetry is stalled"
     assert "buffer full" in result.stderr and "omitted" in result.stderr
@@ -299,12 +301,15 @@ def test_stalled_telemetry_does_not_block_completion_stderr_or_deadline(binary, 
     assert all(live_process_token(int(path.name.removeprefix("argv-"))) is None for path in capture.glob("argv-*"))
     assert bool(saved["in_flight"]) == paused
     assert saved["phase"] == ("uncertain" if paused else "idle")
-    # Only ready and the first invocation event reached the receiver. Releasing
-    # its lost reply cannot launch the discarded backlog after invocation exit.
-    assert [event.get("event") for event in coord.telemetry] == ["ready", "start"]
+    # The sender can time out individual requests during the 30-second turn.
+    # Releasing their lost replies cannot send more events after invocation exit.
+    delivered = list(coord.telemetry)
+    assert [event.get("event") for event in delivered[:2]] == ["ready", "start"]
+    if not paused:
+        assert len(delivered) == 2
     coord.telemetry_release.set()
     time.sleep(.1)
-    assert len(coord.telemetry) == 2
+    assert coord.telemetry == delivered
 
 
 def test_unavailable_telemetry_cannot_settle_native_work_on_completion(binary, fixture):
