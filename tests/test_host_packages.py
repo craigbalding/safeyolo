@@ -556,7 +556,7 @@ def package_inputs(tmp_path, request, monkeypatch):
     source = tmp_path / "source"
     scripts = source / "scripts"
     scripts.mkdir(parents=True)
-    for name in ("build_host_packages.sh", "native_package.sh", "install_native.sh", "install_host_package.sh", "tmux_runtime.sh", "watch_backlog_factory.sh"):
+    for name in ("build_host_packages.sh", "build_host_packages.py", "native_package.sh", "install_native.sh", "install_host_package.sh", "tmux_runtime.sh", "watch_backlog_factory.sh"):
         shutil.copy2(REPO / "scripts" / name, scripts / name)
     # Only upstream acquisition is controlled. Include its optional executables
     # so the real producer must omit them from the package.
@@ -600,6 +600,7 @@ def package_inputs(tmp_path, request, monkeypatch):
     (source / "guest/rootfs").mkdir(parents=True)
     (source / "guest/rootfs/safeyolo-sudo").write_text("#!/bin/sh\nexit 0\n")
     shutil.copytree(REPO / "contrib", source / "contrib")
+    (source / ".gitignore").write_text("proxy/target/\nguest/command/target/\n__pycache__/\n")
     subprocess.run(["git", "init", "-q", str(source)], check=True)
     subprocess.run(["git", "-C", str(source), "add", "."], check=True)
     subprocess.run(["git", "-C", str(source), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "package fixture"], check=True)
@@ -924,8 +925,8 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
             assert stream.extractfile(path).read() == notice.read_bytes()
 
 
-@pytest.mark.parametrize("notices", [True, False])
-def test_hyperlight_runtime_is_packaged_with_pinned_definitions_and_notices(package_inputs, tmp_path, notices):
+@pytest.fixture
+def hyperlight_runtime(package_inputs, tmp_path):
     runtime = tmp_path / "hyperlight"
     runtime.mkdir()
     shutil.copy2(package_inputs[1] / "safeyolo-proxy", runtime / "safeyolo-hyperlight")
@@ -933,9 +934,18 @@ def test_hyperlight_runtime_is_packaged_with_pinned_definitions_and_notices(pack
                  "hyperlight.json", "hyperlight-unikraft.json", "hyperlight-service.json", "hyperlight-unikraft-service.json",
                  "hyperlight-artifact.json", "hyperlight-unikraft-artifact.json"):
         (runtime / name).write_text("controlled runtime fixture\n")
-    if notices:
-        (runtime / "licenses").mkdir()
-        (runtime / "licenses/NOTICE").write_text("runtime notice\n")
+    (runtime / "licenses").mkdir()
+    (runtime / "licenses/NOTICE").write_text("runtime notice\n")
+    return runtime
+
+
+@pytest.mark.parametrize("notices", [True, False])
+def test_hyperlight_runtime_is_packaged_with_pinned_definitions_and_notices(
+    package_inputs, hyperlight_runtime, tmp_path, notices,
+):
+    runtime = hyperlight_runtime
+    if not notices:
+        shutil.rmtree(runtime / "licenses")
     output = tmp_path / "output"
     result = run(*package_inputs[4], "--output", str(output), "--hyperlight-artifacts", str(runtime))
     if not notices:
@@ -953,6 +963,53 @@ def test_hyperlight_runtime_is_packaged_with_pinned_definitions_and_notices(pack
             relative = "assets/hyperlight/" + str(path.relative_to(runtime))
             assert stream.extractfile(prefix + "/" + relative).read() == path.read_bytes()
             assert f"{hashlib.sha256(path.read_bytes()).hexdigest()}  ./{relative}\n" in checksums
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("missing_runtime", [False, True])
+def test_normal_linux_production_workflow_packages_hyperlight(
+    package_inputs, hyperlight_runtime, tmp_path, monkeypatch, missing_runtime,
+):
+    import yaml
+
+    source, host, guest, runtime, _, revision = package_inputs
+    shutil.copytree(host, source / "proxy/target/release")
+    shutil.copytree(guest, source / "guest/command/target/release")
+    if missing_runtime:
+        (hyperlight_runtime / "core.elf").unlink()
+    monkeypatch.setenv("PATH", f"{runtime}:{os.environ['PATH']}")
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("BASH_ENV", os.devnull)
+    for name, value in {"GITHUB_REPOSITORY": "craigbalding/safeyolo", "GITHUB_RUN_ID": "10",
+                        "GITHUB_RUN_ATTEMPT": "1", "GITHUB_JOB": "build", "RUNNER_NAME": "controlled-producer",
+                        "GITHUB_WORKFLOW_REF": "craigbalding/safeyolo/.github/workflows/proxy-rust.yml@refs/heads/master"}.items():
+        monkeypatch.setenv(name, value)
+    workflow = yaml.safe_load((REPO / ".github/workflows/guest-test-inputs.yml").read_text())
+    step = next(s for s in workflow["jobs"]["build"]["steps"]
+                if s.get("name") == "Retain complete Linux production bundle")
+    # Execute the normal Actions shell and producer, without adding a bundle
+    # argument from the test. Only compiled native/runtime bytes are controlled.
+    result = run("bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"], cwd=source)
+    output = tmp_path / "host-package"
+    if missing_runtime:
+        assert result.returncode != 0
+        assert "core.elf" in result.stderr
+        assert not list(output.glob("*.tar.gz"))
+        assert not (output / "build.json").exists()
+        return
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads((output / "build.json").read_text())
+    assert receipt["source_revision"] == revision
+    archive = output / receipt["archive"]["name"]
+    assert receipt["archive"]["sha256"] == builder.sha256(archive)
+    with tarfile.open(archive) as package:
+        prefix = archive.name.removesuffix(".tar.gz")
+        for path in hyperlight_runtime.rglob("*"):
+            if path.is_file():
+                assert package.extractfile(prefix + "/assets/hyperlight/" +
+                                           str(path.relative_to(hyperlight_runtime))).read() == path.read_bytes()
+        assert package.getmember(prefix + "/assets/skills/job-authoring/SKILL.md").isfile()
+        assert package.getmember(prefix + "/assets/skills/job-authoring/references/walkthrough.md").isfile()
 
 
 def test_native_bundle_metadata_records_guest_discovery_without_pinning_an_archive(package_inputs, tmp_path):

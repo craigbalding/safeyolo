@@ -364,7 +364,17 @@ def test_reuse_keeps_independent_schedules_tests_and_package_assembly():
         package = next(step for step in job["steps"] if "Retain complete" in step.get("name", ""))
         assert package["if"] == "inputs.retain_packages && inputs.profile == 'production'"
         assert "build_host_packages.sh" in package["run"]
+        assert '--hyperlight-artifacts "$RUNNER_TEMP/hyperlight"' in package["run"]
         assert "reuse" not in package["if"]
+        hyperlight = next(step for step in job["steps"]
+                         if step.get("name", "").startswith("Build the pinned ")
+                         and "Hyperlight bundle" in step["name"])
+        assert hyperlight["if"] == package["if"]
+        assert job["steps"].index(hyperlight) < job["steps"].index(package)
+        assert "--locked --version 0.1.15 cargo-hyperlight" in hyperlight["run"]
+        assert '--output "$RUNNER_TEMP/hyperlight" --profile production' in hyperlight["run"]
+        assert "rustup component add rust-src" in hyperlight["run"]
+        assert not hyperlight.get("continue-on-error")
         selectors = [step for step in job["steps"] if step.get("id", "").startswith("reuse_")]
         for step in selectors:
             assert step["env"]["REQUIRE_SUCCESSFUL_RUN"] == "${{ inputs.retain_packages && inputs.profile == 'production' }}"

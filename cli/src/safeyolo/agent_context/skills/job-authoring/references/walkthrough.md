@@ -29,10 +29,16 @@ An agent running inside a normal guest has no host adoption authority.
 
 ## Check prerequisites and proposed authority
 
-The installed package must include the optional matching Hyperlight bundle
-under `assets/hyperlight`. Linux x86_64/aarch64 needs accessible KVM;
-Apple-silicon macOS needs Hypervisor.framework and the entitled helper. A Mac
-VM without nested virtualization can prepare source but cannot run this example.
+Install a complete published production SafeYolo host package through the normal
+installer; it includes the matching Hyperlight bundle under `assets/hyperlight`.
+For an existing instance without that bundle, use the existing `safeyolo upgrade`
+journey, then inspect `upgrade status` and `assets/hyperlight/runtime.json`.
+No source checkout, Rust or LLVM build tools are needed for these examples.
+Linux x86_64 needs accessible Kernel-based Virtual Machine (KVM);
+Apple-silicon macOS needs Hypervisor.framework (HVF) and the entitled helper.
+Linux aarch64 is a build target with unqualified runtime
+execution. A Mac VM without nested virtualization can prepare source but cannot
+run this example.
 See [engine selection](engines.md) before choosing a runtime.
 
 The host preparation helper requires Python 3.12+. The commands below use uv
@@ -181,24 +187,29 @@ uv run --script "$HOME/.safeyolo/assets/skills/job-authoring/scripts/prepare.py"
 ```
 
 Select `--engine hyperlight-unikraft` for the Python implementation. Preparation
-pins the installed checker/definition digests, fixes the expected identity in
+copies the selected bundle to `candidate/bundle`, pins its checker/definition
+digests, fixes the expected identity in
 operator-owned inputs, adds the two bindings and proposes a repository-scoped
 service capability. It preserves existing controls and other capabilities.
+Keep `candidate/bundle` at that path after adoption: its files remain the
+approved check implementation when a host upgrade replaces installed examples.
+The receipt identifies both the source bundle and retained bundle.
 A conflicting example block stops generation; an existing explicit host denial
 remains effective. Resolve the named conflict through the existing authority.
 
 For the developed Python bundle, run this variant instead of the preparation
 command above. Use the same selected instance, room, factory and credential
-choices. The bundle must be at its reviewed host path before adoption:
+choices. The source bundle must be at its reviewed host path during preparation:
 
 ```sh
 uv run --script "$HOME/.safeyolo/assets/skills/job-authoring/scripts/prepare.py" --root "$HOME/.safeyolo" --bundle proposed-bundle --engine hyperlight-unikraft --repository OWNER/REPOSITORY --author-id STABLE_USER_ID --issue ISSUE_NUMBER --room engineering --factory example --credential factory-github --output candidate
 ```
 
 `--bundle` selects the proposed definitions and digest-checked checker bytes;
-it defaults to the instance's installed bundle. The receipt names the selected
-bundle. Review the proposed code, runtime pins, capabilities and limits before
-the same service/policy checks and owner adoption below. Digest agreement and
+it defaults to the instance's installed bundle. The receipt names the source
+bundle and retained copy used by the checks. Review the proposed code, runtime
+pins, capabilities and limits before the same service/policy checks and owner
+adoption below. Digest agreement and
 offline tests do not approve code. Existing adopted definitions that differ
 still require the owner's explicit reconciliation; this option does not
 replace them or remove a required binding.
