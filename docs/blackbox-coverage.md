@@ -342,7 +342,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-installed-shared-approvals-py).
 - [tests/proxy_contracts/test_guard_approval_audit.py](../tests/proxy_contracts/test_guard_approval_audit.py#L39) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-guard-approval-audit-py).
-- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L634) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L635) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `access`; default `vz` section `access`.
 - [proxy/tests/credential_http/boundary.rs](../proxy/tests/credential_http/boundary.rs#L55) — Native HTTP; host process; controlled credentials and upstream origins. Evidence: Real proxy wire with controlled credential/provider adapters.
   Exact identities: [source inventory](#witness-proxy-tests-credential-http-boundary-rs).
@@ -663,7 +663,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-installed-shared-approvals-py).
 - [tests/proxy_contracts/test_guard_approval_audit.py](../tests/proxy_contracts/test_guard_approval_audit.py#L39) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-guard-approval-audit-py).
-- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L634) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L635) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `access`; default `vz` section `access`.
 - [tests/blackbox/installed_shared_approvals.py::main](../tests/blackbox/installed_shared_approvals.py#L1467) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
@@ -753,7 +753,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 - [tests/proxy_contracts/test_desktop_waiting_page.py](../tests/proxy_contracts/test_desktop_waiting_page.py#L128) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-desktop-waiting-page-py).
-- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L634) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L635) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `access`; default `vz` section `access`.
 
 ### BB-24 — Coord ownership / review / output authority
@@ -780,7 +780,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-factory-cli-py).
 - [tests/proxy_contracts/test_native_harness_attention.py](../tests/proxy_contracts/test_native_harness_attention.py#L87) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-harness-attention-py).
-- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L634) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L635) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `access`; default `vz` section `access`.
 - [tests/blackbox/native_authority.py::main](../tests/blackbox/native_authority.py#L74) — Curated native Coord cases on Linux with real NATS and isolated instance roots. Evidence: Per-control procedure receipts and exact executed cases; process evidence, without a real guest or live tailnet.
   Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only); step matrix.os == 'ubuntu-latest'`).
@@ -3009,7 +3009,8 @@ and live peer denial, populated owner-positive/peer-negative guest flow search
 and detail, test-context/trace evidence, real NATS Coord and attention, operator
 collaboration approval/exchange/revocation, WebSocket peer effects and traffic-inspector
 filter/transcript/export. These observations stay in one installed composition.
-The fixture prepares desktop test packages and an owned headless host opener.
+The fixture prepares guest desktop packages and an owned host opener. Headless
+Linux runs also own a host Xvfb display for the typed action's display check.
 Viewer checks observe VNC bytes, session binding and cessation on revocation,
 expiry and run turnover; they do not require visual UI automation.
 

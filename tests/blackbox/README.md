@@ -217,6 +217,15 @@ Apple Silicon and the Swift helper build prerequisites in the
 
 ### Run installed sections with one preparation
 
+For Linux access tests, a supplied `DISPLAY` must reach a usable host X display.
+When `DISPLAY` is unset or empty, prepare host `Xvfb` plus `xdpyinfo` or `xrandr`
+first (Debian packages `xvfb` and `x11-utils` provide the first pair). The access
+runner starts a separate Xvfb display before the proxy and stops it during owned
+cleanup. Xvfb selects a free display number and disables TCP listeners. Missing
+commands or failed startup exit 2; the log stays at the access instance's
+`desktop-display.log`. The production action still probes the display and checks
+guest readiness. Guest desktop packages alone do not satisfy this host prerequisite.
+
 Choose the host's actual mechanism. From the repository root, the following
 runs the checked-out HEAD; `--install-commit FULL_SHA` checks an explicit full
 commit before installing anything.

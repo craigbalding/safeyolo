@@ -2131,6 +2131,92 @@ OTHER_REVISION = "b" * 40
 SELECTED_REVISION = "a" * 40
 
 
+@pytest.mark.parametrize("mode,expected", [
+    ("ready", 0), ("xrandr-only", 0), ("assertion-failure", 1), ("startup-failure", 2),
+    ("timeout", 2), ("invalid-display", 2), ("missing-xvfb", 2),
+    ("missing-probe", 2), ("supplied-display", 0), ("macos", 0), ("other-section", 0),
+])
+def test_access_host_display_startup_and_owned_cleanup(tmp_path, mode, expected):
+    """Exercise the real launcher/trap with a controlled display child, without X11 or a guest."""
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    xvfb = commands / "Xvfb"
+    xvfb.write_text(f"#!{sys.executable}\n" + '''
+import json, os, pathlib, sys, time
+root = pathlib.Path(os.environ['SAFEYOLO_CONFIG_DIR'])
+(root / 'fixture-display-pid').write_text(str(os.getpid()))
+(root / 'fixture-display-args.json').write_text(json.dumps(sys.argv[1:]))
+mode = os.environ['FIXTURE_DISPLAY_MODE']
+if mode == 'startup-failure':
+    print('controlled startup failure', flush=True)
+    raise SystemExit(7)
+if mode != 'timeout':
+    os.write(3, b'invalid\\n' if mode == 'invalid-display' else b'211\\n')
+time.sleep(60)
+''')
+    xvfb.chmod(0o755)
+    for name, body in (("uname", "Darwin" if mode == "macos" else "Linux"),
+                       ("xdpyinfo", "unused"), ("xrandr", "unused")):
+        program = commands / name
+        program.write_text(f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(body)}\n")
+        program.chmod(0o755)
+    root = tmp_path / "instance"
+    root.mkdir()
+    runner = (ROOT / "tests/blackbox/run-tests.sh").read_text()
+    cleanup = runner[runner.index("cleanup() {"):runner.index("# --- Access host display ---")]
+    display = runner[runner.index("# --- Access host display ---"):runner.index("# --- Clean stale state")]
+    script = tmp_path / "display-probe.sh"
+    script.write_text(
+        "#!/bin/bash\nset -euo pipefail\n"
+        f"SCRIPT_DIR={shlex.quote(str(ROOT / 'tests/blackbox'))}\n"
+        "STARTED_VM=false\nSTARTED_INGRESS_PEER=false\nSTARTED_PROXY=false\n"
+        "STARTED_PARENT=false\nSTARTED_SINKHOLE=false\nLIFECYCLE=false\n"
+        "PARENT_PID=\nSINKHOLE_PID=\nHOST_LISTENER_PID=\nACCESS_XVFB_PID=\nPROXY_IMPL=rust\n"
+        f"ACCESS={'false' if mode == 'other-section' else 'true'}\n"
+        + '''command() {
+    if [ "$1" = -v ]; then
+        case "$FIXTURE_DISPLAY_MODE:$2" in
+            missing-xvfb:Xvfb|missing-probe:xdpyinfo|missing-probe:xrandr|xrandr-only:xdpyinfo) return 1 ;;
+        esac
+    fi
+    builtin command "$@"
+}
+'''
+        + cleanup + display
+        + 'printf "%s\\n" "${DISPLAY:-}" > "$SAFEYOLO_CONFIG_DIR/fixture-selected-display"\n'
+        + f"exit {1 if mode == 'assertion-failure' else 0}\n"
+    )
+    env = dict(os.environ, PATH=f"{commands}:{os.environ['PATH']}",
+               SAFEYOLO_CONFIG_DIR=str(root), SAFEYOLO_COORD_DATA_DIR=str(root / "coord"),
+               FIXTURE_DISPLAY_MODE=mode, DISPLAY=":777" if mode == "supplied-display" else "")
+    foreign = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        result = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, timeout=15)
+        assert result.returncode == expected, (result.stdout, result.stderr)
+        assert "Cleanup complete" in result.stdout
+        assert foreign.poll() is None, "owned cleanup stopped an unrelated process"
+        pid_file = root / "fixture-display-pid"
+        if pid_file.exists():
+            with pytest.raises(ProcessLookupError):
+                os.kill(int(pid_file.read_text()), 0)
+            assert json.loads((root / "fixture-display-args.json").read_text()) == [
+                "-displayfd", "3", "-screen", "0", "1280x800x24", "-nolisten", "tcp",
+            ]
+        if mode in {"ready", "xrandr-only", "assertion-failure", "supplied-display", "macos", "other-section"}:
+            selected = (root / "fixture-selected-display").read_text().strip()
+            owned = mode in {"ready", "xrandr-only", "assertion-failure"}
+            assert selected == (":211" if owned else ":777" if mode == "supplied-display" else "")
+            assert pid_file.exists() == owned
+        else:
+            assert not (root / "fixture-selected-display").exists(), "failed setup reached the test body"
+            assert "host display" in result.stderr or "host Xvfb" in result.stderr
+            if mode == "startup-failure":
+                assert "controlled startup failure" in (root / "desktop-display.log").read_text()
+    finally:
+        foreign.terminate()
+        foreign.wait(timeout=5)
+
+
 @pytest.mark.parametrize("platform,operator_journey", [("systrap", False), ("systrap", True),
                                                         ("vz", False), ("vz", True)])
 def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeypatch, platform, operator_journey):
@@ -3274,7 +3360,7 @@ if marker.exists():
         "fi\n"
         f"SCRIPT_DIR={str(ROOT / 'tests/blackbox')!r}\n"
         f"STARTED_VM=false\nSTARTED_PROXY={'false' if owner else 'true'}\n"
-        "STARTED_PARENT=false\nSTARTED_SINKHOLE=false\n"
+        "STARTED_PARENT=false\nSTARTED_SINKHOLE=false\nACCESS=false\n"
         "PARENT_PID=\nSINKHOLE_PID=\nHOST_LISTENER_PID=\nPROXY_IMPL=rust\nAGENT_NAME=bbtest\n"
         f"LIFECYCLE={'true' if owner else 'false'}\n"
         + _runner_cleanup_helpers()

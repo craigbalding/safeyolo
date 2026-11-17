@@ -611,6 +611,7 @@ PARENT_PID_FILE="$SAFEYOLO_CONFIG_DIR/native-parent.pid"
 PARENT_ARGV_FILE="$SAFEYOLO_CONFIG_DIR/native-parent.argv"
 PARENT_PORT_FILE="$SAFEYOLO_CONFIG_DIR/native-parent.port"
 HOST_LISTENER_PID=""
+ACCESS_XVFB_PID=""
 
 canonical_path() {
     local candidate="$1"
@@ -828,6 +829,12 @@ PY_OWNER
         wait "$HOST_LISTENER_PID" 2>/dev/null || true
     fi
 
+    if [ -n "${ACCESS_XVFB_PID:-}" ]; then
+        echo "Stopping access host display (PID $ACCESS_XVFB_PID)..."
+        kill "$ACCESS_XVFB_PID" 2>/dev/null || true
+        wait "$ACCESS_XVFB_PID" 2>/dev/null || true
+    fi
+
     if [ "$PROXY_IMPL" = "rust" ]; then
         python3 "$SCRIPT_DIR/harness/native_parent_config.py" restore "$SAFEYOLO_CONFIG_DIR" || cleanup_failed=true
     fi
@@ -874,6 +881,33 @@ PY_SURVIVORS
     exit "$section_exit"
 }
 trap cleanup EXIT
+
+# --- Access host display ---
+# The typed desktop action checks a real host display before guest readiness.
+# Keep a supplied display; on headless Linux, own a separate local X server.
+if [ "$ACCESS" = true ] && [ "$(uname -s)" = Linux ] && [ -z "${DISPLAY:-}" ]; then
+    if ! command -v Xvfb >/dev/null 2>&1 || \
+       { ! command -v xdpyinfo >/dev/null 2>&1 && ! command -v xrandr >/dev/null 2>&1; }; then
+        echo 'ERROR: headless access tests need host Xvfb and xdpyinfo or xrandr; prepare these host packages before running the access section' >&2
+        exit 2
+    fi
+    : > "$SAFEYOLO_CONFIG_DIR/desktop-display"
+    Xvfb -displayfd 3 -screen 0 1280x800x24 -nolisten tcp \
+        3> "$SAFEYOLO_CONFIG_DIR/desktop-display" \
+        > "$SAFEYOLO_CONFIG_DIR/desktop-display.log" 2>&1 &
+    ACCESS_XVFB_PID=$!
+    for _ in {1..50}; do
+        [ -s "$SAFEYOLO_CONFIG_DIR/desktop-display" ] && break
+        kill -0 "$ACCESS_XVFB_PID" 2>/dev/null || break
+        sleep 0.1
+    done
+    access_display="$(cat "$SAFEYOLO_CONFIG_DIR/desktop-display")"
+    if ! [[ "$access_display" =~ ^[0-9]+$ ]] || ! kill -0 "$ACCESS_XVFB_PID" 2>/dev/null; then
+        echo "ERROR: access host display did not become ready; see $SAFEYOLO_CONFIG_DIR/desktop-display.log" >&2
+        exit 2
+    fi
+    export DISPLAY=":$access_display"
+fi
 
 # --- Clean stale state from previous run ---
 # Done at start (not end) so post-mortem analysis of failures is possible.

@@ -6,7 +6,8 @@ and live peer denial, populated owner-positive/peer-negative guest flow search
 and detail, test-context/trace evidence, real NATS Coord and attention, operator
 collaboration approval/exchange/revocation, WebSocket peer effects and traffic-inspector
 filter/transcript/export. These observations stay in one installed composition.
-The fixture prepares desktop test packages and an owned headless host opener.
+The fixture prepares guest desktop packages and an owned host opener. Headless
+Linux runs also own a host Xvfb display for the typed action's display check.
 Viewer checks observe VNC bytes, session binding and cessation on revocation,
 expiry and run turnover; they do not require visual UI automation.
 """
