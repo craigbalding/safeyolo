@@ -565,6 +565,8 @@ def desktop_sharing(api, cli, root, worker, output):
                     current = json.loads(checked([*prefix, "agent", "status", worker]).stdout)
                     assert current["agent_id"] == ids[worker] and current["run_id"] != action["run"]["run_id"]
                     observation["new_run_id"] = current["run_id"]
+                    phase_report.update(observation)
+                    save(path, report)
                     prepare_guest_tests(cli, worker)
                 else:
                     deadline = time.monotonic() + 15
@@ -577,6 +579,8 @@ def desktop_sharing(api, cli, root, worker, output):
                     observation["active_viewer_closed"] = True
                 else:
                     raise AssertionError("retired desktop kept delivering viewer bytes")
+                phase_report.update(observation)
+                save(path, report)
                 observation["old_session"] = refused_viewer(url, cookie, retired=True)
                 phase_report.update(observation)
                 save(path, report)

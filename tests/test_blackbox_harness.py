@@ -2967,8 +2967,8 @@ def test_desktop_sharing_retains_peer_and_safe_request_failure(tmp_path, monkeyp
     assert "private-response" not in raw + str(error.value) and "private-url" not in raw
 
 
-@pytest.mark.parametrize("fail_cessation", [False, True])
-def test_desktop_sharing_uses_body_approval_and_saves_viewer_before_cessation(tmp_path, monkeypatch, fail_cessation):
+@pytest.mark.parametrize("failure", [None, "live-viewer", "retired-access"])
+def test_desktop_sharing_uses_body_approval_and_saves_viewer_before_cessation(tmp_path, monkeypatch, failure):
     (tmp_path / "policy.toml").write_text('[agents.worker]\nagent_id="ag-worker"\n[agents.bbpeer]\nagent_id="ag-peer"\n')
     phases = ("revocation", "expiry", "stale-run")
     current = {}
@@ -3021,7 +3021,7 @@ def test_desktop_sharing_uses_body_approval_and_saves_viewer_before_cessation(tm
         def recv(self, *, timeout):
             assert timeout == 8
             assert json.loads((tmp_path / "desktop-effects.json").read_text())["sessions"][current["phase"]]["positive"] == observed
-            if fail_cessation:
+            if failure == "live-viewer":
                 return b"unexpected live bytes"
             raise installed_access.ConnectionClosed(None, None)
 
@@ -3037,19 +3037,27 @@ def test_desktop_sharing_uses_body_approval_and_saves_viewer_before_cessation(tm
     monkeypatch.setattr(installed_access, "checked", command)
     monkeypatch.setattr(installed_access, "operator_desktop", desktop)
     monkeypatch.setattr(installed_access, "prepare_guest_tests", lambda *args: None)
-    monkeypatch.setattr(installed_access, "refused_viewer", lambda url, cookie, **kwargs: 410 if kwargs else 403)
+
+    def refused(url, cookie, *, retired=False):
+        if retired and failure == "retired-access":
+            raise AssertionError("retired access still allowed")
+        return 410 if retired else 403
+
+    monkeypatch.setattr(installed_access, "refused_viewer", refused)
     api = SimpleNamespace(approval=approval, _request=admin)
-    if fail_cessation:
-        with pytest.raises(AssertionError, match="retired desktop kept delivering"):
+    if failure:
+        with pytest.raises(AssertionError, match="retired desktop kept delivering|retired access still allowed"):
             installed_access.desktop_sharing(api, "selected-cli", tmp_path, "worker", tmp_path / "access.json")
     else:
         installed_access.desktop_sharing(api, "selected-cli", tmp_path, "worker", tmp_path / "access.json")
     raw = (tmp_path / "desktop-effects.json").read_text()
     report = json.loads(raw)
-    assert report["status"] == ("incomplete" if fail_cessation else "passed")
-    assert list(report["sessions"]) == list(phases[:1] if fail_cessation else phases)
+    assert report["status"] == ("incomplete" if failure else "passed")
+    assert list(report["sessions"]) == list(phases[:1] if failure else phases)
     assert report["sessions"]["revocation"]["positive"]["vnc_banner"] == "RFB 003.008\n"
-    assert len(revoked) == (1 if fail_cessation else 3)
+    assert len(revoked) == (1 if failure else 3)
+    if failure == "retired-access":
+        assert report["sessions"]["revocation"]["active_viewer_closed"] is True
     assert approval_reads and None not in approval_reads
     assert all(secret not in raw for secret in ("private-preview", "private-cookie", "private-url"))
 
