@@ -1210,8 +1210,8 @@ async fn unconfigured_tls_interception_failure_never_uses_configured_passthrough
 
     // The handshake content type deliberately resembles TLS, but its record
     // version is invalid. CONNECT has already admitted and opened the origin
-    // socket. This must reach the TLS interception failure path, not the
-    // unconfigured opaque relay path.
+    // socket. ClientHello selection rejects these bytes before the TLS
+    // terminator runs, closing both streams without opaque forwarding.
     let malformed_tls = b"\x16\x03\x04\x00\x04\x02\x00\x00\x00";
     let mut malformed_client =
         connect_raw(&config.listeners[0].socket_path, &intercepted_authority).await;
@@ -1225,19 +1225,9 @@ async fn unconfigured_tls_interception_failure_never_uses_configured_passthrough
     .await
     .unwrap()
     .unwrap();
-    assert_eq!(
-        malformed_response.len(),
-        7,
-        "malformed TLS returned non-alert bytes: {malformed_response:?}"
-    );
-    assert_eq!(
-        &malformed_response[..5],
-        b"\x15\x03\x03\x00\x02",
-        "malformed TLS must return a TLS alert, not an opaque response"
-    );
-    assert_eq!(
-        malformed_response[5], 2,
-        "malformed TLS must return a fatal alert before EOF"
+    assert!(
+        malformed_response.is_empty(),
+        "invalid ClientHello must close without a response: {malformed_response:?}"
     );
     drop(malformed_client);
 

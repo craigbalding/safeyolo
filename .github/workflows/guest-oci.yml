@@ -99,6 +99,25 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends \
             build-essential bc flex bison libelf-dev libssl-dev gnupg dirmngr \
             gcc-aarch64-linux-gnu busybox-static pax-utils cpio pkg-config
+      - name: Install the pinned Rust toolchain
+        working-directory: proxy
+        run: |
+          rustup show active-toolchain
+          printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cmd-format: bash "${{ github.workspace }}/scripts/rust_cache_command.sh" {0}
+          workspaces: proxy -> target
+          shared-key: guest-archive-normalizer
+          cache-bin: false
+          cache-on-failure: true
+      - name: Build the current archive normalizer
+        env:
+          CARGO_BUILD_JOBS: '1'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+        run: |
+          scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo
+          printf 'SAFEYOLO_NATIVE_CLI=%s/proxy/target/debug/safeyolo\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
       - name: Build fresh finished default guest outputs
         env:
           ARCH: ${{ matrix.architecture }}
@@ -241,7 +260,9 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: |
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
           scripts/install_oras.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Build the shared native OCI verifier
@@ -268,6 +289,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install the maintained publisher
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           scripts/install_oras.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
@@ -315,6 +338,8 @@ jobs:
               (reports / name).write_bytes(texts[name].encode("utf-8"))
           PY
       - name: Install the maintained publisher
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           scripts/install_oras.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
@@ -344,7 +369,9 @@ jobs:
           repository: craigbalding/safeyolo
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: ${{ runner.temp }}/seed
-      - run: |
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
           scripts/install_oras.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - env:
@@ -399,7 +426,9 @@ jobs:
             gh api --header 'Accept: application/octet-stream' \
               "repos/craigbalding/safeyolo/releases/assets/$asset" >> "$RUNNER_TEMP/custom-profile-layout.tar"
           done < "$RUNNER_TEMP/custom-profile-assets.txt"
-      - run: |
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
           scripts/install_oras.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Build the shared native OCI verifier

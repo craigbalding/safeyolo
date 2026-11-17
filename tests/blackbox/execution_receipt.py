@@ -10,15 +10,21 @@ from __future__ import annotations
 import argparse
 import ast
 import fnmatch
+import hashlib
 import json
 import os
+import platform
+import re
 import stat
+import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 if __package__:
     from .selections import (
         HOST_EXCLUSIONS,
+        NATIVE_PHASES,
         OPTIONAL_CASES,
         PLATFORM_EXCLUSIONS,
         PROCEDURES,
@@ -28,6 +34,7 @@ if __package__:
 else:
     from selections import (
         HOST_EXCLUSIONS,
+        NATIVE_PHASES,
         OPTIONAL_CASES,
         PLATFORM_EXCLUSIONS,
         PROCEDURES,
@@ -39,7 +46,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 
 
-def read_json(path: Path) -> dict:
+def read_json(path: Path, *, sha256: str | None = None) -> dict:
     """Read bounded regular reports without following candidate symlinks."""
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
@@ -49,6 +56,8 @@ def read_json(path: Path) -> dict:
         data = stream.read(MAX_REPORT_BYTES + 1)
     if len(data) > MAX_REPORT_BYTES:
         raise ValueError("report grew beyond the read bound")
+    if sha256 is not None and hashlib.sha256(data).hexdigest() != sha256:
+        raise ValueError("report SHA-256 differs from the supplied evidence reference")
     document = json.loads(data)
     if not isinstance(document, dict):
         raise ValueError("report must contain a JSON mapping")
@@ -92,7 +101,7 @@ def phase_functions(phase: str, root: Path = ROOT) -> list[str]:
 def exclusion(lane: str, phase: str, node: str, enabled_optional=(), system: str | None = None) -> str | None:
     platform = next((reason for backend, selected_phase, pattern, reason in PLATFORM_EXCLUSIONS
                      if backend == lane and selected_phase == phase and fnmatch.fnmatchcase(node, pattern)), None)
-    if platform or phase != "proxy":
+    if platform or phase not in {"proxy", "policy-recipe"}:
         return platform
     host = next((reason for selected_system, pattern, reason in HOST_EXCLUSIONS
                  if selected_system == system and fnmatch.fnmatchcase(node, pattern)), None)
@@ -161,7 +170,7 @@ class ProcedureReceipt:
         self.document = {"section": section, "run_id": os.environ.get("SAFEYOLO_BLACKBOX_RUN_ID"),
                          "lane": os.environ.get("SAFEYOLO_BLACKBOX_LANE"),
                          "agent": os.environ.get("SAFEYOLO_TEST_AGENT", "bbtest"),
-                         "checkpoints": [], "finished": False}
+                         "checkpoints": [], "finished": False, "complete": False}
         self.document["guest"] = json.loads(os.environ.get("SAFEYOLO_BLACKBOX_GUEST_IDENTITY", "null"))
         save(self.path, self.document)
 
@@ -171,6 +180,7 @@ class ProcedureReceipt:
             raise ValueError(f"unexpected or repeated procedure checkpoint: {name}")
         self.document["checkpoints"].append(name)
         self.document["finished"] = name == "finished"
+        self.document["complete"] = self.document["checkpoints"] == list(expected)
         save(self.path, self.document)
 
 
@@ -235,6 +245,8 @@ class PytestReceipt:
         self.document["enabled_optional"] = [node for node, variable, value, _reason in OPTIONAL_CASES
                                              if (os.environ.get(variable) == value if value else bool(os.environ.get(variable)))]
         self.document["guest"] = json.loads(os.environ.get("SAFEYOLO_BLACKBOX_GUEST_IDENTITY", "null"))
+        if phase in {"policy-recipe", "sudo-disclosure", "rootless-preparation", "rootless-guest"}:
+            self.document.update(focused_inputs(root, phase))
         save(self.path, self.document)
 
     def node(self, item):
@@ -262,7 +274,170 @@ class PytestReceipt:
         save(self.path, self.document)
 
 
+def focused_inputs(root: Path, phase: str) -> dict:
+    """Identify the actual native inputs used by the existing Python fixtures."""
+    layout = os.environ.get("SAFEYOLO_AUTHORING_LAYOUT", "installed")
+    boundary = "host-disclosure/controlled-authentication" if phase == "sudo-disclosure" else f"native-process/{layout}-layout"
+    result = {"boundary": boundary,
+              "authoring_layout": os.environ.get("SAFEYOLO_AUTHORING_LAYOUT", "installed"),
+              "controller_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
+              "working_tree_changed": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=root)),
+              "product_binaries": {}}
+    if phase in {"sudo-disclosure", "rootless-preparation", "rootless-guest"}:
+        binaries = [Path(os.environ.get("SAFEYOLO_NATIVE_CLI", root / "proxy/target/release/safeyolo"))]
+    else:
+        from tests.proxy_contracts.test_native_policy_cli import native_inputs
+
+        host, _guest, _profile = native_inputs()
+        binaries = [host / name for name in ("safeyolo", "safeyolo-proxy", "safeyolo-coord")]
+    if phase == "rootless-preparation":
+        result.update(boundary="installed-cli/native-kernel", control_complete=False,
+                      prerequisites={name: os.environ.get(name) for name in (
+                          "SAFEYOLO_ROOTLESS_PREPARED_CONFIG", "SAFEYOLO_ROOTLESS_BASELINE",
+                          "SAFEYOLO_ROOTLESS_SPECIMENS")},
+                      remaining=["Booted guest/platform proof is separate from these process and native-kernel cases.",
+                                 "This manually selected phase establishes no deployed recurring cadence."])
+    if phase == "rootless-guest":
+        result.update(boundary="installed-cli/gvisor-systrap", control_complete=False,
+                      prerequisites={name: os.environ.get(name) for name in (
+                          "SAFEYOLO_ROOTLESS_PREPARED_CONFIG", "SAFEYOLO_ROOTLESS_GUEST_ARCHIVE",
+                          "SAFEYOLO_ROOTLESS_GUEST_INDEX", "SAFEYOLO_ROOTLESS_GUEST_SHA256")},
+                      remaining=["Process/native-metadata obligations use the separate rootless-preparation --execute phase.",
+                                 "Native metadata parity does not establish new gVisor ACL/capability enforcement.",
+                                 "This manually selected phase establishes no macOS or deployed recurring cadence proof."])
+    for binary in binaries:
+        if binary.is_file():
+            with binary.open("rb") as stream:
+                result["product_binaries"][str(binary.resolve())] = hashlib.file_digest(stream, "sha256").hexdigest()
+    return result
+
+
+def native_cases(phase: str, root: Path) -> list[tuple[str, str, list[str]]]:
+    """Use the catalogue's source identities for the selected native modules."""
+    if __package__:
+        from .catalogue import resolve
+    else:
+        from catalogue import resolve
+
+    witnesses = tomllib.loads((root / "tests/blackbox/controls.toml").read_text())["witnesses"]
+    groups = []
+    for target, module in NATIVE_PHASES[phase]:
+        names = []
+        for witness in witnesses:
+            if witness["kind"] == "cargo" and (witness["target"], witness["module"]) == (target, module):
+                for reference in witness["paths"]:
+                    names += [node["node"] for node in resolve(witness, reference, root)]
+        if not names or len(names) != len(set(names)):
+            raise ValueError(f"missing or duplicate native identities: {target}/{module}")
+        groups.append((target, module, sorted(names)))
+    return groups
+
+
+def native_problems(report: dict, expected: list[tuple[str, str, list[str]]]) -> list[str]:
+    """Require observed named results, including every ignored or missing case."""
+    problems = []
+    groups = report.get("groups", [])
+    if report.get("finished") is not True or len(groups) != len(expected):
+        problems.append("native phase did not finish every selected group")
+    for group, (target, module, names) in zip(groups, expected):
+        if (group.get("target"), group.get("module"), group.get("selected")) != (target, module, names):
+            problems.append(f"native selection mismatch: {target}/{module}")
+        if (type(group.get("exit")) is not int or group["exit"] != 0
+                or group.get("tests") != dict.fromkeys(names, "ok")):
+            problems.append(f"missing, ignored or failed native cases: {target}/{module}")
+    return problems
+
+
+def run_native(args, root: Path) -> int:
+    """Build and run the bounded policy/feed/transition process selections."""
+    output = args.output.resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    report = {"phase": args.native_phase, "lane": args.lane, "identity": "host",
+              "boundary": "native-process", "run_id": args.run_id, "uid": os.getuid(), "gid": os.getgid(),
+              "system": sys.platform, "architecture": platform.machine(), "profile": args.cargo_profile,
+              "controller_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
+              "working_tree_changed": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=root)),
+              "include_ignored": args.include_ignored, "groups": [], "finished": False, "complete": False}
+    save(output, report)
+    expected = native_cases(args.native_phase, root)
+    environment = dict(os.environ, CARGO_BUILD_JOBS="1",
+                       CARGO_TARGET_DIR=os.environ.get("CARGO_TARGET_DIR", str(root / "proxy/target")))
+    executables = {}
+    for index, (target, module, names) in enumerate(expected):
+        group = {"target": target, "module": module, "selected": names, "tests": {}}
+        report["groups"].append(group)
+        save(output, report)
+        if target not in executables:
+            command = [str(root / "scripts/cargo_with_space.sh"), "test", "--manifest-path", "proxy/Cargo.toml",
+                       "--locked", "--no-run", "--message-format=json"]
+            command += ["--lib"] if target == "lib" else ["--test", target]
+            if args.cargo_profile == "release":
+                command.append("--release")
+            build = output.with_name(f"{output.stem}-{target}-build.jsonl")
+            with build.open("w") as stdout, build.with_suffix(".log").open("w") as stderr:
+                result = subprocess.run(command, cwd=root, env=environment, stdout=stdout, stderr=stderr, check=False)
+            group.update(build_command=command, build_exit=result.returncode, build_log=str(build),
+                         build_stderr=str(build.with_suffix(".log")))
+            save(output, report)
+            if result.returncode:
+                break
+            artifacts = [json.loads(line) for line in build.read_text().splitlines()]
+            kind = "lib" if target == "lib" else "test"
+            binaries = [row["executable"] for row in artifacts if row.get("reason") == "compiler-artifact"
+                        and row.get("profile", {}).get("test") and kind in row["target"]["kind"]
+                        and row.get("executable") and (target == "lib" or row["target"]["name"] == target)]
+            if len(binaries) != 1:
+                raise ValueError(f"expected one native {target} test executable, found {binaries}")
+            executables[target] = Path(binaries[0])
+        binary = executables[target]
+        with binary.open("rb") as stream:
+            group.update(executable=str(binary), executable_sha256=hashlib.file_digest(stream, "sha256").hexdigest())
+        command = [str(binary), *([module] if module else []), "--format", "pretty", "--test-threads=1"]
+        if args.include_ignored:
+            command.append("--include-ignored")
+        log = output.with_name(f"{output.stem}-{index}.log")
+        group.update(command=command, log=str(log))
+        save(output, report)
+        with log.open("w") as stdout:
+            result = subprocess.run(command, cwd=root, env=environment, stdout=stdout, stderr=subprocess.STDOUT, check=False)
+        group.update(exit=result.returncode,
+                     tests=dict(re.findall(r"^test (\S+) \.\.\. (ok|FAILED|ignored)\b", log.read_text(), re.MULTILINE)))
+        save(output, report)
+    report["finished"] = True
+    report["problems"] = native_problems(report, expected)
+    report["complete"] = not report["problems"]
+    save(output, report)
+    print(f"{'Complete' if report['complete'] else 'Incomplete'} native phase {args.native_phase}: {output}")
+    return 0 if report["complete"] else 2
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--phase", choices=PYTEST_PHASES)
+    selection.add_argument("--native-phase", choices=NATIVE_PHASES)
+    parser.add_argument("--cargo-profile", choices=("debug", "release"), default="debug")
+    parser.add_argument("--include-ignored", action="store_true", help="run required native cases that need an explicitly prepared host")
+    parser.add_argument("--lane", required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--root", type=Path, default=ROOT)
+    parser.add_argument("arguments", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    root = args.root.resolve()
+    if args.native_phase:
+        if args.arguments:
+            parser.error("native phases have fixed selectors and accept no extra test arguments")
+        try:
+            return run_native(args, root)
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            if args.output.is_file():
+                report = read_json(args.output)
+                if report.get("run_id") == args.run_id:
+                    report.update(complete=False, observer_error=f"{type(exc).__name__}: {exc}")
+                    save(args.output, report)
+            print(f"Incomplete native phase {args.native_phase}: {exc}; report: {args.output}", file=sys.stderr)
+            return 2
     try:
         import pytest
     except ModuleNotFoundError as exc:
@@ -271,16 +446,9 @@ def main() -> int:
         print("Blackbox preparation failed: the selected Python needs pytest", file=sys.stderr)
         return 2
 
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", choices=PYTEST_PHASES, required=True)
-    parser.add_argument("--lane", required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--run-id", required=True)
-    parser.add_argument("--root", type=Path, default=ROOT)
-    parser.add_argument("arguments", nargs=argparse.REMAINDER)
-    args = parser.parse_args()
-    root = args.root.resolve()
     os.chdir(root)
+    if args.phase in {"rootless-preparation", "rootless-guest"}:
+        os.environ["SAFEYOLO_BLACKBOX_ROOTLESS"] = "1"
     plugin = PytestReceipt(args.output.resolve(), args.phase, args.lane, args.run_id, root)
     # Keep the report reader usable in the stdlib-only installation bootstrap.
     PytestReceipt.pytest_collection_modifyitems = pytest.hookimpl(hookwrapper=True, tryfirst=True)(

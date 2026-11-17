@@ -332,6 +332,20 @@ def test_resolve_workflow_supplies_its_scoped_token_to_the_resolver_step():
     assert 'python3 guest/resolve_inputs.py resolve --base --output "$RUNNER_TEMP/inputs.json"' in step["run"]
 
 
+@pytest.mark.parametrize("workflow_name", ["ci.yml", "guest-oci.yml", "blackbox.yml", "installed-arm64.yml"])
+def test_publisher_workflow_supplies_token_for_fresh_release_lookup(workflow_name):
+    workflow = yaml.safe_load((ROOT / ".github/workflows" / workflow_name).read_text())
+    for job_name, job in workflow["jobs"].items():
+        for step in job.get("steps", []):
+            if "scripts/install_oras.sh" not in step.get("run", ""):
+                continue
+            environment = {**workflow.get("env", {}), **job.get("env", {}), **step.get("env", {})}
+            if environment.get("GUEST_INPUTS"):
+                continue
+            assert job.get("permissions", workflow["permissions"])["contents"] == "read"
+            assert step.get("env", {}).get("GH_TOKEN") == "${{ secrets.GITHUB_TOKEN }}", (job_name, step)
+
+
 @pytest.mark.parametrize("architecture", ["amd64", "arm64"])
 @pytest.mark.parametrize("outcome", ["cached", "http-error", "checksum"])
 def test_download_cli_identifies_tool_and_architecture_without_url_secrets(

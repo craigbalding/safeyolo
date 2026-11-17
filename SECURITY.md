@@ -57,6 +57,12 @@ Admin API routes require a bearer token and check it with Rust's
 Host processes run as the operator's user ID. On Linux, `safeyolo agent start`
 does not use host `sudo`.
 
+Prebuilt Linux guest preparation uses a delegated user namespace containing the
+operator and selected subordinate IDs, with host UID/GID 0 excluded. Extraction
+and private-stage cleanup require no host sudo after
+[host preparation](docs/installation.md#linux-host-preparation-in-new-source-bundles).
+The macOS guest's Linux identities remain inside its ext4 image.
+
 ### Fail closed
 
 When uncertain, block. Unknown credentials trigger an approval workflow, not

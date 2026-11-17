@@ -397,7 +397,8 @@ class NativeInstance:
 
 @contextmanager
 def native_instance(directory, source=DENY, *, services=False, parent_proxy=None, agent_api=False,
-                    capture=False, extra_config="", platform_assets=None, agent_addresses=None, service_sources=None):
+                    capture=False, extra_config="", platform_assets=None, agent_addresses=None, service_sources=None,
+                    source_fixture=False):
     artifacts, guest_artifacts, profile = native_inputs()
     root = directory / "installed"
     try:
@@ -415,15 +416,39 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
             inputs += ["--platform-assets", str(platform_assets)]
         else:
             inputs += ["--no-guest-download"]
-        installation = subprocess.run(
-            [str(REPO / "scripts/install_native.sh"), "--root", str(root), "--command-dir", str(root / "commands"), "--yes", *inputs],
-            capture_output=True, text=True, timeout=15,
-        )
-        assert installation.returncode == 0, installation.stderr
-        assert "commit=" in installation.stdout and f"profile={profile}" in installation.stdout
+        if source_fixture:
+            # A controlled guest transport needs native commands and source
+            # assets, but consumes neither an installed package nor runsc.
+            subprocess.run([str(artifacts / "safeyolo"), "--root", str(root), "init"],
+                           check=True, capture_output=True, timeout=15)
+            (root / "bin").mkdir()
+            for binary in HOST_BINARIES:
+                shutil.copy2(artifacts / binary, root / "bin" / binary)
+            assets = root / "assets"
+            shutil.copytree(REPO / "contrib", assets / "contrib")
+            shutil.copytree(REPO / "cli/src/safeyolo/agent_context/skills", assets / "skills")
+            shutil.copytree(REPO / "cli/src/safeyolo/launchers", assets / "launchers")
+            (assets / "docs").mkdir()
+            shutil.copy2(REPO / "docs/AGENTS.md", assets / "docs/AGENTS.md")
+            shutil.copy2(REPO / "repo-map.toml", assets / "repo-map.toml")
+            (assets / "guest").mkdir()
+            for binary in GUEST_BINARIES:
+                for suffix in ("", ".version", ".sha256"):
+                    shutil.copy2(guest_artifacts / (binary + suffix), assets / "guest" / (binary + suffix))
+            for asset in ("guest-init", "guest-init-static", "guest-init-per-run",
+                          "guest-proxy-forwarder", "guest-shell-bridge", "guest-desktop"):
+                shutil.copy2(REPO / "cli/src/safeyolo" / (asset + ".sh"), assets / "guest" / asset)
+            shutil.copy2(REPO / "guest/rootfs/safeyolo-sudo", assets / "guest/guest-sudo")
+        else:
+            installation = subprocess.run(
+                [str(REPO / "scripts/install_native.sh"), "--root", str(root), "--command-dir", str(root / "commands"), "--yes", *inputs],
+                capture_output=True, text=True, timeout=15,
+            )
+            assert installation.returncode == 0, installation.stderr
+            assert "commit=" in installation.stdout and f"profile={profile}" in installation.stdout
+            assert (root / "bin/tmux").is_file() and not (root / ".venv").exists()
+            assert (root / "bin/watch-backlog-factory").stat().st_mode & 0o111
         assert set(HOST_BINARIES).issubset(path.name for path in (root / "bin").iterdir())
-        assert (root / "bin/tmux").is_file() and not (root / ".venv").exists()
-        assert (root / "bin/watch-backlog-factory").stat().st_mode & 0o111
         assert (root / "data/admin_token").stat().st_mode & 0o777 == 0o600
         assert (root / "data/agent_token").stat().st_mode & 0o777 == 0o600
         if source is not None:

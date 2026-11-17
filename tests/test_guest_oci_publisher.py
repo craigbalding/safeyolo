@@ -711,6 +711,89 @@ def test_digest_only_transport_has_no_channel_write(tmp_path, artifacts, publish
     assert all(path.rsplit("/", 1)[1].startswith("sha256:") for method, path in events
                if method == "PUT" and "/manifests/" in path)
 
+@pytest.mark.parametrize("missing_parent", [False, True])
+def test_normalized_tree_publication_preserves_metadata_and_cleans_stage(missing_parent):
+    native_cli = os.environ.get("SAFEYOLO_NATIVE_CLI")
+    if sys.platform != "linux" or os.geteuid() == 0 or not native_cli or not shutil.which("sudo"):
+        pytest.skip("set SAFEYOLO_NATIVE_CLI for an ordinary Linux builder with guest sudo")
+    if run("sudo", "-n", "true").returncode:
+        pytest.skip("guest sudo is unavailable")
+    builder = (ROOT / "guest/build-rootfs.sh").read_text()
+    cleanup = builder[builder.index("cleanup_workdir() {"):builder.index("trap cleanup_workdir EXIT")]
+    publication = builder[builder.index('sudo rm -rf "$OUTPUT_TREE"'):builder.index('echo "tree:')]
+    # Tiny metadata fixtures need the guest filesystem's real numeric owners,
+    # rather than the caller-UID projection of persistent workspace mounts.
+    with tempfile.TemporaryDirectory(prefix="guest-tree-publication-") as temporary:
+        directory = Path(temporary)
+        stage = directory / "extract-default.fixture"
+        stage.mkdir(mode=0o700)
+        tree = stage / "rootfs-tree"
+        target = directory / ("missing/rootfs-tree" if missing_parent else "rootfs-tree")
+        try:
+            prepared = run("sudo", "-n", sys.executable, "-c", """
+import os, pathlib, struct, sys
+tree = pathlib.Path(sys.argv[1])
+tree.mkdir(mode=0o755)
+(tree / 'command').write_bytes(b'guest command')
+(tree / 'command').chmod(0o751)
+os.link(tree / 'command', tree / 'hard')
+(tree / 'symbolic').symlink_to('command')
+(tree / 'private').write_bytes(b'guest user data')
+os.chown(tree / 'private', 1000, 1000)
+acl = struct.pack('<I', 2) + b''.join(struct.pack('<HHI', *entry) for entry in (
+    (1, 6, 0xffffffff), (2, 4, 1), (4, 0, 0xffffffff), (8, 4, 2),
+    (16, 4, 0xffffffff), (32, 0, 0xffffffff)))
+os.setxattr(tree / 'private', 'system.posix_acl_access', acl)
+os.setxattr(tree / 'private', 'user.safeyolo.fixture', b'guest metadata')
+os.setxattr(tree / 'command', 'security.capability', struct.pack('<6I', 0x03000001, 1024, 0, 0, 0, 1000))
+""", str(tree))
+            assert prepared.returncode == 0, prepared.stderr
+            normalized = run("sudo", "-n", native_cli, "host", "archive-profile-tree", str(tree), str(os.getuid()))
+            assert normalized.returncode == 0, normalized.stderr
+            assert stage.stat().st_uid == os.getuid()
+            assert stage.stat().st_mode & 0o777 == 0o700
+            snapshot = """
+import json, os, pathlib, sys
+tree = pathlib.Path(sys.argv[1])
+result = {}
+for path in [tree, *sorted(tree.iterdir())]:
+    info = path.lstat()
+    attrs = {} if path.is_symlink() else {key: os.getxattr(path, key).hex() for key in os.listxattr(path)}
+    result[path.name] = [info.st_uid, info.st_gid, info.st_mode, info.st_ino, info.st_nlink, attrs]
+print(json.dumps(result))
+"""
+            before = run("sudo", "-n", sys.executable, "-c", snapshot, str(tree))
+            assert before.returncode == 0, before.stderr
+            metadata = json.loads(before.stdout)
+            assert metadata["rootfs-tree"][:2] == [100000, 100000]
+            assert metadata["private"][:2] == [101000, 101000]
+            acl = bytes.fromhex(metadata["private"][5]["system.posix_acl_access"])
+            assert struct.unpack_from("<I", acl, 16)[0] == 100001
+            assert struct.unpack_from("<I", acl, 32)[0] == 100002
+            capability = bytes.fromhex(metadata["command"][5]["security.capability"])
+            assert struct.unpack_from("<I", capability, 20)[0] == 101000
+            assert metadata["command"][3] == metadata["hard"][3]
+            if not missing_parent:
+                refused = run("mv", "--", str(tree), str(target))
+                assert refused.returncode != 0 and "Permission denied" in refused.stderr
+                assert tree.is_dir() and not target.exists()
+            result = run("bash", "-c", "set -euo pipefail\n" + cleanup + "trap cleanup_workdir EXIT\n" + publication,
+                         env={**os.environ, "WORK_DIR": "", "TREE_STAGE": str(stage), "OUTPUT_TREE": str(target)})
+            assert not stage.exists(), result.stderr
+            if missing_parent:
+                assert result.returncode != 0
+                assert not target.exists()
+            else:
+                assert result.returncode == 0, result.stderr
+                after = run("sudo", "-n", sys.executable, "-c", snapshot, str(target))
+                assert after.returncode == 0, after.stderr
+                assert json.loads(after.stdout) == metadata
+                assert (target / "symbolic").readlink() == Path("command")
+        finally:
+            removed = run("sudo", "-n", "rm", "-rf", "--", str(stage), str(target))
+            assert removed.returncode == 0, removed.stderr
+
+
 @pytest.mark.parametrize("architecture", ["amd64", "arm64"])
 def test_rootfs_uses_pinned_input_and_records_copied_manifest(tmp_path, architecture):
     # Drive the real builder's input/output wiring without building another
@@ -775,7 +858,7 @@ elif name=='rsync':
     shutil.copytree(args[-2],args[-1],dirs_exist_ok=True)
 # chroot/mkfs/chown are controlled no-ops for this producer-wiring test.
 """
-    for name in ("sudo", "skopeo", "umoci", "curl", "rsync", "chroot", "mkfs.ext4", "chown"):
+    for name in ("sudo", "skopeo", "umoci", "curl", "rsync", "chroot", "mkfs.ext4", "chown", "safeyolo"):
         path = tools / name
         path.write_text(script)
         path.chmod(0o755)
@@ -797,7 +880,7 @@ elif name=='rsync':
     env = {**os.environ, "PATH": f"{tools}:{Path(os.sys.executable).parent}:{os.environ['PATH']}",
            "SAFEYOLO_BUILD_PYTHON": sys.executable, "SSL_CERT_FILE": certifi.where(),
            "ARCH": architecture, "OUTPUT_DIR": str(output), "TMPDIR": str(work), "BUILD_CALLS": str(calls_path),
-           "SKOPEO_PARSER": real_skopeo, "GUEST_INPUTS": str(inputs),
+           "SKOPEO_PARSER": real_skopeo, "GUEST_INPUTS": str(inputs), "SAFEYOLO_NATIVE_CLI": str(tools / "safeyolo"),
            "MISE_SHA256_AMD64": digest, "MISE_SHA256_ARM64": digest,
            "GH_SHA256_AMD64": digest, "GH_SHA256_ARM64": digest, "ROOTFS_SIZE_MB": "1"}
     env.pop("DEBIAN_IMAGE", None)
@@ -810,6 +893,10 @@ elif name=='rsync':
     assert f"--override-arch={architecture}" in copies[0]
     assert any(arg.startswith("docker://docker.io/library/debian@sha256:") for arg in copies[0])
     assert (output / "build-base.txt").read_text() == "docker.io/library/debian@sha256:" + "d" * 64 + "\n"
+    normalizers = [call for call in calls if call[0] == "safeyolo"]
+    assert len(normalizers) == 1 and normalizers[0][1:3] == ["host", "archive-profile-tree"]
+    assert Path(normalizers[0][3]).parent.name.startswith("extract-default.")
+    assert normalizers[0][4] == str(os.getuid())
     assert (output / "rootfs-tree").is_dir()
     assert not (output / "rootfs-tree/tmp/safeyolo-build-ca.pem").exists()
     assert (output / "rootfs-base.ext4").is_file()

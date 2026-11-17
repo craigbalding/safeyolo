@@ -498,7 +498,8 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
                       'for(int i=1;i<argc;i++)fprintf(out,"%s\\n",argv[i]);fclose(out);}'
                       'execv(decoder,argv);return 99;}')
     if guest_exit is not None or guest_assets is not None:
-        guest_command += ('if(argc>2 && strcmp(argv[1],"guest")==0 && strcmp(argv[2],"download")==0){'
+        guest_command += ('if((argc>2 && strcmp(argv[1],"guest")==0 && strcmp(argv[2],"download")==0)||'
+                          '(argc>4 && strcmp(argv[1],"--root")==0 && strcmp(argv[3],"guest")==0 && strcmp(argv[4],"download")==0)){'
                          'char *download=getenv("PACKAGE_GUEST_DOWNLOAD_CLI");'
                          'if(download){execv(download,argv);return 95;}'
                          + (f'return {guest_exit};' if guest_exit is not None else 'puts("sha256:' + 'b' * 64 + '");return 0;') + '}')
@@ -528,7 +529,7 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
         'char *marker=getenv("PACKAGE_HOST_CALLS");if(marker){FILE *out=fopen(marker,"w");'
         'if(!out)return 92;for(int i=1;i<argc;i++)fprintf(out,"%s\\n",argv[i]);fclose(out);}'
         'if(settings){FILE *out=fopen(settings,"w");if(!out)return 93;'
-        'fprintf(out,"[linux]\\nhost_uid=1000\\nhost_gid=1000\\nuid_base=100000\\ngid_base=100000\\nrunsc=\\\"%s/libexec/runsc\\\"\\nrunsc_origin=\\\"bundled\\\"\\n",installed);fclose(out);}return 0;}'
+        'fprintf(out,"[linux]\\nhost_uid=%u\\nhost_gid=%u\\nuid_base=100000\\ngid_base=100000\\nrunsc=\\\"%s/libexec/runsc\\\"\\nrunsc_origin=\\\"bundled\\\"\\n",(unsigned)getuid(),(unsigned)getgid(),installed);fclose(out);}return 0;}'
         'if(argc>4 && strcmp(argv[3],"host")==0 && strcmp(argv[4],"grant-runtime-access")==0){'
         'char *grant=getenv("PACKAGE_RUNTIME_ACCESS_CLI");'
         'if(grant){execv(grant,argv);return 99;}return 0;}'
@@ -1096,6 +1097,7 @@ def test_default_installer_calls_native_guest_before_creating_configuration(pack
     assert staging.parent == root.parent and staging.name.startswith("safeyolo-install.")
     assert arguments == ["--root", str(staging), "guest", "acquire", "--package-info", str(staging / "package-info"), "--write-selection", str(staging / "guest-selection.json"),
                          *(["--index", guest_index] if guest_index else []),
+                         "--namespace-root", str(root),
                          "--host-settings", str(staging / "host-settings.toml")]
     assert not staging.exists()
     assert not (root / "config.toml").exists()

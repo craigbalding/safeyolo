@@ -92,6 +92,8 @@ jobs:
           version: "0.9.24"
           prune-cache: true
       - name: Prepare test instruments
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           uv sync --frozen --group dev --python 3.13
           scripts/install_oras.sh "$RUNNER_TEMP/test-tools"

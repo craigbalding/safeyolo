@@ -218,7 +218,7 @@ if ! $existing; then
   }
   install_lock=$lock_path
   staged_root=$(mktemp -d "$(dirname -- "$root")/safeyolo-install.XXXXXX")
-  guest_host_arguments=()
+  guest_host_arguments=(--namespace-root "$root")
   if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]] || $runtime_override; }; then
     echo 'SafeYolo: checking and preparing the Linux host.' >&2
     "$bundle/bin/safeyolo" --root "$root" host prepare --package-root "$bundle" --installed-root "$root" \

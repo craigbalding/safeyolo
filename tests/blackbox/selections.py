@@ -39,6 +39,42 @@ PYTEST_PHASES = {
         "tests/blackbox/isolation/test_vm_isolation.py::TestSandboxRootContainment::test_host_listener_stays_unreachable_as_sandbox_root",
         "tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_proxy_reachable",
     )),
+    "policy-recipe": ("host", (
+        "tests/proxy_contracts/test_native_policy_cli.py::test_candidate_evaluation_reports_actions_without_destination_contact",
+        "tests/proxy_contracts/test_native_policy_cli.py::test_candidate_evaluation_preserves_captured_scores",
+        "tests/proxy_contracts/test_policy_authoring.py::test_installed_authoring_feed_rdap_preview_activation_and_adverse_cases",
+    )),
+    "sudo-disclosure": ("host", (
+        "tests/test_host_sudo.py",
+        "tests/test_public_installer.py::test_guest_cache_is_prepared_during_host_extraction_without_early_activation",
+    )),
+    "rootless-preparation": ("host", (
+        "tests/test_guest_acquisition.py::test_native_selection_pins_one_index_and_keeps_existing_installation",
+        "tests/test_guest_acquisition.py::test_guest_validation_failure_keeps_verified_archive_for_retry",
+        "tests/test_guest_acquisition.py::test_early_preparation_defers_unavailable_setup_and_reports_cleanup_failure",
+        "tests/test_guest_acquisition.py::test_guest_download_interruption_removes_partial_blob_and_allows_retry",
+        "tests/test_guest_acquisition.py::test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes",
+        "tests/test_guest_acquisition.py::test_rootless_production_metadata_and_distinct_mappings",
+        "tests/test_guest_upgrade.py::test_explicit_upgrade_pins_reuses_and_rolls_back_without_changing_host_or_state",
+        "tests/test_guest_upgrade.py::test_upgrade_refusals_preserve_active_and_previous_selection",
+        "tests/test_guest_upgrade.py::test_failed_activation_is_retryable_and_bad_selected_inputs_can_be_rolled_back",
+        "tests/test_guest_upgrade.py::test_killed_archive_pull_preserves_selection_and_next_upgrade_recovers",
+    )),
+    "rootless-guest": ("host", ("tests/test_guest_acquisition.py::test_prepared_rootless_guest_remains_usable_after_restart",)),
+}
+
+# These are native process boundaries. Real Hyperlight engines use the existing
+# hyperlight_services.py driver. The rootless selector also offers a separate
+# retained-storage observer and a separate maintained booted-guest phase.
+NATIVE_PHASES = {
+    "named-checks": (("lib", "policy::checks::tests"),
+                     ("lib", "policy::checks::fixture_tests"),
+                     ("lib", "policy::checks::composition_edge_tests"),
+                     ("lib", "policy::checks::execution::tests"),
+                     ("lib", "http::policy_checks::execution_tests")),
+    "managed-feeds": (("native_policy_feeds", ""),),
+    "before-after": (("lib", "coord_rooms::work::tests::automatic_tests"),),
+    "mediated-services": (("lib", "jobs::mediated::tests"),),
 }
 
 # A completed procedure records these names after the corresponding assertions.
@@ -55,6 +91,9 @@ PROCEDURES = {
     "provider": ("installed_provider.py", ("identity", "scope", "delivery", "revoke-recover", "closed-stopped", "observer", "finished")),
     "native-authority": ("native_authority.py", ("selected-cases", "finished")),
     "federation": ("installed_federation.py", ("identity", "scope", "destination-effect", "revocation", "finished")),
+    "hyperlight-services": ("host/hyperlight_services.py", (
+        "hyperlight", "hyperlight-unikraft", "provider", "cleanup", "finished",
+    )),
 }
 
 SECTION_DRIVERS = {

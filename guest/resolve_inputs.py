@@ -247,6 +247,7 @@ def download(record: dict, destination: Path, *, kernel_signature: bool = False)
             if len(signers) != 1:
                 raise ValueError("kernel signature does not identify one documented release signer")
             key_url = KERNEL_KEYS[signers[0]]
+            print(f"Preparing kernel signing key {signers[0]}: {key_url!r}", file=sys.stderr, flush=True)
             key = fetch(key_url)
             # WKD returns binary keys. Import complete key material into this
             # isolated keyring; dearmoring alone does not make a key usable.

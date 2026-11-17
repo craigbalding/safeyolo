@@ -9,10 +9,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import signal
+import socket
 import sqlite3
 import subprocess
+import tempfile
+import time
 import tomllib
 from contextlib import contextmanager
 from pathlib import Path
@@ -21,6 +25,7 @@ from types import SimpleNamespace
 import pytest
 import tomlkit
 
+from tests.proxy_contracts.test_gateway_provider import _provider_run
 from tests.proxy_contracts.test_native_coord_operator import terminal
 from tests.proxy_contracts.test_native_policy_cli import native_instance
 
@@ -72,8 +77,8 @@ def cli(instance, *arguments):
 
 
 @contextmanager
-def prepared(directory, nats_binary):
-    with native_instance(directory, source=None, agent_api=True) as instance:
+def prepared(directory, nats_binary, *, source_fixture=False):
+    with native_instance(directory, source=None, agent_api=True, source_fixture=source_fixture) as instance:
         # Ordinary shell utilities are production prerequisites. No Python,
         # package import path or source-checkout helper is in the command PATH.
         tools = directory / "tools"
@@ -436,6 +441,105 @@ def test_installed_doctor_checks_actual_direct_and_wrapped_role_commands(tmp_pat
             wrap()
             diagnosis(role, valid=True)
         assert_no_role_launch(instance)
+
+
+@pytest.mark.skipif(os.uname().sysname != "Linux", reason="Guest supervision uses Linux process state")
+def test_doctor_rejects_the_paused_exact_command_with_a_healthy_supervisor(tmp_path, _binary_cache, monkeypatch):
+    with prepared(tmp_path, _binary_cache, source_fixture=True) as (instance, _):
+        agent = "fixture-forge"
+        home = instance.root / "agents" / agent / "home"
+        state_path = home / ".safeyolo-command-supervisor.json"
+        stop = home / "supervisor.stop"
+        context = home.parent / "config-share/host-launch-context.json"
+        helper = instance.root / "assets/guest/safeyolo-guest"
+        arguments = [str(helper), "--context", str(context), "--state", str(state_path),
+                     "--stop", str(stop), "--workspace", str(home)]
+        checkpoint = home / ".safeyolo/coord-supervisor-state.json"
+        coord = instance.root / "bin/safeyolo-coord"
+        initial = subprocess.check_output([str(coord), "read-state", str(checkpoint)])
+        subprocess.run([str(coord), "write-state", str(checkpoint)], input=initial, check=True)
+        (instance.root / "bin/getent").symlink_to("/usr/bin/getent")
+        # Reuse the owned namespace fixture. Only runsc transport and harness
+        # preflight are controlled; the real guest check feeds native runtime
+        # observation and the actual factory doctor command.
+        with _provider_run(instance.root, monkeypatch, name=agent):
+            instance.environment.update({key: os.environ[key] for key in ("FAKE_RUN_ID", "SAFEYOLO_RUNSC_ROOT")})
+            generation = json.loads(context.read_text())["generation"]
+            state_path.write_text(json.dumps({
+                "schema_version": 1, "name": agent, "generation": generation,
+                "supervision_id": "paused-command", "runtime_owner": "guest-pid1",
+                "state": "starting", "started_at": 1, "command": "exec sleep 60",
+                "restart_count": 0, "consecutive_failures": 0,
+            }))
+            (home.parent / "current-launch.json").write_text(json.dumps({
+                "agent_id": roles(instance)[agent]["agent_id"], "name": agent,
+                "launch_id": "paused-command", "command": "exec sleep 60",
+                "launcher": {"kind": "supervisor"}, "state": "managed",
+            }))
+            runsc = instance.root / "bin/runsc"
+            runsc.write_text('''#!/bin/sh
+case "$3" in
+  state) printf '{"id":"%s","status":"running"}\\n' "$FAKE_RUN_ID" ;;
+  exec)
+    case "$*" in
+      *"safeyolo-guest supervise check"*) exec ''' + shlex.join([*arguments, "supervise", "check"]) + ''' ;;
+      *"safeyolo-guest observe check"*) printf 'running\\n' ;;
+      *"safeyolo-coord preflight"*) exit 0 ;;
+      *) exit 2 ;;
+    esac ;;
+  *) exit 2 ;;
+esac
+''')
+            runsc.chmod(0o755)
+            with tempfile.TemporaryDirectory(prefix="sy1592-") as sockets, socket.socket(socket.AF_UNIX) as listener:
+                socket_path = str(Path(sockets) / "role.sock")
+                listener.bind(socket_path)
+                listener.listen(16)
+                config_path = instance.root / "config.toml"
+                config = tomlkit.parse(config_path.read_text())
+                config["listeners"].append({"agent_id": agent, "socket_path": socket_path})
+                config_path.write_text(tomlkit.dumps(config))
+                with subprocess.Popen([*arguments, "supervise"]) as supervisor:
+                    try:
+                        def wait_state(predicate):
+                            deadline = time.monotonic() + 5
+                            while True:
+                                state = json.loads(state_path.read_text())
+                                if predicate(state):
+                                    return state
+                                assert supervisor.poll() is None, "owned supervisor exited"
+                                assert time.monotonic() < deadline, state
+                                time.sleep(0.02)
+
+                        def diagnose():
+                            report = instance.cli("factory", "doctor", "fixture")
+                            value = json.loads(report.stdout)
+                            # The other two fixture roles have no runtime.
+                            assert value["status"] == "not-ready"
+                            return next(check for check in value["checks"] if check.get("role") == "owner")
+
+                        running = wait_state(lambda state: state["state"] == "running")
+                        assert diagnose()["status"] == "PASS"
+                        pid = running["command_pid"]
+                        os.kill(pid, signal.SIGSTOP)
+                        wait_state(lambda state: Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "T")
+                        paused = wait_state(lambda state: state["heartbeat_at"] > running["heartbeat_at"])
+                        assert paused["command_start_token"] == running["command_start_token"]
+                        rejected = diagnose()
+                        assert rejected["status"] == "FAIL", rejected
+                        assert rejected["runtime"]["runtime_state"] == "running"
+                        assert rejected["runtime"]["agent_state"] == "unknown"
+                        assert rejected["runtime"]["proxy_attachment"]["state"] == "ready"
+                        assert "guest supervisor check failed" in rejected["runtime"]["error"]
+                        os.kill(pid, signal.SIGCONT)
+                        wait_state(lambda state: Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "S")
+                        resumed = diagnose()
+                        assert resumed["status"] == "PASS", resumed
+                        assert json.loads(state_path.read_text())["command_start_token"] == running["command_start_token"]
+                        assert json.loads(state_path.read_text())["restart_count"] == 0
+                    finally:
+                        stop.write_text("intentional-stop")
+                        supervisor.wait(timeout=5)
 
 
 def test_native_release_preserves_other_work_and_requires_canonical_audit(tmp_path, _binary_cache):

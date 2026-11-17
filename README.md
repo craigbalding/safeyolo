@@ -42,16 +42,16 @@ Install SafeYolo and get your first agent running in less than a minute.
 ## Quick start
 
 Use Ubuntu 24.04 AMD64 (x86_64), an ordinary sudo-enabled account, Bash, curl,
-tar and an existing host Claude Code login. Open a host terminal in your own
+tar and an existing Claude Code login. Open a host terminal in your own
 project directory without `install-safeyolo.sh`.
 
-You trust the publisher. Host sudo prepares missing packages, sandbox IDs,
-guest extraction/ownership/cleanup and AppArmor user-namespace rules for the
-selected runtime. Sandbox IDs receive runtime traversal and file read/execute
-permissions; sudo changes permissions only on paths you do not own. Command
-linking uses sudo for an unwritable parent. Exact commands and effects precede
-consent and execution, including cached/passwordless sudo. Run separately; stop
-on failure.
+You trust the publisher. Installation downloads prebuilt host and guest
+artifacts; no guest build is needed. After host preparation, guest extraction,
+updates, cleanup and execution need no host sudo. Missing packages, sandbox ID
+delegation and AppArmor authorization can require sudo. Commands and effects
+precede consent. Accessible owned runtime paths avoid privileged ACL changes;
+explicit KVM selection can require device ACL preparation. A writable
+`--command-dir` avoids sudo for command linking. Stop on failure.
 
 ```sh
 curl -fLO https://github.com/craigbalding/safeyolo/releases/latest/download/install-safeyolo.sh
