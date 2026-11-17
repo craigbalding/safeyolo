@@ -231,9 +231,10 @@ def selection(witness: dict, reference: str, node: dict, commands: list[dict], p
                 continue
             section = "ingress" if phase == "ingress-pair" else phase
             for lane, sections in SECTIONS.items():
-                if section in sections and not (section == "ingress" and phase == "ingress-pair"):
+                applicable = (lane == "systrap") if phase == "ingress-pair" else (lane != "systrap" if phase == "ingress" else True)
+                if section in sections and applicable:
                     selected.append(f"default `{lane}` section `{section}`")
-                elif section in OPTIONAL_SECTIONS[lane]:
+                elif section in OPTIONAL_SECTIONS[lane] and applicable:
                     selected.append(f"optional `{lane}` section `{section}`")
     selected += [f"[{command['job']}]({link(command['path'])}) ({command['cadence']}; condition `{command['condition'] or 'none'}`)"
                  for command in matches]

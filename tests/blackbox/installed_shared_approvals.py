@@ -34,7 +34,6 @@ import re
 import select
 import shlex
 import shutil
-import signal
 import sqlite3
 import subprocess
 import threading
@@ -53,15 +52,13 @@ if __package__:
         _agent_listeners,
         _cli_identity,
         _native_config,
-        _pid_alive,
-        _process_start_token,
         _require_disposable,
         _runtime_observation,
         _rust_identity,
         _socket_accepting,
     )
     from .installed_ingress import runsc_identity
-    from .installed_lifecycle import start_guest, stop_guest
+    from .installed_lifecycle import crash_owned_proxy, start_guest, stop_guest
     from .installed_room_approvals import room_exchange
     from .installed_sections import surviving_processes
 else:
@@ -70,15 +67,13 @@ else:
         _agent_listeners,
         _cli_identity,
         _native_config,
-        _pid_alive,
-        _process_start_token,
         _require_disposable,
         _runtime_observation,
         _rust_identity,
         _socket_accepting,
     )
     from installed_ingress import runsc_identity
-    from installed_lifecycle import start_guest, stop_guest
+    from installed_lifecycle import crash_owned_proxy, start_guest, stop_guest
     from installed_room_approvals import room_exchange
     from installed_sections import surviving_processes
 
@@ -626,14 +621,16 @@ def run(args: argparse.Namespace) -> None:
                     assert crash_recovery["before_crash"]["policy_receipt"]["result"] == first["result"]
                     assert crash_recovery["before_crash"]["network_grant"] == first["result"]["issued_access"]
                     assert not hits, "approval replayed the held operation"
-                    current_proxy = _runtime_observation(root, native_config, binary, config_path=config_path,
-                        working_directory=root, require_running=True, require_authenticated_identity=True)
-                    assert current_proxy["pid"] == pid and _process_start_token(pid) == start_token
-                    os.kill(pid, signal.SIGKILL)
-                    deadline = time.monotonic() + 10
-                    while _pid_alive(pid) and _process_start_token(pid) == start_token:
-                        assert time.monotonic() < deadline, "owned crash target did not exit"
-                        time.sleep(0.05)
+                    crash_recovery["crash"] = crash_owned_proxy(root, binary, native_config, pid, start_token)
+                    outage_before = len(hits)
+                    outage_command = shlex.join(["python3", "-c", GUEST_REQUEST, json.dumps(["GET", url, None])])
+                    outage = subprocess.run(guest_command_args(args.transport_cli, args.worker, outage_command),
+                        capture_output=True, text=True, timeout=15)
+                    crash_recovery["outage"] = {"client_exit": outage.returncode, "origin_before": outage_before, "origin_after": len(hits)}
+                    if outage.returncode == 0:
+                        crash_recovery["outage"]["http_status"] = json.loads(outage.stdout)["status"]
+                        assert crash_recovery["outage"]["http_status"] in (502, 503), "outage returned an unrelated response"
+                    assert len(hits) == outage_before, "outage delivered to the owned origin"
                 finally:
                     with sqlite3.connect(database) as connection:
                         connection.execute("DROP TRIGGER sy769_missing_terminal")

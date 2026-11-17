@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from harness.containment import assert_host_canaries_absent, attempt_network
 from harness.host_listener import refuse_listener
 
 NOFILE_LIMIT = 65536
@@ -262,30 +263,29 @@ class TestGuestRootContainment:
     """
 
     def test_root_direct_egress_blocked(self):
-        """Guest root cannot bypass the proxy with a direct connection.
+        """Guest root cannot deliver bytes outside the proxy.
 
-        What: Use curl with all proxy handling disabled against a public IP
-        and require the connection to fail.
-        Why: Package-management privilege must not also grant an unobserved
-        network path around SafeYolo's policy and credential controls.
+        What: Send marked TCP, TLS and DNS/UDP probes to live owned IPv4/IPv6
+        receivers. The host checks delivery independently of guest exceptions.
+        Why: Guest-root package management must not create an unobserved path.
         """
-        result = subprocess.run(
-            [
-                "curl",
-                "-s",
-                "--noproxy",
-                "*",
-                "--connect-timeout",
-                "3",
-                "-o",
-                "/dev/null",
-                "http://1.1.1.1",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        assert result.returncode != 0, "Guest root reached 1.1.1.1 directly"
+        assert os.geteuid() == 0
+        for family in (4, 6):
+            attempt_network("tcp", family)
+            attempt_network("udp", family, dns=True)
+        attempt_network("tcp", tls=True)
+        attempt_network("tcp", metadata=True)
+
+    def test_root_cannot_read_live_host_canaries(self):
+        """Guest root cannot read the live host process and private file.
+
+        What: Probe the exact host canaries independently verified by the host.
+        Why: Guest PID names and guest-root permissions cannot identify access
+        to the real host namespace or its private files.
+        """
+        assert os.geteuid() == 0
+        assert_host_canaries_absent()
+
 
     def test_root_proxy_path_works(self):
         """Guest root retains the authorised proxy egress path.

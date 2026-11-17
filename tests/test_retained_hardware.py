@@ -56,6 +56,9 @@ def hardware_reports(tmp_path):
                           "run_id": "selected-run", "guest": context, "uid": 0 if identity == "guest-root" else 1000,
                           "finished": True, "exit": 0, "collected": nodes.copy(), "selected": nodes.copy(),
                           "tests": {node: dict.fromkeys(("setup", "call", "teardown"), "passed") for node in nodes}}
+                if phase in {"guest-agent", "guest-root"}:
+                    data[f"guest/{section}/containment-{phase}.json"] = {
+                        "phase": phase, "run_id": "selected-run", "guest": context, "status": "passed"}
                 name = f"pytest-{phase}.json"
             else:
                 report = {"section": phase, "run_id": "selected-run", "guest": context, "finished": True,

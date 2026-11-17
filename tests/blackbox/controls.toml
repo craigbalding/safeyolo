@@ -7,7 +7,7 @@ control = "Direct network egress"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_vm_isolation.py"
 what = "TCP, IPv6 and metadata routes cannot bypass the proxy."
 existing = "Guest BB; nightly."
-conformance = "Repair uncontrolled endpoints and curl-exit-code oracles: use live owned receivers and prove zero unauthorized delivery."
+conformance = "Host TCP receivers compare delivered bytes with independent before/after controls. Assigned non-loopback destinations, host namespaces and guest interfaces/routes are retained. Missing IPv4/IPv6 or owned metadata targets are incomplete coverage. Installed run pending; VZ delivery receivers remain omitted."
 effort = "M"
 comments = "Exercise ordinary agent and guest root."
 owner = "#1560"
@@ -19,7 +19,7 @@ control = "DNS/UDP egress"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_vm_isolation.py"
 what = "Queries/datagrams cannot leak even when no response returns."
 existing = "Guest BB; nightly."
-conformance = "Repair NXDOMAIN/gaierror/no-reply oracles with owned receivers, unique markers and positive controls."
+conformance = "Owned UDP/TCP receivers record unique DNS payloads independently of replies. The disposable guest selects the owned libc resolver temporarily and records its actual route. Missing receiver addresses are incomplete coverage. Installed run pending; VZ receivers remain omitted."
 effort = "M"
 comments = "Share receiver infrastructure with BB-01."
 owner = "#1560"
@@ -31,7 +31,7 @@ control = "Guest-root containment"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_vm_isolation.py"
 what = "Guest administration cannot modify host configuration or access host processes/devices."
 existing = "Guest BB; nightly; partly conformant."
-conformance = "Retain live UID mapping/read-only checks; replace invalid syscall arguments and host-PID-1-name assumptions with valid probes and host canaries."
+conformance = "UID mapping/read-only checks remain. Host file/process canaries replace PID-name and null-pointer inferences. BPF uses valid architecture-specific attributes and nonnegative-FD semantics; device creation and use are distinct. Installed run pending."
 effort = "M"
 comments = "Guest root is intentionally allowed; device-node creation and device use are different claims."
 owner = "#1560"
@@ -42,8 +42,8 @@ id = "BB-04"
 control = "Agent identity / peer isolation"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_ingress_pair.py"
 what = "Forged claims cannot select another agent; peer sockets/private files remain inaccessible as user and root."
-existing = "Strong two-guest BB exists but is optional; basic peer checks run by default."
-conformance = "Wire the existing ingress-pair witness into nightly selection; retire guessed-neighbour probes and SSH checks accepting either outcome."
+existing = "Two real peers are selected by the default systrap ingress section."
+conformance = "Default systrap selects the pair, forged claims, authorized peer context, user/root private-file/socket refusals and restart. Guessed-neighbour and unused-port probes are removed. Installed run of the extended journey remains pending."
 effort = "S"
 comments = "Existing pair covers guest root and proxy restart; retain its actual platform scope."
 owner = "#1560"
@@ -103,7 +103,7 @@ control = "Host-secret custody"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_key_isolation.py"
 what = "Guest and guest root cannot directly read host CA/vault secrets."
 existing = "Scans and injection checks exist; partial."
-conformance = "Extend with unique synthetic secret canaries across relevant guest files, environment and scoped APIs."
+conformance = "Installed access fingerprints its unique signing key and synthetic encrypted-store credential. User/root scans cover relevant files, environment and scoped APIs after authorized TLS/injection; unauthorized origins must not receive the value. Installed run pending."
 effort = "M"
 comments = "Preserve deliberately provisioned client credentials and authorized operator views."
 owner = "#1560"
@@ -115,7 +115,7 @@ control = "Subscription credential adoption / renewal"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/proxy/tests/credential_http/codex.rs"
 what = "Refresh/import cannot change identity or resurrect revoked authority."
 existing = "Strong native HTTP tests; run-lifetime backend is synthetic."
-conformance = "Extend with one real guest and controlled provider: adoption, refresh, restart, revocation and wrong guest."
+conformance = "Default systrap pair composes explicit run-scoped import, two controlled-provider renewals, proxy restart, revocation and wrong-guest attempts. Exact provider effects and sanitized fingerprints are retained. Installed run pending."
 effort = "M"
 comments = "No paid model service needed; retain existing native cases."
 owner = "#1560"
@@ -174,8 +174,8 @@ id = "BB-15"
 control = "Restart / abrupt-failure recovery"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_shared_approvals.py"
 what = "Outages cannot bypass enforcement, revive authority or replay effects."
-existing = "Orderly guest lifecycle nightly; SIGKILL witness on demand."
-conformance = "Wire and extend abrupt failure: guest non-delivery during outage; consumed/revoked authority stays unusable after recovery."
+existing = "Graceful lifecycle stays selected; installed access also selects the shared owned-process SIGKILL witness."
+conformance = "Access checks outage non-delivery, no automatic replay, revoked service and consumed risk-grant refusal after recovery, then an allowed origin control. The approval crash journey also records outage effects. Installed run pending."
 effort = "M"
 comments = "Preserve graceful drain and admitted-stream semantics."
 owner = "#1560"
@@ -553,7 +553,7 @@ paths = ["tests/blackbox/isolation/test_vm_isolation.py"]
 controls = ["BB-01", "BB-02", "BB-03", "BB-04"]
 kind = "pytest"
 scope = "Linux guest; gVisor systrap/KVM or VZ; ordinary user and setpriv subprocesses"
-adapter = "Real guest; audited uncontrolled network endpoints remain under #1560"
+adapter = "Host-owned Linux delivery observers and live host canaries; named VZ delivery exclusions and metadata limits remain explicit"
 
 [[witnesses]]
 paths = ["tests/blackbox/isolation/test_root_containment.py"]
@@ -567,7 +567,7 @@ paths = ["tests/blackbox/isolation/test_key_isolation.py"]
 controls = ["BB-09"]
 kind = "pytest"
 scope = "Linux guest; gVisor systrap/KVM or VZ; user and private-key root selection"
-adapter = "Real guest scans; synthetic canary extension remains #1560"
+adapter = "Generic scans retain existing scope; exact CA/vault canaries run through the installed access driver"
 
 [[witnesses]]
 paths = ["tests/blackbox/isolation/test_agent_api_scope.py"]
@@ -676,7 +676,7 @@ adapter = "Real installed process/guest where the driver boots one; owned endpoi
 
 [[witnesses]]
 paths = ["tests/blackbox/installed_ingress_pair.py::main"]
-controls = ["BB-04", "BB-15"]
+controls = ["BB-04", "BB-10", "BB-15"]
 kind = "procedure"
 scope = "Installed driver; actual backend and identities recorded in its own report"
 adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
@@ -690,7 +690,7 @@ adapter = "Real installed process/guest where the driver boots one; owned endpoi
 
 [[witnesses]]
 paths = ["tests/blackbox/installed_access.py::main"]
-controls = ["BB-08", "BB-19", "BB-23", "BB-24"]
+controls = ["BB-08", "BB-09", "BB-15", "BB-19", "BB-23", "BB-24"]
 kind = "procedure"
 scope = "Installed driver; actual backend and identities recorded in its own report"
 adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
@@ -1132,6 +1132,13 @@ adapter = "Controlled runtime, artifact and credential fixtures; real native cap
 target = "lib"
 module = "jobs::mediated::tests"
 owner = "proxy/src/jobs/mediated.rs"
+
+[[witnesses]]
+paths = ["tests/test_blackbox_containment.py"]
+controls = ["BB-01", "BB-02", "BB-03", "BB-04", "BB-09"]
+kind = "pytest"
+scope = "Isolated checker sensitivity; host identity; no installed-guest claim"
+adapter = "Live TCP/UDP receivers, exposed canaries and controlled syscall returns; source checks do not establish deployed cadence"
 
 [[witnesses]]
 paths = ["proxy/src/policy/checks.rs"]

@@ -5,11 +5,11 @@ the same names. Platform exclusions are explicit and do not hide missing setup.
 """
 
 SECTIONS = {
-    "systrap": ("isolation", "workloads", "access", "lifecycle", "continuity"),
+    "systrap": ("isolation", "ingress", "workloads", "access", "lifecycle", "continuity"),
     "kvm": ("isolation", "ingress", "workloads"),
     "vz": ("isolation", "access", "lifecycle", "continuity"),
 }
-OPTIONAL_SECTIONS = {"systrap": ("claude", "ingress"), "kvm": (), "vz": ()}
+OPTIONAL_SECTIONS = {"systrap": ("claude",), "kvm": (), "vz": ()}
 
 PYTEST_PHASES = {
     "native": ("host", ("tests/blackbox/host/native",)),
@@ -81,9 +81,9 @@ NATIVE_PHASES = {
 # A terminal status or zero exit without every named checkpoint is insufficient.
 PROCEDURES = {
     "ingress": ("installed_ingress.py", ("identity", "policy", "guest", "origin", "finished")),
-    "ingress-pair": ("installed_ingress_pair.py", ("identity", "user-and-root", "restart", "finished")),
+    "ingress-pair": ("installed_ingress_pair.py", ("identity", "subscription-adoption", "user-and-root", "subscription-renewal-revocation", "restart", "finished")),
     "workloads": ("installed_workloads.py", ("identity", "package-repo", "sse", "wss-ssh", "origin", "finished")),
-    "access": ("installed_access.py", ("identity", "service", "contract", "flow-ownership", "coord", "origin", "finished")),
+    "access": ("installed_access.py", ("identity", "service", "contract", "flow-ownership", "coord", "host-secret-custody", "origin", "abrupt-failure", "finished")),
     "lifecycle": ("installed_lifecycle.py", ("identity", "listener", "tls", "restart", "drain", "recovery", "finished")),
     "continuity": ("installed_state_transition.py", ("initial", "restart", "replacement", "return", "cleanup", "finished")),
     "hyperlight-services": ("host/hyperlight_services.py", (
@@ -100,6 +100,11 @@ SECTION_DRIVERS = {
 # These checks assert gVisor-specific behavior. VZ has a real guest kernel.
 # Match only named cases, never every skip on a platform.
 PLATFORM_EXCLUSIONS = (
+    *(("vz", "guest-agent", "*::" + name, "Owned TCP/UDP/DNS delivery receivers are currently maintained on Linux hosts; no VZ delivery claim.")
+      for name in ("test_direct_http_blocked", "test_direct_https_blocked", "test_direct_alt_port_blocked",
+                   "test_ipv6_egress_blocked", "test_dns_udp_blocked", "test_libc_resolver_blocked",
+                   "test_dns_tunnel_subdomain_blocked", "test_metadata_ips_unreachable")),
+    ("vz", "guest-root", "*::test_root_direct_egress_blocked", "Owned TCP/UDP/DNS delivery receivers are currently maintained on Linux hosts; no VZ delivery claim."),
     ("vz", "identity", "*::test_sandbox_root_maps_to_subordinate_host_uid", "VZ uses a separate guest kernel, not a host user namespace."),
     ("vz", "guest-agent", "*::TestSandboxRootContainment::*", "The setpriv/user-namespace controls apply to gVisor."),
     ("vz", "guest-root", "*::test_gvisor_root_cannot_access_host_kvm_device", "The host KVM device control applies to gVisor."),

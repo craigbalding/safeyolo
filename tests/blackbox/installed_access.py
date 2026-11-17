@@ -5,7 +5,8 @@ Retain service and contract binding/risk approvals, exact credential injection
 and live peer denial, populated owner-positive/peer-negative guest flow search
 and detail, test-context/trace evidence, real NATS Coord and attention, operator
 collaboration approval/exchange/revocation, WebSocket peer effects and traffic-inspector
-filter/transcript/export. These observations stay in one installed composition.
+filter/transcript/export, exact host-secret custody and abrupt proxy recovery.
+These observations stay in one installed composition.
 """
 
 from __future__ import annotations
@@ -32,16 +33,20 @@ from pathlib import Path
 if __package__:
     from .execution_receipt import ProcedureReceipt
     from .guest_exec import guest_command_args, prepare_guest_tests
+    from .harness.containment import secret_commitments
     from .host.sinkhole_client import SinkholeClient
-    from .installed_host_smoke import _agent_listeners, _native_config, _sha256
+    from .installed_host_smoke import _agent_listeners, _native_config, _runtime_observation, _sha256
     from .installed_ingress import installed_identity, runsc_identity
+    from .installed_lifecycle import crash_owned_proxy
     from .installed_workloads import control
 else:
     from execution_receipt import ProcedureReceipt
     from guest_exec import guest_command_args, prepare_guest_tests
+    from harness.containment import secret_commitments
     from host.sinkhole_client import SinkholeClient
-    from installed_host_smoke import _agent_listeners, _native_config, _sha256
+    from installed_host_smoke import _agent_listeners, _native_config, _runtime_observation, _sha256
     from installed_ingress import installed_identity, runsc_identity
+    from installed_lifecycle import crash_owned_proxy
     from installed_workloads import control
 from urllib.parse import urlencode, urlsplit
 
@@ -52,6 +57,70 @@ from safeyolo.operator_approvals import approve
 
 ROOM = "p3-owned-room"
 PEER = "bbpeer"
+
+
+def host_secret_custody(cli: str, root: Path, agent: str, vault_value: str) -> list[dict]:
+    """Prove exact CA/vault canary absence after authorized TLS and injection."""
+    commitments = secret_commitments(root / "certs/mitmproxy-ca.pem", vault_value)
+    path = root / "agents" / agent / "config-share/host-secret-commitments.json"
+    with path.open("x") as output:
+        output.write(json.dumps(commitments))
+    path.chmod(0o444)
+    observations = []
+    try:
+        code = ("import sys; sys.path.insert(0, '/workspace/tests/blackbox'); "
+                "from isolation.test_key_isolation import installed_custody; "
+                "installed_custody('/safeyolo/host-secret-commitments.json')")
+        for guest_root in (False, True):
+            result = checked(guest_command_args(cli, agent, shlex.join(["python3", "-c", code]),
+                                                guest_root=guest_root), timeout=120)
+            lines = [line.removeprefix("SECRET_CUSTODY=") for line in result.stdout.splitlines()
+                     if line.startswith("SECRET_CUSTODY=")]
+            assert len(lines) == 1, "guest custody observation missing"
+            value = json.loads(lines[0])
+            assert value["uid"] == (0 if guest_root else 1000)
+            assert value["fingerprints"] == commitments and value["files_inspected"] > 0
+            observations.append(value)
+    finally:
+        path.unlink()
+    return observations
+
+
+def abrupt_authority(cli: str, root: Path, agent: str, platform: str, marker: str,
+                     admin: AdminAPI, sinkhole: SinkholeClient, consumed: str, runtime: dict,
+                     report: dict, save) -> None:
+    """Exercise outage, revoked/consumed authority and explicit recovery calls."""
+    value = report["abrupt_failure"] = {"status": "incomplete", "consumed_grant": consumed}
+    guest(cli, agent, platform, marker, "crash-tokens")
+    value["service_revocation"] = admin.revoke_service(agent, "p3_basic")
+    assert all(row.get("grant_id") != consumed for row in admin.list_gateway_grants()["grants"])
+    before = len(sinkhole.get_requests())
+    selected = runtime["runtime"]
+    native = _native_config(root / "config.toml", root)
+    binary = Path(runtime["candidate"]["path"])
+    save()
+    value["crash"] = crash_owned_proxy(root, binary, native, selected["pid"], selected["receipt"]["start_token"])
+    save()
+    value["outage"] = guest(cli, agent, platform, marker, "crash-outage")
+    value["outage_origin_count"] = len(sinkhole.get_requests())
+    save()
+    assert value["outage_origin_count"] == before, "guest delivered during proxy outage"
+    checked([cli, "--root", str(root), "start"], timeout=60)
+    recovered = _runtime_observation(root, native, binary, config_path=root / "config.toml",
+        working_directory=root, require_running=True, require_authenticated_identity=True)
+    value["recovered"] = recovered
+    save()
+    assert recovered["receipt"]["start_token"] != selected["receipt"]["start_token"]
+    assert len(sinkhole.get_requests()) == before, "recovery automatically replayed an operation"
+    assert all(row.get("grant_id") != consumed for row in admin.list_gateway_grants()["grants"]), "consumed grant reappeared"
+    value["explicit_denied_retries"] = guest(cli, agent, platform, marker, "crash-recovered")
+    save()
+    assert len(sinkhole.get_requests()) == before, "revoked or consumed authority delivered after recovery"
+    value["allowed_after_recovery"] = guest(cli, agent, platform, marker + "-crash-control", "flow-seed")
+    value["origin_count_after_control"] = len(sinkhole.get_requests())
+    assert value["origin_count_after_control"] == before + 1, "authorized recovery origin control failed"
+    value["status"] = "passed"
+    save()
 
 
 def checked(command: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
@@ -583,6 +652,13 @@ def main() -> None:
         assert len(ws_state) == 1 and ws_state[0]["status"] == "complete", ws_state
         assert ws_state[0]["client"] == ws["client"], ws_state
         origin = check_origin(sinkhole, fixture["credential"], marker)
+        custody = host_secret_custody(cli, config_dir, args.agent, fixture["credential"])
+        tls_paths = {row["tls_origin_path"] for row in custody}
+        tls_deliveries = [row for row in sinkhole.get_requests(host="api.github.com") if row.path in tls_paths]
+        assert len(tls_deliveries) == 2 and {row.path for row in tls_deliveries} == tls_paths
+        assert not any(fixture["credential"] in json.dumps(vars(row)) for row in sinkhole.get_requests()
+                       if row.host != "legitimate-api.com" and row.host != "httpbin.org"), "vault value reached an unauthorized origin"
+        receipt.checkpoint('host-secret-custody')
         inspector = inspect_traffic(admin, args.output, args.agent, marker)
         receipt.checkpoint('origin')
         report = {
@@ -614,8 +690,17 @@ def main() -> None:
             "collaboration_and_event": collaboration,
             "websocket_peer": ws_state,
             "origin": origin,
+            "host_secret_custody": custody,
             "inspector": inspector,
         }
+        def save():
+            args.output.write_text(json.dumps(report, indent=2) + "\n")
+        report["status"] = "abrupt_incomplete"
+        save()
+        abrupt_authority(cli, config_dir, args.agent, args.platform, marker, admin, sinkhole,
+                         grant_id, identity, report, save)
+        receipt.checkpoint('abrupt-failure')
+        report["status"] = "journeys_passed"
         if args.operator_journey:
             # Retain the already reached access observations if a later operator
             # step fails. A partial result is not a completed journey.
@@ -629,7 +714,7 @@ def main() -> None:
             )
             report["status"] = "journeys_passed"
         args.output.write_text(json.dumps(report, indent=2) + "\n")
-        print(f"{args.platform} access: six installed guest journeys and operator effects verified ({args.output})")
+        print(f"{args.platform} access, host-secret custody and abrupt recovery verified ({args.output})")
     finally:
         stolen_token_file.unlink(missing_ok=True)
         sinkhole.close()

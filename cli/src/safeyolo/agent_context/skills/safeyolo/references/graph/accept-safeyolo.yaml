@@ -217,7 +217,7 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: tests/blackbox/run-tests.sh
-          sha256: 6a52612ce4909eb4e9c5d024cccf4611dc279aaeb011afb0981d1014ad605a1b
+          sha256: 508f94466fd0c2213b42b794609eba17cfd93244099f488c337b8e2eb892f66e
         - path: uv.lock
           sha256: fd244df9e559bed2b211bbe93f257831fce8e1087b19cfc7d9d3da2fd1bc3050
       setup: "Use an approved host with native bundle/build inputs and a fresh SAFEYOLO_CONFIG_DIR; the lane owns its separate test instance, ports, certificates and sinkhole."
@@ -252,7 +252,7 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: tests/blackbox/run-tests.sh
-          sha256: 6a52612ce4909eb4e9c5d024cccf4611dc279aaeb011afb0981d1014ad605a1b
+          sha256: 508f94466fd0c2213b42b794609eba17cfd93244099f488c337b8e2eb892f66e
         - path: proxy/src/host_platform.rs
           sha256: 0f39c1bfde1db3723e2618dae202babab37b92e7807596918f9dec4ed9846815
         - path: proxy/src/host_boot.rs
@@ -280,13 +280,13 @@ nodes:
         - path: tests/blackbox/claude_smoke.py
           sha256: 98a1ded436d5c4f395c9014e4d270efcbc9834732b0d0f8049c3c5ba51df1f06
         - path: tests/blackbox/installed_sections.py
-          sha256: 7c992f0c1a51a0ce5878da5d1a1d764ce0ffc58c9d3e45e85e16175a0dfae54a
+          sha256: 951e747f72d7eb2b3c808338a7de154ff13dba7b71f2e77c2609a0237667e800
         - path: tests/blackbox/installed_ingress_pair.py
-          sha256: 7528dc814fa524b27b960e9e1ec8efbd0f1ae649344e55486c73d98ab052fc3f
+          sha256: 420757ee572e26b62fb1baa86d699bcf6bee261ab117cfa9ce60d59ec6616e9d
         - path: tests/blackbox/installed_storage.py
           sha256: 9c1d44a18200acc4c5f32b2c2bc97742a66a9827852aa13974a806362208f5e4
         - path: tests/blackbox/isolation/installed_ingress.py
-          sha256: 501b133f084764fae135e214ceebce8a939f298715b623aa11c3cdd7b3d31dbe
+          sha256: 0f0afe9c972af73de8e3436c3323680725b22c750e7f31b4d442a793f082804d
         - path: tests/blackbox/retained_inputs.py
           sha256: f78e88fcbe2026b7873ec172918201c2387a66ca9839254b4b6df7705eebd1c2
       setup: "Use an approved Linux host with the native runtime prerequisites and prepared platform artifacts from docs/installation.md. Supply SAFEYOLO_NATIVE_BUNDLE or matching native host/guest/runtime inputs, SAFEYOLO_PLATFORM_ASSETS, and a fresh SAFEYOLO_CONFIG_DIR. Retained manual Claude reuse requires the same host and selected installed bytes; see tests/blackbox/README.md. The caller verifies runtime settings, creates separate writable state and runs credential-free systrap sections before provisioning. Optional --readiness reuses applicable successful original reports and their retained isolation config.toml. Credentialed jobs require the selected installed assets/guest/guest-proxy-forwarder in the prepared instance. Preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostics."
@@ -939,7 +939,7 @@ nodes:
       obtain_from: "the exact trusted-base blackbox and native Cargo tests; Python drivers are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: tests/blackbox/run-tests.sh
-          sha256: 6a52612ce4909eb4e9c5d024cccf4611dc279aaeb011afb0981d1014ad605a1b
+          sha256: 508f94466fd0c2213b42b794609eba17cfd93244099f488c337b8e2eb892f66e
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: proxy/tests/native_host_cli.rs
