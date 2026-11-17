@@ -480,6 +480,16 @@ grants. A binding grants no network or service access to the invoking job.
 Normal invocation uses the standing adopted authority and creates no recurring
 approval. Role instructions are explanatory; the proxy enforces the binding.
 
+Before a protected Work mutation acquires automatic evidence, Coord validates
+the caller, request and current Work state through the same rules used at
+commit. An already unauthorized or invalid operation starts no job and contacts
+no provider. Coord recovers an exact committed operation receipt before acquiring new evidence; changed input
+under that operation ID remains a conflict. Retained follow-up obligations keep
+their existing recovery rules. Preflight grants no later commit authority:
+Coord revalidates state, selected requirements and effective authority after
+evidence collection. Job execution and provider I/O hold neither the Coord
+transaction nor the global policy lock.
+
 The supported Coord boundaries are:
 
 | `boundary` | `input` | Protected transition and result |
