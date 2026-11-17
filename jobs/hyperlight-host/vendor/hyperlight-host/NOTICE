@@ -1,0 +1,61 @@
+NOTICES
+
+This repository incorporates material as listed below or described in the code.
+
+Component. picolibc
+
+picolibc is a C library designed for embedded systems, derived from newlib.
+https://github.com/picolibc/picolibc
+
+Version: 1.8.11
+
+Open Source License/Copyright Notice.
+
+Copyright © 2019 Keith Packard
+
+picolibc is licensed under the BSD-3-Clause license:
+
+----------------------------------------------------------------------
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+1. Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following
+disclaimer in the documentation and/or other materials provided
+with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+contributors may be used to endorse or promote products derived
+from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+OF THE POSSIBILITY OF SUCH DAMAGE.
+----------------------------------------------------------------------
+
+Portions of picolibc are derived from newlib, which is:
+
+Copyright © 2020 The Newlib Project
+
+Newlib code is licensed under a collection of BSD-compatible and
+permissive licenses. The full license details for all files are
+documented in the COPYING.picolibc and COPYING.NEWLIB files in the
+picolibc submodule at src/hyperlight_libc/third_party/picolibc/.
+
+Note: The picolibc submodule uses the picolibc-bsd fork
+(https://github.com/hyperlight-dev/picolibc-bsd), which is a redistribution
+with all copyleft-licensed files removed from the tree and history.
+Only BSD/MIT/permissive-licensed source files are present.

@@ -268,9 +268,9 @@ nodes:
         - path: tests/blackbox/host/job_network.py
           sha256: 007ab1317bc355bdaf2bffecb0fccf04055ee78ae4ec826c9e6c1bd7b341fbb3
         - path: proxy/Cargo.toml
-          sha256: 14ba0c41411f4b9589b3395204b1f0557336a035c807fc660355512f439ce9c3
+          sha256: dde9b034528dfdc6c43174d384bbeb8d1bedbae8ab763320a656cdf929ffc1da
         - path: proxy/Cargo.lock
-          sha256: d5693870b9b1098dbf66028625002b998e80927609ab6688b28d1dd5bbb5234b
+          sha256: 802588ec2b05b24ef918a5c09a79fc062c7f289deed2c02aa64cf48c8b8d131e
         - path: proxy/src/lib.rs
           sha256: 427aac5817d5057ecb2bbb9e89affca2e14fe80dbd5bf6478cbd59c5202e1944
         - path: proxy/src/bin/safeyolo.rs
@@ -367,9 +367,9 @@ nodes:
         - path: tests/blackbox/host/job_network.py
           sha256: 007ab1317bc355bdaf2bffecb0fccf04055ee78ae4ec826c9e6c1bd7b341fbb3
         - path: proxy/Cargo.toml
-          sha256: 14ba0c41411f4b9589b3395204b1f0557336a035c807fc660355512f439ce9c3
+          sha256: dde9b034528dfdc6c43174d384bbeb8d1bedbae8ab763320a656cdf929ffc1da
         - path: proxy/Cargo.lock
-          sha256: d5693870b9b1098dbf66028625002b998e80927609ab6688b28d1dd5bbb5234b
+          sha256: 802588ec2b05b24ef918a5c09a79fc062c7f289deed2c02aa64cf48c8b8d131e
         - path: proxy/src/lib.rs
           sha256: 427aac5817d5057ecb2bbb9e89affca2e14fe80dbd5bf6478cbd59c5202e1944
         - path: proxy/src/bin/safeyolo.rs
@@ -994,7 +994,7 @@ nodes:
         - path: ruff.toml
           sha256: ec622855546870fcea36325759af749cd95480b10df98c95b6a8a95ccca73213
         - path: .pre-commit-config.yaml
-          sha256: 95cbdef697edd5d729331c723de3c3bfbcf45b8940b1dd17d16a70645e2ca97f
+          sha256: 9bdc03c90ec54a0ee74e8cf856a53d99bbe88b2bd49b5d6ff90521efd8be23de
         - path: uv.lock
           sha256: fd244df9e559bed2b211bbe93f257831fce8e1087b19cfc7d9d3da2fd1bc3050
       setup: "Use the trusted base's locked Python environment and already-approved hook dependencies."

@@ -96,6 +96,36 @@ def test_provider_denial_and_limit_are_unavailable():
             checker.service_check(request(), lambda _: response)
 
 
+def test_bundle_keeps_patched_dependency_licenses(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("builder", REPO / "scripts/build_hyperlight_jobs.py")
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    upstream = tmp_path / "registry-dependency"
+    upstream.mkdir()
+    (upstream / "LICENSE").write_text("registry license")
+    patched = REPO / "jobs/hyperlight-host/vendor/hyperlight-host"
+    metadata = {"workspace_members": ["root"], "packages": [
+        {"id": "root", "source": None},
+        {"id": "patched", "source": None, "name": "hyperlight-host", "version": "0.19.0",
+         "license": "Apache-2.0", "license_file": None, "manifest_path": str(patched / "Cargo.toml")},
+        {"id": "registry", "source": "registry+https://github.com/rust-lang/crates.io-index",
+         "name": "other", "version": "1.0.0", "license": "MIT", "license_file": None,
+         "manifest_path": str(upstream / "Cargo.toml")},
+    ]}
+    monkeypatch.setattr(builder.subprocess, "check_output", lambda *args, **kwargs: json.dumps(metadata))
+    output = tmp_path / "bundle"
+    output.mkdir()
+    builder.copy_licenses(REPO, output)
+    licenses = output / "licenses"
+    for name in ("LICENSE", "NOTICE"):
+        assert (licenses / "hyperlight-host-0.19.0" / name).read_bytes() == (patched / name).read_bytes()
+    assert (licenses / "other-1.0.0/LICENSE").read_text() == "registry license"
+    inventory = json.loads((licenses / "dependencies.json").read_text())
+    assert sorted(inventory) == ["hyperlight-host-0.19.0", "other-1.0.0"]
+    assert inventory["hyperlight-host-0.19.0"]["license"] == "Apache-2.0"
+    assert inventory["hyperlight-host-0.19.0"]["source"] is None
+
+
 def test_bundle_pins_both_service_checkers_without_changing_offline_examples(tmp_path):
     import hashlib
 

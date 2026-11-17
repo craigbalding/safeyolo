@@ -1,0 +1,164 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 The Hyperlight Authors.
+use rand::RngExt;
+use tracing::{Span, instrument};
+
+use super::SandboxConfiguration;
+use super::snapshot::NextAction;
+use crate::hypervisor::hyperlight_vm::{HyperlightVm, HyperlightVmError};
+use crate::mem::exe::LoadInfo;
+use crate::mem::mgr::SandboxMemoryManager;
+use crate::mem::ptr::RawPtr;
+use crate::mem::shared_mem::GuestSharedMemory;
+#[cfg(gdb)]
+use crate::sandbox::config::DebugInfo;
+#[cfg(feature = "mem_profile")]
+use crate::sandbox::trace::MemTraceInfo;
+#[cfg(target_os = "linux")]
+use crate::signal_handlers::setup_signal_handlers;
+use crate::{Result, Sandbox, UninitializedSandbox};
+
+#[instrument(err(Debug), skip_all, parent = Span::current(), level = "Trace")]
+pub(super) fn initialize_sandbox(u_sbox: UninitializedSandbox) -> Result<Sandbox> {
+    let max_guest_log_level = u_sbox.config.get_max_guest_log_level();
+    let (mut hshm, gshm) = u_sbox.mgr.build()?;
+
+    // Get the host page size. Narrowed to u32 because the guest ABI
+    // passes it via a 32-bit register (rdx), but widened back to usize
+    // for host-side alignment calculations in set_up_hypervisor_partition.
+    let page_size = u32::try_from(page_size::get())?;
+
+    let mut vm = set_up_hypervisor_partition(
+        gshm,
+        &u_sbox.config,
+        u_sbox.stack_top_gva,
+        page_size as usize,
+        u_sbox.load_info,
+    )?;
+
+    let seed = {
+        let mut rng = rand::rng();
+        rng.random::<u64>()
+    };
+    let peb_addr = {
+        let peb_u64 = u64::try_from(hshm.layout.peb_address())?;
+        RawPtr::from(peb_u64)
+    };
+
+    #[cfg(target_os = "linux")]
+    setup_signal_handlers(&u_sbox.config)?;
+
+    // Apply any file mappings that were prepared before evolve.
+    // This must happen before vm.initialise() so the mapped data is
+    // visible to the guest's init code.
+    //
+    // Each PreparedFileMapping is marked consumed immediately after
+    // its map_region succeeds — on Windows, WhpVm::map_memory copies
+    // the handle into its own cleanup list, so we must not let
+    // PreparedFileMapping::drop also release it (double-close).
+    // Unconsumed mappings (those after a failed map_region) are
+    // cleaned up by Drop when `pending` goes out of scope.
+    let pending = u_sbox.pending_file_mappings;
+    for mut prepared in pending {
+        let region = prepared.to_memory_region()?;
+        unsafe { vm.map_region(&region) }.map_err(|e| {
+            crate::HyperlightError::HyperlightVmError(HyperlightVmError::MapRegion(e))
+        })?;
+
+        // Mark consumed immediately after map_region succeeds.
+        // On Windows, WhpVm::map_memory copies the file mapping handle
+        // into its own `file_mappings` vec for cleanup on drop. If we
+        // deferred mark_consumed(), both PreparedFileMapping::drop and
+        // WhpVm::drop would release the same handle — a double-close.
+        // For linux see https://github.com/hyperlight-dev/hyperlight/issues/1290.
+        prepared.mark_consumed();
+    }
+
+    let initialise_guest = matches!(vm.get_next_action(), NextAction::Initialise(_));
+    vm.initialise(
+        peb_addr,
+        seed,
+        &mut hshm,
+        &u_sbox.host_funcs,
+        max_guest_log_level,
+    )
+    .map_err(HyperlightVmError::Initialize)?;
+
+    if initialise_guest {
+        hshm.finish_snapshot_checkpoint()?;
+    }
+
+    let mut sbox = Sandbox::from_uninit(u_sbox.host_funcs, hshm, vm);
+
+    if let Some(log_level) = max_guest_log_level {
+        sbox.log_level(log_level)?;
+    }
+
+    Ok(sbox)
+}
+
+pub(crate) fn set_up_hypervisor_partition(
+    mgr: SandboxMemoryManager<GuestSharedMemory>,
+    #[cfg_attr(target_os = "windows", allow(unused_variables))] config: &SandboxConfiguration,
+    stack_top_gva: u64,
+    page_size: usize,
+    _load_info: LoadInfo,
+) -> Result<HyperlightVm> {
+    // Create gdb thread if gdb is enabled and the configuration is provided
+    #[cfg(gdb)]
+    let gdb_conn = if let Some(DebugInfo { port }) = config.get_guest_debug_info() {
+        use crate::hypervisor::gdb::create_gdb_thread;
+
+        let gdb_conn = create_gdb_thread(port);
+
+        // in case the gdb thread creation fails, we still want to continue
+        // without gdb
+        match gdb_conn {
+            Ok(gdb_conn) => Some(gdb_conn),
+            Err(e) => {
+                tracing::error!("Could not create gdb connection: {:#}", e);
+
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    #[cfg(feature = "mem_profile")]
+    let trace_info = MemTraceInfo::new(_load_info.info)?;
+
+    Ok(HyperlightVm::new(
+        mgr.shared_mem,
+        mgr.scratch_mem,
+        mgr.layout.get_pt_base_gpa(),
+        mgr.next_action,
+        stack_top_gva,
+        page_size,
+        config,
+        #[cfg(gdb)]
+        gdb_conn,
+        #[cfg(feature = "mem_profile")]
+        trace_info,
+    )
+    .map_err(HyperlightVmError::Create)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use hyperlight_testing::simple_guest_as_pathbuf;
+
+    use super::initialize_sandbox;
+    use crate::UninitializedSandbox;
+    use crate::sandbox::uninitialized::GuestBinary;
+
+    #[test]
+    fn test_evolve() {
+        let guest_bin_paths = vec![simple_guest_as_pathbuf()];
+        for guest_bin_path in guest_bin_paths {
+            let u_sbox =
+                UninitializedSandbox::new(GuestBinary::FilePath(guest_bin_path), None).unwrap();
+            initialize_sandbox(u_sbox).unwrap();
+        }
+    }
+}

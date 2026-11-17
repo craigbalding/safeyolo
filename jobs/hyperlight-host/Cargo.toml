@@ -21,3 +21,6 @@ hyperlight-host = { version = "=0.19.0", default-features = false, features = ["
 
 [profile.dev]
 debug = 0
+
+[patch.crates-io]
+hyperlight-host = { path = "vendor/hyperlight-host" }
