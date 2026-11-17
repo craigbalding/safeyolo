@@ -262,8 +262,19 @@ def rust_definition(source: str, *, inline: bool) -> list[str]:
     while offset < len(tokens):
         if tokens[offset:offset + 6] == ["#", "[", "cfg", "(", "test", ")"]:
             start = offset
-            while offset < len(tokens) and tokens[offset] != "{":
+            # External test modules end at a semicolon. Nested attribute or
+            # parameter tokens can contain semicolons without ending the item.
+            prefix_depth = 0
+            while offset < len(tokens):
+                token = tokens[offset]
+                if prefix_depth == 0 and token in {"{", ";"}:
+                    break
+                prefix_depth += (token in {"(", "["}) - (token in {")", "]"})
                 offset += 1
+            if offset < len(tokens) and tokens[offset] == ";":
+                selected.extend(tokens[start:offset + 1])
+                offset += 1
+                continue
             depth = 1
             offset += 1
             while depth and offset < len(tokens):
