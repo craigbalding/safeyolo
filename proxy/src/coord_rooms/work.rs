@@ -144,6 +144,19 @@ pub(crate) enum Mutation {
         #[serde(default)]
         evidence_refs: Vec<String>,
     },
+    ResolvePrerequisite {
+        invocation_id: String,
+        expected_version: i64,
+        outcome: automatic::State,
+        summary: String,
+        evidence_refs: Vec<String>,
+    },
+    RetryPrerequisite {
+        invocation_id: String,
+        expected_version: i64,
+        summary: String,
+        evidence_refs: Vec<String>,
+    },
     Cancel {
         work_id: String,
         expected_version: i64,
@@ -554,6 +567,17 @@ fn validate_request(
             .to_string()
             .as_bytes(),
     );
+    // A prerequisite may retain an external effect before a Work receipt exists.
+    // Check that request before selecting bindings, even if this input selects none.
+    let retained: Option<String> = conn.query_row(
+        "SELECT request_hash FROM coord_operations WHERE principal_kind=?1 AND principal_id=?2 AND operation_type=?3 AND operation_id=?4",
+        params![actor.kind(),actor.id(),format!("{operation_type}.prerequisite"),operation], |r| r.get(0),
+    ).optional()?;
+    if retained.is_some_and(|original| original != request_hash) {
+        return Err(conflict(
+            "operation ID conflicts with the original canonical request",
+        ));
+    }
     let prior: Option<(String,String)> = conn.query_row(
         "SELECT request_hash,outcome_json FROM coord_operations WHERE principal_kind=?1 AND principal_id=?2 AND operation_type=?3 AND operation_id=?4",
         params![actor.kind(),actor.id(),operation_type,operation], |r| Ok((r.get(0)?,r.get(1)?)),
@@ -608,6 +632,10 @@ pub(super) fn preflight(
     } = validate_request(&tx, room, actor, &mutation, operation)?;
     if let Some(result) = replay {
         return Ok(Preflight::Replay(result));
+    }
+    if automatic::prerequisite::prepare_recovery(configured, &tx, room, actor, &mutation)?.is_some()
+    {
+        return Ok(Preflight::Ready(None));
     }
     let work = automatic::current_work(&tx, &room_id, &input)?;
     let guard = automatic::guard(
@@ -693,6 +721,16 @@ pub(crate) fn mutate_prepared(
     }
     let operation = operation.as_str();
     let action = input["action"].as_str().unwrap();
+    if let Some(mut invocation) =
+        automatic::prerequisite::prepare_recovery(&configured, &tx, room, actor, &mutation)?
+    {
+        let mut result = automatic::prerequisite::retain_recovery(&tx, &mut invocation)?;
+        result["operation_id"] = json!(operation);
+        tx.execute("INSERT INTO coord_operations(principal_kind,principal_id,operation_type,operation_id,request_hash,outcome_kind,outcome_json,created_at) VALUES(?1,?2,?3,?4,?5,'success',?6,?7)", params![actor.kind(),actor.id(),operation_type,operation,request_hash,result.to_string(),now()])?;
+        let _authority = prepared.map(automatic::Prepared::current).transpose()?;
+        tx.commit()?;
+        return Ok(result);
+    }
     let automatic = automatic::guard(
         &configured,
         &tx,
@@ -1174,6 +1212,8 @@ fn prepare_change(
                     }
                 }
                 Mutation::Create { .. }
+                | Mutation::ResolvePrerequisite { .. }
+                | Mutation::RetryPrerequisite { .. }
                 | Mutation::ReceiveAction { .. }
                 | Mutation::RequestCheck { .. }
                 | Mutation::RaiseChallenge { .. } => unreachable!(),

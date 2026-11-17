@@ -22,6 +22,7 @@ struct Provider {
     mode: Arc<AtomicUsize>,
     reached: Arc<Notify>,
     release: Arc<Notify>,
+    requests: Arc<std::sync::Mutex<Vec<Value>>>,
     task: tokio::task::JoinHandle<()>,
 }
 impl Drop for Provider {
@@ -38,6 +39,7 @@ impl Provider {
         let mode = Arc::new(AtomicUsize::new(0));
         let reached = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
+        let requests = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
         let (c, e, m, n, r) = (
             calls.clone(),
             effects.clone(),
@@ -45,10 +47,12 @@ impl Provider {
             reached.clone(),
             release.clone(),
         );
+        let observed = requests.clone();
         let task = tokio::spawn(async move {
             loop {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let (c, e, m, n, r) = (c.clone(), e.clone(), m.clone(), n.clone(), r.clone());
+                let observed = observed.clone();
                 tokio::spawn(async move {
                     let mut head = vec![];
                     while !head.ends_with(b"\r\n\r\n") {
@@ -71,9 +75,17 @@ impl Provider {
                     socket.read_exact(&mut body).await.unwrap();
                     let input: Value = serde_json::from_slice(&body).unwrap();
                     c.fetch_add(1, Ordering::SeqCst);
-                    let action = path == "/notify";
-                    if action {
-                        e.fetch_add(1, Ordering::SeqCst);
+                    let action = path == "/notify" || path == "/reserve";
+                    {
+                        let mut requests = observed.lock().unwrap();
+                        let duplicate = path == "/reserve"
+                            && requests
+                                .iter()
+                                .any(|v| v["input"]["invocation_id"] == input["invocation_id"]);
+                        if action && !duplicate {
+                            e.fetch_add(1, Ordering::SeqCst);
+                        }
+                        requests.push(json!({"path":path,"input":input}));
                     }
                     let mode = m.load(Ordering::SeqCst);
                     if mode == 4 || action && mode == 5 {
@@ -122,6 +134,7 @@ impl Provider {
             mode,
             reached,
             release,
+            requests,
             task,
         }
     }
@@ -355,6 +368,542 @@ fn refresh_checks(root: &Path, proxy: &crate::Proxy) {
     assert_ne!(source, changed);
     fs::write(root.join("policy.toml"), &changed).unwrap();
     crate::apply_native_policy(&proxy.runtime, &changed).unwrap();
+}
+
+fn adopt_prerequisite(root: &Path, proxy: &crate::Proxy, provider: &Provider, retry: bool) {
+    let old: checks::Checks = serde_json::from_value(definitions(provider.port)).unwrap();
+    let mut selected = definitions(provider.port);
+    selected["checks"]["author"]["source"]["operation"]["effects"] = json!("active");
+    selected["checks"]["author"]["source"]["operation"]["path"] = json!("/reserve");
+    let binding = &mut selected["work_bindings"][0];
+    binding.as_object_mut().unwrap().remove("require");
+    binding["retry"] = json!(if retry { "idempotent" } else { "never" });
+    binding["recovery"] = json!({"reconcilers":[BOB],"retryers":if retry {vec![BOB]} else {vec![]},"max_retries":if retry {1} else {0}});
+    let new: checks::Checks = serde_json::from_value(selected).unwrap();
+    let source = fs::read_to_string(root.join("policy.toml")).unwrap();
+    let changed = source.replace(
+        &toml::to_string(&old).unwrap(),
+        &toml::to_string(&new).unwrap(),
+    );
+    assert_ne!(changed, source);
+    fs::write(root.join("policy.toml"), &changed).unwrap();
+    crate::apply_native_policy(&proxy.runtime, &changed).unwrap();
+}
+
+fn prerequisite_value(root: &Path) -> Value {
+    let conn = super::super::super::open(root).unwrap();
+    let document: String = conn.query_row("SELECT outcome_json FROM coord_operations WHERE operation_type='coord.work.prerequisite' ORDER BY operation_id DESC LIMIT 1", [], |r| r.get(0)).unwrap();
+    serde_json::from_str(&document).unwrap()
+}
+
+fn prerequisite_request() -> Value {
+    json!({"action":"create","title":"reserve before admission","external_ref":"https://github.com/owner/repo/issues/1","operation_id":"protected-reservation"})
+}
+
+fn recovery_request(invocation: &Value, action: &str) -> Value {
+    let mut request = json!({"action":action,"invocation_id":invocation["id"],"expected_version":invocation["version"],
+        "summary":"Read the external reservation by its exact invocation ID","evidence_refs":["fixture:reservation-by-invocation-id"]});
+    if action == "resolve_prerequisite" {
+        request["outcome"] = json!("completed");
+    }
+    request
+}
+
+#[tokio::test]
+async fn prerequisite_is_durable_before_creation_and_dispatches_once_under_concurrency() {
+    let provider = Provider::start().await;
+    let (root, proxy, _) = fixture_proxy(&provider).await;
+    adopt_prerequisite(root.path(), &proxy, &provider, false);
+    let request = prerequisite_request();
+    let mut mutation = request.clone();
+    mutation.as_object_mut().unwrap().remove("operation_id");
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let files = runtime
+        .config
+        .native_config_dir
+        .as_deref()
+        .zip(runtime.config.policy_file.as_deref());
+    let configured = automatic::configuration(files, None).unwrap();
+    preflight(
+        files,
+        &configured,
+        &mut super::super::super::open(root.path()).unwrap(),
+        "owned",
+        Actor::Agent(ALICE),
+        serde_json::from_value(mutation).unwrap(),
+        Some("protected-reservation"),
+    )
+    .unwrap();
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        0,
+        "passive preflight"
+    );
+    let mut no_identity = request.clone();
+    no_identity.as_object_mut().unwrap().remove("operation_id");
+    assert_eq!(api(root.path(), &no_identity).await.0, 400);
+    for invalid in [
+        json!({"title":""}),
+        json!({"assignee":{"kind":"agent","id":"missing"}}),
+    ] {
+        let mut value = request.clone();
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(invalid.as_object().unwrap().clone());
+        assert_ne!(api(root.path(), &value).await.0, 200);
+    }
+    assert_eq!(provider.effects.load(Ordering::SeqCst), 0);
+    provider.mode.store(5, Ordering::SeqCst);
+    let task_root = root.path().to_owned();
+    let task_request = request.clone();
+    let pending = tokio::spawn(async move { api(&task_root, &task_request).await });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        provider.reached.notified(),
+    )
+    .await
+    .unwrap();
+    let before = prerequisite_value(root.path());
+    assert_eq!(before["record"]["state"], "dispatching");
+    let conn = super::super::super::open(root.path()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM coord_work", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(api(root.path(), &request).await.0, 409);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    provider.release.notify_one();
+    let (status, receipt) = pending.await.unwrap();
+    assert_eq!(status, 200, "{receipt}");
+    assert_eq!(receipt["work"]["automatic"][0]["id"], before["id"]);
+    assert_eq!(receipt["work"]["automatic"][0]["state"], "completed");
+    let id = before["id"].as_str().unwrap();
+    let cli = super::super::super::work_cli::run(
+        root.path(),
+        &["prerequisite".into(), "owned".into(), id.into()],
+    )
+    .await
+    .unwrap();
+    assert_eq!(cli["id"], before["id"]);
+    assert_eq!(cli["record"]["state"], "completed");
+    let mut socket = UnixStream::connect(root.path().join("alice.sock"))
+        .await
+        .unwrap();
+    socket.write_all(format!("GET http://_safeyolo.proxy.internal/api/coord/rooms/owned/work?invocation_id={id} HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer synthetic-work-agent-token\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    let mut response = String::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        socket.read_to_string(&mut response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let (head, body) = response.split_once("\r\n\r\n").unwrap();
+    assert!(head.starts_with("HTTP/1.1 200"), "{response}");
+    assert_eq!(serde_json::from_str::<Value>(body).unwrap(), cli);
+    let client = crate::coord_tools::Client {
+        socket: Some(root.path().join("alice.sock")),
+        token_file: root.path().join("data/agent_token"),
+        home: None,
+    };
+    assert_eq!(
+        client
+            .call(
+                "read_work_prerequisite",
+                &json!({"room_name":"owned","invocation_id":id})
+            )
+            .await
+            .unwrap(),
+        cli
+    );
+    for (tool, action) in [
+        ("resolve_work_prerequisite", "resolve_prerequisite"),
+        ("retry_work_prerequisite", "retry_prerequisite"),
+    ] {
+        let mut recovery = recovery_request(&cli, action);
+        recovery.as_object_mut().unwrap().remove("action");
+        recovery["room_name"] = json!("owned");
+        recovery["operation_id"] = json!(tool);
+        let error = client.call(tool, &recovery).await.unwrap_err().to_string();
+        assert!(error.contains("recovery permission"), "{error}");
+    }
+    assert_eq!(api(root.path(), &request).await, (200, receipt));
+    let mut changed = request.clone();
+    changed["title"] = json!("changed protected input");
+    assert_eq!(api(root.path(), &changed).await.0, 409);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.effects.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        provider.requests.lock().unwrap()[0]["input"]["invocation_id"],
+        before["id"]
+    );
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn prerequisite_success_survives_failed_protected_commit_and_exact_restart_replay() {
+    let provider = Provider::start().await;
+    let (root, proxy, _) = fixture_proxy(&provider).await;
+    adopt_prerequisite(root.path(), &proxy, &provider, false);
+    let conn = super::super::super::open(root.path()).unwrap();
+    conn.execute_batch("CREATE TRIGGER controlled_commit_failure BEFORE INSERT ON coord_work BEGIN SELECT RAISE(ABORT,'controlled protected commit failure'); END;").unwrap();
+    let request = prerequisite_request();
+    assert_eq!(api(root.path(), &request).await.0, 503);
+    let invocation = prerequisite_value(root.path());
+    assert_eq!(invocation["record"]["state"], "completed");
+    assert_eq!(provider.effects.load(Ordering::SeqCst), 1);
+    let mut changed = request.clone();
+    changed["title"] = json!("changed before protected commit");
+    assert_eq!(api(root.path(), &changed).await.0, 409);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    conn.execute_batch("DROP TRIGGER controlled_commit_failure")
+        .unwrap();
+    proxy.shutdown().await;
+    let proxy =
+        crate::Proxy::start(crate::native_config::read(&root.path().join("config.toml")).unwrap())
+            .await
+            .unwrap();
+    let (status, receipt) = api(root.path(), &request).await;
+    assert_eq!(status, 200, "{receipt}");
+    assert_eq!(receipt["work"]["automatic"][0]["id"], invocation["id"]);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn prerequisite_changed_selector_cannot_escape_retained_operation_identity() {
+    let provider = Provider::start().await;
+    let (root, proxy, _) = fixture_proxy(&provider).await;
+    adopt_prerequisite(root.path(), &proxy, &provider, false);
+    provider.mode.store(3, Ordering::SeqCst);
+    let request = prerequisite_request();
+    let (status, held) = api(root.path(), &request).await;
+    assert_eq!(status, 409, "{held}");
+    let invocation = prerequisite_value(root.path());
+    assert_eq!(invocation["record"]["state"], "uncertain");
+    let id = invocation["id"].as_str().unwrap();
+    assert!(held["error"].as_str().unwrap().contains(id), "{held}");
+    let client = crate::coord_tools::Client {
+        socket: Some(root.path().join("alice.sock")),
+        token_file: root.path().join("data/agent_token"),
+        home: None,
+    };
+    assert_eq!(
+        client
+            .call(
+                "read_work_prerequisite",
+                &json!({"room_name":"owned","invocation_id":id})
+            )
+            .await
+            .unwrap(),
+        invocation
+    );
+    proxy.shutdown().await;
+    let proxy =
+        crate::Proxy::start(crate::native_config::read(&root.path().join("config.toml")).unwrap())
+            .await
+            .unwrap();
+    for reference in [
+        None,
+        Some(Value::Null),
+        Some(json!("https://github.com/other/repo/issues/1")),
+        Some(json!("https://github.com/owner/repo/issues/2")),
+    ] {
+        let mut changed = request.clone();
+        if let Some(reference) = reference {
+            changed["external_ref"] = reference;
+        } else {
+            changed.as_object_mut().unwrap().remove("external_ref");
+        }
+        let (status, refused) = api(root.path(), &changed).await;
+        assert_eq!(status, 409, "{refused}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("original canonical request"),
+            "{refused}"
+        );
+        // The committing path must reject the same change without binding selection.
+        changed.as_object_mut().unwrap().remove("operation_id");
+        assert_eq!(
+            mutate(
+                None,
+                &mut super::super::super::open(root.path()).unwrap(),
+                "owned",
+                Actor::Agent(ALICE),
+                serde_json::from_value(changed).unwrap(),
+                Some("protected-reservation")
+            )
+            .unwrap_err()
+            .0,
+            409
+        );
+    }
+    let conn = super::super::super::open(root.path()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM coord_work", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(api(root.path(), &request).await.0, 409);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.effects.load(Ordering::SeqCst), 1);
+    let mut generic = request;
+    generic.as_object_mut().unwrap().remove("external_ref");
+    generic["operation_id"] = json!("separate-generic-operation");
+    assert_eq!(api(root.path(), &generic).await.0, 200);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn prerequisite_lost_reply_requires_distinct_recovery_and_bounded_idempotent_retry() {
+    for complete_retry in [false, true] {
+        let provider = Provider::start().await;
+        let (root, proxy, _) = fixture_proxy(&provider).await;
+        adopt_prerequisite(root.path(), &proxy, &provider, true);
+        provider.mode.store(3, Ordering::SeqCst);
+        let request = prerequisite_request();
+        assert_eq!(api(root.path(), &request).await.0, 409);
+        let invocation = prerequisite_value(root.path());
+        assert_eq!(invocation["record"]["state"], "uncertain");
+        assert_eq!(invocation["attempts"], 1);
+        assert_eq!(api(root.path(), &request).await.0, 409);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        for action in ["resolve_prerequisite", "retry_prerequisite"] {
+            assert_eq!(
+                submit(
+                    &proxy,
+                    root.path(),
+                    Actor::Agent(ALICE),
+                    recovery_request(&invocation, action),
+                    action
+                )
+                .await
+                .unwrap_err()
+                .0,
+                403
+            );
+        }
+        let retry = recovery_request(&invocation, "retry_prerequisite");
+        let selected = submit(
+            &proxy,
+            root.path(),
+            Actor::Agent(BOB),
+            retry.clone(),
+            "select-retry",
+        )
+        .await
+        .unwrap();
+        assert_eq!(selected["prerequisite"]["record"]["state"], "pending");
+        assert_eq!(
+            submit(
+                &proxy,
+                root.path(),
+                Actor::Agent(BOB),
+                retry,
+                "select-retry"
+            )
+            .await
+            .unwrap(),
+            selected
+        );
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            1,
+            "selection grants no execution to the recovery actor"
+        );
+        if complete_retry {
+            provider.mode.store(0, Ordering::SeqCst);
+        }
+        assert_eq!(
+            api(root.path(), &request).await.0,
+            if complete_retry { 200 } else { 409 }
+        );
+        let after = prerequisite_value(root.path());
+        assert_eq!(after["id"], invocation["id"]);
+        assert_eq!(after["attempts"], 2);
+        assert_eq!(
+            provider.effects.load(Ordering::SeqCst),
+            1,
+            "the external service deduplicates by invocation ID"
+        );
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        if !complete_retry {
+            assert_eq!(
+                submit(
+                    &proxy,
+                    root.path(),
+                    Actor::Agent(BOB),
+                    recovery_request(&after, "retry_prerequisite"),
+                    "exhausted-retry"
+                )
+                .await
+                .unwrap_err()
+                .0,
+                403
+            );
+            let reconciled = submit(
+                &proxy,
+                root.path(),
+                Actor::Agent(BOB),
+                recovery_request(&after, "resolve_prerequisite"),
+                "external-observation",
+            )
+            .await
+            .unwrap();
+            assert_eq!(reconciled["prerequisite"]["record"]["state"], "completed");
+            assert_eq!(api(root.path(), &request).await.0, 200);
+            assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        }
+        let requests = provider.requests.lock().unwrap().clone();
+        assert_eq!(
+            requests[0]["input"], requests[1]["input"],
+            "retry preserves exact external inputs"
+        );
+        proxy.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn prerequisite_never_retries_without_adoption_and_revoked_recovery_cannot_progress() {
+    let provider = Provider::start().await;
+    let (root, proxy, _) = fixture_proxy(&provider).await;
+    adopt_prerequisite(root.path(), &proxy, &provider, false);
+    provider.mode.store(3, Ordering::SeqCst);
+    let request = prerequisite_request();
+    assert_eq!(api(root.path(), &request).await.0, 409);
+    let invocation = prerequisite_value(root.path());
+    assert_eq!(
+        submit(
+            &proxy,
+            root.path(),
+            Actor::Operator,
+            recovery_request(&invocation, "retry_prerequisite"),
+            "no-retry-adoption"
+        )
+        .await
+        .unwrap_err()
+        .0,
+        403
+    );
+    refresh_checks(root.path(), &proxy);
+    assert_eq!(
+        submit(
+            &proxy,
+            root.path(),
+            Actor::Agent(BOB),
+            recovery_request(&invocation, "resolve_prerequisite"),
+            "revoked-recovery"
+        )
+        .await
+        .unwrap_err()
+        .0,
+        403
+    );
+    assert_eq!(api(root.path(), &request).await.0, 409);
+    assert_eq!(provider.effects.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn prerequisite_pending_revocation_retains_uncertainty_and_prevents_commit() {
+    let provider = Provider::start().await;
+    let (root, proxy, _) = fixture_proxy(&provider).await;
+    adopt_prerequisite(root.path(), &proxy, &provider, true);
+    provider.mode.store(5, Ordering::SeqCst);
+    let task_root = root.path().to_owned();
+    let pending = tokio::spawn(async move { api(&task_root, &prerequisite_request()).await });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        provider.reached.notified(),
+    )
+    .await
+    .unwrap();
+    let invocation = prerequisite_value(root.path());
+    assert_eq!(invocation["record"]["state"], "dispatching");
+    refresh_checks(root.path(), &proxy);
+    provider.release.notify_one();
+    assert_ne!(pending.await.unwrap().0, 200);
+    assert_eq!(
+        prerequisite_value(root.path())["record"]["state"],
+        "uncertain"
+    );
+    let conn = super::super::super::open(root.path()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM coord_work", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(provider.effects.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn prerequisite_crash_after_dispatch_recovers_without_blind_repetition() {
+    const CHILD_ROOT: &str = "SAFEYOLO_PREREQUISITE_CRASH_ROOT";
+    if let Ok(root) = std::env::var(CHILD_ROOT) {
+        let root = Path::new(&root);
+        let proxy =
+            crate::Proxy::start(crate::native_config::read(&root.join("config.toml")).unwrap())
+                .await
+                .unwrap();
+        let _ = api(root, &prerequisite_request()).await;
+        proxy.shutdown().await;
+        panic!("parent must kill the child after observing the reservation");
+    }
+    let provider = Provider::start().await;
+    let (root, proxy, _) = fixture_proxy(&provider).await;
+    adopt_prerequisite(root.path(), &proxy, &provider, false);
+    proxy.shutdown().await;
+    provider.mode.store(5, Ordering::SeqCst);
+    let log = fs::File::create(root.path().join("prerequisite-child.log")).unwrap();
+    let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "coord_rooms::work::tests::automatic_tests::prerequisite_crash_after_dispatch_recovers_without_blind_repetition", "--nocapture"])
+        .env(CHILD_ROOT, root.path()).stdout(log.try_clone().unwrap()).stderr(log).kill_on_drop(true).spawn().unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        provider.reached.notified(),
+    )
+    .await
+    .unwrap();
+    let before = prerequisite_value(root.path());
+    assert_eq!(before["record"]["state"], "dispatching");
+    assert_eq!(provider.effects.load(Ordering::SeqCst), 1);
+    child.kill().await.unwrap();
+    assert!(!child.wait().await.unwrap().success());
+    provider.release.notify_one();
+    provider.mode.store(0, Ordering::SeqCst);
+    let proxy =
+        crate::Proxy::start(crate::native_config::read(&root.path().join("config.toml")).unwrap())
+            .await
+            .unwrap();
+    let after = prerequisite_value(root.path());
+    assert_eq!(after["id"], before["id"]);
+    assert_eq!(after["record"]["state"], "uncertain");
+    assert_eq!(api(root.path(), &prerequisite_request()).await.0, 409);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    submit(
+        &proxy,
+        root.path(),
+        Actor::Agent(BOB),
+        recovery_request(&after, "resolve_prerequisite"),
+        "crash-reconciliation",
+    )
+    .await
+    .unwrap();
+    assert_eq!(api(root.path(), &prerequisite_request()).await.0, 200);
+    assert_eq!(provider.effects.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    proxy.shutdown().await;
 }
 
 #[tokio::test]
