@@ -423,14 +423,11 @@ impl Events {
     }
 }
 
-async fn telemetry(supervisor: &Supervisor, event: &Value) {
-    let Some(room) = &supervisor.config.agent_room else {
-        return;
-    };
+fn telemetry_body(harness: &str, event: &Value) -> String {
     let mut event = event.clone();
     // Pi agent_end includes the full session messages. Keep its completion
     // signal; the established per-event telemetry owns the individual items.
-    if supervisor.config.harness == "pi" && event["type"] == "agent_end" {
+    if harness == "pi" && event["type"] == "agent_end" {
         let count = event["messages"].as_array().map_or(0, Vec::len);
         let mut usage = BTreeMap::<String, u64>::new();
         if let Some(messages) = event["messages"].as_array() {
@@ -459,7 +456,7 @@ async fn telemetry(supervisor: &Supervisor, event: &Value) {
         event["message_count"] = json!(count);
     }
     let raw = event.to_string();
-    let body = if raw.len() <= 256 * 1024 {
+    if raw.len() <= 256 * 1024 {
         raw
     } else {
         let digest = ring::digest::digest(&ring::digest::SHA256, raw.as_bytes());
@@ -473,19 +470,101 @@ async fn telemetry(supervisor: &Supervisor, event: &Value) {
             .into_iter()
             .rev()
             .collect();
-        json!({"type":format!("safeyolo.{}.stdout",supervisor.config.harness),"event":"oversize","original_bytes":raw.len(),"sha256":hash,"head":head,"tail":tail,"middle_omitted":true}).to_string()
-    };
-    match tokio::time::timeout(Duration::from_secs(5),supervisor.client.call("send",&json!({"room_name":room,"body":body,"declared_content_type":"text/plain","notify":"none"}))).await {
+        json!({"type":format!("safeyolo.{harness}.stdout"),"event":"oversize","original_bytes":raw.len(),"sha256":hash,"head":head,"tail":tail,"middle_omitted":true}).to_string()
+    }
+}
+
+async fn publish_telemetry(client: &Client, room: &str, body: String) {
+    match tokio::time::timeout(Duration::from_secs(5),client.call("send",&json!({"room_name":room,"body":body,"declared_content_type":"text/plain","notify":"none"}))).await {
         Ok(Ok(_))=>{},Ok(Err(error))=>eprintln!("Coord telemetry unavailable: {error}"),Err(_)=>eprintln!("Coord telemetry deadline expired; publication outcome unknown"),
     }
 }
 
+// One invocation owns one ordered sender. Each queued body is at most 256 KiB;
+// a full buffer drops new telemetry without delaying canonical event handling.
+#[derive(Default)]
+struct Telemetry {
+    pending: Option<tokio::sync::mpsc::Sender<String>>,
+    sender: tokio::task::JoinSet<()>,
+    dropped: u64,
+}
+
+impl Drop for Telemetry {
+    fn drop(&mut self) {
+        if !self.sender.is_empty() {
+            // JoinSet aborts its tasks on drop, including cancellation of invoke.
+            eprintln!(
+                "Coord telemetry sender stopped; pending events omitted and publication outcome unknown"
+            );
+        }
+    }
+}
+
+impl Telemetry {
+    fn start(supervisor: &Supervisor) -> Self {
+        let mut telemetry = Self::default();
+        if let Some(room) = &supervisor.config.agent_room {
+            let room = room.clone();
+            let client = supervisor.client.clone();
+            let (pending, mut receiver) = tokio::sync::mpsc::channel::<String>(64);
+            telemetry.pending = Some(pending);
+            telemetry.sender.spawn(async move {
+                while let Some(body) = receiver.recv().await {
+                    publish_telemetry(&client, &room, body).await;
+                }
+            });
+        }
+        telemetry
+    }
+
+    fn push(&mut self, supervisor: &Supervisor, event: &Value) {
+        if let Some(pending) = &self.pending
+            && pending
+                .try_send(telemetry_body(&supervisor.config.harness, event))
+                .is_err()
+        {
+            self.dropped = self.dropped.saturating_add(1);
+            if self.dropped == 1 {
+                eprintln!("Coord telemetry buffer full or sender unavailable; new events omitted");
+            }
+        }
+    }
+
+    async fn finish(&mut self) {
+        drop(self.pending.take());
+        match tokio::time::timeout(Duration::from_secs(1), self.sender.join_next()).await {
+            Ok(Some(Err(error))) => {
+                eprintln!("Coord telemetry sender failed: {error}; publication outcome unknown")
+            }
+            Err(_) => {
+                eprintln!(
+                    "Coord telemetry shutdown deadline expired; pending events omitted and in-flight publication outcome unknown"
+                );
+                self.sender.shutdown().await;
+            }
+            _ => {}
+        }
+        if self.dropped > 0 {
+            eprintln!(
+                "Coord telemetry omitted {} new events during invocation",
+                self.dropped
+            );
+        }
+    }
+}
+
 pub(super) async fn notice(supervisor: &Supervisor, event: &str, detail: &str) {
-    telemetry(
-        supervisor,
-        &json!({"type":"safeyolo.supervisor", "event":event, "detail":detail}),
-    )
-    .await;
+    if let Some(room) = &supervisor.config.agent_room {
+        publish_telemetry(
+            &supervisor.client,
+            room,
+            telemetry_body(
+                &supervisor.config.harness,
+                &json!({"type":"safeyolo.supervisor", "event":event, "detail":detail}),
+            ),
+        )
+        .await;
+    }
 }
 
 fn arguments(supervisor: &Supervisor) -> Vec<OsString> {
@@ -600,12 +679,11 @@ pub(super) async fn invoke(
         child.kill().await?;
         return Err(error);
     }
-    notice(
+    let mut telemetry = Telemetry::start(supervisor);
+    telemetry.push(
         supervisor,
-        "start",
-        "bounded harness invocation started; canonical work checkpointed",
-    )
-    .await;
+        &json!({"type":"safeyolo.supervisor", "event":"start", "detail":"bounded harness invocation started; canonical work checkpointed"}),
+    );
     let result=async {
         let mut stdin=child.stdin.take().ok_or("harness stdin is missing")?;
         tokio::time::timeout_at(deadline,async{stdin.write_all(prompt.as_bytes()).await?;stdin.shutdown().await}).await??;
@@ -629,7 +707,7 @@ pub(super) async fn invoke(
                     match serde_json::from_slice::<Value>(&line) {
                         Ok(event)=>{
                             events.consume(supervisor,&event,&invoked)?;
-                            if !pi||!matches!(event["type"].as_str(),Some("message_update"|"message_start")){telemetry(supervisor,&event).await;}
+                            if !pi||!matches!(event["type"].as_str(),Some("message_update"|"message_start")){telemetry.push(supervisor,&event);}
                         }
                         Err(_)=>{events.failed=true;eprintln!("harness emitted malformed JSON");}
                     }
@@ -640,7 +718,7 @@ pub(super) async fn invoke(
                 count=stderr.read(&mut errbuf),if err_open=>{
                     let count=count?;if count==0{err_open=false;continue;}
                     let text=String::from_utf8_lossy(&errbuf[..count]);eprint!("{text}");
-                    telemetry(supervisor,&json!({"type":format!("safeyolo.{}.stderr",supervisor.config.harness),"text":text})).await;
+                    telemetry.push(supervisor,&json!({"type":format!("safeyolo.{}.stderr",supervisor.config.harness),"text":text}));
                 }
             }
         }
@@ -659,12 +737,11 @@ pub(super) async fn invoke(
     supervisor.state.save(&supervisor.state_path)?;
     cleanup_result?;
     let exit_success = child.wait().await?.success();
-    notice(
+    telemetry.push(
         supervisor,
-        "exit",
-        "owned harness invocation stopped and cleanup verified",
-    )
-    .await;
+        &json!({"type":"safeyolo.supervisor", "event":"exit", "detail":"owned harness invocation stopped and cleanup verified"}),
+    );
+    telemetry.finish().await;
     #[cfg(target_os = "linux")]
     loop {
         let mut status = 0;

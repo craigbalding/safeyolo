@@ -50,6 +50,9 @@ class CoordFixture:
         self.objects = {ATTENTION: {"edge": EDGE, "object": OBJECT}}
         self.native_actions = {}
         self.received_actions = set()
+        self.telemetry = []
+        self.telemetry_release = None
+        self.telemetry_status = 200
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -96,11 +99,20 @@ class CoordFixture:
                 args = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 path = urlsplit(self.path).path
                 if path.endswith("/join"):
-                    return self.reply(200, {"room_id": "rm-backlog", "permissions": ["send", "receive"], "brief": {"revision": 0}})
+                    room_id = "rm-forge-agent" if path == "/api/coord/rooms/forge%2Dagent/join" else "rm-backlog"
+                    return self.reply(200, {"room_id": room_id, "permissions": ["send", "receive"], "brief": {"revision": 0}})
                 if path.endswith("/work") and args["action"] == "receive_action":
                     owner.received_actions.add(args["action_key"])
                     return self.reply(200, {"operation_id": args["action_key"]})
                 if path.endswith("/send"):
+                    if path == "/api/coord/rooms/forge%2Dagent/send":
+                        event = json.loads(args["body"])
+                        owner.telemetry.append(event)
+                        if event.get("event") != "ready":
+                            if owner.telemetry_release is not None:
+                                owner.telemetry_release.wait(60)
+                            if owner.telemetry_status != 200:
+                                return self.reply(owner.telemetry_status, {"error": "telemetry unavailable"})
                     owner.sends += 1
                     envelope = {"body": args["body"], "msg_id": f"msg-{owner.sends}", "sender_kind": "agent", "sender_agent_name": owner.agent_name, "sender_agent_id": "ag-" + owner.agent_name, "sequence": 43 + owner.sends}
                     notify = args["notify"]
@@ -125,7 +137,13 @@ class CoordFixture:
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    # A deliberately stalled telemetry reply can outlive the
+                    # invocation-owned sender, which closes its connection.
+                    if owner.telemetry_release is None:
+                        raise
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -171,6 +189,8 @@ args=[]
     env["SAFEYOLO_CODEX_BIN"] = str(harness)
     env["SAFEYOLO_PI_BIN"] = str(harness)
     yield coord, env, config, state, harness, capture
+    if coord.telemetry_release is not None:
+        coord.telemetry_release.set()
     coord.close()
 
 
@@ -185,7 +205,7 @@ def test_host_supervision_refusal_does_not_launch_a_model_or_send_a_terminal(bin
     assert not list(capture.iterdir())
 
 
-def harness_script(path, binary, capture, *, paused=False, terminal=True, pi=False):
+def harness_script(path, binary, capture, *, paused=False, pause_seconds=30, terminal=True, pi=False, event_count=0, stderr_bytes=0):
     # Actual native send output is what the deterministic model seam emits as
     # an MCP receipt; ordinary model text cannot complete an attention object.
     source = f'''#!{sys.executable}
@@ -199,9 +219,13 @@ root=Path({str(capture)!r})
 (root/("argv-"+str(os.getpid()))).write_text(json.dumps(sys.argv[1:]))
 print(json.dumps({{"type": {"session" if pi else "thread.started"!r}, {"id" if pi else "thread_id"!r}:"fixture-thread"}}),flush=True)
 print(json.dumps({{"type": {"agent_start" if pi else "turn.started"!r}}}),flush=True)
+for index in range({event_count}):
+    print(json.dumps({{"type":"fixture.event","sequence":index}}),flush=True)
+sys.stderr.write("x"*{stderr_bytes})
+sys.stderr.flush()
 '''
     if paused:
-        source += "time.sleep(30)\n"
+        source += f"time.sleep({pause_seconds})\n"
     elif terminal:
         source += f'''
 args={{"room_name":"backlog","body":{f'DONE target={TARGET} attention_id={ATTENTION}'!r},"notify":["relay"]}}
@@ -228,10 +252,91 @@ else:
     path.chmod(0o755)
 
 
-def run(binary, fixture, *args, confirm_fresh_identity=True):
+def run(binary, fixture, *args, confirm_fresh_identity=True, timeout=12):
     _coord, env, config, state, _harness, _capture = fixture
     confirmation = ["--confirm-fresh-identity"] if confirm_fresh_identity else []
-    return subprocess.run([str(binary), "supervise", "--config", str(config), "--state", str(state), "--once", *confirmation, "--", *args], env=env, capture_output=True, text=True, timeout=12)
+    return subprocess.run([str(binary), "supervise", "--config", str(config), "--state", str(state), "--once", *confirmation, "--", *args], env=env, capture_output=True, text=True, timeout=timeout)
+
+
+@pytest.mark.parametrize("pi", [False, True])
+def test_healthy_telemetry_preserves_order_and_canonical_receipt(binary, fixture, pi):
+    coord, _, config, state, harness, capture = fixture
+    settings = json.loads(config.read_text())
+    settings.update(agent_room="forge-agent", harness="pi" if pi else "codex")
+    config.write_text(json.dumps(settings))
+    harness_script(harness, binary, capture, pi=pi, event_count=4)
+    args = ["--provider", "fixture", "--model", "fixture"] if pi else []
+    result = run(binary, fixture, *args)
+    assert result.returncode == 0, result.stderr
+    assert [event["sequence"] for event in coord.telemetry if event["type"] == "fixture.event"] == list(range(4))
+    assert coord.telemetry[0]["event"] == "ready"
+    assert coord.telemetry[1]["event"] == "start"
+    assert coord.telemetry[-2]["type"] == ("agent_end" if pi else "turn.completed")
+    assert coord.telemetry[-1]["event"] == "exit"
+    assert "omitted" not in result.stderr
+    saved = json.loads(state.read_text())
+    assert saved["in_flight"] == [] and saved["owned_process"] is None
+
+
+@pytest.mark.parametrize("paused", [False, True])
+def test_stalled_telemetry_does_not_block_completion_stderr_or_deadline(binary, fixture, paused):
+    coord, _, config, state, harness, capture = fixture
+    settings = json.loads(config.read_text())
+    settings.update(agent_room="forge-agent", startup_timeout_seconds=30, work_timeout_seconds=30)
+    config.write_text(json.dumps(settings))
+    coord.telemetry_release = threading.Event()
+    harness_script(harness, binary, capture, paused=paused, pause_seconds=60, event_count=160, stderr_bytes=256 * 1024)
+    began = time.monotonic()
+    result = run(binary, fixture, timeout=45 if paused else 12)
+    elapsed = time.monotonic() - began
+    assert elapsed < (35 if paused else 4.5), (elapsed, result.stderr)
+    if paused:
+        assert elapsed >= 30, (elapsed, result.stderr)
+    assert (result.returncode != 0) == paused, result.stderr
+    assert "x" * (256 * 1024) in result.stderr, "harness stderr must drain while telemetry is stalled"
+    assert "buffer full" in result.stderr and "omitted" in result.stderr
+    assert "shutdown deadline expired" in result.stderr and "publication outcome unknown" in result.stderr
+    saved = json.loads(state.read_text())
+    assert saved["owned_process"] is None
+    assert all(live_process_token(int(path.name.removeprefix("argv-"))) is None for path in capture.glob("argv-*"))
+    assert bool(saved["in_flight"]) == paused
+    assert saved["phase"] == ("uncertain" if paused else "idle")
+    # The sender can time out individual requests during the 30-second turn.
+    # Releasing their lost replies cannot send more events after invocation exit.
+    delivered = list(coord.telemetry)
+    assert [event.get("event") for event in delivered[:2]] == ["ready", "start"]
+    if not paused:
+        assert len(delivered) == 2
+    coord.telemetry_release.set()
+    time.sleep(.1)
+    assert coord.telemetry == delivered
+
+
+def test_unavailable_telemetry_cannot_settle_native_work_on_completion(binary, fixture):
+    coord, _, config, state, harness, capture = fixture
+    settings = json.loads(config.read_text())
+    settings.update(agent_room="forge-agent", native_work=True)
+    config.write_text(json.dumps(settings))
+    work_id = "work-" + "c" * 32
+    action = {"key": "action-" + "d" * 64, "kind": "execute_work", "work_id": work_id,
+              "work_version": 1, "claim_generation": 0, "target_generation": 0, "requires_action": True}
+    coord.native_actions[work_id] = [action]
+    edge = {**EDGE, "kind": "work_changed", "object_id": work_id, "revision_or_sequence": 1}
+    coord.objects = {ATTENTION: {"edge": edge, "object": {"work_id": work_id, "room_id": "rm-backlog", "version": 1}}}
+    coord.page = {"edges": [edge], "next_cursor": 7}
+    coord.telemetry_status = 503
+    harness_script(harness, binary, capture, terminal=False, event_count=4)
+    result = run(binary, fixture)
+    assert result.returncode != 0 and "Coord telemetry unavailable" in result.stderr
+    saved = json.loads(state.read_text())
+    assert saved["native_in_flight"][0]["action"] == action
+    assert saved["owned_process"] is None and saved["phase"] == "uncertain"
+    assert any(event["type"] == "turn.completed" for event in coord.telemetry)
+    # Reconciliation, rather than telemetry or process success, retires the action.
+    coord.native_actions[work_id] = []
+    assert run(binary, fixture, confirm_fresh_identity=False).returncode == 0
+    assert json.loads(state.read_text()).get("native_in_flight", []) == []
+    assert len(list(capture.glob("prompt-*"))) == 1
 
 
 @pytest.mark.parametrize("harness_name", ["codex", "pi"])
