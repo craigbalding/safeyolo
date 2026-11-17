@@ -195,6 +195,7 @@ pub fn read(path: &Path) -> Result<Config, Error> {
 
 pub(crate) fn from_source(path: &Path, source: &str) -> Result<Config, Error> {
     // Resolve config aliases before deriving listener and runtime paths.
+    crate::instance::validate_config_path(path)?;
     let path = path.canonicalize()?;
     let root = path
         .parent()
@@ -333,6 +334,7 @@ pub(crate) fn from_source(path: &Path, source: &str) -> Result<Config, Error> {
     config.native_settings = Some(settings);
     config.native_config_dir = Some(root.canonicalize()?);
     config.native_config_path = Some(path);
+    crate::instance::validate_config(&config)?;
     config.validate()?;
     Ok(config)
 }

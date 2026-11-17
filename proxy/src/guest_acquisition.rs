@@ -732,6 +732,41 @@ pub(crate) fn selected_boot_inputs(root: &Path) -> Result<(PathBuf, PathBuf), Er
     Ok((host, guest))
 }
 
+pub(crate) fn reusable_boot_inputs(runtime: &Path, source: &Path) -> Result<PathBuf, Error> {
+    let (host, share) = components::installed_paths(source)?;
+    let inputs = selected_inputs_at(&host, &share)?;
+    if runtime.join("package-info").try_exists()?
+        && share.join("guest-selection.json").try_exists()?
+    {
+        let package = PackageGuest::read(&runtime.join("package-info"), false)?;
+        let selection: GuestSelection =
+            serde_json::from_slice(&fs::read(share.join("guest-selection.json"))?)?;
+        selection.validate(&package)?;
+    }
+    Ok(inputs)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn asset_digest_in_namespace(root: &Path, path: &Path) -> Result<String, Error> {
+    let mut namespace =
+        namespace::ImportNamespace::start(root, crate::linux_host::mapping_for_root(root)?)?;
+    let output = namespace
+        .command(root.join("bin/safeyolo"))?
+        .args(["instance", "asset-digest"])
+        .arg(path)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "guest asset digest failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    let hash = String::from_utf8(output.stdout)?.trim().to_owned();
+    guest_oci::sha256_hex(&format!("sha256:{hash}"))?;
+    Ok(hash)
+}
+
 pub(crate) fn retained_host_binaries(root: &Path, name: &str) -> Result<Vec<PathBuf>, Error> {
     components::retained_host_binaries(root, name)
 }
