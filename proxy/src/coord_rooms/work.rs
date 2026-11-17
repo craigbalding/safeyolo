@@ -567,6 +567,17 @@ fn validate_request(
             .to_string()
             .as_bytes(),
     );
+    // A prerequisite may retain an external effect before a Work receipt exists.
+    // Check that request before selecting bindings, even if this input selects none.
+    let retained: Option<String> = conn.query_row(
+        "SELECT request_hash FROM coord_operations WHERE principal_kind=?1 AND principal_id=?2 AND operation_type=?3 AND operation_id=?4",
+        params![actor.kind(),actor.id(),format!("{operation_type}.prerequisite"),operation], |r| r.get(0),
+    ).optional()?;
+    if retained.is_some_and(|original| original != request_hash) {
+        return Err(conflict(
+            "operation ID conflicts with the original canonical request",
+        ));
+    }
     let prior: Option<(String,String)> = conn.query_row(
         "SELECT request_hash,outcome_json FROM coord_operations WHERE principal_kind=?1 AND principal_id=?2 AND operation_type=?3 AND operation_id=?4",
         params![actor.kind(),actor.id(),operation_type,operation], |r| Ok((r.get(0)?,r.get(1)?)),

@@ -335,8 +335,13 @@ pub(super) fn guard(
             };
             if !satisfied {
                 return Err(conflict(&format!(
-                    "automatic requirement {} is unmet (job {}, factory {}, policy {}): {}; inspect ops.work_requirement for the operation ID and the current adopted check before retrying",
-                    binding.name, binding.job, binding.factory, record.policy_hash, record.detail
+                    "automatic requirement {} is unmet (invocation {}, job {}, factory {}, policy {}): {}; inspect ops.work_requirement for the operation ID and the current adopted check before retrying",
+                    binding.name,
+                    record.id,
+                    binding.job,
+                    binding.factory,
+                    record.policy_hash,
+                    record.detail
                 )));
             }
             guard.records.push(record.clone());

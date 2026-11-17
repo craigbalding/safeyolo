@@ -110,7 +110,19 @@ pub(super) async fn invoke(
     let mut invocation = {
         let mut conn = open(root)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let room_id = authorize(&tx, room, actor, true)?;
+        let request = validate_request(
+            &tx,
+            room,
+            actor,
+            &serde_json::from_value(input.clone())?,
+            Some(operation),
+        )?;
+        if request.replay.is_some() {
+            return Err(conflict(
+                "protected operation already committed; recover its original operation receipt",
+            ));
+        }
+        let room_id = request.room_id;
         let configured = Configuration {
             policy: prepared.runtime.policy.clone(),
             root: Some(root.to_owned()),
@@ -173,6 +185,12 @@ pub(super) async fn invoke(
             .attempts
             .checked_add(1)
             .ok_or_else(|| conflict("prerequisite attempt count cannot advance"))?;
+        // Reserve the protected operation's identity independently of its bindings.
+        // This and the invocation revision commit together before any external effect.
+        tx.execute(
+            "INSERT INTO coord_operations(principal_kind,principal_id,operation_type,operation_id,request_hash,outcome_kind,outcome_json,created_at) VALUES(?1,?2,?3,?4,?5,'retained',?6,?7) ON CONFLICT(principal_kind,principal_id,operation_type,operation_id) DO NOTHING",
+            params![actor.kind(),actor.id(),format!("{}.prerequisite",request.operation_type),operation,request.request_hash,json!({"room_id":invocation.room_id,"mutation":input}).to_string(),now()],
+        )?;
         append(&tx, &mut invocation)?;
         let _current = prepared.current()?;
         tx.commit()?;

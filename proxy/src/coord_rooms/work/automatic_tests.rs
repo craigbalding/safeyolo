@@ -574,6 +574,94 @@ async fn prerequisite_success_survives_failed_protected_commit_and_exact_restart
 }
 
 #[tokio::test]
+async fn prerequisite_changed_selector_cannot_escape_retained_operation_identity() {
+    let provider = Provider::start().await;
+    let (root, proxy, _) = fixture_proxy(&provider).await;
+    adopt_prerequisite(root.path(), &proxy, &provider, false);
+    provider.mode.store(3, Ordering::SeqCst);
+    let request = prerequisite_request();
+    let (status, held) = api(root.path(), &request).await;
+    assert_eq!(status, 409, "{held}");
+    let invocation = prerequisite_value(root.path());
+    assert_eq!(invocation["record"]["state"], "uncertain");
+    let id = invocation["id"].as_str().unwrap();
+    assert!(held["error"].as_str().unwrap().contains(id), "{held}");
+    let client = crate::coord_tools::Client {
+        socket: Some(root.path().join("alice.sock")),
+        token_file: root.path().join("data/agent_token"),
+        home: None,
+    };
+    assert_eq!(
+        client
+            .call(
+                "read_work_prerequisite",
+                &json!({"room_name":"owned","invocation_id":id})
+            )
+            .await
+            .unwrap(),
+        invocation
+    );
+    proxy.shutdown().await;
+    let proxy =
+        crate::Proxy::start(crate::native_config::read(&root.path().join("config.toml")).unwrap())
+            .await
+            .unwrap();
+    for reference in [
+        None,
+        Some(Value::Null),
+        Some(json!("https://github.com/other/repo/issues/1")),
+        Some(json!("https://github.com/owner/repo/issues/2")),
+    ] {
+        let mut changed = request.clone();
+        if let Some(reference) = reference {
+            changed["external_ref"] = reference;
+        } else {
+            changed.as_object_mut().unwrap().remove("external_ref");
+        }
+        let (status, refused) = api(root.path(), &changed).await;
+        assert_eq!(status, 409, "{refused}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("original canonical request"),
+            "{refused}"
+        );
+        // The committing path must reject the same change without binding selection.
+        changed.as_object_mut().unwrap().remove("operation_id");
+        assert_eq!(
+            mutate(
+                None,
+                &mut super::super::super::open(root.path()).unwrap(),
+                "owned",
+                Actor::Agent(ALICE),
+                serde_json::from_value(changed).unwrap(),
+                Some("protected-reservation")
+            )
+            .unwrap_err()
+            .0,
+            409
+        );
+    }
+    let conn = super::super::super::open(root.path()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM coord_work", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(api(root.path(), &request).await.0, 409);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.effects.load(Ordering::SeqCst), 1);
+    let mut generic = request;
+    generic.as_object_mut().unwrap().remove("external_ref");
+    generic["operation_id"] = json!("separate-generic-operation");
+    assert_eq!(api(root.path(), &generic).await.0, 200);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
 async fn prerequisite_lost_reply_requires_distinct_recovery_and_bounded_idempotent_retry() {
     for complete_retry in [false, true] {
         let provider = Provider::start().await;
