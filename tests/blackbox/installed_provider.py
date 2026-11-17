@@ -146,7 +146,16 @@ def capture_guest_command(command, env, path, failures):
             with child.stdout as stream:
                 descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with os.fdopen(descriptor, "wb") as log:
+                    drain_deadline = None
                     while True:
+                        # A descendant can keep writing after the CLI exits.
+                        # Bound that drain so owned teardown can finish.
+                        if finished.is_set():
+                            if drain_deadline is None:
+                                drain_deadline = time.monotonic() + 1
+                            elif time.monotonic() >= drain_deadline:
+                                failures.append(f"guest output pipe remained open after exit: {path.name}")
+                                return
                         readable, _, _ = select.select([stream], [], [], 0.1)
                         if readable:
                             chunk = os.read(stream.fileno(), 65536)

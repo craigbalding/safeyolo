@@ -439,7 +439,9 @@ def deterministic_exchange(args, ids, guest, operator, native, ports, marker, hi
     current = decide(blocked()["approval_id"])
     assert current["grant_active"] is True
     stop_guest(args.transport_cli, args.config_dir, args.worker)
-    start_guest(args.transport_cli, args.config_dir, args.worker)
+    # This deterministic journey uses the shipped Bash/curl, including after
+    # turnover; the other approval modes still prepare their Python workload.
+    start_guest(args.transport_cli, args.config_dir, args.worker, python_tests=False)
     after = json.loads(checked([str(args.native_cli), "--root", str(args.config_dir), "agent", "status", args.worker]))
     assert after["agent_id"] == ids[args.worker] and after["run_id"] != run
     assert native("approvals", "show", current["approval_id"])["grant_active"] is False

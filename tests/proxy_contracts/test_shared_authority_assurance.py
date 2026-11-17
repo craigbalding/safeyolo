@@ -81,7 +81,10 @@ egress="deny"
 egress="prompt"
 '''
 
-        def start(_cli, root, name):
+        restart_preparation = []
+
+        def start(_cli, root, name, *, python_tests=True):
+            restart_preparation.append(python_tests)
             generation = uuid.uuid4().hex
             child = subprocess.Popen(["runsc-sandbox", "-c", "import time; time.sleep(300)",
                 "boot", "safeyolo-" + generation, "--root", str(root / "run")], executable=sys.executable)
@@ -98,6 +101,7 @@ egress="prompt"
 
         for name in ids:
             start(None, tmp_path, name)
+        restart_preparation.clear()
         monkeypatch.setattr(approvals, "start_guest", start)
         monkeypatch.setattr(approvals, "stop_guest", lambda *_arguments: None)
         monkeypatch.setattr(approvals, "checked", lambda _arguments: (tmp_path / "agents/worker/runtime.json").read_text())
@@ -131,3 +135,4 @@ egress="prompt"
                 ports, marker, hits)
             assert result["no_model_or_human_decision"] and len(hits) == 3
             assert result["original_run_id"] != result["current_run_id"]
+            assert restart_preparation == [False]

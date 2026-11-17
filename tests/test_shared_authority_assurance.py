@@ -14,11 +14,12 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from tests.blackbox import catalogue, guest_exec, installed_tailnet, native_authority
+from tests.blackbox import catalogue, guest_exec, installed_lifecycle, installed_tailnet, native_authority
 from tests.blackbox.selections import NATIVE_AUTHORITY
 
 
@@ -450,6 +451,44 @@ def test_access_preparation_carries_desktop_and_offline_inputs_through_guest_sud
     sudo = shlex.split(calls[0][-1])
     assert sudo[:5] == ["exec", "sudo", "-n", "/bin/bash", "-lc"]
     assert shlex.split(sudo[-1]) == ["bash", "/workspace/tests/blackbox/prepare-guest-tests.sh", "/workspace/offline inputs", "--desktop"]
+
+
+@pytest.mark.parametrize(("python_tests", "preparation_exit"), [(None, 0), (True, 0), (None, 127), (True, 127), (False, 127)])
+def test_guest_restart_selects_python_preparation_for_its_workload(tmp_path, monkeypatch, python_tests, preparation_exit):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    calls = tmp_path / "calls.jsonl"
+    cli = tmp_path / "cli"
+    cli.write_text(f'''#!{sys.executable}
+import json, sys
+with open({str(calls)!r}, 'a') as log:
+    log.write(json.dumps(sys.argv[1:]) + '\\n')
+if 'shell' in sys.argv:
+    sys.exit({preparation_exit})
+''')
+    cli.chmod(0o755)
+    monkeypatch.setattr(installed_lifecycle, "_agent_listeners",
+        lambda _root: [{"agent_id": "worker", "path": "native.sock"}])
+    options = {} if python_tests is None else {"python_tests": python_tests}
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind("native.sock")
+        if python_tests is not False and preparation_exit:
+            with pytest.raises(SystemExit) as error:
+                installed_lifecycle.start_guest(str(cli), tmp_path, "worker", **options)
+            assert error.value.code == 2
+        else:
+            assert installed_lifecycle.start_guest(str(cli), tmp_path, "worker", **options) == Path("native.sock")
+    commands = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert commands[0] == ["agent", "start", "worker", "--sandbox-only"]
+    assert len(commands) == (1 if python_tests is False else 2)
+    if python_tests is not False:
+        assert commands[1][:6] == ["--root", str(tmp_path), "agent", "shell", "worker", "-c"]
+        assert "prepare-guest-tests.sh" in commands[1][-1]
+    # Native-only startup must still reject a missing listener.
+    if python_tests is False:
+        (tmp_path / "native.sock").unlink()
+        with pytest.raises(AssertionError, match="no native listener"):
+            installed_lifecycle.start_guest(str(cli), tmp_path, "worker", **options)
 
 
 @pytest.mark.parametrize("defect", [None, "absent", "zero-tests", "failed"])

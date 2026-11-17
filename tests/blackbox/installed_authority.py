@@ -22,7 +22,7 @@ import tomlkit
 from tests.blackbox.execution_receipt import save
 from tests.blackbox.installed_host_smoke import _sha256
 from tests.blackbox.installed_lifecycle import running_guest
-from tests.blackbox.installed_provider import checked, inputs
+from tests.blackbox.installed_provider import capture_guest_command, checked, inputs
 from tests.blackbox.installed_sections import (
     copy_prepared_nats,
     owned_processes,
@@ -71,6 +71,7 @@ def run(args):
         return checked([str(cli), "--root", str(root), *arguments], env=env,
                        diagnostics=output / "native.log")
 
+    capture_failures = []
     try:
         prepare_authority_guests(base, root, native)
         if args.section == "shared-approvals":
@@ -100,14 +101,23 @@ def run(args):
                        "--worker", "bbtest", "--helper", "bbpeer", "--deterministic",
                        "--output", str(output / "approval-effects.json")]
         save(output / "result.json", report)
-        with (output / "driver.log").open("x") as log:
-            (output / "driver.log").chmod(0o600)
-            result = subprocess.run([sys.executable, *command], env=env, stdout=log, stderr=log, timeout=900)
-        report["exit"] = result.returncode
-        assert result.returncode == 0, "authority driver failed; inspect its retained private driver.log"
+        child, reader, finished = capture_guest_command(
+            [sys.executable, *command], env, output / "driver.log", capture_failures)
+        try:
+            report["exit"] = child.wait(timeout=900)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+            finished.set()
+            reader.join(timeout=5)
+            if reader.is_alive():
+                capture_failures.append("authority driver output capture survived child exit")
+        assert not capture_failures, capture_failures
+        assert report["exit"] == 0, "authority driver failed; inspect its retained private driver.log"
         report["status"] = "passed"
     finally:
-        failures = []
+        failures = list(capture_failures)
         if (root / ".safeyolo-platform-smoke").is_file():
             try:
                 processes = owned_processes(root)
