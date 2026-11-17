@@ -7,15 +7,17 @@ import io
 import json
 import os
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
 import traceback
+import urllib.request
 from email.message import Message
 from http import HTTPStatus
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import HTTPHandler, HTTPSHandler
+from urllib.request import HTTPHandler
 from urllib.response import addinfourl
 
 import pytest
@@ -52,7 +54,7 @@ def upstream(monkeypatch):
     def insecure(self, request):
         pytest.fail(f"followed an insecure redirect to {request.full_url}")
 
-    monkeypatch.setattr(HTTPSHandler, "https_open", receive)
+    monkeypatch.setattr(inputs.DownloadHTTPSHandler, "https_open", receive)
     monkeypatch.setattr(HTTPHandler, "http_open", insecure)
     return routes, requests
 
@@ -383,3 +385,250 @@ def test_download_cli_identifies_tool_and_architecture_without_url_secrets(
             f"'https://upstream.invalid/gh-9.8.7-linux-{architecture}.tar.gz'") in captured.err
     for secret in ("fixture-user", "private-password", "private-query", "private-fragment"):
         assert secret not in captured.err
+
+
+def download_diagnostics(capsys):
+    return [json.loads(line.removeprefix("guest HTTPS: "))
+            for line in capsys.readouterr().err.splitlines()]
+
+
+@pytest.mark.parametrize("route", ["direct", "http-proxy", "https-proxy", "bypass"])
+@pytest.mark.parametrize("userinfo", [False, True])
+def test_failed_fetch_reports_actual_peer_and_all_address_errors(monkeypatch, capsys, route, userinfo):
+    proxy = "https://proxy-user:proxy-secret@proxy.invalid:8443/secret-proxy-path?private-query"
+    if route == "http-proxy":
+        proxy = proxy.replace("https:", "http:", 1)
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {} if route == "direct" else {"https": proxy})
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: route == "bypass")
+    monkeypatch.setenv("GH_TOKEN", "private-api-token")
+    rows = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.20", 443)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::20", 443, 0, 0))]
+    failures = [TimeoutError("private-first-error"), OSError(101, "private-last-error")]
+    resolutions, sockets, attempts, delays = [], [], [], []
+
+    def resolve(*args):
+        resolutions.append(args)
+        port = args[1]
+        return [(family, kind, protocol, name, (address[0], port, *address[2:]))
+                for family, kind, protocol, name, address in rows]
+
+    class FailedSocket:
+        def __init__(self, *args):
+            self.args, self.closed, self.timeout = args, False, None
+            sockets.append(self)
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
+        def connect(self, address):
+            attempts.append(address)
+            raise failures[len(attempts) - 1]
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(socket, "socket", FailedSocket)
+    monkeypatch.setattr(inputs.time, "sleep", delays.append)
+    clock = iter([0, 1, 1.75, 2, 3.25])
+    monkeypatch.setattr(inputs.time, "monotonic", lambda: next(clock))
+
+    origin = "private-user:private-password@origin.invalid:443" if userinfo else "origin.invalid"
+    with pytest.raises(URLError) as error:
+        inputs.fetch(f"https://{origin}/private-url-path?private-url-query#private-fragment", github_api=True)
+    assert error.value.reason is failures[-1]
+    proxied = route in {"http-proxy", "https-proxy"}
+    peer, port = ("proxy.invalid", 8443) if proxied else ("origin.invalid", 443)
+    raw_host = origin.removesuffix(":443")
+    assert resolutions == [(peer if proxied else raw_host, port, 0, socket.SOCK_STREAM)]
+    assert attempts == [("192.0.2.20", port), ("2001:db8::20", port, 0, 0)]
+    assert all(sock.closed and sock.timeout == 120 for sock in sockets)
+    assert [sock.args for sock in sockets] == [row[:3] for row in rows]
+    assert delays == []
+    events = download_diagnostics(capsys)
+    assert events == [
+        {"event": "connection", "host": peer, "port": port, "proxy": proxied,
+         "origin_host": "origin.invalid", "origin_port": 443},
+        {"event": "address_error", "family": socket.AF_INET, "address": ["192.0.2.20", port],
+         "elapsed": 0.75, "error": "TimeoutError", "errno": None},
+        {"event": "address_error", "family": socket.AF_INET6, "address": ["2001:db8::20", port, 0, 0],
+         "elapsed": 1.25, "error": "OSError", "errno": 101},
+    ]
+
+
+@pytest.mark.parametrize("dns_failure", [False, True])
+def test_resolution_failure_is_observed_without_replacement(monkeypatch, capsys, dns_failure):
+    connection = inputs.DownloadHTTPSConnection("origin.invalid", timeout=120)
+    failure = socket.gaierror(-2, "private resolver text")
+
+    def resolve(*args):
+        if dns_failure:
+            raise failure
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    with pytest.raises(OSError) as error:
+        connection.connect()
+    events = download_diagnostics(capsys)
+    if dns_failure:
+        assert error.value is failure
+        assert events[-1]["event"] == "resolution_error" and events[-1]["errno"] == -2
+        assert "private resolver text" not in json.dumps(events)
+    else:
+        assert str(error.value) == "getaddrinfo returns an empty list"
+        assert len(events) == 1
+
+
+def test_success_after_failed_address_retains_timeout_bind_and_tls(monkeypatch, capsys):
+    addresses = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.10", 443)),
+                 (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::10", 443, 0, 0))]
+    sockets, wrapped = [], []
+
+    class ControlledSocket:
+        def __init__(self, *args):
+            self.closed, self.bound, self.timeout = False, None, None
+            sockets.append(self)
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
+        def bind(self, source):
+            self.bound = source
+
+        def connect(self, address):
+            if len(sockets) == 1:
+                raise TimeoutError("first address timed out")
+
+        def close(self):
+            self.closed = True
+
+        def setsockopt(self, *args):
+            pass
+
+    def wrap(context, sock, *, server_hostname):
+        wrapped.append((context.verify_mode, context.check_hostname, server_hostname, sock))
+        return sock
+
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args: addresses)
+    monkeypatch.setattr(socket, "socket", ControlledSocket)
+    monkeypatch.setattr(ssl.SSLContext, "wrap_socket", wrap)
+    connection = inputs.DownloadHTTPSConnection("origin.invalid", timeout=120, source_address=("127.0.0.1", 0))
+    connection.connect()
+    assert connection.sock is sockets[1]
+    assert sockets[0].closed and not sockets[1].closed
+    assert all(sock.timeout == 120 and sock.bound == ("127.0.0.1", 0) for sock in sockets)
+    assert wrapped == [(ssl.CERT_REQUIRED, True, "origin.invalid", sockets[1])]
+    assert [event["event"] for event in download_diagnostics(capsys)] == ["connection", "address_error", "address_connected"]
+    connection.close()
+    assert sockets[1].closed
+
+
+@pytest.mark.parametrize("proxied", [False, True])
+def test_successful_fetch_retains_proxy_auth_origin_auth_tls_and_bytes(monkeypatch, capsys, proxied):
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": "http://private-user:private-password@proxy.invalid:8443"} if proxied else {})
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
+    monkeypatch.setenv("GH_TOKEN", "private-api-token")
+    sent, wrapped, peers = [], [], []
+    replies = [b"HTTP/1.1 200 Connection established\r\n\r\n"] if proxied else []
+    replies.append(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nverified")
+
+    class ProxySocket:
+        def sendall(self, data):
+            sent.append(data)
+
+        def makefile(self, mode):
+            return io.BytesIO(replies.pop(0))
+
+        def settimeout(self, timeout):
+            assert timeout == 120
+
+        def connect(self, address):
+            peers.append(address)
+
+        def setsockopt(self, *args):
+            pass
+
+        def close(self):
+            pass
+
+    peer = ProxySocket()
+    monkeypatch.setattr(socket, "getaddrinfo", lambda host, port, *args: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.20", port))])
+    monkeypatch.setattr(socket, "socket", lambda *args: peer)
+    monkeypatch.setattr(ssl.SSLContext, "wrap_socket", lambda context, sock, *, server_hostname:
+                        wrapped.append((context.verify_mode, context.check_hostname, server_hostname)) or sock)
+    assert inputs.fetch("https://origin.invalid/private-path?private-query", github_api=True) == b"verified"
+    assert wrapped == [(ssl.CERT_REQUIRED, True, "origin.invalid")]
+    assert peers == [("192.0.2.20", 8443 if proxied else 443)]
+    if proxied:
+        assert b"CONNECT origin.invalid:443" in sent[0]
+        assert b"Proxy-Authorization: Basic " in sent[0]
+        assert b"private-api-token" not in sent[0]
+    assert b"Authorization: Bearer private-api-token" in sent[-1]
+    assert b"Proxy-Authorization" not in sent[-1]
+    assert download_diagnostics(capsys)[0] == {"event": "connection", "host": "proxy.invalid" if proxied else "origin.invalid",
+                                    "port": 8443 if proxied else 443, "proxy": proxied,
+                                    "origin_host": "origin.invalid", "origin_port": 443}
+
+
+def test_redirect_diagnostic_omits_all_url_secrets(capsys):
+    handler = inputs.HTTPSRedirectHandler()
+    request = urllib.request.Request("https://origin.invalid/private-source")
+    destination = "https://private-user:private-password@[2001:db8::1]:8443/private-path?private-query#private-fragment"
+    redirected = handler.redirect_request(request, None, 302, "Found", {}, destination)
+    assert redirected.full_url == destination
+    assert download_diagnostics(capsys) == [{"event": "redirect", "destination":
+                                    {"scheme": "https", "host": "2001:db8::1", "port": 8443}}]
+
+
+def test_redirected_socket_failure_reports_the_new_actual_peer(monkeypatch, capsys):
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {})
+    resolved, sent, wrapped = [], [], []
+    failure = OSError(101, "private socket error")
+    destination = "https://redirect.invalid/private-path?private-query#private-fragment"
+
+    def resolve(host, port, *args):
+        resolved.append((host, port))
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.20", port))]
+
+    class RedirectSocket:
+        def settimeout(self, timeout):
+            assert timeout == 120
+
+        def connect(self, address):
+            if len(resolved) == 2:
+                raise failure
+
+        def sendall(self, data):
+            sent.append(data)
+
+        def makefile(self, mode):
+            return io.BytesIO(f"HTTP/1.1 302 Found\r\nLocation: {destination}\r\nContent-Length: 0\r\n\r\n".encode())
+
+        def setsockopt(self, *args):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(socket, "socket", lambda *args: RedirectSocket())
+    monkeypatch.setattr(ssl.SSLContext, "wrap_socket", lambda context, sock, *, server_hostname:
+                        wrapped.append(server_hostname) or sock)
+    with pytest.raises(URLError) as error:
+        inputs.fetch("https://origin.invalid/private-source")
+    assert error.value.reason is failure
+    assert resolved == [("origin.invalid", 443), ("redirect.invalid", 443)]
+    assert wrapped == ["origin.invalid"] and len(sent) == 1
+    events = download_diagnostics(capsys)
+    assert [event["event"] for event in events] == ["connection", "address_connected", "redirect", "connection", "address_error"]
+    assert events[2]["destination"] == {"scheme": "https", "host": "redirect.invalid", "port": None}
+    assert events[3]["host"] == "redirect.invalid" and events[4]["errno"] == 101
+    assert "private" not in json.dumps(events)
+
+
+def test_diagnostic_stream_failure_does_not_replace_connection_result(monkeypatch):
+    def closed_stream(*args, **kwargs):
+        raise BrokenPipeError("closed stderr")
+
+    monkeypatch.setattr("builtins.print", closed_stream)
+    inputs.download_diagnostic("address_error", errno=101)
