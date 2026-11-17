@@ -377,6 +377,8 @@ fn shutdown_removes_idle_templates_and_preserves_a_live_mapping_lease() {
     clear_templates(&config).unwrap();
     assert!(!idle.exists());
     assert!(active.exists());
+    // A concurrent child fixture can briefly inherit this synthetic lease.
+    lease.unlock().unwrap();
     drop(lease);
     clear_templates(&config).unwrap();
     assert!(!active.exists());

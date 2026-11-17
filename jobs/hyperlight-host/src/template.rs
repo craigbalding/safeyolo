@@ -445,7 +445,9 @@ mod tests {
                 .is_none()
         );
         assert!(observed.cold_reason.unwrap().contains("capacity is in use"));
-        readers.pop();
+        // Concurrent child fixtures can inherit an open lease until exec.
+        // Explicitly unlock this synthetic reader before testing eviction.
+        readers.pop().unwrap().unlock().unwrap();
         assert!(
             select(Some(&request), &mut Observation::default(), || Err(
                 "failed after eviction".into()
@@ -507,6 +509,7 @@ mod tests {
                 .count(),
             1
         );
+        lease.unlock().unwrap();
         drop(lease);
         assert!(
             entries(directory, &host_boot().unwrap(), seconds().unwrap())
