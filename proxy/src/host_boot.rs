@@ -10,6 +10,7 @@ use std::{
 
 pub(crate) fn workspace(path: &Path, allow_unowned: bool) -> Result<PathBuf, Error> {
     let path = path.canonicalize()?;
+    crate::instance::check_writable_asset(&path)?;
     let metadata = path.metadata()?;
     if !metadata.is_dir() {
         return Err("workspace must be a directory".into());
@@ -101,6 +102,9 @@ pub(crate) fn mount(spec: &str) -> Result<(PathBuf, String, bool), Error> {
         .into());
     }
     let read_only = parts.len() == 3;
+    if !read_only {
+        crate::instance::check_writable_asset(&host)?;
+    }
     if !read_only
         && let Some(protected) = crate::native_config::host_settings()?
             .protected_host_directories
@@ -244,6 +248,8 @@ pub(crate) async fn setup(
 pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value, Error> {
     validate_sandbox(agent)?;
     let root = config_dir();
+    crate::instance::verify_guest_assets(&root)?;
+    crate::instance::check_agent_socket_paths(&root, &agent.name)?;
     let (host_package, guest_inputs) = crate::guest_acquisition::selected_boot_inputs(&root)?;
     let directory = root.join("agents").join(&agent.name);
     let home = directory.join("home");

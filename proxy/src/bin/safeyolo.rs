@@ -312,6 +312,13 @@ async fn run() -> Result<(), Error> {
     } else {
         root.join("config.toml")
     };
+    if arguments.first().is_some_and(|value| value == "instance") {
+        let code = safeyolo_proxy::instance::run(&root, &arguments[1..]).await?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
     // Proposal file options retain Unix filename bytes through the shared
     // parser, as do the native guest CLI's existing path-taking commands.
     if upgrade_command && !matches!(arguments.as_slice(), [version] if version == "--version") {
@@ -426,6 +433,7 @@ async fn run() -> Result<(), Error> {
             println!("{}", safeyolo_proxy::ssh_proxy::HELP);
             println!("{}", safeyolo_proxy::lab::HELP);
             println!("{}", safeyolo_proxy::demo::HELP);
+            println!("{}", safeyolo_proxy::instance::HELP);
             println!("{}", safeyolo_proxy::guest_acquisition::HELP);
             println!(
                 "{}",

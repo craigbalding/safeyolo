@@ -66,6 +66,7 @@ mod host_lifecycle;
 mod host_mounts;
 mod host_runs;
 mod host_sudo;
+pub mod instance;
 pub mod lab;
 pub mod linux_host;
 #[cfg(target_os = "macos")]

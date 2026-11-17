@@ -494,7 +494,8 @@ def verify(args, output: Path) -> None:
         delivered = [row for row in rows if row.get("body", "").startswith(f"bb26-{initial['nonce']}-")]
         assert sorted(row["body"] for row in delivered) == sorted(phases[key]["marker"] for key in ("initial", "restored"))
         assert all(row["sender_kind"] == "agent" and row["sender_agent_id"] == principal and
-                   row["origin_instance_id"] == destination for row in delivered), "wrong destination-owned principal"
+                   row["origin_instance_id"] == source and row["origin_agent_id"] == agent
+                   for row in delivered), "wrong federated sender or source"
         report.update(status="passed", nonce=initial["nonce"], source_instance=source,
                       destination_instance=destination, observer=observer, phases=phases, checks=checks,
                       source_cleanup=cleanup)

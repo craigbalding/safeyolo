@@ -42,7 +42,8 @@ from tests.proxy_contracts import harness as proxy_harness
 from tests.proxy_contracts.websocket_peer import Peer, read_head
 
 
-@pytest.mark.parametrize("failure", [None, "wrong-status", "destination-effect", "transport", "observer", "revocation-status"])
+@pytest.mark.parametrize("failure", [None, "wrong-status", "destination-effect", "transport", "observer", "revocation-status",
+                                   "wrong-origin-instance", "wrong-origin-agent"])
 def test_installed_federation_binds_destination_and_observes_before_asserting(tmp_path, monkeypatch, failure):
     root, output = tmp_path / "source", tmp_path / "output"
     destination = tmp_path / "source-destination"
@@ -105,7 +106,9 @@ def test_installed_federation_binds_destination_and_observes_before_asserting(tm
             assert "instance_id" not in query
             status = 200
             messages.append({"body": body, "sender_kind": "agent", "sender_agent_name": "remote-bbtest",
-                             "sender_agent_id": "remote-principal", "origin_instance_id": destination.name})
+                             "sender_agent_id": "remote-principal",
+                             "origin_instance_id": destination.name if failure == "wrong-origin-instance" else root.name,
+                             "origin_agent_id": "ag-bbpeer" if failure == "wrong-origin-agent" else "ag-bbtest"})
         return subprocess.CompletedProcess(arguments, 0, f"{{}}\nBB_STATUS:{status}\nBB_APPROVAL:\nBB_REQUEST:", "")
 
     monkeypatch.setattr(installed_federation, "inputs", lambda *args: {"guest": {"sha256": "fixture-guest"}})
@@ -140,6 +143,10 @@ def test_installed_federation_binds_destination_and_observes_before_asserting(tm
         assert [row[0] for row in requests] == ["wrong-principal", "wrong-instance", "allowed", "revoked"]
         assert report["allowed_status"] == 200 and report["revocation_destination_unchanged"]
         assert report["revocation_status"] == (200 if failure else 403)
+    elif failure in {"wrong-origin-instance", "wrong-origin-agent"}:
+        assert [row[0] for row in requests] == ["wrong-principal", "wrong-instance", "allowed"]
+        assert report["allowed_status"] == 200 and len(report["destination_messages"]) == 2
+        assert not state["revoked"] and "revocation_status" not in report
 
 
 def test_installed_federation_generates_a_trusted_server_leaf_despite_host_ca_default(tmp_path, monkeypatch):

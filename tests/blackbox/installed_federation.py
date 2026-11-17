@@ -155,7 +155,8 @@ def run(args):
         delivered = [row for row in rows if row.get("body") == marker + "-allowed"]
         assert len(rows) == len(baseline) + 1 and len(delivered) == 1
         assert delivered[0]["sender_kind"] == "agent" and delivered[0]["sender_agent_name"] == "remote-bbtest"
-        assert delivered[0]["origin_instance_id"] == destination_id and delivered[0]["sender_agent_id"] != source_agent
+        assert delivered[0]["origin_instance_id"] == source_id and delivered[0]["origin_agent_id"] == source_agent
+        assert delivered[0]["sender_agent_id"] != source_agent
         receipt.checkpoint('destination-effect')
         native(destination, "coord", "federation", "revoke", source_id)
         try:

@@ -242,7 +242,8 @@ def test_tailnet_phase_rejects_changed_context_and_retains_uncertain_submission(
 
 @pytest.mark.parametrize("defect", [None, "refused-effect", "wrong-principal", "source-restarted",
     "wrong-refusal", "missing-case", "unrelated-observer", "source-cleanup", "destination-cleanup", "false-lost-pass",
-    "outside-window", "different-binary", "no-active-disconnect", "silent-disconnect", "unrelated-disconnect"])
+    "outside-window", "different-binary", "no-active-disconnect", "silent-disconnect", "unrelated-disconnect",
+    "wrong-origin-instance", "wrong-origin-agent"])
 def test_tailnet_verifier_pairs_full_producer_receipts_with_independent_destination(tailnet_phase, tmp_path, monkeypatch, defect):
     args, _guest, _runtime, diagnosis, _calls = tailnet_phase
     phases, checks = [], []
@@ -286,11 +287,16 @@ def test_tailnet_verifier_pairs_full_producer_receipts_with_independent_destinat
     # Same length-prefixed principal contract as the native destination producer.
     principal = "ag-fed-" + hashlib.sha256(b"9:sy-sourceag-source").hexdigest()
     rows = [{"body": f"bb26-{args.nonce}-{name}", "sender_kind": "agent",
-             "sender_agent_id": principal, "origin_instance_id": "sy-destination"} for name in ("initial", "restored")]
+             "sender_agent_id": principal, "origin_instance_id": "sy-source",
+             "origin_agent_id": "ag-source"} for name in ("initial", "restored")]
     if defect == "refused-effect":
         rows.append(rows[0] | {"body": f"bb26-{args.nonce}-lost-interface"})
     elif defect == "wrong-principal":
         rows[1]["sender_agent_id"] = "ag-other"
+    elif defect == "wrong-origin-instance":
+        rows[1]["origin_instance_id"] = "sy-destination"
+    elif defect == "wrong-origin-agent":
+        rows[1]["origin_agent_id"] = "ag-other"
     elif defect in {"source-restarted", "false-lost-pass"}:
         path = phases[2 if defect == "source-restarted" else 1]
         value = json.loads(path.read_text())
