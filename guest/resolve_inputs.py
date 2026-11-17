@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import re
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
@@ -40,12 +42,89 @@ def now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def download_diagnostic(event: str, **details) -> None:
+    try:
+        print("guest HTTPS: " + json.dumps({"event": event, **details}), file=sys.stderr, flush=True)
+    except OSError:
+        # A closed diagnostic stream must not replace the download's result.
+        pass
+
+
+def download_origin(url: str) -> dict:
+    # Paths, queries, fragments and userinfo may all carry credentials.
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        return {"scheme": parsed.scheme, "host": parsed.hostname, "port": parsed.port}
+    except ValueError:
+        # Let urllib report the original malformed destination.
+        return {"invalid_url": True}
+
+
+class DownloadHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self):
+        self._create_connection = self.connect_addresses
+        super().connect()
+
+    def connect_addresses(self, address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None):
+        host, port = address
+        download_diagnostic("connection", host=host.rsplit("@", 1)[-1], port=port, proxy=bool(self._tunnel_host),
+                            origin_host=(self._tunnel_host or host).rsplit("@", 1)[-1],
+                            origin_port=self._tunnel_port or port)
+        started = time.monotonic()
+        try:
+            addresses = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+        except OSError as error:
+            download_diagnostic("resolution_error", elapsed=time.monotonic() - started,
+                                error=type(error).__name__, errno=error.errno)
+            raise
+
+        # Adapted from CPython socket.create_connection, Copyright (c) 2001-2023
+        # Python Software Foundation; PSF-2.0 license retained in
+        # proxy/src/flow_store/details/PYTHON-LICENSE.txt. Keep its address order,
+        # per-address timeout, cleanup and last-error behavior; add observations.
+        errors = []
+        for family, kind, protocol, _, sockaddr in addresses:
+            sock = None
+            started = time.monotonic()
+            try:
+                sock = socket.socket(family, kind, protocol)
+                if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                    sock.settimeout(timeout)
+                if source_address:
+                    sock.bind(source_address)
+                sock.connect(sockaddr)
+            except OSError as error:
+                errors.clear()
+                errors.append(error)
+                if sock is not None:
+                    sock.close()
+                download_diagnostic("address_error", family=family, address=sockaddr,
+                                    elapsed=time.monotonic() - started, error=type(error).__name__, errno=error.errno)
+            else:
+                errors.clear()
+                download_diagnostic("address_connected", family=family, address=sockaddr,
+                                    elapsed=time.monotonic() - started)
+                return sock
+        if errors:
+            try:
+                raise errors[0]
+            finally:
+                errors.clear()
+        raise OSError("getaddrinfo returns an empty list")
+
+
+class DownloadHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(DownloadHTTPSConnection, request, context=self._context)
+
+
 class HTTPSRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Reject insecure redirect hops before sending the next request."""
 
     def redirect_request(self, request, response, code, message, headers, new_url):
         if not new_url.startswith("https://"):
             raise ValueError("upstream redirect must retain HTTPS")
+        download_diagnostic("redirect", destination=download_origin(new_url))
         return super().redirect_request(request, response, code, message, headers, new_url)
 
 
@@ -64,7 +143,7 @@ def fetch(url: str, *, github_api: bool = False) -> bytes:
             # urllib omits unredirected headers from every redirected request.
             request.add_unredirected_header("Authorization", f"Bearer {token}")
         try:
-            with urllib.request.build_opener(HTTPSRedirectHandler()).open(request, timeout=120) as response:
+            with urllib.request.build_opener(HTTPSRedirectHandler(), DownloadHTTPSHandler()).open(request, timeout=120) as response:
                 if not response.url.startswith("https://"):
                     raise ValueError("upstream redirect must retain HTTPS")
                 return response.read()
