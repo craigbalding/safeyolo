@@ -25,7 +25,7 @@ from functools import partial
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -40,6 +40,106 @@ from tests.blackbox.isolation import installed_workloads as guest_workloads
 from tests.blackbox.proxy_backend import SelectionError, identity
 from tests.proxy_contracts import harness as proxy_harness
 from tests.proxy_contracts.websocket_peer import Peer, read_head
+
+
+@pytest.mark.parametrize("failure", [None, "wrong-status", "destination-effect", "transport", "observer", "revocation-status"])
+def test_installed_federation_binds_destination_and_observes_before_asserting(tmp_path, monkeypatch, failure):
+    root, output = tmp_path / "source", tmp_path / "output"
+    destination = tmp_path / "source-destination"
+    messages, requests, homes, observations, cleanups = [], [], [], [], []
+    state = {"revoked": False, "last": None}
+
+    def prepare(base, selected):
+        selected.mkdir()
+        (selected / "config.toml").touch()
+        (selected / ".safeyolo-platform-smoke").touch()
+        (selected / "data").mkdir()
+        (selected / "data/instance_id").write_text(selected.name)
+
+    def command(arguments, **kwargs):
+        if arguments[0] == "openssl":
+            Path(arguments[arguments.index("-keyout") + 1]).touch()
+            return ""
+        selected, words = Path(arguments[2]), arguments[3:]
+        if words[:2] == ["agent", "status"]:
+            return json.dumps({"agent_id": "ag-" + words[2]})
+        if words == ["coord", "start"]:
+            return json.dumps({"client_port": 12345})
+        if words[:3] == ["coord", "federation", "home"]:
+            homes.append(words[3:])
+        if words[:2] == ["coord", "send"]:
+            messages.append({"body": words[3], "sender_kind": "operator"})
+        if words[:2] == ["coord", "watch"]:
+            assert selected == destination
+            observations.append(state["last"])
+            if failure == "observer" and state["last"] == "wrong-instance":
+                raise RuntimeError("destination observer unavailable")
+            return "\n".join(json.dumps(row) for row in messages)
+        if words[:3] == ["coord", "federation", "revoke"]:
+            state["revoked"] = True
+        return ""
+
+    def guest_shell(arguments, **kwargs):
+        # Exercise the real guest HTTP helper through its native-shell boundary.
+        assert arguments[:5] == [str(tmp_path / "bin/safeyolo"), "--root", str(root), "agent", "shell"]
+        actor = arguments[5]
+        words = shlex.split(arguments[-1])
+        url = urlsplit(words[-1])
+        query = parse_qs(url.query)
+        assert url.path == "/api/coord/rooms/shared/send" and query["home"] == ["destination"]
+        body = json.loads(words[words.index("--data-binary") + 1])["body"]
+        label = next(name for name in ("wrong-principal", "wrong-instance", "allowed", "revoked") if body.endswith(name))
+        requests.append((label, actor, query))
+        state["last"] = label
+        if label == "wrong-instance":
+            assert query["instance_id"] == [root.name]
+            if failure == "transport":
+                return subprocess.CompletedProcess(arguments, 28, "", "fixture timeout")
+            status = 200 if failure == "wrong-status" else 409
+            if failure == "destination-effect":
+                messages.append({"body": body, "sender_kind": "agent"})
+        elif actor == "bbpeer" or state["revoked"]:
+            assert "instance_id" not in query
+            status = 200 if failure == "revocation-status" and state["revoked"] else 403
+        else:
+            assert "instance_id" not in query
+            status = 200
+            messages.append({"body": body, "sender_kind": "agent", "sender_agent_name": "remote-bbtest",
+                             "sender_agent_id": "remote-principal", "origin_instance_id": destination.name})
+        return subprocess.CompletedProcess(arguments, 0, f"{{}}\nBB_STATUS:{status}\nBB_APPROVAL:\nBB_REQUEST:", "")
+
+    monkeypatch.setattr(installed_federation, "inputs", lambda *args: {"guest": {"sha256": "fixture-guest"}})
+    monkeypatch.setattr(installed_federation, "prepare_authority_guests", lambda base, selected, native: prepare(base, selected))
+    monkeypatch.setattr(installed_federation, "prepare_native_instance", prepare)
+    monkeypatch.setattr(installed_federation, "copy_prepared_nats", lambda *args: None)
+    monkeypatch.setattr(installed_federation, "checked", command)
+    monkeypatch.setattr(installed_federation, "_sha256", lambda path: "fixture-guest")
+    monkeypatch.setattr(installed_federation, "running_guest", lambda *args: {"backend_pid": 42, "backend_token": "fixture"})
+    monkeypatch.setattr(installed_federation, "cleanup_instance", lambda cli, selected: cleanups.append(selected) or [])
+    monkeypatch.setattr(subprocess, "run", guest_shell)
+    args = SimpleNamespace(prepared_config=tmp_path, root=root, output=output, revision="test")
+    if failure:
+        expected = RuntimeError if failure == "observer" else AssertionError
+        with pytest.raises(expected):
+            installed_federation.run(args)
+    else:
+        installed_federation.run(args)
+
+    report = json.loads((output / "result.json").read_text())
+    assert cleanups == [root, destination] and report["cleanup"] == "stopped"
+    assert len(homes) == 1 and homes[0][:2] == ["destination", destination.name]
+    refused = report["refusals"]["wrong-instance"]
+    assert refused["enforcement"] == "source-instance-selection"
+    assert refused["home"] == "destination" and refused["instance_id"] == root.name
+    assert refused["status"] == (None if failure == "transport" else 200 if failure == "wrong-status" else 409)
+    assert "wrong-instance" in observations
+    assert refused["destination_unchanged"] == (None if failure == "observer" else failure != "destination-effect")
+    assert report["refusals"]["wrong-principal"]["status"] == 403
+    assert report["status"] == ("incomplete" if failure else "passed")
+    if failure is None or failure == "revocation-status":
+        assert [row[0] for row in requests] == ["wrong-principal", "wrong-instance", "allowed", "revoked"]
+        assert report["allowed_status"] == 200 and report["revocation_destination_unchanged"]
+        assert report["revocation_status"] == (200 if failure else 403)
 
 
 def test_installed_federation_generates_a_trusted_server_leaf_despite_host_ca_default(tmp_path, monkeypatch):

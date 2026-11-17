@@ -837,7 +837,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 - [tests/blackbox/native_authority.py::main](../tests/blackbox/native_authority.py#L74) — Curated native Coord cases on Linux with real NATS and isolated instance roots. Evidence: Per-control procedure receipts and exact executed cases; process evidence, without a real guest or live tailnet.
   Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only); step matrix.os == 'ubuntu-latest'`).
-- [tests/blackbox/installed_federation.py::main](../tests/blackbox/installed_federation.py#L155) — Two actual systrap guests and a separate destination instance on the same Linux host. Evidence: Real TLS/NATS, destination operator history, exact delivery, wrong principal/instance and trust revocation; no live Tailscale claim.
+- [tests/blackbox/installed_federation.py::main](../tests/blackbox/installed_federation.py#L183) — Two actual systrap guests and a separate destination instance on the same Linux host. Evidence: Real TLS/NATS, destination operator history, exact delivery, wrong principal/instance and trust revocation; no live Tailscale claim.
   Selection: default `systrap` section `federation`.
 - [proxy/tests/native_coord/federation.rs](../proxy/tests/native_coord/federation.rs#L267) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real instances/NATS; controlled run adapters.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-federation-rs).
@@ -3037,6 +3037,8 @@ room, broker, TLS key and peer credential. No peer credential enters a guest.
 Both roots must be new; output must be empty and disk-backed. The driver checks
 destination-owned message effects, wrong principal/instance and revocation,
 then stops both instances. This is a same-host TLS journey, not a live tailnet.
+Wrong-instance selection is refused by the source before forwarding. Native
+federation tests cover the destination's payload-mismatch handler separately.
 
 ### `tests/blackbox/installed_ingress.py`
 

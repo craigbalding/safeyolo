@@ -8,6 +8,8 @@ room, broker, TLS key and peer credential. No peer credential enters a guest.
 Both roots must be new; output must be empty and disk-backed. The driver checks
 destination-owned message effects, wrong principal/instance and revocation,
 then stops both instances. This is a same-host TLS journey, not a live tailnet.
+Wrong-instance selection is refused by the source before forwarding. Native
+federation tests cover the destination's payload-mismatch handler separately.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import json
 import os
 import uuid
 from pathlib import Path
+from urllib.parse import urlencode
 
 import tomlkit
 
@@ -55,10 +58,13 @@ def run(args):
         save(output / "result.json", report)
         return rows
 
-    def send(actor, home, body):
+    def send(actor, body, instance_id=None):
         env = os.environ | {"SAFEYOLO_CONFIG_DIR": str(root), "SAFEYOLO_NATIVE_CONFIG_PATH": str(root / "config.toml")}
+        query = {"home": "destination"}
+        if instance_id is not None:
+            query["instance_id"] = instance_id
         return guest_http_request(str(cli), actor, "POST",
-                                  "http://_safeyolo.proxy.internal/api/coord/rooms/shared/send?home=" + home,
+                                  "http://_safeyolo.proxy.internal/api/coord/rooms/shared/send?" + urlencode(query),
                                   {"body": body, "notify": "none"}, env=env)
 
     try:
@@ -99,9 +105,8 @@ def run(args):
         broker = json.loads(native(destination, "coord", "start"))
         endpoint = f"tls://127.0.0.1:{broker['client_port']}"
         native(destination, "start")
-        for home, identity in (("destination", destination_id), ("wrong-instance", source_id)):
-            native(root, "coord", "federation", "home", home, identity, "tls", endpoint,
-                   str(certificate), str(credential))
+        native(root, "coord", "federation", "home", "destination", destination_id, "tls", endpoint,
+               str(certificate), str(credential))
         report["participants"] = {}
         for name in NAMES:
             native(root, "agent", "start", name, "--sandbox-only")
@@ -121,23 +126,46 @@ def run(args):
         baseline = observe()
         assert any(row.get("body") == marker + "-observer" and row["sender_kind"] == "operator" for row in baseline)
         report["refusals"] = {}
-        for label, actor, home in (("wrong-principal", "bbpeer", "destination"),
-                                   ("wrong-instance", "bbtest", "wrong-instance")):
-            reply = send(actor, home, marker + "-" + label)
-            report["refusals"][label] = reply["status"]
-            assert reply["status"] == 403 and observe() == baseline, "refused federation request changed destination"
+        for label, actor, instance_id, status in (("wrong-principal", "bbpeer", None, 403),
+                                                 ("wrong-instance", "bbtest", source_id, 409)):
+            refusal = {"home": "destination", "instance_id": instance_id, "expected_status": status,
+                       "enforcement": "source-instance-selection" if instance_id else "destination-principal",
+                       "status": None, "destination_unchanged": None}
+            report["refusals"][label] = refusal
+            save(output / "result.json", report)
+            try:
+                reply = send(actor, marker + "-" + label, instance_id)
+                refusal["status"] = reply["status"]
+            finally:
+                # Save the response before the observer can fail, and observe
+                # even when the guest transport raises instead of returning it.
+                save(output / "result.json", report)
+                refusal["destination_unchanged"] = observe() == baseline
+                save(output / "result.json", report)
+            assert refusal["status"] == status, f"{label}: expected HTTP {status}"
+            assert refusal["destination_unchanged"], "refused federation request changed destination"
         receipt.checkpoint('scope')
-        allowed = send("bbtest", "destination", marker + "-allowed")
+        try:
+            allowed = send("bbtest", marker + "-allowed")
+            report["allowed_status"] = allowed["status"]
+        finally:
+            save(output / "result.json", report)
+            rows = observe()
         assert allowed["status"] == 200
-        rows = observe()
         delivered = [row for row in rows if row.get("body") == marker + "-allowed"]
         assert len(rows) == len(baseline) + 1 and len(delivered) == 1
         assert delivered[0]["sender_kind"] == "agent" and delivered[0]["sender_agent_name"] == "remote-bbtest"
         assert delivered[0]["origin_instance_id"] == destination_id and delivered[0]["sender_agent_id"] != source_agent
         receipt.checkpoint('destination-effect')
         native(destination, "coord", "federation", "revoke", source_id)
-        revoked = send("bbtest", "destination", marker + "-revoked")
-        assert revoked["status"] == 403 and observe() == rows
+        try:
+            revoked = send("bbtest", marker + "-revoked")
+            report["revocation_status"] = revoked["status"]
+        finally:
+            save(output / "result.json", report)
+            report["revocation_destination_unchanged"] = observe() == rows
+            save(output / "result.json", report)
+        assert revoked["status"] == 403 and report["revocation_destination_unchanged"]
         receipt.checkpoint('revocation')
         report["status"] = "passed"
     finally:
