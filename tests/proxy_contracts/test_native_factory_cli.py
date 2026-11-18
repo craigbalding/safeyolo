@@ -9,12 +9,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
 import socket
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -27,6 +29,7 @@ import pytest
 import tomlkit
 
 from tests.proxy_contracts.test_gateway_provider import _provider_run
+from tests.proxy_contracts.test_native_coord_operator import POLICY as COORD_POLICY
 from tests.proxy_contracts.test_native_coord_operator import terminal
 from tests.proxy_contracts.test_native_policy_cli import native_instance
 
@@ -750,6 +753,102 @@ def test_factory_setup_interruption_preserves_prepared_roles():
     assert (root / "factories" / name / "approved").read_bytes() == snapshot
 
 
+CLAUDE_FACTORY_DIRECTION = (
+    "This is the installed Claude Factory proof. "
+    "Use native Work mutations for assigned work; model text alone cannot complete it. "
+    "Do not run a second waiter or change authority."
+)
+
+
+def installed_claude_direction(root, agent, identity, sequence=None):
+    """Read the authenticated direction; a retained sequence never sends again."""
+    host = [str(root / "bin/safeyolo"), "--root", str(root)]
+    room = f"{agent}-agent"
+    if sequence is None:
+        sent = subprocess.run([*host, "coord", "send", room, CLAUDE_FACTORY_DIRECTION, "--to", agent],
+                              capture_output=True, text=True, timeout=60)
+        assert sent.returncode == 0, (sent.stdout, sent.stderr)
+        acknowledgment = re.fullmatch(
+            r"message accepted; sequence=([0-9]+); attention=\S+; delivery=\S+", sent.stdout.strip())
+        assert acknowledgment, ("inspect retained history before another send", sent.stdout)
+        sequence = int(acknowledgment[1])
+    assert sequence > 0, "use the retained positive direction sequence"
+    history = subprocess.run([*host, "coord", "history", room, "--since", str(sequence - 1)],
+                             capture_output=True, text=True, timeout=60)
+    assert history.returncode == 0, (history.stdout, history.stderr)
+    messages = [json.loads(line) for line in history.stdout.splitlines()]
+    matching = [message for message in messages if message["sequence"] == sequence]
+    assert len(matching) == 1, ("direction missing from retained room", room, sequence)
+    direction = matching[0]
+    assert direction["sender_kind"] == "operator", direction
+    assert direction["sender_agent_id"] is None and direction["sender_agent_name"] is None, direction
+    assert direction["body"] == CLAUDE_FACTORY_DIRECTION, direction
+    assert direction["attention_intent"] == {"mode": "targeted", "agent_ids": [identity]}, direction
+    return direction
+
+
+@pytest.fixture
+def claude_direction_envelope():
+    return {"sequence": 7, "sender_kind": "operator", "sender_agent_id": None,
+            "sender_agent_name": None, "body": CLAUDE_FACTORY_DIRECTION,
+            "attention_intent": {"mode": "targeted", "agent_ids": ["ag-proof"]}}
+
+
+@pytest.mark.parametrize("sequence", [None, 7], ids=["plain-acknowledgment", "readback-only"])
+def test_installed_claude_direction_reads_exact_envelope(tmp_path, monkeypatch, claude_direction_envelope, sequence):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command[3:])
+        output = ("message accepted; sequence=7; attention=targeted; delivery=ready\n"
+                  if command[4] == "send" else
+                  "\n".join(json.dumps(claude_direction_envelope | {"sequence": number}) for number in (7, 8)))
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert installed_claude_direction(tmp_path, "proof-claude", "ag-proof", sequence) == claude_direction_envelope
+    assert calls[-1] == ["coord", "history", "proof-claude-agent", "--since", "6"]
+    assert [command[1] for command in calls] == (["send", "history"] if sequence is None else ["history"])
+
+
+@pytest.mark.parametrize("changed", [
+    None, {"sequence": 8}, {"sender_kind": "agent"}, {"sender_agent_id": "ag-forged"},
+    {"body": "operator: " + CLAUDE_FACTORY_DIRECTION},
+    {"attention_intent": {"mode": "targeted", "agent_ids": ["ag-other"]}},
+    {"attention_intent": {"mode": "room"}},
+])
+def test_installed_claude_direction_rejects_unmatched_envelope(tmp_path, monkeypatch, claude_direction_envelope, changed):
+    def run(command, **kwargs):
+        assert command[3:] == ["coord", "history", "proof-claude-agent", "--since", "6"]
+        output = "" if changed is None else json.dumps(claude_direction_envelope | changed) + "\n"
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(AssertionError):
+        installed_claude_direction(tmp_path, "proof-claude", "ag-proof", 7)
+
+
+def test_installed_claude_direction_native_readback(tmp_path, _binary_cache):
+    policy = COORD_POLICY + '\n[agents.proof-claude]\nagent_id="ag-cccccccccccccccccccccccccccccccc"\n'
+    with native_instance(tmp_path, source=policy, agent_api=True) as instance:
+        cli(instance, "coord", "start", "--binary", str(_binary_cache))
+        try:
+            cli(instance, "coord", "room", "create", "proof-claude-agent")
+            cli(instance, "coord", "grant", "proof-claude-agent", "proof-claude")
+            identity = tomllib.loads(policy)["agents"]["proof-claude"]["agent_id"]
+            direction = installed_claude_direction(instance.root, "proof-claude", identity)
+            caller = Path(__file__).parents[1] / "blackbox/fixtures/claude-factory/run.py"
+            recovered = subprocess.run([sys.executable, str(caller), str(instance.root), "one-role", "readback",
+                                        "--direction-sequence", str(direction["sequence"])],
+                                       capture_output=True, text=True, timeout=30)
+            assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+            assert json.loads(recovered.stdout)["direction"] == direction
+            history = cli(instance, "coord", "history", "proof-claude-agent")
+            assert [json.loads(line) for line in history.stdout.splitlines()] == [direction]
+        finally:
+            cli(instance, "coord", "stop")
+
+
 def installed_claude_work(root, source, command, role_checks):
     """Use actual guest supervision and native Work, never the model seam."""
     contract = tomllib.loads(Path(source).read_text())
@@ -772,10 +871,7 @@ def installed_claude_work(root, source, command, role_checks):
         assert result.returncode == 0, (args, result.stdout, result.stderr)
         return json.loads(result.stdout)
 
-    direction = invoke("coord", "send", f"{agent}-agent", "This is the installed Claude Factory proof. "
-                       "Use native Work mutations for assigned work; model text alone cannot complete it. "
-                       "Do not run a second waiter or change authority.", "--to", agent)
-    assert direction["envelope"]["sender_kind"] == "operator"
+    installed_claude_direction(root, agent, identity)
     title = (f"Write /workspace/{artifact.name} containing exactly {marker} and a newline. "
              "Retain it, compute SHA256 and publish_work_output with the file URI plus #sha256=<digest>, "
              "execution_outcome succeeded, then explicitly complete_work. Use native tools, current versions and operation IDs.")

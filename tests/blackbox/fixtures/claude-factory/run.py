@@ -5,6 +5,8 @@ macOS host. ROOT must contain the installed candidate, an active proxy, pinned
 NATS and a compatible prepared guest. Preparation starts no guest or model.
 Before the run phase, provision each stopped role's own client and supported
 login/provider through the existing host interfaces. No credentials are copied.
+Use readback --direction-sequence N to inspect an accepted direction without
+repeating preparation, sending, native Work or a model turn.
 """
 
 from __future__ import annotations
@@ -18,12 +20,30 @@ import tomllib
 from pathlib import Path
 
 
+def readback_direction(repository, root, contract, sequence):
+    """Reuse the maintained envelope checks without invoking the installed journey."""
+    sys.path.insert(0, str(repository))
+    # Match pytest's conftest import path when reading without the test runner.
+    sys.path.insert(0, str(repository / "tests/reference"))
+    from tests.proxy_contracts.test_native_factory_cli import installed_claude_direction
+
+    agent = next(role["agent"] for role in contract["roles"].values() if role.get("harness") == "claude")
+    identity = tomllib.loads((root / "policy.toml").read_text())["agents"][agent]["agent_id"]
+    direction = installed_claude_direction(root, agent, identity, sequence)
+    print(json.dumps({"room": f"{agent}-agent", "direction": direction,
+                      "scope": "retained direction only; installed Work/model outcome unverified"}))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path, help="separately owned installed host root")
     parser.add_argument("fixture", choices=("one-role", "mixed"))
-    parser.add_argument("phase", choices=("prepare", "run"))
+    parser.add_argument("phase", choices=("prepare", "run", "readback"))
+    parser.add_argument("--direction-sequence", type=int,
+                        help="recover this accepted direction without setup, sending or model execution")
     arguments = parser.parse_args()
+    if (arguments.phase == "readback") != (arguments.direction_sequence is not None):
+        parser.error("readback requires --direction-sequence; other phases do not accept it")
     root = arguments.root.resolve(strict=True)
     fixtures = Path(__file__).resolve().parent
     repository = fixtures.parents[3]
@@ -31,6 +51,9 @@ def main():
     source = directory / (arguments.fixture + ".toml")
     contract = tomllib.loads((fixtures / source.name).read_text())
     workspaces = {role: str(directory / "workspaces" / role) for role in contract["roles"]}
+    if arguments.phase == "readback":
+        readback_direction(repository, root, contract, arguments.direction_sequence)
+        return
     if arguments.phase == "prepare":
         directory.mkdir(parents=True, exist_ok=True)
         for workspace in workspaces.values():
