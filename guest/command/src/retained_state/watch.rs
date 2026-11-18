@@ -22,7 +22,16 @@ const MASK: u32 = libc::IN_CLOSE_WRITE
     | libc::IN_DELETE_SELF
     | libc::IN_MOVE_SELF;
 
-fn directories(path: &Path, paths: &mut BTreeSet<PathBuf>) -> Result<(), Error> {
+fn directories(
+    store: &GuestState,
+    path: &Path,
+    paths: &mut BTreeSet<PathBuf>,
+) -> Result<(), Error> {
+    let relative = format!("/{}", path.strip_prefix(&store.root)?.display());
+    if configuration::excluded(&relative) {
+        return Ok(());
+    }
+    configuration::safe_parents(&store.root, &relative)?;
     let metadata = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -31,7 +40,7 @@ fn directories(path: &Path, paths: &mut BTreeSet<PathBuf>) -> Result<(), Error> 
     if metadata.is_dir() {
         paths.insert(path.into());
         for entry in fs::read_dir(path)? {
-            directories(&entry?.path(), paths)?;
+            directories(store, &entry?.path(), paths)?;
         }
     }
     Ok(())
@@ -41,6 +50,7 @@ fn arm(
     store: &GuestState,
     paths: &[String],
 ) -> Result<(OwnedFd, std::collections::BTreeMap<i32, PathBuf>), Error> {
+    configuration::validate_coverage(store, paths)?;
     let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
     if fd < 0 {
         return Err(io::Error::last_os_error().into());
@@ -48,7 +58,7 @@ fn arm(
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     let mut directories_to_watch = BTreeSet::new();
     for path in paths {
-        directories(&store.actual(path), &mut directories_to_watch)?;
+        directories(store, &store.actual(path), &mut directories_to_watch)?;
         let actual = store.actual(path);
         if let Some(parent) = actual.ancestors().skip(1).find(|x| x.is_dir()) {
             directories_to_watch.insert(parent.into());
