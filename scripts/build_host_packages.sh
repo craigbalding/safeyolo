@@ -190,7 +190,7 @@ if [[ $platform == linux-* ]] && command -v dpkg-query >/dev/null 2>&1; then
 fi
 cp "$repository/docs/AGENTS.md" "$directory/assets/docs/"
 cp "$repository/repo-map.toml" "$directory/assets/"
-for asset in claude-host-setup codex-host-setup codex-command codex-coord-host-setup pi-host-setup pi-coord-host-setup mise-shell-host-setup coord-mcp-bootstrap safeyolo-coord-mcp-launcher; do
+for asset in claude-host-setup claude-coord-host-setup codex-host-setup codex-command codex-coord-host-setup pi-host-setup pi-coord-host-setup mise-shell-host-setup coord-mcp-bootstrap safeyolo-coord-mcp-launcher; do
   cp "$repository/contrib/$asset.sh" "$directory/assets/contrib/"
 done
 cp "$repository/contrib/pi-coord-extension.ts" "$directory/assets/contrib/"

@@ -1066,7 +1066,7 @@ fn harness(agent: &Agent) -> Option<&'static str> {
     match agent.host_script.as_deref()?.rsplit('/').next()? {
         "codex-host-setup.sh" | "codex-coord-host-setup.sh" => Some("codex"),
         "pi-host-setup.sh" | "pi-coord-host-setup.sh" => Some("pi"),
-        "claude-host-setup.sh" => Some("claude"),
+        "claude-host-setup.sh" | "claude-coord-host-setup.sh" => Some("claude"),
         "mise-shell-host-setup.sh" => Some("shell"),
         _ => None,
     }

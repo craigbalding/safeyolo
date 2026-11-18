@@ -1,4 +1,4 @@
-//! Linux invocation ownership, deadlines and Codex/Pi event consumption.
+//! Linux invocation ownership, deadlines and native harness event consumption.
 
 use super::*;
 #[cfg(target_os = "linux")]
@@ -280,6 +280,7 @@ struct Events {
     consumed_information: bool,
     unresolved_send: bool,
     pi_args: BTreeMap<String, Value>,
+    claude_calls: BTreeMap<String, Value>,
 }
 
 fn structured(item: &Value) -> Option<&Value> {
@@ -312,6 +313,50 @@ fn normalized(item: &Value) -> Option<(Value, Value)> {
     Some((result, args))
 }
 impl Events {
+    fn complete_information(
+        &mut self,
+        supervisor: &mut Supervisor,
+        invoked: &BTreeSet<String>,
+    ) -> Result<(), Error> {
+        let completed: Vec<_> = supervisor
+            .state
+            .in_flight
+            .iter()
+            .filter(|p| !p.requires_terminal && invoked.contains(&p.attention_id))
+            .map(|p| p.attention_id.clone())
+            .collect();
+        self.consumed_information |= !completed.is_empty();
+        for id in completed {
+            supervisor.state.complete(&id);
+        }
+        let completed: Vec<_> = supervisor
+            .state
+            .approval_notifications
+            .iter()
+            .map(approval_notification_id)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|id| invoked.contains(*id))
+            .map(str::to_owned)
+            .collect();
+        self.consumed_information |= !completed.is_empty();
+        supervisor
+            .state
+            .approval_notifications
+            .retain(|p| !completed.iter().any(|id| p["edge"]["attention_id"] == *id));
+        for id in completed {
+            supervisor.state.remember(&id);
+        }
+        let before = supervisor.state.native_in_flight.len();
+        supervisor
+            .state
+            .native_in_flight
+            .retain(|d| d.action.requires_action || !invoked.contains(&d.action.key));
+        self.consumed_information |= before != supervisor.state.native_in_flight.len();
+        supervisor.state.save(&supervisor.state_path)?;
+        Ok(())
+    }
+
     fn consume(
         &mut self,
         supervisor: &mut Supervisor,
@@ -324,18 +369,87 @@ impl Events {
         }
         let kind = event["type"].as_str().unwrap_or("");
         let pi = supervisor.config.harness == "pi";
-        if (!pi && kind == "thread.started") || (pi && kind == "session") {
+        let claude = supervisor.config.harness == "claude";
+        let codex = !pi && !claude;
+        // Match the native Claude session and main turn, as the existing
+        // streaming attention adapter does. Nested tool sessions cannot finish it.
+        if claude {
+            if !event["parent_tool_use_id"].is_null() {
+                return Ok(());
+            }
+            if kind == "system"
+                && event["subtype"] == "init"
+                && event["mcp_servers"].as_array().is_none_or(|servers| {
+                    !servers.iter().any(|server| {
+                        server["name"] == "safeyolo-coord" && server["status"] == "connected"
+                    })
+                })
+            {
+                self.failed = true;
+                eprintln!("Claude safeyolo-coord MCP connection is unavailable");
+            }
+            if matches!(kind, "system" | "assistant" | "user" | "result")
+                && event["session_id"].as_str() != supervisor.state.thread_id.as_deref()
+            {
+                self.failed = true;
+                return Ok(());
+            }
+            if let Some(blocks) = event["message"]["content"].as_array() {
+                for block in blocks {
+                    if kind == "assistant"
+                        && block["type"] == "tool_use"
+                        && let (Some(id), Some(tool)) =
+                            (block["id"].as_str(), block["name"].as_str())
+                        && let Some(tool) = tool.strip_prefix("mcp__safeyolo-coord__")
+                    {
+                        if tool == "wait_for_coord" {
+                            self.failed = true;
+                        }
+                        if matches!(tool, "send" | "send_task") {
+                            self.claude_calls
+                                .insert(id.into(), json!({"tool":tool,"arguments":block["input"]}));
+                        }
+                    } else if kind == "user"
+                        && block["type"] == "tool_result"
+                        && let Some(id) = block["tool_use_id"].as_str()
+                        && let Some(mut item) = self.claude_calls.remove(id)
+                    {
+                        // Claude exposes the MCP structured result on the user
+                        // tool-result event, separately from assistant narration.
+                        item["status"] = json!("completed");
+                        item["result"] = event["tool_use_result"].clone();
+                        if block["is_error"] != true
+                            && let Some((result, args)) = normalized(&item)
+                        {
+                            self.canonical |= supervisor.outbound(&result, &args, false)?;
+                        } else {
+                            self.unresolved_send = true;
+                        }
+                    }
+                }
+            }
+        }
+        if (codex && kind == "thread.started") || (pi && kind == "session") {
             let id = text(event, if pi { "id" } else { "thread_id" })?;
             if id.is_empty() {
                 return Err("harness returned an empty session ID".into());
             }
             supervisor.state.thread_id = Some(id.into());
             supervisor.state.save(&supervisor.state_path)?;
-        } else if (!pi && kind == "turn.started") || (pi && kind == "agent_start") {
+        } else if (codex && kind == "turn.started")
+            || (pi && kind == "agent_start")
+            || (claude && kind == "system" && event["subtype"] == "init")
+        {
             self.started = true;
             supervisor.state.phase = "running".into();
             supervisor.state.save(&supervisor.state_path)?;
-        } else if (!pi && kind == "turn.completed")
+        } else if (codex && kind == "turn.completed")
+            || (claude
+                && kind == "result"
+                && event["subtype"] == "success"
+                && event["is_error"] == false
+                && self.started
+                && !self.failed)
             || (pi
                 && kind == "agent_end"
                 && event["willRetry"] != true
@@ -343,43 +457,10 @@ impl Events {
                 && !self.harness_failed)
         {
             self.completed = true;
-            let completed: Vec<_> = supervisor
-                .state
-                .in_flight
-                .iter()
-                .filter(|p| !p.requires_terminal && invoked.contains(&p.attention_id))
-                .map(|p| p.attention_id.clone())
-                .collect();
-            self.consumed_information |= !completed.is_empty();
-            for id in completed {
-                supervisor.state.complete(&id);
+            if !claude {
+                self.complete_information(supervisor, invoked)?;
             }
-            let completed: Vec<_> = supervisor
-                .state
-                .approval_notifications
-                .iter()
-                .map(approval_notification_id)
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .filter(|id| invoked.contains(*id))
-                .map(str::to_owned)
-                .collect();
-            self.consumed_information |= !completed.is_empty();
-            supervisor
-                .state
-                .approval_notifications
-                .retain(|p| !completed.iter().any(|id| p["edge"]["attention_id"] == *id));
-            for id in completed {
-                supervisor.state.remember(&id);
-            }
-            let before = supervisor.state.native_in_flight.len();
-            supervisor
-                .state
-                .native_in_flight
-                .retain(|d| d.action.requires_action || !invoked.contains(&d.action.key));
-            self.consumed_information |= before != supervisor.state.native_in_flight.len();
-            supervisor.state.save(&supervisor.state_path)?;
-        } else if !pi && kind == "turn.failed" {
+        } else if (codex && kind == "turn.failed") || (claude && kind == "result") {
             self.failed = true;
         } else if pi && kind == "message_end" && event["message"]["role"] == "assistant" {
             self.harness_failed = matches!(
@@ -404,7 +485,7 @@ impl Events {
             } else if event["toolName"] == "send" {
                 self.unresolved_send = true;
             }
-        } else if !pi
+        } else if codex
             && kind == "item.completed"
             && event["item"]["type"] == "mcp_tool_call"
             && event["item"]["server"] == "safeyolo-coord"
@@ -597,17 +678,31 @@ pub(super) async fn invoke(
     rooms: &BTreeMap<String, String>,
 ) -> Result<bool, Error> {
     let pi = supervisor.config.harness == "pi";
-    let program = std::env::var_os(if pi {
-        "SAFEYOLO_PI_BIN"
-    } else {
-        "SAFEYOLO_CODEX_BIN"
+    let claude = supervisor.config.harness == "claude";
+    let program = std::env::var_os(match supervisor.config.harness.as_str() {
+        "pi" => "SAFEYOLO_PI_BIN",
+        "claude" => "SAFEYOLO_CLAUDE_BIN",
+        _ => "SAFEYOLO_CODEX_BIN",
     })
     .unwrap_or_else(|| supervisor.config.harness.clone().into());
     let resuming = supervisor.state.thread_id.is_some();
     let recovering_uncertainty = supervisor.state.phase == "uncertain";
     let mut command = tokio::process::Command::new(program);
     let args = arguments(supervisor);
-    if pi {
+    if claude {
+        preflight::claude_arguments(&args)?;
+        // Select the session before dispatch so even an interrupted first turn
+        // has a known native recovery operand. Startup failure clears it below.
+        let id = supervisor
+            .state
+            .thread_id
+            .get_or_insert_with(|| uuid::Uuid::new_v4().to_string());
+        command
+            .args(&args)
+            .args(["--print", "--output-format", "stream-json", "--verbose"])
+            .arg(if resuming { "--resume" } else { "--session-id" })
+            .arg(id);
+    } else if pi {
         command.args(["--mode", "json", "--print"]);
         if let Some(id) = &supervisor.state.thread_id {
             command.args(["--session", id]);
@@ -630,7 +725,8 @@ pub(super) async fn invoke(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if !pi {
-        crate::coding_client::authenticate(command.as_std_mut(), "codex").await?;
+        crate::coding_client::authenticate(command.as_std_mut(), &supervisor.config.harness)
+            .await?;
     }
     unsafe {
         command.pre_exec(|| {
@@ -750,7 +846,7 @@ pub(super) async fn invoke(
         }
     }
     supervisor.state.owned_process = None;
-    let events = match result {
+    let mut events = match result {
         Ok(events) => events,
         Err(error) => {
             supervisor.state.phase = "uncertain".into();
@@ -759,6 +855,9 @@ pub(super) async fn invoke(
             return Err(error);
         }
     };
+    if claude && events.completed && !events.failed && !events.harness_failed && exit_success {
+        events.complete_information(supervisor, &invoked)?;
+    }
     let terminals_before = supervisor
         .state
         .in_flight

@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import time
 import tomllib
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,7 +31,7 @@ from tests.proxy_contracts.test_native_coord_operator import terminal
 from tests.proxy_contracts.test_native_policy_cli import native_instance
 
 
-def contract(directory, *, mixed=True):
+def contract(directory, *, mixed=True, claude=False):
     directory.mkdir()
     (directory / "role.md").write_text("Follow the assigned role and use canonical Coord handoffs.\n")
     source = directory / "factory.toml"
@@ -47,6 +48,7 @@ args = ["--model", "selected-model"]
 [roles.owner]
 agent = "fixture-forge"
 contract = "role.md"
+''' + ('harness = "claude"\nargs = ["--model", "sonnet"]\n' if claude else '') + '''
 [roles.reviewer]
 agent = "fixture-lens"
 contract = "role.md"
@@ -77,7 +79,7 @@ def cli(instance, *arguments):
 
 
 @contextmanager
-def prepared(directory, nats_binary, *, source_fixture=False):
+def prepared(directory, nats_binary, *, source_fixture=False, claude=False):
     with native_instance(directory, source=None, agent_api=True, source_fixture=source_fixture) as instance:
         # Ordinary shell utilities are production prerequisites. No Python,
         # package import path or source-checkout helper is in the command PATH.
@@ -93,9 +95,10 @@ def prepared(directory, nats_binary, *, source_fixture=False):
         instance.environment["SAFEYOLO_NATS_TEST_INSTANCE"] = "1"
         for name in ("SAFEYOLO_COORD_EXECUTABLE", "SAFEYOLO_COORD_GUEST_BINARY",
                      "SAFEYOLO_FACTORY_SNAPSHOT", "SAFEYOLO_FACTORY_ROLE",
-                     "SAFEYOLO_CODEX_COORD_SUPERVISOR", "SAFEYOLO_PI_COORD_SUPERVISOR"):
+                     "SAFEYOLO_CODEX_COORD_SUPERVISOR", "SAFEYOLO_PI_COORD_SUPERVISOR",
+                     "SAFEYOLO_CLAUDE_COORD_SUPERVISOR"):
             instance.environment.pop(name, None)
-        source = contract(directory / "contract")
+        source = contract(directory / "contract", claude=claude)
         cli(instance, "factory", "check", str(source))
         cli(instance, "factory", "approve", str(source), "--yes")
         cli(instance, "coord", "start", "--binary", str(nats_binary))
@@ -254,8 +257,9 @@ def test_setup_repairs_stopped_staging_and_explicitly_changed_workspace(tmp_path
         assert_no_role_launch(instance)
 
 
-def test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants(tmp_path, _binary_cache):
-    with prepared(tmp_path, _binary_cache) as (instance, workspaces):
+@pytest.mark.parametrize("claude", [False, True])
+def test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants(tmp_path, _binary_cache, claude):
+    with prepared(tmp_path, _binary_cache, claude=claude) as (instance, workspaces):
         # The shared native bundle retains non-Factory inputs. Factory homes
         # stage native commands and link only their workflow skills.
         assert not list((instance.root / "agents").rglob("*.py"))
@@ -286,6 +290,11 @@ def test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants(tmp
         assert (pi / ".pi/agent/extensions/safeyolo-coord.ts").read_bytes() == (instance.root / "assets/contrib/pi-coord-extension.ts").read_bytes()
         assert (pi / ".pi/agent/skills/safeyolo").readlink() == Path("/safeyolo/skills/safeyolo")
         codex_home = instance.root / "agents/fixture-relay/home/.codex"
+        if claude:
+            claude_home = instance.root / "agents/fixture-forge/home"
+            assert json.loads((claude_home / ".claude.json").read_text())["mcpServers"]["safeyolo-coord"]["command"] == "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher"
+            assert not (claude_home / ".claude/.credentials.json").exists()
+            assert json.loads((claude_home / ".safeyolo/coord-supervisor.json").read_text())["harness"] == "claude"
         assert not (codex_home / "auth.json").exists()
         assert tomllib.loads((codex_home / "config.toml").read_text())["mcp_servers"]["safeyolo-coord"]["command"] == "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher"
         codex = shutil.which("codex")
@@ -740,8 +749,112 @@ def test_factory_setup_interruption_preserves_prepared_roles():
     assert (root / "factories" / name / "approved").read_bytes() == snapshot
 
 
+def installed_claude_work(root, source, command, role_checks):
+    """Use actual guest supervision and native Work, never the model seam."""
+    contract = tomllib.loads(Path(source).read_text())
+    selected = next((name for name, role in contract["roles"].items()
+                     if role.get("harness") == "claude"), None)
+    if selected is None:
+        return
+    assert "work" in contract, "the Claude installed witness needs its native Work policy"
+    role = contract["roles"][selected]
+    agent = role["agent"]
+    identity = next(item["observation"]["agent_id"] for item in role_checks if item["role"] == selected)
+    snapshot = (root / "factories" / contract["name"] / "approved").read_text().strip()
+    workspace = Path(tomllib.loads((root / "policy.toml").read_text())["agents"][agent]["folder"])
+    marker = "claude-factory-" + uuid.uuid4().hex
+    artifact = workspace / (marker + ".txt")
+    host = [str(root / "bin/safeyolo"), "--root", str(root)]
+
+    def invoke(*args):
+        result = subprocess.run([*host, *args], capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, (args, result.stdout, result.stderr)
+        return json.loads(result.stdout)
+
+    direction = invoke("coord", "send", f"{agent}-agent", "This is the installed Claude Factory proof. "
+                       "Use native Work mutations for assigned work; model text alone cannot complete it. "
+                       "Do not run a second waiter or change authority.", "--to", agent)
+    assert direction["envelope"]["sender_kind"] == "operator"
+    title = (f"Write /workspace/{artifact.name} containing exactly {marker} and a newline. "
+             "Retain it, compute SHA256 and publish_work_output with the file URI plus #sha256=<digest>, "
+             "execution_outcome succeeded, then explicitly complete_work. Use native tools, current versions and operation IDs.")
+    created = invoke("coord", "work", "create", contract["room"], title,
+                     "--assignee", json.dumps({"kind": "agent", "id": identity}),
+                     "--factory", json.dumps({"name": contract["name"], "snapshot_id": snapshot}),
+                     "--operation-id", marker)
+    work_id = created["work"]["work_id"]
+    deadline = time.monotonic() + 180
+    while True:
+        work = invoke("coord", "work", "show", contract["room"], work_id)
+        if work["state"] == "done" and work["output"] is not None:
+            break
+        assert time.monotonic() < deadline, work
+        time.sleep(0.5)
+    assert work["claim_agent_id"] == identity
+    assert work["output"]["producer"] == {"kind": "agent", "id": identity}
+    assert work["output"]["execution_outcome"] == "succeeded"
+    assert artifact.read_text() == marker + "\n"
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    assert work["target_ref"].endswith("#sha256=" + digest)
+    original_output = work["output"]
+    original_generation = work["target_generation"]
+    assert work["acceptance_status"]["state"] != "accepted", "producer execution is not independent acceptance"
+    refusal = {"room_name": contract["room"], "work_id": work_id,
+               "expected_version": work["version"], "expected_generation": work["claim_generation"],
+               "expected_target_generation": work["target_generation"],
+               "expected_requirements_version": work["acceptance_requirements"]["version"],
+               "verdict": "approve", "summary": "Producer cannot independently accept itself",
+               "operation_id": marker + "-refuse"}
+    guest = "printf %s " + shlex.quote(json.dumps(refusal)) + " | /home/agent/.safeyolo/safeyolo-coord call decide_work_acceptance"
+    denied = subprocess.run([*host, "agent", "shell", agent, "-c", guest], capture_output=True, text=True, timeout=30)
+    assert denied.returncode != 0
+    assert "selected acceptance decider" in denied.stderr or "output producer cannot decide" in denied.stderr
+    # The operator independently read the exact retained output. A one-role
+    # fixture selects that operator as decider through the ordinary API.
+    requirements = work["acceptance_requirements"]
+    assert not requirements["checks"] and not requirements["challenges"], "use the finite operator-reviewed fixture"
+    invoke("coord", "work", "set-requirements", contract["room"], work_id,
+           "--expected-version", str(work["version"]), "--expected-generation", str(work["claim_generation"]),
+           "--expected-requirements-version", str(requirements["version"]),
+           "--authorities", '[{"kind":"operator","id":"operator"}]',
+           "--deciders", '[{"kind":"operator","id":"operator"}]', "--independent", "true",
+           "--reason", "The disposable one-role or mixed witness uses independent operator inspection",
+           "--operation-id", marker + "-requirements")
+    work = invoke("coord", "work", "show", contract["room"], work_id)
+    invoke("coord", "work", "decide-acceptance", contract["room"], work_id,
+                      "--expected-version", str(work["version"]),
+                      "--expected-generation", str(work["claim_generation"]),
+                      "--expected-target-generation", str(work["target_generation"]),
+                      "--expected-requirements-version", str(work["acceptance_requirements"]["version"]),
+                      "--verdict", "approve", "--summary", "Read the retained exact marker and verified its digest",
+                      "--operation-id", marker + "-accept")
+    accepted = invoke("coord", "work", "show", contract["room"], work_id)
+    assert accepted["acceptance_status"]["state"] == "accepted"
+    watched = subprocess.run([*host, "agent", "watch", agent, "--once", "--plain", "--history", "100"],
+                             capture_output=True, text=True, timeout=30)
+    assert watched.returncode == 0, watched.stderr
+    assert "harness=claude" in watched.stdout
+    assert "session" in watched.stdout.lower() or "turn" in watched.stdout.lower()
+    stopped = subprocess.run([*command, "stop", contract["name"]], capture_output=True, text=True, timeout=180)
+    assert stopped.returncode == 0, stopped.stderr
+    checkpoint = root / "agents" / agent / "home/.safeyolo/coord-supervisor-state.json"
+    saved = json.loads(checkpoint.read_text())
+    resumed = subprocess.run([*command, "setup", str(source)], capture_output=True, text=True, timeout=600)
+    assert resumed.returncode == 0, (resumed.stdout, resumed.stderr)
+    assert tomllib.loads((root / "policy.toml").read_text())["agents"][agent]["agent_id"] == identity
+    assert json.loads(checkpoint.read_text())["safe_cursor"] >= saved["safe_cursor"]
+    current = invoke("coord", "work", "show", contract["room"], work_id)
+    assert current["output"] == original_output and current["target_generation"] == original_generation
+    assert current["state"] == "done" and current["acceptance_status"]["state"] == "accepted"
+    (root / "claude-factory-result.json").write_text(json.dumps({
+        "work_id": work_id, "agent_id": identity, "snapshot": snapshot, "output": original_output,
+        "target_generation": original_generation, "artifact": str(artifact), "sha256": digest,
+        "restarted_without_duplicate_output": True,
+    }, indent=2) + "\n")
+
+
 def test_factory_run_executes_staged_worker_commands():
-    """Run only on the explicit disposable installed Ubuntu acceptance root."""
+    """Run only on the explicit disposable installed Linux or macOS host."""
     supplied = os.environ.get("SAFEYOLO_FACTORY_ACCEPTANCE_ROOT")
     if not supplied:
         pytest.skip("requires the separately owned, prepared installed Factory witness")
@@ -781,6 +894,7 @@ def test_factory_run_executes_staged_worker_commands():
             assert identities == {item["role"]: (item["observation"]["agent_id"], item["observation"]["runtime"]["run_id"],
                                                  item["observation"]["runtime"]["launch_id"])
                                   for item in current["checks"] if item["component"] == "role"}
+            installed_claude_work(root, source, command, role_checks)
             original = (root / "factories" / name / "approved").read_bytes()
             changed = tomlkit.parse(Path(source).read_text())
             changed["room"] += "-unapproved"

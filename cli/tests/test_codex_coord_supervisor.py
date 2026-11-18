@@ -188,6 +188,7 @@ args=[]
     harness = tmp_path / "fake-codex"
     env["SAFEYOLO_CODEX_BIN"] = str(harness)
     env["SAFEYOLO_PI_BIN"] = str(harness)
+    env["SAFEYOLO_CLAUDE_BIN"] = str(harness)
     yield coord, env, config, state, harness, capture
     if coord.telemetry_release is not None:
         coord.telemetry_release.set()
@@ -1480,3 +1481,148 @@ def test_factory_concurrent_handoffs_are_checkpointed_together(binary, fixture):
     assert {item["recipient_agent"] for item in saved["awaiting_handoffs"]} == {"forge", "lens"}
     assert saved["thread_id"] == "fixture-thread"
     assert coord.sends == 2
+
+
+def claude_harness(fixture, binary, *, mode="success", terminal=True):
+    """Emit the installed Claude 2.1.303 protocol through the existing seam."""
+    _coord, env, config, _state, harness, capture = fixture
+    settings = json.loads(config.read_text())
+    settings["harness"] = "claude"
+    config.write_text(json.dumps(settings))
+    Path(env["HOME"], ".claude.json").write_text(json.dumps({
+        "mcpServers": {"safeyolo-coord": {"command": str(binary), "args": []}},
+    }))
+    harness.write_text(f'''#!{sys.executable}
+import json,os,sys,subprocess,time
+from pathlib import Path
+mode={mode!r}
+if "--version" in sys.argv:
+    print("2.1.303 (Claude Code)");sys.exit(0)
+if "auth" in sys.argv:
+    if "--unknown-claude-option" in sys.argv:
+        print("error: unknown option '--unknown-claude-option'",file=sys.stderr);sys.exit(1)
+    print(json.dumps({{"loggedIn": mode != "invalid_auth"}}));sys.exit(0)
+root=Path({str(capture)!r})
+(root/("prompt-"+str(os.getpid()))).write_text(sys.stdin.read())
+(root/("argv-"+str(os.getpid()))).write_text(json.dumps(sys.argv[1:]))
+session=sys.argv[sys.argv.index("--resume" if "--resume" in sys.argv else "--session-id")+1]
+def event(kind,**fields):
+    print(json.dumps({{"type":kind,"session_id":session,"parent_tool_use_id":None,**fields}}),flush=True)
+event("system",subtype="init",mcp_servers=[{{"name":"safeyolo-coord","status":"failed" if mode=="mcp_failed" else "connected"}}])
+if mode=="crash": sys.exit(1)
+if mode=="timeout":
+    child=subprocess.Popen(["sleep","90"],start_new_session=True)
+    (root/"descendant").write_text(str(child.pid))
+    time.sleep(90)
+if mode=="malformed": print("not JSON",flush=True)
+if mode=="truncated":
+    print('{{"type":"result"',end="",flush=True);sys.exit(0)
+if {terminal!r}:
+    args={{"room_name":"backlog","body":{f'DONE target={TARGET} attention_id={ATTENTION}'!r},"notify":["relay"]}}
+    event("assistant",message={{"role":"assistant","content":[{{"type":"tool_use","id":"send-1","name":"mcp__safeyolo-coord__send","input":args}}]}})
+    result=subprocess.run([{str(binary)!r},"call","send"],input=json.dumps(args),capture_output=True,text=True)
+    event("user",message={{"role":"user","content":[{{"type":"tool_result","tool_use_id":"send-1","is_error":result.returncode!=0,"content":result.stdout}}]}},
+          tool_use_result={{"structuredContent":json.loads(result.stdout)}} if result.returncode==0 else {{}})
+else:
+    event("assistant",message={{"role":"assistant","content":[{{"type":"text","text":{f'DONE target={TARGET} attention_id={ATTENTION}'!r}}}]}})
+if mode=="foreign": session="00000000-0000-0000-0000-000000000000"
+if mode=="nested":
+    print(json.dumps({{"type":"result","session_id":session,"parent_tool_use_id":"nested-tool","subtype":"success","is_error":False}}),flush=True)
+else:
+    event("result",subtype="error_during_execution" if mode=="error" else "success",is_error=mode=="error")
+if mode=="late_malformed": print("truncated tail {{",flush=True)
+if mode=="late_crash": sys.exit(1)
+''')
+    harness.chmod(0o755)
+
+
+def test_claude_terminal_receipt_and_telemetry_use_existing_checkpoint(binary, fixture):
+    coord, _env, config, state, _harness, capture = fixture
+    settings = json.loads(config.read_text())
+    settings["agent_room"] = "forge-agent"
+    config.write_text(json.dumps(settings))
+    claude_harness(fixture, binary)
+    result = run(binary, fixture, "--model", "name with spaces")
+    assert result.returncode == 0, result.stderr
+    saved = json.loads(state.read_text())
+    assert saved["harness"] == "claude" and not saved["in_flight"]
+    assert saved["owned_process"] is None
+    argv = json.loads(next(capture.glob("argv-*")).read_text())
+    assert argv[:2] == ["--model", "name with spaces"]
+    assert "--session-id" in argv and "--print" in argv
+    assert any(event["type"] == "system" for event in coord.telemetry)
+    assert any(event["type"] == "result" for event in coord.telemetry)
+    assert any(message["body"].startswith("DONE target=") for message in coord.messages)
+
+
+def test_claude_crashed_turn_resumes_same_session_without_accepting_narration(binary, fixture):
+    _coord, _env, _config, state, _harness, capture = fixture
+    claude_harness(fixture, binary, mode="crash", terminal=False)
+    result = run(binary, fixture)
+    assert result.returncode != 0
+    saved = json.loads(state.read_text())
+    assert saved["phase"] == "uncertain" and saved["in_flight"]
+    session = saved["thread_id"]
+    claude_harness(fixture, binary, terminal=False)
+    result = run(binary, fixture, confirm_fresh_identity=False)
+    assert result.returncode != 0, "model prose cannot complete canonical work"
+    args = [json.loads(path.read_text()) for path in capture.glob("argv-*")]
+    assert any("--resume" in row and row[row.index("--resume")+1] == session for row in args)
+    assert json.loads(state.read_text())["in_flight"] == saved["in_flight"]
+
+
+@pytest.mark.parametrize("mode", ["malformed", "truncated", "foreign", "nested", "error", "mcp_failed", "late_malformed", "late_crash"])
+def test_claude_failed_stream_does_not_consume_operator_information(binary, fixture, mode):
+    coord, _env, _config, state, _harness, _capture = fixture
+    coord.objects[ATTENTION]["object"] = {**OBJECT, "sender_kind": "operator",
+                                          "sender_agent_name": None, "sender_agent_id": None,
+                                          "body": "Inspect this selected context."}
+    claude_harness(fixture, binary, mode=mode, terminal=False)
+    result = run(binary, fixture)
+    assert result.returncode != 0
+    saved = json.loads(state.read_text())
+    assert saved["phase"] == "uncertain" and saved["in_flight"][0]["attention_id"] == ATTENTION
+    assert ATTENTION not in saved["recent_attention_ids"]
+    assert saved["owned_process"] is None
+
+
+def test_claude_valid_stream_consumes_operator_information(binary, fixture):
+    coord, _env, _config, state, _harness, _capture = fixture
+    coord.objects[ATTENTION]["object"] = {**OBJECT, "sender_kind": "operator",
+                                          "sender_agent_name": None, "sender_agent_id": None,
+                                          "body": "Inspect this selected context."}
+    claude_harness(fixture, binary, terminal=False)
+    result = run(binary, fixture)
+    assert result.returncode == 0, result.stderr
+    saved = json.loads(state.read_text())
+    assert saved["phase"] == "idle" and saved["in_flight"] == []
+    assert ATTENTION in saved["recent_attention_ids"]
+
+
+@pytest.mark.parametrize("argument", ["--resume=other", "-rother", "--output-format=text", "--no-session-persistence", "--unknown-claude-option"])
+def test_claude_rejects_conflicting_and_unknown_args_before_dispatch(binary, fixture, argument):
+    _coord, _env, _config, _state, _harness, capture = fixture
+    claude_harness(fixture, binary)
+    result = run(binary, fixture, argument)
+    assert result.returncode != 0
+    assert "owned by the supervisor" in result.stderr or "unknown option" in result.stderr
+    assert not list(capture.iterdir())
+
+
+def test_claude_invalid_authentication_refuses_before_dispatch(binary, fixture):
+    _coord, _env, _config, _state, _harness, capture = fixture
+    claude_harness(fixture, binary, mode="invalid_auth")
+    result = run(binary, fixture)
+    assert result.returncode != 0 and "not authenticated" in result.stderr
+    assert not list(capture.iterdir())
+
+
+def test_claude_timeout_cleans_owned_descendants_and_retains_work(binary, fixture):
+    _coord, _env, _config, state, _harness, capture = fixture
+    claude_harness(fixture, binary, mode="timeout", terminal=False)
+    result = run(binary, fixture, timeout=40)
+    assert result.returncode != 0
+    saved = json.loads(state.read_text())
+    assert saved["phase"] == "uncertain" and saved["in_flight"]
+    assert saved["owned_process"] is None
+    assert live_process_token(int((capture / "descendant").read_text())) is None
