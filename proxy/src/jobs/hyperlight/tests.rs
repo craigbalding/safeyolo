@@ -151,7 +151,12 @@ async fn missing_artifacts_identify_role_path_and_os_error_before_discovery() {
         ("python.cpio", "Unikraft runtime"),
     ] {
         let (root, mut spec, config) = fixture("exit 99");
-        let JobEngine::HyperlightUnikraft { runtime, checker } = &mut spec.engine else {
+        let JobEngine::HyperlightUnikraft {
+            runtime,
+            checker,
+            reuse_initialization,
+        } = &mut spec.engine
+        else {
             unreachable!()
         };
         runtime.path = "runtime.json".into();
@@ -159,6 +164,7 @@ async fn missing_artifacts_identify_role_path_and_os_error_before_discovery() {
         if missing == "core.elf" {
             fs::copy(root.path().join("checker.py"), root.path().join(missing)).unwrap();
             spec.engine = JobEngine::Hyperlight {
+                reuse_initialization: *reuse_initialization,
                 runtime: runtime.clone(),
                 guest: PinnedArtifact {
                     path: missing.into(),
