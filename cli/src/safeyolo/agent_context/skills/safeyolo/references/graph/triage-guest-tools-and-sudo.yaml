@@ -280,6 +280,38 @@ nodes:
     source: authored
 
 
+  - id: sym.tools_guest_prerequisite_lost
+    kind: symptom
+    label: "A package or local configuration is missing after recreation or a selected guest upgrade"
+    keywords: [restore, retained state, recreation, guest upgrade, configuration, package missing]
+    source: authored
+
+  - id: ev.tools_retained_capture
+    kind: evidence
+    label: "Run safeyolo-guest-state status and restore in the selected guest; inspect coverage, baseline, capture completion, watcher and the preview"
+    source: authored
+
+  - id: con.tools_restore_retained
+    kind: conclusion
+    label: "Within existing authority, reconcile the preview and run safeyolo-guest-state restore --apply; verify the task prerequisites and reuse working packages"
+    source: authored
+
+  - id: con.tools_capture_uncovered
+    kind: conclusion
+    label: "Select the application's real configuration path with paths add, run capture and inspect its private history; do not infer uncaptured contents"
+    source: authored
+
+  - id: con.tools_restore_unresolved
+    kind: conclusion
+    label: "Preserve the retained state; inspect interrupted transactions, unknown baselines, capture errors, conflicting files or unavailable package requirements and resolve the specific need without wider authority"
+    source: authored
+
+  - id: con.tools_capture_absent
+    kind: conclusion
+    label: "Check the installed Debian image/helper and existing setup notes; absent capture cannot reconstruct lost contents. Use existing operator recovery if the harness cannot start"
+    source: authored
+
+
 edges:
   # sudo entries
   - {from: sym.tools_sudo_asks_password,      to: ev.tools_check_sudo_path, kind: next_check}
@@ -355,6 +387,13 @@ edges:
   - {from: ev.tools_check_procmem_readable, to: con.tools_use_non_ptrace_tool, kind: implies, when: "the tool uses /proc/mem AND ptrace_scope is 0 -- no relationship or elevation needed"}
 
 
+  - {from: sym.tools_guest_prerequisite_lost, to: ev.tools_retained_capture, kind: next_check}
+  - {from: ev.tools_retained_capture, to: con.tools_restore_retained, kind: implies, when: "a retained completed capture has a usable preview with no unresolved conflict or requirement"}
+  - {from: ev.tools_retained_capture, to: con.tools_capture_uncovered, kind: implies, when: "the application configuration path was outside coverage"}
+  - {from: ev.tools_retained_capture, to: con.tools_restore_unresolved, kind: implies, when: "capture failed, a transaction is incomplete, the baseline is unknown, a file conflicts or a package constraint is unavailable"}
+  - {from: ev.tools_retained_capture, to: con.tools_capture_absent, kind: implies, when: "the record or image integration is absent"}
+
+
 entries:
   - symptom: sym.tools_sudo_asks_password
   - symptom: sym.tools_sudo_command_not_found
@@ -365,3 +404,4 @@ entries:
   - symptom: sym.tools_pip_ssl_or_timeout
   - symptom: sym.tools_download_28x_block
   - symptom: sym.tools_ptrace_denied
+  - symptom: sym.tools_guest_prerequisite_lost

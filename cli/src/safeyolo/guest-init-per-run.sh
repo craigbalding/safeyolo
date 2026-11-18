@@ -212,6 +212,16 @@ else
     stop_guest_schedulers() { :; }
 fi
 
+# Capture uses persistent home after proxy/environment setup, before ordinary work.
+# Restoration remains agent-assisted; failures stay discoverable without preventing recovery.
+if [ -x /usr/local/bin/safeyolo-guest-state ]; then
+    if "$GUEST_HELPER" retained-state start; then
+        "$GUEST_HELPER" retained-state watch >> /var/log/safeyolo-guest-state.log 2>&1 &
+    else
+        echo 'Guest state needs attention; run safeyolo-guest-state status' >&2
+    fi
+fi
+
 # --------------------------------------------------------------------------
 # 3. Run user init hook (legacy; host script can write here too)
 # --------------------------------------------------------------------------

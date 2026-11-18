@@ -70,7 +70,8 @@ do not reload Coord or GitHub references already supplied by the role contract.
   It covers ordinary curl syntax, the CONNECT response ID and linked evidence
   after a TLS failure. Address acquisition is separate from target selection.
 - Read [Guest tools and privilege](references/guest-tools.md) before installing
-  native packages, diagnosing `sudo`, using Linux `setpriv`, or deciding
+  native packages, restoring retained guest prerequisites, changing configuration
+  capture coverage, diagnosing `sudo`, using Linux `setpriv`, or deciding
   whether an operator root shell is actually necessary.
 - Read [Desktop and operator preview](references/desktop.md) before starting a
   graphical guest program, exposing the optional desktop to the operator, or
