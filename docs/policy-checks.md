@@ -174,6 +174,81 @@ It cannot replace the `service_evidence` required by GitHub checked-input
 admission. A missing required capture remains unavailable. Named service sources
 still require their service/capability grants.
 
+### Adopt an installed public-network job as a named check
+
+On the host that owns the selected instance, first choose and validate an
+[installed network example](hyperlight-jobs.md#network-access-through-the-delegated-proxy).
+Retain a copy of its complete bundle at an unused, stable host path. Relative
+runtime/checker paths in the JobSpec resolve within that copy. Keep its pins;
+an installed-package upgrade must not replace an adopted checker silently.
+Use `hyperlight-network.json` for core Hyperlight or
+`hyperlight-unikraft-network.json` for Python. gVisor/VZ job sources use the
+same check schema with their platform JobSpec and in-guest client.
+
+Before applying the following fragment, replace `/absolute/retained/bundle`
+with that retained bundle's path and `my-agent` with the intended invoker.
+Merge the fragment into the selected policy through the
+[normal check, preview and apply workflow](installation.md#check-show-and-apply).
+The check sends one GET to `https://example.com/` under
+`gate:hyperlight-network-check`. Its caller needs invocation permission; the
+gate needs network permission. There is no Gateway grant in this example.
+
+```toml
+[agents."gate:hyperlight-network-check".hosts."example.com"]
+egress = "allow"
+
+[checks.public_status]
+source_id = "public-http-status"
+meaning = "The adopted public endpoint returns HTTP 200"
+subject = "value"
+result_type = "finding"
+influences = ["hard_exclusion"]
+implementation_version = "installed-network-example-v1"
+configuration_version = "example-com-status-v1"
+max_age_seconds = 30
+invokers = ["my-agent"]
+inputs = { url = "https://example.com/", expected_status = "200" }
+
+[checks.public_status.source]
+kind = "job"
+spec = "/absolute/retained/bundle/hyperlight-network.json"
+effects = "passive"
+
+[checks.public_status.source.limits]
+timeout_ms = 20000
+max_input_bytes = 16384
+max_output_bytes = 16384
+max_concurrent = 1
+max_pending = 1
+max_cached = 16
+```
+
+For Unikraft, select its JobSpec in `source.spec`; the surrounding check stays
+the same. The labels identify the adopted implementation/configuration;
+the JobSpec separately pins the actual runtime and checker bytes.
+Invoke `public_status` through `/checks/invoke` with this body:
+
+```json
+{"check":"public_status","subject":{"kind":"value","value":"https://example.com/"}}
+```
+
+The policy-owned `inputs.url` fixes the destination. Changing the invocation's
+subject cannot change that destination, gate or engine. A completed HTTP
+response with another status gives a negative finding. A failed connection,
+invalid TLS certificate, malformed output or missing observation gives
+unavailable evidence. Each cached result retains its actual execution identity;
+expiry, changed inputs/versions or policy activation require fresh evidence.
+
+For a Gateway-backed variant, adopt a separate named check using the same
+network JobSpec. Fix its `inputs.url` to the intended API operation and set
+`inputs.service = "github"`. Separately grant the gate the intended GitHub
+capability and stored credential, and permit that API destination in its network
+policy, as described in the
+[Gateway network example](hyperlight-jobs.md#network-access-through-the-delegated-proxy).
+Network access alone supplies neither the scoped token nor route permission.
+The response remains a guest-produced status finding; use the existing
+mediated-service author check when GitHub admission requires a captured snapshot.
+
 ### Invoke an adopted check as an agent
 
 An operator can add `invokers = ["forge"]` to a named job or service check.

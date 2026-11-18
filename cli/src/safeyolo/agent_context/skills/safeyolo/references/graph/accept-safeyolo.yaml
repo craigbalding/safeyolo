@@ -266,7 +266,7 @@ nodes:
         - path: tests/blackbox/host/job_sandbox.py
           sha256: ce1fec2dda673ad7e185d8bdaef3f4cf444f0d984e613adbce079d12988f1cfb
         - path: tests/blackbox/host/job_network.py
-          sha256: 5067c0777296bce1fe61c625a8cc8736c9f3c4af540cd9c4cc58e7d6583f7f48
+          sha256: 80a0dd4b3f2cc4d403ed50c608f2a250f0f785e083bb452919e4df50a035d5ca
         - path: proxy/Cargo.toml
           sha256: dde9b034528dfdc6c43174d384bbeb8d1bedbae8ab763320a656cdf929ffc1da
         - path: proxy/Cargo.lock
@@ -365,7 +365,7 @@ nodes:
         - path: tests/blackbox/host/job_sandbox.py
           sha256: ce1fec2dda673ad7e185d8bdaef3f4cf444f0d984e613adbce079d12988f1cfb
         - path: tests/blackbox/host/job_network.py
-          sha256: 5067c0777296bce1fe61c625a8cc8736c9f3c4af540cd9c4cc58e7d6583f7f48
+          sha256: 80a0dd4b3f2cc4d403ed50c608f2a250f0f785e083bb452919e4df50a035d5ca
         - path: proxy/Cargo.toml
           sha256: dde9b034528dfdc6c43174d384bbeb8d1bedbae8ab763320a656cdf929ffc1da
         - path: proxy/Cargo.lock

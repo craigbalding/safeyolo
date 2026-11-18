@@ -1,7 +1,8 @@
-"""Exercise delegated public egress through both installed Hyperlight engines.
+"""Exercise delegated public egress through an installed job engine.
 
-Run on an owning Linux KVM or physical Apple-silicon HVF host with matching
-candidate CLI/proxy/bundle, Python and tomlkit. Supply a new short instance root,
+Run on the owning host with matching candidate CLI/proxy and prepared inputs,
+Python and tomlkit. Hyperlight needs Linux KVM or physical Apple-silicon HVF;
+platform jobs use their existing backend. Supply a new short instance root,
 empty private disk-backed scratch directory and two authorized loopback ports.
 This witness needs no provider credential or Service Gateway grant. It covers
 HTTP direct/named allow/removal and contact-free validation. Use --tls for
@@ -22,6 +23,17 @@ Core allow/direct-denial observations. The continuation runs Core named denial
 and the Unikraft cases in a fresh instance, with separate contact counters.
 Use --engine to select only an engine whose observations remain unrun. Earlier
 receipts retain their own source, artifact identities and contact counters.
+
+For gVisor or VZ select --engine gvisor or --engine vz and --base-root pointing
+to that host's prepared installation instead of --bundle. The same direct/named
+HTTP and TLS cases use the platform guest's existing curl client. Platform
+lifetime and direct-socket/DNS isolation remain in job_network.py/job_sandbox.py.
+Use --scope for destination/method/path refusal, a negative HTTP 302 finding
+without automatic following, separate adopted gates and cache expiry. The 302
+case does not prove policy refusal of an attempted redirected request.
+Use --caller-only for caller/ancestry/offline cases where
+those observations remain unrun. These modes share logical cases across all
+engines without rerunning completed lifetime or authority cases.
 """
 
 import argparse
@@ -33,14 +45,28 @@ import signal
 import socket
 import ssl
 import subprocess
+import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import tomlkit
 from hyperlight_services import Instance, digest, job_result, output, save, stop
-from job_network import create_upstream_certificate, wait_ready
+from job_network import create_upstream_certificate, stage_runtime, wait_ready
+from job_sandbox import job_directories
+
+# The adopted argv fixes this public probe's URL; no guest JSON parser or extra
+# package is needed. curl runs inside the platform guest, through its injected
+# proxy and CA. Redirects and retries are not enabled.
+PLATFORM_CHECKER = r'''
+status=$(curl --silent --show-error --max-time 40 --proxy "$HTTP_PROXY" \
+    --cacert "$SSL_CERT_FILE" --output /work/response --write-out '%{http_code}' "$1")
+positive=false
+if [ "$status" = 200 ]; then positive=true; fi
+printf '{"finding":{"kind":"finding","positive":%s}}\n' "$positive"
+'''
 
 
 class TlsOrigin(ThreadingHTTPServer):
@@ -103,7 +129,10 @@ class NetworkOrigin(BaseHTTPRequestHandler):
         if held is not None:
             held.wait(self.connection)
         try:
-            self.send_response(200)
+            redirect = getattr(self.server, "redirect", False)
+            self.send_response(302 if redirect else 200)
+            if redirect:
+                self.send_header("Location", f"http://localhost:{self.server.server_port}/scope/denied")
             self.send_header("Content-Length", "0")
             self.end_headers()
         except (BrokenPipeError, ConnectionResetError) as error:
@@ -350,17 +379,17 @@ def exercise_lifetimes(instance, engine, origin, contacts):
     return results
 
 
-def check_direct(result, positive):
+def check_direct(result, positive, *, expected_engine=None):
     assert result["outcome"] == {"kind": "exit", "code": 0}, result
     assert result["observation_error"] is None, result
     finding = output(result)["finding"]
     assert finding["kind"] == "finding" and finding["positive"] is positive, result
     assert result["gate_principal"] == result["authorization_principal"] == "gate:hyperlight-network-check"
-    assert result["rootfs"]["network"] is True
+    check_network_execution(result, expected_engine)
     assert result["service_evidence"] == []
 
 
-def check_named(status, value, positive):
+def check_named(status, value, positive, *, gate="gate:hyperlight-network-check", expected_engine=None):
     assert status == 200, value
     evidence = value["evidence"]
     assert evidence["unavailable"] is None, value
@@ -369,19 +398,33 @@ def check_named(status, value, positive):
     execution = evidence["execution"]
     assert execution["outcome"] == {"kind": "exit", "code": 0}, value
     assert execution["observation_error"] is None, value
-    assert execution["gate_principal"] == execution["authorization_principal"] == "gate:hyperlight-network-check"
+    assert execution["gate_principal"] == execution["authorization_principal"] == gate
     assert execution["service_evidence"] == [], value
+    check_network_execution(execution, expected_engine)
+
+
+def check_network_execution(execution, expected_engine=None):
+    if expected_engine is not None:
+        assert execution["engine"] == expected_engine, execution
+    if execution["engine"] in ("hyperlight", "hyperlight-unikraft"):
+        assert execution["rootfs"]["network"] is True, execution
+    else:
+        assert execution["engine"] in ("gvisor", "vz"), execution
+        assert execution["outcome_source"] == "guest_process", execution
+        assert execution["rootfs"]["profile"] == "shared", execution
 
 
 def check_failed_tls(execution):
     """Check observed execution failure; the proxy audit establishes its cause."""
     assert execution["outcome"] == {"kind": "exit", "code": 1}, execution
     assert execution["observation_error"] is None, execution
-    assert execution["outcome_source"] == "host_helper", execution
-    report = execution["runtime_report"]
-    assert report["completion"] is None and report["error"], execution
+    if execution["engine"] in ("hyperlight", "hyperlight-unikraft"):
+        assert execution["outcome_source"] == "host_helper", execution
+        report = execution["runtime_report"]
+        assert report["completion"] is None and report["error"], execution
+    check_network_execution(execution)
     assert execution["gate_principal"] == execution["authorization_principal"] == "gate:hyperlight-network-check"
-    assert execution["rootfs"]["network"] is True and execution["service_evidence"] == [], execution
+    assert execution["service_evidence"] == [], execution
 
 
 def check_connect_audit(rows, runs, port):
@@ -444,8 +487,111 @@ def completed_core(args):
             "contacts": prior["origin_contacts"], "versions": versions}
 
 
+def scope_cases(instance, engine, contacts, origin):
+    """Exercise inspectable network scopes with the same unchanged GET job."""
+    original = copy.deepcopy(instance.policy)
+    port = instance.args.upstream_port
+    results = {}
+    try:
+        count = len(contacts)
+        instance.command("job", "validate", str(instance.scratch / f"{engine}-adopted.json"))
+        assert len(contacts) == count, contacts
+        # The loader selects either baseline hosts/agents or IAM permissions.
+        # These method/path cases use IAM, rather than leaving it shadowed by
+        # the baseline schema. The original policy is restored below.
+        instance.policy.pop("hosts", None)
+        instance.policy.pop("agents", None)
+        for label, host, path, permitted_method, positive, added in (
+                ("allowed", "127.0.0.1", f"/{engine}", "GET", True, 2),
+                ("destination", "localhost", f"/{engine}", "GET", False, 0),
+                ("path", "127.0.0.1", "/outside", "GET", False, 0),
+                ("method", "127.0.0.1", f"/{engine}", "HEAD", False, 0),
+                ("http-302-no-follow", "127.0.0.1", f"/{engine}", "GET", False, 2)):
+            origin.redirect = label == "http-302-no-follow"
+            instance.policy["permissions"] = [
+                {"action": "network:request", "resource": f"{host}/*", "effect": "allow", "condition": {
+                    "agent": "gate:hyperlight-network-check", "port": port,
+                    "method": permitted_method, "path_prefix": path}},
+                {"action": "network:request", "resource": "*", "effect": "deny"}]
+            instance.apply()
+            subject = {"kind": "value", "value": f"http://127.0.0.1:{port}/{engine}"}
+            count = len(contacts)
+            direct = instance.run_job(engine, {"subject": subject, "inputs": {}})
+            check_direct(direct, positive, expected_engine=engine)
+            status, named = instance.invoke(engine, {"subject": subject})
+            check_named(status, named, positive, expected_engine=engine)
+            assert len(contacts) == count + added, (label, contacts)
+            results[label] = {"direct": direct, "named": named, "new_contacts": contacts[count:]}
+            if origin.redirect:
+                assert all(row["path"] == f"/{engine}" for row in contacts[count:]), contacts
+                results[label]["evidence_scope"] = (
+                    "Origin returned HTTP 302; findings are negative and neither client followed. "
+                    "No redirected second request was attempted; its policy refusal remains unverified.")
+            save(instance.scratch / f"{engine}-scope.json", results)
+    finally:
+        origin.redirect = False
+        instance.policy = original
+        instance.apply()
+    results["freshness"] = cache_expiry_and_gate_separation(instance, engine, contacts)
+    save(instance.scratch / f"{engine}-scope.json", results)
+    return results
+
+
+def cache_expiry_and_gate_separation(instance, engine, contacts):
+    """A result expires, and another adopted gate cannot borrow its evidence."""
+    original = copy.deepcopy(instance.policy)
+    other = engine + "-other-gate"
+    spec = json.loads((instance.scratch / f"{engine}-adopted.json").read_bytes())
+    spec["gate_id"] = "network-other-gate"
+    path = instance.scratch / f"{other}-adopted.json"
+    save(path, spec)
+    check = instance.policy["checks"][engine]
+    check["max_age_seconds"] = 1
+    check["source"]["limits"]["max_cached"] = 2
+    different_gate = copy.deepcopy(check)
+    different_gate["source"]["spec"] = str(path)
+    different_gate["configuration_version"] = digest(path)
+    instance.policy["checks"][other] = different_gate
+    subject = {"kind": "value", "value": f"http://127.0.0.1:{instance.args.upstream_port}/fresh/{engine}/expiry"}
+    try:
+        instance.apply()
+        count = len(contacts)
+        status, first = instance.invoke(engine, {"subject": subject})
+        check_named(status, first, True)
+        assert first["evidence"]["acquisition"] == "live", first
+        status, cached = instance.invoke(engine, {"subject": subject})
+        check_named(status, cached, True)
+        assert cached["evidence"]["acquisition"] == "reused_live_evidence", cached
+        assert cached["evidence"]["execution"] == first["evidence"]["execution"], cached
+        assert len(contacts) == count + 1, contacts
+        # Do not activate another policy: that would test invalidation instead
+        # of expiration of evidence from the current policy.
+        collected = first["evidence"]["result"]["collected_at_ms"]
+        time.sleep(max(0, (collected + 1100 - time.time() * 1000) / 1000))
+        status, expired = instance.invoke(engine, {"subject": subject})
+        check_named(status, expired, True)
+        assert expired["evidence"]["acquisition"] == "live", expired
+        assert expired["evidence"]["execution"]["run_id"] != first["evidence"]["execution"]["run_id"], expired
+        assert expired["evidence"]["result"]["collected_at_ms"] > collected, expired
+        assert len(contacts) == count + 2, contacts
+        status, denied = instance.invoke(other, {"subject": subject})
+        check_named(status, denied, False, gate="gate:network-other-gate")
+        assert denied["evidence"]["acquisition"] == "live", denied
+        assert denied["evidence"]["execution"]["run_id"] not in {
+            first["evidence"]["execution"]["run_id"], expired["evidence"]["execution"]["run_id"]}, denied
+        assert len(contacts) == count + 2, contacts
+        return {"first": first, "cached": cached, "expired": expired, "different_gate": denied}
+    finally:
+        instance.policy = original
+        instance.apply()
+
+
 def exercise_engine(instance, engine, contacts, continuing_core, origin):
     """Observe the selected calls and require denied calls to add no contact."""
+    if instance.args.scope:
+        return scope_cases(instance, engine, contacts, origin)
+    if instance.args.caller_only:
+        return {"authority": authority_cases(instance, engine, contacts)}
     if instance.args.authority or instance.args.lifetimes_only:
         observed = {"authority": authority_cases(instance, engine, contacts)} if instance.args.authority else {}
         observed["lifetimes"] = exercise_lifetimes(instance, engine, origin, contacts)
@@ -464,10 +610,10 @@ def exercise_engine(instance, engine, contacts, continuing_core, origin):
         instance.command("policy", "check", str(instance.scratch / "policy-candidate.toml"))
         assert len(contacts) == before and len(connections) == before_connections
         direct = instance.run_job(engine, request)
-        check_direct(direct, True)
+        check_direct(direct, True, expected_engine=engine)
         assert len(contacts) == before + 1
         status, named = instance.invoke(engine, {"subject": subject})
-        check_named(status, named, True)
+        check_named(status, named, True, expected_engine=engine)
         assert len(contacts) == before + 2
         observed.update(direct=direct["run_id"], named=named)
     expected_contacts = len(contacts)
@@ -505,6 +651,11 @@ def adopt_network_checks(instance, engines):
               "listeners": [{"agent_id": "driver", "socket_path": str(args.root / "driver.sock")}]}
     if args.tls:
         config["upstream_ca_file"] = "certs/mitmproxy-ca-cert.pem"
+    if args.base_root is not None:
+        stage_runtime(args.cli, args.proxy, args.base_root, args.root)
+        original = tomlkit.parse((args.base_root / "config.toml").read_text())
+        if "linux" in original:
+            config["linux"] = original["linux"]
     (args.root / "config.toml").write_text(tomlkit.dumps(config))
     destination = f"127.0.0.1:{args.upstream_port}"
     gate = "gate:hyperlight-network-check"
@@ -512,7 +663,16 @@ def adopt_network_checks(instance, engines):
                        "agents": {gate: {"hosts": {destination: {"egress": "allow"}}}},
                        "controls": {"test_context": {"action": "warn"}}, "checks": {}}
     for engine in engines:
-        spec = json.loads((args.bundle / f"{engine}-network.json").read_bytes())
+        if engine in ("gvisor", "vz"):
+            url = f"{'https' if args.tls else 'http'}://127.0.0.1:{args.upstream_port}/{engine}"
+            spec = {"engine": {"kind": "platform"}, "gate_id": "hyperlight-network-check",
+                    "argv": ["/bin/bash", "-euo", "pipefail", "-c", PLATFORM_CHECKER, "network-check", url], "network": True,
+                    "memory_mb": 512, "max_input_bytes": 16384, "max_input_entries": 1,
+                    "retain_bytes": 16384}
+            implementation = digest(Path(__file__))
+        else:
+            spec = json.loads((args.bundle / f"{engine}-network.json").read_bytes())
+            implementation = spec["engine"].get("guest", spec["engine"].get("checker"))["sha256"]
         for key in ("runtime", "guest", "checker"):
             if key in spec["engine"]:
                 spec["engine"][key]["path"] = str(args.bundle / spec["engine"][key]["path"])
@@ -522,7 +682,7 @@ def adopt_network_checks(instance, engines):
         instance.policy["checks"][engine] = {
             "source_id": "public-http-status", "meaning": "Public endpoint returns HTTP 200",
             "subject": "value", "result_type": "finding", "influences": ["hard_exclusion"],
-            "implementation_version": spec["engine"].get("guest", spec["engine"].get("checker"))["sha256"],
+            "implementation_version": implementation,
             "configuration_version": digest(path), "max_age_seconds": 60, "invokers": ["driver"],
             "source": {"kind": "job", "spec": str(path), "effects": "passive", "limits": {
                 "timeout_ms": 40_000, "max_input_bytes": 16384, "max_output_bytes": 16384,
@@ -533,11 +693,13 @@ def adopt_network_checks(instance, engines):
 def check_shutdown(args, results):
     assert not (args.root / "data/ready.json").exists()
     assert not list((args.root / "data").glob("job-hyperlight-*"))
-    if args.tls or args.authority or args.lifetimes_only:
+    if args.base_root is not None:
+        assert not job_directories(args.root), "platform job runtime remains"
+    if args.tls or args.authority or args.lifetimes_only or args.caller_only:
         # Shutdown flushes the ordinary audit writer. Keep the complete private
         # audit and raw job streams even when the exact refusal assertion fails.
         rows = [json.loads(line) for line in (args.root / "logs/audit.jsonl").read_text().splitlines()]
-    if args.authority:
+    if args.authority or args.caller_only:
         check_cycle_audit(rows, results)
     if args.tls:
         runs = [run for result in results.values() for run in
@@ -559,7 +721,7 @@ def exercise(args):
 
     server = TlsOrigin if args.tls else ThreadingHTTPServer
     with server(("127.0.0.1", args.upstream_port), NetworkOrigin) as origin:
-        origin.context, origin.connections, origin.held = context, connections, None
+        origin.context, origin.connections, origin.held, origin.redirect = context, connections, None, False
         origin.observation_path = args.scratch / "origin-tls.json"
         origin.contacts, origin.contacts_path = contacts, args.scratch / "origin-contacts.json"
         thread = threading.Thread(target=origin.serve_forever)
@@ -568,10 +730,11 @@ def exercise(args):
             adopt_network_checks(instance, engines)
             results = {}
             report = {"engines": results, "contacts": contacts, "reused_core": reused,
-                      "mode": ("lifetimes" if args.lifetimes_only else "authority" if args.authority
+                      "mode": ("scope" if args.scope else "caller" if args.caller_only else
+                               "lifetimes" if args.lifetimes_only else "authority" if args.authority
                                else "https-inspected" if args.tls else "http"),
                       "tls_connections": connections,
-                      "runtime_manifest_sha256": digest(args.bundle / "runtime.json"),
+                      "runtime_manifest_sha256": digest(args.bundle / "runtime.json") if args.bundle else None,
                       "cli_sha256": digest(args.cli), "proxy_sha256": digest(args.proxy)}
             save(args.scratch / "result.json", report)
             with (args.scratch / "proxy.log").open("wb") as log:
@@ -595,7 +758,10 @@ def exercise(args):
             save(args.scratch / "origin-contacts.json", contacts)
             save(args.scratch / "origin-tls.json", connections)
     check_shutdown(args, results)
-    if args.authority or args.lifetimes_only:
+    if args.scope or args.caller_only:
+        print("PASS: " + ("adopted gate scopes, cache expiry and separate-gate evidence" if args.scope else
+                         "adopted caller/gate separation, forged inputs/headers, cycle refusal and offline effects"))
+    elif args.authority or args.lifetimes_only:
         print("PASS: generic stream direct/named deadlines and revocation, cancellation, EOF/endpoint teardown and fresh/cached invocations")
     else:
         protocol = "HTTPS/CONNECT refusal" if args.tls else "HTTP"
@@ -603,29 +769,44 @@ def exercise(args):
               + ("; completed Core observations reused from the selected receipt" if reused else ""))
 
 
+def validate_engine_selection(parser, args):
+    if (args.base_root is not None) != (args.engine in ("gvisor", "vz")):
+        parser.error("select --engine gvisor/vz with --base-root; Hyperlight engines require --bundle")
+    if args.base_root is not None and (sys.platform == "darwin") != (args.engine == "vz"):
+        parser.error("select the host's actual platform engine: VZ on macOS, gVisor on Linux")
+    if args.base_root is not None and (args.authority or args.lifetimes_only):
+        parser.error("platform engines use --scope, --caller-only or HTTP/TLS; their lifetime witness is job_network.py")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("cli", "proxy", "bundle", "root", "scratch"):
+    for name in ("cli", "proxy", "root", "scratch"):
         parser.add_argument("--" + name, type=Path, required=True)
+    runtime = parser.add_mutually_exclusive_group(required=True)
+    runtime.add_argument("--bundle", type=Path, help="pinned Hyperlight bundle for this host")
+    runtime.add_argument("--base-root", type=Path, help="prepared platform installation for gVisor or VZ")
     for name in ("admin-port", "upstream-port"):
         parser.add_argument("--" + name, type=int, required=True)
     parser.add_argument("--continue-from", type=Path, help="retained partial Core HTTP observation receipt")
-    parser.add_argument("--engine", choices=("hyperlight", "hyperlight-unikraft"),
+    parser.add_argument("--engine", choices=("hyperlight", "hyperlight-unikraft", "gvisor", "vz"),
                         help="exercise only the selected engine (default: both)")
-    parser.add_argument("--tls", action="store_true", help="run only HTTPS success and CONNECT-refusal cases")
-    parser.add_argument("--authority", action="store_true", help="run only new generic HTTP authority, cycle/offline and lifetime cases")
-    parser.add_argument("--lifetimes-only", action="store_true", help="run lifetime cases without caller, offline or cycle replays")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--tls", action="store_true", help="run only HTTPS success and CONNECT-refusal cases")
+    modes.add_argument("--authority", action="store_true", help="run generic HTTP authority, cycle/offline and lifetime cases")
+    modes.add_argument("--lifetimes-only", action="store_true", help="run lifetime cases without caller, offline or cycle replays")
+    modes.add_argument("--scope", action="store_true", help="run shared scopes and separate-gate evidence/expiry cases")
+    modes.add_argument("--caller-only", action="store_true", help="run shared caller/cycle/offline cases without lifetimes")
     args = parser.parse_args()
-    for name in ("cli", "proxy", "bundle", "scratch"):
+    for name in ("cli", "proxy", "scratch"):
         setattr(args, name, getattr(args, name).resolve(strict=True))
+    for name in ("bundle", "base_root"):
+        if getattr(args, name) is not None:
+            setattr(args, name, getattr(args, name).resolve(strict=True))
     args.root = args.root.absolute()
-    if args.authority and (args.tls or args.continue_from is not None):
-        parser.error("--authority cannot be combined with --tls or --continue-from")
-    if args.lifetimes_only and (args.authority or args.tls or args.continue_from is not None):
-        parser.error("--lifetimes-only cannot be combined with --authority, --tls or --continue-from")
+    validate_engine_selection(parser, args)
     if args.continue_from is not None:
-        if args.engine is not None or args.tls:
-            parser.error("--continue-from is HTTP-only and cannot be combined with --engine or --tls")
+        if args.engine is not None or args.tls or args.authority or args.lifetimes_only or args.scope or args.caller_only:
+            parser.error("--continue-from selects its partial HTTP cases; do not combine an engine or another mode")
         args.continue_from = args.continue_from.resolve(strict=True)
     # Instance.invoke uses this only as a default subject; every call overrides it.
     args.issue = 1584

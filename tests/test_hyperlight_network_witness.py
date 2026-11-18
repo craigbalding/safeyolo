@@ -6,12 +6,15 @@ import hashlib
 import http.client
 import importlib.util
 import json
+import os
+import shlex
 import socket
 import ssl
 import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
 import tomlkit
@@ -41,6 +44,185 @@ def test_witness_accepts_the_reached_core_findings(witness, partial):
     witness.check_direct(partial["direct_after_permission_removal"], False)
     named = partial["named_allowed"]
     witness.check_named(named["status"], named["body"], True)
+
+
+@pytest.mark.parametrize(("https", "deny", "wrong_host"), [
+    (False, False, False), (False, True, False), (True, False, False),
+    (True, True, False), (True, False, True)])
+def test_platform_client_uses_only_selected_proxy_and_strict_guest_tls(witness, tmp_path, https, deny, wrong_host):
+    from tests.test_hyperlight_proxy_client import ProxyBytes, certificates
+
+    ca, context = certificates(tmp_path, host="wrong.test" if wrong_host else "example.test")
+    (tmp_path / "ca.pem").write_text(ca)
+    bridge = ProxyBytes(ca, context, https=https, deny=deny)
+    url = f"{'https' if https else 'http'}://example.test/value?x=1#private"
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.settimeout(8)
+        thread = threading.Thread(target=lambda: bridge.origin(listener.accept()[0]))
+        thread.start()
+        try:
+            # Only the writable output mount path changes for this CPU control.
+            program = witness.PLATFORM_CHECKER.replace('/work/response', shlex.quote(str(tmp_path / 'response')))
+            result = subprocess.run(["bash", "-euo", "pipefail", "-c", program, "network-check", url],
+                capture_output=True, timeout=8,
+                env={**os.environ, "HTTP_PROXY": f"http://127.0.0.1:{listener.getsockname()[1]}",
+                     "SSL_CERT_FILE": str(tmp_path / "ca.pem")})
+        finally:
+            thread.join(9)
+            assert not thread.is_alive()
+    if https and (deny or wrong_host):
+        assert result.returncode != 0 and not result.stdout, result
+        assert not bridge.requests
+        assert (b"403" if deny else b"SSL") in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {"finding": {"kind": "finding", "positive": not deny}}
+        assert len(bridge.requests) == 1
+        expected = b"GET /value?x=1 " if https else b"GET http://example.test/value?x=1 "
+        assert bridge.requests[0].startswith(expected)
+        assert b"#private" not in bridge.requests[0]
+        assert b"Authorization:" not in bridge.requests[0]
+
+
+@pytest.mark.parametrize("defect", [None, "denied_contact", "path_positive", "other_engine"])
+def test_scope_witness_requires_negative_findings_zero_denied_contacts_and_selected_engine(
+        witness, partial, tmp_path, monkeypatch, defect):
+    contacts = []
+    origin = SimpleNamespace(redirect=False)
+    original = {"hosts": {"*": {"egress": "deny"}}, "agents": {}, "checks": {}}
+    (tmp_path / "hyperlight-adopted.json").write_text("{}")
+    findings = iter([True, True, False, False, False, False, False, False, False, False])
+
+    class Instance:
+        args = SimpleNamespace(upstream_port=12345)
+        scratch = tmp_path
+
+        def __init__(self):
+            self.policy = copy.deepcopy(original)
+            self.calls = 0
+
+        def command(self, *_args):
+            pass  # This control tests witness assertions, not native validation.
+
+        def apply(self):
+            if "permissions" in self.policy:
+                assert "hosts" not in self.policy and "agents" not in self.policy
+
+        def finding(self, request):
+            expected = next(findings)
+            self.calls += 1
+            url = request["subject"]["value"]
+            if expected or origin.redirect or defect == "denied_contact":
+                contacts.append({"path": urlsplit(url).path})
+            if defect == "path_positive" and self.calls in (5, 6):
+                return True
+            return expected
+
+        def run_job(self, engine, request):
+            positive = self.finding(request)
+            result = copy.deepcopy(partial["direct_allowed" if positive else "direct_after_permission_removal"])
+            if defect == "other_engine":
+                result["engine"] = "hyperlight-unikraft"
+            return result
+
+        def invoke(self, engine, request):
+            value = copy.deepcopy(partial["named_allowed"]["body"])
+            value["evidence"]["result"]["finding"]["positive"] = self.finding(request)
+            return 200, value
+
+    monkeypatch.setattr(witness, "cache_expiry_and_gate_separation", lambda *_args: {"separate_control": True})
+    instance = Instance()
+    if defect:
+        with pytest.raises(AssertionError):
+            witness.scope_cases(instance, "hyperlight", contacts, origin)
+    else:
+        result = witness.scope_cases(instance, "hyperlight", contacts, origin)
+        assert len(contacts) == 4 and len(result) == 6
+        redirected = result["http-302-no-follow"]
+        assert redirected["named"]["evidence"]["result"]["finding"]["positive"] is False
+        assert "No redirected second request was attempted" in redirected["evidence_scope"]
+    assert instance.policy == original
+
+
+@pytest.mark.parametrize("defect", [None, "expired_cached", "expired_run", "wrong_gate", "borrowed_positive", "denied_contact"])
+def test_cache_witness_requires_expiry_and_separate_adopted_gate_evidence(
+        witness, partial, tmp_path, monkeypatch, defect):
+    contacts, calls, activations = [], [], []
+    original = {"checks": {"hyperlight": {"source": {"spec": "owned.json", "limits": {}}}}}
+    (tmp_path / "hyperlight-adopted.json").write_text('{"gate_id":"hyperlight-network-check"}')
+    monkeypatch.setattr(witness.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(witness.time, "time", lambda: 100)
+
+    class Instance:
+        args = SimpleNamespace(upstream_port=12345)
+        scratch = tmp_path
+
+        def __init__(self):
+            self.policy = copy.deepcopy(original)
+
+        def apply(self):
+            activations.append(copy.deepcopy(self.policy))
+
+        def invoke(self, name, request):
+            calls.append((name, request))
+            index = len(calls)
+            value = copy.deepcopy(partial["named_allowed"]["body"])
+            evidence = value["evidence"]
+            evidence["acquisition"] = "reused_live_evidence" if index == 2 else "live"
+            evidence["execution"]["run_id"] = "owned-1" if index <= 2 else f"owned-{index}"
+            evidence["result"]["collected_at_ms"] = 1000 if index <= 2 else 2100
+            if index in (1, 3):
+                contacts.append(request["subject"])
+            if index == 3:
+                if defect == "expired_cached":
+                    evidence["acquisition"] = "reused_live_evidence"
+                if defect == "expired_run":
+                    evidence["execution"]["run_id"] = "owned-1"
+            if index == 4:
+                assert name == "hyperlight-other-gate"
+                evidence["execution"].update(gate_principal="gate:network-other-gate",
+                    authorization_principal="gate:network-other-gate")
+                evidence["result"]["finding"]["positive"] = defect == "borrowed_positive"
+                if defect == "wrong_gate":
+                    evidence["execution"]["authorization_principal"] = "gate:hyperlight-network-check"
+                if defect == "denied_contact":
+                    contacts.append(request["subject"])
+            return 200, value
+
+    instance = Instance()
+    if defect:
+        with pytest.raises(AssertionError):
+            witness.cache_expiry_and_gate_separation(instance, "hyperlight", contacts)
+    else:
+        result = witness.cache_expiry_and_gate_separation(instance, "hyperlight", contacts)
+        assert len(calls) == 4 and len(contacts) == 2 and len(result) == 4
+    assert instance.policy == original and len(activations) == 2
+    spec = json.loads((tmp_path / "hyperlight-other-gate-adopted.json").read_bytes())
+    assert spec["gate_id"] == "network-other-gate"
+
+
+@pytest.mark.parametrize("engine", ["gvisor", "vz", "hyperlight", "hyperlight-unikraft"])
+@pytest.mark.parametrize("mode", ["scope", "caller_only"])
+def test_shared_modes_do_not_replay_completed_cases(witness, monkeypatch, engine, mode):
+    args = SimpleNamespace(scope=mode == "scope", caller_only=mode == "caller_only",
+                           authority=False, lifetimes_only=False)
+    calls = []
+
+    def selected(_instance, selected_engine, *_args):
+        calls.append(selected_engine)
+        return {"selected": mode}
+
+    def unselected(*_args):
+        pytest.fail("a completed or unselected case was replayed")
+
+    monkeypatch.setattr(witness, "scope_cases", selected if mode == "scope" else unselected)
+    monkeypatch.setattr(witness, "authority_cases", selected if mode == "caller_only" else unselected)
+    monkeypatch.setattr(witness, "exercise_lifetimes", unselected)
+    result = witness.exercise_engine(SimpleNamespace(args=args), engine, [], False, None)
+    assert calls == [engine]
+    assert result == ({"selected": mode} if mode == "scope" else {"authority": {"selected": mode}})
 
 
 @pytest.mark.parametrize("defect", ["exit", "observation", "missing", "malformed", "truncated", "hash", "integer", "positive"])
@@ -169,7 +351,8 @@ def selected_inputs(witness, partial, tmp_path, monkeypatch):
 
     monkeypatch.setattr(witness.subprocess, "run", run)
     return SimpleNamespace(bundle=bundle, scratch=scratch, root=tmp_path / "instance", cli=cli, proxy=proxy,
-                           continue_from=receipt, engine=None, tls=False, admin_port=12345, upstream_port=0, issue=1584)
+                           continue_from=receipt, engine=None, tls=False, admin_port=12345, upstream_port=0, issue=1584,
+                           scope=False, caller_only=False, base_root=None)
 
 
 @pytest.mark.parametrize("defect", [None, "guest", "runtime", "helper", "cpio", "source", "contacts", "policy"])
@@ -200,7 +383,8 @@ def test_continuation_checks_selected_artifacts_before_runtime(witness, selected
 
 @pytest.mark.parametrize(("continuation", "selected_engine", "tls"), [
     (False, None, False), (True, None, False), (False, "hyperlight-unikraft", False),
-    (False, None, True), (False, "hyperlight-unikraft", True)])
+    (False, None, True), (False, "hyperlight-unikraft", True),
+    (False, "gvisor", False), (False, "vz", False), (False, "gvisor", True), (False, "vz", True)])
 def test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts(
         witness, selected_inputs, partial, monkeypatch, continuation, selected_engine, tls):
     args = selected_inputs
@@ -210,6 +394,13 @@ def test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts(
     for engine in ("hyperlight", "hyperlight-unikraft"):
         witness.save(args.bundle / f"{engine}-network.json", {
             "engine": {"guest": {"path": "core.elf", "sha256": "a" * 64}}})
+    platform = selected_engine in ("gvisor", "vz")
+    if platform:
+        args.base_root = args.bundle
+        args.bundle = None
+        (args.base_root / "share").mkdir()
+        (args.base_root / "bin").mkdir()
+        (args.base_root / "config.toml").write_text("[linux]\nplatform='systrap'\n")
     calls, validations, stopped = [], [], []
     gate = "gate:hyperlight-network-check"
 
@@ -224,6 +415,7 @@ def test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts(
         def command(self, *arguments):
             if arguments == ("init",):
                 args.root.mkdir()
+                (args.root / "data").mkdir()
                 if tls:
                     certs = args.root / "certs"
                     certs.mkdir()
@@ -265,8 +457,11 @@ def test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts(
         def run_job(self, engine, request, **_options):
             allowed = self.finding(engine, "direct", request)
             result = copy.deepcopy(partial["direct_allowed" if allowed else "direct_after_permission_removal"])
+            result["engine"] = engine
+            if platform:
+                result.update(engine=engine, outcome_source="guest_process", rootfs={"profile": "shared"})
             if tls and not allowed:
-                result.update(outcome={"kind": "exit", "code": 1}, outcome_source="host_helper",
+                result.update(outcome={"kind": "exit", "code": 1}, outcome_source="guest_process" if platform else "host_helper",
                               runtime_report={"completion": None, "error": "the call failed in the guest with status 1 (see its output)"})
                 self.refusal(result)
             return result
@@ -279,11 +474,15 @@ def test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts(
         def invoke(self, engine, request):
             allowed = self.finding(engine, "named", request)
             named = copy.deepcopy(partial["named_allowed"])
+            named["body"]["evidence"]["execution"].update(engine=engine)
             named["body"]["evidence"]["result"]["finding"]["positive"] = allowed
+            if platform:
+                named["body"]["evidence"]["execution"].update(
+                    engine=engine, outcome_source="guest_process", rootfs={"profile": "shared"})
             if tls and not allowed:
                 evidence = named["body"]["evidence"]
                 evidence.update(result=None, unavailable="job execution failed or unavailable observation")
-                evidence["execution"].update(outcome={"kind": "exit", "code": 1}, outcome_source="host_helper",
+                evidence["execution"].update(outcome={"kind": "exit", "code": 1}, outcome_source="guest_process" if platform else "host_helper",
                                              runtime_report={"completion": None, "error": "the call failed in the guest with status 1 (see its output)"})
                 self.refusal(evidence["execution"])
             return named["status"], named["body"]
@@ -315,13 +514,13 @@ def test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts(
     monkeypatch.setattr(witness.subprocess, "Popen", popen)
     monkeypatch.setattr(witness, "stop", lambda child: stopped.append(child))
     witness.exercise(args)
-    all_cases = [(engine, mode, allowed) for engine in ("hyperlight", "hyperlight-unikraft")
+    all_cases = [(engine, mode, allowed) for engine in ((selected_engine,) if selected_engine else ("hyperlight", "hyperlight-unikraft"))
                  for mode, allowed in (("direct", True), ("named", True), ("direct", False), ("named", False))]
-    selected = all_cases[4:] if selected_engine else all_cases[3:] if continuation else all_cases
+    selected = all_cases[3:] if continuation else all_cases
     assert calls == selected
     assert validations.count(("job", "validate")) == (1 if continuation or selected_engine else 2)
     report = json.loads((args.scratch / "result.json").read_bytes())
-    assert report["contacts"] == ([{"path": "/hyperlight-unikraft"}] * 2 if continuation or selected_engine else
+    assert report["contacts"] == ([{"path": f"/{selected_engine or 'hyperlight-unikraft'}"}] * 2 if continuation or selected_engine else
                                   [{"path": "/hyperlight"}] * 2 + [{"path": "/hyperlight-unikraft"}] * 2)
     assert set(report["engines"]) == ({selected_engine} if selected_engine else {"hyperlight", "hyperlight-unikraft"})
     assert (report["reused_core"] is not None) is continuation
@@ -333,6 +532,12 @@ def test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts(
     connections = json.loads((args.scratch / "origin-tls.json").read_bytes())
     assert len(connections) == (len(report["contacts"]) if tls else 0)
     assert all(row["phase"] == "tls" and row["version"].startswith("TLSv") for row in connections)
+    if platform:
+        adopted = json.loads((args.scratch / f"{selected_engine}-adopted.json").read_bytes())
+        assert adopted["engine"] == {"kind": "platform"}
+        assert adopted["argv"] == ["/bin/bash", "-euo", "pipefail", "-c", witness.PLATFORM_CHECKER,
+                                   "network-check", f"{'https' if tls else 'http'}://127.0.0.1:{args.upstream_port}/{selected_engine}"]
+        assert tomlkit.parse((args.root / "config.toml").read_text())["linux"] == {"platform": "systrap"}
     config = tomlkit.parse((args.root / "config.toml").read_text())
     assert config.get("upstream_ca_file") == ("certs/mitmproxy-ca-cert.pem" if tls else None)
     assert not config.get("ignore_hosts")

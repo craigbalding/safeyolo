@@ -243,7 +243,7 @@ Both examples return a typed finding that compares the HTTP status with
 redirects or retry. Every later request a workload makes still passes through
 the delegated proxy. Removing the gate's permission denies the unchanged job.
 The same JobSpec can be the source of an
-[adopted named job check](policy-checks.md#execute-adopted-checks).
+[adopted named job check](policy-checks.md#adopt-an-installed-public-network-job-as-a-named-check).
 
 Core's `NetworkCheck` uses reqwless for HTTP and Rustls/ring for TLS and
 certificate validation. Its byte adapter, TLS buffers and client execute in
@@ -298,6 +298,24 @@ cleanup still apply. No stream or token is donated to another invocation.
 Offline validation and preview do not open a proxy stream or query a dependency.
 CPU client checks and guest ELF builds alone do not establish installed VM
 execution or isolation on a different host.
+
+The existing `tests/blackbox/host/hyperlight_network.py` witness shares public
+direct/named allow/removal cases across all four engines. Select a pinned
+Hyperlight `--bundle`, or select `--engine gvisor`/`--engine vz` with that
+host's prepared `--base-root`. Platform cases use its existing Bash and curl;
+the adopted argv fixes the endpoint while the shared cases vary gate policy.
+`--scope` adds destination/method/path refusal, a negative HTTP 302 finding
+without automatic following, cache expiry and a
+separately adopted gate without dependency access. `--caller-only` selects
+caller and cycle checks and offline effects without repeating lifetimes.
+Each selected mode retains its own contact counters and
+execution facts; selecting another engine does not carry over a platform pass.
+The 302 case records only the two original direct/named requests. It does not
+prove that SafeYolo denied an attempted redirected or off-scope second request.
+The platform job and isolation witnesses cover their retained connections,
+direct-socket/DNS refusal and teardown. `--lifetimes-only` remains the focused
+Hyperlight continuation. None of these selections establishes unrun warm-state
+or checked-source-capture behavior.
 
 ## Mediated service access
 

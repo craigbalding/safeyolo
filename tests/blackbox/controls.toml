@@ -681,15 +681,15 @@ owner = "proxy/src/jobs/proxy_stream.rs"
 paths = ["tests/test_hyperlight_network_witness.py"]
 controls = ["BB-29", "BB-31"]
 kind = "pytest"
-scope = "HTTP/HTTPS and generic authority/lifetime witness controls"
-adapter = "Retained Core observations and controlled job adapters with real loopback HTTP/TLS, EOF, endpoint and contact observations; no VM or installed authority claim"
+scope = "HTTP/HTTPS, shared engine scopes and authority/lifetime witness controls"
+adapter = "Retained Core observations, actual platform curl client over owned proxy sockets, and controlled job adapters with loopback HTTP/TLS, EOF, endpoint, contact and cache assertions; no VM or installed authority claim"
 
 [[witnesses]]
 paths = ["tests/blackbox/host/hyperlight_network.py::main"]
 controls = ["BB-29", "BB-31"]
 kind = "procedure"
-scope = "Manual installed Hyperlight public HTTP/HTTPS or generic authority/lifetime witness"
-adapter = "Owned origin contacts and exact-run proxy observations. Authority mode adds held responses, teardown and fresh/cache cases. No complete four-engine or recurring maintained-run claim"
+scope = "Manual installed public-network direct/named witness for the selected job engine"
+adapter = "Shared public HTTP/HTTPS cases select Hyperlight bundles or installed gVisor/VZ inputs. Separate scope/caller modes cover method/path/destination refusal, adopted gates, expiry, cycle and offline effects. The HTTP 302 case proves a negative finding and no automatic follow; it does not prove policy refusal of an attempted redirected request. Hyperlight lifetime mode retains held EOF and fresh/cache cases. Owned contacts and exact-run proxy observations; unrun modes/platforms remain unqualified, with no recurring maintained-run claim"
 
 [[witnesses]]
 paths = ["tests/test_blackbox_execution_receipt.py", "tests/test_blackbox_catalogue.py"]
