@@ -218,6 +218,63 @@ def host_driver(monkeypatch):
     return driver
 
 
+def test_resident_memory_reads_a_live_process_and_rejects_a_missing_one(host_driver):
+    assert host_driver.resident_bytes(host_driver.os.getpid()) > 0
+    with pytest.raises(OSError):
+        host_driver.resident_bytes(2147483647)
+
+
+@pytest.mark.parametrize("unavailable_memory", [False, True])
+def test_warm_probe_rejects_replayed_runtime_randomness_and_preserves_samples(
+        host_driver, tmp_path, monkeypatch, unavailable_memory):
+    (tmp_path / "hyperlight-unikraft.json").write_text(json.dumps({"engine": {}}))
+    (tmp_path / "template_probe.py").write_text("probe")
+    instance = SimpleNamespace(args=SimpleNamespace(bundle=tmp_path), scratch=tmp_path,
+                               proxy=SimpleNamespace(pid=host_driver.os.getpid()))
+    results = []
+
+    @contextlib.contextmanager
+    def job(engine, request, **options):
+        index = len(results)
+        run_id = f"run-{index}"
+        payload = json.dumps({"calls": 1, "input": list(request["value"].encode()), "initialized_at": 42,
+                              "context": {"invocation_id": run_id, "unix_ms": 100,
+                                          "random": [index], "runtime_random": 0.25}}).encode()
+        result = {"outcome": {"kind": "exit", "code": 0}, "observation_error": None,
+                  "run_id": run_id, "started_unix_ms": 99, "ended_unix_ms": 101,
+                  "stdout": {"bytes": len(payload), "retained_base64": base64.b64encode(payload).decode(),
+                             "sha256": host_driver.hashlib.sha256(payload).hexdigest()},
+                  "runtime_report": {"initialization": {
+                      "mode": "constructed" if index == 0 else "restored", "initialization_events": 1 - index,
+                      "template_key": "same-template", "snapshot_digest": "sha256:" + "a" * 64}}}
+        results.append(result)
+        prefix = tmp_path / run_id
+        yield SimpleNamespace(wait=lambda **_: None, returncode=0), prefix
+        prefix.with_suffix(".stdout").write_text(json.dumps(result))
+        prefix.with_suffix(".stderr").write_text("")
+        prefix.with_suffix(".status.json").write_text(json.dumps({"returncode": 0, "command_wall_ms": 10}))
+
+    instance.job = job
+    if unavailable_memory:
+        def refused(_pid):
+            raise PermissionError("memory sample refused")
+        monkeypatch.setattr(host_driver, "resident_bytes", refused)
+    with pytest.raises(AssertionError):
+        host_driver.warm_templates(instance, "hyperlight-unikraft")
+    assert len(results) == 2
+    retained = json.loads((tmp_path / "hyperlight-unikraft-templates.json").read_bytes())
+    assert "idle_worker_bytes" not in retained
+    samples = retained["observations"]
+    assert len(samples) == 2
+    for sample in samples:
+        if unavailable_memory:
+            assert sample["idle_proxy_rss_bytes"] is None
+            assert sample["memory_observation_error"] == "memory sample refused"
+        else:
+            assert sample["idle_proxy_rss_bytes"] > 0
+            assert sample["memory_observation_error"] is None
+
+
 @pytest.mark.parametrize("entrypoint", ["job_result", "run_job"])
 def test_driver_preserves_job33_failure_before_decoding_stdout(host_driver, tmp_path, monkeypatch, entrypoint):
     prefix = tmp_path / "job-33"

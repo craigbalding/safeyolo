@@ -13,6 +13,7 @@ import argparse
 import base64
 import contextlib
 import copy
+import ctypes
 import hashlib
 import http.client
 import json
@@ -53,6 +54,23 @@ def stop(child):
         child.kill()
         child.wait()
         raise
+
+
+def resident_bytes(pid):
+    """Read this process's current resident memory without invoking ps."""
+    if sys.platform == "linux":
+        pages = int(Path(f"/proc/{pid}/statm").read_text().split()[1])
+        return pages * os.sysconf("SC_PAGE_SIZE")
+    if sys.platform == "darwin":
+        # sys/resource.h: rusage_info_v0 is a UUID followed by ten uint64_t
+        # fields. ri_resident_size is the seventh field after that UUID.
+        usage = (ctypes.c_uint64 * 12)()
+        library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        if library.proc_pid_rusage(ctypes.c_int(pid), ctypes.c_int(0), ctypes.byref(usage)):
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+        return usage[8]
+    raise OSError(f"resident memory sampling unavailable on {sys.platform}")
 
 
 def job_result(prefix, engine, mode, *, expected_outcome=None):
@@ -393,12 +411,18 @@ def warm_templates(instance, engine):
             child.wait(timeout=60)
         result = job_result(prefix, engine, "warm-template", expected_outcome=expected)
         status = json.loads(prefix.with_suffix(".status.json").read_bytes())
+        try:
+            idle_proxy_bytes, memory_error = resident_bytes(instance.proxy.pid), None
+        except OSError as error:
+            idle_proxy_bytes, memory_error = None, str(error)
         observations.append({"full_invocation_ms": status["command_wall_ms"],
-                             "result": result, "provider_latency_ms": 0})
+                             "result": result, "provider_latency_ms": 0,
+                             "idle_proxy_rss_bytes": idle_proxy_bytes,
+                             "memory_observation_error": memory_error})
         save(instance.scratch / f"{engine}-templates.json", {
             "observations": observations,
-            "idle_worker_bytes": 0,
-            "memory_limit": "helper_max_rss_bytes is one helper's peak; it excludes CLI/proxy and page cache",
+            "memory_limit": ("helper_max_rss_bytes is one helper's active peak; idle_proxy_rss_bytes is "
+                             "the proxy after that command. Total process-tree and page-cache memory remain unmeasured"),
             "latency_limit": "offline workload, no provider; preparation and cache save/load remain included",
         })
         return result
@@ -409,6 +433,8 @@ def warm_templates(instance, engine):
     assert initialized["initialization_events"] == 1, first
     first_output = output(first)
     assert first_output["calls"] == 1
+    runtime_random = ({first_output["context"]["runtime_random"]}
+                      if engine == "hyperlight-unikraft" else set())
     spec["gate_id"] = "another-template-principal"
     second = measured({"value": "second"}, spec)
     restored = second["runtime_report"]["initialization"]
@@ -422,6 +448,10 @@ def warm_templates(instance, engine):
         assert value["context"]["invocation_id"] == result["run_id"], value
         assert result["started_unix_ms"] <= value["context"]["unix_ms"] <= result["ended_unix_ms"], value
         assert value["context"]["random"] != first_output["context"]["random"], value
+        if engine == "hyperlight-unikraft":
+            current_random = value["context"]["runtime_random"]
+            assert current_random not in runtime_random, value
+            runtime_random.add(current_random)
         if result["runtime_report"]["initialization"]["mode"] == "restored":
             assert value["initialized_at"] == first_output["initialized_at"], value
         return value
