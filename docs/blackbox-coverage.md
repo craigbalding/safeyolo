@@ -945,7 +945,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-service-effect-assessment-py).
 - [proxy/src/jobs/proxy_stream.rs](../proxy/src/jobs/proxy_stream.rs#L148) — Native delegated proxy byte transport; host process. Evidence: Real proxy and owned origin; no guest client or VM execution.
   Exact identities: [source inventory](#witness-proxy-src-jobs-proxy-stream-rs-jobs-proxy-stream-tests).
-- [tests/blackbox/host/hyperlight_network.py::main](../tests/blackbox/host/hyperlight_network.py#L119) — Manual installed Hyperlight direct/named public HTTP witness. Evidence: Owned endpoint contact counters; no TLS, complete lifecycle or recurring maintained-run claim.
+- [tests/test_hyperlight_network_witness.py](../tests/test_hyperlight_network_witness.py#L34) — HTTP witness result classification and selected continuation. Evidence: Retained Core observations and controlled job adapters with a real loopback contact counter; no VM or installed authority claim.
+  Exact identities: [source inventory](#witness-tests-test-hyperlight-network-witness-py).
+- [tests/blackbox/host/hyperlight_network.py::main](../tests/blackbox/host/hyperlight_network.py#L191) — Manual installed Hyperlight direct/named public HTTP witness. Evidence: Owned endpoint contact counters; no TLS, complete lifecycle or recurring maintained-run claim.
   Selection: manual; no recurring selector resolved.
 - [proxy/src/http/policy_checks/execution_tests.rs](../proxy/src/http/policy_checks/execution_tests.rs#L127) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real native request/gateway; owned assessment service and origin.
   Exact identities: [source inventory](#witness-proxy-src-http-policy-checks-execution-tests-rs).
@@ -1017,7 +1019,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-test-hyperlight-proxy-client-py).
 - [proxy/src/jobs/proxy_stream.rs](../proxy/src/jobs/proxy_stream.rs#L148) — Native delegated proxy byte transport; host process. Evidence: Real proxy and owned origin; no guest client or VM execution.
   Exact identities: [source inventory](#witness-proxy-src-jobs-proxy-stream-rs-jobs-proxy-stream-tests).
-- [tests/blackbox/host/hyperlight_network.py::main](../tests/blackbox/host/hyperlight_network.py#L119) — Manual installed Hyperlight direct/named public HTTP witness. Evidence: Owned endpoint contact counters; no TLS, complete lifecycle or recurring maintained-run claim.
+- [tests/test_hyperlight_network_witness.py](../tests/test_hyperlight_network_witness.py#L34) — HTTP witness result classification and selected continuation. Evidence: Retained Core observations and controlled job adapters with a real loopback contact counter; no VM or installed authority claim.
+  Exact identities: [source inventory](#witness-tests-test-hyperlight-network-witness-py).
+- [tests/blackbox/host/hyperlight_network.py::main](../tests/blackbox/host/hyperlight_network.py#L191) — Manual installed Hyperlight direct/named public HTTP witness. Evidence: Owned endpoint contact counters; no TLS, complete lifecycle or recurring maintained-run claim.
   Selection: manual; no recurring selector resolved.
 - [tests/blackbox/host/hyperlight_adoption.py::main](../tests/blackbox/host/hyperlight_adoption.py#L165) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
@@ -2442,7 +2446,8 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 
 - [`tests/test_hyperlight_proxy_client.py::test_maintained_clients_use_fragmented_proxy_streams`](../tests/test_hyperlight_proxy_client.py#L203)
 - [`tests/test_hyperlight_proxy_client.py::test_tls_refusal_precedes_application_request`](../tests/test_hyperlight_proxy_client.py#L221)
-- [`tests/test_hyperlight_proxy_client.py::test_adopted_status_input_controls_finding_and_invalid_input_never_contacts_origin`](../tests/test_hyperlight_proxy_client.py#L248)
+- [`tests/test_hyperlight_proxy_client.py::test_http_proxy_denial_is_a_completed_negative_finding`](../tests/test_hyperlight_proxy_client.py#L247)
+- [`tests/test_hyperlight_proxy_client.py::test_adopted_status_input_controls_finding_and_invalid_input_never_contacts_origin`](../tests/test_hyperlight_proxy_client.py#L261)
 
 <a id="witness-proxy-src-jobs-proxy-stream-rs-jobs-proxy-stream-tests"></a>
 ### [`proxy/src/jobs/proxy_stream.rs`](../proxy/src/jobs/proxy_stream.rs)
@@ -2451,6 +2456,17 @@ Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; c
 
 - [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::proxy_stream::tests::guest_cannot_select_host_transport_or_forge_authority -- --exact`](../proxy/src/jobs/proxy_stream.rs#L148)
 - [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::proxy_stream::tests::public_egress_needs_only_gate_policy_and_revocation_closes_streams -- --exact`](../proxy/src/jobs/proxy_stream.rs#L168)
+
+<a id="witness-tests-test-hyperlight-network-witness-py"></a>
+### [`tests/test_hyperlight_network_witness.py`](../tests/test_hyperlight_network_witness.py)
+
+Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`).
+
+- [`tests/test_hyperlight_network_witness.py::test_witness_accepts_the_reached_core_findings`](../tests/test_hyperlight_network_witness.py#L34)
+- [`tests/test_hyperlight_network_witness.py::test_direct_denial_requires_a_complete_typed_result`](../tests/test_hyperlight_network_witness.py#L42)
+- [`tests/test_hyperlight_network_witness.py::test_named_denial_requires_a_negative_finding`](../tests/test_hyperlight_network_witness.py#L63)
+- [`tests/test_hyperlight_network_witness.py::test_continuation_checks_selected_artifacts_before_runtime`](../tests/test_hyperlight_network_witness.py#L114)
+- [`tests/test_hyperlight_network_witness.py::test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts`](../tests/test_hyperlight_network_witness.py#L140)
 
 <a id="witness-tests-test-blackbox-execution-receipt-py"></a>
 ### [`tests/test_blackbox_execution_receipt.py`](../tests/test_blackbox_execution_receipt.py)

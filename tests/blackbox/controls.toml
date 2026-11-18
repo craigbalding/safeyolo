@@ -678,6 +678,13 @@ module = "jobs::proxy_stream::tests"
 owner = "proxy/src/jobs/proxy_stream.rs"
 
 [[witnesses]]
+paths = ["tests/test_hyperlight_network_witness.py"]
+controls = ["BB-29", "BB-31"]
+kind = "pytest"
+scope = "HTTP witness result classification and selected continuation"
+adapter = "Retained Core observations and controlled job adapters with a real loopback contact counter; no VM or installed authority claim"
+
+[[witnesses]]
 paths = ["tests/blackbox/host/hyperlight_network.py::main"]
 controls = ["BB-29", "BB-31"]
 kind = "procedure"

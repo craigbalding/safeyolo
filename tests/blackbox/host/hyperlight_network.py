@@ -6,6 +6,10 @@ empty private disk-backed scratch directory and two authorized loopback ports.
 This witness needs no provider credential or Service Gateway grant. It covers
 HTTP direct/named allow/removal and contact-free validation, not the whole
 four-engine, TLS, ancestry, capture or lifecycle acceptance contract.
+
+Use --continue-from with the retained partial HTTP receipt to reuse completed
+Core allow/direct-denial observations. The continuation runs Core named denial
+and the Unikraft cases in a fresh instance, with separate contact counters.
 """
 
 import argparse
@@ -20,7 +24,98 @@ from hyperlight_services import Instance, digest, output, save, stop
 from job_network import wait_ready
 
 
+def check_direct(result, positive):
+    assert result["outcome"] == {"kind": "exit", "code": 0}, result
+    assert result["observation_error"] is None, result
+    finding = output(result)["finding"]
+    assert finding["kind"] == "finding" and finding["positive"] is positive, result
+    assert result["gate_principal"] == result["authorization_principal"] == "gate:hyperlight-network-check"
+    assert result["rootfs"]["network"] is True
+    assert result["service_evidence"] == []
+
+
+def check_named(status, value, positive):
+    assert status == 200, value
+    evidence = value["evidence"]
+    assert evidence["unavailable"] is None, value
+    finding = evidence["result"]["finding"]
+    assert finding["kind"] == "finding" and finding["positive"] is positive, value
+    execution = evidence["execution"]
+    assert execution["outcome"] == {"kind": "exit", "code": 0}, value
+    assert execution["observation_error"] is None, value
+    assert execution["gate_principal"] == execution["authorization_principal"] == "gate:hyperlight-network-check"
+    assert execution["service_evidence"] == [], value
+
+
+def completed_core(args):
+    """Validate the selected observation receipt before skipping completed work."""
+    if args.continue_from is None:
+        return None
+    prior = json.loads(args.continue_from.read_bytes())
+    check_direct(prior["direct_allowed"], True)
+    check_named(prior["named_allowed"]["status"], prior["named_allowed"]["body"], True)
+    check_direct(prior["direct_after_permission_removal"], False)
+    assert prior["after_removal_cli_returncode"] == 0
+    assert prior["policy_removal"] == {"http_status": 200, "hosts": {}, "active": "active"}
+    assert prior["origin_contacts"] == [{"path": "/hyperlight"}, {"path": "/hyperlight"}]
+    assert prior["ready_exists_after"] is False and prior["job_runtime_directories_after"] == []
+    observations = [prior["direct_allowed"], prior["named_allowed"]["body"]["evidence"]["execution"],
+                    prior["direct_after_permission_removal"]]
+    assert len({item["run_id"] for item in observations}) == 3
+    for item in observations:
+        assert item["engine"] == item["rootfs"]["kind"] == "hyperlight"
+        assert item["rootfs"]["runtime_manifest_sha256"] == digest(args.bundle / "runtime.json")
+        assert item["rootfs"]["artifact_sha256"] == digest(args.bundle / "core.elf")
+    bundle = prior["direct_allowed"]["rootfs"]["bundle"]
+    for name in ("helper", "rootfs"):
+        assert digest(args.bundle / bundle[name]["file"]) == bundle[name]["sha256"]
+    versions = {}
+    for name in ("cli", "proxy"):
+        versions[name] = subprocess.run([str(getattr(args, name)), "--version"], check=True, timeout=10,
+                                        capture_output=True, text=True).stdout.strip()
+        assert f"commit={prior['source']} " in versions[name] + " ", versions[name]
+    return {"receipt": str(args.continue_from), "sha256": digest(args.continue_from),
+            "source": prior["source"], "case": prior["case"], "run_ids": [item["run_id"] for item in observations],
+            "contacts": prior["origin_contacts"], "versions": versions}
+
+
+def exercise_engine(instance, engine, contacts, continuing_core):
+    """Observe the selected calls and require denied calls to add no contact."""
+    destination = f"127.0.0.1:{instance.args.upstream_port}"
+    gate = "gate:hyperlight-network-check"
+    before = len(contacts)
+    subject = {"kind": "value", "value": f"http://{destination}/{engine}"}
+    request = {"subject": subject, "inputs": {}}
+    observed = {}
+    if not continuing_core:
+        instance.command("job", "validate", str(instance.scratch / f"{engine}-adopted.json"))
+        instance.command("policy", "check", str(instance.scratch / "policy-candidate.toml"))
+        assert len(contacts) == before
+        direct = instance.run_job(engine, request)
+        check_direct(direct, True)
+        assert len(contacts) == before + 1
+        status, named = instance.invoke(engine, {"subject": subject})
+        check_named(status, named, True)
+        assert len(contacts) == before + 2
+        observed.update(direct=direct["run_id"], named=named)
+    expected_contacts = len(contacts)
+    permission = instance.policy["agents"][gate]["hosts"].pop(destination)
+    instance.apply()
+    if not continuing_core:
+        denied_direct = instance.run_job(engine, request)
+        check_direct(denied_direct, False)
+        observed["denied_direct"] = denied_direct["run_id"]
+    assert len(contacts) == expected_contacts
+    status, denied = instance.invoke(engine, {"subject": subject})
+    check_named(status, denied, False)
+    assert len(contacts) == expected_contacts
+    instance.policy["agents"][gate]["hosts"][destination] = permission
+    instance.apply()
+    return {**observed, "denied": denied}
+
+
 def exercise(args):
+    reused = completed_core(args)
     instance = Instance(args)
     contacts = []
 
@@ -49,7 +144,6 @@ def exercise(args):
             instance.policy = {"hosts": {"*": {"egress": "deny"}},
                                "agents": {gate: {"hosts": {destination: {"egress": "allow"}}}},
                                "controls": {"test_context": {"action": "warn"}}, "checks": {}}
-            paths = {}
             for engine in ("hyperlight", "hyperlight-unikraft"):
                 spec = json.loads((args.bundle / f"{engine}-network.json").read_bytes())
                 for key in ("runtime", "guest", "checker"):
@@ -58,7 +152,6 @@ def exercise(args):
                 spec["timeout_seconds"] = 30
                 path = args.scratch / f"{engine}-adopted.json"
                 save(path, spec)
-                paths[engine] = path
                 instance.policy["checks"][engine] = {
                     "source_id": "public-http-status", "meaning": "Public endpoint returns HTTP 200",
                     "subject": "value", "result_type": "finding", "influences": ["hard_exclusion"],
@@ -69,41 +162,19 @@ def exercise(args):
                         "max_concurrent": 1, "max_pending": 1, "max_cached": 0}}}
             instance.apply(initial=True)
             results = {}
+            report = {"engines": results, "contacts": contacts, "reused_core": reused,
+                      "runtime_manifest_sha256": digest(args.bundle / "runtime.json"),
+                      "cli_sha256": digest(args.cli), "proxy_sha256": digest(args.proxy)}
+            save(args.scratch / "result.json", report)
             with (args.scratch / "proxy.log").open("wb") as log:
                 instance.proxy = subprocess.Popen([str(args.proxy), "--config", str(args.root / "config.toml")],
                                                   stdout=log, stderr=log)
                 try:
                     wait_ready(instance.proxy, args.root, args.admin_port)
-                    for engine, spec_path in paths.items():
-                        before = len(contacts)
-                        instance.command("job", "validate", str(spec_path))
-                        instance.command("policy", "check", str(args.scratch / "policy-candidate.toml"))
-                        assert len(contacts) == before
-                        subject = {"kind": "value", "value": f"http://{destination}/{engine}"}
-                        request = {"subject": subject, "inputs": {}}
-                        direct = instance.run_job(engine, request)
-                        assert output(direct)["finding"]["positive"] is True
-                        assert direct["gate_principal"] == direct["authorization_principal"] == gate
-                        assert direct["rootfs"]["network"] is True
-                        assert direct["service_evidence"] == []
-                        assert len(contacts) == before + 1
-                        status, named = instance.invoke(engine, {"subject": subject})
-                        assert status == 200 and named["evidence"]["result"]["finding"]["positive"] is True, named
-                        assert len(contacts) == before + 2
-                        permission = instance.policy["agents"][gate]["hosts"].pop(destination)
-                        instance.apply()
-                        with instance.job(engine, request) as (child, prefix):
-                            child.wait(timeout=60)
-                        assert json.loads(prefix.with_suffix(".status.json").read_bytes())["returncode"] == 1
-                        status, denied = instance.invoke(engine, {"subject": subject})
-                        assert status == 200 and denied["evidence"].get("unavailable"), denied
-                        assert len(contacts) == before + 2
-                        instance.policy["agents"][gate]["hosts"][destination] = permission
-                        instance.apply()
-                        results[engine] = {"direct": direct["run_id"], "named": named, "denied": denied}
-                        save(args.scratch / "result.json", {"engines": results, "contacts": contacts,
-                             "runtime_manifest_sha256": digest(args.bundle / "runtime.json"),
-                             "cli_sha256": digest(args.cli), "proxy_sha256": digest(args.proxy)})
+                    for engine in ("hyperlight", "hyperlight-unikraft"):
+                        results[engine] = exercise_engine(instance, engine, contacts,
+                                                         reused is not None and engine == "hyperlight")
+                        save(args.scratch / "result.json", report)
                 finally:
                     stop(instance.proxy)
         finally:
@@ -113,7 +184,8 @@ def exercise(args):
             save(args.scratch / "origin-contacts.json", contacts)
     assert not (args.root / "data/ready.json").exists()
     assert not list((args.root / "data").glob("job-hyperlight-*"))
-    print("PASS: both-engine public HTTP direct/named allow, permission removal and validation contact counters")
+    print("PASS: public HTTP direct/named allow, permission removal and validation contact counters"
+          + ("; completed Core observations reused from the selected receipt" if reused else ""))
 
 
 def main():
@@ -122,10 +194,13 @@ def main():
         parser.add_argument("--" + name, type=Path, required=True)
     for name in ("admin-port", "upstream-port"):
         parser.add_argument("--" + name, type=int, required=True)
+    parser.add_argument("--continue-from", type=Path, help="retained partial Core HTTP observation receipt")
     args = parser.parse_args()
     for name in ("cli", "proxy", "bundle", "scratch"):
         setattr(args, name, getattr(args, name).resolve(strict=True))
     args.root = args.root.absolute()
+    if args.continue_from is not None:
+        args.continue_from = args.continue_from.resolve(strict=True)
     # Instance.invoke uses this only as a default subject; every call overrides it.
     args.issue = 1584
     if (args.root.exists() or any(args.scratch.iterdir()) or len(str(args.root / "driver.sock").encode()) >= 100

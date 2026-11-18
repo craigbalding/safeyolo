@@ -1,0 +1,295 @@
+{
+  "recorded_at": "2026-11-18T00:12:51.281954+00:00",
+  "source": "e2ed67d559da359dbf52e5df5dd346d8bb8f5e07",
+  "host": "Bristol physical",
+  "user": "sy-agent",
+  "uid": 502,
+  "case": "/Users/sy-agent/s1584-e2ed",
+  "binding": {
+    "at": "2026-11-18T00:07:12.043692+00:00",
+    "uid": 502,
+    "source": "e2ed67d559da359dbf52e5df5dd346d8bb8f5e07",
+    "free_bytes": 21805035520,
+    "floor_bytes": 21474836480,
+    "root_absent": true,
+    "proof_empty": true,
+    "ports": [
+      46372,
+      46374
+    ]
+  },
+  "resource_guard": {
+    "started_at": "2026-11-18T00:07:12.077222+00:00",
+    "floor_bytes": 21474836480,
+    "before_free_bytes": 21805027328,
+    "minimum_free_bytes": 21762441216,
+    "stopped_for_floor": false,
+    "owned_driver_pid": 97012,
+    "last_free_bytes": 21803732992,
+    "ended_at": "2026-11-18T00:07:15.176958+00:00",
+    "driver_exit": 1,
+    "after_free_bytes": 21803769856
+  },
+  "driver_sha256": "f8901c5042557257d5d87b6b7cd9bbba5e1f62b3ce07ecc30cec955480cd38cf",
+  "direct_allowed": {
+    "engine": "hyperlight",
+    "outcome_source": "host_helper",
+    "runtime_report": {
+      "completion": {
+        "kind": "guest_function_returned"
+      },
+      "error": null
+    },
+    "helper_process_status": {
+      "kind": "exit",
+      "code": 0
+    },
+    "run_id": "job-40fc24e16cac48ce8b5264cd37c5fb0a",
+    "gate_id": "hyperlight-network-check",
+    "gate_definition_sha256": "521d39bac7312ca842fd448ad7b460b3523b26a2fe27c843258f446a9475760a",
+    "gate_principal": "gate:hyperlight-network-check",
+    "authorization_principal": "gate:hyperlight-network-check",
+    "service_evidence": [],
+    "rootfs": {
+      "kind": "hyperlight",
+      "runtime_manifest_sha256": "225e8dfc2cd07ce3138830acafaf934c5173efa3a96f5274975fbbe5612220fa",
+      "artifact_sha256": "ea3b6a95c5606d047c3feaa2d9b2b3d9a6bb07efc5cb314ef76cdbd247a654e7",
+      "bundle": {
+        "protocol": 3,
+        "os": "macos",
+        "architecture": "aarch64",
+        "hyperlight": "0.19.0",
+        "unikraft": "0.21.0",
+        "kernel_contract": "k097a8080d7532764-c8",
+        "helper": {
+          "file": "safeyolo-hyperlight",
+          "sha256": "829a857b08dd5f0cdf4954c712b6940ebe94ab532f45743344d30d550751146f"
+        },
+        "rootfs": {
+          "file": "python.cpio",
+          "sha256": "5574a03e3de2c3971a73fa3befc8f1427e09545f6098e00ff68b48a4f09aa3ab"
+        },
+        "rootfs_source": "https://ghcr.io/v2/hyperlight-dev/hyperlight-unikraft/python/blobs/sha256:448fbf853530c9a78f238b1eb3f6782c3d5162b516d2701bdcc1d7620b435b9d"
+      },
+      "policy_hash": "sha256:6a2cc0303edc033c",
+      "network": true,
+      "service_access": "in_guest",
+      "console_encoding": "utf-8"
+    },
+    "input_sha256": "f28318af4cee43072b0b0a23c5ff1a6980fbca7e8060c0fadabbc2bb88a23bee",
+    "started_unix_ms": 1794960433435,
+    "ended_unix_ms": 1794960433968,
+    "outcome": {
+      "kind": "exit",
+      "code": 0
+    },
+    "observation_error": null,
+    "stdout": {
+      "bytes": 47,
+      "sha256": "0cf414dde882b4f7065637967ff2377087aa7ee99e447db333d3eb7fa938f439",
+      "retained_base64": "eyJmaW5kaW5nIjp7ImtpbmQiOiJmaW5kaW5nIiwicG9zaXRpdmUiOnRydWV9fQo="
+    },
+    "stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "retained_base64": ""
+    }
+  },
+  "named_allowed": {
+    "status": 200,
+    "body": {
+      "check": "hyperlight",
+      "evidence": {
+        "check": "hyperlight",
+        "source_id": "public-http-status",
+        "meaning": "Public endpoint returns HTTP 200",
+        "scale": null,
+        "subject": {
+          "kind": "value",
+          "value": "http://127.0.0.1:46374/hyperlight"
+        },
+        "input_digest": "f45589235175d4b84845546e992717823fe3c7cdbfb0a388004036884be65662",
+        "acquisition": "live",
+        "file_digest": null,
+        "file_version": null,
+        "result": {
+          "subject": {
+            "kind": "value",
+            "value": "http://127.0.0.1:46374/hyperlight"
+          },
+          "input_digest": "f45589235175d4b84845546e992717823fe3c7cdbfb0a388004036884be65662",
+          "implementation_version": "ea3b6a95c5606d047c3feaa2d9b2b3d9a6bb07efc5cb314ef76cdbd247a654e7",
+          "configuration_version": "da9347ad5ad64cf2eeed8394493bd938c634a728c34cbcee72036c9df1dd8b3a",
+          "collected_at_ms": 1794960434459,
+          "valid_until_ms": null,
+          "source": {
+            "source_id": "public-http-status",
+            "source_revision": null,
+            "content_digest": "sha256:0cf414dde882b4f7065637967ff2377087aa7ee99e447db333d3eb7fa938f439",
+            "source_observed_at_ms": null
+          },
+          "finding": {
+            "kind": "finding",
+            "positive": true
+          }
+        },
+        "unavailable": null,
+        "expires_at_ms": 1794960494459,
+        "execution": {
+          "kind": "job",
+          "engine": "hyperlight",
+          "outcome_source": "host_helper",
+          "runtime_report": {
+            "completion": {
+              "kind": "guest_function_returned"
+            },
+            "error": null
+          },
+          "helper_process_status": {
+            "kind": "exit",
+            "code": 0
+          },
+          "run_id": "job-aadbcedd4dcd4ad8b7a140ded24a7ab4",
+          "gate_principal": "gate:hyperlight-network-check",
+          "authorization_principal": "gate:hyperlight-network-check",
+          "definition_digest": "da9347ad5ad64cf2eeed8394493bd938c634a728c34cbcee72036c9df1dd8b3a",
+          "gate_definition_sha256": "81a6cd3765e71f7ba4a6c26f98e7f7742913fd43f1f090225f4e2abff70cf462",
+          "service_evidence": [],
+          "rootfs": {
+            "kind": "hyperlight",
+            "runtime_manifest_sha256": "225e8dfc2cd07ce3138830acafaf934c5173efa3a96f5274975fbbe5612220fa",
+            "artifact_sha256": "ea3b6a95c5606d047c3feaa2d9b2b3d9a6bb07efc5cb314ef76cdbd247a654e7",
+            "bundle": {
+              "protocol": 3,
+              "os": "macos",
+              "architecture": "aarch64",
+              "hyperlight": "0.19.0",
+              "unikraft": "0.21.0",
+              "kernel_contract": "k097a8080d7532764-c8",
+              "helper": {
+                "file": "safeyolo-hyperlight",
+                "sha256": "829a857b08dd5f0cdf4954c712b6940ebe94ab532f45743344d30d550751146f"
+              },
+              "rootfs": {
+                "file": "python.cpio",
+                "sha256": "5574a03e3de2c3971a73fa3befc8f1427e09545f6098e00ff68b48a4f09aa3ab"
+              },
+              "rootfs_source": "https://ghcr.io/v2/hyperlight-dev/hyperlight-unikraft/python/blobs/sha256:448fbf853530c9a78f238b1eb3f6782c3d5162b516d2701bdcc1d7620b435b9d"
+            },
+            "policy_hash": "sha256:6a2cc0303edc033c",
+            "network": true,
+            "service_access": "in_guest",
+            "console_encoding": "utf-8"
+          },
+          "input_digest": "4e171bff2337417100b7f1c51e2502b9aa3414bfcc12fd3fe351947b539884c2",
+          "started_at_ms": 1794960434012,
+          "ended_at_ms": 1794960434458,
+          "outcome": {
+            "kind": "exit",
+            "code": 0
+          },
+          "observation_error": null,
+          "stdout": {
+            "bytes": 47,
+            "sha256": "0cf414dde882b4f7065637967ff2377087aa7ee99e447db333d3eb7fa938f439"
+          },
+          "stderr": {
+            "bytes": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        }
+      }
+    }
+  },
+  "direct_after_permission_removal": {
+    "engine": "hyperlight",
+    "outcome_source": "host_helper",
+    "runtime_report": {
+      "completion": {
+        "kind": "guest_function_returned"
+      },
+      "error": null
+    },
+    "helper_process_status": {
+      "kind": "exit",
+      "code": 0
+    },
+    "run_id": "job-e72796dcff9346378155f3e0ca03fe56",
+    "gate_id": "hyperlight-network-check",
+    "gate_definition_sha256": "521d39bac7312ca842fd448ad7b460b3523b26a2fe27c843258f446a9475760a",
+    "gate_principal": "gate:hyperlight-network-check",
+    "authorization_principal": "gate:hyperlight-network-check",
+    "service_evidence": [],
+    "rootfs": {
+      "kind": "hyperlight",
+      "runtime_manifest_sha256": "225e8dfc2cd07ce3138830acafaf934c5173efa3a96f5274975fbbe5612220fa",
+      "artifact_sha256": "ea3b6a95c5606d047c3feaa2d9b2b3d9a6bb07efc5cb314ef76cdbd247a654e7",
+      "bundle": {
+        "protocol": 3,
+        "os": "macos",
+        "architecture": "aarch64",
+        "hyperlight": "0.19.0",
+        "unikraft": "0.21.0",
+        "kernel_contract": "k097a8080d7532764-c8",
+        "helper": {
+          "file": "safeyolo-hyperlight",
+          "sha256": "829a857b08dd5f0cdf4954c712b6940ebe94ab532f45743344d30d550751146f"
+        },
+        "rootfs": {
+          "file": "python.cpio",
+          "sha256": "5574a03e3de2c3971a73fa3befc8f1427e09545f6098e00ff68b48a4f09aa3ab"
+        },
+        "rootfs_source": "https://ghcr.io/v2/hyperlight-dev/hyperlight-unikraft/python/blobs/sha256:448fbf853530c9a78f238b1eb3f6782c3d5162b516d2701bdcc1d7620b435b9d"
+      },
+      "policy_hash": "sha256:daa681bd8b7c0143",
+      "network": true,
+      "service_access": "in_guest",
+      "console_encoding": "utf-8"
+    },
+    "input_sha256": "f28318af4cee43072b0b0a23c5ff1a6980fbca7e8060c0fadabbc2bb88a23bee",
+    "started_unix_ms": 1794960434499,
+    "ended_unix_ms": 1794960434802,
+    "outcome": {
+      "kind": "exit",
+      "code": 0
+    },
+    "observation_error": null,
+    "stdout": {
+      "bytes": 48,
+      "sha256": "55d0ad624fe7d15a0b5cb650acb7011be5645c7cb1abeb000ddebcf11e9b7ff5",
+      "retained_base64": "eyJmaW5kaW5nIjp7ImtpbmQiOiJmaW5kaW5nIiwicG9zaXRpdmUiOmZhbHNlfX0K"
+    },
+    "stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "retained_base64": ""
+    }
+  },
+  "after_removal_cli_returncode": 0,
+  "after_removal_stdout_decoded": "{\"finding\":{\"kind\":\"finding\",\"positive\":false}}\n",
+  "policy_removal": {
+    "http_status": 200,
+    "hosts": {},
+    "active": "active"
+  },
+  "origin_contacts": [
+    {
+      "path": "/hyperlight"
+    },
+    {
+      "path": "/hyperlight"
+    }
+  ],
+  "ready_exists_after": false,
+  "job_runtime_directories_after": [],
+  "limits": "Driver assertion at line97 expected exit1 but got exit0 with negative finding. No third origin contact. Core named denial and all Unikraft checks were not reached. Current evidence does not establish all8 criteria. No rerun selected.",
+  "private_archive_sha256": "174a04d7c28117b15c6d06014464492832b9082d5280e94b9b2d2dd9cd1831c8",
+  "archive_file_hashes": {
+    "proof/job-1.stdout": "fba6433475f03b3d771064b3195575d7a56286c8f2497d2247d7c89b0b819762",
+    "proof/named-2.json": "60d3e42d0110007a5f2c3efa868dadcd9a04c14b93e53f01d0a49ee49755c381",
+    "proof/job-4.stdout": "69971a93ff7b72d270f30159171bd4c61a05a698823df96414fdc773f59dfd4b",
+    "proof/job-4.status.json": "1e3f6691f455051e8adb15d961e4bf3c7a17e83dd88b2afdd13315cc288250bb",
+    "proof/origin-contacts.json": "abc2a7a71118734a8ac92881ba263b67c8a7a08570323bd97cc54f5aeb05cbb2",
+    "resource-guard.json": "3c87f53ef4414eba0ab6f056ad49ca2c5d3a6d415d06c67642864c5cbfbc110f"
+  }
+}

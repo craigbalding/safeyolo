@@ -244,6 +244,19 @@ def test_tls_refusal_precedes_application_request(tmp_path, monkeypatch, client,
 
 
 @pytest.mark.parametrize("client", ["python", "core"])
+def test_http_proxy_denial_is_a_completed_negative_finding(tmp_path, monkeypatch, client):
+    ca, context = certificates(tmp_path)
+    bridge = ProxyBytes(ca, context, https=False, deny=True)
+    try:
+        result = run_client(client, bridge, tmp_path, monkeypatch, https=False, service=False)
+        assert result == {"Ok": {"finding": {"kind": "finding", "positive": False}}}
+        assert len(bridge.requests) == 1  # The proxy response, not a forwarded origin request.
+    finally:
+        bridge.close()
+        assert not bridge.streams
+
+
+@pytest.mark.parametrize("client", ["python", "core"])
 @pytest.mark.parametrize("expected", ["201", "not-a-status"])
 def test_adopted_status_input_controls_finding_and_invalid_input_never_contacts_origin(tmp_path, monkeypatch, client, expected):
     ca, context = certificates(tmp_path)
