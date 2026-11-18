@@ -516,6 +516,10 @@ admission selects the approved factory and retains the finding and its source
 provenance. The Hyperlight GitHub example also retains its exact captured
 response as `automatic[].evidence.execution.checked_input`, with Base64 bytes
 and their SHA-256 digest. The worker consumes that checked title/body snapshot.
+Any job used for GitHub issue admission must supply this independently captured
+snapshot. If capture is missing, incomplete or mismatched, the evidence remains
+unavailable even when the job returns a positive typed finding. An ordinary
+manual typed check does not acquire this admission requirement.
 Admission and later delegation perform fresh reads instead of reusing earlier
 admission results. A new relevant issue revision therefore supplies new input;
 the observation does not promise GitHub stays unchanged after collection.

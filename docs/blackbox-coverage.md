@@ -945,9 +945,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-service-effect-assessment-py).
 - [proxy/src/jobs/proxy_stream.rs](../proxy/src/jobs/proxy_stream.rs#L148) — Native delegated proxy byte transport; host process. Evidence: Real proxy and owned origin; no guest client or VM execution.
   Exact identities: [source inventory](#witness-proxy-src-jobs-proxy-stream-rs-jobs-proxy-stream-tests).
-- [tests/test_hyperlight_network_witness.py](../tests/test_hyperlight_network_witness.py#L37) — HTTP/HTTPS witness result classification and selected continuation. Evidence: Retained Core observations and controlled job adapters with real loopback HTTP/TLS and contact counters; no VM or installed authority claim.
+- [tests/test_hyperlight_network_witness.py](../tests/test_hyperlight_network_witness.py#L39) — HTTP/HTTPS and generic authority/lifetime witness controls. Evidence: Retained Core observations and controlled job adapters with real loopback HTTP/TLS, EOF, endpoint and contact observations; no VM or installed authority claim.
   Exact identities: [source inventory](#witness-tests-test-hyperlight-network-witness-py).
-- [tests/blackbox/host/hyperlight_network.py::main](../tests/blackbox/host/hyperlight_network.py#L288) — Manual installed Hyperlight direct/named public HTTP or HTTPS witness. Evidence: Owned origin contacts; HTTPS mode adds origin TLS/TCP observations and CONNECT refusal. No complete lifecycle or recurring maintained-run claim.
+- [tests/blackbox/host/hyperlight_network.py::main](../tests/blackbox/host/hyperlight_network.py#L602) — Manual installed Hyperlight public HTTP/HTTPS or generic authority/lifetime witness. Evidence: Owned origin contacts and exact-run proxy observations. Authority mode adds held responses, teardown and fresh/cache cases. No complete four-engine or recurring maintained-run claim.
   Selection: manual; no recurring selector resolved.
 - [proxy/src/http/policy_checks/execution_tests.rs](../proxy/src/http/policy_checks/execution_tests.rs#L127) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real native request/gateway; owned assessment service and origin.
   Exact identities: [source inventory](#witness-proxy-src-http-policy-checks-execution-tests-rs).
@@ -1021,15 +1021,15 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-test-hyperlight-rootfs-py).
 - [proxy/src/jobs/proxy_stream.rs](../proxy/src/jobs/proxy_stream.rs#L148) — Native delegated proxy byte transport; host process. Evidence: Real proxy and owned origin; no guest client or VM execution.
   Exact identities: [source inventory](#witness-proxy-src-jobs-proxy-stream-rs-jobs-proxy-stream-tests).
-- [tests/test_hyperlight_network_witness.py](../tests/test_hyperlight_network_witness.py#L37) — HTTP/HTTPS witness result classification and selected continuation. Evidence: Retained Core observations and controlled job adapters with real loopback HTTP/TLS and contact counters; no VM or installed authority claim.
+- [tests/test_hyperlight_network_witness.py](../tests/test_hyperlight_network_witness.py#L39) — HTTP/HTTPS and generic authority/lifetime witness controls. Evidence: Retained Core observations and controlled job adapters with real loopback HTTP/TLS, EOF, endpoint and contact observations; no VM or installed authority claim.
   Exact identities: [source inventory](#witness-tests-test-hyperlight-network-witness-py).
-- [tests/blackbox/host/hyperlight_network.py::main](../tests/blackbox/host/hyperlight_network.py#L288) — Manual installed Hyperlight direct/named public HTTP or HTTPS witness. Evidence: Owned origin contacts; HTTPS mode adds origin TLS/TCP observations and CONNECT refusal. No complete lifecycle or recurring maintained-run claim.
+- [tests/blackbox/host/hyperlight_network.py::main](../tests/blackbox/host/hyperlight_network.py#L602) — Manual installed Hyperlight public HTTP/HTTPS or generic authority/lifetime witness. Evidence: Owned origin contacts and exact-run proxy observations. Authority mode adds held responses, teardown and fresh/cache cases. No complete four-engine or recurring maintained-run claim.
   Selection: manual; no recurring selector resolved.
 - [tests/blackbox/host/hyperlight_adoption.py::main](../tests/blackbox/host/hyperlight_adoption.py#L165) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
 - [tests/blackbox/host/hyperlight_services.py::main](../tests/blackbox/host/hyperlight_services.py#L499) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
-- [proxy/src/jobs/hyperlight/tests.rs](../proxy/src/jobs/hyperlight/tests.rs#L63) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Controlled executable-helper supervisor; no VM or Python checker execution.
+- [proxy/src/jobs/hyperlight/tests.rs](../proxy/src/jobs/hyperlight/tests.rs#L63) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Controlled executable-helper supervisor and real job/check/admission pipeline; no VM or Python checker execution.
   Exact identities: [source inventory](#witness-proxy-src-jobs-hyperlight-tests-rs).
 - [proxy/src/jobs/mediated/tests.rs](../proxy/src/jobs/mediated/tests.rs#L31) — Native mediated job capabilities; host process. Evidence: Controlled runtime, artifact and credential fixtures; real native capability enforcement.
   Exact identities: [source inventory](#witness-proxy-src-jobs-mediated-tests-rs).
@@ -2473,13 +2473,21 @@ Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; c
 
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`).
 
-- [`tests/test_hyperlight_network_witness.py::test_witness_accepts_the_reached_core_findings`](../tests/test_hyperlight_network_witness.py#L37)
-- [`tests/test_hyperlight_network_witness.py::test_direct_denial_requires_a_complete_typed_result`](../tests/test_hyperlight_network_witness.py#L45)
-- [`tests/test_hyperlight_network_witness.py::test_named_denial_requires_a_negative_finding`](../tests/test_hyperlight_network_witness.py#L66)
-- [`tests/test_hyperlight_network_witness.py::test_tls_failure_requires_an_observed_guest_error`](../tests/test_hyperlight_network_witness.py#L92)
-- [`tests/test_hyperlight_network_witness.py::test_tls_denial_cause_requires_exact_proxy_audit`](../tests/test_hyperlight_network_witness.py#L125)
-- [`tests/test_hyperlight_network_witness.py::test_continuation_checks_selected_artifacts_before_runtime`](../tests/test_hyperlight_network_witness.py#L174)
-- [`tests/test_hyperlight_network_witness.py::test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts`](../tests/test_hyperlight_network_witness.py#L202)
+- [`tests/test_hyperlight_network_witness.py::test_witness_accepts_the_reached_core_findings`](../tests/test_hyperlight_network_witness.py#L39)
+- [`tests/test_hyperlight_network_witness.py::test_direct_denial_requires_a_complete_typed_result`](../tests/test_hyperlight_network_witness.py#L47)
+- [`tests/test_hyperlight_network_witness.py::test_named_denial_requires_a_negative_finding`](../tests/test_hyperlight_network_witness.py#L68)
+- [`tests/test_hyperlight_network_witness.py::test_tls_failure_requires_an_observed_guest_error`](../tests/test_hyperlight_network_witness.py#L94)
+- [`tests/test_hyperlight_network_witness.py::test_tls_denial_cause_requires_exact_proxy_audit`](../tests/test_hyperlight_network_witness.py#L127)
+- [`tests/test_hyperlight_network_witness.py::test_continuation_checks_selected_artifacts_before_runtime`](../tests/test_hyperlight_network_witness.py#L176)
+- [`tests/test_hyperlight_network_witness.py::test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts`](../tests/test_hyperlight_network_witness.py#L204)
+- [`tests/test_hyperlight_network_witness.py::test_held_response_observes_eof_before_late_release`](../tests/test_hyperlight_network_witness.py#L341)
+- [`tests/test_hyperlight_network_witness.py::test_http_origin_retains_disconnect_and_late_response_observations`](../tests/test_hyperlight_network_witness.py#L362)
+- [`tests/test_hyperlight_network_witness.py::test_teardown_probe_distinguishes_live_closed_and_missing_endpoint`](../tests/test_hyperlight_network_witness.py#L390)
+- [`tests/test_hyperlight_network_witness.py::test_live_delegation_filters_stopped_and_foreign_generations_before_uniqueness`](../tests/test_hyperlight_network_witness.py#L402)
+- [`tests/test_hyperlight_network_witness.py::test_named_lifetime_refuses_a_positive_or_unrelated_failure`](../tests/test_hyperlight_network_witness.py#L427)
+- [`tests/test_hyperlight_network_witness.py::test_cycle_credit_requires_exact_run_gate_and_dependency_reason`](../tests/test_hyperlight_network_witness.py#L445)
+- [`tests/test_hyperlight_network_witness.py::test_lifetime_driver_requires_fresh_runs_and_current_policy_cache`](../tests/test_hyperlight_network_witness.py#L472)
+- [`tests/test_hyperlight_network_witness.py::test_authority_driver_checks_refusal_offline_effects_and_restores_policy`](../tests/test_hyperlight_network_witness.py#L520)
 
 <a id="witness-tests-test-blackbox-execution-receipt-py"></a>
 ### [`tests/test_blackbox_execution_receipt.py`](../tests/test_blackbox_execution_receipt.py)
@@ -2607,13 +2615,14 @@ Selection: manual native phase `named-checks` (named execution receipt; ignored 
 Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
 - [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::pinned_helper_captures_complete_streams_and_removes_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L63)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::operator_selected_artifact_links_still_verify_the_copied_bytes -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L84)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::substituted_artifacts_and_manifest_architecture_fail_before_spawn -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L105)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_artifacts_identify_role_path_and_os_error_before_discovery -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L134)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_or_failed_vm_report_cannot_make_a_successful_helper_exit_pass -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L192)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::deadline_kills_and_reaps_a_spinning_helper_before_returning -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L205)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::cancellation_stops_a_blocked_helper_and_preserves_no_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L235)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L261)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::github_admission_requires_capture_but_manual_typed_jobs_do_not -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L84)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::operator_selected_artifact_links_still_verify_the_copied_bytes -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L190)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::substituted_artifacts_and_manifest_architecture_fail_before_spawn -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L211)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_artifacts_identify_role_path_and_os_error_before_discovery -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L240)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_or_failed_vm_report_cannot_make_a_successful_helper_exit_pass -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L298)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::deadline_kills_and_reaps_a_spinning_helper_before_returning -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L311)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::cancellation_stops_a_blocked_helper_and_preserves_no_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L341)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L367)
 
 <a id="witness-tests-proxy-contracts-test-agent-api-config-py"></a>
 ### [`tests/proxy_contracts/test_agent_api_config.py`](../tests/proxy_contracts/test_agent_api_config.py)

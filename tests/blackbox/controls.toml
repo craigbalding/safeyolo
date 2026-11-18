@@ -681,15 +681,15 @@ owner = "proxy/src/jobs/proxy_stream.rs"
 paths = ["tests/test_hyperlight_network_witness.py"]
 controls = ["BB-29", "BB-31"]
 kind = "pytest"
-scope = "HTTP/HTTPS witness result classification and selected continuation"
-adapter = "Retained Core observations and controlled job adapters with real loopback HTTP/TLS and contact counters; no VM or installed authority claim"
+scope = "HTTP/HTTPS and generic authority/lifetime witness controls"
+adapter = "Retained Core observations and controlled job adapters with real loopback HTTP/TLS, EOF, endpoint and contact observations; no VM or installed authority claim"
 
 [[witnesses]]
 paths = ["tests/blackbox/host/hyperlight_network.py::main"]
 controls = ["BB-29", "BB-31"]
 kind = "procedure"
-scope = "Manual installed Hyperlight direct/named public HTTP or HTTPS witness"
-adapter = "Owned origin contacts; HTTPS mode adds origin TLS/TCP observations and CONNECT refusal. No complete lifecycle or recurring maintained-run claim"
+scope = "Manual installed Hyperlight public HTTP/HTTPS or generic authority/lifetime witness"
+adapter = "Owned origin contacts and exact-run proxy observations. Authority mode adds held responses, teardown and fresh/cache cases. No complete four-engine or recurring maintained-run claim"
 
 [[witnesses]]
 paths = ["tests/test_blackbox_execution_receipt.py", "tests/test_blackbox_catalogue.py"]
@@ -912,7 +912,7 @@ paths = ["proxy/src/jobs/hyperlight/tests.rs"]
 controls = ["BB-31"]
 kind = "cargo"
 scope = "Native Rust; host OS/cfg and ignore attributes are retained per source"
-adapter = "Controlled executable-helper supervisor; no VM or Python checker execution"
+adapter = "Controlled executable-helper supervisor and real job/check/admission pipeline; no VM or Python checker execution"
 target = "lib"
 module = "jobs::hyperlight::tests"
 owner = "proxy/src/jobs/hyperlight.rs"

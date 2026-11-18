@@ -6,8 +6,10 @@ import hashlib
 import http.client
 import importlib.util
 import json
+import socket
 import ssl
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -202,7 +204,7 @@ def test_continuation_checks_selected_artifacts_before_runtime(witness, selected
 def test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts(
         witness, selected_inputs, partial, monkeypatch, continuation, selected_engine, tls):
     args = selected_inputs
-    args.engine, args.tls = selected_engine, tls
+    args.engine, args.tls, args.authority = selected_engine, tls, False
     if not continuation:
         args.continue_from = None
     for engine in ("hyperlight", "hyperlight-unikraft"):
@@ -334,3 +336,227 @@ def test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts(
     config = tomlkit.parse((args.root / "config.toml").read_text())
     assert config.get("upstream_ca_file") == ("certs/mitmproxy-ca-cert.pem" if tls else None)
     assert not config.get("ignore_hosts")
+
+
+def test_held_response_observes_eof_before_late_release(witness, tmp_path):
+    held = witness.HeldResponse(tmp_path / "held.json")
+    client, upstream = socket.socketpair()
+    thread = threading.Thread(target=held.wait, args=(upstream,))
+    thread.start()
+    try:
+        assert held.entered.wait(2)
+        assert not held.closed.wait(0.05), "an idle open stream is not EOF"
+        assert json.loads(held.path.read_bytes()) == {"entered": True}
+        client.close()
+        assert held.closed.wait(2)
+        assert json.loads(held.path.read_bytes()) == {"entered": True, "peer_closed": True}
+        assert thread.is_alive(), "late response must wait for explicit release"
+    finally:
+        held.release.set()
+        thread.join(timeout=2)
+        client.close()
+        upstream.close()
+    assert not thread.is_alive()
+
+
+def test_http_origin_retains_disconnect_and_late_response_observations(witness, tmp_path):
+    held = witness.HeldResponse(tmp_path / "held.json")
+    with witness.ThreadingHTTPServer(("127.0.0.1", 0), witness.NetworkOrigin) as server:
+        server.held, server.contacts, server.contacts_path = held, [], tmp_path / "contacts.json"
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        client = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=2)
+        try:
+            client.request("GET", "/hold/late")
+            assert held.entered.wait(2)
+            assert not held.closed.is_set()
+            client.close()
+            assert held.closed.wait(2)
+            held.release.set()
+            assert held.finished.wait(2)
+            assert json.loads(server.contacts_path.read_bytes()) == [{"path": "/hold/late"}]
+            observed = json.loads(held.path.read_bytes())
+            assert observed["peer_closed"] is True
+            assert observed.get("late_response_written") is True or observed.get("late_response_error") in {
+                "BrokenPipeError", "ConnectionResetError"}
+        finally:
+            held.release.set()
+            client.close()
+            server.shutdown()
+            thread.join(timeout=2)
+    assert not thread.is_alive()
+
+
+def test_teardown_probe_distinguishes_live_closed_and_missing_endpoint(witness, tmp_path):
+    path = tmp_path / "delegate.sock"
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind(str(path))
+        listener.listen(1)
+        with pytest.raises(AssertionError, match="still accepts"):
+            witness.check_closed_delegation(path)
+    witness.check_closed_delegation(path)
+    path.unlink()
+    witness.check_closed_delegation(path)
+
+
+def test_live_delegation_filters_stopped_and_foreign_generations_before_uniqueness(witness, tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    old = data / "job-hyperlight-old"
+    old.mkdir()
+    witness.save(old / "invocation.json", {"parent_pid": 123, "service_bridge": "/retained/s.sock"})
+    foreign = data / "job-hyperlight-foreign"
+    foreign.mkdir()
+    witness.save(foreign / "invocation.json", {"parent_pid": 456, "service_bridge": "/foreign/s.sock"})
+    current = data / "job-hyperlight-current"
+    current.mkdir()
+    bridge = tmp_path / "s.sock"
+    delegated = tmp_path / "p.sock"
+    witness.save(current / "invocation.json", {"parent_pid": 123, "service_bridge": str(bridge)})
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind(str(delegated))
+        assert witness.live_delegation(tmp_path, {old}, 123) == (current, delegated)
+        with pytest.raises(AssertionError):
+            witness.live_delegation(tmp_path, set(), 123)
+        with pytest.raises(AssertionError):
+            witness.live_delegation(tmp_path, {old}, 789)
+
+
+@pytest.mark.parametrize("mode", ["deadline", "revoke"])
+@pytest.mark.parametrize("defect", [None, "positive", "cause", "status"])
+def test_named_lifetime_refuses_a_positive_or_unrelated_failure(witness, mode, defect):
+    status, value = ((409, {"error": "check authority changed while pending; late result discarded"})
+                     if mode == "revoke" else
+                     (422, {"error": "check execution deadline exceeded; late result discarded"}))
+    if defect == "positive":
+        value = {"evidence": {"result": {"finding": {"kind": "finding", "positive": True}}, "unavailable": None}}
+    elif defect == "cause":
+        value = {"error": "unrelated failure"}
+    elif defect == "status":
+        status = 503
+    if defect:
+        with pytest.raises((AssertionError, TypeError)):
+            witness.check_unavailable_named(status, value, mode)
+    else:
+        witness.check_unavailable_named(status, value, mode)
+
+
+@pytest.mark.parametrize("defect", [None, "event", "run", "gate", "action", "reason", "check"])
+def test_cycle_credit_requires_exact_run_gate_and_dependency_reason(witness, defect):
+    row = {"event": "security.network_guard.evaluated", "details": {
+        "attribution": {"trusted_transport_identity": "job-cycle",
+                        "attribution_provenance": {"authorization_principal": "gate:hyperlight-network-check"}},
+        "named_checks": {"action": "unresolved", "evidence": {
+            "hyperlight": {"unavailable": "recursive/cyclic check dependency"}}}}}
+    if defect == "event":
+        row["event"] = "other"
+    elif defect == "run":
+        row["details"]["attribution"]["trusted_transport_identity"] = "other"
+    elif defect == "gate":
+        row["details"]["attribution"]["attribution_provenance"]["authorization_principal"] = "gate:other"
+    elif defect == "action":
+        row["details"]["named_checks"]["action"] = "allow"
+    elif defect == "reason":
+        row["details"]["named_checks"]["evidence"]["hyperlight"]["unavailable"] = "job failed"
+    elif defect == "check":
+        row["details"]["named_checks"]["evidence"]["other"] = row["details"]["named_checks"]["evidence"].pop("hyperlight")
+    results = {"hyperlight": {"authority": {"cycle": {"body": {"evidence": {"execution": {"run_id": "job-cycle"}}}}}}}
+    if defect:
+        with pytest.raises(AssertionError):
+            witness.check_cycle_audit([row], results)
+    else:
+        witness.check_cycle_audit([row], results)
+
+
+@pytest.mark.parametrize("defect", [None, "fresh_cached", "cached_other_run", "after_policy_cached"])
+def test_lifetime_driver_requires_fresh_runs_and_current_policy_cache(witness, partial, tmp_path, monkeypatch, defect):
+    contacts, held_calls = [], []
+
+    class Instance:
+        scratch = tmp_path
+        args = SimpleNamespace(upstream_port=12345)
+        policy = {"checks": {"hyperlight": {"source": {"limits": {}}}}}
+
+        def __init__(self):
+            self.cache, self.generation = {}, 0
+
+        def apply(self):
+            if not (defect == "after_policy_cached" and held_calls):
+                self.cache.clear()
+
+        def invoke(self, engine, request):
+            subject = request["subject"]["value"]
+            if subject in self.cache:
+                body = copy.deepcopy(self.cache[subject])
+                body["evidence"]["acquisition"] = "reused_live_evidence"
+                if defect == "cached_other_run":
+                    body["evidence"]["execution"]["run_id"] = "other"
+            else:
+                body = copy.deepcopy(partial["named_allowed"]["body"])
+                self.generation += 1
+                body["evidence"]["execution"]["run_id"] = f"fresh-{self.generation}"
+                body["evidence"]["acquisition"] = "reused_live_evidence" if defect == "fresh_cached" else "live"
+                contacts.append({"path": subject})
+                self.cache[subject] = copy.deepcopy(body)
+            return 200, body
+
+    def held(instance, engine, origin, mode):
+        held_calls.append((engine, mode))
+        contacts.append({"path": "held"})
+        return {"run_id": "retired"}
+
+    monkeypatch.setattr(witness, "held_direct", held)
+    monkeypatch.setattr(witness, "held_named", held)
+    if defect:
+        with pytest.raises(AssertionError):
+            witness.exercise_lifetimes(Instance(), "hyperlight", None, contacts)
+    else:
+        results = witness.exercise_lifetimes(Instance(), "hyperlight", None, contacts)
+        assert len(held_calls) == 5 and len(contacts) == 11
+        assert results["policy-invalidated-cache"]["evidence"]["execution"]["run_id"] == "fresh-6"
+
+
+@pytest.mark.parametrize("defect", [None, "caller_contact", "forged_accepted", "live_preview", "cycle_positive"])
+def test_authority_driver_checks_refusal_offline_effects_and_restores_policy(witness, partial, tmp_path, monkeypatch, defect):
+    contacts = []
+    original = {"subject": "value", "source": {"effects": "passive"}}
+
+    class Instance:
+        args = SimpleNamespace(upstream_port=12345)
+        scratch = tmp_path
+        policy = {"checks": {"hyperlight": copy.deepcopy(original)}}
+
+        def apply(self):
+            pass  # This control checks the observer; installed activation is separate.
+
+        def invoke(self, engine, request):
+            if any(key != "subject" for key in request):
+                return (200 if defect == "forged_accepted" else 400), {
+                    "error": "supply only an adopted check name and typed subject"}
+            body = copy.deepcopy(partial["named_allowed"]["body"])
+            body["evidence"]["result"]["finding"]["positive"] = defect == "cycle_positive"
+            return 200, body
+
+        def command(self, *arguments):
+            if arguments[:2] == ("policy", "evaluate"):
+                effects = tomlkit.parse(Path(arguments[2]).read_text())["checks"]["hyperlight"]["source"]["effects"]
+                return SimpleNamespace(stdout=json.dumps({"result": {
+                    "evidence_mode": "live" if defect == "live_preview" else "recorded_offline",
+                    "destination_contact": False, "dependency_calls": [], "stages": [{}, {
+                        "evidence": {"hyperlight": {"execution": {"effects": effects, "invoked": False}}}}]}}))
+
+    def caller(*_args):
+        if defect == "caller_contact":
+            contacts.append({"path": "forbidden"})
+        return {"status": 403}
+
+    monkeypatch.setattr(witness, "caller_request", caller)
+    instance = Instance()
+    if defect:
+        with pytest.raises(AssertionError):
+            witness.authority_cases(instance, "hyperlight", contacts)
+    else:
+        result = witness.authority_cases(instance, "hyperlight", contacts)
+        assert set(result) == {"caller", "forged-headers", "gate_id", "run_id", "ancestry", "inputs", "spec",
+                               "passive-preview", "active-preview", "cycle"}
+    assert instance.policy == {"checks": {"hyperlight": original}}

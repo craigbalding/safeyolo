@@ -84,6 +84,112 @@ async fn pinned_helper_captures_complete_streams_and_removes_runtime() {
 }
 
 #[tokio::test]
+async fn github_admission_requires_capture_but_manual_typed_jobs_do_not() {
+    use crate::policy::checks::{
+        Checks, Subject, Truth,
+        work::{Binding, Boundary},
+    };
+    let (root, mut spec, config) = fixture(
+        "printf '%s' '{\"finding\":{\"kind\":\"finding\",\"positive\":true}}'\nprintf '%s' '{\"completion\":{\"kind\":\"guest_call_completed\",\"reported_status\":0},\"error\":null}' > \"$2\"",
+    );
+    spec.retain_bytes = 4096;
+    let path = root.path().join("job.json");
+    fs::write(&path, serde_json::to_vec(&spec).unwrap()).unwrap();
+    let checks: Checks = serde_json::from_value(json!({"checks":{"author":{
+        "source_id":"adopted-author", "meaning":"Issue author matches the adopted identity",
+        "subject":"value", "result_type":"finding", "influences":["hard_exclusion"],
+        "implementation_version":"fixture", "configuration_version":"fixture", "max_age_seconds":60,
+        "invokers":["driver"], "inputs":{"repository":"craigbalding/safeyolo"},
+        "source":{"kind":"job", "spec":path, "effects":"passive", "limits":{
+            "timeout_ms":10000, "max_input_bytes":8192, "max_output_bytes":4096,
+            "max_concurrent":1, "max_pending":0, "max_cached":2}}}}, "check_rules":[]}))
+    .unwrap();
+    fs::write(
+        root.path().join("policy.toml"),
+        format!(
+            "{}\n[hosts.'*']\negress='deny'\n",
+            toml::to_string(&checks).unwrap()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        &config,
+        "admin_port=0\nlisteners=[]\nflow_store_enabled=false\n",
+    )
+    .unwrap();
+    for name in ["data", "services", "builtin-services"] {
+        fs::create_dir(root.path().join(name)).unwrap();
+    }
+    fs::write(
+        root.path().join("data/instance_id"),
+        "sy-dddddddddddddddddddddddddddddddd",
+    )
+    .unwrap();
+    let proxy = crate::Proxy::start(crate::native_config::read(&config).unwrap())
+        .await
+        .unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let checks = runtime.policy.as_ref().unwrap().named_checks();
+    let subject = Subject::Value {
+        value: "1584".into(),
+    };
+    let manual = checks
+        .invoke_named(
+            "author",
+            "driver",
+            subject.clone(),
+            &runtime,
+            &proxy.runtime,
+        )
+        .await
+        .unwrap();
+    assert!(manual.unavailable.is_none(), "{manual:?}");
+    assert_eq!(
+        serde_json::to_value(&manual.result.as_ref().unwrap().finding).unwrap(),
+        json!({"kind":"finding","positive":true})
+    );
+    let admitted = checks
+        .invoke_automatic(
+            "author",
+            subject.clone(),
+            &runtime,
+            &proxy.runtime,
+            Boundary::AdmitIssue,
+            None,
+        )
+        .await
+        .unwrap();
+    proxy.shutdown().await;
+    let execution = admitted.execution.as_ref().unwrap();
+    assert_eq!(execution["outcome"], json!({"kind":"exit","code":0}));
+    assert_eq!(execution["service_evidence"], json!([]));
+    assert!(execution.get("checked_input").is_none());
+    assert_ne!(
+        execution["run_id"],
+        manual.execution.as_ref().unwrap()["run_id"]
+    );
+    assert_eq!(
+        admitted.unavailable.as_deref(),
+        Some("GitHub snapshot capture unavailable")
+    );
+    assert!(admitted.result.is_none());
+    let binding: Binding = serde_json::from_value(json!({"name":"author", "room":"fixture",
+        "factory":"fixture", "boundary":"admit_issue", "job":"author", "input":"github_issue",
+        "repository":"craigbalding/safeyolo", "on_failure":"hold",
+        "require":{"op":"finding","check":"author"}}))
+    .unwrap();
+    assert_ne!(
+        checks.work_truth(
+            &binding,
+            &subject,
+            admitted,
+            now().unwrap().try_into().unwrap()
+        ),
+        Truth::True
+    );
+}
+
+#[tokio::test]
 async fn operator_selected_artifact_links_still_verify_the_copied_bytes() {
     let (root, spec, config) = fixture(
         "printf '%s' '{\"completion\":{\"kind\":\"guest_call_completed\",\"reported_status\":0},\"error\":null}' > \"$2\"",
