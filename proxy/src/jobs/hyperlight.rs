@@ -138,7 +138,12 @@ fn file_in(bundle: &Path, file: &BundleFile) -> Result<PinnedArtifact, Error> {
 }
 
 async fn bundle(runtime: &PinnedArtifact) -> Result<Bundle, Error> {
-    let bytes = bounded(&runtime.path, 64 * 1024).await?;
+    let bytes = bounded(&runtime.path, 64 * 1024).await.map_err(|error| {
+        format!(
+            "cannot read Hyperlight runtime manifest {}: {error}",
+            runtime.path.display()
+        )
+    })?;
     if digest(&bytes) != runtime.sha256.to_ascii_lowercase() {
         return Err("Hyperlight runtime manifest digest mismatch".into());
     }
@@ -165,12 +170,19 @@ async fn copy(
     artifact: &PinnedArtifact,
     destination: &Path,
     executable: bool,
+    role: &str,
 ) -> Result<(), Error> {
     let mut source = tokio::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
         .open(&artifact.path)
-        .await?;
+        .await
+        .map_err(|error| {
+            format!(
+                "cannot open Hyperlight {role} {}: {error}",
+                artifact.path.display()
+            )
+        })?;
     if !source.metadata().await?.is_file() {
         return Err("Hyperlight artifact must be a regular file".into());
     }
@@ -216,11 +228,16 @@ async fn prepare(spec: &JobSpec, root: &Path) -> Result<Bundle, Error> {
         &file_in(&runtime.path, &bundle.helper)?,
         &root.join("helper"),
         true,
+        "helper",
     )
     .await?;
     tokio::fs::create_dir(root.join("code")).await?;
     let code = root.join("code/checker");
-    copy(artifact, &code, false).await?;
+    let role = match spec.engine {
+        JobEngine::Hyperlight { .. } => "core guest",
+        _ => "Python checker",
+    };
+    copy(artifact, &code, false, role).await?;
     if matches!(spec.engine, JobEngine::Hyperlight { .. }) {
         let header = bounded_header(&code).await?;
         let machine = u16::from_le_bytes([header[18], header[19]]);
@@ -237,6 +254,7 @@ async fn prepare(spec: &JobSpec, root: &Path) -> Result<Bundle, Error> {
             &file_in(&runtime.path, &bundle.rootfs)?,
             &root.join("python.cpio"),
             false,
+            "Unikraft runtime",
         )
         .await?;
     }
