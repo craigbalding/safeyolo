@@ -2625,9 +2625,10 @@ Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; c
 - [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::cancellation_stops_a_blocked_helper_and_preserves_no_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L341)
 - [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::stop_reaps_a_helper_that_exited_before_group_signalling -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L391)
 - [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::exited_helper_recovery_does_not_accept_a_live_helper -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L409)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::stop_kills_descendants_before_reaping_an_exited_leader -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L428)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::exited_helper_recovery_never_signals_a_remaining_group -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L451)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L471)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::denied_group_kill_waits_for_delayed_helper_exit -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L433)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::stop_kills_descendants_before_reaping_an_exited_leader -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L461)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::exited_helper_recovery_never_signals_a_remaining_group -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L484)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L507)
 
 <a id="witness-tests-proxy-contracts-test-agent-api-config-py"></a>
 ### [`tests/proxy_contracts/test_agent_api_config.py`](../tests/proxy_contracts/test_agent_api_config.py)

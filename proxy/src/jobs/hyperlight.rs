@@ -320,21 +320,14 @@ async fn stop(helper: &mut Helper) -> Result<HelperProcessStatus, Error> {
         if error.raw_os_error() != Some(libc::ESRCH) {
             let failure =
                 format!("could not SIGKILL Hyperlight helper process group {group}: {error}");
-            // Darwin excludes zombies from group signalling and can return
-            // EPERM when only the unreaped leader remains. Do not accept the
-            // error unless our Child exited and the group is now absent.
+            // Darwin can deny group signalling while the helper is exiting.
+            // Closing the bridge starts exit; it need not be waitable yet.
+            // Reuse the bounded stop wait, then prove the group is absent.
             // DOC: docs/hyperlight-jobs.md
             if error.raw_os_error() == Some(libc::EPERM) {
-                match reap_exited_helper(helper) {
-                    Ok(Some(status)) => return Ok(status),
-                    Ok(None) => {
-                        return Err(format!(
-                            "{failure}; helper has not exited; VM cleanup is unproved"
-                        )
-                        .into());
-                    }
-                    Err(cleanup) => return Err(format!("{failure}; {cleanup}").into()),
-                }
+                return reap_after_denied_group_kill(helper)
+                    .await
+                    .map_err(|cleanup| format!("{failure}; {cleanup}").into());
             }
             return Err(failure.into());
         }
@@ -346,10 +339,10 @@ async fn stop(helper: &mut Helper) -> Result<HelperProcessStatus, Error> {
     observed_status(status)
 }
 
-fn reap_exited_helper(helper: &mut Helper) -> Result<Option<HelperProcessStatus>, Error> {
-    let Some(status) = helper.child.try_wait()? else {
-        return Ok(None);
-    };
+async fn reap_after_denied_group_kill(helper: &mut Helper) -> Result<HelperProcessStatus, Error> {
+    let status = tokio::time::timeout(Duration::from_secs(5), helper.child.wait())
+        .await
+        .map_err(|_| "Hyperlight helper did not exit within 5 seconds after denied SIGKILL; VM cleanup is unproved")??;
     // Reaping releases the group ID. Clear it before any error can drop the
     // Helper, and use signal zero only: a reused foreign group is not ours.
     if let Some(group) = helper.group.take() {
@@ -362,7 +355,7 @@ fn reap_exited_helper(helper: &mut Helper) -> Result<Option<HelperProcessStatus>
             return Err(format!("Hyperlight helper exited but process group {group} absence is unproved: {error}; no further signal sent").into());
         }
     }
-    Ok(Some(observed_status(status)?))
+    observed_status(status)
 }
 
 pub(super) async fn discover(config: &Path, spec: &JobSpec) -> Result<Option<Value>, Error> {

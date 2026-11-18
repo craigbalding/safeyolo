@@ -167,9 +167,11 @@ Bounded input copying happens first. Cleanup failures and incomplete observation
 cannot report successful completion. No successful result is returned before
 the helper has exited and the transient directory has been removed.
 
-If group signalling returns `EPERM`, cleanup succeeds only when the owned
-helper has exited and the process group is absent after reaping. A live helper
-or an unverified group still produces a cleanup error and preserves the runtime.
+If group signalling returns `EPERM`, cleanup waits up to five seconds for the
+owned helper to exit. Closing a proxy bridge can start helper exit before the
+exit status is available. Cleanup succeeds only when the helper has exited and
+the process group is absent after reaping. A helper that remains live at the
+deadline or an unverified group produces a cleanup error and preserves the runtime.
 After reaping, cleanup never sends another signal to the former group.
 Errors identify the bridge, delegation, socket directory or helper operation.
 

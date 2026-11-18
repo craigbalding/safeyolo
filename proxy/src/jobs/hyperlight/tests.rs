@@ -417,7 +417,12 @@ async fn exited_helper_recovery_does_not_accept_a_live_helper() {
         group: child.id(),
         child,
     };
-    assert!(reap_exited_helper(&mut helper).unwrap().is_none());
+    let error = reap_after_denied_group_kill(&mut helper)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("did not exit within 5 seconds"), "{error}");
+    assert!(helper.child.try_wait().unwrap().is_none());
     assert!(helper.group.is_some());
     assert_eq!(
         stop(&mut helper).await.unwrap(),
@@ -425,6 +430,34 @@ async fn exited_helper_recovery_does_not_accept_a_live_helper() {
             number: libc::SIGKILL
         }
     );
+}
+
+#[tokio::test]
+async fn denied_group_kill_waits_for_delayed_helper_exit() {
+    // EOF stands in for closing the host-call bridge. The child remains live
+    // during cleanup, then exits; an immediate try_wait cannot prove this.
+    let (root, _, _) = fixture("/bin/cat >/dev/null\nexit 7");
+    let mut child = command(&root.path().join("helper-source"))
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = child.stdin.take().unwrap();
+    let mut helper = Helper {
+        group: child.id(),
+        child,
+    };
+    assert!(helper.child.try_wait().unwrap().is_none());
+    let close_bridge = async {
+        // Poll cleanup while EOF is still withheld, then allow the child to
+        // exit. This schedule does not depend on a wall-clock delay.
+        tokio::task::yield_now().await;
+        drop(input);
+    };
+    let (status, ()) = tokio::join!(reap_after_denied_group_kill(&mut helper), close_bridge);
+    assert_eq!(status.unwrap(), HelperProcessStatus::Exit { code: 7 });
+    assert!(helper.group.is_none());
+    assert!(helper.child.id().is_none());
+    assert_reaped(root.path());
 }
 
 #[tokio::test]
@@ -462,7 +495,10 @@ async fn exited_helper_recovery_never_signals_a_remaining_group() {
     let mut foreign = command(Path::new("/bin/sleep"));
     let mut foreign = foreign.arg("999").spawn().unwrap();
     helper.group = foreign.id();
-    let error = reap_exited_helper(&mut helper).unwrap_err().to_string();
+    let error = reap_after_denied_group_kill(&mut helper)
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("still exists"), "{error}");
     assert!(helper.group.is_none());
     drop(helper);
