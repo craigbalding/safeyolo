@@ -107,7 +107,7 @@ def selected_inputs(witness, partial, tmp_path, monkeypatch):
     monkeypatch.setattr(witness.subprocess, "run", lambda *_a, **_k: SimpleNamespace(
         stdout=f"safeyolo commit={partial['source']} profile=debug\n"))
     return SimpleNamespace(bundle=bundle, scratch=scratch, root=tmp_path / "instance", cli=cli, proxy=proxy,
-                           continue_from=receipt, admin_port=12345, upstream_port=0, issue=1584)
+                           continue_from=receipt, engine=None, admin_port=12345, upstream_port=0, issue=1584)
 
 
 @pytest.mark.parametrize("defect", [None, "guest", "runtime", "helper", "cpio", "source", "contacts", "policy"])
@@ -136,10 +136,11 @@ def test_continuation_checks_selected_artifacts_before_runtime(witness, selected
         assert reused["contacts"] == [{"path": "/hyperlight"}] * 2
 
 
-@pytest.mark.parametrize("continuation", [False, True])
+@pytest.mark.parametrize(("continuation", "selected_engine"), [(False, None), (True, None), (False, "hyperlight-unikraft")])
 def test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts(
-        witness, selected_inputs, partial, monkeypatch, continuation):
+        witness, selected_inputs, partial, monkeypatch, continuation, selected_engine):
     args = selected_inputs
+    args.engine = selected_engine
     if not continuation:
         args.continue_from = None
     for engine in ("hyperlight", "hyperlight-unikraft"):
@@ -201,11 +202,13 @@ def test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts(
     witness.exercise(args)
     all_cases = [(engine, mode, allowed) for engine in ("hyperlight", "hyperlight-unikraft")
                  for mode, allowed in (("direct", True), ("named", True), ("direct", False), ("named", False))]
-    assert calls == (all_cases[3:] if continuation else all_cases)
-    assert validations.count(("job", "validate")) == (1 if continuation else 2)
+    selected = all_cases[4:] if selected_engine else all_cases[3:] if continuation else all_cases
+    assert calls == selected
+    assert validations.count(("job", "validate")) == (1 if continuation or selected_engine else 2)
     report = json.loads((args.scratch / "result.json").read_bytes())
-    assert report["contacts"] == ([{"path": "/hyperlight-unikraft"}] * 2 if continuation else
+    assert report["contacts"] == ([{"path": "/hyperlight-unikraft"}] * 2 if continuation or selected_engine else
                                   [{"path": "/hyperlight"}] * 2 + [{"path": "/hyperlight-unikraft"}] * 2)
+    assert set(report["engines"]) == ({selected_engine} if selected_engine else {"hyperlight", "hyperlight-unikraft"})
     assert (report["reused_core"] is not None) is continuation
     if continuation:
         assert "direct" not in report["engines"]["hyperlight"]

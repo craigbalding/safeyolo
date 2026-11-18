@@ -248,6 +248,11 @@ guest. Other client libraries need a compatible adapter; ordinary Linux socket
 APIs are not enabled. Both provided clients validate the server certificate
 and hostname. Core includes public roots and the selected proxy CA; Python uses
 its runtime roots and the selected proxy CA.
+The bundle builder supplies the Python image's missing OpenSSL 3 libraries
+from digest-pinned Debian 12 packages for the guest architecture. It keeps
+the package's copyright and license and exposes the image's bundled public
+CA roots at OpenSSL's default path. The completed CPIO image has its own
+runtime-manifest digest; replacing it requires regenerating the job pins.
 
 For HTTP, the guest sends an absolute-form proxy request. For HTTPS, the guest
 performs CONNECT and TLS. DNS and destination connections remain with SafeYolo.

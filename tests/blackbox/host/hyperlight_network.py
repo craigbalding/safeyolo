@@ -10,6 +10,8 @@ four-engine, TLS, ancestry, capture or lifecycle acceptance contract.
 Use --continue-from with the retained partial HTTP receipt to reuse completed
 Core allow/direct-denial observations. The continuation runs Core named denial
 and the Unikraft cases in a fresh instance, with separate contact counters.
+Use --engine to select only an engine whose observations remain unrun. Earlier
+receipts retain their own source, artifact identities and contact counters.
 """
 
 import argparse
@@ -115,6 +117,7 @@ def exercise_engine(instance, engine, contacts, continuing_core):
 
 
 def exercise(args):
+    engines = (args.engine,) if args.engine else ("hyperlight", "hyperlight-unikraft")
     reused = completed_core(args)
     instance = Instance(args)
     contacts = []
@@ -144,7 +147,7 @@ def exercise(args):
             instance.policy = {"hosts": {"*": {"egress": "deny"}},
                                "agents": {gate: {"hosts": {destination: {"egress": "allow"}}}},
                                "controls": {"test_context": {"action": "warn"}}, "checks": {}}
-            for engine in ("hyperlight", "hyperlight-unikraft"):
+            for engine in engines:
                 spec = json.loads((args.bundle / f"{engine}-network.json").read_bytes())
                 for key in ("runtime", "guest", "checker"):
                     if key in spec["engine"]:
@@ -171,7 +174,7 @@ def exercise(args):
                                                   stdout=log, stderr=log)
                 try:
                     wait_ready(instance.proxy, args.root, args.admin_port)
-                    for engine in ("hyperlight", "hyperlight-unikraft"):
+                    for engine in engines:
                         results[engine] = exercise_engine(instance, engine, contacts,
                                                          reused is not None and engine == "hyperlight")
                         save(args.scratch / "result.json", report)
@@ -195,11 +198,15 @@ def main():
     for name in ("admin-port", "upstream-port"):
         parser.add_argument("--" + name, type=int, required=True)
     parser.add_argument("--continue-from", type=Path, help="retained partial Core HTTP observation receipt")
+    parser.add_argument("--engine", choices=("hyperlight", "hyperlight-unikraft"),
+                        help="exercise only the selected engine (default: both)")
     args = parser.parse_args()
     for name in ("cli", "proxy", "bundle", "scratch"):
         setattr(args, name, getattr(args, name).resolve(strict=True))
     args.root = args.root.absolute()
     if args.continue_from is not None:
+        if args.engine is not None:
+            parser.error("select --engine or --continue-from")
         args.continue_from = args.continue_from.resolve(strict=True)
     # Instance.invoke uses this only as a default subject; every call overrides it.
     args.issue = 1584

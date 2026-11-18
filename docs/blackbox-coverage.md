@@ -947,7 +947,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-proxy-src-jobs-proxy-stream-rs-jobs-proxy-stream-tests).
 - [tests/test_hyperlight_network_witness.py](../tests/test_hyperlight_network_witness.py#L34) — HTTP witness result classification and selected continuation. Evidence: Retained Core observations and controlled job adapters with a real loopback contact counter; no VM or installed authority claim.
   Exact identities: [source inventory](#witness-tests-test-hyperlight-network-witness-py).
-- [tests/blackbox/host/hyperlight_network.py::main](../tests/blackbox/host/hyperlight_network.py#L191) — Manual installed Hyperlight direct/named public HTTP witness. Evidence: Owned endpoint contact counters; no TLS, complete lifecycle or recurring maintained-run claim.
+- [tests/blackbox/host/hyperlight_network.py::main](../tests/blackbox/host/hyperlight_network.py#L194) — Manual installed Hyperlight direct/named public HTTP witness. Evidence: Owned endpoint contact counters; no TLS, complete lifecycle or recurring maintained-run claim.
   Selection: manual; no recurring selector resolved.
 - [proxy/src/http/policy_checks/execution_tests.rs](../proxy/src/http/policy_checks/execution_tests.rs#L127) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real native request/gateway; owned assessment service and origin.
   Exact identities: [source inventory](#witness-proxy-src-http-policy-checks-execution-tests-rs).
@@ -1015,13 +1015,15 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-test-hyperlight-service-checker-py).
 - [tests/test_job_authoring.py](../tests/test_job_authoring.py#L61) — Host job authoring and adoption; controlled adapters. Evidence: Controlled build/runner adapters; not a live Hyperlight boundary pass.
   Exact identities: [source inventory](#witness-tests-test-job-authoring-py).
-- [tests/test_hyperlight_proxy_client.py](../tests/test_hyperlight_proxy_client.py#L203) — HTTP/TLS client libraries on the host CPU. Evidence: Real HTTP/OpenSSL/Rustls over fragmented fixture proxy bytes; no VM, native delegation, gate policy or isolation claim.
+- [tests/test_hyperlight_proxy_client.py](../tests/test_hyperlight_proxy_client.py#L204) — HTTP/TLS client libraries and guest SSL packaging on the host CPU. Evidence: Real HTTP/OpenSSL/Rustls over fragmented fixture proxy bytes; optional assembled-image Python adapter; pinned-package and CPIO controls. No VM, native delegation, gate policy or isolation claim.
   Exact identities: [source inventory](#witness-tests-test-hyperlight-proxy-client-py).
+- [tests/test_hyperlight_rootfs.py](../tests/test_hyperlight_rootfs.py#L49) — HTTP/TLS client libraries and guest SSL packaging on the host CPU. Evidence: Real HTTP/OpenSSL/Rustls over fragmented fixture proxy bytes; optional assembled-image Python adapter; pinned-package and CPIO controls. No VM, native delegation, gate policy or isolation claim.
+  Exact identities: [source inventory](#witness-tests-test-hyperlight-rootfs-py).
 - [proxy/src/jobs/proxy_stream.rs](../proxy/src/jobs/proxy_stream.rs#L148) — Native delegated proxy byte transport; host process. Evidence: Real proxy and owned origin; no guest client or VM execution.
   Exact identities: [source inventory](#witness-proxy-src-jobs-proxy-stream-rs-jobs-proxy-stream-tests).
 - [tests/test_hyperlight_network_witness.py](../tests/test_hyperlight_network_witness.py#L34) — HTTP witness result classification and selected continuation. Evidence: Retained Core observations and controlled job adapters with a real loopback contact counter; no VM or installed authority claim.
   Exact identities: [source inventory](#witness-tests-test-hyperlight-network-witness-py).
-- [tests/blackbox/host/hyperlight_network.py::main](../tests/blackbox/host/hyperlight_network.py#L191) — Manual installed Hyperlight direct/named public HTTP witness. Evidence: Owned endpoint contact counters; no TLS, complete lifecycle or recurring maintained-run claim.
+- [tests/blackbox/host/hyperlight_network.py::main](../tests/blackbox/host/hyperlight_network.py#L194) — Manual installed Hyperlight direct/named public HTTP witness. Evidence: Owned endpoint contact counters; no TLS, complete lifecycle or recurring maintained-run claim.
   Selection: manual; no recurring selector resolved.
 - [tests/blackbox/host/hyperlight_adoption.py::main](../tests/blackbox/host/hyperlight_adoption.py#L165) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
@@ -2444,10 +2446,19 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`).
 
-- [`tests/test_hyperlight_proxy_client.py::test_maintained_clients_use_fragmented_proxy_streams`](../tests/test_hyperlight_proxy_client.py#L203)
-- [`tests/test_hyperlight_proxy_client.py::test_tls_refusal_precedes_application_request`](../tests/test_hyperlight_proxy_client.py#L221)
-- [`tests/test_hyperlight_proxy_client.py::test_http_proxy_denial_is_a_completed_negative_finding`](../tests/test_hyperlight_proxy_client.py#L247)
-- [`tests/test_hyperlight_proxy_client.py::test_adopted_status_input_controls_finding_and_invalid_input_never_contacts_origin`](../tests/test_hyperlight_proxy_client.py#L261)
+- [`tests/test_hyperlight_proxy_client.py::test_maintained_clients_use_fragmented_proxy_streams`](../tests/test_hyperlight_proxy_client.py#L204)
+- [`tests/test_hyperlight_proxy_client.py::test_tls_refusal_precedes_application_request`](../tests/test_hyperlight_proxy_client.py#L222)
+- [`tests/test_hyperlight_proxy_client.py::test_http_proxy_denial_is_a_completed_negative_finding`](../tests/test_hyperlight_proxy_client.py#L248)
+- [`tests/test_hyperlight_proxy_client.py::test_adopted_status_input_controls_finding_and_invalid_input_never_contacts_origin`](../tests/test_hyperlight_proxy_client.py#L262)
+
+<a id="witness-tests-test-hyperlight-rootfs-py"></a>
+### [`tests/test_hyperlight_rootfs.py`](../tests/test_hyperlight_rootfs.py)
+
+Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}`).
+
+- [`tests/test_hyperlight_rootfs.py::test_rootfs_addition_preserves_existing_files_and_creates_library_parents`](../tests/test_hyperlight_rootfs.py#L49)
+- [`tests/test_hyperlight_rootfs.py::test_incomplete_guest_image_fails_before_adding_ssl`](../tests/test_hyperlight_rootfs.py#L70)
+- [`tests/test_hyperlight_rootfs.py::test_pinned_package_is_verified_before_only_required_regular_members_are_added`](../tests/test_hyperlight_rootfs.py#L84)
 
 <a id="witness-proxy-src-jobs-proxy-stream-rs-jobs-proxy-stream-tests"></a>
 ### [`proxy/src/jobs/proxy_stream.rs`](../proxy/src/jobs/proxy_stream.rs)

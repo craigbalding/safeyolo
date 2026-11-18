@@ -170,9 +170,10 @@ def run_client(client, bridge, directory, monkeypatch, *, https, service, expect
             return {"Ok": checker.check(request_value)}
         except (OSError, ValueError) as error:
             return {"Err": str(error)}
-    executable = os.environ.get("SAFEYOLO_CORE_PROXY_CLIENT")
+    variable = "SAFEYOLO_UNIKRAFT_PROXY_CLIENT" if client == "unikraft" else "SAFEYOLO_CORE_PROXY_CLIENT"
+    executable = os.environ.get(variable)
     if not executable:
-        pytest.skip("set SAFEYOLO_CORE_PROXY_CLIENT to the built CPU client example")
+        pytest.skip(f"set {variable} to the corresponding CPU client adapter")
     request = directory / "request.json"
     request.write_text(json.dumps(request_value))
     with subprocess.Popen([executable, str(request)], stdin=subprocess.PIPE,
@@ -196,7 +197,7 @@ def run_client(client, bridge, directory, monkeypatch, *, https, service, expect
                 child.wait(timeout=5)
 
 
-@pytest.mark.parametrize("client", ["python", "core"])
+@pytest.mark.parametrize("client", ["python", "core", "unikraft"])
 @pytest.mark.parametrize("https", [False, True])
 @pytest.mark.parametrize("service", [False, True])
 @pytest.mark.parametrize(("path_query", "fragment"), [("/value?x=1", ""), ("/value?x=1", "#client-only"), ("/", "#0")])
@@ -216,7 +217,7 @@ def test_maintained_clients_use_fragmented_proxy_streams(tmp_path, monkeypatch, 
         bridge.close()
 
 
-@pytest.mark.parametrize("client", ["python", "core"])
+@pytest.mark.parametrize("client", ["python", "core", "unikraft"])
 @pytest.mark.parametrize("failure", ["expired", "hostname", "untrusted", "connect_denied"])
 def test_tls_refusal_precedes_application_request(tmp_path, monkeypatch, client, failure):
     ca, context = certificates(tmp_path, host="other.test" if failure == "hostname" else "example.test",
@@ -235,7 +236,7 @@ def test_tls_refusal_precedes_application_request(tmp_path, monkeypatch, client,
                   "connect_denied": ("403",)}
         # Python exposes certificate causes; reqwless maps stream errors to
         # Network(Other). The positive TLS rows validate both client fixtures.
-        if client == "python" or failure == "connect_denied":
+        if client in {"python", "unikraft"} or failure == "connect_denied":
             assert any(cause in result["Err"].lower() for cause in causes[failure]), result
         assert bridge.requests == []
         assert bridge.streams == {}
@@ -243,7 +244,7 @@ def test_tls_refusal_precedes_application_request(tmp_path, monkeypatch, client,
         bridge.close()
 
 
-@pytest.mark.parametrize("client", ["python", "core"])
+@pytest.mark.parametrize("client", ["python", "core", "unikraft"])
 def test_http_proxy_denial_is_a_completed_negative_finding(tmp_path, monkeypatch, client):
     ca, context = certificates(tmp_path)
     bridge = ProxyBytes(ca, context, https=False, deny=True)
@@ -256,7 +257,7 @@ def test_http_proxy_denial_is_a_completed_negative_finding(tmp_path, monkeypatch
         assert not bridge.streams
 
 
-@pytest.mark.parametrize("client", ["python", "core"])
+@pytest.mark.parametrize("client", ["python", "core", "unikraft"])
 @pytest.mark.parametrize("expected", ["201", "not-a-status"])
 def test_adopted_status_input_controls_finding_and_invalid_input_never_contacts_origin(tmp_path, monkeypatch, client, expected):
     ca, context = certificates(tmp_path)

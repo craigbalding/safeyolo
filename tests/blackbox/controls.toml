@@ -661,11 +661,11 @@ scope = "Host job authoring and adoption; controlled adapters"
 adapter = "Controlled build/runner adapters; not a live Hyperlight boundary pass"
 
 [[witnesses]]
-paths = ["tests/test_hyperlight_proxy_client.py"]
+paths = ["tests/test_hyperlight_proxy_client.py", "tests/test_hyperlight_rootfs.py"]
 controls = ["BB-31"]
 kind = "pytest"
-scope = "HTTP/TLS client libraries on the host CPU"
-adapter = "Real HTTP/OpenSSL/Rustls over fragmented fixture proxy bytes; no VM, native delegation, gate policy or isolation claim"
+scope = "HTTP/TLS client libraries and guest SSL packaging on the host CPU"
+adapter = "Real HTTP/OpenSSL/Rustls over fragmented fixture proxy bytes; optional assembled-image Python adapter; pinned-package and CPIO controls. No VM, native delegation, gate policy or isolation claim"
 
 [[witnesses]]
 paths = ["proxy/src/jobs/proxy_stream.rs"]
