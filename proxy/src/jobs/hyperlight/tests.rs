@@ -366,6 +366,110 @@ async fn cancellation_stops_a_blocked_helper_and_preserves_no_runtime() {
     assert_eq!(fs::read_dir(root.path().join("data")).unwrap().count(), 0);
 }
 
+async fn wait_for_unreaped_exit(helper: &Helper) {
+    let pid = helper.child.id().unwrap() as libc::pid_t;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+        assert_eq!(
+            unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid as libc::id_t,
+                    info.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+                )
+            },
+            0
+        );
+        if unsafe { info.assume_init().si_pid() } == pid {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+#[tokio::test]
+async fn stop_reaps_a_helper_that_exited_before_group_signalling() {
+    let (root, _, _) = fixture("exit 7");
+    let child = command(&root.path().join("helper-source")).spawn().unwrap();
+    let mut helper = Helper {
+        group: child.id(),
+        child,
+    };
+    wait_for_unreaped_exit(&helper).await;
+    // Darwin's group kill returns EPERM here. Linux normally returns success.
+    assert_eq!(
+        stop(&mut helper).await.unwrap(),
+        HelperProcessStatus::Exit { code: 7 }
+    );
+    assert!(helper.group.is_none());
+    assert!(helper.child.id().is_none());
+}
+
+#[tokio::test]
+async fn exited_helper_recovery_does_not_accept_a_live_helper() {
+    let mut child = command(Path::new("/bin/sleep"));
+    child.arg("999");
+    let child = child.spawn().unwrap();
+    let mut helper = Helper {
+        group: child.id(),
+        child,
+    };
+    assert!(reap_exited_helper(&mut helper).unwrap().is_none());
+    assert!(helper.group.is_some());
+    assert_eq!(
+        stop(&mut helper).await.unwrap(),
+        HelperProcessStatus::Signal {
+            number: libc::SIGKILL
+        }
+    );
+}
+
+#[tokio::test]
+async fn stop_kills_descendants_before_reaping_an_exited_leader() {
+    let (root, _, _) = fixture("/bin/sleep 999 &\nexit 0");
+    let mut child = command(&root.path().join("helper-source")).spawn().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let mut helper = Helper {
+        group: child.id(),
+        child,
+    };
+    wait_for_unreaped_exit(&helper).await;
+    assert_eq!(
+        stop(&mut helper).await.unwrap(),
+        HelperProcessStatus::Exit { code: 0 }
+    );
+    // The descendant inherited stdout. EOF proves it cannot keep running with
+    // that descriptor after the leader has already exited.
+    let output = tokio::time::timeout(Duration::from_secs(5), collect(stdout, 16))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(output.bytes, 0);
+}
+
+#[tokio::test]
+async fn exited_helper_recovery_never_signals_a_remaining_group() {
+    let (root, _, _) = fixture("exit 0");
+    let child = command(&root.path().join("helper-source")).spawn().unwrap();
+    let mut helper = Helper {
+        group: child.id(),
+        child,
+    };
+    helper.child.wait().await.unwrap();
+    let mut foreign = command(Path::new("/bin/sleep"));
+    let mut foreign = foreign.arg("999").spawn().unwrap();
+    helper.group = foreign.id();
+    let error = reap_exited_helper(&mut helper).unwrap_err().to_string();
+    assert!(error.contains("still exists"), "{error}");
+    assert!(helper.group.is_none());
+    drop(helper);
+    assert!(foreign.try_wait().unwrap().is_none());
+    foreign.kill().await.unwrap();
+}
+
 #[test]
 fn unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec() {
     let (root, mut spec, _) = fixture("exit 0");

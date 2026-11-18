@@ -318,7 +318,25 @@ async fn stop(helper: &mut Helper) -> Result<HelperProcessStatus, Error> {
     {
         let error = std::io::Error::last_os_error();
         if error.raw_os_error() != Some(libc::ESRCH) {
-            return Err(error.into());
+            let failure =
+                format!("could not SIGKILL Hyperlight helper process group {group}: {error}");
+            // Darwin excludes zombies from group signalling and can return
+            // EPERM when only the unreaped leader remains. Do not accept the
+            // error unless our Child exited and the group is now absent.
+            // DOC: docs/hyperlight-jobs.md
+            if error.raw_os_error() == Some(libc::EPERM) {
+                match reap_exited_helper(helper) {
+                    Ok(Some(status)) => return Ok(status),
+                    Ok(None) => {
+                        return Err(format!(
+                            "{failure}; helper has not exited; VM cleanup is unproved"
+                        )
+                        .into());
+                    }
+                    Err(cleanup) => return Err(format!("{failure}; {cleanup}").into()),
+                }
+            }
+            return Err(failure.into());
         }
     }
     let status = tokio::time::timeout(Duration::from_secs(5), helper.child.wait())
@@ -326,6 +344,25 @@ async fn stop(helper: &mut Helper) -> Result<HelperProcessStatus, Error> {
         .map_err(|_| "Hyperlight helper did not stop after SIGKILL; VM cleanup is unproved")??;
     helper.group = None;
     observed_status(status)
+}
+
+fn reap_exited_helper(helper: &mut Helper) -> Result<Option<HelperProcessStatus>, Error> {
+    let Some(status) = helper.child.try_wait()? else {
+        return Ok(None);
+    };
+    // Reaping releases the group ID. Clear it before any error can drop the
+    // Helper, and use signal zero only: a reused foreign group is not ours.
+    if let Some(group) = helper.group.take() {
+        let exists = unsafe { libc::kill(-(group as i32), 0) };
+        if exists == 0 {
+            return Err(format!("Hyperlight helper exited but process group {group} still exists; no further signal sent; VM cleanup is unproved").into());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            return Err(format!("Hyperlight helper exited but process group {group} absence is unproved: {error}; no further signal sent").into());
+        }
+    }
+    Ok(Some(observed_status(status)?))
 }
 
 pub(super) async fn discover(config: &Path, spec: &JobSpec) -> Result<Option<Value>, Error> {
@@ -534,14 +571,18 @@ pub(super) async fn run(
         match task.await {
             Err(error) if error.is_cancelled() => {}
             Ok(Ok(())) => {}
-            Ok(Err(error)) => cleanup_errors.push(error.to_string()),
-            Err(error) => cleanup_errors.push(error.to_string()),
+            Ok(Err(error)) => {
+                cleanup_errors.push(format!("Hyperlight proxy bridge stop failed: {error}"))
+            }
+            Err(error) => {
+                cleanup_errors.push(format!("Hyperlight proxy bridge task failed: {error}"))
+            }
         }
     }
     if let Some(client) = delegation
         && let Err(error) = client.close().await
     {
-        cleanup_errors.push(error.to_string());
+        cleanup_errors.push(format!("Hyperlight delegation close failed: {error}"));
     }
     if let Some(directory) = socket_directory {
         let path = directory.path().to_owned();
@@ -557,7 +598,7 @@ pub(super) async fn run(
     {
         match stop(helper).await {
             Ok(status) => helper_process_status = Some(status),
-            Err(error) => cleanup_errors.push(error.to_string()),
+            Err(error) => cleanup_errors.push(format!("Hyperlight helper stop failed: {error}")),
         }
     }
     let service_evidence = captures.finish()?;

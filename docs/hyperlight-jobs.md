@@ -149,7 +149,7 @@ trusted definition, so copying the complete bundle preserves its bindings.
 | Privilege | No Unix privilege model | Guest user IDs do not supply full Linux privilege semantics |
 | Networking | Bounded byte I/O to the delegated proxy; optional separate mediated service host call | Same byte I/O; host-socket passthrough stays disabled |
 | Memory | `memory_mb` selects scratch size | `memory_mb` selects scratch size |
-| Cancellation | Kill the owning helper process group, then reap the helper | Same |
+| Cancellation | Stop the owning helper process group and reap the helper | Same |
 | State reuse | No snapshots or warm templates | No snapshots or warm templates |
 
 Both engines reject `privilege=guest-root`. Core is not an
@@ -166,6 +166,12 @@ The execution deadline covers artifact preparation, VM startup and execution.
 Bounded input copying happens first. Cleanup failures and incomplete observation
 cannot report successful completion. No successful result is returned before
 the helper has exited and the transient directory has been removed.
+
+If group signalling returns `EPERM`, cleanup succeeds only when the owned
+helper has exited and the process group is absent after reaping. A live helper
+or an unverified group still produces a cleanup error and preserves the runtime.
+After reaping, cleanup never sends another signal to the former group.
+Errors identify the bridge, delegation, socket directory or helper operation.
 
 The helper also enforces the same monotonic deadline in an independent thread.
 It exits without waiting for a guest callback when the deadline expires or its

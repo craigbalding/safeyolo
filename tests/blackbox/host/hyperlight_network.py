@@ -13,6 +13,8 @@ withholds headers and observes upstream EOF before a late response. Fresh and
 cached invocations follow direct cancellation/deadline/revocation and named
 deadline/revocation. These modes do not establish the whole four-engine or
 independent capture contract.
+Use --lifetimes-only after a cleanup correction to run those lifetime cases
+without repeating completed caller, offline or cycle observations.
 TLS mode also requires the existing OpenSSL command.
 
 Use --continue-from with the retained partial HTTP receipt to reuse completed
@@ -442,8 +444,13 @@ def completed_core(args):
             "contacts": prior["origin_contacts"], "versions": versions}
 
 
-def exercise_engine(instance, engine, contacts, continuing_core, connections):
+def exercise_engine(instance, engine, contacts, continuing_core, origin):
     """Observe the selected calls and require denied calls to add no contact."""
+    if instance.args.authority or instance.args.lifetimes_only:
+        observed = {"authority": authority_cases(instance, engine, contacts)} if instance.args.authority else {}
+        observed["lifetimes"] = exercise_lifetimes(instance, engine, origin, contacts)
+        return observed
+    connections = origin.connections
     destination = f"127.0.0.1:{instance.args.upstream_port}"
     gate = "gate:hyperlight-network-check"
     before = len(contacts)
@@ -526,7 +533,7 @@ def adopt_network_checks(instance, engines):
 def check_shutdown(args, results):
     assert not (args.root / "data/ready.json").exists()
     assert not list((args.root / "data").glob("job-hyperlight-*"))
-    if args.tls or args.authority:
+    if args.tls or args.authority or args.lifetimes_only:
         # Shutdown flushes the ordinary audit writer. Keep the complete private
         # audit and raw job streams even when the exact refusal assertion fails.
         rows = [json.loads(line) for line in (args.root / "logs/audit.jsonl").read_text().splitlines()]
@@ -561,7 +568,8 @@ def exercise(args):
             adopt_network_checks(instance, engines)
             results = {}
             report = {"engines": results, "contacts": contacts, "reused_core": reused,
-                      "mode": "authority" if args.authority else "https-inspected" if args.tls else "http",
+                      "mode": ("lifetimes" if args.lifetimes_only else "authority" if args.authority
+                               else "https-inspected" if args.tls else "http"),
                       "tls_connections": connections,
                       "runtime_manifest_sha256": digest(args.bundle / "runtime.json"),
                       "cli_sha256": digest(args.cli), "proxy_sha256": digest(args.proxy)}
@@ -572,12 +580,8 @@ def exercise(args):
                 try:
                     wait_ready(instance.proxy, args.root, args.admin_port)
                     for engine in engines:
-                        if args.authority:
-                            results[engine] = {"authority": authority_cases(instance, engine, contacts),
-                                               "lifetimes": exercise_lifetimes(instance, engine, origin, contacts)}
-                        else:
-                            results[engine] = exercise_engine(instance, engine, contacts,
-                                                             reused is not None and engine == "hyperlight", connections)
+                        results[engine] = exercise_engine(instance, engine, contacts,
+                                                         reused is not None and engine == "hyperlight", origin)
                         if args.tls:
                             assert len(connections) == len(contacts), connections
                             assert all(row["phase"] == "tls" for row in connections), connections
@@ -591,7 +595,7 @@ def exercise(args):
             save(args.scratch / "origin-contacts.json", contacts)
             save(args.scratch / "origin-tls.json", connections)
     check_shutdown(args, results)
-    if args.authority:
+    if args.authority or args.lifetimes_only:
         print("PASS: generic stream direct/named deadlines and revocation, cancellation, EOF/endpoint teardown and fresh/cached invocations")
     else:
         protocol = "HTTPS/CONNECT refusal" if args.tls else "HTTP"
@@ -610,12 +614,15 @@ def main():
                         help="exercise only the selected engine (default: both)")
     parser.add_argument("--tls", action="store_true", help="run only HTTPS success and CONNECT-refusal cases")
     parser.add_argument("--authority", action="store_true", help="run only new generic HTTP authority, cycle/offline and lifetime cases")
+    parser.add_argument("--lifetimes-only", action="store_true", help="run lifetime cases without caller, offline or cycle replays")
     args = parser.parse_args()
     for name in ("cli", "proxy", "bundle", "scratch"):
         setattr(args, name, getattr(args, name).resolve(strict=True))
     args.root = args.root.absolute()
     if args.authority and (args.tls or args.continue_from is not None):
         parser.error("--authority cannot be combined with --tls or --continue-from")
+    if args.lifetimes_only and (args.authority or args.tls or args.continue_from is not None):
+        parser.error("--lifetimes-only cannot be combined with --authority, --tls or --continue-from")
     if args.continue_from is not None:
         if args.engine is not None or args.tls:
             parser.error("--continue-from is HTTP-only and cannot be combined with --engine or --tls")

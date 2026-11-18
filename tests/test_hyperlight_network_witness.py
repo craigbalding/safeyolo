@@ -204,7 +204,7 @@ def test_continuation_checks_selected_artifacts_before_runtime(witness, selected
 def test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts(
         witness, selected_inputs, partial, monkeypatch, continuation, selected_engine, tls):
     args = selected_inputs
-    args.engine, args.tls, args.authority = selected_engine, tls, False
+    args.engine, args.tls, args.authority, args.lifetimes_only = selected_engine, tls, False, False
     if not continuation:
         args.continue_from = None
     for engine in ("hyperlight", "hyperlight-unikraft"):
@@ -336,6 +336,50 @@ def test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts(
     config = tomlkit.parse((args.root / "config.toml").read_text())
     assert config.get("upstream_ca_file") == ("certs/mitmproxy-ca-cert.pem" if tls else None)
     assert not config.get("ignore_hosts")
+
+
+@pytest.mark.parametrize("selected_engine", ["hyperlight", "hyperlight-unikraft"])
+def test_lifetime_continuation_skips_completed_authority_and_transport_cases(
+        witness, selected_inputs, monkeypatch, selected_engine):
+    args = selected_inputs
+    args.engine, args.tls, args.authority, args.lifetimes_only = selected_engine, False, False, True
+    args.continue_from = None
+    witness.save(args.bundle / f"{selected_engine}-network.json", {
+        "engine": {"guest": {"path": "core.elf", "sha256": "a" * 64}}})
+    calls, stopped = [], []
+
+    class Instance:
+        def __init__(self, _args):
+            self.args, self.scratch = _args, _args.scratch
+
+        def command(self, *arguments):
+            assert arguments == ("init",), arguments
+            args.root.mkdir()
+            (args.root / "logs").mkdir()
+            (args.root / "logs/audit.jsonl").write_text("")
+
+        def apply(self, initial=False):
+            assert initial
+
+    def lifetimes(_instance, engine, _origin, contacts):
+        calls.append(engine)
+        contacts.append({"path": "/held-and-fresh"})
+        return {"selected": engine}
+
+    monkeypatch.setattr(witness, "Instance", Instance)
+    monkeypatch.setattr(witness, "authority_cases", lambda *_a: pytest.fail("authority replayed"))
+    monkeypatch.setattr(witness, "exercise_lifetimes", lifetimes)
+    monkeypatch.setattr(witness, "wait_ready", lambda *_a: None)
+    monkeypatch.setattr(witness.subprocess, "Popen", lambda *_a, **_kw: object())
+    monkeypatch.setattr(witness, "stop", stopped.append)
+    # Use an unused kernel-selected loopback port for this controlled driver.
+    args.upstream_port = 0
+    witness.exercise(args)
+    report = json.loads((args.scratch / "result.json").read_bytes())
+    assert calls == [selected_engine] and len(stopped) == 1
+    assert report["mode"] == "lifetimes"
+    assert report["engines"] == {selected_engine: {"lifetimes": {"selected": selected_engine}}}
+    assert report["contacts"] == [{"path": "/held-and-fresh"}]
 
 
 def test_held_response_observes_eof_before_late_release(witness, tmp_path):
