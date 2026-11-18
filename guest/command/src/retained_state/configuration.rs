@@ -115,6 +115,7 @@ fn walk(root: &Path, path: &str, files: &mut Map<String, Value>) -> Result<(), E
     if excluded(path) {
         return Ok(());
     }
+    safe_parents(root, path)?;
     let actual = root.join(path.trim_start_matches('/'));
     let Some(value) = describe(&actual)? else {
         return Ok(());
@@ -148,9 +149,20 @@ pub(super) fn inventory(root: &Path, paths: &[String]) -> Result<Value, Error> {
     Ok(Value::Object(files))
 }
 
-fn account_names(root: &Path) -> Result<(Map<String, Value>, Map<String, Value>), Error> {
-    let mut result = (Map::new(), Map::new());
-    for (filename, names) in [("etc/passwd", &mut result.0), ("etc/group", &mut result.1)] {
+struct AccountNames {
+    users: Map<String, Value>,
+    groups: Map<String, Value>,
+}
+
+fn account_names(root: &Path) -> Result<AccountNames, Error> {
+    let mut result = AccountNames {
+        users: Map::new(),
+        groups: Map::new(),
+    };
+    for (filename, names) in [
+        ("etc/passwd", &mut result.users),
+        ("etc/group", &mut result.groups),
+    ] {
         let text = match fs::read_to_string(root.join(filename)) {
             Ok(text) => text,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -166,8 +178,8 @@ fn account_names(root: &Path) -> Result<(Map<String, Value>, Map<String, Value>)
     Ok(result)
 }
 
-fn accounts(state: &Value, names: &(Map<String, Value>, Map<String, Value>)) -> Value {
-    json!({"user":names.0.get(&state["uid"].to_string()),"group":names.1.get(&state["gid"].to_string())})
+fn accounts(state: &Value, names: &AccountNames) -> Value {
+    json!({"user":names.users.get(&state["uid"].to_string()),"group":names.groups.get(&state["gid"].to_string())})
 }
 
 fn copy_file(source: &Path, target: &Path, value: &Value) -> Result<(), Error> {
@@ -316,6 +328,7 @@ pub(super) fn validate_coverage(store: &GuestState, paths: &[String]) -> Result<
     }
     let state_path = store.directory.canonicalize()?;
     for path in paths {
+        safe_parents(&store.root, path)?;
         if let Ok(actual) = store.actual(path).canonicalize()
             && (state_path.starts_with(&actual) || actual.starts_with(&state_path))
         {
@@ -448,12 +461,12 @@ pub(super) fn resolve(store: &GuestState, value: &mut Value, path: &str) -> Resu
     store.save(value)
 }
 
-fn safe_parents(root: &Path, path: &str) -> Result<(), Error> {
-    let target = root.join(path.trim_start_matches('/'));
-    for parent in target.ancestors().skip(1) {
-        if parent == root {
-            break;
-        }
+pub(super) fn safe_parents(root: &Path, path: &str) -> Result<(), Error> {
+    let relative = Path::new(path.trim_start_matches('/'));
+    let mut parent = root.to_path_buf();
+    // Check from the root outward, before inspecting a child through its parent.
+    for component in relative.parent().into_iter().flat_map(Path::components) {
+        parent.push(component);
         match parent.symlink_metadata() {
             Ok(meta) if meta.file_type().is_symlink() => {
                 return Err(

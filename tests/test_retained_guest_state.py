@@ -245,7 +245,8 @@ def test_interrupted_dpkg_and_capture_failure_remain_visible(guest, tmp_path):
         assert "unsupported configuration file type" in saved(state)["capture_error"]
 
 
-def test_apt_records_real_native_plan(guest, tmp_path):
+@pytest.mark.parametrize("package_request", ["archive", "version", "release"])
+def test_apt_choices_survive_real_nested_dpkg_hooks(guest, tmp_path, package_request):
     root, state, command = guest
     archive = make_deb(tmp_path, "1.0")
     (root / "usr/bin").mkdir(parents=True)
@@ -271,13 +272,51 @@ def test_apt_records_real_native_plan(guest, tmp_path):
     config = tmp_path / "apt.conf"
     config.write_text(f'Dir "{root}";\nDir::Etc::parts "{root}/etc/apt/apt.conf.d";\nDir::Etc::main "{root}/etc/apt/apt.conf";\n')
     options += ["-o", "DPkg::Options::=--log=" + str(root / "var/log/dpkg.log")]
-    run("apt-get", *options, "-y", "--no-install-recommends", "install", str(archive),
+    # --root does not redirect dpkg's host configuration lookup. Pass the
+    # shipped hook settings explicitly, rebinding only the owned wrapper path.
+    dpkg_config = root / "etc/dpkg/dpkg.cfg.d/99safeyolo-guest-state"
+    for setting in dpkg_config.read_text().splitlines():
+        options += ["-o", "DPkg::Options::=--" + setting.replace("/usr/local/lib/safeyolo/guest-state-hook", str(wrapper))]
+    if package_request == "archive":
+        operand = str(archive)
+    else:
+        repository = tmp_path / "repository"
+        repository.mkdir()
+        shutil.copy2(archive, repository / archive.name)
+        (repository / "Packages").write_text(
+            run("dpkg-deb", "--field", str(archive)).stdout.rstrip() + "\n"
+            + f"Filename: ./{archive.name}\nSize: {archive.stat().st_size}\n"
+            + f"SHA256: {hashlib.sha256(archive.read_bytes()).hexdigest()}\n\n")
+        (repository / "Release").write_text("Suite: fixture-release\nCodename: fixture-release\n")
+        sources = root / "etc/apt/sources.list"
+        sources.write_text(f"deb [trusted=yes] file:{repository} ./\n")
+        options += ["-o", "Dir::Etc::sourcelist=" + str(sources)]
+        run("apt-get", *options, "update", env={**os.environ, "APT_CONFIG": str(config)})
+        operand = "sy-retention-fixture" + ("=1.0" if package_request == "version" else "/fixture-release")
+    run("apt-get", *options, "-y", "--no-install-recommends", "install", operand,
         env={**os.environ, "APT_CONFIG": str(config)})
     run(*command, "capture")
-    plans = [tx["plan"] for tx in saved(state)["transactions"].values() if "plan" in tx]
+    record = saved(state)
+    plans = [tx["plan"] for tx in record["transactions"].values() if "plan" in tx]
     assert plans and plans[0][0]["package"] == "sy-retention-fixture"
     assert plans[0][0]["version"] == "1.0"
+    assert any(tx.get("requested_archives") for tx in record["transactions"].values())
+    choice = record["desired_packages"]["sy-retention-fixture"]
+    assert choice["requested_archive"]["version"] == "1.0"
+    if package_request == "version":
+        assert choice["version"] == "1.0"
+    elif package_request == "release":
+        assert choice["release"] == "fixture-release"
+    else:
+        assert "version" not in choice and "release" not in choice
     assert (root / "usr/share/retention-fixture/version").read_text() == "1.0"
+    # A later direct dpkg invocation deliberately requests an archive, without
+    # adopting the earlier APT pin or release as its own requirement.
+    hooks = ["--" + setting.replace("/usr/local/lib/safeyolo/guest-state-hook", str(wrapper))
+             for setting in dpkg_config.read_text().splitlines()]
+    run("dpkg", "--root=" + str(root), "--force-not-root", "--force-script-chrootless", *hooks, "--install", str(archive))
+    choice = saved(state)["desired_packages"]["sy-retention-fixture"]
+    assert "version" not in choice and "release" not in choice
 
 
 def test_changed_account_mapping_requires_review(guest):
@@ -322,6 +361,64 @@ def test_removed_coverage_stops_tracking_without_removing_application_files(gues
     assert "/opt/example/settings" not in saved(state)["configuration"]
     assert not (state / "configuration/opt/example/settings").exists()
     assert (outside / "settings").read_text() == "application configuration\n"
+
+
+@pytest.mark.parametrize("excluded", ["app/agent_token", "etc/environment", "safeyolo/private"])
+def test_configuration_rejects_symlink_parents_but_retains_symlinks(guest, excluded):
+    root, state, command = guest
+    target = root / excluded
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("synthetic excluded credential\n")
+    alias = root / "opt/a"
+    alias.parent.mkdir()
+    alias.symlink_to(target.parent, target_is_directory=True)
+    before = saved(state)
+    result = run(*command, "paths", "add", f"/opt/a/{target.name}", check=False)
+    assert result.returncode
+    assert "configuration parent is a symlink" in result.stderr
+    assert saved(state)["coverage"] == before["coverage"]
+    assert saved(state)["configuration_commit"] == before["configuration_commit"]
+    # The link itself is configuration. Its target's contents are not captured.
+    run(*command, "paths", "add", "/opt/a")
+    mirror = state / "configuration/opt/a"
+    assert mirror.is_symlink()
+    assert mirror.readlink() == target.parent
+    assert saved(state)["configuration"]["/opt/a"]["kind"] == "symlink"
+    assert not any(path.startswith("/opt/a/") for path in saved(state)["configuration"])
+
+
+@pytest.mark.parametrize("watching", [False, True])
+def test_capture_and_watch_report_a_replaced_symlink_parent(guest, watching):
+    root, state, command = guest
+    outside = root / "opt/example"
+    outside.mkdir(parents=True)
+    (outside / "settings").write_text("retained application setting\n")
+    run(*command, "paths", "add", "/opt/example/settings")
+    sensitive = root / "app"
+    sensitive.mkdir()
+    (sensitive / "settings").write_text("synthetic excluded credential\n")
+    with (state / "watch-output").open("w") as log:
+        watch = subprocess.Popen([*command, "watch"], stdout=log, stderr=log) if watching else None
+        try:
+            if watch is not None:
+                eventually(lambda: saved(state).get("watch", {}).get("pid") == watch.pid)
+                eventually(lambda: saved(state)["status"] == "captured")
+            before = saved(state)
+            outside.rename(outside.with_name("original"))
+            outside.symlink_to(sensitive, target_is_directory=True)
+            if watch is not None:
+                eventually(lambda: saved(state)["status"] == "needs_attention")
+            else:
+                assert run(*command, "capture", check=False).returncode
+            record = saved(state)
+            assert "configuration parent is a symlink" in record["capture_error"]
+            assert record["configuration_commit"] == before["configuration_commit"]
+            assert (state / "configuration/opt/example/settings").read_text() == "retained application setting\n"
+        finally:
+            if watch is not None:
+                if watch.poll() is None:
+                    watch.kill()
+                watch.wait(timeout=5)
 
 
 def test_adopted_requirement_checks_actual_package_and_reuses_newer_base(guest, tmp_path):

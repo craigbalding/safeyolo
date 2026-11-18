@@ -265,17 +265,32 @@ fn distribution(store: &GuestState) -> Result<String, Error> {
     Ok(format!("{}:{}", field("ID"), field("VERSION_CODENAME")))
 }
 
+fn parent_pid(pid: i32) -> Result<i32, Error> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    Ok(stat
+        .rsplit(')')
+        .next()
+        .ok_or("missing process fields")?
+        .split_whitespace()
+        .nth(1)
+        .ok_or("missing parent pid")?
+        .parse()?)
+}
+
+fn process_arguments(pid: i32) -> Result<Vec<String>, Error> {
+    Ok(fs::read(format!("/proc/{pid}/cmdline"))?
+        .split(|x| *x == 0)
+        .filter(|x| !x.is_empty())
+        .map(|x| String::from_utf8_lossy(x).into_owned())
+        .collect())
+}
+
 fn process_owner() -> Result<(String, Vec<String>), Error> {
     // Walk past hook shells to the actual package process. Retain only identity and
     // package operands; command lines can contain repository passwords.
     let mut pid = unsafe { libc::getppid() };
     for _ in 0..6 {
-        let command = fs::read(format!("/proc/{pid}/cmdline"))?;
-        let args: Vec<_> = command
-            .split(|x| *x == 0)
-            .filter(|x| !x.is_empty())
-            .map(|x| String::from_utf8_lossy(x).into_owned())
-            .collect();
+        let args = process_arguments(pid)?;
         if args.first().is_some_and(|x| {
             matches!(
                 Path::new(x).file_name().and_then(|x| x.to_str()),
@@ -285,17 +300,33 @@ fn process_owner() -> Result<(String, Vec<String>), Error> {
             let token = crate::live_token(pid)?.ok_or("package process has exited")?;
             return Ok((format!("{pid}/{token}"), args));
         }
-        let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
-        pid = stat
-            .rsplit(')')
-            .next()
-            .ok_or("missing process fields")?
-            .split_whitespace()
-            .nth(1)
-            .ok_or("missing parent pid")?
-            .parse()?;
+        pid = parent_pid(pid)?;
     }
     Err("cannot identify the package process".into())
+}
+
+fn enclosing_apt_arguments(owner: &str) -> Result<Vec<String>, Error> {
+    let mut pid = owner
+        .split_once('/')
+        .ok_or("invalid package owner")?
+        .0
+        .parse()?;
+    while pid > 1 {
+        pid = parent_pid(pid)?;
+        if pid <= 1 {
+            break;
+        }
+        let args = process_arguments(pid)?;
+        if args.first().is_some_and(|arg| {
+            matches!(
+                Path::new(arg).file_name().and_then(|name| name.to_str()),
+                Some("apt" | "apt-get")
+            )
+        }) {
+            return Ok(args);
+        }
+    }
+    Ok(Vec::new())
 }
 
 pub(super) fn active(value: &Value) -> Result<bool, Error> {
@@ -411,6 +442,9 @@ pub(super) fn hook(
         }
     }
     if event == "dpkg-pre" {
+        // Read the enclosing request, independent of bounded transaction history.
+        // Only parsed package choices are retained, never the raw command line.
+        let apt_choices = package_choices(&enclosing_apt_arguments(&owner)?);
         let requested = value["transactions"][&owner]["requested_archives"]
             .as_array()
             .cloned()
@@ -419,10 +453,24 @@ pub(super) fn hook(
             let name = archive["package"]
                 .as_str()
                 .ok_or("missing archive package")?;
+            let qualified = format!(
+                "{name}:{}",
+                archive["architecture"]
+                    .as_str()
+                    .ok_or("missing archive architecture")?
+            );
+            let explicit = apt_choices
+                .iter()
+                .find(|(package, _)| package == name || *package == qualified);
+            let (name, mut choice) = if let Some(explicit) = explicit {
+                (explicit.0.clone(), explicit.1.clone())
+            } else {
+                (name.to_owned(), json!({"action":"install"}))
+            };
             // Keep the archive request beyond the bounded transaction history.
-            // Choosing an archive does not pin future compatible reinstalls.
-            value["desired_packages"][name] =
-                json!({"action":"install","requested_archive":archive});
+            // A nested dpkg observes APT's choice; a direct archive stays unpinned.
+            choice["requested_archive"] = archive;
+            value["desired_packages"][&name] = choice;
         }
     }
     let transactions = value["transactions"]
