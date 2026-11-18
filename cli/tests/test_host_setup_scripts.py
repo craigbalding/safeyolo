@@ -228,6 +228,7 @@ def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
         expected_links = {
             "safeyolo": SKILL_LINK_TARGET,
             "safeyolo-commission": "/safeyolo/skills/safeyolo-commission",
+            "harness-authoring": "/safeyolo/skills/harness-authoring",
         }
         if consumer_dir in {".agents", ".claude"}:
             expected_links["readme-usability"] = "/safeyolo/skills/readme-usability"
@@ -1740,7 +1741,7 @@ def test_context_staging_migrates_legacy_managed_skill_link(
         ("claude-host-setup.sh", ".claude"),
     ],
 )
-@pytest.mark.parametrize("skill_name", ["safeyolo", "safeyolo-commission"])
+@pytest.mark.parametrize("skill_name", ["safeyolo", "safeyolo-commission", "harness-authoring"])
 def test_context_staging_refuses_user_owned_safeyolo_skill(
     tmp_path: Path,
     script_name: str,
@@ -2181,7 +2182,7 @@ def test_claude_setup_stages_personal_skills_but_reserves_managed_names(
     personal = operator_home / ".claude/skills/personal/SKILL.md"
     personal.parent.mkdir(parents=True)
     personal.write_text("operator personal skill\n")
-    reserved = ["safeyolo", "safeyolo-lab-controller", "safeyolo-factory", "job-authoring", "safeyolo-commission"]
+    reserved = ["safeyolo", "safeyolo-lab-controller", "safeyolo-factory", "job-authoring", "safeyolo-commission", "harness-authoring"]
     for name in reserved:
         colliding = operator_home / ".claude/skills" / name / "SKILL.md"
         colliding.parent.mkdir(parents=True)
@@ -2204,7 +2205,7 @@ def test_claude_setup_stages_personal_skills_but_reserves_managed_names(
         assert os.readlink(agent_home / ".claude/skills" / name) == f"/safeyolo/skills/{name}"
 
 
-@pytest.mark.parametrize("skill_name", ["safeyolo", "safeyolo-lab-controller", "safeyolo-factory", "job-authoring", "safeyolo-commission"])
+@pytest.mark.parametrize("skill_name", ["safeyolo", "safeyolo-lab-controller", "safeyolo-factory", "job-authoring", "safeyolo-commission", "harness-authoring"])
 @pytest.mark.parametrize("kind", ["directory", "file", "symlink", "parent-symlink"])
 def test_claude_managed_skill_conflicts_preserve_user_paths(tmp_path, skill_name, kind):
     operator, home = tmp_path / "operator", tmp_path / "agent"
