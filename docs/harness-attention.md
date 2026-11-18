@@ -5,6 +5,9 @@ The harness integration selects how an authorized event enters a conversation.
 Message text cannot select its own priority or delivery mode.
 
 The integrations below are opt-in. They do not change a running factory.
+To assess another harness, use the installed
+[harness-authoring skill](../cli/src/safeyolo/agent_context/skills/harness-authoring/SKILL.md).
+External attention and supervised Factory turns require different proof.
 The five-harness scope comes from [issue 373](https://github.com/craigbalding/safeyolo/issues/373).
 A native receipt establishes input acceptance. Observe native
 conversation events and a model response separately to establish application.
