@@ -43,6 +43,13 @@ fi
 # user's CLAUDE.md. Link the shared on-demand skills into Claude's native path.
 stage_safeyolo_context "$AGENT_HOME" claude
 
+if [ "${SAFEYOLO_CLAUDE_COORD_SUPERVISOR:-0}" = "1" ]; then
+    "$coord_host" factory-stage \
+        "$AGENT_HOME/.safeyolo/coord-supervisor.json" \
+        "$AGENT_HOME/.safeyolo/AGENTS.md" \
+        "$SAFEYOLO_AGENT_NAME" "$SAFEYOLO_FACTORY_SNAPSHOT" "$SAFEYOLO_FACTORY_ROLE" claude
+fi
+
 # --- 3. Write the foreground command -----------------------------------------
 # Installs Claude's native release on first run and repairs an incomplete
 # installation on subsequent runs. Explicit npm selections retain the legacy
@@ -285,6 +292,11 @@ fi
 exec "$HOME/.safeyolo/safeyolo-coord" client-exec claude -- claude "${args[@]}" "$@"
 EOF
 chmod +x "$AGENT_HOME/.safeyolo-command"
+
+if [ "${SAFEYOLO_CLAUDE_COORD_SUPERVISOR:-0}" = "1" ]; then
+    install -m 0755 "$AGENT_HOME/.safeyolo-command" "$AGENT_HOME/.safeyolo-interactive-command"
+    "$coord_host" supervised-launcher "$AGENT_HOME/.safeyolo-command" claude
+fi
 
 # --- 6. Stage and register the coord MCP server ------------------------------
 # This runs after the foreground command is written so the shared bootstrap can

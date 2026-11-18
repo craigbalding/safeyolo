@@ -335,7 +335,73 @@ fn event(event: &Value, show_unknown: bool) -> Option<(&'static str, String)> {
                 ),
             )
         }
-        "safeyolo.codex.stderr" | "safeyolo.pi.stderr" => ("STDERR", get(event, "text", "")),
+        "safeyolo.codex.stderr" | "safeyolo.pi.stderr" | "safeyolo.claude.stderr" => {
+            ("STDERR", get(event, "text", ""))
+        }
+        "system" if event["subtype"] == "init" => (
+            "SESSION",
+            format!("session={}", get(event, "session_id", "?")),
+        ),
+        "assistant" | "user" if event["message"]["content"].is_array() => {
+            let blocks = event["message"]["content"].as_array().unwrap();
+            let text = blocks
+                .iter()
+                .filter_map(|block| match block["type"].as_str() {
+                    Some("text") => block["text"].as_str().map(str::to_owned),
+                    Some("tool_use") => Some(format!(
+                        "tool {} {}",
+                        get(block, "name", "?"),
+                        get(block, "input", "")
+                    )),
+                    Some("tool_result") => Some(format!(
+                        "tool {} {}",
+                        get(block, "tool_use_id", "?"),
+                        if block["is_error"] == true {
+                            "failed"
+                        } else {
+                            "returned"
+                        }
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            if text.is_empty() {
+                return None;
+            }
+            (
+                if blocks.iter().any(|block| block["is_error"] == true) {
+                    "TOOLERR"
+                } else if blocks
+                    .iter()
+                    .any(|block| matches!(block["type"].as_str(), Some("tool_use" | "tool_result")))
+                {
+                    "TOOL"
+                } else {
+                    "AGENT"
+                },
+                text,
+            )
+        }
+        "result" if event["session_id"].is_string() => {
+            let u = usage(
+                &event["usage"],
+                &[
+                    ("input_tokens", "input"),
+                    ("cache_read_input_tokens", "cached"),
+                    ("cache_creation_input_tokens", "cache_write"),
+                    ("output_tokens", "output"),
+                ],
+            );
+            (
+                if event["is_error"] == false && event["subtype"] == "success" {
+                    "DONE"
+                } else {
+                    "ERROR"
+                },
+                format!("turn {} tokens {u}", get(event, "subtype", "unknown")),
+            )
+        }
         "safeyolo.supervisor" => {
             let action = get(event, "event", "event");
             let mut detail = action.clone();

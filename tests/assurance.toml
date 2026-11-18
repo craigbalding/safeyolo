@@ -12,7 +12,7 @@
 id = "FACTORY-RUN-STARTS-WORKERS"
 description = "Factory run executes each staged worker command after Coord is ready."
 node = "tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_executes_staged_worker_commands"
-sha256 = "cff462557435ee673f7212202d41e33804bfa2a5abb439100965cd2421ac5911"
+sha256 = "418f542e576938a12f4223e4e67d2bab522da214b779d187ca8eeaab2177a6f1"
 
 [[factory_acceptance]]
 id = "FACTORY-RUN-REQUIRES-COORD"
