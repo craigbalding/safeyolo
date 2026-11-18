@@ -361,7 +361,7 @@ async fn unproved_child_disposal_preserves_the_callers_runtime() {
         .collect();
     assert_eq!(retained.len(), 1);
     assert!(retained[0].join("helper").is_file());
-    assert!(retained[0].join("input").is_file());
+    assert!(retained[0].join("input").is_dir());
     assert!(retained[0].join("service-evidence.json").is_file());
     assert!(error.contains(&format!("runtime preserved at {}", retained[0].display())));
 }
