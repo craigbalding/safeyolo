@@ -96,6 +96,11 @@ action = "warn"
         [str(cli), "--root", str(root), "credentials", "add", "job-secret", "--stdin", "--storage", "local"],
         input=b"synthetic-job-provider-secret\n", check=True,
     )
+    create_upstream_certificate(root)
+
+
+def create_upstream_certificate(root: Path):
+    """Sign an owned loopback origin with the instance's disposable CA."""
     # Use a portable OpenSSL config rather than version-specific -addext flags.
     request = root / "certs/upstream.cnf"
     request.write_text(

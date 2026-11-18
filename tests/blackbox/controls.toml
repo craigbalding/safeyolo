@@ -681,15 +681,15 @@ owner = "proxy/src/jobs/proxy_stream.rs"
 paths = ["tests/test_hyperlight_network_witness.py"]
 controls = ["BB-29", "BB-31"]
 kind = "pytest"
-scope = "HTTP witness result classification and selected continuation"
-adapter = "Retained Core observations and controlled job adapters with a real loopback contact counter; no VM or installed authority claim"
+scope = "HTTP/HTTPS witness result classification and selected continuation"
+adapter = "Retained Core observations and controlled job adapters with real loopback HTTP/TLS and contact counters; no VM or installed authority claim"
 
 [[witnesses]]
 paths = ["tests/blackbox/host/hyperlight_network.py::main"]
 controls = ["BB-29", "BB-31"]
 kind = "procedure"
-scope = "Manual installed Hyperlight direct/named public HTTP witness"
-adapter = "Owned endpoint contact counters; no TLS, complete lifecycle or recurring maintained-run claim"
+scope = "Manual installed Hyperlight direct/named public HTTP or HTTPS witness"
+adapter = "Owned origin contacts; HTTPS mode adds origin TLS/TCP observations and CONNECT refusal. No complete lifecycle or recurring maintained-run claim"
 
 [[witnesses]]
 paths = ["tests/test_blackbox_execution_receipt.py", "tests/test_blackbox_catalogue.py"]
