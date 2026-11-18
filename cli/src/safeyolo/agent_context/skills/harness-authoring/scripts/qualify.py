@@ -69,9 +69,14 @@ def read_events(path: Path) -> Iterator[dict]:
             if not isinstance(event, dict):
                 raise QualificationError(f"Event at line {number} is not an object; repair structured output")
             message = event.get("message")
-            if event.get("type") == "turn.failed" or (event.get("type") == "message_end"
-                    and isinstance(message, dict) and message.get("role") == "assistant"
-                    and message.get("stopReason") in {"error", "aborted"}):
+            if (event.get("type") == "message_end" and isinstance(message, dict)
+                    and message.get("role") == "assistant"):
+                stop_reason = message.get("stopReason")
+                if stop_reason is not None and not isinstance(stop_reason, str):
+                    raise QualificationError("Invalid assistant stopReason; repair structured output")
+                if stop_reason in {"error", "aborted"}:
+                    raise QualificationError("Native model turn failed; inspect its private error output")
+            if event.get("type") == "turn.failed":
                 raise QualificationError("Native model turn failed; inspect its private error output")
             yield event
 
@@ -106,6 +111,7 @@ def events(path: Path, harness: str) -> dict:
             if session is None:
                 raise QualificationError("Turn started without session identity; repair structured output")
             started = True
+            completed = tool = False
         terminal = kind == "turn.completed" if harness == "codex" else kind == "agent_end" and event.get("willRetry") is not True
         if terminal:
             if not started:

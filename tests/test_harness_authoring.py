@@ -121,6 +121,35 @@ def test_pi_retry_and_error_are_not_success(tmp_path, suffix, reason):
     assert code == 1 and reason in report["reason"]
 
 
+@pytest.mark.parametrize("harness,values", [("codex", CODEX), ("pi", PI)])
+@pytest.mark.parametrize("ending", ["open", "retry", "no_tool", "complete"])
+def test_final_turn_must_supply_its_own_tool_and_completion(tmp_path, harness, values, ending):
+    later = values[1:]
+    if ending == "open":
+        later = later[:-1]
+    elif ending == "retry":
+        if harness == "codex":
+            later = later[:1]
+        else:
+            later = [*later[:-1], {"type": "agent_end", "willRetry": True}]
+    elif ending == "no_tool":
+        later = [later[0], later[-1]]
+    code, report = trace(tmp_path, [*values, *later], harness)
+    if ending == "complete":
+        assert code == 0 and report["state"] == "fixture_passing"
+    else:
+        assert code == 1 and report["state"] == "failed"
+        assert ("tool event" if ending == "no_tool" else "terminal") in report["reason"]
+
+
+@pytest.mark.parametrize("stop_reason", [[], {}, ["error"], {"error": True}, 1, False])
+def test_malformed_pi_stop_reason_has_an_actionable_json_failure(tmp_path, stop_reason):
+    code, report = trace(tmp_path, [{"type": "message_end", "message": {
+        "role": "assistant", "stopReason": stop_reason}}], "pi")
+    assert code == 1 and report["state"] == "failed"
+    assert "stopReason" in report["reason"] and "repair structured output" in report["reason"]
+
+
 def test_malformed_json_is_failure(tmp_path):
     path = tmp_path / "bad.jsonl"
     path.write_text('{"type":\n')
