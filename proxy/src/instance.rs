@@ -184,7 +184,7 @@ pub fn asset_digest(path: &Path) -> Result<String, Error> {
         .collect())
 }
 
-fn digest(root: &Path, path: &Path) -> Result<String, Error> {
+fn digest(_root: &Path, path: &Path) -> Result<String, Error> {
     match asset_digest(path) {
         Ok(hash) => Ok(hash),
         #[cfg(target_os = "linux")]
@@ -195,7 +195,7 @@ fn digest(root: &Path, path: &Path) -> Result<String, Error> {
         {
             // Prepared rootfs files use delegated IDs. Reuse the existing import
             // namespace; this never acquires host root or changes asset modes.
-            crate::guest_acquisition::asset_digest_in_namespace(root, path)
+            crate::guest_acquisition::asset_digest_in_namespace(_root, path)
         }
         Err(error) => Err(error),
     }
