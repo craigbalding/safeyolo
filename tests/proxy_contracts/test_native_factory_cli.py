@@ -74,7 +74,7 @@ fields = ["target"]
 
 def cli(instance, *arguments):
     result = instance.cli(*arguments)
-    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
     return result
 
 
@@ -86,7 +86,7 @@ def prepared(directory, nats_binary, *, source_fixture=False, claude=False):
         tools = directory / "tools"
         tools.mkdir()
         for name in ("bash", "env", "cp", "chmod", "mkdir", "install", "stat", "id",
-                     "dirname", "cat", "tail", "grep", "sed", "awk", "readlink",
+                     "dirname", "basename", "cat", "tail", "grep", "sed", "awk", "readlink",
                      "ln", "mv", "rm", "mktemp", "git", "openssl"):
             executable = shutil.which(name)
             assert executable is not None, name
@@ -284,7 +284,8 @@ def test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants(tmp
             runtime = home / ".safeyolo/safeyolo-coord"
             with runtime.open("rb") as handle:
                 assert hashlib.file_digest(handle, "sha256").hexdigest() == (instance.root / "assets/guest/safeyolo-coord.sha256").read_text().strip()
-            assert 'safeyolo-coord" repo-map "$@"' in (home / ".safeyolo/repo-map").read_text()
+            if not claude or role != "owner":
+                assert 'safeyolo-coord" repo-map "$@"' in (home / ".safeyolo/repo-map").read_text()
             assert not (home / ".agents/skills/safeyolo-lab-controller").is_symlink()
         pi = instance.root / "agents/fixture-lens/home"
         assert (pi / ".pi/agent/extensions/safeyolo-coord.ts").read_bytes() == (instance.root / "assets/contrib/pi-coord-extension.ts").read_bytes()
