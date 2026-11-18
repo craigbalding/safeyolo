@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::Write,
     os::unix::{
         fs::PermissionsExt,
         process::{CommandExt, ExitStatusExt},
@@ -383,18 +382,9 @@ pub(crate) fn clear_templates(config: &Path) -> Result<(), Error> {
 
 async fn stop(helper: &mut Helper) -> Result<HelperProcessStatus, Error> {
     if let Some(status) = helper.child.try_wait()? {
-        let _ = writeln!(
-            std::io::stderr().lock(),
-            "Hyperlight helper already reaped before SIGKILL: parent_pid={}, group={:?}, monotonic_ms={:?}, child_status={status:?}",
-            std::process::id(),
-            helper.group,
-            monotonic_ms().ok()
-        );
         helper.group = None;
         return observed_status(status);
     }
-    let started = std::time::Instant::now();
-    let started_monotonic_ms = monotonic_ms().ok();
     let mut errors = Vec::new();
     let group_signal = helper.group.map(kill_helper_group);
     if let Some(group) = helper.group
@@ -419,22 +409,8 @@ async fn stop(helper: &mut Helper) -> Result<HelperProcessStatus, Error> {
                 "Hyperlight helper direct-child SIGKILL failed: {error}"
             ));
         }
-        let _ = writeln!(
-            std::io::stderr().lock(),
-            "Hyperlight helper group SIGKILL failed; confirming owned-child disposal: parent_pid={}, child_pid={:?}, group={group}, started_monotonic_ms={started_monotonic_ms:?}, elapsed_ms={}, group_error={error}, child_status={recheck:?}, direct_child_sigkill={fallback:?}",
-            std::process::id(),
-            helper.child.id(),
-            started.elapsed().as_millis(),
-        );
     }
     let wait = tokio::time::timeout(Duration::from_secs(5), helper.child.wait()).await;
-    let _ = writeln!(
-        std::io::stderr().lock(),
-        "Hyperlight helper disposal wait completed: parent_pid={}, group={:?}, started_monotonic_ms={started_monotonic_ms:?}, elapsed_ms={}, group_sigkill={group_signal:?}, child_wait={wait:?}, signal_errors={errors:?}",
-        std::process::id(),
-        helper.group,
-        started.elapsed().as_millis(),
-    );
     let status = match wait {
         Ok(Ok(status)) => status,
         Ok(Err(error)) => {
