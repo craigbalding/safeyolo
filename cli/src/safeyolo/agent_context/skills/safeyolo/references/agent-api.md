@@ -5,6 +5,7 @@
 - [Model](#model)
 - [Calling the API](#calling-the-api)
 - [Diagnostics and policy](#diagnostics-and-policy)
+- [Approved diagnostic evidence](#approved-diagnostic-evidence)
 - [Delegated decisions](#delegated-decisions)
 - [Approval context](#approval-context)
 - [Operator actions](#operator-actions)
@@ -792,6 +793,110 @@ metadata consume that space. The effective running broker ceiling can be lower;
 the refusal reports the actual bound. Ordinary rooms retain their 256 KiB body
 and existing stream bounds. Coord history, retention, attention loss and
 ambiguous-publication semantics remain in force. No automatic resend occurs.
+
+## Approved diagnostic evidence
+
+Use the native Model Context Protocol (MCP) tools in this order:
+
+1. `diagnostic_evidence()` reports the local instance, your current durable
+   identity, readable diagnostic grants, source choices and collection limits.
+   Existing own-request `/explain` and ordinary room receive rights remain usable.
+2. `request_diagnostic_access` records a canonical approval with an
+   `operation_id`, the discovered `instance_id`, explicit subject agent names,
+   a typed `scope`, `expires_at` and a short untrusted `reason`. The host resolves
+   names to durable identities. Requesting evidence grants no access.
+3. `read_approval` reads the returned `approval_id`. A pending or rejected
+   decision grants no newly requested evidence. After approval, use its grant ID
+   with `query_diagnostic_evidence`.
+
+For example, after discovery, select your own name and the two affected peers
+instead of the example names below. Replace the time with the desired cutoff.
+The request remains pending for an operator decision:
+
+```json
+{
+  "operation_id": "communication-investigation-1",
+  "instance_id": "THE_DISCOVERED_INSTANCE_ID",
+  "subjects": ["investigator", "sender", "recipient"],
+  "scope": {
+    "audit": true,
+    "runtime": true,
+    "rooms": [],
+    "system_categories": ["coord_health"],
+    "history": {"since": null, "until": "2026-11-18T12:00:00Z", "future": false},
+    "snapshot": true
+  },
+  "expires_at": null,
+  "reason": "Investigate why sender's communication did not reach recipient"
+}
+```
+
+History and access lifetime are separate. `since:null` selects all retained
+history. A fixed snapshot uses `snapshot:true`, `future:false` and an explicit
+`until` cutoff. Its first collection freezes selected sources across pages and
+retries. For temporary access, use `snapshot:false` and a selected RFC 3339
+`expires_at`. For until-revoked access, use `snapshot:false` and
+`expires_at:null`. Set `history.future:true` and `history.until:null` only when
+you want the operator to authorize future records. Access expiry does not
+silently expand historical reach. Standing grants survive ordinary requester
+restarts. A recreated same-name agent does not inherit records or authority.
+
+Select sources independently. `audit` returns complete authorized retained
+events, including their request/connection details. Only records whose retained
+instance and sandbox-run attribution establish the selected durable identity
+qualify. Name-only historical records are excluded with a limitation.
+`runtime` returns the existing host-observed control projection. Room selections
+use `{"room_id":"EXACT_ROOM_ID","history":true,"membership":true,"attention":true}`;
+each Boolean grants that source separately. Room history can contain messages
+from other participants. Attention exposes only selected recipients' references
+in selected rooms. It grants neither their identity nor object-resolution rights.
+The canonical source does not hold a recipient's application consumption cursor;
+this absence is reported rather than interpreted as unread messages.
+Current runtime, membership and component health are timestamped observations,
+not reconstructions of historical state. `runs` can map a selected subject ID to
+explicit sandbox run IDs. An absent or empty run list selects all provably
+attributed retained runs for that subject.
+
+Unattributed system categories are separate: `audit_health` projects retained
+audit-validation failures; `coord_health` projects current Coord component
+health. They do not follow nested references or expose arbitrary payloads,
+credentials or full policy. Guest files/logs and commands keep their separate
+support permissions. Diagnostic disclosure adds no room send right, guest
+administration, lifecycle action, policy mutation or Admin API access.
+
+`query_diagnostic_evidence` accepts `operation_id`, `grant`, optional `filter`,
+`limit` (1–200, default 100) and `page_token`. Filters include `sources`,
+`subject_ids`, `events`, `since`, `until`, `runtime_id`, `run_id`, `request_id`,
+`connection_id` and `failures_only`. Request/connection correlation requires its
+runtime namespace. It filters permitted evidence and never follows references
+into another subject's raw records. Unsupported filters fail explicitly.
+Preserve the operation ID, filters and limit on a page continuation. Use the
+returned token; tokens from another collection, caller or selection are refused.
+After a lost reply, repeat that exact page. Authorized continuations need no new
+operator approval.
+
+Read `applied_scope`, `sources`, source status/limitations, `collected_at`,
+`truncated`, `offset` and `next_page_token` before drawing a conclusion. An empty
+match within readable retained data differs from denied access, source loss or
+incomplete search. Source limits and pruning can leave missing evidence. The
+reader does not require FlowStore recording or prior knowledge of request IDs.
+
+Private support receipts retain at most 2000 rows and 4 MiB per collection for
+seven days. Expired diagnostic data is removed on later diagnostic use. A fixed
+snapshot's canonical approval retains a collection marker; lost or expired
+snapshot data is not recollected from a different window. Other grants freeze
+each operation's retained collection for pagination and retries within retention.
+Every page rechecks current requester, subjects, instance and host-held grant.
+Narrowing filters the retained authorized subset; expiry and revocation refuse
+new reads. Already disclosed bytes cannot be recalled. New disclosure or repair
+needs its own existing authority.
+
+The local API routes are `GET /support/diagnostics`,
+`POST /support/diagnostics/requests` and `POST /support/diagnostics/query`.
+They use the ordinary Agent API token. Approved audit reads and canonical
+decision readback work without Coord notifications when their own API, policy
+and evidence owners remain available. A failed notification creates no grant.
+This interface adds no remote disclosure or federation extension.
 
 ## Delegated local peer support
 

@@ -36,6 +36,16 @@ do not reload Coord or GitHub references already supplied by the role contract.
 5. Retry only after self-correcting the request, waiting for backoff, or
    receiving operator approval. Do not loop on a 428 or 429.
 
+For an investigation that needs more retained evidence, use
+`diagnostic_evidence` to discover current local disclosure. Use
+`request_diagnostic_access` to request explicit subjects, sources, history and
+a fixed snapshot, selected expiry, or until-revoked lifetime. Read the canonical
+approval before `query_diagnostic_evidence`. Inspect completeness and source
+limitations on every result. The operator can narrow or revoke access through
+the existing support grant controls. Observation grants no repair or publication.
+See [diagnostic disclosure](references/agent-api.md#approved-diagnostic-evidence)
+for filters, pagination, retention and attribution limits.
+
 ## Select the needed reference
 
 - Read [job authoring](../job-authoring/SKILL.md) to choose an execution engine,

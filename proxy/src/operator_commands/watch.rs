@@ -107,6 +107,7 @@ fn supported(view: &Value) -> bool {
                 | "coord_access"
                 | "coord_collaboration"
                 | "operator_action"
+                | "diagnostic_disclosure"
         )
     )
 }

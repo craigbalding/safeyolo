@@ -1,6 +1,7 @@
 //! Current audit envelopes and one lazy JSONL writer. The caller retains
 //! one writer across runtime snapshots; this module performs no global setup.
 
+pub(crate) mod disclosure;
 mod envelope;
 mod explain;
 mod nsm;

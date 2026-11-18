@@ -49,6 +49,15 @@ pub(crate) fn explain(
             ],
             "ev.accept_coord_lane",
         ),
+        "diagnostic_disclosure" => (
+            "The agent requested additional diagnostic evidence from this local instance.",
+            vec![
+                "Only explicitly selected sources, durable subjects and historical reach are disclosed for the selected lifetime.",
+                "No room send, guest administration, lifecycle, policy change or Admin credential is granted. Current authority is checked on every read and continuation.",
+                "Disclosed bytes cannot be recalled. Fixed collections are bounded, retained privately for seven days and never silently recollected after loss.",
+            ],
+            "ev.accept_proxy_lane",
+        ),
         "network_allow" => (
             "The network policy required approval for this agent, destination and port.",
             vec![
@@ -117,6 +126,7 @@ pub(crate) fn explain(
             | "operator_action"
             | "coord_access"
             | "coord_collaboration"
+            | "diagnostic_disclosure"
     );
     if option.is_some() && record.authority.selected_option(option).is_none() {
         return Err(invalid("select one of this approval's fixed options"));
@@ -149,6 +159,14 @@ pub(crate) fn explain(
         "service":action["service"],"capability":action["capability"],
         "credential_reference":action["credential"],"account":action["account"],
         "request_method":method,"request_scheme":record.authority.scheme});
+    if kind == "diagnostic_disclosure" {
+        facts["requested_disclosure"] = action["grant"].clone();
+        facts["operator_selection"] = view["result"]["diagnostic_selection"].clone();
+        facts["authority_delta"] = json!(
+            "Read-only diagnostic disclosure through existing support grants. History and access lifetime are independent. Explicit room selections grant no room identity or send rights. Narrow a pending selection through this approval's diagnostic-selection route; after approval use support grant preview/apply/revoke."
+        );
+        unknowns.clear();
+    }
     if kind == "operator_action" {
         facts["action_id"] = action["action_id"].clone();
         facts["presentation"] = action["presentation"].clone();

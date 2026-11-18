@@ -48,6 +48,9 @@ pub(crate) enum Action {
 
 impl Action {
     fn permitted(&self, grant: &Grant) -> bool {
+        if grant.diagnostics.is_some() {
+            return false;
+        }
         match self {
             Self::Inspect => true,
             Self::FactoryState {
@@ -883,7 +886,7 @@ async fn lifecycle(
 
 /// Whitelist diagnostic facts. Host paths, scripts, control tokens, arbitrary
 /// guest stderr, launch arguments and unrelated worker records never cross it.
-fn inspection(observed: &Value) -> Value {
+pub(super) fn inspection(observed: &Value) -> Value {
     let mut value = json!({});
     for field in [
         "agent_id",

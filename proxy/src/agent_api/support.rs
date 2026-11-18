@@ -18,6 +18,9 @@ where
     let (Some(state), Some(writer)) = (state, writer) else {
         return Ok(response(503, json!({"error":"local support unavailable"})));
     };
+    if super::route(request).starts_with("/support/diagnostics") {
+        return diagnostic_response(request, state, writer, body).await;
+    }
     match super::coord::query_parameter(request.path_and_query, "home") {
         Ok(Some(home)) => {
             let payload = if request.method == "POST" {
@@ -159,6 +162,84 @@ where
             response(
                 refusal.map_or(503, |refusal| refusal.status),
                 json!({"error":refusal.map_or("support state or runtime control unavailable", |refusal| refusal.message),"next_action":"inspect your current support grants; ask the operator to preview missing target/action authority. After a lost reply, read the original operation_id before requesting another operation."}),
+            )
+        }
+    })
+}
+
+async fn diagnostic_response<B>(
+    request: Request<'_>,
+    state: &crate::RuntimeState,
+    writer: &std::sync::Arc<crate::audit::Writer>,
+    body: RequestBody<'_, B>,
+) -> Result<Outcome<'static>, B::Error>
+where
+    B: Body<Data = Bytes> + Unpin,
+{
+    use crate::peer_support::{diagnostics, refuse};
+    let Some(run) = request.identity.run().cloned() else {
+        return Ok(response(
+            403,
+            json!({"error":"current authenticated agent run required"}),
+        ));
+    };
+    if request.path_and_query.contains('?') {
+        return Ok(response(
+            400,
+            json!({"error":"diagnostic disclosure is local; select filters only through the typed request body"}),
+        ));
+    }
+    let config = match crate::operator_actions::config_path(state) {
+        Ok(config) => config,
+        Err(_) => {
+            return Ok(response(
+                503,
+                json!({"error":"diagnostic owner unavailable"}),
+            ));
+        }
+    };
+    let result = if request.method == "GET" && super::route(request) == "/support/diagnostics" {
+        crate::host_platform::in_config(config, async { diagnostics::discover(state, &run) }).await
+    } else if request.method == "POST" {
+        let content = match super::declarations::read_content(body).await? {
+            Ok(c) => c,
+            Err(e) => return Ok(super::declarations::content_error(e)),
+        };
+        match super::route(request) {
+            "/support/diagnostics/requests" => match serde_json::from_slice(&content) {
+                Ok(input) => diagnostics::request(state, writer, &run, input).await,
+                Err(_) => Err(refuse(
+                    400,
+                    "invalid typed diagnostic disclosure request; requester identity is transport-bound",
+                )),
+            },
+            "/support/diagnostics/query" => match serde_json::from_slice(&content) {
+                Ok(input) => {
+                    crate::host_platform::in_config(config, async {
+                        diagnostics::query(state, writer, &run, input).await
+                    })
+                    .await
+                }
+                Err(_) => Err(refuse(
+                    400,
+                    "invalid typed diagnostic query; unsupported fields and filters are refused",
+                )),
+            },
+            _ => Err(refuse(404, "diagnostic endpoint unavailable")),
+        }
+    } else {
+        Err(refuse(
+            405,
+            "use GET /support/diagnostics or POST /support/diagnostics/requests or /support/diagnostics/query",
+        ))
+    };
+    Ok(match result {
+        Ok(value) => response(200, value),
+        Err(error) => {
+            let refusal = error.downcast_ref::<crate::peer_support::Refusal>();
+            response(
+                refusal.map_or(503, |e| e.status),
+                json!({"error":refusal.map_or("diagnostic source or authority unavailable",|e|e.message),"next_action":"Read current diagnostic disclosure and the canonical approval. A failed or incomplete read does not establish empty evidence. Retry an authorized collection with its original operation_id and page token."}),
             )
         }
     })
