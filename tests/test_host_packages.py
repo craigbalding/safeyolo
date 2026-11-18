@@ -573,7 +573,7 @@ def package_inputs(tmp_path, request, monkeypatch):
         (assets / f"{name}.sh").write_text("#!/bin/sh\nexit 0\n")
     for name in ("launchers", "agent_context/skills/safeyolo", "services"):
         (assets / name).mkdir(parents=True)
-    for name in ("safeyolo-lab-controller", "safeyolo-factory", "job-authoring"):
+    for name in ("safeyolo-lab-controller", "safeyolo-factory", "job-authoring", "safeyolo-commission"):
         shutil.copytree(
             REPO / "cli/src/safeyolo/agent_context/skills" / name,
             assets / "agent_context/skills" / name,
@@ -1370,6 +1370,9 @@ def test_fresh_install_preserves_prepared_platform_inputs(package_inputs, tmp_pa
         ("job-authoring", "references/walkthrough.md"),
         ("job-authoring", "references/engines.md"),
         ("job-authoring", "scripts/prepare.py"),
+        ("safeyolo-commission", "SKILL.md"),
+        ("safeyolo-commission", "references/discovery.md"),
+        ("safeyolo-commission", "references/movie-trial.md"),
     ):
         assert (root / "assets/skills" / name / relative).read_bytes() == (
             skill_source / name / relative

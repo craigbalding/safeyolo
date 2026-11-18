@@ -10,6 +10,7 @@ logs/
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/readme-usability
+!.claude/skills/safeyolo-commission
 CLAUDE.local.md
 *.egg-info/
 .pytest_cache/
