@@ -542,6 +542,24 @@ mod tests {
             monotonic_ms().unwrap() + if mode.contains("bridge") { 2000 } else { 200 },
         )
         .unwrap();
+        if mode == "construction" {
+            let request = template::Request {
+                directory: std::env::var_os("SAFEYOLO_LIFETIME_DIRECTORY")
+                    .unwrap()
+                    .into(),
+                key: "unfinished initialization".into(),
+            };
+            template::select(
+                Some(&request),
+                &mut template::Observation::default(),
+                || loop {
+                    // Exercise the actual selection/build path under its locks.
+                    // The watchdog must stop initialization without cooperation.
+                    std::thread::sleep(Duration::from_secs(60));
+                },
+            );
+            panic!("unfinished initialization returned before its deadline");
+        }
         if mode == "bridge" || mode == "expired-bridge" {
             // Keep the watchdog later than the socket deadline so this child
             // proves the callback's timeout outcome, including an expired call.
@@ -576,10 +594,15 @@ mod tests {
             ("parent", 125),
             ("bridge", 124),
             ("expired-bridge", 124),
+            ("construction", 124),
         ] {
+            let directory = std::env::current_dir()
+                .unwrap()
+                .join(format!("template-lifetime-{}", std::process::id()));
             let mut child = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "tests::lifetime_child", "--ignored"])
                 .env("SAFEYOLO_LIFETIME_TEST", mode)
+                .env("SAFEYOLO_LIFETIME_DIRECTORY", &directory)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()
@@ -605,6 +628,39 @@ mod tests {
                 );
             }
             assert_eq!(status.code(), Some(expected), "{mode}");
+            if mode == "construction" {
+                assert!(fs::read_dir(&directory).unwrap().any(|entry| {
+                    entry
+                        .unwrap()
+                        .file_name()
+                        .as_encoded_bytes()
+                        .starts_with(b"template-")
+                }));
+                let request = template::Request {
+                    directory: directory.clone(),
+                    key: "next invocation".into(),
+                };
+                let mut observation = template::Observation::default();
+                assert!(
+                    template::select(Some(&request), &mut observation, || Err(
+                        "next controlled build".into()
+                    ))
+                    .snapshot
+                    .is_none()
+                );
+                assert!(
+                    observation
+                        .cold_reason
+                        .unwrap()
+                        .contains("next controlled build")
+                );
+                assert_eq!(
+                    fs::read_dir(&directory).unwrap().count(),
+                    1,
+                    "only the unlocked directory lock remains"
+                );
+                fs::remove_dir_all(directory).unwrap();
+            }
         }
     }
 }

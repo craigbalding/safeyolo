@@ -184,6 +184,35 @@ fn entries(directory: &Path, host: &str, now: u64) -> Result<Vec<(PathBuf, Recei
     Ok(retained)
 }
 
+/// The directory lock prevents new readers while idle entries are removed.
+/// Repeat after saving: the new snapshot's size is only known at that point.
+fn evict_idle_templates(retained: &mut Vec<(PathBuf, Receipt)>, size: u64) -> Result<bool, Error> {
+    if size > MAX_BYTES {
+        return Ok(false);
+    }
+    let mut total = retained
+        .iter()
+        .try_fold(0u64, |total, (_, r)| total.checked_add(r.bytes))
+        .ok_or("invalid template retention sizes")?;
+    while retained.len() >= MAX_ENTRIES || total >= MAX_BYTES || size > MAX_BYTES - total {
+        let mut removed = false;
+        for index in 0..retained.len() {
+            let lease = lock_file(&retained[index].0.join("lease"))?;
+            if try_exclusive(&lease)? {
+                fs::remove_dir_all(&retained[index].0)?;
+                let (_, value) = retained.remove(index);
+                total = total.saturating_sub(value.bytes);
+                removed = true;
+                break;
+            }
+        }
+        if !removed {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 pub fn select(
     request: Option<&Request>,
     observation: &mut Observation,
@@ -262,24 +291,8 @@ fn select_inner(
             }
         }
     }
-    let mut total = retained
-        .iter()
-        .try_fold(0u64, |total, (_, r)| total.checked_add(r.bytes))
-        .ok_or("invalid template retention sizes")?;
-    while retained.len() >= MAX_ENTRIES || total >= MAX_BYTES {
-        let mut available = None;
-        for (index, (path, _)) in retained.iter().enumerate() {
-            if try_exclusive(&lock_file(&path.join("lease"))?)? {
-                available = Some(index);
-                break;
-            }
-        }
-        let Some(index) = available else {
-            return Err("template capacity is in use; executing cold".into());
-        };
-        let (path, value) = retained.remove(index);
-        fs::remove_dir_all(path)?;
-        total = total.saturating_sub(value.bytes);
+    if !evict_idle_templates(&mut retained, 0)? {
+        return Err("template capacity is in use; executing cold".into());
     }
     // The directory lock stays held through construction/publication. Other
     // invocations can execute cold without waiting for guest initialization.
@@ -303,10 +316,11 @@ fn select_inner(
     let size = bytes(&path)?
         .checked_add(8192)
         .ok_or("template size overflow")?;
+    let retain = evict_idle_templates(&mut retained, size)?;
     observation.save_ms = saving.elapsed().as_millis();
-    if size > MAX_BYTES.saturating_sub(total) {
+    if !retain {
         observation.cold_reason =
-            Some("initialized template exceeds retention capacity; not retained".into());
+            Some("initialized template exceeds available retention capacity; not retained".into());
         return Ok(Selection {
             snapshot: Some(snapshot),
             _lease: None,
@@ -462,6 +476,42 @@ mod tests {
                 .len(),
             MAX_ENTRIES - 1
         );
+    }
+
+    #[test]
+    fn saved_snapshot_size_evicts_idle_bytes_and_preserves_active_or_oversized_entries() {
+        let _guard = crate::CHILD_FIXTURE_LOCK.lock().unwrap();
+        let scratch = scratch();
+        let directory = scratch.0.as_ref().unwrap();
+        let active = saved(directory, "active", "other", seconds().unwrap());
+        let idle = saved(directory, "idle", "other", seconds().unwrap());
+        for path in [&active, &idle] {
+            let mut value = receipt(path).unwrap();
+            value.bytes = MAX_BYTES / 3;
+            fs::write(
+                path.join("receipt.json"),
+                serde_json::to_vec(&value).unwrap(),
+            )
+            .unwrap();
+        }
+        let lease = lock_file(&active.join("lease")).unwrap();
+        lease.try_lock_shared().unwrap();
+        let mut retained = entries(directory, &host_boot().unwrap(), seconds().unwrap()).unwrap();
+        // A snapshot larger than the whole budget must not evict useful entries.
+        assert!(!evict_idle_templates(&mut retained, MAX_BYTES + 1).unwrap());
+        assert!(active.exists() && idle.exists());
+        // Before save there is room for an entry. After save, its measured
+        // half-budget footprint needs the idle third-budget entry evicted.
+        assert!(evict_idle_templates(&mut retained, 0).unwrap());
+        assert!(idle.exists());
+        assert!(evict_idle_templates(&mut retained, MAX_BYTES / 2).unwrap());
+        assert!(active.exists() && !idle.exists());
+        assert_eq!(retained.len(), 1);
+        assert!(!evict_idle_templates(&mut retained, MAX_BYTES).unwrap());
+        assert!(active.exists());
+        lease.unlock().unwrap();
+        assert!(evict_idle_templates(&mut retained, MAX_BYTES).unwrap());
+        assert!(retained.is_empty() && !active.exists());
     }
 
     #[test]

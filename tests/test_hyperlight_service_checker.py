@@ -8,6 +8,7 @@ import json
 import signal
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -222,6 +223,58 @@ def test_resident_memory_reads_a_live_process_and_rejects_a_missing_one(host_dri
     assert host_driver.resident_bytes(host_driver.os.getpid()) > 0
     with pytest.raises(OSError):
         host_driver.resident_bytes(2147483647)
+
+
+def test_process_memory_includes_descendants_and_excludes_unrelated_processes(host_driver, monkeypatch):
+    monkeypatch.setattr(host_driver.subprocess, "check_output", lambda *_args, **_kwargs:
+                        "10 1 8\n12 11 32\n11 10 16\n99 1 1024\n")
+    sample = host_driver.process_memory([10])
+    assert {row["pid"] for row in sample["processes"]} == {10, 11, 12}
+    assert sample["rss_sum_bytes"] == (8 + 16 + 32) * 1024
+
+
+def test_job_memory_retains_live_processes_and_samples_idle_after_reaping(host_driver, tmp_path):
+    proxy = host_driver.subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+    helper = [sys.executable, "-c", "import time; memory=bytearray(16*1024*1024); time.sleep(10)"]
+    program = ("import subprocess, sys\n"
+               f"child=subprocess.Popen({helper!r})\n"
+               "print(child.pid, flush=True)\n"
+               "try:\n sys.stdin.buffer.read()\n"
+               "finally:\n child.terminate()\n child.wait()\n")
+    child = host_driver.subprocess.Popen([sys.executable, "-c", program], stdin=host_driver.subprocess.PIPE,
+                                        stdout=host_driver.subprocess.PIPE, text=True)
+    try:
+        helper_pid = int(child.stdout.readline())
+        with host_driver.sample_job_memory(child, proxy, tmp_path / "job"):
+            time.sleep(0.15)
+            child.stdin.close()
+            child.wait(timeout=5)
+        sample = json.loads((tmp_path / "job.memory.json").read_bytes())
+        assert sample["error"] is None and sample["sample_count"] > 0
+        assert {row["pid"] for row in sample["peak"]["processes"]} == {child.pid, helper_pid, proxy.pid}
+        assert sample["active_peak"] is not None
+        assert any(row["pid"] == helper_pid and row["parent_pid"] == child.pid
+                   for row in sample["active_peak"]["processes"])
+        assert sample["peak"]["rss_sum_bytes"] > sample["idle"]["rss_sum_bytes"] > 0
+        assert [row["pid"] for row in sample["idle"]["processes"]] == [proxy.pid]
+        assert child.poll() is not None
+    finally:
+        if not child.stdin.closed:
+            child.stdin.close()
+        child.wait(timeout=5)
+        host_driver.stop(proxy)
+
+
+def test_job_memory_preserves_failed_observation_without_claiming_zero_memory(host_driver, tmp_path, monkeypatch):
+    def denied(_roots):
+        raise PermissionError("process observation denied")
+    monkeypatch.setattr(host_driver, "process_memory", denied)
+    child = SimpleNamespace(pid=123, poll=lambda: None)
+    with host_driver.sample_job_memory(child, child, tmp_path / "job"):
+        pass
+    sample = json.loads((tmp_path / "job.memory.json").read_bytes())
+    assert sample["error"] == "process observation denied"
+    assert sample["peak"] is sample["idle"] is None and sample["sample_count"] == 0
 
 
 @pytest.mark.parametrize("console", ["missing", "other", "wrong", "exited"])
@@ -460,6 +513,17 @@ def test_host_capture_retains_the_current_policy_and_configuration_identities(ho
         host_driver.captured(host_capture)
 
 
+def test_capture_observer_requires_the_selected_current_principal(host_driver, host_capture):
+    principal = "gate:hyperlight-template-other"
+    with pytest.raises(AssertionError):
+        host_driver.captured(host_capture, principal)
+    host_capture["gate_principal"] = principal
+    with pytest.raises(AssertionError):
+        host_driver.captured(host_capture, principal)
+    host_capture["authorization_principal"] = principal
+    assert host_driver.captured(host_capture, principal) == host_capture["service_evidence"]
+
+
 @pytest.mark.parametrize("engine", ["hyperlight", "hyperlight-unikraft"])
 @pytest.mark.parametrize("defect", [None, "engine", "kind", "runtime_manifest_sha256", "artifact_sha256"])
 def test_engine_observer_matches_selected_engine_and_artifact_pins(host_driver, host_capture, tmp_path, engine, defect):
@@ -589,12 +653,13 @@ def test_held_controls_reject_an_unreached_or_finished_call(host_driver, tmp_pat
     assert triggered == [] and not origin.release.is_set()
 
 
-@pytest.mark.parametrize("remaining_state", [False, True])
+@pytest.mark.parametrize("remaining_state,boundaries", [(False, False), (True, False), (False, True)])
 def test_remaining_window_skips_completed_phases_and_reports_its_actual_scope(
-        host_driver, tmp_path, monkeypatch, capsys, remaining_state):
+        host_driver, tmp_path, monkeypatch, capsys, remaining_state, boundaries):
     args = SimpleNamespace(root=tmp_path / "root", scratch=tmp_path, admin_port=18450,
                            bundle=tmp_path, cli=tmp_path / "cli", proxy=tmp_path / "proxy",
-                           unikraft_lifetimes_only=not remaining_state, unikraft_remaining_only=remaining_state,
+                           unikraft_lifetimes_only=not remaining_state and not boundaries,
+                           unikraft_remaining_only=remaining_state, template_boundaries_only=boundaries,
                            warm_templates_only=False, provider_port=0)
     for name in ("runtime.json", "cli", "proxy"):
         (tmp_path / name).write_text(name)
@@ -611,16 +676,24 @@ def test_remaining_window_skips_completed_phases_and_reports_its_actual_scope(
         return []
 
     monkeypatch.setattr(host_driver, "warm_templates", warm)
+    monkeypatch.setattr(host_driver, "template_comparison", lambda actual, engine: calls.append(engine + " comparison"))
+    monkeypatch.setattr(host_driver, "template_authority", lambda actual, engine, origin, port: calls.append(engine + " authority"))
+    monkeypatch.setattr(host_driver, "template_cache", lambda actual: {"entries": []})
     def held(actual, engine, origin, port):
         assert actual is instance and engine == "hyperlight-unikraft"
         calls.append("held")
 
     monkeypatch.setattr(host_driver, "held_lifetimes", held)
     host_driver.exercise(args)
-    assert calls == ["prepare", "ready", *(["state"] if remaining_state else []), "held", "stop"]
+    if boundaries:
+        assert calls == ["prepare", "ready", "hyperlight comparison", "hyperlight authority", "stop",
+                         "ready", "hyperlight-unikraft comparison", "hyperlight-unikraft authority", "stop"]
+    else:
+        assert calls == ["prepare", "ready", *(["state"] if remaining_state else []), "held", "stop"]
     result = json.loads((tmp_path / "result.json").read_bytes())
-    assert result["engines"] == ["hyperlight-unikraft"]
-    assert result["checks"] == ("remaining Unikraft state and held-call lifetimes" if remaining_state
+    assert result["engines"] == (["hyperlight", "hyperlight-unikraft"] if boundaries else ["hyperlight-unikraft"])
+    assert result["checks"] == ("template authority, equivalent comparisons, capacity, expiry and shutdown" if boundaries else
+                                "remaining Unikraft state and held-call lifetimes" if remaining_state
                                 else "held deadline/cancel/revoke/shutdown lifetimes")
     report = capsys.readouterr().out
     assert "hyperlight-unikraft" in report and "live GitHub" not in report and "both" not in report

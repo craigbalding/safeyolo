@@ -197,31 +197,54 @@ async fn operator_selected_artifact_links_still_verify_the_copied_bytes() {
 
 #[tokio::test]
 async fn substituted_artifacts_and_manifest_architecture_fail_before_spawn() {
-    let (root, mut spec, config) = fixture("exit 0");
-    fs::write(root.path().join("helper-source"), "substituted").unwrap();
-    assert!(
-        run(&config, &spec, None, None, &[], None)
+    for file in ["runtime.json", "helper-source", "checker.py", "python.cpio"] {
+        let (root, spec, config) = fixture("exit 99");
+        // A retained cache must not bypass verification of any current input.
+        fs::create_dir_all(root.path().join("data/hyperlight-templates/template-old")).unwrap();
+        fs::write(root.path().join(file), "substituted").unwrap();
+        let error = run(&config, &spec, None, None, &[], None)
             .await
             .unwrap_err()
-            .to_string()
-            .contains("digest mismatch")
-    );
-    let JobEngine::HyperlightUnikraft { runtime, .. } = &mut spec.engine else {
-        unreachable!()
-    };
-    let mut manifest: Value = serde_json::from_slice(&fs::read(&runtime.path).unwrap()).unwrap();
-    manifest["architecture"] = "incompatible-architecture".into();
-    let bytes = serde_json::to_vec(&manifest).unwrap();
-    fs::write(&runtime.path, &bytes).unwrap();
-    runtime.sha256 = digest(&bytes);
-    assert!(
-        run(&config, &spec, None, None, &[], None)
+            .to_string();
+        assert!(error.contains("digest mismatch"), "{file}: {error}");
+        assert!(!root.path().join("helper.pid").exists());
+        assert!(
+            root.path()
+                .join("data/hyperlight-templates/template-old")
+                .exists()
+        );
+        assert_eq!(fs::read_dir(root.path().join("data")).unwrap().count(), 1);
+    }
+    for (field, value, diagnostic) in [
+        ("protocol", json!(3), "ABI version"),
+        ("hyperlight", json!("incompatible"), "ABI version"),
+        ("unikraft", json!("incompatible"), "ABI version"),
+        ("os", json!("incompatible-os"), "host is"),
+        (
+            "architecture",
+            json!("incompatible-architecture"),
+            "host is",
+        ),
+    ] {
+        let (root, mut spec, config) = fixture("exit 99");
+        let JobEngine::HyperlightUnikraft { runtime, .. } = &mut spec.engine else {
+            unreachable!()
+        };
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&runtime.path).unwrap()).unwrap();
+        manifest[field] = value;
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        fs::write(&runtime.path, &bytes).unwrap();
+        // Even a newly adopted digest cannot authorize an incompatible ABI.
+        runtime.sha256 = digest(&bytes);
+        let error = run(&config, &spec, None, None, &[], None)
             .await
             .unwrap_err()
-            .to_string()
-            .contains("host is")
-    );
-    assert_eq!(fs::read_dir(root.path().join("data")).unwrap().count(), 0);
+            .to_string();
+        assert!(error.contains(diagnostic), "{field}: {error}");
+        assert!(!root.path().join("helper.pid").exists());
+        assert_eq!(fs::read_dir(root.path().join("data")).unwrap().count(), 0);
+    }
 }
 
 #[tokio::test]
@@ -532,25 +555,44 @@ fn unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec()
 
 #[test]
 fn template_identity_tracks_frozen_inputs_and_keeps_invocation_authority_separate() {
-    let (_root, mut spec, _) = fixture("exit 0");
-    let original = template_key(&spec).unwrap();
-    spec.gate_id = "another-principal".into();
-    spec.argv = vec!["different invocation input".into()];
-    spec.timeout_seconds += 1;
-    assert_eq!(template_key(&spec).unwrap(), original);
-    spec.memory_mb += 1;
-    assert_ne!(template_key(&spec).unwrap(), original);
-    spec.memory_mb -= 1;
-    let JobEngine::HyperlightUnikraft { checker, .. } = &mut spec.engine else {
-        unreachable!()
-    };
-    checker.sha256 = "a".repeat(64);
-    assert_ne!(template_key(&spec).unwrap(), original);
-    let JobEngine::HyperlightUnikraft { runtime, .. } = &mut spec.engine else {
-        unreachable!()
-    };
-    runtime.sha256 = "b".repeat(64);
-    assert_ne!(template_key(&spec).unwrap(), original);
+    let (_root, spec, _) = fixture("exit 0");
+    let original_value = serde_json::to_value(&spec).unwrap();
+    for core in [false, true] {
+        let mut value = original_value.clone();
+        let artifact = if core { "guest" } else { "checker" };
+        if core {
+            value["engine"] = json!({"kind":"hyperlight", "runtime":value["engine"]["runtime"],
+                "guest":value["engine"]["checker"], "function":"Check", "reuse_initialization":true});
+        }
+        let original = template_key(&serde_json::from_value(value.clone()).unwrap()).unwrap();
+        for field in ["memory_mb", "artifact", "runtime"] {
+            // Each mutation starts from the original. Otherwise a previous
+            // changed artifact can hide a runtime-identity regression.
+            let mut changed = value.clone();
+            match field {
+                "memory_mb" => changed[field] = (spec.memory_mb + 1).into(),
+                "artifact" => changed["engine"][artifact]["sha256"] = "a".repeat(64).into(),
+                "runtime" => changed["engine"][field]["sha256"] = "b".repeat(64).into(),
+                _ => unreachable!(),
+            }
+            let changed: JobSpec = serde_json::from_value(changed).unwrap();
+            assert_ne!(
+                template_key(&changed).unwrap(),
+                original,
+                "{artifact}/{field}"
+            );
+        }
+        value["gate_id"] = "another-principal".into();
+        value["argv"] = json!(["different invocation input"]);
+        value["timeout_seconds"] = (spec.timeout_seconds + 1).into();
+        if core {
+            value["engine"]["function"] = "another-entry".into();
+        }
+        assert_eq!(
+            template_key(&serde_json::from_value(value).unwrap()).unwrap(),
+            original
+        );
+    }
     let mut value = serde_json::to_value(&spec).unwrap();
     value["engine"]
         .as_object_mut()

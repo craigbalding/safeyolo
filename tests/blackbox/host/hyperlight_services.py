@@ -3,6 +3,8 @@
 Use --unikraft-lifetimes-only to run just the four Unikraft lifetime controls.
 Use --unikraft-remaining-only for spin cancellation, recovery, overlap,
 changed artifacts, corrupt templates and held calls, after two fresh setup runs.
+Use --template-boundaries-only for fresh service authority across principals,
+equivalent cold/restore measurements and template eviction/expiry/shutdown.
 
 Requires matching candidate CLI/proxy, a protocol-4 bundle built on this host's
 architecture, Python with tomlkit, and accessible KVM or entitled Apple-silicon
@@ -73,6 +75,63 @@ def resident_bytes(pid):
             raise OSError(error, os.strerror(error))
         return usage[8]
     raise OSError(f"resident memory sampling unavailable on {sys.platform}")
+
+
+def process_memory(roots):
+    """Sample the selected processes and their descendants in one process table."""
+    table = subprocess.check_output(["ps", "-axo", "pid=,ppid=,rss="], text=True, timeout=5)
+    rows = [tuple(map(int, row.split())) for row in table.splitlines() if row.strip()]
+    selected = set(roots)
+    while True:
+        children = {pid for pid, parent, _rss in rows if parent in selected}
+        expanded = selected | children
+        if expanded == selected:
+            break
+        selected = expanded
+    processes = [{"pid": pid, "parent_pid": parent, "rss_bytes": rss * 1024}
+                 for pid, parent, rss in rows if pid in selected]
+    return {"unix_ms": time.time_ns() // 1_000_000, "processes": processes,
+            "rss_sum_bytes": sum(row["rss_bytes"] for row in processes)}
+
+
+@contextlib.contextmanager
+def sample_job_memory(child, proxy, prefix):
+    """Retain a sampled CLI/helper/proxy peak and the idle proxy after reaping."""
+    finished = threading.Event()
+    samples = {"peak": None, "active_peak": None, "sample_count": 0, "error": None,
+               "job_pid": child.pid, "proxy_pid": proxy.pid,
+               "limits": "20ms sampling can miss peaks; summed RSS double-counts shared pages and excludes file page cache"}
+
+    def observe():
+        try:
+            while not finished.is_set():
+                roots = ([child.pid] if child.poll() is None else [])
+                if proxy.poll() is None:
+                    roots.append(proxy.pid)
+                current = process_memory(roots)
+                samples["sample_count"] += 1
+                if samples["peak"] is None or current["rss_sum_bytes"] > samples["peak"]["rss_sum_bytes"]:
+                    samples["peak"] = current
+                if (any(row["parent_pid"] == child.pid for row in current["processes"])
+                        and (samples["active_peak"] is None
+                             or current["rss_sum_bytes"] > samples["active_peak"]["rss_sum_bytes"])):
+                    samples["active_peak"] = current
+                finished.wait(0.02)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            samples["error"] = str(error)
+
+    thread = threading.Thread(target=observe)
+    thread.start()
+    try:
+        yield
+    finally:
+        finished.set()
+        thread.join()
+        try:
+            samples["idle"] = process_memory([proxy.pid] if proxy.poll() is None else [])
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            samples["idle"], samples["error"] = None, str(error)
+        save(prefix.with_suffix(".memory.json"), samples)
 
 
 def job_result(prefix, engine, mode, *, expected_outcome=None):
@@ -240,12 +299,15 @@ class Instance:
         with prefix.with_suffix(".stdout").open("wb") as stdout, prefix.with_suffix(".stderr").open("wb") as stderr:
             started = time.perf_counter_ns()
             child = subprocess.Popen(arguments, stdout=stdout, stderr=stderr)
-            try:
-                yield child, prefix
-            finally:
-                stop(child)
-                save(prefix.with_suffix(".status.json"), {"returncode": child.returncode,
-                     "command_wall_ms": (time.perf_counter_ns() - started) / 1_000_000})
+            sampling = (sample_job_memory(child, self.proxy, prefix)
+                        if getattr(self.args, "template_boundaries_only", False) else contextlib.nullcontext())
+            with sampling:
+                try:
+                    yield child, prefix
+                finally:
+                    stop(child)
+                    save(prefix.with_suffix(".status.json"), {"returncode": child.returncode,
+                         "command_wall_ms": (time.perf_counter_ns() - started) / 1_000_000})
 
     def run_job(self, engine, request, *, expected_outcome=None, **options):
         with self.job(engine, request, **options) as (child, prefix):
@@ -261,10 +323,10 @@ def output(result):
     return json.loads(data)
 
 
-def captured(result):
+def captured(result, principal="gate:hyperlight-service-check"):
     assert result["observation_error"] is None, result
     assert result["outcome"] == {"kind": "exit", "code": 0}, result
-    assert result["gate_principal"] == result["authorization_principal"] == "gate:hyperlight-service-check"
+    assert result["gate_principal"] == result["authorization_principal"] == principal
     assert result["runtime_report"]["error"] is None
     assert result["rootfs"]["service_access"] == "mediated"
     for key in ("runtime_manifest_sha256", "artifact_sha256"):
@@ -401,8 +463,8 @@ def held_lifetimes(instance, engine, origin, port):
         assert output(instance.run_job(engine, next_request, probe=True))[0]["ok"] is True
 
 
-def warm_templates(instance, engine, *, remaining_only=False):
-    """Observe actual construction, restored state, fresh calls and cold costs."""
+def template_probe_spec(instance, engine):
+    """Select the existing diagnostic without changing its installed artifacts."""
     spec = json.loads((instance.args.bundle / f"{engine}.json").read_bytes())
     for name in ("runtime", "guest", "checker"):
         if name in spec["engine"]:
@@ -412,6 +474,12 @@ def warm_templates(instance, engine, *, remaining_only=False):
     else:
         path = instance.args.bundle / "template_probe.py"
         spec["engine"]["checker"] = {"path": str(path), "sha256": digest(path)}
+    return spec
+
+
+def warm_templates(instance, engine, *, remaining_only=False):
+    """Observe actual construction, restored state, fresh calls and cold costs."""
+    spec = template_probe_spec(instance, engine)
     observations = []
 
     def measured(request, definition, expected=None, timeout=30):
@@ -487,6 +555,157 @@ def warm_templates(instance, engine, *, remaining_only=False):
     fresh(invalid)
     assert invalid["engine"] == engine
     return observations
+
+
+def template_pending_principals(instance, engine, origin, spec, concurrent_call):
+    """Complete a second principal's call before cancelling a held predecessor."""
+    origin.entered.clear()
+    origin.release.clear()
+    request = {"call": {"kind": "service", "service": "held", "method": "GET",
+                        "url": f"http://127.0.0.1:{origin.server_address[1]}/hold"}}
+    try:
+        with instance.job(engine, request, probe=True, definition=spec) as (child, prefix):
+            assert origin.entered.wait(20), "first principal never reached the provider"
+            assert child.poll() is None
+            concurrent_call()
+            assert child.poll() is None, "pending predecessor ended before cancellation"
+            child.send_signal(signal.SIGINT)
+            child.wait(timeout=10)
+        cancelled = job_result(prefix, engine, "cross-principal predecessor", expected_outcome={
+            "kind": "interrupted", "signal": int(signal.SIGINT)})
+        assert all(row["response_sha256"] is None for row in cancelled["service_evidence"])
+        return cancelled
+    finally:
+        # Deliver late success only after job() has stopped and reaped its child.
+        origin.release.set()
+
+
+def template_authority(instance, engine, origin, port):
+    """Share initialized bytes while changing live principals, policy and captures."""
+    spec = json.loads((instance.scratch / f"{engine}-adopted.json").read_bytes())
+    other = "gate:hyperlight-template-other"
+    original_policy = copy.deepcopy(instance.policy)
+    observations, evidence_ids = [], set()
+    request = {"call": {"kind": "service", "service": "held", "method": "GET",
+                        "url": f"http://127.0.0.1:{port}/value"}}
+
+    def invoke(label, definition, value=None, *, allowed=True):
+        value = request if value is None else value
+        result = instance.run_job(engine, value, probe=True, definition=definition)
+        observations.append({"case": label, "result": result})
+        save(instance.scratch / f"{engine}-template-authority.json", observations)
+        assert output(result)[0]["ok"] is allowed, result
+        records = captured(result, "gate:" + definition["gate_id"])
+        ids = {row["id"] for row in records}
+        assert not ids & evidence_ids, "another invocation donated captured evidence"
+        evidence_ids.update(ids)
+        if allowed:
+            assert len(records) == 1 and records[0]["url"] == request["call"]["url"], result
+        else:
+            assert all(row["response_sha256"] is None for row in records), result
+        return result
+
+    first = invoke("initial authority", spec)
+    alternate = copy.deepcopy(spec)
+    alternate["gate_id"] = other.removeprefix("gate:")
+    instance.policy["agents"][other] = {"services": {"held": copy.deepcopy(
+        instance.policy["agents"]["gate:hyperlight-service-check"]["services"]["held"])}}
+    try:
+        instance.apply()
+        second = invoke("changed principal and policy", alternate)
+        assert second["rootfs"]["policy_hash"] != first["rootfs"]["policy_hash"]
+        cancelled = template_pending_principals(instance, engine, origin, spec, lambda: invoke(
+            "other principal while predecessor is pending", alternate))
+        observations.append({"case": "cancelled other principal", "result": cancelled})
+        save(instance.scratch / f"{engine}-template-authority.json", observations)
+        invoke("after cancelled predecessor", alternate)
+        invoke("foreign evidence handle", alternate, {"call": {
+            "kind": "read", "id": first["service_evidence"][0]["id"], "offset": 0, "length": 1}}, allowed=False)
+        instance.policy["agents"][other]["services"].pop("held")
+        instance.apply()
+        denied = invoke("grant removed with reusable template", alternate, allowed=False)
+        assert denied["rootfs"]["policy_hash"] != second["rootfs"]["policy_hash"]
+        expected = first["runtime_report"]["initialization"]
+        for row in observations:
+            if row["case"] == "cancelled other principal":
+                continue
+            actual = row["result"]["runtime_report"]["initialization"]
+            assert actual["template_key"] == expected["template_key"]
+            assert actual["snapshot_digest"] == expected["snapshot_digest"]
+            if row["case"] != "initial authority":
+                assert actual["mode"] == "restored" and actual["initialization_events"] == 0
+    finally:
+        origin.release.set()
+        instance.policy = original_policy
+        instance.apply()
+
+
+def template_cache(instance):
+    """Observe actual retained files after all current invocation readers exit."""
+    entries = []
+    for path in sorted((instance.root / "data/hyperlight-templates").glob("template-*")):
+        receipt = json.loads((path / "receipt.json").read_bytes())
+        entries.append({"path": str(path), "receipt": receipt,
+                        "file_bytes": sum(file.stat().st_size for file in path.rglob("*") if file.is_file())})
+    return {"entries": entries, "file_bytes": sum(row["file_bytes"] for row in entries),
+            "reserved_bytes": sum(row["receipt"]["bytes"] for row in entries)}
+
+
+def template_comparison(instance, engine):
+    """Compare identical offline work, then observe real capacity and expiry."""
+    spec = template_probe_spec(instance, engine)
+    request = {"value": "equivalent comparison"}
+    observations = []
+
+    def measured(label, definition):
+        with instance.job(engine, request, definition=definition) as (child, prefix):
+            child.wait(timeout=60)
+        result = job_result(prefix, engine, label)
+        status = json.loads(prefix.with_suffix(".status.json").read_bytes())
+        memory = json.loads(prefix.with_suffix(".memory.json").read_bytes())
+        cache = template_cache(instance)
+        observations.append({"case": label, "result": result, "cache": cache, "memory": memory,
+                             "full_invocation_ms": status["command_wall_ms"], "provider_latency_ms": 0})
+        save(instance.scratch / f"{engine}-template-boundaries.json", {
+            "observations": observations,
+            "limits": "same input/spec/principal; offline provider latency is zero; installed build profile must be recorded by caller; RSS sampling excludes file page cache"})
+        assert memory["error"] is None and memory["sample_count"] > 0, memory
+        assert memory["active_peak"] is not None, "no live helper descendant was sampled"
+        assert cache["file_bytes"] <= cache["reserved_bytes"] <= 1 << 30, cache
+        assert len(cache["entries"]) <= 4, cache
+        assert not list((instance.root / "data").glob("job-hyperlight-*"))
+        return result, cache
+
+    first, initial_cache = measured("construction", spec)
+    restored, _cache = measured("restored comparison", spec)
+    cold = copy.deepcopy(spec)
+    cold["engine"]["reuse_initialization"] = False
+    cold_result, _cache = measured("cold comparison", cold)
+    assert first["runtime_report"]["initialization"]["mode"] == "constructed"
+    assert restored["runtime_report"]["initialization"]["mode"] == "restored"
+    assert cold_result["runtime_report"]["initialization"]["mode"] == "cold"
+    assert first["input_sha256"] == restored["input_sha256"] == cold_result["input_sha256"]
+    initial_key = first["runtime_report"]["initialization"]["template_key"]
+    assert restored["runtime_report"]["initialization"]["template_key"] == initial_key
+    assert restored["runtime_report"]["initialization"]["snapshot_digest"] == first["runtime_report"]["initialization"]["snapshot_digest"]
+    # Five distinct initialization layouts exceed the existing four-entry cap.
+    # These are new retention witnesses, not repeats of predecessor/lifetime cases.
+    for index in range(1, 6):
+        variant = copy.deepcopy(spec)
+        variant["memory_mb"] += index
+        result, cache = measured(f"capacity layout {index}", variant)
+        assert result["runtime_report"]["initialization"]["template_key"] != initial_key
+    assert not {row["path"] for row in initial_cache["entries"]} & {row["path"] for row in cache["entries"]}
+    key = result["runtime_report"]["initialization"]["template_key"]
+    selected = [row for row in cache["entries"] if row["receipt"]["key"] == key]
+    assert len(selected) == 1, selected
+    expired = Path(selected[0]["path"])
+    receipt = selected[0]["receipt"]
+    save(instance.scratch / f"{engine}-before-expiry.json", receipt)
+    save(expired / "receipt.json", {**receipt, "created_seconds": int(time.time()) - 3600})
+    result, _cache = measured("expired layout reconstructed", variant)
+    assert result["runtime_report"]["initialization"]["mode"] == "constructed"
+    assert not expired.exists(), "expired disk template survived selection"
 
 
 def wait_spin_entry(child, prefix, timeout=20):
@@ -600,6 +819,11 @@ def exercise(args):
                                                       stdout=log, stderr=log)
                     try:
                         wait_ready(instance.proxy, args.root, args.admin_port)
+                        if getattr(args, "template_boundaries_only", False):
+                            template_comparison(instance, engine)
+                            template_authority(instance, engine, origin, port)
+                            engine_case(engine, "template-identity-authority-retention-comparison")
+                            continue
                         if args.warm_templates_only or args.unikraft_remaining_only:
                             receipt.document.setdefault("warm_templates", {})[engine] = warm_templates(
                                 instance, engine, remaining_only=args.unikraft_remaining_only)
@@ -657,6 +881,10 @@ def exercise(args):
                     finally:
                         origin.release.set()
                         stop(instance.proxy)
+                        if getattr(args, "template_boundaries_only", False):
+                            retained = template_cache(instance)
+                            save(args.scratch / f"{engine}-template-shutdown.json", retained)
+                            assert not retained["entries"], "normal shutdown retained idle templates"
                         save(args.scratch / "provider-observations.json", observations)
         finally:
             origin.release.set()
@@ -668,7 +896,8 @@ def exercise(args):
     assert not (args.root / "data/ready.json").exists()
     assert not list((args.root / "data").glob("job-hyperlight-*"))
     receipt.checkpoint("cleanup")
-    checks = ("remaining Unikraft state and held-call lifetimes" if args.unikraft_remaining_only else
+    checks = ("template authority, equivalent comparisons, capacity, expiry and shutdown" if getattr(args, "template_boundaries_only", False) else
+              "remaining Unikraft state and held-call lifetimes" if args.unikraft_remaining_only else
               "initialized templates, cold comparison and held lifetimes" if args.warm_templates_only else
               "held deadline/cancel/revoke/shutdown lifetimes" if args.unikraft_lifetimes_only else
               "live GitHub, standing grant/removal, named input/typed mismatch, scope/limits, held lifetimes")
@@ -699,6 +928,8 @@ def main():
                         help="exercise initialized restores, fresh state, cold comparison and existing held lifetimes")
     modes.add_argument("--unikraft-remaining-only", action="store_true",
                        help="run remaining Unikraft state/lifetime windows; construct and restore one fresh setup template")
+    modes.add_argument("--template-boundaries-only", action="store_true",
+                       help="compare equivalent cold/restored work and exercise changed-principal authority and cache release")
     args = parser.parse_args()
     for name in ("cli", "proxy", "bundle", "github_token_file", "scratch"):
         setattr(args, name, getattr(args, name).resolve(strict=True))

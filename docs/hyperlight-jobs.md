@@ -87,6 +87,28 @@ cancellation and recovery, concurrent calls, changed-artifact refusal,
 corrupt-template fallback and held-call lifetimes. It first constructs and
 restores one template in the new disposable instance. It skips Core, the
 Unikraft cold comparison, failed predecessor and completed spin deadline case.
+To exercise the remaining authority, retention and comparison boundaries, use
+`--template-boundaries-only` with the same prerequisites. Run it separately on
+each selected KVM or HVF host. It uses the installed diagnostic workloads and
+the loopback provider; it makes no GitHub request. Keep the supplied credential
+input private as required by the existing instance setup.
+
+This mode compares identical input, principal, artifact pins and limits for
+construction, restore and explicit cold execution. It records full command
+latency, the existing stage reports, zero offline provider latency, sampled
+CLI/helper/proxy resident memory and idle proxy memory after reaping. Record
+the installed build profile alongside the run. Sampling can miss short peaks;
+summed resident memory counts shared pages more than once and excludes the
+file page cache. Process sampling adds observation overhead to the comparison.
+
+Five additional memory layouts exercise the four-entry and one-GiB cache
+limits. The driver expires one owned receipt and checks reconstruction. It
+also checks normal shutdown removal. The service probe shares one template
+across principals and policy changes, including overlapping work, a cancelled
+predecessor, a foreign capture handle and removal of a service grant. This mode
+skips the completed offline predecessor, corruption and held-lifetime matrices.
+These selected controls do not establish initialization/load/restore phase
+interruption or complete issue acceptance.
 
 Discovery checks the selected artifact digests, host architecture, runtime
 versions and hypervisor availability. A missing device, entitlement, artifact
@@ -254,6 +276,10 @@ entries after check tasks drain. An independent CLI call that still holds a
 reader lease keeps its files until a later access or shutdown can remove them.
 No VM, interpreter, callback or delegated handle remains idle in the cache.
 The operating system can retain file pages in its own page cache.
+After saving a new snapshot, admission uses its measured size. The helper
+evicts idle entries until the new snapshot fits. Active reader leases remain
+protected. If the snapshot exceeds the whole budget, or active readers prevent
+admission, the current call uses its initialized snapshot without retaining it.
 
 `runtime_report.initialization` reports `constructed`, `restored` or `cold`, the
 template key and snapshot digest, an explicit cold reason, and stage times in
