@@ -3,12 +3,12 @@
 import base64
 import contextlib
 import copy
+import errno
 import importlib.util
 import json
 import signal
 import sys
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -226,6 +226,7 @@ def test_resident_memory_reads_a_live_process_and_rejects_a_missing_one(host_dri
 
 
 def test_process_memory_includes_descendants_and_excludes_unrelated_processes(host_driver, monkeypatch):
+    monkeypatch.setattr(host_driver.sys, "platform", "linux")
     monkeypatch.setattr(host_driver.subprocess, "check_output", lambda *_args, **_kwargs:
                         "10 1 8\n12 11 32\n11 10 16\n99 1 1024\n")
     sample = host_driver.process_memory([10])
@@ -233,36 +234,110 @@ def test_process_memory_includes_descendants_and_excludes_unrelated_processes(ho
     assert sample["rss_sum_bytes"] == (8 + 16 + 32) * 1024
 
 
+@pytest.fixture
+def darwin_observer(host_driver, monkeypatch):
+    parents = {10: 1, 11: 10, 12: 11, 99: 1}
+    children = {10: [11, 99], 11: [12]}
+    capacities = []
+
+    def pidinfo(pid, flavor, argument, destination, size):
+        assert flavor == 3 and argument == 0 and size == 136
+        if pid not in parents:
+            host_driver.ctypes.set_errno(errno.ESRCH)
+            return 0
+        destination._obj.pid = pid
+        destination._obj.parent_pid = parents[pid]
+        return size
+
+    def childpids(pid, buffer, size):
+        assert size == host_driver.ctypes.sizeof(buffer)
+        capacities.append(len(buffer))
+        selected = children.get(pid, [])[:len(buffer)]
+        for index, child in enumerate(selected):
+            buffer[index] = child
+        return len(selected)
+
+    library = SimpleNamespace(proc_pidinfo=pidinfo, proc_listchildpids=childpids)
+    monkeypatch.setattr(host_driver.sys, "platform", "darwin")
+    monkeypatch.setattr(host_driver.ctypes, "CDLL", lambda *_args, **_kwargs: library)
+    monkeypatch.setattr(host_driver, "resident_bytes", lambda pid: pid * 1024)
+    return SimpleNamespace(driver=host_driver, library=library, parents=parents,
+                           children=children, capacities=capacities)
+
+
+def test_darwin_memory_aggregates_descendants_counts_pids_and_grows_full_buffers(darwin_observer):
+    probe = darwin_observer
+    probe.parents.update(dict.fromkeys(range(20, 60), 10))
+    probe.children[10].extend(range(20, 60))
+    # Overlapping roots count once; 99 was reparented before its metadata read.
+    sample = probe.driver.process_memory([10, 11, 500])
+    expected = {10, 11, 12, *range(20, 60)}
+    assert {row["pid"] for row in sample["processes"]} == expected
+    assert sample["rss_sum_bytes"] == sum(expected) * 1024
+    assert 32 in probe.capacities and 64 in probe.capacities
+
+
+@pytest.mark.parametrize("phase", ["metadata", "resident", "children"])
+def test_darwin_memory_omits_processes_that_disappear_during_sampling(darwin_observer, monkeypatch, phase):
+    probe = darwin_observer
+
+    def missing(*_args):
+        probe.driver.ctypes.set_errno(errno.ESRCH)
+        return 0
+
+    if phase == "metadata":
+        monkeypatch.setattr(probe.library, "proc_pidinfo", missing)
+    elif phase == "children":
+        monkeypatch.setattr(probe.library, "proc_listchildpids", missing)
+    else:
+        def missing_rss(_pid):
+            raise ProcessLookupError(errno.ESRCH, "exited during sampling")
+        monkeypatch.setattr(probe.driver, "resident_bytes", missing_rss)
+    sample = probe.driver.process_memory([10])
+    assert sample["processes"] == [] and sample["rss_sum_bytes"] == 0
+
+
+@pytest.mark.parametrize("phase", ["metadata", "short_metadata", "resident", "children"])
+def test_darwin_memory_preserves_denied_or_incomplete_observations(darwin_observer, monkeypatch, phase):
+    probe = darwin_observer
+
+    def refused(*_args):
+        probe.driver.ctypes.set_errno(0 if phase == "short_metadata" else errno.EPERM)
+        return 135 if phase == "short_metadata" else 0
+
+    if phase in {"metadata", "short_metadata"}:
+        monkeypatch.setattr(probe.library, "proc_pidinfo", refused)
+    elif phase == "children":
+        monkeypatch.setattr(probe.library, "proc_listchildpids", refused)
+    else:
+        def refused_rss(_pid):
+            raise PermissionError(errno.EPERM, "RSS denied")
+        monkeypatch.setattr(probe.driver, "resident_bytes", refused_rss)
+    with pytest.raises(OSError):
+        probe.driver.process_memory([10])
+
+
+def test_darwin_process_enumeration_keeps_the_existing_five_second_bound(darwin_observer, monkeypatch):
+    probe = darwin_observer
+    monkeypatch.setattr(probe.library, "proc_listchildpids", lambda _pid, buffer, _size: len(buffer))
+    times = iter([0, 6])
+    with monkeypatch.context() as context:
+        context.setattr(probe.driver.time, "monotonic", lambda: next(times))
+        with pytest.raises(TimeoutError):
+            probe.driver.darwin_children(probe.library, 10, 5)
+
+
 def test_job_memory_retains_live_processes_and_samples_idle_after_reaping(host_driver, tmp_path):
-    proxy = host_driver.subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
-    helper = [sys.executable, "-c", "import time; memory=bytearray(16*1024*1024); time.sleep(10)"]
-    program = ("import subprocess, sys\n"
-               f"child=subprocess.Popen({helper!r})\n"
-               "print(child.pid, flush=True)\n"
-               "try:\n sys.stdin.buffer.read()\n"
-               "finally:\n child.terminate()\n child.wait()\n")
-    child = host_driver.subprocess.Popen([sys.executable, "-c", program], stdin=host_driver.subprocess.PIPE,
-                                        stdout=host_driver.subprocess.PIPE, text=True)
-    try:
-        helper_pid = int(child.stdout.readline())
-        with host_driver.sample_job_memory(child, proxy, tmp_path / "job"):
-            time.sleep(0.15)
-            child.stdin.close()
-            child.wait(timeout=5)
-        sample = json.loads((tmp_path / "job.memory.json").read_bytes())
-        assert sample["error"] is None and sample["sample_count"] > 0
-        assert {row["pid"] for row in sample["peak"]["processes"]} == {child.pid, helper_pid, proxy.pid}
-        assert sample["active_peak"] is not None
-        assert any(row["pid"] == helper_pid and row["parent_pid"] == child.pid
-                   for row in sample["active_peak"]["processes"])
-        assert sample["peak"]["rss_sum_bytes"] > sample["idle"]["rss_sum_bytes"] > 0
-        assert [row["pid"] for row in sample["idle"]["processes"]] == [proxy.pid]
-        assert child.poll() is not None
-    finally:
-        if not child.stdin.closed:
-            child.stdin.close()
-        child.wait(timeout=5)
-        host_driver.stop(proxy)
+    # The same standalone command is runnable by the confined consumer without
+    # installing pytest or starting the Hyperlight product.
+    result = host_driver.subprocess.run(
+        [sys.executable, str(REPO / "tests/blackbox/host/hyperlight_memory_probe.py"),
+         "--output", str(tmp_path / "job")], capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    observed = json.loads(result.stdout)
+    assert observed["native_vm_executed"] is False
+    assert observed["sample"]["sample_count"] > 0
 
 
 def test_job_memory_preserves_failed_observation_without_claiming_zero_memory(host_driver, tmp_path, monkeypatch):

@@ -1011,7 +1011,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-test-job-authoring-py).
 - [tests/blackbox/host/hyperlight_adoption.py::main](../tests/blackbox/host/hyperlight_adoption.py#L165) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
-- [tests/blackbox/host/hyperlight_services.py::main](../tests/blackbox/host/hyperlight_services.py#L913) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/host/hyperlight_services.py::main](../tests/blackbox/host/hyperlight_services.py#L984) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
 - [proxy/src/jobs/hyperlight/tests.rs](../proxy/src/jobs/hyperlight/tests.rs#L71) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Controlled executable-helper supervisor; no VM or Python checker execution.
   Exact identities: [source inventory](#witness-proxy-src-jobs-hyperlight-tests-rs).
@@ -2401,25 +2401,29 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 - [`tests/test_hyperlight_service_checker.py::test_non_json_constants_in_artifact_subject_are_unavailable`](../tests/test_hyperlight_service_checker.py#L201)
 - [`tests/test_hyperlight_service_checker.py::test_resident_memory_reads_a_live_process_and_rejects_a_missing_one`](../tests/test_hyperlight_service_checker.py#L222)
 - [`tests/test_hyperlight_service_checker.py::test_process_memory_includes_descendants_and_excludes_unrelated_processes`](../tests/test_hyperlight_service_checker.py#L228)
-- [`tests/test_hyperlight_service_checker.py::test_job_memory_retains_live_processes_and_samples_idle_after_reaping`](../tests/test_hyperlight_service_checker.py#L236)
-- [`tests/test_hyperlight_service_checker.py::test_job_memory_preserves_failed_observation_without_claiming_zero_memory`](../tests/test_hyperlight_service_checker.py#L268)
-- [`tests/test_hyperlight_service_checker.py::test_spin_observer_rejects_missing_or_other_invocation_entry`](../tests/test_hyperlight_service_checker.py#L281)
-- [`tests/test_hyperlight_service_checker.py::test_spin_observer_waits_for_the_current_live_marker`](../tests/test_hyperlight_service_checker.py#L301)
-- [`tests/test_hyperlight_service_checker.py::test_warm_probe_rejects_replayed_runtime_randomness_and_preserves_samples`](../tests/test_hyperlight_service_checker.py#L315)
-- [`tests/test_hyperlight_service_checker.py::test_driver_preserves_job33_failure_before_decoding_stdout`](../tests/test_hyperlight_service_checker.py#L366)
-- [`tests/test_hyperlight_service_checker.py::test_driver_cannot_accept_json_from_a_failed_command`](../tests/test_hyperlight_service_checker.py#L400)
-- [`tests/test_hyperlight_service_checker.py::test_driver_accepts_only_the_explicit_retained_grant_denial`](../tests/test_hyperlight_service_checker.py#L435)
-- [`tests/test_hyperlight_service_checker.py::test_driver_matches_sibling_job_outcomes_and_cli_status`](../tests/test_hyperlight_service_checker.py#L455)
-- [`tests/test_hyperlight_service_checker.py::test_expected_negative_still_rejects_command_and_observation_failures`](../tests/test_hyperlight_service_checker.py#L474)
-- [`tests/test_hyperlight_service_checker.py::test_expected_negative_requires_a_retained_json_file`](../tests/test_hyperlight_service_checker.py#L482)
-- [`tests/test_hyperlight_service_checker.py::test_host_capture_retains_the_current_policy_and_configuration_identities`](../tests/test_hyperlight_service_checker.py#L507)
-- [`tests/test_hyperlight_service_checker.py::test_capture_observer_requires_the_selected_current_principal`](../tests/test_hyperlight_service_checker.py#L516)
-- [`tests/test_hyperlight_service_checker.py::test_engine_observer_matches_selected_engine_and_artifact_pins`](../tests/test_hyperlight_service_checker.py#L529)
-- [`tests/test_hyperlight_service_checker.py::test_host_capture_rejects_invalid_identity_or_time_binding`](../tests/test_hyperlight_service_checker.py#L550)
-- [`tests/test_hyperlight_service_checker.py::test_named_evidence_binds_the_raw_adopted_definition_digest`](../tests/test_hyperlight_service_checker.py#L556)
-- [`tests/test_hyperlight_service_checker.py::test_held_controls_keep_entry_triggers_late_release_and_fresh_runs`](../tests/test_hyperlight_service_checker.py#L577)
-- [`tests/test_hyperlight_service_checker.py::test_held_controls_reject_an_unreached_or_finished_call`](../tests/test_hyperlight_service_checker.py#L641)
-- [`tests/test_hyperlight_service_checker.py::test_remaining_window_skips_completed_phases_and_reports_its_actual_scope`](../tests/test_hyperlight_service_checker.py#L657)
+- [`tests/test_hyperlight_service_checker.py::test_darwin_memory_aggregates_descendants_counts_pids_and_grows_full_buffers`](../tests/test_hyperlight_service_checker.py#L268)
+- [`tests/test_hyperlight_service_checker.py::test_darwin_memory_omits_processes_that_disappear_during_sampling`](../tests/test_hyperlight_service_checker.py#L281)
+- [`tests/test_hyperlight_service_checker.py::test_darwin_memory_preserves_denied_or_incomplete_observations`](../tests/test_hyperlight_service_checker.py#L301)
+- [`tests/test_hyperlight_service_checker.py::test_darwin_process_enumeration_keeps_the_existing_five_second_bound`](../tests/test_hyperlight_service_checker.py#L320)
+- [`tests/test_hyperlight_service_checker.py::test_job_memory_retains_live_processes_and_samples_idle_after_reaping`](../tests/test_hyperlight_service_checker.py#L330)
+- [`tests/test_hyperlight_service_checker.py::test_job_memory_preserves_failed_observation_without_claiming_zero_memory`](../tests/test_hyperlight_service_checker.py#L343)
+- [`tests/test_hyperlight_service_checker.py::test_spin_observer_rejects_missing_or_other_invocation_entry`](../tests/test_hyperlight_service_checker.py#L356)
+- [`tests/test_hyperlight_service_checker.py::test_spin_observer_waits_for_the_current_live_marker`](../tests/test_hyperlight_service_checker.py#L376)
+- [`tests/test_hyperlight_service_checker.py::test_warm_probe_rejects_replayed_runtime_randomness_and_preserves_samples`](../tests/test_hyperlight_service_checker.py#L390)
+- [`tests/test_hyperlight_service_checker.py::test_driver_preserves_job33_failure_before_decoding_stdout`](../tests/test_hyperlight_service_checker.py#L441)
+- [`tests/test_hyperlight_service_checker.py::test_driver_cannot_accept_json_from_a_failed_command`](../tests/test_hyperlight_service_checker.py#L475)
+- [`tests/test_hyperlight_service_checker.py::test_driver_accepts_only_the_explicit_retained_grant_denial`](../tests/test_hyperlight_service_checker.py#L510)
+- [`tests/test_hyperlight_service_checker.py::test_driver_matches_sibling_job_outcomes_and_cli_status`](../tests/test_hyperlight_service_checker.py#L530)
+- [`tests/test_hyperlight_service_checker.py::test_expected_negative_still_rejects_command_and_observation_failures`](../tests/test_hyperlight_service_checker.py#L549)
+- [`tests/test_hyperlight_service_checker.py::test_expected_negative_requires_a_retained_json_file`](../tests/test_hyperlight_service_checker.py#L557)
+- [`tests/test_hyperlight_service_checker.py::test_host_capture_retains_the_current_policy_and_configuration_identities`](../tests/test_hyperlight_service_checker.py#L582)
+- [`tests/test_hyperlight_service_checker.py::test_capture_observer_requires_the_selected_current_principal`](../tests/test_hyperlight_service_checker.py#L591)
+- [`tests/test_hyperlight_service_checker.py::test_engine_observer_matches_selected_engine_and_artifact_pins`](../tests/test_hyperlight_service_checker.py#L604)
+- [`tests/test_hyperlight_service_checker.py::test_host_capture_rejects_invalid_identity_or_time_binding`](../tests/test_hyperlight_service_checker.py#L625)
+- [`tests/test_hyperlight_service_checker.py::test_named_evidence_binds_the_raw_adopted_definition_digest`](../tests/test_hyperlight_service_checker.py#L631)
+- [`tests/test_hyperlight_service_checker.py::test_held_controls_keep_entry_triggers_late_release_and_fresh_runs`](../tests/test_hyperlight_service_checker.py#L652)
+- [`tests/test_hyperlight_service_checker.py::test_held_controls_reject_an_unreached_or_finished_call`](../tests/test_hyperlight_service_checker.py#L716)
+- [`tests/test_hyperlight_service_checker.py::test_remaining_window_skips_completed_phases_and_reports_its_actual_scope`](../tests/test_hyperlight_service_checker.py#L732)
 
 <a id="witness-tests-test-job-authoring-py"></a>
 ### [`tests/test_job_authoring.py`](../tests/test_job_authoring.py)

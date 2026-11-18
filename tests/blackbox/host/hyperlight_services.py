@@ -18,6 +18,7 @@ import base64
 import contextlib
 import copy
 import ctypes
+import errno
 import hashlib
 import http.client
 import json
@@ -61,7 +62,7 @@ def stop(child):
 
 
 def resident_bytes(pid):
-    """Read this process's current resident memory without invoking ps."""
+    """Read a process's current resident memory without invoking ps."""
     if sys.platform == "linux":
         pages = int(Path(f"/proc/{pid}/statm").read_text().split()[1])
         return pages * os.sysconf("SC_PAGE_SIZE")
@@ -77,10 +78,80 @@ def resident_bytes(pid):
     raise OSError(f"resident memory sampling unavailable on {sys.platform}")
 
 
+class DarwinBsdInfo(ctypes.Structure):
+    # Darwin sys/proc_info.h, PROC_PIDTBSDINFO (3); the ABI is 136 bytes.
+    _fields_ = [(name, ctypes.c_uint32) for name in (
+        "flags", "status", "exit_status", "pid", "parent_pid", "uid", "gid",
+        "real_uid", "real_gid", "saved_uid", "saved_gid", "reserved",
+    )] + [("command", ctypes.c_char * 16), ("name", ctypes.c_char * 32)] + [
+        (name, ctypes.c_uint32) for name in (
+            "file_count", "process_group", "job_count", "device", "terminal_group",
+        )
+    ] + [("nice", ctypes.c_int32), ("started_seconds", ctypes.c_uint64),
+         ("started_microseconds", ctypes.c_uint64)]
+
+
+def darwin_children(library, pid, deadline):
+    """Read child PIDs without truncating a full libproc buffer."""
+    capacity = 32
+    while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Darwin process enumeration exceeded five seconds")
+        children = (ctypes.c_int * capacity)()
+        ctypes.set_errno(0)
+        count = library.proc_listchildpids(pid, children, ctypes.sizeof(children))
+        error = ctypes.get_errno()
+        if count < 0 or (count == 0 and error):
+            raise OSError(error or errno.EIO, f"proc_listchildpids({pid}) failed")
+        # libproc returns PID counts, whereas its buffer length is in bytes.
+        if count < capacity:
+            return list(children[:count])
+        capacity *= 2
+
+
+def darwin_process_rows(roots):
+    """Observe selected trees through the same libproc used for resident bytes."""
+    library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    library.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                                     ctypes.c_void_p, ctypes.c_int]
+    library.proc_pidinfo.restype = ctypes.c_int
+    library.proc_listchildpids.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    library.proc_listchildpids.restype = ctypes.c_int
+    deadline = time.monotonic() + 5
+    pending = [(pid, None) for pid in roots]
+    observed, rows = set(), []
+    while pending:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Darwin process enumeration exceeded five seconds")
+        pid, expected_parent = pending.pop()
+        if pid in observed:
+            continue
+        try:
+            info = DarwinBsdInfo()
+            ctypes.set_errno(0)
+            size = library.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+            if size != ctypes.sizeof(info):
+                raise OSError(ctypes.get_errno() or errno.EIO, f"proc_pidinfo({pid}) returned {size} bytes")
+            if expected_parent is not None and info.parent_pid != expected_parent:
+                continue  # Exited/reparented/reused since child enumeration.
+            rss = resident_bytes(pid)
+            children = darwin_children(library, pid, deadline)
+        except ProcessLookupError:
+            continue  # The selected process exited during this sample.
+        observed.add(pid)
+        rows.append((pid, info.parent_pid, rss))
+        pending.extend((child, pid) for child in children)
+    return rows
+
+
 def process_memory(roots):
-    """Sample the selected processes and their descendants in one process table."""
-    table = subprocess.check_output(["ps", "-axo", "pid=,ppid=,rss="], text=True, timeout=5)
-    rows = [tuple(map(int, row.split())) for row in table.splitlines() if row.strip()]
+    """Sample selected process trees; processes can disappear during a sample."""
+    if sys.platform == "darwin":
+        rows = darwin_process_rows(roots)
+    else:
+        table = subprocess.check_output(["ps", "-axo", "pid=,ppid=,rss="], text=True, timeout=5)
+        parsed = [tuple(map(int, row.split())) for row in table.splitlines() if row.strip()]
+        rows = [(pid, parent, rss * 1024) for pid, parent, rss in parsed]
     selected = set(roots)
     while True:
         children = {pid for pid, parent, _rss in rows if parent in selected}
@@ -88,7 +159,7 @@ def process_memory(roots):
         if expanded == selected:
             break
         selected = expanded
-    processes = [{"pid": pid, "parent_pid": parent, "rss_bytes": rss * 1024}
+    processes = [{"pid": pid, "parent_pid": parent, "rss_bytes": rss}
                  for pid, parent, rss in rows if pid in selected]
     return {"unix_ms": time.time_ns() // 1_000_000, "processes": processes,
             "rss_sum_bytes": sum(row["rss_bytes"] for row in processes)}
