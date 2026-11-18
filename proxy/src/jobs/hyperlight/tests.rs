@@ -134,6 +134,64 @@ async fn substituted_artifacts_and_manifest_architecture_fail_before_spawn() {
 }
 
 #[tokio::test]
+async fn missing_artifacts_identify_role_path_and_os_error_before_discovery() {
+    for (missing, role) in [
+        ("runtime.json", "runtime manifest"),
+        ("helper-source", "helper"),
+        ("core.elf", "core guest"),
+        ("checker.py", "Python checker"),
+        ("python.cpio", "Unikraft runtime"),
+    ] {
+        let (root, mut spec, config) = fixture("exit 99");
+        let JobEngine::HyperlightUnikraft { runtime, checker } = &mut spec.engine else {
+            unreachable!()
+        };
+        runtime.path = "runtime.json".into();
+        checker.path = "checker.py".into();
+        if missing == "core.elf" {
+            fs::copy(root.path().join("checker.py"), root.path().join(missing)).unwrap();
+            spec.engine = JobEngine::Hyperlight {
+                runtime: runtime.clone(),
+                guest: PinnedArtifact {
+                    path: missing.into(),
+                    sha256: checker.sha256.clone(),
+                },
+                function: "Check".into(),
+            };
+        }
+        let path = root.path().join(missing);
+        fs::remove_file(&path).unwrap();
+        let os_error = fs::File::open(&path).unwrap_err().to_string();
+        let retained: Vec<_> = fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let bytes = fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect();
+        let spec_path = root.path().join("job.json");
+        fs::write(&spec_path, serde_json::to_vec(&spec).unwrap()).unwrap();
+        let error = super::super::command(
+            &config,
+            &["validate".into(), spec_path.display().to_string()],
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(&format!("Hyperlight {role}")), "{error}");
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(error.contains(&os_error), "{error}");
+        assert!(!path.exists());
+        assert!(!root.path().join("helper.pid").exists());
+        assert_eq!(fs::read_dir(root.path().join("data")).unwrap().count(), 0);
+        for (path, bytes) in retained {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+    }
+}
+
+#[tokio::test]
 async fn missing_or_failed_vm_report_cannot_make_a_successful_helper_exit_pass() {
     for script in [
         "exit 0",
