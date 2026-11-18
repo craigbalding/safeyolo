@@ -70,6 +70,8 @@ Keep a concise human-readable task note in the selected persistent workspace
 or home, using an existing task document when available. Use ordinary files
 and configuration; there is no required filename, schema or new task store.
 The agent maintains the note so the operator need not edit internal files.
+Keep progress and the next action in that note or existing canonical Work;
+do not create a parallel queue or duplicate progress checklist.
 Retain enough to continue without the prior conversation:
 
 - Accepted intent, preferences, risk choices, composition and relevant sources.

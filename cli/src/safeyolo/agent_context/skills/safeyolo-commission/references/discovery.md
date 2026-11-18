@@ -20,7 +20,11 @@ safeyolo status
 Status reports the selected root, proxy state and configured agents. For a
 different selected instance, preserve its explicit `--root` or `--config`
 selection on subsequent commands. A running proxy does not establish that a
-worker, provider or control is operational.
+worker, provider or control is operational. The host command reads the saved
+configured-agent list independently of proxy availability. A successful empty
+configured list remains an empty list even when `proxy_state` is unavailable;
+do not label the whole status response unavailable. Active policy can still
+be unavailable while saved configuration and local task work are usable.
 
 Within the selected host authority, inspect the relevant saved configuration,
 active `policy show`, source status, service definitions and credential/grant
@@ -35,8 +39,10 @@ Use the installed [SafeYolo skill](../../safeyolo/SKILL.md) and its
 [Agent API reference](../../safeyolo/references/agent-api.md) for authenticated
 read shapes. Preserve the proxy and certificate authority configuration.
 Useful reads include `/health`, `/status`, `/agents` and `/operator-actions`.
-The visible agent inventory is scoped discovery, not proof of all configured
-workers. `/operator-actions` lists the calling agent's offered action
+The Agent API's `/agents` reports discovered agents and last-seen information;
+it is not the host's saved configured-agent list. Its visible inventory is
+scoped discovery, not proof of all configured workers. `/operator-actions`
+lists the calling agent's offered action
 vocabulary; it does not authorize an effect. A gateway service listing contains
 scoped tokens: select only required nonsecret metadata before displaying or
 retaining it.
