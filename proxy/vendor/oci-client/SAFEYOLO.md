@@ -22,8 +22,10 @@ does not establish that a native production build selects those dependencies.
 
 The standalone `Cargo.lock` is locally refreshed from the published archive.
 It selects rustix 1.1.6, ctutils 0.4.4, quinn-proto 0.11.19,
-quinn-udp 0.5.16, rustls 0.23.46, rustls-webpki 0.103.16 and tokio 1.53.3
-to address the patchable advisories in those selections. The source and license
-remain those identified above. The standalone lock still contains the chrono
-and astral-tokio-tar maintenance notices. SafeYolo's product dependencies use
-`proxy/Cargo.lock`, separately from this standalone lock.
+quinn-udp 0.5.16, rustls 0.23.46, rustls-webpki 0.103.16, tokio 1.53.3
+and webpki-root-certs 1.0.10 to address the patchable advisories in those
+selections, including the bundled emSign trust defect in RUSTSEC-2026-0383.
+The source and license remain those identified above. The standalone lock
+still contains the chrono and astral-tokio-tar maintenance notices.
+SafeYolo's product dependencies use `proxy/Cargo.lock`, separately from this
+standalone lock.
