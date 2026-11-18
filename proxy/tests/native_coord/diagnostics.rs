@@ -272,6 +272,20 @@ async fn diagnostic_limits_and_failures_never_replace_or_repeat_the_original() {
 
 #[tokio::test]
 async fn error_body_states_and_correlation_remain_explicit() {
+    for status in ["403 Forbidden", "409 Conflict", "429 Too Many Requests"] {
+        let mut reply = Reply::failure();
+        reply.status = status;
+        reply.body = json!({"error":"refused","action":"inspect permitted evidence"}).to_string();
+        let (result, requests, _) = failure_result(reply, vec![]).await;
+        assert!(
+            result["structuredContent"]["diagnostic_reference"]
+                .as_str()
+                .unwrap()
+                .ends_with(ORIGINAL)
+        );
+        assert_eq!(result["structuredContent"]["diagnostic"], Value::Null);
+        assert_eq!(requests.len(), 1);
+    }
     for (body, length, state) in [
         ("", None, "empty"),
         ("<html>bad</html>", None, "malformed"),

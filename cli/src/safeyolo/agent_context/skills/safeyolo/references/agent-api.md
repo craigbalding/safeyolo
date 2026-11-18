@@ -246,6 +246,9 @@ response-header `request_id`, `correlation`, `blocked_by`, `retry_after` and
 `incomplete` and `too_large`. `response_received: false` means no response
 facts were obtained. A body-supplied ID cannot select diagnostic evidence.
 Malformed or interrupted error bodies do not erase the available HTTP status.
+For an identified failure, `diagnostic_reference` names its own-request
+`/explain` URL, including failures outside the automatic 503 collection. The
+reference grants no additional authority and does not trigger a read.
 
 For a local Agent API 503, the guest client automatically reads the existing
 authenticated `/explain` endpoint for that original request. Generic Admin

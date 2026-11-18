@@ -83,6 +83,7 @@ impl ApiError {
             "http_status": self.status,
             "http_reason": StatusCode::from_u16(self.status).ok().and_then(|s| s.canonical_reason()),
             "request_id": self.request_id, "correlation": self.correlation,
+            "diagnostic_reference": self.request_id.as_ref().map(|id| format!("http://_safeyolo.proxy.internal/explain?request_id={id}")),
             "blocked_by": self.headers[0], "retry_after": self.headers[1],
             "body_state": self.body_state, "error_details": self.body,
             "details_limited": self.details_limited, "diagnostic": self.diagnostic,

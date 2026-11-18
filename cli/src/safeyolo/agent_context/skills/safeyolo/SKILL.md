@@ -23,6 +23,9 @@ do not reload Coord or GitHub references already supplied by the role contract.
    `blocked_by`, `retry_after`, bounded `error_details` and `body_state`.
    `isError: true` still means the original operation failed or is uncertain.
    Missing correlation and incomplete bodies remain explicit.
+   For an identified failure, `diagnostic_reference` names its own-request
+   `/explain` read. The reference grants no access; automatic collection is
+   limited to local Agent API 503s.
 2. For a local Agent API 503, consume the attached `diagnostic` first. It uses
    your current identity to read `/explain` for the original request. Collection
    adds at most two seconds and two reads, with only one refresh for `pending`.
