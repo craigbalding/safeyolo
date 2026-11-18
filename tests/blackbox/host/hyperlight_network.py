@@ -62,7 +62,7 @@ from job_sandbox import job_directories
 # proxy and CA. Redirects and retries are not enabled.
 PLATFORM_CHECKER = r'''
 status=$(curl --silent --show-error --max-time 40 --proxy "$HTTP_PROXY" \
-    --cacert "$SSL_CERT_FILE" --output /work/response --write-out '%{http_code}' "$1")
+    --cacert "$SSL_CERT_FILE" --output /work/response --write-out '%{http_code}' "$1") || exit 1
 positive=false
 if [ "$status" = 200 ]; then positive=true; fi
 printf '{"finding":{"kind":"finding","positive":%s}}\n' "$positive"

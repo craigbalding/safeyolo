@@ -76,6 +76,19 @@ def test_platform_client_uses_only_selected_proxy_and_strict_guest_tls(witness, 
         assert result.returncode != 0 and not result.stdout, result
         assert not bridge.requests
         assert (b"403" if deny else b"SSL") in result.stderr
+        # Feed the real guest exit through both observers instead of substituting
+        # the CLI's status 1 for curl's own status. This is CPU/client proof.
+        for engine in ("gvisor", "vz"):
+            execution = {"engine": engine, "outcome": {"kind": "exit", "code": result.returncode},
+                         "outcome_source": "guest_process", "rootfs": {"profile": "shared"},
+                         "observation_error": None, "gate_principal": "gate:hyperlight-network-check",
+                         "authorization_principal": "gate:hyperlight-network-check", "service_evidence": []}
+            prefix = tmp_path / engine
+            prefix.with_suffix(".status.json").write_text(json.dumps({"returncode": 1}))
+            prefix.with_suffix(".stdout").write_text(json.dumps(execution))
+            prefix.with_suffix(".stderr").write_text("")
+            observed = witness.job_result(prefix, engine, "tls-refusal", expected_outcome={"kind": "exit", "code": 1})
+            witness.check_failed_tls(observed)
     else:
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout) == {"finding": {"kind": "finding", "positive": not deny}}
