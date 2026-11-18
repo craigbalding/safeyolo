@@ -14,8 +14,16 @@ Callers that disable default features can use the raw registry APIs and
 SafeYolo selects `rustls-tls-no-provider` without `image-config`; its existing
 digest, platform and raw configuration validation remain in SafeYolo.
 
-The patch changes the two manifests, `src/lib.rs` and `src/client.rs`.
+The source patch changes the two manifests, `src/lib.rs` and `src/client.rs`.
 The added configuration tests exercise absent/null dates, precise timestamps,
 offset normalization and typed conversions. The copied upstream manifests and
 lockfile also describe optional and development dependencies. Their presence
 does not establish that a native production build selects those dependencies.
+
+The standalone `Cargo.lock` is locally refreshed from the published archive.
+It selects rustix 1.1.6, ctutils 0.4.4, quinn-proto 0.11.19,
+quinn-udp 0.5.16, rustls 0.23.46, rustls-webpki 0.103.16 and tokio 1.53.3
+to address the patchable advisories in those selections. The source and license
+remain those identified above. The standalone lock still contains the chrono
+and astral-tokio-tar maintenance notices. SafeYolo's product dependencies use
+`proxy/Cargo.lock`, separately from this standalone lock.

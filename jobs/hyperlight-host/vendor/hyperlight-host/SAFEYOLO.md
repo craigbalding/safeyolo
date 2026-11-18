@@ -24,3 +24,10 @@ select chrono. The copied standalone lockfile includes those dependencies;
 it is separate from SafeYolo's selected normal/build feature graph.
 Upstream integration tests require their own guest fixtures and tools; the
 SafeYolo helper's focused tests do not require those fixtures or a guest boot.
+
+The standalone `Cargo.lock` is locally refreshed from the published archive.
+It selects libz-sys 1.1.33 and rustix 1.1.6 to address the patchable advisories
+in those selections. The source, license and notice remain those identified
+above. The optional and development chrono maintenance notice remains.
+SafeYolo's helper dependencies use `jobs/hyperlight-host/Cargo.lock`, separately
+from this standalone lock.
