@@ -9,17 +9,24 @@ defines context, decision, activation, evidence, outcome and continuity.
 ## On the owning host
 
 Use the installed native command under the account that owns the instance.
-First identify the executable and selected root. For the ordinary default
-instance, these commands read identity and status without starting it:
+Resolve the executable and root from the retained selection. Keep that command
+prefix for every read, including after interruption. For an explicitly selected
+instance, set these variables to its actual executable and root before running
+the read-only identity and status commands:
 
 ```sh
-safeyolo --version
-safeyolo status
+selected_cli=/absolute/path/to/installed/bin/safeyolo
+selected_root=/absolute/path/to/selected/instance
+"$selected_cli" --version
+"$selected_cli" --root "$selected_root" status
 ```
 
-Status reports the selected root, proxy state and configured agents. For a
-different selected instance, preserve its explicit `--root` or `--config`
-selection on subsequent commands. A running proxy does not establish that a
+Status reports the selected root, proxy state and configured agents. Verify
+that the returned root matches the retained selection before using the report.
+If the roots differ, inspect and correct the invocation; do not silently adopt
+the default instance or ask the operator to choose an already known target.
+Preserve an existing explicit `--config` selection in the same way. A running
+proxy does not establish that a
 worker, provider or control is operational. The host command reads the saved
 configured-agent list independently of proxy availability. A successful empty
 configured list remains an empty list even when `proxy_state` is unavailable;
