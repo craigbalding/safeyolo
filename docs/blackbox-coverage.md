@@ -1013,7 +1013,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Selection: manual; no recurring selector resolved.
 - [tests/blackbox/host/hyperlight_services.py::main](../tests/blackbox/host/hyperlight_services.py#L622) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
-- [proxy/src/jobs/hyperlight/tests.rs](../proxy/src/jobs/hyperlight/tests.rs#L64) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Controlled executable-helper supervisor; no VM or Python checker execution.
+- [proxy/src/jobs/hyperlight/tests.rs](../proxy/src/jobs/hyperlight/tests.rs#L71) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Controlled executable-helper supervisor; no VM or Python checker execution.
   Exact identities: [source inventory](#witness-proxy-src-jobs-hyperlight-tests-rs).
 - [proxy/src/jobs/mediated/tests.rs](../proxy/src/jobs/mediated/tests.rs#L31) — Native mediated job capabilities; host process. Evidence: Controlled runtime, artifact and credential fixtures; real native capability enforcement.
   Exact identities: [source inventory](#witness-proxy-src-jobs-mediated-tests-rs).
@@ -2550,17 +2550,21 @@ Selection: manual native phase `named-checks` (named execution receipt; ignored 
 
 Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::pinned_helper_captures_complete_streams_and_removes_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L64)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::operator_selected_artifact_links_still_verify_the_copied_bytes -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L85)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::substituted_artifacts_and_manifest_architecture_fail_before_spawn -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L106)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_artifacts_identify_role_path_and_os_error_before_discovery -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L135)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_or_failed_vm_report_cannot_make_a_successful_helper_exit_pass -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L193)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::reaped_helpers_never_signal_a_stale_process_group -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L206)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::deadline_kills_and_reaps_a_spinning_helper_before_returning -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L239)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::cancellation_stops_a_blocked_helper_and_preserves_no_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L269)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L295)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::template_identity_tracks_frozen_inputs_and_keeps_invocation_authority_separate -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L320)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::shutdown_removes_idle_templates_and_preserves_a_live_mapping_lease -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L365)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::pinned_helper_captures_complete_streams_and_removes_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L71)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::operator_selected_artifact_links_still_verify_the_copied_bytes -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L92)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::substituted_artifacts_and_manifest_architecture_fail_before_spawn -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L113)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_artifacts_identify_role_path_and_os_error_before_discovery -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L142)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_or_failed_vm_report_cannot_make_a_successful_helper_exit_pass -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L200)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::reaped_helpers_never_signal_a_stale_process_group -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L213)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::refused_group_signal_uses_owned_child_termination_and_reaps -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L246)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::refused_signals_wait_for_a_delayed_owned_child_exit -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L265)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::refused_termination_of_a_live_child_remains_a_cleanup_error -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L305)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::unproved_child_disposal_preserves_the_callers_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L328)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::deadline_kills_and_reaps_a_spinning_helper_before_returning -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L361)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::cancellation_stops_a_blocked_helper_and_preserves_no_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L391)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L417)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::template_identity_tracks_frozen_inputs_and_keeps_invocation_authority_separate -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L442)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::shutdown_removes_idle_templates_and_preserves_a_live_mapping_lease -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L487)
 
 <a id="witness-tests-proxy-contracts-test-agent-api-config-py"></a>
 ### [`tests/proxy_contracts/test_agent_api_config.py`](../tests/proxy_contracts/test_agent_api_config.py)

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     fs,
+    io::Write,
     os::unix::{
         fs::PermissionsExt,
         process::{CommandExt, ExitStatusExt},
@@ -382,31 +383,94 @@ pub(crate) fn clear_templates(config: &Path) -> Result<(), Error> {
 
 async fn stop(helper: &mut Helper) -> Result<HelperProcessStatus, Error> {
     if let Some(status) = helper.child.try_wait()? {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "Hyperlight helper already reaped before SIGKILL: parent_pid={}, group={:?}, monotonic_ms={:?}, child_status={status:?}",
+            std::process::id(),
+            helper.group,
+            monotonic_ms().ok()
+        );
         helper.group = None;
         return observed_status(status);
     }
+    let started = std::time::Instant::now();
+    let started_monotonic_ms = monotonic_ms().ok();
+    let mut errors = Vec::new();
+    let group_signal = helper.group.map(kill_helper_group);
     if let Some(group) = helper.group
-        && unsafe { libc::kill(-(group as i32), libc::SIGKILL) } != 0
+        && let Some(Err(error)) = &group_signal
     {
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::ESRCH) {
-            // The helper can exit while delegated connections are closing,
-            // or between try_wait and kill. A signal error does not establish
-            // a live helper; only a reaped child proves disposal.
-            if let Some(status) = helper.child.try_wait()? {
-                helper.group = None;
-                return observed_status(status);
-            }
-            return Err(
-                format!("Hyperlight helper process group {group} SIGKILL failed: {error}").into(),
-            );
+        errors.push(format!(
+            "Hyperlight helper process group {group} SIGKILL failed: {error}"
+        ));
+        // A group signal can race with exit before the child becomes waitable.
+        // Try the owned child explicitly, then confirm disposal by waiting.
+        let recheck = helper.child.try_wait();
+        if let Err(error) = &recheck {
+            errors.push(format!("Hyperlight helper status check failed: {error}"));
         }
+        let fallback = if matches!(recheck, Ok(Some(_))) {
+            None
+        } else {
+            Some(kill_helper_child(&mut helper.child))
+        };
+        if let Some(Err(error)) = &fallback {
+            errors.push(format!(
+                "Hyperlight helper direct-child SIGKILL failed: {error}"
+            ));
+        }
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "Hyperlight helper group SIGKILL failed; confirming owned-child disposal: parent_pid={}, child_pid={:?}, group={group}, started_monotonic_ms={started_monotonic_ms:?}, elapsed_ms={}, group_error={error}, child_status={recheck:?}, direct_child_sigkill={fallback:?}",
+            std::process::id(),
+            helper.child.id(),
+            started.elapsed().as_millis(),
+        );
     }
-    let status = tokio::time::timeout(Duration::from_secs(5), helper.child.wait())
-        .await
-        .map_err(|_| "Hyperlight helper did not stop after SIGKILL; VM cleanup is unproved")??;
+    let wait = tokio::time::timeout(Duration::from_secs(5), helper.child.wait()).await;
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "Hyperlight helper disposal wait completed: parent_pid={}, group={:?}, started_monotonic_ms={started_monotonic_ms:?}, elapsed_ms={}, group_sigkill={group_signal:?}, child_wait={wait:?}, signal_errors={errors:?}",
+        std::process::id(),
+        helper.group,
+        started.elapsed().as_millis(),
+    );
+    let status = match wait {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => {
+            errors.push(format!(
+                "Hyperlight helper wait failed: {error}; VM cleanup is unproved"
+            ));
+            return Err(errors.join("; ").into());
+        }
+        Err(_) => {
+            errors.push(
+                "Hyperlight helper did not stop after SIGKILL; VM cleanup is unproved".into(),
+            );
+            return Err(errors.join("; ").into());
+        }
+    };
     helper.group = None;
     observed_status(status)
+}
+
+fn kill_helper_group(group: u32) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(errno) = tests::GROUP_KILL_ERROR.with(|error| error.take()) {
+        return Err(std::io::Error::from_raw_os_error(errno));
+    }
+    if unsafe { libc::kill(-(group as i32), libc::SIGKILL) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn kill_helper_child(child: &mut Child) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(errno) = tests::CHILD_KILL_ERROR.with(|error| error.take()) {
+        return Err(std::io::Error::from_raw_os_error(errno));
+    }
+    child.start_kill()
 }
 
 pub(super) async fn discover(config: &Path, spec: &JobSpec) -> Result<Option<Value>, Error> {

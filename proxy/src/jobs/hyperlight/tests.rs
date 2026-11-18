@@ -2,6 +2,13 @@
 use super::*;
 use base64::Engine;
 
+// One-shot faults are local to each current-thread Tokio test. The real stop
+// and caller paths still own, wait for and dispose of real child processes.
+thread_local! {
+    pub(super) static GROUP_KILL_ERROR: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+    pub(super) static CHILD_KILL_ERROR: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+}
+
 fn fixture(script: &str) -> (tempfile::TempDir, JobSpec, std::path::PathBuf) {
     let root = tempfile::Builder::new()
         .prefix("hyperlight-test-")
@@ -236,6 +243,121 @@ async fn reaped_helpers_never_signal_a_stale_process_group() {
             "reaped helper signalled the replacement group; drop={dropping}"
         );
     }
+}
+
+#[tokio::test]
+async fn refused_group_signal_uses_owned_child_termination_and_reaps() {
+    let child = command(Path::new("/bin/sleep")).arg("999").spawn().unwrap();
+    let mut helper = Helper {
+        group: child.id(),
+        child,
+    };
+    GROUP_KILL_ERROR.with(|error| error.set(Some(libc::EPERM)));
+    assert_eq!(
+        stop(&mut helper).await.unwrap(),
+        HelperProcessStatus::Signal {
+            number: libc::SIGKILL
+        }
+    );
+    assert!(helper.group.is_none());
+    assert!(helper.child.try_wait().unwrap().is_some());
+    assert!(GROUP_KILL_ERROR.with(|error| error.get()).is_none());
+}
+
+#[tokio::test]
+async fn refused_signals_wait_for_a_delayed_owned_child_exit() {
+    let mut child = command(Path::new("/bin/sh"))
+        .args(["-c", "printf ready; read release; exit 124"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut ready = [0; 5];
+    child
+        .stdout
+        .as_mut()
+        .unwrap()
+        .read_exact(&mut ready)
+        .await
+        .unwrap();
+    assert_eq!(&ready, b"ready");
+    let mut release = child.stdin.take().unwrap();
+    let mut helper = Helper {
+        group: child.id(),
+        child,
+    };
+    GROUP_KILL_ERROR.with(|error| error.set(Some(libc::EPERM)));
+    CHILD_KILL_ERROR.with(|error| error.set(Some(libc::EPERM)));
+    let mut stopping = Box::pin(stop(&mut helper));
+    tokio::select! {
+        biased;
+        result = &mut stopping => panic!("stop returned before the owned child was released: {result:?}"),
+        _ = tokio::task::yield_now() => {}
+    }
+    assert!(GROUP_KILL_ERROR.with(|error| error.get()).is_none());
+    assert!(CHILD_KILL_ERROR.with(|error| error.get()).is_none());
+    release.write_all(b"exit now\n").await.unwrap();
+    assert_eq!(
+        stopping.await.unwrap(),
+        HelperProcessStatus::Exit { code: 124 }
+    );
+    assert!(helper.group.is_none());
+    assert_eq!(helper.child.try_wait().unwrap().unwrap().code(), Some(124));
+}
+
+#[tokio::test]
+async fn refused_termination_of_a_live_child_remains_a_cleanup_error() {
+    let child = command(Path::new("/bin/sleep")).arg("999").spawn().unwrap();
+    let mut helper = Helper {
+        group: child.id(),
+        child,
+    };
+    GROUP_KILL_ERROR.with(|error| error.set(Some(libc::EPERM)));
+    CHILD_KILL_ERROR.with(|error| error.set(Some(libc::EACCES)));
+    let error = stop(&mut helper).await.unwrap_err().to_string();
+    let still_live = helper.child.try_wait().unwrap().is_none();
+    let group_retained = helper.group.is_some();
+    // Remove only the faults; the ordinary stop path must clean up this child.
+    stop(&mut helper).await.unwrap();
+    assert!(still_live);
+    assert!(group_retained);
+    assert!(error.contains("process group"));
+    assert!(error.contains("direct-child SIGKILL failed"));
+    assert!(error.contains("os error 1"));
+    assert!(error.contains(&format!("os error {}", libc::EACCES)));
+    assert!(error.contains("VM cleanup is unproved"));
+}
+
+#[tokio::test]
+async fn unproved_child_disposal_preserves_the_callers_runtime() {
+    let (root, spec, config) = fixture("exec /bin/sleep 999");
+    let (sender, receiver) = tokio::sync::watch::channel(false);
+    let cancel = async {
+        // The helper's marker synchronizes cancellation with its actual launch.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !root.path().join("helper.pid").exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        GROUP_KILL_ERROR.with(|error| error.set(Some(libc::EPERM)));
+        CHILD_KILL_ERROR.with(|error| error.set(Some(libc::EPERM)));
+        sender.send(true).unwrap();
+    };
+    let (result, ()) = tokio::join!(run(&config, &spec, None, Some(receiver), &[]), cancel);
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("process group"));
+    assert!(error.contains("direct-child SIGKILL failed"));
+    assert!(error.contains("VM cleanup is unproved"));
+    let retained: Vec<_> = fs::read_dir(root.path().join("data"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(retained.len(), 1);
+    assert!(retained[0].join("helper").is_file());
+    assert!(retained[0].join("input").is_file());
+    assert!(retained[0].join("service-evidence.json").is_file());
+    assert!(error.contains(&format!("runtime preserved at {}", retained[0].display())));
 }
 
 #[tokio::test]
