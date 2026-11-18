@@ -13,6 +13,29 @@ use crate::{Error, native_config};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
+mod diagnostics;
+pub(crate) use diagnostics::{ApiError, tool_failure};
+
+struct JsonReply {
+    status: u16,
+    value: Value,
+    request_id: Option<String>,
+    details_limited: bool,
+}
+
+struct ApiResponseHead {
+    status: hyper::StatusCode,
+    request_id: Option<String>,
+    correlation: &'static str,
+    blocked_by: Option<String>,
+    retry_after: Option<String>,
+}
+
+struct ReplyLimits {
+    timeout: Duration,
+    bytes: usize,
+}
+
 pub(crate) struct ProbeReply {
     pub status: u16,
     pub request_id: Option<String>,
@@ -113,67 +136,104 @@ where
 async fn json(
     response: Response<Incoming>,
     deadline: tokio::time::Instant,
-) -> Result<Value, Error> {
+    token: &str,
+    max_success_bytes: usize,
+) -> Result<JsonReply, Error> {
     let status = response.status();
+    // Only the local response header supplies correlation. An error body or
+    // caller-supplied identifier cannot select another request's evidence.
+    let mut identifiers = response.headers().get_all("x-safeyolo-request-id").iter();
+    let identifier = identifiers.next();
+    let request_id = identifier
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| crate::agent_api::valid_request_id(value))
+        .filter(|_| identifiers.next().is_none())
+        .map(str::to_owned);
+    let correlation = match (identifier, request_id.as_ref()) {
+        (None, _) => "missing",
+        (_, None) => "invalid",
+        _ => "validated_response_header",
+    };
+    let [blocked_by, retry_after] = ["x-blocked-by", "retry-after"].map(|name| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    });
+    let head = ApiResponseHead {
+        status,
+        request_id,
+        correlation,
+        blocked_by,
+        retry_after,
+    };
+    let limit = if status.is_success() {
+        max_success_bytes
+    } else {
+        diagnostics::MAX_RESPONSE_BYTES
+    };
     let body = tokio::time::timeout_at(deadline, async {
-        Ok::<_, Error>(response.into_body().collect().await?.to_bytes())
+        Ok::<_, Error>(
+            http_body_util::Limited::new(response.into_body(), limit)
+                .collect()
+                .await?
+                .to_bytes(),
+        )
     })
     .await
     .unwrap_or_else(|error| Err(error.into()));
     let bytes = match body {
         Ok(bytes) => bytes,
-        Err(error) if !status.is_success() => {
-            return Err(format!(
-                "API {status}: {}; could not read response body: {error}",
-                status.canonical_reason().unwrap_or("request failed")
+        Err(error) => {
+            let body_state = if error.is::<http_body_util::LengthLimitError>() {
+                "too_large"
+            } else {
+                "incomplete"
+            };
+            return Err(ApiError::new(
+                head,
+                Value::Null,
+                body_state,
+                Some((error.to_string(), error.is::<tokio::time::error::Elapsed>())),
+                token,
             )
             .into());
         }
-        Err(error) => return Err(error),
     };
     let value = serde_json::from_slice::<Value>(&bytes);
-    if !status.is_success() {
-        let error = value.as_ref().ok();
-        let outcome = if error
-            .and_then(|value| value.get("send_outcome"))
-            .and_then(Value::as_str)
-            == Some("unknown")
-        {
-            "; send outcome unknown; inspect retained history before repeating"
+    if !status.is_success() || value.is_err() {
+        let state = if bytes.is_empty() {
+            "empty"
+        } else if value.is_err() {
+            "malformed"
         } else {
-            ""
+            "json"
         };
-        let message = format!(
-            "API {status}: {}{outcome}",
-            error
-                .and_then(|value| value.get("error"))
-                .and_then(Value::as_str)
-                .unwrap_or_else(|| status.canonical_reason().unwrap_or("request failed"))
-        );
-        return Err(ApiError {
-            status: status.as_u16(),
-            body: value.unwrap_or(Value::Null),
-            message,
-        }
+        let parse_error = if status.is_success() {
+            value.as_ref().err().map(ToString::to_string)
+        } else {
+            None
+        };
+        return Err(ApiError::new(
+            head,
+            value.unwrap_or(Value::Null),
+            state,
+            parse_error.map(|error| (error, false)),
+            token,
+        )
         .into());
     }
-    Ok(value?)
+    let mut value = value?;
+    let details_limited =
+        max_success_bytes != usize::MAX && diagnostics::protect(&mut value, token);
+    Ok(JsonReply {
+        status: status.as_u16(),
+        value,
+        request_id: head.request_id,
+        details_limited,
+    })
 }
-
-/// Canonical refusal details let guided operator edits refresh a stale preview.
-/// Transport errors remain distinct: they must never trigger a mutation retry.
-#[derive(Debug)]
-pub(crate) struct ApiError {
-    pub status: u16,
-    pub body: Value,
-    message: String,
-}
-impl std::fmt::Display for ApiError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-impl std::error::Error for ApiError {}
 
 pub(crate) async fn operator_socket(
     config_path: &Path,
@@ -235,7 +295,13 @@ pub async fn export(config_path: &Path, path: &str, destination: &Path) -> Resul
     )
     .await??;
     if !response.status().is_success() {
-        json(response, tokio::time::Instant::now() + TIMEOUT).await?;
+        json(
+            response,
+            tokio::time::Instant::now() + TIMEOUT,
+            token.trim(),
+            usize::MAX,
+        )
+        .await?;
         return Err("export unavailable".into());
     }
     let destination = if std::fs::symlink_metadata(destination)
@@ -285,11 +351,39 @@ pub async fn send_json<IO>(
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    Ok(send_reply(
+        socket,
+        host,
+        path,
+        token,
+        method,
+        body,
+        ReplyLimits {
+            timeout,
+            bytes: usize::MAX,
+        },
+    )
+    .await?
+    .value)
+}
+
+async fn send_reply<IO>(
+    socket: IO,
+    host: &str,
+    path: &str,
+    token: &str,
+    method: Method,
+    body: Value,
+    limits: ReplyLimits,
+) -> Result<JsonReply, Error>
+where
+    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     // Keep Tokio's existing handling of durations beyond Instant's range.
-    let deadline = tokio::time::sleep(timeout).deadline();
+    let deadline = tokio::time::sleep(limits.timeout).deadline();
     let (response, _connection) =
         tokio::time::timeout_at(deadline, send(socket, host, path, token, method, body)).await??;
-    json(response, deadline).await
+    json(response, deadline, token, limits.bytes).await
 }
 
 /// HTTP status and retry timing, without response bodies or credentials.
@@ -546,7 +640,35 @@ pub async fn helper_timeout(
     body: Value,
     timeout: Duration,
 ) -> Result<Value, Error> {
-    let token = Zeroizing::new(std::fs::read_to_string(token_file)?);
+    match helper_reply(socket, token_file, path, method, body, timeout, usize::MAX).await {
+        Ok(reply) => Ok(reply.value),
+        Err(error) => {
+            let mut error = match error.downcast::<ApiError>() {
+                Ok(error) => error,
+                Err(error) => return Err(error),
+            };
+            let diagnostic_read = path
+                .split('?')
+                .next()
+                .is_some_and(|path| path.trim_end_matches('/') == "/explain");
+            if error.status == 503 && !diagnostic_read {
+                error.diagnostic = Some(diagnostics::collect(socket, token_file, &error).await);
+            }
+            Err(error)
+        }
+    }
+}
+
+async fn helper_reply(
+    socket: Option<&Path>,
+    token_file: &Path,
+    path: &str,
+    method: Method,
+    body: Value,
+    timeout: Duration,
+    max_success_bytes: usize,
+) -> Result<JsonReply, Error> {
+    let token = Zeroizing::new(tokio::fs::read_to_string(token_file).await?);
     if token.trim().is_empty() {
         return Err("Agent API token is empty".into());
     }
@@ -554,7 +676,19 @@ pub async fn helper_timeout(
     if let Some(socket) = socket {
         let stream =
             tokio::time::timeout(TIMEOUT, tokio::net::UnixStream::connect(socket)).await??;
-        return send_json(stream, host, path, token.trim(), method, body, timeout).await;
+        return send_reply(
+            stream,
+            host,
+            path,
+            token.trim(),
+            method,
+            body,
+            ReplyLimits {
+                timeout,
+                bytes: max_success_bytes,
+            },
+        )
+        .await;
     }
     let proxy: hyper::Uri = std::env::var("HTTP_PROXY")
         .or_else(|_| std::env::var("http_proxy"))
@@ -575,14 +709,17 @@ pub async fn helper_timeout(
         )),
     )
     .await??;
-    send_json(
+    send_reply(
         stream,
         host,
         &format!("http://{host}{path}"),
         token.trim(),
         method,
         body,
-        timeout,
+        ReplyLimits {
+            timeout,
+            bytes: max_success_bytes,
+        },
     )
     .await
 }

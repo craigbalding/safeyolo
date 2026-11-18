@@ -82,6 +82,12 @@ nodes:
     keywords: [503, "service unavailable", "circuit breaker", "circuit tripped", dependency, "PDP down"]
     source: authored
 
+  - id: sym.native_tool_503
+    kind: symptom
+    label: "A native Coord tool returned a local Agent API 503"
+    keywords: [Coord, MCP, "tool failure", "agent-api", "structuredContent", diagnostic, "503"]
+    source: authored
+
   - id: sym.status_508
     kind: symptom
     label: "Response was 508 (loop guard)"
@@ -149,7 +155,28 @@ nodes:
 
   - id: ev.check_explain_request_id
     kind: evidence
-    label: "GET /explain?request_id=req-... using request_id from safeyolo logs"
+    label: "Read returned own-request evidence, or GET /explain with the validated response request_id"
+    source: authored
+
+  - id: ev.native_tool_evidence
+    kind: evidence
+    label: "Read the original failure and attached diagnostic, preserving their separate request IDs"
+    detail: |
+      Read structuredContent.http_status, request_id, correlation, body_state,
+      error_details, blocked_by and retry_after. isError remains true.
+      diagnostic.reference identifies the original own-request lookup; reads
+      carries diagnostic request IDs. Check collection_state, evidence.status,
+      evidence_limited and limits. Automatic collection uses the current agent
+      and existing /explain reader, with a two-second total budget, at most two
+      reads and one pending refresh. It never repeats the failed operation.
+      A complete search or agent.api_response refusal is not root-cause proof.
+      blocked_by: agent-api alone does not identify a network-policy denial.
+    source: authored
+
+  - id: ev.local_api_health
+    kind: evidence
+    label: "Read /health with the existing Agent API authentication when local health is relevant"
+    detail: "Continue permitted read-only checks. Use /lookup, /budgets or /circuits only for a supported destination, quota or upstream hypothesis. Do not infer a network-policy cause from a local refusal."
     source: authored
 
   # Trace endpoint — "what SafeYolo processing actually ran". Distinct
@@ -383,7 +410,22 @@ nodes:
 
   - id: ask.logs_request_id
     kind: operator_ask
-    label: "Ask operator for the request_id via `safeyolo logs --request-id req-... --raw`"
+    label: "Report missing correlation and request the exact evidence scope through an available authorized path"
+    detail: "Use returned correlation first. If no response ID is available, do not manufacture one from a body or repeat an uncertain operation. Ask for a missing source only when it is needed and no supported access path is available."
+    source: authored
+
+  - id: con.local_failure_observed
+    kind: conclusion
+    label: "Report the observed local failure, reached evidence and remaining uncertainty"
+    detail: |
+      Preserve the original status and any send_outcome: unknown. Separate an
+      observed refusal from a supported diagnosis and an unknown cause. Empty,
+      pending, incomplete, unavailable, denied and limited evidence cannot prove
+      absence or root cause. Diagnosis authorizes no recovery or replay. An
+      uncertain send still needs canonical readback; failed attention-object
+      resolution preserves the last safe cursor. For an additional source, use
+      its supported approval or authorized support path and recheck effective
+      access. When no such path is available, report the exact unmet need.
     source: authored
 
   - id: ask.report_client_bug
@@ -418,9 +460,10 @@ nodes:
     label: "Retry the failing operation with `X-SafeYolo-Trace: 1` on the request so /trace has pipeline evidence to return"
     detail: |
       The trace store is bounded and TTL'd. If the request was never
-      traced, /trace has nothing to return. Ask the operator (or
-      reissue) the request with the opt-in header, then run the trace
-      branch from the top.
+      traced, /trace has nothing to return. Missing trace evidence is not
+      permission to repeat a write or an uncertain send. For a separately
+      authorized safe read, the opt-in header can collect fresh evidence.
+      Preserve the original result and distinguish that new request.
     source: authored
 
 
@@ -430,7 +473,12 @@ edges:
   - {from: sym.status_403,   to: ev.check_x_blocked_by, kind: next_check}
   - {from: sym.status_428,   to: ev.check_x_blocked_by, kind: next_check}
   - {from: sym.status_429,   to: ev.check_x_blocked_by, kind: next_check}
-  - {from: sym.status_503,   to: ev.check_x_blocked_by, kind: next_check}
+  - {from: sym.status_503,   to: ev.check_x_blocked_by, kind: next_check, when: "failure is not from the local Agent API"}
+  - {from: sym.status_503, to: ev.native_tool_evidence, kind: next_check, when: "local Agent API tool failure"}
+  - {from: sym.native_tool_503, to: ev.native_tool_evidence, kind: next_check}
+  - {from: ev.native_tool_evidence, to: ev.local_api_health, kind: next_check, when: "a local health observation is needed and permitted"}
+  - {from: ev.native_tool_evidence, to: con.local_failure_observed, kind: implies, when: "available evidence or its collection limit has been read"}
+  - {from: ev.local_api_health, to: con.local_failure_observed, kind: implies}
   - {from: sym.status_508,   to: ev.check_x_blocked_by, kind: next_check}
   - {from: sym.gh_error_after_ok_polls, to: ev.check_status_security_events, kind: next_check}
   - {from: sym.request_timeout_no_response, to: ev.check_timeout_route, kind: next_check}
@@ -475,7 +523,8 @@ edges:
   - {from: cls.observability_gate, to: con.self_correct_request, kind: implies, when: "recording is what I wanted; either send the header or add host to test_context.target_hosts"}
 
   # Correlation escape hatch — from any evidence branch, if the picture is unclear, get the request_id and use /explain
-  - {from: ev.check_response_body_json, to: ask.logs_request_id, kind: next_check, when: "picture is unclear after body inspection"}
+  - {from: ev.check_response_body_json, to: ev.check_explain_request_id, kind: next_check, when: "picture is unclear and a validated response request_id is available"}
+  - {from: ev.check_response_body_json, to: ask.logs_request_id, kind: next_check, when: "needed correlation is unavailable through the current authorized path"}
   - {from: ask.logs_request_id,         to: ev.check_explain_request_id, kind: next_check}
 
   # Trace escape hatch — /explain answers "what audit events fired"; /trace
@@ -547,6 +596,7 @@ entries:
   - symptom: sym.status_428
   - symptom: sym.status_429
   - symptom: sym.status_503
+  - symptom: sym.native_tool_503
   - symptom: sym.status_508
   - symptom: sym.flow_search_empty
   - symptom: sym.gh_error_after_ok_polls

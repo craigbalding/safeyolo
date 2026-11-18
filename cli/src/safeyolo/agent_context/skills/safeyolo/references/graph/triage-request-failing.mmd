@@ -12,6 +12,7 @@ flowchart TD
     sym.status_428(["Response was 428 (approval / self-correct)"])
     sym.status_429(["Response was 429 (rate / budget)"])
     sym.status_503(["Response was 503 (dependency / circuit)"])
+    sym.native_tool_503(["A native Coord tool returned a local Agent API 503"])
     sym.status_508(["Response was 508 (loop guard)"])
     sym.flow_search_empty(["/api/flows/search returned count:0 for traffic I know happened"])
     sym.gh_error_after_ok_polls(["gh printed a transport-flavored error after OAuth polls returned 200s"])
@@ -23,7 +24,9 @@ flowchart TD
     ev.check_policy_credential_use["GET /policy — look for credential:use permission on the target host"]
     ev.check_config_credential_rules["GET /config — read credential_rules array"]
     ev.check_status_security_events["Operator runs 'safeyolo logs --event security --tail 20' for the failing time window"]
-    ev.check_explain_request_id["GET /explain?request_id=req-... using request_id from safeyolo logs"]
+    ev.check_explain_request_id["Read returned own-request evidence, or GET /explain with the validated response request_id"]
+    ev.native_tool_evidence["Read the original failure and attached diagnostic, preserving their separate request IDs"]
+    ev.local_api_health["Read /health with the existing Agent API authentication when local health is relevant"]
     ev.check_trace_request_id["GET /trace?request_id=req-... — per-control state+outcome+reason for the request pipeline"]
     ev.check_budgets["GET /budgets — remaining for the target host"]
     ev.check_circuits["GET /circuits — state for the target host"]
@@ -61,7 +64,8 @@ flowchart TD
     ask.check_control_policy[["Ask operator to inspect 'safeyolo policy show' for controls.<name>.enabled and matching host/agent exceptions"]]
     ask.native_trace_diagnostics[["Ask operator to inspect native 'safeyolo doctor' and 'safeyolo logs --request-id req-... --raw'"]]
     ask.policy_add_host[["Ask operator: 'safeyolo policy host add HOST --agent AGENT'"]]
-    ask.logs_request_id[["Ask operator for the request_id via 'safeyolo logs --request-id req-... --raw'"]]
+    ask.logs_request_id[["Report missing correlation and request the exact evidence scope through an available authorized path"]]
+    con.local_failure_observed(["Report the observed local failure, reached evidence and remaining uncertainty"])
     ask.report_client_bug[["Report a client bug upstream (include version + exact malformed value); use '--with-token' as a workaround"]]
     ask.suggest_client_upgrade[["Determine how the client was installed, propose the specific upgrade command, and ask the operator to approve running it -- do not upgrade unilaterally, do not make the operator choose the command"]]
     ask.mitmproxy_version_and_doctor[["Ask operator: 'safeyolo doctor' and check the running mitmproxy version for known header-whitespace re-encoding fixes"]]
@@ -71,7 +75,12 @@ flowchart TD
     sym.status_403 -->|"next_check"| ev.check_x_blocked_by
     sym.status_428 -->|"next_check"| ev.check_x_blocked_by
     sym.status_429 -->|"next_check"| ev.check_x_blocked_by
-    sym.status_503 -->|"next_check"| ev.check_x_blocked_by
+    sym.status_503 -->|"next_check: failure is not from the local Agent API"| ev.check_x_blocked_by
+    sym.status_503 -->|"next_check: local Agent API tool failure"| ev.native_tool_evidence
+    sym.native_tool_503 -->|"next_check"| ev.native_tool_evidence
+    ev.native_tool_evidence -->|"next_check: a local health observation is needed and permitted"| ev.local_api_health
+    ev.native_tool_evidence -->|"implies: available evidence or its collection limit has been read"| con.local_failure_observed
+    ev.local_api_health -->|"implies"| con.local_failure_observed
     sym.status_508 -->|"next_check"| ev.check_x_blocked_by
     sym.gh_error_after_ok_polls -->|"next_check"| ev.check_status_security_events
     sym.request_timeout_no_response -->|"next_check"| ev.check_timeout_route
@@ -100,7 +109,8 @@ flowchart TD
     sym.flow_search_empty -->|"next_check"| ev.check_context_header_and_targets
     ev.check_context_header_and_targets -->|"implies: either precondition is missing"| cls.observability_gate
     cls.observability_gate -->|"implies: recording is what I wanted; either send the header or add host to test_context.target_hosts"| con.self_correct_request
-    ev.check_response_body_json -->|"next_check: picture is unclear after body inspection"| ask.logs_request_id
+    ev.check_response_body_json -->|"next_check: picture is unclear and a validated response request_id is available"| ev.check_explain_request_id
+    ev.check_response_body_json -->|"next_check: needed correlation is unavailable through the current authorized path"| ask.logs_request_id
     ask.logs_request_id -->|"next_check"| ev.check_explain_request_id
     ev.check_explain_request_id -->|"next_check: /explain empty/ambiguous OR failure is about which control ran, not which recorded"| ev.check_trace_request_id
     ev.check_trace_request_id -->|"implies: selected control/hook step has state=evaluated with a normal outcome (no_detection, no_match, allowed, ...)"| cls.trace_evaluated_normal
@@ -142,6 +152,7 @@ flowchart TD
     class sym.status_428 symptom
     class sym.status_429 symptom
     class sym.status_503 symptom
+    class sym.native_tool_503 symptom
     class sym.status_508 symptom
     class sym.flow_search_empty symptom
     class sym.gh_error_after_ok_polls symptom
@@ -154,6 +165,8 @@ flowchart TD
     class ev.check_config_credential_rules evidence
     class ev.check_status_security_events evidence
     class ev.check_explain_request_id evidence
+    class ev.native_tool_evidence evidence
+    class ev.local_api_health evidence
     class ev.check_trace_request_id evidence
     class ev.check_budgets evidence
     class ev.check_circuits evidence
@@ -192,6 +205,7 @@ flowchart TD
     class ask.native_trace_diagnostics operator_ask
     class ask.policy_add_host operator_ask
     class ask.logs_request_id operator_ask
+    class con.local_failure_observed conclusion
     class ask.report_client_bug operator_ask
     class ask.suggest_client_upgrade operator_ask
     class ask.mitmproxy_version_and_doctor operator_ask
@@ -203,6 +217,7 @@ flowchart TD
     style sym.status_428 stroke-width:3px
     style sym.status_429 stroke-width:3px
     style sym.status_503 stroke-width:3px
+    style sym.native_tool_503 stroke-width:3px
     style sym.status_508 stroke-width:3px
     style sym.flow_search_empty stroke-width:3px
     style sym.gh_error_after_ok_polls stroke-width:3px

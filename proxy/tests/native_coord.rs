@@ -23,6 +23,8 @@ mod attestations;
 mod catch_up;
 #[path = "native_coord/continuation.rs"]
 mod continuation;
+#[path = "native_coord/diagnostics.rs"]
+mod diagnostics;
 #[path = "native_coord/factory.rs"]
 mod factory;
 #[path = "native_coord/federation.rs"]
