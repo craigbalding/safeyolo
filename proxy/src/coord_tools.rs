@@ -1060,7 +1060,12 @@ async fn rpc(client: Client, request: Value) -> Option<Value> {
                 }
                 Err(error) => {
                     let failure = crate::native_client::tool_failure(&error);
-                    json!({"content":[{"type":"text","text":format!("Coord unavailable or request refused: {}\n{}", failure["message"].as_str().unwrap_or("request failed"), failure)}],"structuredContent":failure,"isError":true})
+                    let guidance = if failure["http_status"] == 503 {
+                        "\nRead the installed safeyolo skill for this failure and continue permitted read-only investigation using the attached evidence and configured Agent API before reporting. Do not ask the operator to copy evidence already supplied here. Diagnosis does not retry the operation, authorize recovery or advance an attention cursor."
+                    } else {
+                        ""
+                    };
+                    json!({"content":[{"type":"text","text":format!("Coord unavailable or request refused: {}{guidance}\n{}", failure["message"].as_str().unwrap_or("request failed"), failure)}],"structuredContent":failure,"isError":true})
                 }
             }
         }
