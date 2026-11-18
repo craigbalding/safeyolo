@@ -71,11 +71,94 @@ fn assert_reaped(root: &Path) {
 }
 
 #[tokio::test]
+async fn live_console_precedes_completion_and_survives_cancellation() {
+    let marker = b"template-spin-entered\n";
+    let (root, mut spec, config) =
+        fixture("printf 'template-spin-entered\\n'; exec /bin/sleep 999");
+    spec.retain_bytes = marker.len();
+    let path = root.path().join("current.console");
+    let console = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .await
+        .unwrap();
+    let (sender, receiver) = tokio::sync::watch::channel(false);
+    let observe = async {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if tokio::fs::read(&path).await.unwrap() == marker {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        sender.send(true).unwrap();
+    };
+    let (result, ()) = tokio::join!(
+        run(&config, &spec, None, Some(receiver), &[], Some(console)),
+        observe
+    );
+    let result = result.unwrap();
+    assert_eq!(
+        result.outcome,
+        Some(Outcome::Interrupted {
+            signal: libc::SIGTERM
+        })
+    );
+    assert_eq!(
+        result.helper_process_status,
+        Some(HelperProcessStatus::Signal {
+            number: libc::SIGKILL
+        })
+    );
+    assert_eq!(result.stdout.bytes, marker.len() as u64);
+    assert_eq!(
+        super::super::STANDARD
+            .decode(result.stdout.retained_base64)
+            .unwrap(),
+        marker
+    );
+    assert_eq!(fs::read(&path).unwrap(), marker);
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_reaped(root.path());
+    assert_eq!(fs::read_dir(root.path().join("data")).unwrap().count(), 0);
+}
+
+#[tokio::test]
+async fn console_command_refuses_a_previous_invocations_file_before_spawn() {
+    let (root, spec, config) = fixture("exec /bin/sleep 999");
+    let path = root.path().join("job.json");
+    fs::write(&path, serde_json::to_vec(&spec).unwrap()).unwrap();
+    let console = root.path().join("previous.console");
+    fs::write(&console, b"template-spin-entered\n").unwrap();
+    let args = vec![
+        "run".into(),
+        path.display().to_string(),
+        "--console-file".into(),
+        console.display().to_string(),
+    ];
+    let error = super::super::command(&config, &args).await.unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<std::io::Error>().unwrap().kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+    assert!(!root.path().join("helper.pid").exists());
+    assert_eq!(fs::read(console).unwrap(), b"template-spin-entered\n");
+}
+
+#[tokio::test]
 async fn pinned_helper_captures_complete_streams_and_removes_runtime() {
     let (root, spec, config) = fixture(
         "printf 'abcdefghijklmnopqrstuv'\nprintf 'error text' >&2\nprintf '%s' '{\"completion\":{\"kind\":\"guest_call_completed\",\"reported_status\":0},\"error\":null}' > \"$2\"",
     );
-    let result = run(&config, &spec, None, None, &[]).await.unwrap();
+    let result = run(&config, &spec, None, None, &[], None).await.unwrap();
     assert_eq!(result.engine, "hyperlight-unikraft");
     assert_eq!(result.outcome_source, "host_helper");
     assert_eq!(result.outcome, Some(Outcome::Exit { code: 0 }));
@@ -100,11 +183,11 @@ async fn operator_selected_artifact_links_still_verify_the_copied_bytes() {
     let target = root.path().join("versioned-helper");
     fs::rename(&source, &target).unwrap();
     std::os::unix::fs::symlink(&target, &source).unwrap();
-    let result = run(&config, &spec, None, None, &[]).await.unwrap();
+    let result = run(&config, &spec, None, None, &[], None).await.unwrap();
     assert_eq!(result.outcome, Some(Outcome::Exit { code: 0 }));
     fs::write(&target, "changed after adoption").unwrap();
     assert!(
-        run(&config, &spec, None, None, &[])
+        run(&config, &spec, None, None, &[], None)
             .await
             .unwrap_err()
             .to_string()
@@ -117,7 +200,7 @@ async fn substituted_artifacts_and_manifest_architecture_fail_before_spawn() {
     let (root, mut spec, config) = fixture("exit 0");
     fs::write(root.path().join("helper-source"), "substituted").unwrap();
     assert!(
-        run(&config, &spec, None, None, &[])
+        run(&config, &spec, None, None, &[], None)
             .await
             .unwrap_err()
             .to_string()
@@ -132,7 +215,7 @@ async fn substituted_artifacts_and_manifest_architecture_fail_before_spawn() {
     fs::write(&runtime.path, &bytes).unwrap();
     runtime.sha256 = digest(&bytes);
     assert!(
-        run(&config, &spec, None, None, &[])
+        run(&config, &spec, None, None, &[], None)
             .await
             .unwrap_err()
             .to_string()
@@ -212,7 +295,7 @@ async fn missing_or_failed_vm_report_cannot_make_a_successful_helper_exit_pass()
         "printf '%s' '{\"completion\":null,\"error\":\"startup failed\"}' > \"$2\"",
     ] {
         let (_root, spec, config) = fixture(script);
-        let result = run(&config, &spec, None, None, &[]).await.unwrap();
+        let result = run(&config, &spec, None, None, &[], None).await.unwrap();
         assert_eq!(result.outcome, Some(Outcome::Exit { code: 0 }));
         assert!(result.observation_error.is_some());
     }
@@ -350,7 +433,7 @@ async fn unproved_child_disposal_preserves_the_callers_runtime() {
         CHILD_KILL_ERROR.with(|error| error.set(Some(libc::EPERM)));
         sender.send(true).unwrap();
     };
-    let (result, ()) = tokio::join!(run(&config, &spec, None, Some(receiver), &[]), cancel);
+    let (result, ()) = tokio::join!(run(&config, &spec, None, Some(receiver), &[], None), cancel);
     let error = result.unwrap_err().to_string();
     assert!(error.contains("process group"));
     assert!(error.contains("direct-child SIGKILL failed"));
@@ -371,7 +454,7 @@ async fn deadline_kills_and_reaps_a_spinning_helper_before_returning() {
     let (root, mut spec, config) = fixture("while :; do :; done");
     spec.timeout_seconds = 1;
     let started = std::time::Instant::now();
-    let result = run(&config, &spec, None, None, &[]).await.unwrap();
+    let result = run(&config, &spec, None, None, &[], None).await.unwrap();
     assert_eq!(result.outcome, Some(Outcome::Timeout));
     assert_eq!(
         result.helper_process_status,
@@ -388,7 +471,7 @@ async fn deadline_kills_and_reaps_a_spinning_helper_before_returning() {
         "printf '%s' '{\"completion\":{\"kind\":\"guest_call_completed\",\"reported_status\":0},\"error\":null}' > \"$2\"",
     );
     assert_eq!(
-        run(&next_config, &next_spec, None, None, &[])
+        run(&next_config, &next_spec, None, None, &[], None)
             .await
             .unwrap()
             .outcome,
@@ -404,7 +487,7 @@ async fn cancellation_stops_a_blocked_helper_and_preserves_no_runtime() {
         tokio::time::sleep(Duration::from_millis(100)).await;
         sender.send(true).unwrap();
     };
-    let (result, ()) = tokio::join!(run(&config, &spec, None, Some(receiver), &[]), cancel);
+    let (result, ()) = tokio::join!(run(&config, &spec, None, Some(receiver), &[], None), cancel);
     let result = result.unwrap();
     assert_eq!(
         result.helper_process_status,

@@ -29,9 +29,9 @@ use std::{
     process::{ExitStatus, Stdio},
     time::Duration,
 };
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
-pub const HELP: &str = r#"safeyolo [--root ROOT] job run SPEC.json [--input DIRECTORY]
+pub const HELP: &str = r#"safeyolo [--root ROOT] job run SPEC.json [--input DIRECTORY] [--console-file PATH]
 safeyolo [--root ROOT] job validate SPEC.json
 Run a trusted host-supplied job definition. Only the host caller selects DIRECTORY.
 Inputs are copied without following symlinks. No job receives an Agent API, Coord, harness or host-script authority.
@@ -48,6 +48,7 @@ Hyperlight has no Unix process or guest-root semantics. Core calls the named fun
 For mediated service access, set mediated_services={services:[NAME],max_calls:N,max_request_bytes:N,max_response_bytes:N} in the adopted Hyperlight specification, with network=false. Core SYCall(JSON) and Unikraft hyperlight.call("sy.call", REQUEST) use the same named-service request. The host delegates gate:<gate_id> through the existing proxy, keeps credentials outside the guest, and retains service_evidence. Guest sockets stay disabled. Host-call messages are at most 49152 bytes; captured responses use handles and reads of at most 16384 bytes.
 Print observed execution evidence as JSON. A PASS string is ordinary output. engine identifies the selected backend; outcome_source distinguishes a guest process from a host helper. runtime_report retains VM completion or error separately. helper_process_status retains the actual OS exit or signal even after a watchdog deadline or cancellation.
 All captured stream bytes are counted and hashed; retain_bytes bounds retained output. Unikraft's console decodes UTF-8 with replacement; console_encoding identifies that representation.
+For Hyperlight jobs, --console-file creates a private new file and copies up to retain_bytes of stdout there as it arrives. The final JSON result remains on stdout. An existing path is refused. This file belongs only to this invocation; console text is guest output, not an authority or success signal.
 Without network or mediated_services, gate_principal is provenance and authorization_principal is null.
 Return 0 only for observed exit 0 with complete evidence and, for Hyperlight, successful VM completion. Return 124 for timeout and 1 for other job outcomes.
 Observation failures set observation_error and retain exact available outcome/streams; outcome is null when no exact result is available. Startup or cleanup failures cannot report successful completion.
@@ -300,7 +301,15 @@ impl OutputCapture {
     }
 }
 
-async fn collect(mut input: impl AsyncRead + Unpin, retained_limit: usize) -> io::Result<Output> {
+async fn collect(input: impl AsyncRead + Unpin, retained_limit: usize) -> io::Result<Output> {
+    collect_console(input, retained_limit, None).await
+}
+
+async fn collect_console(
+    mut input: impl AsyncRead + Unpin,
+    retained_limit: usize,
+    mut console: Option<tokio::fs::File>,
+) -> io::Result<Output> {
     let mut capture = OutputCapture::new(retained_limit);
     let mut buffer = [0; 16 * 1024];
     loop {
@@ -308,7 +317,13 @@ async fn collect(mut input: impl AsyncRead + Unpin, retained_limit: usize) -> io
         if count == 0 {
             break;
         }
+        let retained = capture.retained.len();
         capture.write(&buffer[..count])?;
+        if let Some(file) = console.as_mut() {
+            file.write_all(&capture.retained[retained..]).await?;
+            // Complete the file write before waiting for another pipe read.
+            file.flush().await?;
+        }
     }
     Ok(capture.finish())
 }
@@ -526,7 +541,7 @@ async fn spawn(name: &str, directory: &Path) -> Result<tokio::process::Child, Er
 
 /// This entry point is host-only. The Agent API does not expose job creation.
 pub async fn run(config: &Path, spec: &JobSpec, input: Option<&Path>) -> Result<JobResult, Error> {
-    run_inner(config, spec, input, None, &[]).await
+    run_inner(config, spec, input, None, &[], None).await
 }
 
 pub(crate) async fn run_check(
@@ -536,7 +551,7 @@ pub(crate) async fn run_check(
     cancel: tokio::sync::watch::Receiver<bool>,
     checks: &[String],
 ) -> Result<JobResult, Error> {
-    run_inner(config, spec, Some(input), Some(cancel), checks).await
+    run_inner(config, spec, Some(input), Some(cancel), checks, None).await
 }
 
 async fn run_inner(
@@ -545,10 +560,14 @@ async fn run_inner(
     input: Option<&Path>,
     mut cancel: Option<tokio::sync::watch::Receiver<bool>>,
     checks: &[String],
+    console: Option<tokio::fs::File>,
 ) -> Result<JobResult, Error> {
     spec.validate()?;
     if !matches!(spec.engine, JobEngine::Platform) {
-        return hyperlight::run(config, spec, input, cancel, checks).await;
+        return hyperlight::run(config, spec, input, cancel, checks, console).await;
+    }
+    if console.is_some() {
+        return Err("--console-file requires a Hyperlight engine".into());
     }
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -774,6 +793,10 @@ pub async fn command(config: &Path, args: &[String]) -> Result<i32, Error> {
         );
         return Ok(0);
     }
+    let (args, console_path) = match args {
+        [rest @ .., flag, path] if flag == "--console-file" => (rest, Some(path)),
+        _ => (args, None),
+    };
     let (spec, input) = match args {
         [run, spec] if run == "run" => (spec, None),
         [run, spec, flag, input] if run == "run" && flag == "--input" => {
@@ -784,7 +807,23 @@ pub async fn command(config: &Path, args: &[String]) -> Result<i32, Error> {
     let path = Path::new(spec).canonicalize()?;
     let mut spec: JobSpec = serde_json::from_slice(&fs::read(&path)?)?;
     spec.resolve_artifacts(path.parent().ok_or("job spec has no parent")?);
-    let result = run(config, &spec, input).await?;
+    spec.validate()?;
+    let console = if let Some(path) = console_path {
+        if matches!(spec.engine, JobEngine::Platform) {
+            return Err("--console-file requires a Hyperlight engine".into());
+        }
+        Some(
+            tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(path)
+                .await?,
+        )
+    } else {
+        None
+    };
+    let result = run_inner(config, &spec, input, None, &[], console).await?;
     println!("{}", serde_json::to_string(&result)?);
     Ok(command_status(result.outcome, result.observation_error))
 }
@@ -813,6 +852,29 @@ mod tests {
                 bytes[..limit.min(bytes.len())]
             );
         }
+    }
+
+    #[tokio::test]
+    async fn live_console_respects_retention_without_changing_count_or_digest() {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let bytes = vec![b'x'; 70_000];
+        for limit in [0, 1, 17, bytes.len() + 1] {
+            let path = root.path().join(format!("console-{limit}"));
+            let file = tokio::fs::File::create(&path).await.unwrap();
+            let result = collect_console(bytes.as_slice(), limit, Some(file))
+                .await
+                .unwrap();
+            assert_eq!(result.bytes, bytes.len() as u64);
+            assert_eq!(result.sha256, digest(&bytes));
+            assert_eq!(fs::read(path).unwrap(), bytes[..limit.min(bytes.len())]);
+        }
+        let path = root.path().join("console-17");
+        let read_only = tokio::fs::File::open(path).await.unwrap();
+        assert!(
+            collect_console(bytes.as_slice(), 17, Some(read_only))
+                .await
+                .is_err()
+        );
     }
 
     #[test]

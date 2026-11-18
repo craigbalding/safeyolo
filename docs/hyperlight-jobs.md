@@ -42,6 +42,15 @@ JSON, with bounded retained output encoded in Base64. Use
 `hyperlight-unikraft.json` to run the equivalent Python workload. These examples
 measure a small offline workload; they are not authoritative policy predicates.
 
+For either Hyperlight engine, append `--console-file /absolute/path/to/new.console`
+to `job run` to observe stdout while that invocation runs. The command creates
+the file with mode 0600 and refuses an existing path. It copies at most
+`retain_bytes` into that file; the final JSON result still includes the output
+count, digest and retained bytes. Console text comes from the guest. It does not
+establish authority or successful execution. A diagnostic workload can emit an
+entry marker so a caller can select cancellation after that workload begins,
+instead of assuming entry after a fixed delay.
+
 The bundle also includes `hyperlight-service.json`,
 `hyperlight-unikraft-service.json` and `service_checker.py`. These use the same
 bounded GitHub issue-author predicate in the core `ServiceCheck` function and
@@ -73,6 +82,11 @@ selected host. Its `--help` lists the required existing GitHub credential and
 owned instance paths. It changes only that disposable instance's test grants
 and retains private results before assertions. It needs real KVM or HVF;
 source tests and bundle preparation do not establish VM behavior.
+After a partial Unikraft warm run, `--unikraft-remaining-only` selects spin
+cancellation and recovery, concurrent calls, changed-artifact refusal,
+corrupt-template fallback and held-call lifetimes. It first constructs and
+restores one template in the new disposable instance. It skips Core, the
+Unikraft cold comparison, failed predecessor and completed spin deadline case.
 
 Discovery checks the selected artifact digests, host architecture, runtime
 versions and hypervisor availability. A missing device, entitlement, artifact

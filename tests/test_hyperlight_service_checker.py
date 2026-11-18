@@ -224,6 +224,40 @@ def test_resident_memory_reads_a_live_process_and_rejects_a_missing_one(host_dri
         host_driver.resident_bytes(2147483647)
 
 
+@pytest.mark.parametrize("console", ["missing", "other", "wrong", "exited"])
+def test_spin_observer_rejects_missing_or_other_invocation_entry(host_driver, tmp_path, console):
+    prefix = tmp_path / "current"
+    if console == "other":
+        (tmp_path / "previous.console").write_bytes(b"template-spin-entered\n")
+    elif console == "wrong":
+        prefix.with_suffix(".console").write_bytes(b"initializing\n")
+    elif console == "exited":
+        prefix.with_suffix(".console").write_bytes(b"template-spin-entered\n")
+    child = host_driver.subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+    try:
+        if console == "exited":
+            host_driver.stop(child)
+        with pytest.raises(RuntimeError, match="spin entry"):
+            host_driver.wait_spin_entry(child, prefix, timeout=0.05)
+        if console != "exited":
+            assert child.poll() is None
+    finally:
+        host_driver.stop(child)
+
+
+def test_spin_observer_waits_for_the_current_live_marker(host_driver, tmp_path):
+    prefix = tmp_path / "current"
+    program = ("import pathlib, sys, time; "
+               "p = pathlib.Path(sys.argv[1]); p.write_bytes(b'template-'); time.sleep(.05); "
+               "p.write_bytes(b'template-spin-entered\\n'); time.sleep(10)")
+    child = host_driver.subprocess.Popen([sys.executable, "-c", program, str(prefix.with_suffix(".console"))])
+    try:
+        host_driver.wait_spin_entry(child, prefix, timeout=2)
+        assert child.poll() is None
+    finally:
+        host_driver.stop(child)
+
+
 @pytest.mark.parametrize("unavailable_memory", [False, True])
 def test_warm_probe_rejects_replayed_runtime_randomness_and_preserves_samples(
         host_driver, tmp_path, monkeypatch, unavailable_memory):
@@ -555,10 +589,13 @@ def test_held_controls_reject_an_unreached_or_finished_call(host_driver, tmp_pat
     assert triggered == [] and not origin.release.is_set()
 
 
-def test_remaining_window_skips_completed_phases_and_reports_its_actual_scope(host_driver, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("remaining_state", [False, True])
+def test_remaining_window_skips_completed_phases_and_reports_its_actual_scope(
+        host_driver, tmp_path, monkeypatch, capsys, remaining_state):
     args = SimpleNamespace(root=tmp_path / "root", scratch=tmp_path, admin_port=18450,
                            bundle=tmp_path, cli=tmp_path / "cli", proxy=tmp_path / "proxy",
-                           unikraft_lifetimes_only=True, warm_templates_only=False, provider_port=0)
+                           unikraft_lifetimes_only=not remaining_state, unikraft_remaining_only=remaining_state,
+                           warm_templates_only=False, provider_port=0)
     for name in ("runtime.json", "cli", "proxy"):
         (tmp_path / name).write_text(name)
     calls = []
@@ -568,15 +605,22 @@ def test_remaining_window_skips_completed_phases_and_reports_its_actual_scope(ho
     monkeypatch.setattr(host_driver, "wait_ready", lambda *_args: calls.append("ready"))
     monkeypatch.setattr(host_driver, "stop", lambda *_args: calls.append("stop"))
 
+    def warm(actual, engine, *, remaining_only):
+        assert actual is instance and engine == "hyperlight-unikraft" and remaining_only
+        calls.append("state")
+        return []
+
+    monkeypatch.setattr(host_driver, "warm_templates", warm)
     def held(actual, engine, origin, port):
         assert actual is instance and engine == "hyperlight-unikraft"
         calls.append("held")
 
     monkeypatch.setattr(host_driver, "held_lifetimes", held)
     host_driver.exercise(args)
-    assert calls == ["prepare", "ready", "held", "stop"]
+    assert calls == ["prepare", "ready", *(["state"] if remaining_state else []), "held", "stop"]
     result = json.loads((tmp_path / "result.json").read_bytes())
     assert result["engines"] == ["hyperlight-unikraft"]
-    assert result["checks"] == "held deadline/cancel/revoke/shutdown lifetimes"
+    assert result["checks"] == ("remaining Unikraft state and held-call lifetimes" if remaining_state
+                                else "held deadline/cancel/revoke/shutdown lifetimes")
     report = capsys.readouterr().out
     assert "hyperlight-unikraft" in report and "live GitHub" not in report and "both" not in report

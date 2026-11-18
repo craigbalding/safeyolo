@@ -3,7 +3,7 @@
 
 use super::{
     HelperProcessStatus, JobEngine, JobResult, JobSpec, Outcome, PinnedArtifact, Privilege,
-    collect, digest, input, now,
+    collect, collect_console, digest, input, now,
 };
 use crate::Error;
 use ring::digest::{Context, SHA256};
@@ -498,6 +498,7 @@ pub(super) async fn run(
     source_input: Option<&Path>,
     mut cancel: Option<tokio::sync::watch::Receiver<bool>>,
     checks: &[String],
+    console: Option<tokio::fs::File>,
 ) -> Result<JobResult, Error> {
     let config = config.canonicalize()?;
     let parent = config
@@ -597,9 +598,10 @@ pub(super) async fn run(
             .arg(root.join("invocation.json"))
             .arg(root.join("report.json"))
             .spawn()?;
-        stdout = Some(tokio::spawn(collect(
+        stdout = Some(tokio::spawn(collect_console(
             helper.stdout.take().ok_or("missing helper stdout")?,
             spec.retain_bytes,
+            console,
         )));
         stderr = Some(tokio::spawn(collect(
             helper.stderr.take().ok_or("missing helper stderr")?,

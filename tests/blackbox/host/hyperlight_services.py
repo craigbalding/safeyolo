@@ -1,6 +1,8 @@
 """Exercise both real Hyperlight engines in one owned, disposable instance.
 
 Use --unikraft-lifetimes-only to run just the four Unikraft lifetime controls.
+Use --unikraft-remaining-only for spin cancellation, recovery, overlap,
+changed artifacts, corrupt templates and held calls, after two fresh setup runs.
 
 Requires matching candidate CLI/proxy, a protocol-4 bundle built on this host's
 architecture, Python with tomlkit, and accessible KVM or entitled Apple-silicon
@@ -210,7 +212,8 @@ class Instance:
         return status, value
 
     @contextlib.contextmanager
-    def job(self, engine, request, *, probe=False, timeout=30, limits=None, retain=16384, definition=None):
+    def job(self, engine, request, *, probe=False, timeout=30, limits=None, retain=16384, definition=None,
+            console=False):
         self.index += 1
         prefix = self.scratch / f"job-{self.index}"
         inputs = prefix.with_suffix(".input")
@@ -228,10 +231,15 @@ class Instance:
                 spec["argv"].append("--isolation-probe" if probe == "isolation" else "--probe")
         path = prefix.with_suffix(".spec.json")
         save(path, spec)
+        arguments = [str(self.args.cli), "--root", str(self.root), "job", "run", str(path),
+                     "--input", str(inputs)]
+        if console:
+            console_path = prefix.with_suffix(".console")
+            assert not console_path.exists(), f"console path already exists: {console_path}"
+            arguments.extend(["--console-file", str(console_path)])
         with prefix.with_suffix(".stdout").open("wb") as stdout, prefix.with_suffix(".stderr").open("wb") as stderr:
             started = time.perf_counter_ns()
-            child = subprocess.Popen([str(self.args.cli), "--root", str(self.root), "job", "run", str(path),
-                                      "--input", str(inputs)], stdout=stdout, stderr=stderr)
+            child = subprocess.Popen(arguments, stdout=stdout, stderr=stderr)
             try:
                 yield child, prefix
             finally:
@@ -393,7 +401,7 @@ def held_lifetimes(instance, engine, origin, port):
         assert output(instance.run_job(engine, next_request, probe=True))[0]["ok"] is True
 
 
-def warm_templates(instance, engine):
+def warm_templates(instance, engine, *, remaining_only=False):
     """Observe actual construction, restored state, fresh calls and cold costs."""
     spec = json.loads((instance.args.bundle / f"{engine}.json").read_bytes())
     for name in ("runtime", "guest", "checker"):
@@ -458,12 +466,13 @@ def warm_templates(instance, engine):
 
     assert fresh(second)["input"] != first_output["input"]
     assert second["run_id"] != first["run_id"] and second["gate_principal"] != first["gate_principal"]
-    cold = copy.deepcopy(spec)
-    cold["engine"]["reuse_initialization"] = False
-    cold_result = measured({"value": "cold"}, cold)
-    assert cold_result["runtime_report"]["initialization"]["mode"] == "cold", cold_result
-    fresh(cold_result)
-    template_predecessors(instance, engine, spec, measured, fresh)
+    if not remaining_only:
+        cold = copy.deepcopy(spec)
+        cold["engine"]["reuse_initialization"] = False
+        cold_result = measured({"value": "cold"}, cold)
+        assert cold_result["runtime_report"]["initialization"]["mode"] == "cold", cold_result
+        fresh(cold_result)
+    template_predecessors(instance, engine, spec, measured, fresh, remaining_only=remaining_only)
     # All readers have exited. Alter an actual saved manifest, then require an
     # explicit cold run of this engine instead of stale or unchecked bytes.
     directory = instance.root / "data/hyperlight-templates"
@@ -480,15 +489,34 @@ def warm_templates(instance, engine):
     return observations
 
 
-def template_predecessors(instance, engine, spec, measured, fresh):
+def wait_spin_entry(child, prefix, timeout=20):
+    """Wait for this invocation's console marker while the job is still live."""
+    path = prefix.with_suffix(".console")
+    deadline = time.monotonic() + timeout
+    while child.poll() is None:
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            # The CLI creates the file after validating its arguments.
+            data = b""
+        if b"template-spin-entered" in data:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"spin entry was not observed within {timeout}s: {path}")
+        time.sleep(0.02)
+    raise RuntimeError(f"job exited before live spin entry was observed: {path}")
+
+
+def template_predecessors(instance, engine, spec, measured, fresh, *, remaining_only=False):
     """A failed, expired, cancelled or overlapping call cannot donate state."""
-    measured({"mode": "fail"}, spec, {"kind": "exit", "code": 1})
-    fresh(measured({"value": "after failure"}, spec))
-    timed = measured({"mode": "spin"}, spec, {"kind": "timeout"}, timeout=5)
-    assert b"template-spin-entered" in base64.b64decode(timed["stdout"]["retained_base64"], validate=True), timed
-    fresh(measured({"value": "after deadline"}, spec))
-    with instance.job(engine, {"mode": "spin"}, definition=spec) as (child, prefix):
-        time.sleep(2)
+    if not remaining_only:
+        measured({"mode": "fail"}, spec, {"kind": "exit", "code": 1})
+        fresh(measured({"value": "after failure"}, spec))
+        timed = measured({"mode": "spin"}, spec, {"kind": "timeout"}, timeout=5)
+        assert b"template-spin-entered" in base64.b64decode(timed["stdout"]["retained_base64"], validate=True), timed
+        fresh(measured({"value": "after deadline"}, spec))
+    with instance.job(engine, {"mode": "spin"}, definition=spec, console=True) as (child, prefix):
+        wait_spin_entry(child, prefix)
         assert child.poll() is None, "spin predecessor ended before cancellation"
         child.send_signal(signal.SIGINT)
         child.wait(timeout=10)
@@ -520,7 +548,8 @@ def template_predecessors(instance, engine, spec, measured, fresh):
 def exercise(args):
     instance = Instance(args)
     observations = []
-    engines = ("hyperlight-unikraft",) if args.unikraft_lifetimes_only else ("hyperlight", "hyperlight-unikraft")
+    engines = (("hyperlight-unikraft",) if args.unikraft_lifetimes_only or args.unikraft_remaining_only
+               else ("hyperlight", "hyperlight-unikraft"))
     receipt = ProcedureReceipt("hyperlight-services", args.scratch / "result.json")
     receipt.document.update(boundary="real-hyperlight-engines", selected_engines=engines, agent="driver", guest=None,
                             controller_sha256=digest(Path(__file__)),
@@ -571,11 +600,13 @@ def exercise(args):
                                                       stdout=log, stderr=log)
                     try:
                         wait_ready(instance.proxy, args.root, args.admin_port)
-                        if args.warm_templates_only:
-                            receipt.document.setdefault("warm_templates", {})[engine] = warm_templates(instance, engine)
+                        if args.warm_templates_only or args.unikraft_remaining_only:
+                            receipt.document.setdefault("warm_templates", {})[engine] = warm_templates(
+                                instance, engine, remaining_only=args.unikraft_remaining_only)
                             save(receipt.path, receipt.document)
                             held_lifetimes(instance, engine, origin, port)
-                            engine_case(engine, "warm-templates-and-lifetimes")
+                            engine_case(engine, "remaining-state-and-lifetimes" if args.unikraft_remaining_only
+                                        else "warm-templates-and-lifetimes")
                             continue
                         if args.unikraft_lifetimes_only:
                             held_lifetimes(instance, engine, origin, port)
@@ -637,7 +668,8 @@ def exercise(args):
     assert not (args.root / "data/ready.json").exists()
     assert not list((args.root / "data").glob("job-hyperlight-*"))
     receipt.checkpoint("cleanup")
-    checks = ("initialized templates, cold comparison and held lifetimes" if args.warm_templates_only else
+    checks = ("remaining Unikraft state and held-call lifetimes" if args.unikraft_remaining_only else
+              "initialized templates, cold comparison and held lifetimes" if args.warm_templates_only else
               "held deadline/cancel/revoke/shutdown lifetimes" if args.unikraft_lifetimes_only else
               "live GitHub, standing grant/removal, named input/typed mismatch, scope/limits, held lifetimes")
     save(args.scratch / "result.json", {"engines": engines, "checks": checks,
@@ -660,13 +692,14 @@ def main():
     parser.add_argument("--admin-port", type=int, required=True)
     parser.add_argument("--provider-port", type=int, default=0,
                         help="select an authorized loopback provider port; zero asks the OS on unrestricted test hosts")
-    parser.add_argument("--unikraft-lifetimes-only", action="store_true",
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--unikraft-lifetimes-only", action="store_true",
                         help="run only the remaining Unikraft deadline/cancel/revoke/shutdown controls in a fresh instance")
-    parser.add_argument("--warm-templates-only", action="store_true",
+    modes.add_argument("--warm-templates-only", action="store_true",
                         help="exercise initialized restores, fresh state, cold comparison and existing held lifetimes")
+    modes.add_argument("--unikraft-remaining-only", action="store_true",
+                       help="run remaining Unikraft state/lifetime windows; construct and restore one fresh setup template")
     args = parser.parse_args()
-    if args.unikraft_lifetimes_only and args.warm_templates_only:
-        parser.error("select one focused mode")
     for name in ("cli", "proxy", "bundle", "github_token_file", "scratch"):
         setattr(args, name, getattr(args, name).resolve(strict=True))
     args.root = args.root.absolute()
