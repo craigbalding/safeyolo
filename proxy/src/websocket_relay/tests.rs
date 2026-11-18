@@ -53,7 +53,7 @@ fn stats(monitor: &MemoryMonitor) -> Value {
 fn records(runtime: &Runtime, directory: &Path) -> Vec<Value> {
     assert!(runtime.audit.shutdown(Duration::from_secs(1)).unwrap());
     std::fs::read_to_string(directory.join("audit.jsonl"))
-        .unwrap_or_default()
+        .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
@@ -345,17 +345,15 @@ async fn cancellation_during_scanner_prevents_message_publication() {
     ));
     owner.run(async { Ok(()) }).await;
     assert!(messages.recv().await.is_none());
-    let diagnostics =
-        std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap_or_default();
-    assert!(
-        !diagnostics
-            .lines()
-            .any(|line| line.contains("traffic.websocket.message")),
-        "canceled inspection must not publish message evidence"
-    );
     drop(memory);
     assert_eq!(stats(&runtime.memory_monitor)["active_websockets"], 0);
-    assert!(runtime.audit.shutdown(Duration::from_secs(1)).unwrap());
+    let events = records(&runtime, directory.path());
+    assert!(
+        !events
+            .iter()
+            .any(|event| event["event"] == "traffic.websocket.message"),
+        "canceled inspection must not publish message evidence"
+    );
 }
 
 #[tokio::test]
