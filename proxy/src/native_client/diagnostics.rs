@@ -156,8 +156,10 @@ pub(super) fn protect(value: &mut Value, token: &str) -> bool {
         *remaining -= 1;
         match value {
             Value::String(text) => {
-                *limited |= text.chars().count() > 1024;
                 let safe = clean(text, token);
+                // The sanitizer appends "..." beyond its limit on truncation.
+                // Redaction can expand short inputs before that limit applies.
+                *limited |= safe.chars().count() > 1024;
                 use zeroize::Zeroize;
                 text.zeroize();
                 *text = safe;
@@ -199,7 +201,7 @@ pub(super) fn protect(value: &mut Value, token: &str) -> bool {
                 ordered.extend(pending);
                 for (key, mut value) in ordered {
                     let safe_key = clean(&key, token);
-                    *limited |= key.chars().count() > 1024;
+                    *limited |= safe_key.chars().count() > 1024;
                     let key = key.to_ascii_lowercase().replace('-', "_");
                     if matches!(
                         key.as_str(),
@@ -241,6 +243,7 @@ pub(super) fn protect(value: &mut Value, token: &str) -> bool {
             "send_outcome",
             "action",
             "reason",
+            "retry_after",
             "request_id",
             "status",
             "searched_lines_per_file",

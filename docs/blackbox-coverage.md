@@ -2709,9 +2709,11 @@ Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; c
 - [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::tool_failure_preserves_original_and_bounded_reader_states -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L174)
 - [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::diagnostic_limits_and_failures_never_replace_or_repeat_the_original -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L218)
 - [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::error_body_states_and_correlation_remain_explicit -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L271)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::sensitive_and_unbounded_failures_do_not_escape_to_mcp -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L327)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::real_agent_api_refusal_uses_its_existing_scoped_audit_reader -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L373)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::generic_transport_and_explicit_diagnostic_reads_do_not_collect -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L427)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::reduced_failure_details_preserve_body_retry_information -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L327)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::diagnostic_limits_describe_truncation_after_redaction_and_sanitization -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L353)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::sensitive_and_unbounded_failures_do_not_escape_to_mcp -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L408)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::real_agent_api_refusal_uses_its_existing_scoped_audit_reader -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L454)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::generic_transport_and_explicit_diagnostic_reads_do_not_collect -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L508)
 
 <a id="witness-proxy-tests-native-coord-factory-rs"></a>
 ### [`proxy/tests/native_coord/factory.rs`](../proxy/tests/native_coord/factory.rs)

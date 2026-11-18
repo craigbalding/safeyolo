@@ -327,6 +327,87 @@ async fn error_body_states_and_correlation_remain_explicit() {
 }
 
 #[tokio::test]
+async fn reduced_failure_details_preserve_body_retry_information() {
+    let mut reply = Reply::failure();
+    reply.headers = format!("X-SafeYolo-Request-Id: {ORIGINAL}\r\n");
+    let mut body: Value = serde_json::from_str(&reply.body).unwrap();
+    body["retry_after"] = json!(7);
+    for index in 0..40 {
+        body[format!("padding_{index:02}")] = json!("x".repeat(1000));
+    }
+    reply.body = body.to_string();
+    assert!(reply.body.len() > 32 * 1024 && reply.body.len() < 64 * 1024);
+
+    let (result, requests, _) = failure_result(reply, vec![Reply::evidence("complete")]).await;
+    let failure = &result["structuredContent"];
+    assert_eq!(failure["http_status"], 503);
+    assert_eq!(failure["retry_after"], Value::Null);
+    assert_eq!(failure["error_details"]["retry_after"], 7);
+    assert_eq!(failure["error_details"]["send_outcome"], "unknown");
+    assert_eq!(
+        failure["error_details"]["action"],
+        "inspect retained history"
+    );
+    assert_eq!(failure["details_limited"], true);
+    assert_eq!(requests.len(), 2);
+}
+
+#[tokio::test]
+async fn diagnostic_limits_describe_truncation_after_redaction_and_sanitization() {
+    let tail = " essential-triage-tail-marker";
+    for (text, is_key, limited) in [
+        (format!("{}{tail}", "token=a ".repeat(59)), false, true),
+        (format!("{}{tail}", "token=a ".repeat(100)), false, true),
+        (format!("{}{tail}", "token=a ".repeat(59)), true, true),
+        ("x".repeat(1024), false, false),
+        ("x".repeat(1025), false, true),
+        (format!("{}{tail}", "\u{1b}[31m".repeat(300)), false, false),
+    ] {
+        let mut reply = Reply::failure();
+        let mut body: Value = serde_json::from_str(&reply.body).unwrap();
+        let mut event = json!({});
+        if is_key {
+            body["detail"] = json!({text.clone(): "value"});
+            event[text] = json!("value");
+        } else {
+            body["detail"] = json!(text);
+            event["summary"] = body["detail"].clone();
+        }
+        reply.body = body.to_string();
+        let evidence = Reply::json(
+            "200 OK",
+            json!({"request_id":ORIGINAL,"status":"complete","events":[event]}),
+        );
+        let (result, requests, _) = failure_result(reply, vec![evidence]).await;
+        let failure = &result["structuredContent"];
+        let diagnostic = &failure["diagnostic"];
+        assert_eq!(failure["details_limited"], limited, "{result}");
+        assert_eq!(diagnostic["evidence_limited"], limited, "{result}");
+        assert_eq!(diagnostic["evidence"]["status"], "complete");
+        let safe = if is_key {
+            diagnostic["evidence"]["events"][0]
+                .as_object()
+                .unwrap()
+                .keys()
+                .next()
+                .unwrap()
+                .as_str()
+        } else {
+            diagnostic["evidence"]["events"][0]["summary"]
+                .as_str()
+                .unwrap()
+        };
+        assert!(safe.chars().count() <= 1027);
+        assert!(!safe.contains("token=a"));
+        if limited {
+            assert!(safe.ends_with("..."));
+            assert!(!safe.contains(tail));
+        }
+        assert_eq!(requests.len(), 2);
+    }
+}
+
+#[tokio::test]
 async fn sensitive_and_unbounded_failures_do_not_escape_to_mcp() {
     // Padding arrives before the endpoint's critical fields on the wire.
     let mut padded = Reply::failure();
