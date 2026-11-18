@@ -90,6 +90,16 @@ impl CoordClient {
             // No attention object resolver and no impersonated recipient. The
             // projection contains only delivery references in selected rooms.
             for subject in &grant.targets {
+                let cursor = crate::host_agents::list()
+                    .and_then(|agents| {
+                        crate::host_agents::by_id(&agents, &subject.agent_id).map(|a| a.cloned())
+                    })
+                    .ok()
+                    .flatten()
+                    .map(|agent| crate::agent_watch::recipient_cursor(&agent, &room))
+                    .unwrap_or_else(|| json!({"status":"unavailable"}));
+                rows.push(json!({"source":"coord_attention","subject_id":subject.agent_id,"room_id":selected.room_id,
+                    "record":{"ts":now_iso(),"recipient_cursor":cursor}}));
                 let mut statement=conn.prepare("SELECT feed_sequence,attention_id,kind,object_id,revision_or_sequence,created_at FROM coord_attention_edges WHERE recipient_agent_id=?1 AND room_id=?2 ORDER BY feed_sequence DESC LIMIT 201")?;
                 let edges=statement.query_map(params![subject.agent_id,selected.room_id],|r|Ok(json!({"feed_sequence":r.get::<_,i64>(0)?,"attention_id":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"object_id":r.get::<_,String>(3)?,"revision_or_sequence":r.get::<_,i64>(4)?,"created_at":r.get::<_,i64>(5)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
                 if edges.len() > 200 {
@@ -113,7 +123,7 @@ impl CoordClient {
                         rows.push(json!({"source":"coord_attention","subject_id":subject.agent_id,"room_id":selected.room_id,"record":{"ts":ts,"delivery":edge}}));
                     }
                 }
-                limitations.push("attention references record projected delivery, not application consumption; the recipient's harness cursor is not stored by this source".into());
+                limitations.push("attention references record projected delivery, not application consumption; recipient checkpoint observations are separately labelled and may be unavailable or stale".into());
             }
         }
         drop(conn);

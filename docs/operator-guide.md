@@ -766,7 +766,10 @@ selection. Each read/page checks current authority. Private collections retain
 at most 2000 rows / 4 MiB for seven days and are removed on later diagnostic
 use. Snapshot loss or expiry is reported rather than silently recollected.
 Name-only audit history cannot establish durable ownership. Current runtime
-and membership observations do not reconstruct history. Already disclosed bytes
+and membership observations do not reconstruct history. Selected attention can
+include a timestamped recipient supervisor cursor. This recipient-writable
+checkpoint does not prove liveness or application consumption; unavailable
+checkpoints remain explicit. Already disclosed bytes
 cannot be recalled. See the [agent interface](../cli/src/safeyolo/agent_context/skills/safeyolo/references/agent-api.md#approved-diagnostic-evidence)
 for source permissions, filters and completeness limits.
 

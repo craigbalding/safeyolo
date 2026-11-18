@@ -237,9 +237,18 @@ where
         Ok(value) => response(200, value),
         Err(error) => {
             let refusal = error.downcast_ref::<crate::peer_support::Refusal>();
+            let invalid = error
+                .downcast_ref::<crate::approvals::ApprovalError>()
+                .is_some_and(|e| {
+                    matches!(
+                        e.kind,
+                        crate::approvals::ErrorKind::Invalid
+                            | crate::approvals::ErrorKind::Unsupported
+                    )
+                });
             response(
-                refusal.map_or(503, |e| e.status),
-                json!({"error":refusal.map_or("diagnostic source or authority unavailable",|e|e.message),"next_action":"Read current diagnostic disclosure and the canonical approval. A failed or incomplete read does not establish empty evidence. Retry an authorized collection with its original operation_id and page token."}),
+                refusal.map_or(if invalid { 400 } else { 503 }, |e| e.status),
+                json!({"error":refusal.map_or(if invalid {"invalid diagnostic selection or request; discover supported scope and read the canonical approval"} else {"diagnostic source or authority unavailable"},|e|e.message),"next_action":"Read current diagnostic disclosure and the canonical approval. A failed or incomplete read does not establish empty evidence. Retry an authorized collection with its original operation_id and page token."}),
             )
         }
     })

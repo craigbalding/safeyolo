@@ -52,7 +52,10 @@ pub(crate) fn submit(
             "supply operation_id and a short untrusted reason without credentials",
         ));
     }
-    input.scope.validate().map_err(unavailable)?;
+    input
+        .scope
+        .validate()
+        .map_err(|_| invalid("select supported diagnostic sources, history, runs and lifetime"))?;
     if !input.scope.rooms.is_empty() {
         let root = policy
             .identity_root()
@@ -104,7 +107,9 @@ pub(crate) fn submit(
         expires_at: input.expires_at,
         acknowledgment: None,
     };
-    grant.validate().map_err(unavailable)?;
+    grant
+        .validate()
+        .map_err(|_| invalid("select valid durable subjects and diagnostic scope"))?;
     if grant
         .expires_at
         .as_deref()

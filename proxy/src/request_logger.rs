@@ -74,6 +74,7 @@ pub(crate) struct Exchange {
     attribution: Attribution,
     agent: Option<String>,
     quieted: bool,
+    pub(crate) request_scope: Option<crate::audit::RequestScope>,
 }
 impl Exchange {
     pub(crate) fn new(attribution: Attribution, agent: Option<String>) -> Self {
@@ -81,6 +82,7 @@ impl Exchange {
             attribution,
             agent,
             quieted: false,
+            request_scope: None,
         }
     }
     #[cfg(test)]
@@ -328,6 +330,7 @@ fn event(
     event.addon = Some("request-logger".into());
     event.host = Some(parsed.host.to_owned());
     event.attribution = Some(exchange.attribution.clone());
+    event.request_scope = exchange.request_scope.clone();
     event
 }
 fn text(value: &str) -> C {

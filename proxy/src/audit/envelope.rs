@@ -47,7 +47,7 @@ pub struct Approval {
 /// Details retain the existing typed JSON number and temporal representation.
 pub struct Event {
     validation_failed: bool,
-    request_scope: Option<RequestScope>,
+    pub(crate) request_scope: Option<RequestScope>,
     pub event: String,
     pub kind: Kind,
     pub severity: Severity,
@@ -64,11 +64,12 @@ pub struct Event {
 }
 
 /// Set only by the native connection owner at a request-path publication.
-struct RequestScope {
-    instance_id: String,
-    runtime_id: String,
-    client_connection_id: String,
-    sandbox_run: Option<crate::host_runs::AgentRun>,
+#[derive(Clone)]
+pub(crate) struct RequestScope {
+    pub(crate) instance_id: String,
+    pub(crate) runtime_id: String,
+    pub(crate) client_connection_id: String,
+    pub(crate) sandbox_run: Option<crate::host_runs::AgentRun>,
 }
 
 impl Event {
@@ -282,8 +283,7 @@ impl Event {
         }
         fields.insert("details".into(), CircuitValue::Object(details));
         let value = CircuitValue::Object(fields);
-        if self.request_scope.is_some()
-            || self.kind == Kind::Network
+        if self.kind == Kind::Network
             || super::nsm::is_event(&self.event)
             || (super::nsm::is_request_decision(&self.event)
                 && super::nsm::is_scoped(&value.json().map_err(|_| invalid())?))

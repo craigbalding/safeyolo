@@ -94,11 +94,12 @@ pub(crate) async fn request(
     crate::host_platform::in_config(config,async {
         let policy=super::current_policy(state)?;
         let record=crate::approvals::pending::diagnostics::submit(writer,&policy,run,input)?;
+        let runtime=state.read().map_err(|_|"runtime unavailable")?.clone();
         let mut event=audit::Event::new("agent.diagnostic_access_requested",audit::Kind::Agent,audit::Severity::Low,"Agent requested diagnostic disclosure");
         event.agent=Some(run.agent.clone());event.request_id=Some(record.request_id.clone());
-        event.details=json!({"approval_id":record.approval_id,"requester":run,"authority_digest":record.authority_digest,"disclosure":record.authority.action["grant"]}).into();
+        event.details=json!({"approval_id":record.approval_id,"requester":run,"authority_digest":record.authority_digest,"disclosure":record.authority.action["grant"],
+            "instance_id":record.authority.action["grant"]["instance_id"],"runtime_id":runtime.instance_id,"sandbox_run":run}).into();
         let audit_available=writer.emit_confirmed(event).await.is_ok();
-        let runtime=state.read().map_err(|_|"runtime unavailable")?.clone();
         crate::approvals::pending::delegation::notify(&runtime,&record).await;
         let mut view=record.view(&policy)?;
         view["audit_available"]=json!(audit_available);
@@ -308,7 +309,12 @@ fn matches_filter(row: &Value, f: &Filter) -> bool {
 async fn collect(state: &RuntimeState, writer: &Arc<audit::Writer>, grant: &Grant) -> Value {
     let scope = grant.diagnostics.as_ref().expect("diagnostic grant");
     let mut sources = Vec::new();
-    if scope.audit || !scope.system_categories.is_empty() {
+    if scope.audit
+        || scope
+            .system_categories
+            .iter()
+            .any(|category| category == "audit_health")
+    {
         let writer = writer.clone();
         let grant = grant.clone();
         let audit = tokio::task::spawn_blocking(move || {
@@ -334,8 +340,8 @@ async fn collect(state: &RuntimeState, writer: &Arc<audit::Writer>, grant: &Gran
                 Err(e) => Err(e),
             };
             sources.push(match result {
-                Ok(record)=>json!({"source":"runtime","status":"observed","rows":[{"source":"runtime","subject_id":subject.agent_id,"record":{"ts":iso_now(),"observation":record}}],"limitations":["current control observation; historical runtime states are not reconstructed"]}),
-                Err(_)=>json!({"source":"runtime","status":"unavailable","rows":[],"limitations":["selected runtime control observation unavailable"]}),
+                Ok(record)=>json!({"source":"runtime","subject_id":subject.agent_id,"status":"observed","rows":[{"source":"runtime","subject_id":subject.agent_id,"record":{"ts":iso_now(),"observation":record}}],"limitations":["current control observation; historical runtime states are not reconstructed"]}),
+                Err(_)=>json!({"source":"runtime","subject_id":subject.agent_id,"status":"unavailable","rows":[],"limitations":["selected runtime control observation unavailable"]}),
             });
         }
     }
@@ -528,9 +534,27 @@ pub(crate) async fn query(
             "diagnostic authority changed during the read",
         ));
     }
-    let statuses = receipt["evidence"]["sources"]
+    let scope = grant.diagnostics.as_ref().unwrap();
+    let statuses: Vec<_> = receipt["evidence"]["sources"]
         .as_array()
-        .ok_or("diagnostic source status unavailable")?;
+        .ok_or("diagnostic source status unavailable")?
+        .iter()
+        .filter(|source| {
+            let allowed = match source["source"].as_str() {
+                Some("audit") => {
+                    scope.audit || scope.system_categories.iter().any(|c| c == "audit_health")
+                }
+                Some("coord") => scope.rooms.iter().any(|r| source["room_id"] == r.room_id),
+                Some(name) => source_allowed(name, scope, None),
+                None => false,
+            };
+            allowed
+                && source["subject_id"]
+                    .as_str()
+                    .is_none_or(|id| grant.targets.iter().any(|a| a.agent_id == id))
+        })
+        .cloned()
+        .collect();
     let result = if statuses.iter().any(|s| s["status"] == "unavailable") {
         "source_unavailable"
     } else if receipt["evidence"]["truncated"] == true
@@ -546,7 +570,7 @@ pub(crate) async fn query(
     };
     let output = json!({"instance_id":grant.instance_id,"grant":input.grant,"requester":run,"applied_scope":grant,"filter":input.filter,
         "rows":page,"total_matches":selected.len(),"offset":offset,"next_page_token":if end<selected.len(){Some(format!("{binding}:{end}"))}else{None},
-        "sources":receipt["evidence"]["sources"],"collected_at":receipt["evidence"]["collected_at"],"truncated":receipt["evidence"]["truncated"],
+        "sources":statuses,"collected_at":receipt["evidence"]["collected_at"],"truncated":receipt["evidence"]["truncated"],
         "retain_until":receipt["retain_until"],"collection_id":receipt["collection_id"],"snapshot":snapshot,
         "result":result});
     // Result bytes never enter an ordinary audit summary or attention.
@@ -557,7 +581,8 @@ pub(crate) async fn query(
         "Agent read approved diagnostic evidence",
     );
     event.agent = Some(run.agent.clone());
-    event.details=json!({"requester":run,"grant":input.grant,"grant_revision":grant.revision(),"collection_id":receipt["collection_id"],"returned":page.len(),"offset":offset}).into();
+    event.details=json!({"requester":run,"grant":input.grant,"grant_revision":grant.revision(),"collection_id":receipt["collection_id"],"returned":page.len(),"offset":offset,
+        "instance_id":grant.instance_id,"runtime_id":state.read().ok().map(|runtime|runtime.instance_id.clone()),"sandbox_run":run}).into();
     let _ = writer.emit(event);
     receipt.as_object_mut().unwrap().remove("evidence");
     drop(lock);

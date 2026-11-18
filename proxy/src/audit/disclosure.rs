@@ -27,6 +27,7 @@ pub(crate) fn read(
     let mut ambiguous = 0;
     let mut omitted = 0;
     let mut retained_bytes = 0;
+    let mut readable_files = 0;
     // Each file uses the same validated, bounded tail as the operator reader.
     for path in files.into_iter().rev() {
         let tail = match super::local_tail(&path, None, 10_000) {
@@ -36,6 +37,7 @@ pub(crate) fn read(
                 continue;
             }
         };
+        readable_files += 1;
         if tail.lines_read > tail.rows.len() {
             limitations.push("audit search was limited to the retained tail");
         }
@@ -88,7 +90,7 @@ pub(crate) fn read(
     }
     limitations.sort();
     limitations.dedup();
-    json!({"source":"audit","status":if limitations.is_empty(){"complete_retained_search"}else{"incomplete_search"},
+    json!({"source":"audit","status":if readable_files == 0 {"unavailable"} else if limitations.is_empty(){"complete_retained_search"}else{"incomplete_search"},
         "rows":rows,"limitations":limitations,"ambiguous_name_only_records":ambiguous,"omitted":omitted,
         "retention":"Only currently retained configured audit files were searched. Absence cannot establish that an event never occurred."})
 }
@@ -144,8 +146,11 @@ fn system_record(row: &Value, scope: &Scope) -> Option<Value> {
     {
         details["agent_id"] = json!(id);
     }
+    let event_id = row["event_id"]
+        .as_str()
+        .filter(|id| uuid::Uuid::parse_str(id.strip_prefix("evt-").unwrap_or(id)).is_ok());
     Some(
-        json!({"source":category,"record":{"event_id":row["event_id"],"event":event,"ts":row["ts"],"details":details},
+        json!({"source":category,"record":{"event_id":event_id,"event":event,"ts":row["ts"],"details":details},
         "projection":"Selected component-health facts only; references and unselected payload fields are omitted."}),
     )
 }

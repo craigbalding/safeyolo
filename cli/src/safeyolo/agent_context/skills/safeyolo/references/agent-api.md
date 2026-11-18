@@ -849,9 +849,12 @@ qualify. Name-only historical records are excluded with a limitation.
 use `{"room_id":"EXACT_ROOM_ID","history":true,"membership":true,"attention":true}`;
 each Boolean grants that source separately. Room history can contain messages
 from other participants. Attention exposes only selected recipients' references
-in selected rooms. It grants neither their identity nor object-resolution rights.
-The canonical source does not hold a recipient's application consumption cursor;
-this absence is reported rather than interpreted as unread messages.
+in selected rooms. It also projects the selected recipient's existing supervisor
+cursor when a matching current launch and checkpoint are available. This is
+recipient-writable, timestamped evidence across that recipient's feed. It does
+not prove current supervisor liveness or application consumption. Missing,
+replaced or older checkpoints remain unavailable. No checkpoint body, other
+room identifier, recipient impersonation or object-resolution right is disclosed.
 Current runtime, membership and component health are timestamped observations,
 not reconstructions of historical state. `runs` can map a selected subject ID to
 explicit sandbox run IDs. An absent or empty run list selects all provably
