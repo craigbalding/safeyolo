@@ -246,4 +246,5 @@ Acquire::https::Proxy "http://127.0.0.1:8080";
 APT::Keep-Downloaded-Packages "true";
 APTCONF
 
+install_safeyolo_guest_state "$ROOTFS"
 echo "=== Customize hook completed successfully ==="
