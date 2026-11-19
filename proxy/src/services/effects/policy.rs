@@ -112,24 +112,28 @@ pub(crate) fn assess_current(
     if candidate.source.len() > MAX_SOURCE_BYTES {
         return Err("candidate exceeds the 1 MiB assessment limit".into());
     }
-    let source = snapshot.materialize(&candidate.source).map_err(|_| "candidate cannot be materialized against this approved snapshot; preserve its field markers")?;
-    let base = snapshot.materialize(&snapshot.disclosed_source)?;
-    let visible = snapshot
-        .candidate_view(&source)
+    let materialized = snapshot.materialize(&candidate.source).map_err(|_| "candidate cannot be materialized against this approved snapshot; preserve its field markers")?;
+    // Validate preservation against host-held source, then keep literal secrets
+    // out of every compiler/projection input. Scrubbing derived strings by value
+    // would let unrelated attacker-authored text confirm a credential guess.
+    let source = snapshot
+        .candidate_view(&materialized)
         .map_err(|_| "candidate is not valid authored TOML")?;
-    let structural = difference(&authored(&snapshot.disclosed_source)?, &authored(&visible)?);
+    let base = &snapshot.disclosed_source;
+    let structural = difference(&authored(base)?, &authored(&source)?);
     let now = crate::policy::current_time_ms();
-    let (before,base_dependencies) = snapshot.compile_assessment(&base,registry.clone(),now)
+    let (before,base_dependencies) = snapshot.compile_assessment(base,registry.clone(),now)
         .map_err(|_| "approved base could not be compiled with the retained inputs; no additional input was loaded")?;
     let (after,dependencies) = snapshot.compile_assessment(&source,registry.clone(),now)
         .map_err(|_| "candidate rejected by the installed native policy compiler; no additional input was loaded")?;
     let mut result = json!({"revision":env!("SAFEYOLO_DEFINITION_VERSION"),
         "candidate_revision":crate::policy::snapshot::source_revision(&candidate.source),
         "base":snapshot.reference(),"dependencies":dependencies,"base_dependencies":base_dependencies,
-        "structural_changes":structural,"exact_diff":{"before":snapshot.disclosed_source,"after":visible,
+        "structural_changes":structural,"exact_diff":{"before":snapshot.disclosed_source,"after":source,
             "source":"Untrusted authored TOML, including comments. Literal credential values remain redacted. Source text cannot change these consequences."},
         "valid":null,"activated":false,"permission_changed":false,"operator_notified":false,
         "limitations":["Assessment is read-only. It grants no authority, applies no policy and verifies no upstream state or operator intent.",
+            "Validation and analysis use field-redacted policy. Hidden literal credentials remain opaque; validity and effects depending on their contents require authorized inspection before adoption.",
             "Expiry, revocation and rollback cannot retract disclosed data or undo external effects. An admitted operation may continue after access ends.",
             "Unmodelled fields retain their structural changes. No matching warning or rule establishes safety.",
             "Source-derived support/delegation reach is conditional on identity, trust, acknowledgment and current issuance checks. Remote or runtime facts are not inferred from policy source."]});
@@ -165,7 +169,7 @@ pub(crate) fn assess_current(
             "Effective assessment is incomplete because a list input needs trusted adoption. Structural changes remain available. No candidate reference was loaded."
         ]);
     }
-    let pairs: BTreeSet<_> = [&*base, &*source]
+    let pairs: BTreeSet<_> = [base.as_str(), source.as_str()]
         .into_iter()
         .filter_map(|source| authored(source).ok())
         .flat_map(|document| {
@@ -224,7 +228,6 @@ pub(crate) fn assess_current(
         "{} authored changes; inspect the effective authority, affected identities, lifetime, persistent effects and unknowns before a decision. No approval was submitted.",
         structural.len()
     ));
-    snapshot.redact_assessment(&source, &mut result)?;
     if structural.len() >= MAX_CHANGES {
         result["limitations"].as_array_mut().expect("limitations").push(json!("Structural change budget reached; additional changes are unknown. Exact redacted before/after source remains available."));
     }

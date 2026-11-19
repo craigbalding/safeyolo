@@ -407,59 +407,10 @@ impl RetainedPolicySnapshot {
             .clone())
     }
 
-    pub(crate) fn redact_assessment(&self, source: &str, result: &mut Value) -> super::Result<()> {
-        let retained = Self::new(source, self.metadata.clone())?;
-        let (document, _) = super::parse_toml_for_edit(source)?;
-        let mut secrets = Vec::new();
-        for redaction in &retained.redactions {
-            let item = at(document.as_item(), &redaction.path);
-            let secret = match &redaction.json_path {
-                Some(path) => item
-                    .and_then(toml_edit::Item::as_str)
-                    .and_then(|encoded| serde_json::from_str::<Value>(encoded).ok())
-                    .and_then(|value| {
-                        json_at(&value, path)
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    }),
-                None => item.and_then(toml_edit::Item::as_str).map(str::to_owned),
-            };
-            if let Some(secret) = secret {
-                secrets.push(zeroize::Zeroizing::new(secret));
-            }
-        }
-        fn scrub(value: &mut Value, secrets: &[zeroize::Zeroizing<String>]) {
-            match value {
-                Value::String(text) => {
-                    for secret in secrets {
-                        if !secret.is_empty() && text.contains(secret.as_str()) {
-                            let old = std::mem::replace(
-                                text,
-                                text.replace(secret.as_str(), "[literal credential redacted]"),
-                            );
-                            let _old = zeroize::Zeroizing::new(old);
-                        }
-                    }
-                }
-                Value::Array(values) => {
-                    for value in values {
-                        scrub(value, secrets);
-                    }
-                }
-                Value::Object(fields) => {
-                    for value in fields.values_mut() {
-                        scrub(value, secrets);
-                    }
-                }
-                _ => {}
-            }
-        }
-        scrub(result, &secrets);
-        Ok(())
-    }
-
     /// Compile with captured list contents and definition data supplied by the
-    /// authorized caller. This path has no input acquisition or execution.
+    /// authorized caller. Source must be the audience's field-redacted view;
+    /// hidden literals must not influence derived fields or validation errors.
+    /// This path has no input acquisition or execution.
     pub(crate) fn compile_assessment(
         &self,
         source: &str,
@@ -534,7 +485,7 @@ impl RetainedPolicySnapshot {
         }
         document.remove("lists");
         let (authored, _) = super::parse_toml_with_timestamps(source)?;
-        let (base, _) = super::parse_toml_with_timestamps(&self.source)?;
+        let (base, _) = super::parse_toml_with_timestamps(&self.disclosed_source)?;
         for (name, check) in authored
             .get("checks")
             .and_then(Value::as_object)

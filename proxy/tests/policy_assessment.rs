@@ -155,6 +155,84 @@ async fn private_tool_assesses_revises_and_shares_the_exact_authorized_projectio
 }
 
 #[tokio::test]
+async fn hidden_credentials_do_not_change_unrelated_candidate_text() {
+    let f = Fixture::new().await;
+    let _worker = controlled_runs::agent_run(f.root.path(), "worker", WORKER_ID, RUN);
+    f.apply(&format!(
+        "{}\n[private]\npassword='pin-0427'\nencoded='{{\"nested\":[{{\"api_key\":\"hidden-key\"}}]}}'\n",
+        f.source()
+    ))
+    .await;
+    let (id, source) = approved(&f).await;
+    assert!(!source.contains("pin-0427") && !source.contains("hidden-key"));
+    let before = f.source();
+    let pending = f.admin("GET", "/admin/approvals", None).await.json();
+    for text in [
+        "pin-0426",
+        "pin-0427",
+        "pin-0428",
+        "prefix-pin-0427-suffix",
+        "hidden-key",
+    ] {
+        let proposed =
+            format!("{source}\n[probe]\ntext='{text}'\n[controls.network]\nenabled=false\n");
+        let report = client(&f)
+            .call("assess_policy", &candidate(&id, &proposed))
+            .await
+            .unwrap();
+        assert_eq!(report["valid"], true);
+        let after = report["exact_diff"]["after"]
+            .as_str()
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        assert_eq!(after["probe"]["text"].as_str(), Some(text));
+        let change = report["structural_changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|change| change["path"] == json!(["probe"]))
+            .unwrap();
+        assert_eq!(change["after"]["text"], text);
+        assert_ne!(after["private"]["password"].as_str(), Some("pin-0427"));
+        assert!(
+            !after["private"]["encoded"]
+                .as_str()
+                .unwrap()
+                .contains("hidden-key")
+        );
+        assert_eq!(
+            report["effective"]["after"]["controls"]["network"]["enabled"],
+            false
+        );
+        assert_eq!(report["operator_notified"], false);
+        assert_eq!(report["activated"], false);
+        assert_eq!(report["permission_changed"], false);
+        if text == "pin-0426" {
+            let encoded = report.to_string();
+            assert!(!encoded.contains("pin-0427") && !encoded.contains("hidden-key"));
+        }
+        if text == "pin-0427" {
+            let review = f
+                .admin(
+                    "POST",
+                    "/admin/policy/assess",
+                    Some(candidate(&id, &proposed)),
+                )
+                .await;
+            assert_eq!(review.status, 200, "{}", review.json());
+            assert_eq!(review.json()["authorized_projection"], report);
+        }
+    }
+    assert_eq!(f.source(), before);
+    assert_eq!(
+        f.admin("GET", "/admin/approvals", None).await.json(),
+        pending
+    );
+    f.stop().await;
+}
+
+#[tokio::test]
 async fn later_policy_and_other_readers_do_not_become_an_assessment_oracle() {
     let f = Fixture::new().await;
     let _worker = controlled_runs::agent_run(f.root.path(), "worker", WORKER_ID, RUN);

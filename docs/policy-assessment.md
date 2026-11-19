@@ -16,9 +16,12 @@ First obtain the approved snapshot through `request_policy_snapshot` and
 the complete proposed TOML as `candidate.toml` in the private guest workspace.
 Save current discovery output as `capabilities.json`.
 
-Set `SNAPSHOT_REQUEST_ID` to that original `req-` identifier. The following
-command writes a private assessment request and reads its result. It uses
-Python 3 only to encode JSON; Python is not a SafeYolo runtime dependency.
+Set `SNAPSHOT_REQUEST_ID` to that original `req-` identifier. In an environment
+with Python 3, the following command writes a private assessment request and
+reads its result. If the guest has no JSON encoder, prepare the request on the
+owning host and transfer it privately to the guest. Run `safeyolo-coord` in the
+same guest run as the approved disclosure. Python is not a SafeYolo runtime
+dependency.
 
 ```sh
 export SNAPSHOT_REQUEST_ID=req-REPLACE_WITH_YOUR_ORIGINAL_REQUEST_ID
@@ -38,8 +41,12 @@ safeyolo-coord call assess_policy < assessment-request.json > assessment.json
 
 Read `consequences`, `effective`, `authority`, `alternatives` and `limitations`.
 The source diff includes the complete redacted before/after TOML.
-`valid: true` means that the installed compiler accepted the form using the
-available inputs. It does not mean the change is safe, approved or active.
+`valid: true` means that the installed compiler accepted the redacted form
+using the available inputs. Hidden literal credentials remain opaque during
+validation and analysis. Their contents do not alter unrelated candidate text
+or derived explanations. Validity and effects that depend on those contents
+remain unknown and need authorized inspection before adoption. A valid result
+does not mean the change is safe, approved or active.
 `valid: null` identifies an incomplete effective assessment, such as a list
 that needs trusted adoption. Invalid forms return a bounded error.
 
@@ -88,7 +95,7 @@ captured list inputs.
 
 ## Identity, dependencies and limits
 
-`assessment_id` binds `input_identity`: complete materialized candidate, base
+`assessment_id` binds `input_identity`: complete field-redacted candidate, base
 revision, captured inputs, relevant temporary grants, adopted service-definition
 revisions, implementation definition version and reached analysis. The operator
 result also binds its current policy revision. Observation time is separate.
