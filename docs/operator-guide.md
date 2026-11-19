@@ -363,6 +363,17 @@ requester cannot be approved for different bytes. See
 [full policy snapshots](policy-snapshots.md) for source identity, preservation
 markers, retention and result reconciliation.
 
+An approval with type `policy_change` is a separate human decision to save and
+activate an immutable agent-authored candidate. Inspect its trusted assessment,
+complete redacted source diff and current saved/active basis with
+`approvals show APPROVAL_ID` or `approvals explain APPROVAL_ID --option apply`.
+Approve only that exact content with `approvals approve APPROVAL_ID --option
+apply`, or decline with `approvals reject`. An agent delegation cannot decide
+it. After a lost reply, read the same canonical approval before retrying.
+`policy restore APPROVAL_ID --operation-id req-ID` prepares a separate restore
+review against the current base. See [exact policy adoption](policy-adoption.md)
+for stale recovery, durable result readback, retention and restore limits.
+
 If the scope is what you intend, type the following input at `inspect>` with
 the same full ID:
 

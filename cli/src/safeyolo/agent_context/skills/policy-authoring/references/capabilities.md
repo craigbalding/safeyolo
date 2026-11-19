@@ -122,8 +122,11 @@ Reassess the complete revised source, or discuss the concrete tradeoff in the
 harness. Do not automatically submit or retry. The full command recipe and
 operator review contract are in the shipped `docs/policy-assessment.md`.
 
-Explicitly submit the candidate and relevant references through the authorized
-adoption owner. On the owning host, `safeyolo policy assess SNAPSHOT_REQUEST_ID
+Explicitly call `submit_policy_change` with a new `operation_id` and the
+complete assessed object in `candidate`. The original `snapshot_request_id`,
+exact `source` and installed `definition_version` stay together. Read a lost
+submission's original ID with `read_policy_change`; changed content needs a
+new decision. Only the human operator can approve full-policy adoption. On the owning host, `safeyolo policy assess SNAPSHOT_REQUEST_ID
 FILE` presents trusted consequences, scope, exact redacted diff and evidence
 from the same assessment implementation. The operator view adds its authorized
 service models and current temporary grants. Its currentness and input identity

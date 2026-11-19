@@ -109,6 +109,7 @@ fn supported(view: &Value) -> bool {
                 | "operator_action"
                 | "diagnostic_disclosure"
                 | "policy_snapshot"
+                | "policy_change"
         )
     )
 }

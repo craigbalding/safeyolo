@@ -127,3 +127,8 @@ Both accept only `snapshot_request_id`, `source` and `definition_version`.
 There is no host path, remote instance, rationale or model override in the
 request. Full-policy disclosure and final candidate adoption retain their
 existing separate authority boundaries.
+
+After private revision, use [exact policy adoption](policy-adoption.md) to
+explicitly submit the same candidate, review trusted consequences through the
+existing human approval interface, read the saved/active receipt and deliberately
+prepare a restore. Assessment itself remains quiet and read-only.

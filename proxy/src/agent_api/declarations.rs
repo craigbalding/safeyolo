@@ -152,6 +152,9 @@ where
     if route(request) == "/policy/assess" {
         return super::policy_assessment::respond(request, state, controls.audit, body).await;
     }
+    if route(request) == "/policy/changes" || route(request).starts_with("/policy/changes/") {
+        return super::policy_changes::respond(request, state, controls.audit, body).await;
+    }
     // Reconciliation is the single request-boundary owner decision. A true
     // source conflict rejects scoped routes before reading a body or invoking
     // a provider, so a stale legacy agent field cannot re-open ownership.

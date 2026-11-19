@@ -132,7 +132,7 @@ impl Record {
     }
 
     fn refresh_result(&mut self, policy: &Policy) -> Result<Option<Ready>> {
-        if self.status == "challenged" {
+        if matches!(self.status.as_str(), "challenged" | "applying") {
             return Ok(None);
         }
         if self.status == "pending" {

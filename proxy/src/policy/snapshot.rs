@@ -366,6 +366,54 @@ fn at_mut<'a>(
 }
 
 impl RetainedPolicySnapshot {
+    pub(crate) fn matches_reference(&self, reference: &Value) -> bool {
+        self.reference() == *reference
+            && assessment_inputs_revision(&self.assessment_inputs)
+                == self.metadata["assessment_inputs_revision"]
+            && source_revision(&self.disclosed_source) == self.metadata["disclosed_source_revision"]
+            && self
+                .materialize(&self.disclosed_source)
+                .is_ok_and(|source| {
+                    source_revision(&source) == self.metadata["saved_source_revision"]
+                })
+    }
+
+    /// Include unused declarations before the loader receives source. A new
+    /// reference still needs its existing trusted adoption path.
+    pub(crate) fn adoption_references_allowed(&self, source: &str) -> bool {
+        let Ok((document, _)) = super::parse_toml_with_timestamps(source) else {
+            return false;
+        };
+        document["lists"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .all(|(_, reference)| {
+                self.assessment_inputs
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|input| input["reference"] == *reference)
+            })
+    }
+    pub(crate) fn adoption_inputs_match(&self, candidate: &Policy) -> bool {
+        candidate
+            .assessment_list_inputs()
+            .as_array()
+            .into_iter()
+            .flatten()
+            .all(|input| {
+                self.assessment_inputs
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|accepted| {
+                        accepted["reference"] == input["reference"]
+                            && assessment_inputs_revision(&json!([accepted]))
+                                == assessment_inputs_revision(&json!([input]))
+                    })
+            })
+    }
     fn new(source: &str, mut metadata: Value) -> super::Result<Self> {
         let (mut document, context) = super::parse_toml_for_edit(source)
             .map_err(|_| invalid("saved authored policy is not valid TOML"))?;

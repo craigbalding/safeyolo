@@ -6,7 +6,7 @@ use crate::{
     services::effects::policy::{self, Candidate},
 };
 
-fn snapshot(
+pub(super) fn snapshot(
     writer: &Writer,
     input: &Candidate,
 ) -> Result<crate::policy::snapshot::RetainedPolicySnapshot> {
@@ -85,10 +85,6 @@ pub(crate) fn operator(
         )
     };
     let saved = zeroize::Zeroizing::new(std::fs::read_to_string(path).map_err(unavailable)?);
-    let saved_revision = crate::policy::snapshot::source_revision(&saved);
-    let active_revision = policy
-        .native_source_text()
-        .map(crate::policy::snapshot::source_revision);
     let grants = store
         .map(|store| store.current_grants_for_report(time::OffsetDateTime::now_utc()))
         .transpose()?
@@ -103,22 +99,50 @@ pub(crate) fn operator(
         })
         .map(|entry| entry.grant)
         .collect::<Vec<_>>();
+    operator_materialized(&retained, input, &policy, &saved, &grants, None)
+}
+
+/// Shared assessment with caller-held policy/store/file locks at adoption.
+pub(super) fn operator_materialized(
+    retained: &crate::policy::snapshot::RetainedPolicySnapshot,
+    input: &Candidate,
+    policy: &Policy,
+    saved: &str,
+    grants: &[crate::grants::Grant],
+    materialized: Option<&str>,
+) -> Result<Value> {
+    let saved_revision = crate::policy::snapshot::source_revision(saved);
+    let active_revision = policy
+        .native_source_text()
+        .map(crate::policy::snapshot::source_revision);
     let mut operator_inputs = retained.clone();
     operator_inputs.assessment_inputs = policy.assessment_list_inputs();
     let inputs_match =
         crate::policy::snapshot::assessment_inputs_revision(&operator_inputs.assessment_inputs)
             == crate::policy::snapshot::assessment_inputs_revision(&retained.assessment_inputs);
-    let mut result = policy::assess_current(
-        &operator_inputs,
-        input,
-        policy.gateway().and_then(|gateway| gateway.registry()),
-        &grants,
-        Some(&policy),
-    )
+    let mut result = if let Some(source) = materialized {
+        policy::assess_materialized(
+            &operator_inputs,
+            input,
+            policy.gateway().and_then(|gateway| gateway.registry()),
+            grants,
+            Some(policy),
+            source,
+        )
+    } else {
+        policy::assess_current(
+            &operator_inputs,
+            input,
+            policy.gateway().and_then(|gateway| gateway.registry()),
+            grants,
+            Some(policy),
+        )
+    }
     .map_err(|error| invalid(error.to_string()))?;
     result["audience"] = json!("authenticated_operator");
     result["input_identity"]["current_policy"] =
         json!({"saved":saved_revision,"active":active_revision});
+    result["input_identity"]["check_feeds"] = policy.named_checks().adopted_feed_revisions();
     result["assessment_id"] = json!(digest(&result["input_identity"]));
     result["current_state"] = json!({"active_source_revision":active_revision,"saved_source_revision":saved_revision,
         "captured_inputs_match_active":inputs_match,
@@ -128,6 +152,8 @@ pub(crate) fn operator(
         "saved_matches_active":active_revision.as_deref() == Some(saved_revision.as_str()),
         "observed_at_ms":crate::policy::current_time_ms(),
         "final_revalidation":"The adoption owner must revalidate the candidate, base, grants and definitions at decision. This read grants no apply authority."});
-    result["authorized_projection"] = authorized_projection(&retained, input)?;
+    if materialized.is_none() {
+        result["authorized_projection"] = authorized_projection(retained, input)?;
+    }
     Ok(result)
 }
