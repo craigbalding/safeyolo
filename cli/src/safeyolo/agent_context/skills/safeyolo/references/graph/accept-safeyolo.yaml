@@ -833,7 +833,7 @@ nodes:
         - path: proxy/src/coord_operator/catch_up/tests.rs
           sha256: b36cec3e532f69faad69fcb314a6273659101b6d530e8ebdf1ff10a605cc8078
         - path: proxy/src/coord_timeline.rs
-          sha256: 3a91213ed277352b16cd7bfcf71bc47c6e3228e84cfdc449cca509027c673e37
+          sha256: 6887b92d9648eecaacf9171cad742afbce86a0e284578631dc80bf8327bc072d
         - path: proxy/tests/native_coord/catch_up.rs
           sha256: 7126f4374e070d659d5f4df0be455f8c5881f3dd0a47277689d74de6593c9146
       setup: "Use the pinned Rust toolchain with curl/tar and an approved NATS acquisition route or the configured verified NATS executable. Tests allocate their own roots and endpoints; never use the operator's live Coord data."
