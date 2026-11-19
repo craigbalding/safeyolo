@@ -19,6 +19,7 @@ pub(crate) mod attention;
 pub(crate) mod context;
 pub(crate) mod coord;
 pub(crate) mod delegation;
+pub(crate) mod diagnostics;
 mod explanation;
 mod gateway;
 pub(crate) mod policy_snapshot;
@@ -571,6 +572,7 @@ impl Record {
             Some("gateway_route") => ("gateway.risky_route", "gateway_risky_route"),
             Some("service_authorize") => ("gateway.request_access", "service"),
             Some("operator_action") => ("agent.operator_action_requested", "desktop_present"),
+            Some("diagnostic_disclosure") => ("agent.diagnostic_access_requested", "diagnostic"),
             Some("policy_snapshot") => ("agent.policy_snapshot_requested", "policy_snapshot"),
             Some("coord_access" | "coord_collaboration") => {
                 ("coord.access_requested", "coord_room")
@@ -647,7 +649,9 @@ pub(crate) fn save_receipt(document: &mut toml_edit::DocumentMut, record: &Recor
 }
 
 pub(crate) fn revision(policy: &Policy, action: &Value) -> Option<String> {
-    if action["kind"] == "policy_snapshot" {
+    if action["kind"] == "diagnostic_disclosure" {
+        diagnostics::revision(policy, action)
+    } else if action["kind"] == "policy_snapshot" {
         (policy.evidence_agent_id(action["agent"].as_str()?) == action["agent_id"].as_str()
             && policy
                 .native_source_text()
@@ -905,6 +909,25 @@ pub(crate) fn current_view(
     view["request_history"] = writer.approvals().request_history(record)?;
     view["attention"] = json!(record.attention);
     view["result_delivery"] = record.result_delivery.view();
+    if record.authority.action["kind"] == "diagnostic_disclosure" {
+        let saved = state.map(|state| saved_policy(state, policy)).transpose()?;
+        let effective = saved.as_ref().unwrap_or(policy);
+        let instance = effective
+            .identity_root()
+            .and_then(|root| crate::peer_support::events::instance(root).ok());
+        let disclosure = effective.support_grants().remove(&record.approval_id);
+        let active = disclosure.as_ref().is_some_and(|grant| {
+            grant.active()
+                && instance.as_deref() == Some(grant.instance_id.as_str())
+                && effective.evidence_agent_id(&grant.support.name)
+                    == Some(grant.support.agent_id.as_str())
+                && grant
+                    .targets
+                    .iter()
+                    .all(|a| effective.evidence_agent_id(&a.name) == Some(a.agent_id.as_str()))
+        });
+        view["effective_access"] = json!({"active":active,"disclosure":disclosure,"next_action":"A canonical decision is recorded history. Current host-held disclosure, identity, expiry and retention govern each diagnostic read."});
+    }
     if view["status"] == "pending"
         && record.authority.action["kind"] == "operator_action"
         && state.is_some_and(|state| {
@@ -1267,8 +1290,8 @@ pub(crate) fn resolve_as(
     let mut changed = false;
     let selected = writer.approvals().decide(id, |record| {
         let policy = active_policy(state)?;
-        if record.authority.action["kind"] == "coord_collaboration" && reviewer.is_some() {
-            return Err(invalid("new collaboration requires an operator decision"));
+        if matches!(record.authority.action["kind"].as_str(), Some("coord_collaboration" | "diagnostic_disclosure")) && reviewer.is_some() {
+            return Err(invalid("this disclosure requires an operator decision"));
         }
         let delegated = reviewer.map(|(reviewer, name)| delegation::authorize(&policy, record, reviewer, name, option.unwrap_or("run"))).transpose()?;
         if record.status != "pending" { return Ok(()); }
@@ -1310,6 +1333,11 @@ pub(crate) fn resolve_as(
             return Err(invalid("the selected session expired; make a new request"));
         }
         record.option = Some(selected.id.clone());
+        if record.authority.action["kind"] == "diagnostic_disclosure" {
+            diagnostics::issue(state, record)?;
+            changed = true;
+            return Ok(());
+        }
         if record.authority.action["kind"] == "coord_collaboration" {
             record.result = json!({"permission_changed":true,"room_id":record.authority.action["room_id"],
                 "room_name":record.authority.action["room_name"],"expires_at":record.authority.expires_at});

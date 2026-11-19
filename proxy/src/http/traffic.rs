@@ -51,13 +51,20 @@ impl Traffic {
         destination: &super::Destination,
     ) -> Arc<Self> {
         let parsed = project(request, destination);
+        let mut exchange = logger::Exchange::new(
+            identity.audit_attribution(),
+            identity.request_agent().map(str::to_owned),
+        );
+        exchange.request_scope = state.read().ok().and_then(|runtime| {
+            runtime
+                .connection_events
+                .as_ref()
+                .map(|events| events.request_scope(identity))
+        });
         Arc::new(Self {
             state,
             hooks: Mutex::new(HookState {
-                exchange: logger::Exchange::new(
-                    identity.audit_attribution(),
-                    identity.request_agent().map(str::to_owned),
-                ),
+                exchange,
                 metrics_start: None,
                 started: None,
                 requested: false,

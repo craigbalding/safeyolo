@@ -647,7 +647,7 @@ nodes:
         - path: proxy/src/peer_support/authority/graph_tests.rs
           sha256: 7803851ecbfdbc4720f3e434d33ddd2395a0527a962e894a61d8c77ad18b06e8
         - path: proxy/src/policy/authority.rs
-          sha256: 62744ef08967975b5be6cf0afb2c83cac8dc5c104cef8441534abaad0672dee3
+          sha256: 61d92e53b131e8e39b02352d56f45f5d5af71ed0513f35ddbc4aa7f77047561b
         - path: proxy/tests/native_coord/federation/support_authority.rs
           sha256: fc2936d685b8ed6ab8ba497f86c670e31dcbdf1b05e7ca14151cfc4ad5d42e0e
         - path: proxy/tests/native_coord/federation/support_audit.rs
@@ -655,7 +655,7 @@ nodes:
         - path: proxy/tests/peer_support.rs
           sha256: 89cea1317f128318dfeb7011d5d57ec71df148e49cd31455e17414944b6de209
         - path: proxy/tests/peer_support/audit.rs
-          sha256: e156df027f1a8a186024f6c545ffecf5c918fd177c78ae2ebf0e58574cdaef83
+          sha256: 8fb65b2c49e9fe84d777a484b79f3b7818236d8169fe36bf9d51ee46f8ebc703
         - path: proxy/tests/support/owned_run.rs
           sha256: ba639e14354fc8425fb735bece123b10529886742d3ed4f1528791c899fbd439
         - path: proxy/tests/native_coord/federation/support.rs
@@ -665,21 +665,21 @@ nodes:
         - path: proxy/tests/support/controlled_runs.rs
           sha256: af1ce356a298d4a9bfebe626287bfbe79dda404693e87a4e610785a70b4fcfaf
         - path: proxy/src/agent_api/support.rs
-          sha256: f173070d7aadddc80c1837f071ad6db68cc91e443230e7c2a05a84d3d92d47cd
+          sha256: e9e15372c3188f64c4d0ffab28b391cc2020f09bb9214da938e18010cb29f494
         - path: proxy/src/agent_api/coord/operational.rs
           sha256: 5d2320572ad95603f2e71b10b6074c688ae5c1caf560197ce9bcd0c37d96bfba
         - path: proxy/src/agent_api/coord/outbox.rs
           sha256: 9b0cfced1a0395cfdb9fb9063e3fae68f533aeeb1b908140dafd07ddce376a16
         - path: proxy/src/peer_support.rs
-          sha256: 0f58babec7e8064a32d5ea5d10068610bc299a213caab65c6397f9ee6c22e021
+          sha256: a20b3b6a9c980aec09da90b41f35d7070351b4c60e09744dfd62df90159814f0
         - path: proxy/src/peer_support/operations.rs
-          sha256: eb8f4f145d2100144b50a3139d8253204a6aa7eed210ce79d60ce60d7546d38f
+          sha256: 2f15d94af4564e25339380b0333f0dabfa4e2ca50d61eaa00e27b51146a5c34f
         - path: proxy/src/peer_support/grants.rs
-          sha256: 2dc18d09e60fb27311d9158c665d76f948d05edafc09d384fc7d01807b142713
+          sha256: 5fe537301fa4033de0db625b3baf054c4d9ab150adfdf7b5dbbbc032a731439a
         - path: proxy/src/peer_support/events.rs
           sha256: ce708ef9d44900fcb2ab9dc49a9236bec8d07adac1610b441f3259dcc4684ad0
         - path: proxy/src/policy/support.rs
-          sha256: a453a56f41ae545009b0afe5445ad90f3bd84211d3afae2f066952928ff54279
+          sha256: 782a6318311de9b99af28cf9dfb506092ce0350c8cdda3b44b9f993c054cde71
         - path: proxy/tests/native_coord/federation/reliability.rs
           sha256: 8338ae6fad7d2c24b1450e2fefc10a9e3b53e91ff2d16bdb726daee7e4acff44
         - path: proxy/tests/native_coord/federation/guided.rs
@@ -693,7 +693,7 @@ nodes:
         - path: proxy/tests/native_coord/federation.rs
           sha256: 7bfc83e871c120479782f1e0d027a6346de321b819e823d7f985a4d4509edcb7
         - path: proxy/src/agent_api/coord.rs
-          sha256: 1cab87a667351ea572c3166b3cd6046422c9397818988131744a5cf2c01c5b71
+          sha256: e48333efa48d960d3926afa1b3a506c156704c545c26cba2bae287b8a08f575b
         - path: proxy/src/agent_api/coord/federation.rs
           sha256: 699b6103139e178606c5280d0e8ecd887de4629f13894edd69eb479e49991aef
         - path: proxy/src/agent_api/coord/federation/tests.rs
@@ -819,7 +819,7 @@ nodes:
         - path: proxy/src/coord_operator/signals.rs
           sha256: 90fa9648af1c4c243f776a179142dd267e2a00cc96df9c0b03a2638ec9ec8fee
         - path: proxy/src/coord_tools.rs
-          sha256: 4453847a6a4d29a572bc7102675cc6f133600a611a97c18582f210535056c74d
+          sha256: 4e8201622b8e499df34561f982ccad557ee56cc70039710eb75c6654e5b4d7c9
         - path: proxy/src/coord_rooms/room_status.rs
           sha256: 9fcd506d9a465dd2dc3f737727e3232f88f7df43b11b552cf139890fd59d2431
         - path: proxy/src/coord_rooms/room_status/tests.rs
