@@ -143,9 +143,9 @@ effects or cancel every operation already admitted under the former policy.
 ## Retention and access
 
 Candidate source, snapshot restoration values, the review and prior source
-remain in the existing private approval database beside the audit destination
-(`audit.approvals.sqlite3` for `audit.jsonl`). They are not another policy file
-or source of truth. The database is host-owned mode `0600`. Shared attention
+remain in the existing private approval database, `approvals.sqlite3`, in the
+selected instance's data directory. They are not another policy file or source
+of truth. The database is host-owned mode `0600`. Shared attention
 and ordinary audit events carry identities and outcomes, never full source or
 literal credentials. Broader diagnostic or approval-read grants do not expose
 the operator-only assessment through the generic agent approval view.
