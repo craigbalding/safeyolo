@@ -24,6 +24,15 @@ pub(crate) fn explain(
     };
     let kind = action["kind"].as_str().unwrap_or("");
     let (stopped, mut non_grants, graph_node) = match kind {
+        "policy_snapshot" => (
+            "The requester asked to read one identified complete authored policy snapshot from this local instance.",
+            vec![
+                "No policy application, enforcement change or access to a future source revision.",
+                "No config.toml, Admin credentials, credential-store values or arbitrary host files.",
+                "Only the original current requester/run can read the approved retained snapshot. Disclosure cannot be undone.",
+            ],
+            "sym.accept_policy_assurance",
+        ),
         "operator_action" => (
             "Presenting an agent desktop requires the operator's approval for this target, route, browser URL and preview lifetime.",
             vec![
@@ -117,6 +126,7 @@ pub(crate) fn explain(
             | "operator_action"
             | "coord_access"
             | "coord_collaboration"
+            | "policy_snapshot"
     );
     if option.is_some() && record.authority.selected_option(option).is_none() {
         return Err(invalid("select one of this approval's fixed options"));
@@ -149,6 +159,13 @@ pub(crate) fn explain(
         "service":action["service"],"capability":action["capability"],
         "credential_reference":action["credential"],"account":action["account"],
         "request_method":method,"request_scheme":record.authority.scheme});
+    if kind == "policy_snapshot" {
+        facts["snapshot"] = action["snapshot"].clone();
+        facts["authority_delta"] = json!(
+            "Permit private reads of this retained snapshot by its original current requester/run. The saved and active revisions identify the approval basis. New policy bytes require a separate decision. Enforcement policy and apply authority remain unchanged."
+        );
+        unknowns.clear();
+    }
     if kind == "operator_action" {
         facts["action_id"] = action["action_id"].clone();
         facts["presentation"] = action["presentation"].clone();

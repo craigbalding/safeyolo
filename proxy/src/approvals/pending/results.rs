@@ -204,6 +204,16 @@ impl Store {
         let mut ready = vec![];
         for (position, encoded) in rows {
             let mut record = decode_record(&encoded)?;
+            if record
+                .decided_at
+                .is_some_and(|at| now() >= at.saturating_add(RETAIN_SECONDS))
+            {
+                tx.execute(
+                    "DELETE FROM policy_snapshots WHERE approval_id=?1",
+                    [&record.approval_id],
+                )
+                .map_err(unavailable)?;
+            }
             if let Some(mut result) = record.refresh_result(policy)? {
                 result.scan_position = position;
                 ready.push(result);

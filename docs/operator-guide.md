@@ -323,6 +323,24 @@ full canonical record under the same operator permissions. Existing traffic
 views and the [approval troubleshooting graph](../cli/src/safeyolo/agent_context/skills/safeyolo/references/graph/triage-approval-required.yaml)
 provide deeper diagnostics; explanation does not require traffic recording.
 
+An approval with type `policy_snapshot` permits disclosure of one complete
+authored local policy snapshot. Inspect its requester/run, instance, source
+revisions, saved/active status and redaction fields before deciding. In the host
+account that owns the selected instance, use the returned approval ID:
+
+```sh
+safeyolo approvals show APPROVAL_ID --json
+safeyolo approvals explain APPROVAL_ID --option snapshot --json
+safeyolo approvals approve APPROVAL_ID --option snapshot --json
+```
+
+Use `approvals reject` to decline. Approval returns the fixed snapshot to its
+original current requester through installed guest tools. It changes no
+enforcement policy and grants no application authority. A stale source or
+requester cannot be approved for different bytes. See
+[full policy snapshots](policy-snapshots.md) for source identity, preservation
+markers, retention and result reconciliation.
+
 If the scope is what you intend, type the following input at `inspect>` with
 the same full ID:
 

@@ -36,6 +36,7 @@ pub(crate) mod expiry;
 mod model_json;
 pub mod native;
 mod sensor_config;
+pub mod snapshot;
 mod source;
 mod stats;
 pub(crate) mod support;

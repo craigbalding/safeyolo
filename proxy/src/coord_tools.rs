@@ -157,6 +157,26 @@ impl Client {
     }
 
     async fn call_scoped(&self, name: &str, args: &Value) -> Result<Value, Error> {
+        if matches!(name, "request_policy_snapshot" | "read_policy_snapshot") {
+            if self.home.is_some() {
+                return Err("policy snapshots select only the authenticated local instance".into());
+            }
+            return if name == "request_policy_snapshot" {
+                self.request(
+                    Method::POST,
+                    "/policy/snapshots",
+                    args.clone(),
+                    Duration::from_secs(60),
+                )
+                .await
+            } else {
+                self.get(&format!(
+                    "/policy/snapshots/{}",
+                    segment(text(args, "request_id")?)
+                ))
+                .await
+            };
+        }
         if name == "wait_for_coord" && args.get("sources").is_some() {
             return self.wait_sources(args).await;
         }
@@ -580,6 +600,18 @@ pub fn tools() -> Vec<Value> {
     let mut add = |name: &str, description: &str, properties: Value, required: &[&str]| {
         result.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}}));
     };
+    add(
+        "request_policy_snapshot",
+        "Request human approval to disclose one complete authored policy snapshot from this local instance. Choose operation_id (req- followed by 32 lowercase hex digits) before submission; after a lost response read that same ID. Requester and source are host-derived. Approval grants no apply authority or future-source permission.",
+        json!({"operation_id":string}),
+        &["operation_id"],
+    );
+    add(
+        "read_policy_snapshot",
+        "Read your original full-policy snapshot request and, after human approval, its retained authored source. Use the original operation_id or returned approval_id as request_id. Another requester or replaced run cannot read it. Retries return the same snapshot; preserve its field markers when composing a candidate. Keep source private.",
+        json!({"request_id":string}),
+        &["request_id"],
+    );
     add(
         "read_work_prerequisite",
         "Read a durable before-admission action invocation, including before Work exists. Supply the invocation ID from the held protected operation. Current room receive authority is required. Inspect exact request, binding, reached state, attempts and version before recovery. The record does not imply exactly-once remote effects or protected completion.",
@@ -1007,7 +1039,12 @@ pub fn tools() -> Vec<Value> {
     for tool in &mut result {
         if !matches!(
             tool["name"].as_str(),
-            Some("request_room_access" | "request_collaboration")
+            Some(
+                "request_room_access"
+                    | "request_collaboration"
+                    | "request_policy_snapshot"
+                    | "read_policy_snapshot"
+            )
         ) {
             tool["inputSchema"]["properties"]["home"] = json!({"type":"string","description":"Explicit configured home SafeYolo. Omit for local operations. Attention cursors belong to the selected home."});
         }
