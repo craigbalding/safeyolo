@@ -9,7 +9,9 @@ use super::{Policy, Result, delegation::Agent, invalid};
 
 pub(crate) mod diagnostics;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Lifecycle {
     StartSandbox,
@@ -19,7 +21,9 @@ pub(crate) enum Lifecycle {
     RestartSandbox,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Notification {
     LaunchFailed,
@@ -35,7 +39,7 @@ pub(crate) enum Notification {
     ObservationHealth,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FactoryDirection {
     pub factory: String,
@@ -43,8 +47,9 @@ pub(crate) struct FactoryDirection {
     pub types: Vec<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("x-scope" = "Explicit durable support and target identities in the owning instance", "x-lifetime" = "Optional expiry; acknowledgment and current identities/trust required", "x-effects" = "Permit inspection and selected guest administration, logs, lifecycle, notices and factory directions. Guest administration reaches target-accessible credentials, mounts and delegations.", "x-dependencies" = "Operator-owned support preview/apply; live target and control for guest execution; current peer trust for remote support", "x-gaps" = "Static validation does not verify identities, trust, runtime or grant acknowledgment."))]
 pub(crate) struct Grant {
     pub instance_id: String,
     pub support: Agent,

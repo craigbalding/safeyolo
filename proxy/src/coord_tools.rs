@@ -186,6 +186,29 @@ impl Client {
                 }
             };
         }
+        if name == "discover_policy_capabilities" {
+            return self
+                .get(if args["observe"] == true {
+                    "/policy/capabilities?observe=true"
+                } else {
+                    "/policy/capabilities"
+                })
+                .await;
+        }
+        if name == "validate_policy_capability" || name == "observe_support_capability" {
+            return self
+                .request(
+                    Method::POST,
+                    if name == "validate_policy_capability" {
+                        "/policy/capabilities/validate"
+                    } else {
+                        "/policy/capabilities/support"
+                    },
+                    args.clone(),
+                    Duration::from_secs(60),
+                )
+                .await;
+        }
         if name == "wait_for_coord" && args.get("sources").is_some() {
             return self.wait_sources(args).await;
         }
@@ -545,51 +568,144 @@ impl Client {
 }
 
 fn validate_arguments(args: &Value, schema: &Value) -> Result<(), Error> {
-    let args = args.as_object().ok_or("arguments must be an object")?;
-    for field in schema["required"].as_array().ok_or("invalid tool schema")? {
-        if !args.contains_key(field.as_str().ok_or("invalid schema field")?) {
-            return Err(format!("missing argument {field}").into());
+    let fields = args.as_object().ok_or("arguments must be an object")?;
+    for name in schema["required"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if !fields.contains_key(name) {
+            return Err(format!("missing argument {name}").into());
         }
     }
-    for (field, value) in args {
+    for (name, value) in fields {
         let property = schema["properties"]
-            .get(field)
-            .ok_or_else(|| format!("unknown argument {field}"))?;
-        if !valid_property(value, property) {
-            return Err(format!("invalid type or value for {field}").into());
+            .get(name)
+            .ok_or_else(|| format!("unknown argument {name}"))?;
+        if !valid_schema(value, property, schema, 0) {
+            return Err(format!("invalid type or value for {name}").into());
         }
     }
     Ok(())
 }
 
-fn valid_property(value: &Value, property: &Value) -> bool {
-    if property
-        .get("enum")
-        .and_then(Value::as_array)
-        .is_some_and(|values| !values.contains(value))
+fn valid_schema(value: &Value, schema: &Value, root: &Value, depth: usize) -> bool {
+    if depth > 128 || schema == &Value::Bool(false) {
+        return false;
+    }
+    if schema == &Value::Bool(true) {
+        return true;
+    }
+    let root = if schema.get("$schema").is_some() {
+        schema
+    } else {
+        root
+    };
+    if let Some(reference) = schema["$ref"].as_str() {
+        return reference
+            .strip_prefix('#')
+            .and_then(|pointer| root.pointer(pointer))
+            .is_some_and(|target| valid_schema(value, target, root, depth + 1));
+    }
+    if schema
+        .get("const")
+        .is_some_and(|expected| expected != value)
     {
         return false;
     }
-    if let Some(choices) = property.get("oneOf").and_then(Value::as_array) {
-        return choices.iter().filter(|s| valid_property(value, s)).count() == 1;
+    if schema["enum"]
+        .as_array()
+        .is_some_and(|choices| !choices.contains(value))
+    {
+        return false;
     }
-    match property["type"].as_str() {
-        Some("string") => value.is_string(),
-        Some("integer") => value.as_u64().is_some(),
-        Some("number") => value.is_number(),
-        Some("boolean") => value.is_boolean(),
-        Some("null") => value.is_null(),
-        Some("object") => validate_arguments(value, property).is_ok(),
-        Some("array") => value
+    if schema["oneOf"].as_array().is_some_and(|choices| {
+        choices
+            .iter()
+            .filter(|choice| valid_schema(value, choice, root, depth + 1))
+            .count()
+            != 1
+    }) {
+        return false;
+    }
+    if schema["anyOf"].as_array().is_some_and(|choices| {
+        !choices
+            .iter()
+            .any(|choice| valid_schema(value, choice, root, depth + 1))
+    }) {
+        return false;
+    }
+    if schema["allOf"].as_array().is_some_and(|choices| {
+        !choices
+            .iter()
+            .all(|choice| valid_schema(value, choice, root, depth + 1))
+    }) {
+        return false;
+    }
+    let kind_matches = |kind: &str| match kind {
+        "string" => value.is_string(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "number" => value.is_number(),
+        "boolean" => value.is_boolean(),
+        "null" => value.is_null(),
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        _ => false,
+    };
+    if schema["type"]
+        .as_str()
+        .is_some_and(|kind| !kind_matches(kind))
+        || schema["type"]
             .as_array()
-            .is_some_and(|a| a.iter().all(|v| valid_property(v, &property["items"]))),
-        _ => {
-            value.is_string()
-                || value
-                    .as_array()
-                    .is_some_and(|a| a.iter().all(Value::is_string))
+            .is_some_and(|kinds| !kinds.iter().filter_map(Value::as_str).any(kind_matches))
+    {
+        return false;
+    }
+    if value.as_f64().is_some_and(|number| {
+        schema["minimum"]
+            .as_f64()
+            .is_some_and(|minimum| number < minimum)
+            || schema["maximum"]
+                .as_f64()
+                .is_some_and(|maximum| number > maximum)
+    }) {
+        return false;
+    }
+    if let Some(fields) = value.as_object() {
+        if schema["required"].as_array().is_some_and(|required| {
+            required
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|field| !fields.contains_key(field))
+        }) {
+            return false;
+        }
+        for (name, field) in fields {
+            let field_schema = schema["properties"]
+                .get(name)
+                .or_else(|| schema.get("additionalProperties"));
+            if field_schema.is_some_and(|schema| !valid_schema(field, schema, root, depth + 1)) {
+                return false;
+            }
         }
     }
+    if let Some(items) = value.as_array() {
+        if schema["minItems"]
+            .as_u64()
+            .is_some_and(|min| items.len() < (min as usize))
+        {
+            return false;
+        }
+        if let Some(item_schema) = schema.get("items")
+            && !items
+                .iter()
+                .all(|item| valid_schema(item, item_schema, root, depth + 1))
+        {
+            return false;
+        }
+    }
+    true
 }
 
 pub fn tools() -> Vec<Value> {
@@ -609,6 +725,24 @@ pub fn tools() -> Vec<Value> {
     let mut add = |name: &str, description: &str, properties: Value, required: &[&str]| {
         result.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}}));
     };
+    add(
+        "discover_policy_capabilities",
+        "Discover installed policy types, operation schemas, owning validators, declared effects, scopes, lifetimes, dependencies and coverage gaps before full-policy disclosure. observe=true adds only current caller-authorized observations; failed or undisclosed reads remain unknown. This read grants no authority and performs no protected operation.",
+        json!({"observe":{"type":"boolean","default":false}}),
+        &[],
+    );
+    add(
+        "validate_policy_capability",
+        "Check a proposed component form with its installed authoritative parser/validator and exact definition_version from discovery. Supply definition and value from the returned schema. No policy is read, changed, approved or activated. Full candidate assessment and current execution authority remain separate.",
+        json!({"definition":schemars::schema_for!(crate::policy::capabilities::Definition),"value":{},"definition_version":string}),
+        &["definition", "value", "definition_version"],
+    );
+    add(
+        "observe_support_capability",
+        "Observe permission and readiness for one typed local support operation without executing it. Use a grant and target returned by your current support discovery. Forged, undisclosed or obsolete targets remain unknown. Granted and unavailable can coexist. Current execution still revalidates through the support owner.",
+        json!({"request":{"type":"object"},"definition_version":string}),
+        &["request", "definition_version"],
+    );
     add(
         "read_work_prerequisite",
         "Read a durable before-admission action invocation, including before Work exists. Supply the invocation ID from the held protected operation. Current room receive authority is required. Inspect exact request, binding, reached state, attempts and version before recovery. The record does not imply exactly-once remote effects or protected completion.",
@@ -965,15 +1099,7 @@ pub fn tools() -> Vec<Value> {
     add(
         "support_operation",
         "Inspect or operate on one explicitly delegated target. Select home for a remote owner; Core NATS and that owner's current grant and runtime controls must work. Choose operation_id before submitting; never repeat an uncertain effect with a new ID. expected_run must match the inspected run for commands and lifecycle actions; use null to start a target with no run. Inspection-only permits no caller command. Guest administration includes guest sudo, mounts, credentials, services and the target's delegations. Output is private untrusted evidence, limited to 8192 bytes per stream. After timeout or a lost reply use read_support_operation with the same home. Transport cancellation does not prove guest descendant termination. The current host grant is rechecked at execution; no Coord notification is required.",
-        json!({"operation_id":string,"grant":string,"instance_id":{"oneOf":[string,{"type":"null"}]},"target_id":string,"expected_run":{"oneOf":[string,{"type":"null"}]},"operation":{"oneOf":[
-            {"type":"object","properties":{"action":{"type":"string","enum":["inspect"]}},"required":["action"],"additionalProperties":false},
-            {"type":"object","properties":{"action":{"type":"string","enum":["factory_state"]},"factory":string,"snapshot_id":string},"required":["action","factory","snapshot_id"],"additionalProperties":false},
-            {"type":"object","properties":{"action":{"type":"string","enum":["factory_direction"]},"factory":string,"snapshot_id":string,"kind":string,"text":string},"required":["action","factory","snapshot_id","kind","text"],"additionalProperties":false},
-            {"type":"object","properties":{"action":{"type":"string","enum":["guest_command"]},"command":string,"timeout_seconds":integer},"required":["action","command","timeout_seconds"],"additionalProperties":false},
-            {"type":"object","properties":{"action":{"type":"string","enum":["guest_log"]},"path":string},"required":["action","path"],"additionalProperties":false},
-            {"type":"object","properties":{"action":{"type":"string","enum":["guest_probe"]},"timeout_seconds":integer},"required":["action","timeout_seconds"],"additionalProperties":false},
-            {"type":"object","properties":{"action":{"type":"string","enum":["lifecycle"]},"operation":{"type":"string","enum":["start_sandbox","start_harness","restart_harness","stop_sandbox","restart_sandbox"]}},"required":["action","operation"],"additionalProperties":false}
-        ]}}),
+        json!({}),
         &[
             "operation_id",
             "grant",
@@ -1067,9 +1193,26 @@ pub fn tools() -> Vec<Value> {
         &["room_name"],
     );
     for tool in &mut result {
+        if tool["name"] == "support_operation" {
+            tool["inputSchema"] = json!(schemars::schema_for!(
+                crate::peer_support::operations::Request
+            ));
+        }
+        if tool["name"] == "observe_support_capability" {
+            tool["inputSchema"]["properties"]["request"] = json!(schemars::schema_for!(
+                crate::peer_support::operations::Request
+            ));
+        }
+
         if !matches!(
             tool["name"].as_str(),
-            Some("request_room_access" | "request_collaboration")
+            Some(
+                "request_room_access"
+                    | "request_collaboration"
+                    | "discover_policy_capabilities"
+                    | "validate_policy_capability"
+                    | "observe_support_capability"
+            )
         ) {
             tool["inputSchema"]["properties"]["home"] = json!({"type":"string","description":"Explicit configured home SafeYolo. Omit for local operations. Attention cursors belong to the selected home."});
         }

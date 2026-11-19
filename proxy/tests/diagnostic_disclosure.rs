@@ -4,6 +4,8 @@
 use serde_json::{Value, json};
 use std::{fs, time::Duration};
 
+#[path = "diagnostic_disclosure/client.rs"]
+mod client;
 #[path = "support/controlled_runs.rs"]
 mod controlled_runs;
 #[path = "diagnostic_disclosure/coord.rs"]

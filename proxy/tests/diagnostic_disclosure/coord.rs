@@ -16,6 +16,119 @@ impl Drop for StopCoord {
 
 #[tokio::test]
 #[ignore = "requires pinned SAFEYOLO_COORD_NATS_BINARY and SAFEYOLO_NATS_TEST_INSTANCE=1"]
+async fn empty_history_is_complete_and_real_message_loss_remains_incomplete() {
+    let f = Fixture::with_installed_settings().await;
+    let _runs = runs(&f);
+    let root = f.root.path();
+    let _stop = StopCoord(root.to_owned());
+    let binary = std::env::var_os("SAFEYOLO_COORD_NATS_BINARY").expect("pinned NATS");
+    coord_rooms::start(root, Some(std::path::Path::new(&binary)), None, None)
+        .await
+        .unwrap();
+    let room = coord_rooms::create_room(root, "empty").await.unwrap();
+    coord_rooms::grant(
+        &root.join("config.toml"),
+        "empty",
+        "worker",
+        &["send".into()],
+        false,
+        None,
+    )
+    .unwrap();
+    let mut input = request("empty-history", false, vec!["worker"]);
+    input["scope"]["audit"] = json!(false);
+    input["scope"]["rooms"] =
+        json!([{"room_id":room["room_id"],"history":true,"membership":false,"attention":false}]);
+    let pending = submit(&f, input).await;
+    let id = pending["approval_id"].as_str().unwrap();
+    approve(&f, id).await;
+    let output = query(&f, json!({"operation_id":"empty","grant":id}))
+        .await
+        .json();
+    assert_eq!(
+        output["result"], "no_matching_retained_evidence",
+        "{output}"
+    );
+    assert!(output["rows"].as_array().unwrap().is_empty());
+    assert_eq!(output["sources"][0]["status"], "complete_retained_search");
+    assert_eq!(output["sources"][0]["limitations"], json!([]));
+
+    for marker in ["first", "deleted", "last"] {
+        let sent = f
+            .agent(
+                "worker",
+                "POST",
+                "/api/coord/rooms/empty/send",
+                Some(json!({"body":marker,"notify":"none","declared_content_type":"text/plain"})),
+            )
+            .await;
+        assert_eq!(sent.status, 200, "{}", sent.json());
+    }
+    let retained = query(&f, json!({"operation_id":"retained","grant":id}))
+        .await
+        .json();
+    assert_eq!(retained["result"], "retained_evidence", "{retained}");
+    assert_eq!(retained["rows"].as_array().unwrap().len(), 3);
+
+    // Delete an interior message at this fixture's real source owner, keeping
+    // first/last sequences so the collector must expose the missing record.
+    let password =
+        zeroize::Zeroizing::new(fs::read_to_string(root.join("data/coord/nats/creds")).unwrap());
+    let endpoint: Value = serde_json::from_slice(
+        &fs::read(root.join("data/coord/nats/local-endpoint.json")).unwrap(),
+    )
+    .unwrap();
+    let connection = async_nats::ConnectOptions::new()
+        .user_and_password("safeyolo".into(), password.trim().into())
+        .connect(endpoint["url"].as_str().unwrap())
+        .await
+        .unwrap();
+    let mut stream = async_nats::jetstream::new(connection)
+        .get_stream(format!("ROOM_{}", room["room_id"].as_str().unwrap()))
+        .await
+        .unwrap();
+    assert!(
+        stream
+            .delete_message(retained["rows"][1]["record"]["sequence"].as_u64().unwrap())
+            .await
+            .unwrap()
+    );
+    let lost = query(&f, json!({"operation_id":"lost","grant":id}))
+        .await
+        .json();
+    assert_eq!(lost["result"], "incomplete_search", "{lost}");
+    assert_eq!(lost["rows"].as_array().unwrap().len(), 2);
+    assert!(
+        lost["sources"][0]["limitations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s == "a selected room message was lost during collection")
+    );
+    assert!(!lost.to_string().contains("\"body\":\"deleted\""));
+
+    stream.purge().await.unwrap();
+    let state = &stream.info().await.unwrap().state;
+    assert_eq!(state.messages, 0);
+    let pruned = query(&f, json!({"operation_id":"pruned","grant":id}))
+        .await
+        .json();
+    assert_eq!(pruned["result"], "incomplete_search", "{pruned}");
+    assert!(pruned["rows"].as_array().unwrap().is_empty());
+    assert_eq!(
+        pruned["sources"][0]["limitations"],
+        json!(["room retention has pruned earlier history"])
+    );
+    coord_rooms::stop(root).await.unwrap();
+    let unavailable = query(&f, json!({"operation_id":"unavailable","grant":id}))
+        .await
+        .json();
+    assert_eq!(unavailable["result"], "source_unavailable", "{unavailable}");
+    f.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "requires pinned SAFEYOLO_COORD_NATS_BINARY and SAFEYOLO_NATS_TEST_INSTANCE=1"]
 async fn selected_coord_runtime_and_private_results_survive_notification_outage() {
     let f = Fixture::with_installed_settings().await;
     let _runs = runs(&f);

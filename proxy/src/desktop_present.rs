@@ -21,8 +21,9 @@ pub(crate) enum Error {
 }
 
 /// Only guest browser navigation and preview lifetime are agent-selectable.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
+#[schemars(extend("x-scope" = "Requesting worker run only", "x-lifetime" = "Finite ttl_seconds; independent preview sources survive expiry/revocation", "x-effects" = "Start or reuse a gated desktop and optionally navigate the guest browser. Browser opening and disclosed content cannot be undone.", "x-dependencies" = "Existing desktop.present operator approval and configured presentation prerequisites", "x-gaps" = "Readiness is observed through the existing operator-action owner, not by parsing parameters."))]
 pub(crate) struct Parameters {
     pub(crate) browser_url: Option<String>,
     pub(crate) ttl_seconds: u32,
@@ -66,7 +67,7 @@ impl Parameters {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Route {
     Local,

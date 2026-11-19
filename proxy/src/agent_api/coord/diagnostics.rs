@@ -148,7 +148,8 @@ impl CoordClient {
                     "room history search was limited to its last 200 retained messages".into(),
                 );
             }
-            for sequence in start..=last {
+            // Sequence zero does not exist, including in a new empty stream.
+            for sequence in start.max(1)..=last {
                 let raw = match stream.get_raw_message(sequence).await {
                     Ok(raw) => raw,
                     Err(_) => {
