@@ -8,11 +8,7 @@ use crate::{
 };
 
 fn instance_id(config: &crate::Config) -> Result<String> {
-    let data = config
-        .data_dir
-        .as_ref()
-        .ok_or_else(|| invalid("local instance data directory unavailable"))?;
-    let id = std::fs::read_to_string(data.join("instance_id")).map_err(unavailable)?;
+    let id = std::fs::read_to_string(config.data_dir().join("instance_id")).map_err(unavailable)?;
     if id.trim().is_empty() {
         return Err(invalid("local instance identity unavailable"));
     }

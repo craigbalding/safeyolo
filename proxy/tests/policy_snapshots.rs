@@ -99,6 +99,10 @@ async fn request(f: &Fixture) -> (String, Value) {
     let id = operation();
     let result = installed_tool(f, "request_policy_snapshot", json!({"operation_id":id})).await;
     assert_eq!(result["status"], "pending", "{result}");
+    assert_eq!(
+        result["approval"]["target"],
+        result["snapshot"]["instance_id"]
+    );
     assert!(result["snapshot"]["source"].is_null());
     (id, result)
 }

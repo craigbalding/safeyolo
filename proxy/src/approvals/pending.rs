@@ -583,6 +583,12 @@ impl Record {
             .get("host")
             .or_else(|| self.authority.action.get("service"))
             .or_else(|| self.authority.action.get("room_name"))
+            .or_else(|| {
+                self.authority
+                    .action
+                    .get("snapshot")
+                    .and_then(|snapshot| snapshot.get("instance_id"))
+            })
             .or_else(|| self.authority.action.get("agent_id"))
             .and_then(Value::as_str)
             .unwrap_or("");
