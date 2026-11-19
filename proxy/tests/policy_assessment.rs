@@ -386,6 +386,31 @@ fn retained(
 }
 
 #[test]
+fn newly_authored_credentials_change_the_complete_candidate_identity() {
+    let source = format!("[agents.worker]\nagent_id='{WORKER_ID}'\n");
+    let (_root, snapshot) = retained(&source);
+    let report = |password| {
+        let proposed = format!("{source}\n[probe]\npassword='{password}'\n");
+        let input: Candidate = serde_json::from_value(candidate("req-fixture", &proposed)).unwrap();
+        assess(&snapshot, &input, None, &[]).unwrap()
+    };
+    let first = report("new-agent-authored-alpha");
+    let second = report("new-agent-authored-beta");
+    assert_eq!(first["valid"], true);
+    assert_eq!(second["valid"], true);
+    assert_eq!(first["exact_diff"], second["exact_diff"]);
+    assert_eq!(first["effective"], second["effective"]);
+    assert_ne!(first["candidate_revision"], second["candidate_revision"]);
+    assert_ne!(
+        first["input_identity"]["candidate"],
+        second["input_identity"]["candidate"]
+    );
+    assert_ne!(first["assessment_id"], second["assessment_id"]);
+    assert!(!first.to_string().contains("new-agent-authored-alpha"));
+    assert!(!second.to_string().contains("new-agent-authored-beta"));
+}
+
+#[test]
 fn whole_allowed_gateway_scope_combines_candidate_and_existing_temporary_authority() {
     let mut definition: Value = serde_json::from_str(include_str!(
         "fixtures/service-authoring/job.generated.yaml"

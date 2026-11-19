@@ -218,7 +218,7 @@ pub(crate) fn assess_current(
             .map(|(name, definition)| (name, crate::approvals::pending::digest(&definition.raw)))
             .collect::<std::collections::BTreeMap<_, _>>()
     });
-    result["input_identity"] = json!({"candidate":crate::policy::snapshot::source_revision(&source),
+    result["input_identity"] = json!({"candidate":result["candidate_revision"],
         "base":snapshot.metadata["saved_source_revision"],"captured_inputs":crate::policy::snapshot::assessment_inputs_revision(&snapshot.assessment_inputs),
         "temporary_grants":crate::approvals::pending::digest(&json!(relevant_grants)),"adopted_definitions":definitions,
         "analysis":crate::approvals::pending::digest(&json!([result["effective"],result["network"],result["authority"],result["services"],result["dependencies"]])),
