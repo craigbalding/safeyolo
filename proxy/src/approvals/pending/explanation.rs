@@ -469,6 +469,8 @@ pub(crate) fn explain_policy_changes(changes: &[Value], effective: bool) -> Vec<
             "This changes diagnostic or authority disclosure to the selected identities and scope. Information already read cannot be retracted. Runtime records still require their native read authority."
         } else if effective && root == "permissions" {
             "These are compiled effective rules, including inherited rules and defaults. Matching, precedence, budgets and other control checks still apply; the full selectors cover every matching request."
+        } else if effective && root == "budgets" {
+            "Request-budget changes alter the policy revision used by run-scoped credential approvals. An existing grant bound to the previous revision may no longer authorize credential use, even for the same fingerprint, destination and run. A fresh canonical credential decision may be required. Review that request through ordinary approvals; do not infer renewed credential authority from this policy decision."
         } else if matches!(root,"checks"|"check_rules"|"work_bindings") {
             "This changes named evidence, admission or request decisions. Evidence was not acquired and actions were not executed. Its native owner must validate adopted dependencies at submission."
         } else {
