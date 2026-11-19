@@ -557,6 +557,101 @@ def test_scanner_failure_and_incomplete_scan_are_not_passes(modules, selected, m
         checker.scan(media, selected["scan"], tmp_path)
 
 
+@pytest.mark.parametrize("seconds,milliseconds", [(270, "270000"), (0.2501, "251"), (0.0001, "1")])
+def test_selected_scan_time_bounds_the_scanner_and_process(modules, selected, monkeypatch, tmp_path, seconds, milliseconds):
+    _, checker = modules
+    media = tmp_path / "media"
+    media.write_bytes(b"media")
+    selected["scan"]["timeout_seconds"] = seconds
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, "fixture-version\n" if "--version" in argv else "media: OK\n", "")
+
+    monkeypatch.setattr(checker.subprocess, "run", run)
+    checker.scan(media, selected["scan"], tmp_path)
+    argv, options = calls[-1]
+    assert argv[argv.index("--max-scantime") + 1] == milliseconds
+    assert options["timeout"] == seconds
+    assert "--alert-exceeds-max=yes" in argv
+    assert "--scan-archive=no" not in argv and "--nocerts" not in argv
+
+
+@pytest.mark.parametrize("seconds", [0, -1, float("inf"), float("nan")])
+def test_scan_timeout_cannot_disable_the_selected_bound(modules, selected, monkeypatch, tmp_path, seconds):
+    _, checker = modules
+    selected["scan"]["timeout_seconds"] = seconds
+    calls = probe(monkeypatch, checker)
+    with pytest.raises(ValueError, match="positive, finite scan timeout"):
+        checker.scan(tmp_path / "media", selected["scan"], tmp_path)
+    assert calls == []
+
+
+@pytest.mark.parametrize("mode,code,output", [
+    ("limit", 1, "media: Heuristics.Limits.Exceeded.MaxScanTime FOUND"),
+    ("error", 2, "media: ERROR"), ("incomplete", 0, "incomplete scanner output"),
+    ("timeout", 0, "partial scanner output"), ("version", 2, "database verification failed"),
+])
+def test_failed_checker_diagnostics_reach_saved_native_result(modules, selected, monkeypatch, tmp_path, mode, code, output):
+    host, _ = modules
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    scanner = tools / "clamscan"
+    scanner.write_text(f"#!{sys.executable}\n" + textwrap.dedent(f"""
+        import sys
+        import time
+        if "--version" in sys.argv and {mode!r} != "version":
+            print("fixture scanner version")
+            sys.exit(0)
+        print({output!r}, flush=True)
+        print("original scanner stderr", file=sys.stderr, flush=True)
+        if {mode!r} == "timeout":
+            time.sleep(3)
+        sys.exit({code})
+    """))
+    scanner.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ["PATH"])
+    if mode == "timeout":
+        selected["scan"]["timeout_seconds"] = 0.2
+    real_run = subprocess.run
+    acquisition(monkeypatch, host)
+    download = host.subprocess.run
+
+    def run(argv, **kwargs):
+        if argv[0] == "curl":
+            return download(argv, **kwargs)
+        control = "validate" if "validate-job.json" in argv[5] else "scan"
+        directory = Path(argv[-1])
+        response = job_response(host, control, directory, selected)
+        if control == "scan":
+            # The checker and child capture are real; only native transport is controlled.
+            child = real_run([sys.executable, str(directory / "check_media.py"), "scan", "--input", str(directory)],
+                             capture_output=True, text=True, timeout=10)
+            assert child.returncode == 1
+            response["outcome"]["code"] = child.returncode
+            for stream in ("stdout", "stderr"):
+                raw = getattr(child, stream).encode()
+                response[stream] = {"retained_base64": base64.b64encode(raw).decode(), "bytes": len(raw),
+                                    "sha256": hashlib.sha256(raw).hexdigest()}
+        return subprocess.CompletedProcess(argv, 0, json.dumps(response), "")
+
+    monkeypatch.setattr(host.subprocess, "run", run)
+    with pytest.raises(ValueError, match="observable success"):
+        host.ingest(selected)
+    attempt, = Path(selected["quarantine"]).iterdir()
+    receipt = json.loads((attempt / "receipt.json").read_text())
+    assert receipt["stage"] == "scan" and receipt["status"] == "incomplete"
+    assert set(receipt["controls"]) == {"validate"}
+    assert not list(Path(selected["library"]).iterdir())
+    result = json.loads((attempt / "scan-job-result.json").read_text())
+    diagnostic = base64.b64decode(result["stderr"]["retained_base64"]).decode()
+    assert output in diagnostic and "original scanner stderr" in diagnostic
+    failure = ("TimeoutExpired" if mode == "timeout" else
+               "CalledProcessError" if mode == "version" else f"exit {code}")
+    assert failure in diagnostic
+
+
 def test_scanner_pins_database_and_refuses_expired_qualification(modules, selected, monkeypatch, tmp_path):
     _, checker = modules
     media = tmp_path / "media"

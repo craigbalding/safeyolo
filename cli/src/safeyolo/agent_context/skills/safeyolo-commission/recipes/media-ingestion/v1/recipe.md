@@ -64,7 +64,13 @@ bytes and expiry; their provenance and suitability still need independent
 qualification. Keep signature refresh separate from each scan's disabled network.
 
 The example permits 1 GiB of media, a 300-second download, a 90-second metadata
-probe and a 270-second scan. Native jobs additionally bound memory, elapsed time,
+probe and a 270-second scan. `scan.timeout_seconds` also selects ClamAV's internal
+scan limit in milliseconds, rounded up to the next millisecond. Select a positive,
+finite value. The process deadline includes database loading and the scan; it
+can stop the scanner before the internal limit. The example's 300-second native
+scan job also covers checker hashing and result generation. A time-limit alert
+or process timeout is incomplete scanning and prevents import.
+Native jobs additionally bound memory, elapsed time,
 input entries/bytes and retained streams. Their 2 GiB input bound includes the
 media, signatures, checker and request. Check allocated space before staging.
 Change these recipe inputs for the actual workload. There is no product-wide
@@ -119,6 +125,10 @@ control and import, the executor atomically saves the current stage in that same
 receipt. It also saves each completed control and the import result. The receipt
 identifies the selected library and filename. A failed or timed-out acquisition
 also retains its captured stdout/stderr and exit code or timeout in the receipt.
+Failed scanner output and timed-out tool output remain in the native job's
+retained stderr, beside the original child exit or timeout diagnostic. The private
+quarantine's `scan-job-result.json` retains that native result, including its
+bounded streams. No failed child result becomes a successful check.
 Abrupt termination leaves the last
 saved record; `incomplete` at `import` can mean that the file was created before
 the result was saved. Cancellation still propagates. No process/turn status
@@ -140,7 +150,10 @@ preservation. Real curl requests against an owned HTTPS fixture cover literal
 source URLs. Child-process cancellation probes retain the real receipt and file
 import paths, with acquisition and native checks controlled. They verify retained
 stages and destination inspection after interruption, including after file import.
-Its native-job envelopes are controlled fixtures. Its optional real
+Its native-job envelopes are controlled fixtures. Checker failure probes run
+child tools and retain their actual limit, exit and timeout diagnostics through
+the executor's saved job result; native transport
+remains controlled. Its optional real
 tool case generates media with embedded English captions and runs ffprobe and
 ClamAV with one harmless test signature. That case establishes tool behavior,
 not a production database or installed sandbox/library outcome. Missing tools

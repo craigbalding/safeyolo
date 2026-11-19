@@ -5,7 +5,9 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -45,6 +47,9 @@ def scan(media, selected, directory):
     """Scan with exactly the adopted database bytes and selected expiry."""
     if time.time() >= selected["valid_until_unix"]:
         raise ValueError("The adopted scanner database qualification has expired")
+    timeout_seconds = selected["timeout_seconds"]
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError("Select a positive, finite scan timeout")
     database = directory / "signatures"
     actual = {path.name: sha256(path) for path in database.iterdir() if path.is_file()}
     if not actual or actual != selected["database_sha256"]:
@@ -53,12 +58,14 @@ def scan(media, selected, directory):
                              check=True, capture_output=True, text=True, timeout=10)
     result = subprocess.run([
         "clamscan", "--stdout", "--no-summary", "--alert-exceeds-max=yes",
+        "--max-scantime", str(math.ceil(timeout_seconds * 1000)),
         "--max-filesize", str(media.stat().st_size + 1),
         "--max-scansize", str(selected["max_scan_bytes"]),
         "--database", str(database), str(media),
-    ], capture_output=True, text=True, timeout=selected["timeout_seconds"])
+    ], capture_output=True, text=True, timeout=timeout_seconds)
     if result.returncode != 0 or not result.stdout.rstrip().endswith(": OK"):
-        raise ValueError(f"Scanner did not establish a completed no-detection result (exit {result.returncode})")
+        raise ValueError(f"Scanner did not establish a completed no-detection result (exit {result.returncode})\n"
+                         f"stdout: {result.stdout}\nstderr: {result.stderr}")
     return {"clamscan": version.stdout.strip(), "database_sha256": actual,
             "valid_until_unix": selected["valid_until_unix"],
             "warnings": result.stderr,
@@ -85,7 +92,12 @@ def main():
     parser.add_argument("--input", type=Path, default=Path("/input"))
     args = parser.parse_args()
     # Unexpected faults and cancellation remain nonzero job outcomes.
-    print(json.dumps(check(args.control, args.input)))
+    try:
+        print(json.dumps(check(args.control, args.input)))
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        print(f"Child stdout: {os.fsdecode(error.stdout or '')}\n"
+              f"Child stderr: {os.fsdecode(error.stderr or '')}", file=sys.stderr)
+        raise
 
 
 if __name__ == "__main__":
