@@ -7,6 +7,24 @@ arguments and output. These commands write proposal files in the current guest
 working directory. They do not read full policy, contact a protected target,
 change policy or issue access.
 
+For a plain command guest, the owning host must first stage the matching guest
+client with `safeyolo-coord stage-runtime AGENT_HOME GUEST_COORD_EXECUTABLE`.
+`AGENT_HOME` is that agent's host-side persistent home. The guest executable is
+the selected installation's `assets/guest/safeyolo-coord`, with its version and
+checksum receipts. Ordinary coding-harness setup already stages this client.
+In the guest shell, load the mounted per-run transport before the commands below:
+
+```sh
+set -a
+. /safeyolo/proxy.env
+set +a
+export SAFEYOLO_COORD_TOKEN_PATH=/safeyolo/agent_token
+export PATH="$HOME/.safeyolo:$PATH"
+```
+
+These settings select the guest's existing proxy, certificates and token file.
+Keep token contents out of arguments and output.
+
 ## Discover
 
 Call `discover_policy_capabilities` through the installed Model Context Protocol
