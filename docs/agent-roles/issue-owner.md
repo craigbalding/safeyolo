@@ -122,9 +122,11 @@ Evidence requested as a repository deliverable belongs in the repository.
   to the issue.
 - Implement the change and update authoritative documentation when behaviour,
   interfaces, or contracts change.
-- For changes to operator journeys, apply the
-  [operator interaction contract](../operator-interaction-contract.md) in the
-  candidate and review handoff.
+- For changes to SafeYolo operator journeys, use the
+  [operator-ux skill](../../cli/src/safeyolo/agent_context/skills/operator-ux/SKILL.md)
+  to apply the [operator interaction contract](../operator-interaction-contract.md)
+  in the candidate and review handoff. Keep the evidence proportional to the
+  changed interaction.
 
 ## Prove the candidate proportionately
 
