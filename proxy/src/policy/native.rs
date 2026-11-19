@@ -425,6 +425,17 @@ impl Policy {
         now_ms: f64,
         previous: Option<&Self>,
     ) -> Result<(Self, super::ExpiredHosts)> {
+        Self::native_source_inputs(source, path, registry, now_ms, previous, true)
+    }
+
+    pub(super) fn native_source_inputs(
+        source: &str,
+        path: &Path,
+        registry: Option<Arc<crate::services::Registry>>,
+        now_ms: f64,
+        previous: Option<&Self>,
+        load_inputs: bool,
+    ) -> Result<(Self, super::ExpiredHosts)> {
         let (mut authored, mut timestamps) = super::parse_toml_with_timestamps(source)?;
         validate_authoring(&authored)?;
         let controls: Controls = serde_json::from_value(
@@ -510,7 +521,7 @@ impl Policy {
                         registry.as_ref(),
                     )
                 });
-        let mut policy = Self::from_document(
+        let mut policy = Self::from_document_inputs(
             ParsedPolicy {
                 document: fields,
                 timestamps,
@@ -519,6 +530,7 @@ impl Policy {
             registry,
             false,
             gateway_policy,
+            load_inputs,
         )?;
         policy.native = Some(Snapshot {
             identity_root: path.parent().unwrap_or(Path::new(".")).to_owned(),

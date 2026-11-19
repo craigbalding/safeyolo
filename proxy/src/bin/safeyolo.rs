@@ -454,7 +454,7 @@ async fn run() -> Result<(), Error> {
                 "safeyolo [--root ROOT] agent recover NAME [--timeout SECONDS]\nsafeyolo guest-command stage HOME SHARE ASSETS CONTEXT_JSON\nRecovery requires an already booted guest with idle command supervision. Staging is for a stopped guest; the caller supplies this run's context."
             );
             println!(
-                "safeyolo [--root ROOT] policy capabilities [--json]\nsafeyolo [--root ROOT] policy check FILE\nsafeyolo [--root ROOT] policy evaluate FILE REQUEST_JSON\nsafeyolo [--root ROOT] policy show\nsafeyolo [--root ROOT] policy apply FILE\nsafeyolo [--root ROOT] policy feeds --help\nsafeyolo config check FILE\nsafeyolo test-context --run ID --agent NAME [--role VALUE] [--suite VALUE] [--subject VALUE] [--step VALUE] [--test VALUE] [--intent VALUE] [--expect VALUE] [--field KEY=VALUE] [--header] [--write FILE]\nsafeyolo test-context declare --socket SOCKET --token-file FILE --run ID --agent NAME [--ttl SECONDS]\nsafeyolo test-context current|clear --socket SOCKET --token-file FILE\n\ncheck validates without saving or spending quotas.\nevaluate previews network decisions from captured evidence, without contacting the target or spending live quotas.\nshow reads effective policy and its source from the running process.\napply saves and activates through the operator Admin API.\nROOT contains config.toml and policy.toml. Named controls: network, credentials, patterns, test_context, circuits.\nContext agent is annotation; the trusted listener owns identity. --write atomically replaces a watched file.\n\nsafeyolo --version"
+                "safeyolo [--root ROOT] policy capabilities [--json]\nsafeyolo [--root ROOT] policy assess SNAPSHOT_REQUEST_ID FILE [--json]\nsafeyolo [--root ROOT] policy check FILE\nsafeyolo [--root ROOT] policy evaluate FILE REQUEST_JSON\nsafeyolo [--root ROOT] policy show\nsafeyolo [--root ROOT] policy apply FILE\nsafeyolo [--root ROOT] policy feeds --help\nsafeyolo config check FILE\nsafeyolo test-context --run ID --agent NAME [--role VALUE] [--suite VALUE] [--subject VALUE] [--step VALUE] [--test VALUE] [--intent VALUE] [--expect VALUE] [--field KEY=VALUE] [--header] [--write FILE]\nsafeyolo test-context declare --socket SOCKET --token-file FILE --run ID --agent NAME [--ttl SECONDS]\nsafeyolo test-context current|clear --socket SOCKET --token-file FILE\n\nassess privately explains candidate authority against an approved snapshot, with no approval submission, policy write or grant.\ncheck validates without saving or spending quotas.\nevaluate previews network decisions from captured evidence, without contacting the target or spending live quotas.\nshow reads effective policy and its source from the running process.\napply saves and activates through the operator Admin API.\nROOT contains config.toml and policy.toml. Named controls: network, credentials, patterns, test_context, circuits.\nContext agent is annotation; the trusted listener owns identity. --write atomically replaces a watched file.\n\nsafeyolo --version"
             );
             Ok(())
         }
@@ -488,6 +488,25 @@ async fn run() -> Result<(), Error> {
         }
         [policy, command, path] if policy == "policy" && command == "check" => {
             check(Path::new(path), &policy_directory(&config)?)
+        }
+        [policy, command, snapshot, path, rest @ ..]
+            if policy == "policy" && command == "assess" =>
+        {
+            if !rest.is_empty() && rest != ["--json"] {
+                return Err(
+                    "usage: safeyolo policy assess SNAPSHOT_REQUEST_ID FILE [--json]".into(),
+                );
+            }
+            let source = zeroize::Zeroizing::new(std::fs::read_to_string(path)?);
+            let definitions = safeyolo_proxy::policy::capabilities::discover();
+            let result = admin(&config,"/admin/policy/assess",Method::POST,
+                json!({"snapshot_request_id":snapshot,"source":source.as_str(),"definition_version":definitions["definition_version"]}),Duration::from_secs(60)).await?;
+            if rest == ["--json"] {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                safeyolo_proxy::operator_commands::show_policy_assessment(&result);
+            }
+            Ok(())
         }
         [policy, command, path, request] if policy == "policy" && command == "evaluate" => {
             let policy =

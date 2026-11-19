@@ -949,11 +949,11 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-service-effect-assessment-py).
 - [proxy/src/http/policy_checks/execution_tests.rs](../proxy/src/http/policy_checks/execution_tests.rs#L127) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real native request/gateway; owned assessment service and origin.
   Exact identities: [source inventory](#witness-proxy-src-http-policy-checks-execution-tests-rs).
-- [proxy/src/policy/checks.rs](../proxy/src/policy/checks.rs#L1516) — Native evaluator; process fixtures. Evidence: Composition, three-valued results, type/subject/version/freshness binding and offline preview; actual HTTP enforcement is separate.
+- [proxy/src/policy/checks.rs](../proxy/src/policy/checks.rs#L1526) — Native evaluator; process fixtures. Evidence: Composition, three-valued results, type/subject/version/freshness binding and offline preview; actual HTTP enforcement is separate.
   Exact identities: [source inventory](#witness-proxy-src-policy-checks-rs-policy-checks-tests).
-- [proxy/src/policy/checks.rs](../proxy/src/policy/checks.rs#L2126) — Native recorded-evidence and candidate preview; process fixtures. Evidence: Recorded allow/deny/unknown/expiry, effective native controls and no preview budget charge.
+- [proxy/src/policy/checks.rs](../proxy/src/policy/checks.rs#L2136) — Native recorded-evidence and candidate preview; process fixtures. Evidence: Recorded allow/deny/unknown/expiry, effective native controls and no preview budget charge.
   Exact identities: [source inventory](#witness-proxy-src-policy-checks-rs-policy-checks-fixture-tests).
-- [proxy/src/policy/checks.rs](../proxy/src/policy/checks.rs#L2219) — Native numeric composition; process fixture. Evidence: Non-finite aggregation cannot create a positive finding.
+- [proxy/src/policy/checks.rs](../proxy/src/policy/checks.rs#L2229) — Native numeric composition; process fixture. Evidence: Non-finite aggregation cannot create a positive finding.
   Exact identities: [source inventory](#witness-proxy-src-policy-checks-rs-policy-checks-composition-edge-tests).
 - [proxy/src/policy/checks/execution/tests.rs](../proxy/src/policy/checks/execution/tests.rs#L1) — Native typed-result and captured-input boundary; process fixtures. Evidence: Exact captured GitHub evidence, adopted input mapping and caller-supplied provenance refusal; no live engine.
   Exact identities: [source inventory](#witness-proxy-src-policy-checks-execution-tests-rs).
@@ -2884,32 +2884,32 @@ Selection: manual native phase `mediated-services` (named execution receipt; ign
 
 Selection: manual native phase `named-checks` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::scoped_ipv6_keeps_required_checks_and_normalization_failure_uses_fallback -- --exact`](../proxy/src/policy/checks.rs#L1516)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::validation_rejects_unknown_types_scales_stages_and_influence -- --exact`](../proxy/src/policy/checks.rs#L1590)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::hard_exclusion_dominates_host_agent_and_positive_advisory_allows -- --exact`](../proxy/src/policy/checks.rs#L1643)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::scoped_exception_only_overrides_its_named_advisory_rule -- --exact`](../proxy/src/policy/checks.rs#L1695)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::thresholds_aggregation_boolean_precedence_and_advisory_priority -- --exact`](../proxy/src/policy/checks.rs#L1743)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::no_match_missing_stale_and_failure_never_become_positive_under_negation -- --exact`](../proxy/src/policy/checks.rs#L1818)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::subject_input_version_type_source_time_and_validity_are_bound -- --exact`](../proxy/src/policy/checks.rs#L1872)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::registration_age_uses_decision_time_and_expires_at_the_transition -- --exact`](../proxy/src/policy/checks.rs#L1943)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::direct_ip_opaque_and_unsupported_stage_use_the_selected_fallback -- --exact`](../proxy/src/policy/checks.rs#L1991)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::unavailable_boolean_inputs_follow_three_valued_logic -- --exact`](../proxy/src/policy/checks.rs#L2054)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::recorded_replacement_and_missing_versions_are_observed_without_result_cache -- --exact`](../proxy/src/policy/checks.rs#L2076)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::scoped_ipv6_keeps_required_checks_and_normalization_failure_uses_fallback -- --exact`](../proxy/src/policy/checks.rs#L1526)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::validation_rejects_unknown_types_scales_stages_and_influence -- --exact`](../proxy/src/policy/checks.rs#L1600)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::hard_exclusion_dominates_host_agent_and_positive_advisory_allows -- --exact`](../proxy/src/policy/checks.rs#L1653)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::scoped_exception_only_overrides_its_named_advisory_rule -- --exact`](../proxy/src/policy/checks.rs#L1705)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::thresholds_aggregation_boolean_precedence_and_advisory_priority -- --exact`](../proxy/src/policy/checks.rs#L1753)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::no_match_missing_stale_and_failure_never_become_positive_under_negation -- --exact`](../proxy/src/policy/checks.rs#L1828)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::subject_input_version_type_source_time_and_validity_are_bound -- --exact`](../proxy/src/policy/checks.rs#L1882)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::registration_age_uses_decision_time_and_expires_at_the_transition -- --exact`](../proxy/src/policy/checks.rs#L1953)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::direct_ip_opaque_and_unsupported_stage_use_the_selected_fallback -- --exact`](../proxy/src/policy/checks.rs#L2001)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::unavailable_boolean_inputs_follow_three_valued_logic -- --exact`](../proxy/src/policy/checks.rs#L2064)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::recorded_replacement_and_missing_versions_are_observed_without_result_cache -- --exact`](../proxy/src/policy/checks.rs#L2086)
 
 <a id="witness-proxy-src-policy-checks-rs-policy-checks-fixture-tests"></a>
 ### [`proxy/src/policy/checks.rs`](../proxy/src/policy/checks.rs)
 
 Selection: manual native phase `named-checks` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::fixture_tests::reusable_fixture_preserves_allow_deny_unknown_and_expiry -- --exact`](../proxy/src/policy/checks.rs#L2126)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::fixture_tests::preview_uses_native_warn_and_bypass_and_never_charges_network_budget -- --exact`](../proxy/src/policy/checks.rs#L2155)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::fixture_tests::reusable_fixture_preserves_allow_deny_unknown_and_expiry -- --exact`](../proxy/src/policy/checks.rs#L2136)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::fixture_tests::preview_uses_native_warn_and_bypass_and_never_charges_network_budget -- --exact`](../proxy/src/policy/checks.rs#L2165)
 
 <a id="witness-proxy-src-policy-checks-rs-policy-checks-composition-edge-tests"></a>
 ### [`proxy/src/policy/checks.rs`](../proxy/src/policy/checks.rs)
 
 Selection: manual native phase `named-checks` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::composition_edge_tests::non_finite_aggregate_cannot_assert_a_positive_condition -- --exact`](../proxy/src/policy/checks.rs#L2219)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::composition_edge_tests::non_finite_aggregate_cannot_assert_a_positive_condition -- --exact`](../proxy/src/policy/checks.rs#L2229)
 
 <a id="witness-proxy-src-policy-checks-execution-tests-rs"></a>
 ### [`proxy/src/policy/checks/execution/tests.rs`](../proxy/src/policy/checks/execution/tests.rs)
@@ -2928,14 +2928,15 @@ Selection: manual native phase `named-checks` (named execution receipt; ignored 
 
 Selection: manual native phase `managed-feeds` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_refresh_preserves_literal_initial_and_redirect_endpoints -- --exact`](../proxy/tests/native_policy_feeds.rs#L281)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_refresh_after_rollback_recovers_unchanged_provider_membership -- --exact`](../proxy/tests/native_policy_feeds.rs#L330)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_setup_refresh_retention_expiry_restart_rollback_and_recovery -- --exact`](../proxy/tests/native_policy_feeds.rs#L458)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_download_validation_and_adopted_redirect_boundaries -- --exact`](../proxy/tests/native_policy_feeds.rs#L592)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_first_start_failure_recovers_automatically_without_approvals -- --exact`](../proxy/tests/native_policy_feeds.rs#L724)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_named_feed_only_fallback_refresh_preview_restart_and_rollback -- --exact`](../proxy/tests/native_policy_feeds.rs#L753)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds pending_acquisition_rechecks_source_adoption_and_retains_interrupted_schedule -- --exact`](../proxy/tests/native_policy_feeds.rs#L977)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds feed_setup_and_candidate_check_keep_the_selected_policy_directory -- --exact`](../proxy/tests/native_policy_feeds.rs#L1077)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds assessment_keeps_adopted_feed_scope_and_expiry_without_reloading_its_path -- --exact`](../proxy/tests/native_policy_feeds.rs#L281)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_refresh_preserves_literal_initial_and_redirect_endpoints -- --exact`](../proxy/tests/native_policy_feeds.rs#L327)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_refresh_after_rollback_recovers_unchanged_provider_membership -- --exact`](../proxy/tests/native_policy_feeds.rs#L376)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_setup_refresh_retention_expiry_restart_rollback_and_recovery -- --exact`](../proxy/tests/native_policy_feeds.rs#L504)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_download_validation_and_adopted_redirect_boundaries -- --exact`](../proxy/tests/native_policy_feeds.rs#L638)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_first_start_failure_recovers_automatically_without_approvals -- --exact`](../proxy/tests/native_policy_feeds.rs#L770)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_named_feed_only_fallback_refresh_preview_restart_and_rollback -- --exact`](../proxy/tests/native_policy_feeds.rs#L799)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds pending_acquisition_rechecks_source_adoption_and_retains_interrupted_schedule -- --exact`](../proxy/tests/native_policy_feeds.rs#L1023)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds feed_setup_and_candidate_check_keep_the_selected_policy_directory -- --exact`](../proxy/tests/native_policy_feeds.rs#L1123)
 
 <a id="witness-proxy-src-coord-rooms-work-automatic-tests-rs"></a>
 ### [`proxy/src/coord_rooms/work/automatic_tests.rs`](../proxy/src/coord_rooms/work/automatic_tests.rs)

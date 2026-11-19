@@ -3,6 +3,7 @@
 
 pub mod assessment;
 pub(crate) mod authority;
+pub mod policy;
 
 use std::collections::{BTreeMap, BTreeSet};
 

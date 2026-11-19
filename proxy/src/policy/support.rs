@@ -86,6 +86,19 @@ impl Grant {
             && self.acknowledgment.as_deref() == Some(self.revision().as_str())
     }
 
+    pub(crate) fn warnings(&self) -> Vec<String> {
+        let mut warnings = vec!["Revocation, narrowing and expiry prevent newly unauthorized operations. Admitted commands may continue; disclosed data and file or external changes cannot be undone.".into()];
+        if self.guest_admin {
+            warnings.push("Guest administration of both producer and reviewer is common administrative control. Configured actor checks still apply, but the reviewer is not independent of this manager. Keep a required independent decider outside the manager's administration.".into());
+            warnings.push("Guest administration permits arbitrary guest commands, including existing passwordless guest sudo, all target-accessible files, writable mounts, credentials, network and services, Agent API permissions and existing delegations. Authority can reach other peers and approval decisions through the target. Standing grants follow capabilities later given to the target. Direct target checks do not confine this indirect reach.".into());
+            warnings.push("The authority report shows typed upstream and downstream reach within the selected owner inventory and authorized disclosure. Inspect its supporting paths and unknown frontier. Partial evidence cannot establish reviewer independence.".into());
+        }
+        if !self.guest_logs.is_empty() {
+            warnings.push("Selected log paths are read inside the guest. Guest links may lead to any target-accessible data, including shared mounts and credentials. This permission is broader than host-observed inspection.".into());
+        }
+        warnings
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         if self.instance_id.is_empty() || self.targets.is_empty() {
             return Err(invalid(

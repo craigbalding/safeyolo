@@ -1867,6 +1867,46 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         }
         return Ok(get_baseline(policy, policy_path).await);
     }
+    if method == Method::POST && path == "/admin/policy/assess" {
+        let data = match read_json(request).await? {
+            ParsedBody::Value(data) => data.0.clone(),
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => Value::Null,
+        };
+        let input: crate::services::effects::policy::Candidate = match serde_json::from_value(data)
+        {
+            Ok(input) => input,
+            Err(_) => {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"supply snapshot_request_id, complete TOML source and installed definition_version only"}),
+                ));
+            }
+        };
+        let (Some(state), Some(writer)) = (task_state, audit) else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"assessment owner unavailable"}),
+            ));
+        };
+        let (state, writer) = (state.clone(), writer.clone());
+        return Ok(
+            match tokio::task::spawn_blocking(move || {
+                crate::approvals::pending::policy_assessment::operator(&state, &writer, &input)
+            })
+            .await
+            {
+                Ok(Ok(value)) => response(StatusCode::OK, value),
+                Ok(Err(error)) => {
+                    response(StatusCode::BAD_REQUEST, json!({"error":error.to_string()}))
+                }
+                Err(_) => response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error":"assessment unavailable; no candidate was applied or submitted"}),
+                ),
+            },
+        );
+    }
     if method == Method::POST && path == "/admin/policy/validate" {
         if policy.and_then(Policy::native_controls).is_some() {
             let data = match read_json(request).await? {

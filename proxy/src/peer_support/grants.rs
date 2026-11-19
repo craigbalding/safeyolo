@@ -115,14 +115,7 @@ pub(crate) fn preview(policy: &Policy, name: &str, proposal: &Proposal) -> Resul
             "state_disclosure":"The selected factory's role identities and observed runtime states; no checkpoint, contract, guest output or room history."}));
         warnings.push(format!("Factory {}: selected direction types {} reach its approved operator-input agent under the manager's own identity. This grants selected factory state and direction publication, not room history, native work ownership, acceptance or policy administration. Required checks, challenges and actor rules remain in force.",selected.factory,selected.types.join(", ")));
     }
-    if grant.guest_admin {
-        warnings.push("Guest administration of both producer and reviewer is common administrative control. Configured actor checks still apply, but the reviewer is not independent of this manager. Keep a required independent decider outside the manager's administration.".into());
-        warnings.push("Guest administration permits arbitrary guest commands, including existing passwordless guest sudo, all target-accessible files, writable mounts, credentials, network and services, Agent API permissions and existing delegations. Authority can reach other peers and approval decisions through the target. Standing grants follow capabilities later given to the target. Direct target checks do not confine this indirect reach.".into());
-        warnings.push("The authority report shows typed upstream and downstream reach within the selected owner inventory and authorized disclosure. Inspect its supporting paths and unknown frontier. Partial evidence cannot establish reviewer independence.".into());
-    }
-    if !grant.guest_logs.is_empty() {
-        warnings.push("Selected log paths are read inside the guest. Guest links may lead to any target-accessible data, including shared mounts and credentials. This permission is broader than host-observed inspection.".into());
-    }
+    warnings.extend(grant.warnings());
     if !grant.signal_rooms.is_empty() {
         let connection = crate::coord_rooms::open(&crate::host_platform::config_dir())
             .map_err(|_| invalid("signal disclosure needs the owning instance's Coord store"))?;

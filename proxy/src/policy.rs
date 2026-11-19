@@ -787,11 +787,29 @@ impl Policy {
     }
 
     fn from_document(
+        parsed: ParsedPolicy,
+        list_base_dir: Option<&Path>,
+        registry: Option<Arc<crate::services::Registry>>,
+        is_task: bool,
+        gateway_policy: Option<&Self>,
+    ) -> Result<Self> {
+        Self::from_document_inputs(
+            parsed,
+            list_base_dir,
+            registry,
+            is_task,
+            gateway_policy,
+            true,
+        )
+    }
+
+    fn from_document_inputs(
         mut parsed: ParsedPolicy,
         list_base_dir: Option<&Path>,
         registry: Option<Arc<crate::services::Registry>>,
         is_task: bool,
         gateway_policy: Option<&Self>,
+        load_inputs: bool,
     ) -> Result<Self> {
         let document = &mut parsed.document;
         let timestamps = &mut parsed.timestamps;
@@ -820,7 +838,11 @@ impl Policy {
             .transpose()?;
         let mut policy = Self {
             native: None,
-            checks: Arc::new(checks::Checks::parse(document, list_base_dir)?),
+            checks: Arc::new(if load_inputs {
+                checks::Checks::parse(document, list_base_dir)?
+            } else {
+                checks::Checks::parse_inputs(document, list_base_dir, false)?
+            }),
             baseline: None,
             baseline_path: None,
             file_times: None,
@@ -2355,7 +2377,7 @@ pub(crate) fn parse_toml_document(source: &str) -> Result<Value> {
     Ok(parse_toml_with_timestamps(source)?.0)
 }
 
-fn parse_toml_with_timestamps(source: &str) -> Result<(Value, TimestampPaths)> {
+pub(crate) fn parse_toml_with_timestamps(source: &str) -> Result<(Value, TimestampPaths)> {
     let (syntax_source, context) = mask_large_toml_integers(source)?;
     parse_toml_with_context(&syntax_source, &context)
 }

@@ -157,6 +157,21 @@ impl Client {
     }
 
     async fn call_scoped(&self, name: &str, args: &Value) -> Result<Value, Error> {
+        if name == "assess_policy" {
+            if self.home.is_some() {
+                return Err(
+                    "policy assessment selects only the authenticated local instance".into(),
+                );
+            }
+            return self
+                .request(
+                    Method::POST,
+                    "/policy/assess",
+                    args.clone(),
+                    Duration::from_secs(60),
+                )
+                .await;
+        }
         if matches!(name, "request_policy_snapshot" | "read_policy_snapshot") {
             if self.home.is_some() {
                 return Err("policy snapshots select only the authenticated local instance".into());
@@ -717,6 +732,12 @@ pub fn tools() -> Vec<Value> {
         result.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}}));
     };
     add(
+        "assess_policy",
+        "Privately validate and assess complete candidate TOML against your approved full-policy snapshot. Supply its original request ID, preserve redaction markers, and use definition_version from discovery. Returns effective authority, consequences, limitations and narrower supported choices within your disclosure. Later policy, unrelated runtime grants and private service models remain undisclosed. This read submits no approval, notifies nobody and changes no policy or grant. Revise or discuss the tradeoff before explicit submission through the adoption owner.",
+        json!({"snapshot_request_id":string,"source":string,"definition_version":string}),
+        &["snapshot_request_id", "source", "definition_version"],
+    );
+    add(
         "request_policy_snapshot",
         "Request human approval to disclose one complete authored policy snapshot from this local instance. Choose operation_id (req- followed by 32 lowercase hex digits) before submission; after a lost response read that same ID. Requester and source are host-derived. Approval grants no apply authority or future-source permission.",
         json!({"operation_id":string}),
@@ -1181,6 +1202,7 @@ pub fn tools() -> Vec<Value> {
                     | "request_collaboration"
                     | "request_policy_snapshot"
                     | "read_policy_snapshot"
+                    | "assess_policy"
                     | "discover_policy_capabilities"
                     | "validate_policy_capability"
                     | "observe_support_capability"

@@ -403,3 +403,32 @@ pub(crate) fn explain(
         })?;
     Ok(result)
 }
+
+pub(crate) fn explain_policy_changes(changes: &[Value], effective: bool) -> Vec<Value> {
+    changes.iter().map(|change| {
+        let path = change["path"].as_array().expect("change path");
+        let root = path.first().and_then(Value::as_str).unwrap_or("");
+        let control = effective && root == "controls" && path.len() == 3;
+        let last = path.last().and_then(Value::as_str).unwrap_or("");
+        let meaning = if effective && matches!(root,"support_grants"|"approval_delegations") && last == "expires_at" {
+            "This changes the duration of the selected authority. A null expiry is standing authority until revoked. Shortening or expiry cannot undo disclosed data or effects of admitted operations."
+        } else if effective && root == "support_grants" {
+            "The named support principal and explicit target peers have these operations and constraints. Inspection is always included. Guest administration reaches target-accessible credentials, mounts and delegations; the authority paths and native warnings explain combinations."
+        } else if effective && root == "approval_delegations" {
+            "Each selected reviewer can decide eligible canonical requests within the complete typed scopes. Beneficiaries, grant duration and source dependencies still bound issuance. The native warnings explain combined and persistent effects; proposed rules cannot approve their own adoption."
+        } else if control && last == "enabled" && change["after"] == false {
+            "Enforcement is disabled for this control and its affected traffic. Other controls still use their own settings."
+        } else if control && last == "action" && change["after"] == "warn" {
+            "This control records a warning while allowing the operation to continue. It no longer blocks this condition."
+        } else if root == "authority_readers" || (root == "agents" && path.len() == 3 && last == "evidence_reads") {
+            "This changes diagnostic or authority disclosure to the selected identities and scope. Information already read cannot be retracted. Runtime records still require their native read authority."
+        } else if effective && root == "permissions" {
+            "These are compiled effective rules, including inherited rules and defaults. Matching, precedence, budgets and other control checks still apply; the full selectors cover every matching request."
+        } else if matches!(root,"checks"|"check_rules"|"work_bindings") {
+            "This changes named evidence, admission or request decisions. Evidence was not acquired and actions were not executed. Its native owner must validate adopted dependencies at submission."
+        } else {
+            "The exact structural change is retained. Complete business effects for this field are not modelled; do not interpret missing warnings as safety."
+        };
+        json!({"path":path,"consequence":meaning})
+    }).collect()
+}

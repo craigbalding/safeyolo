@@ -102,28 +102,35 @@ definition uses the service parser rather than an invented parallel schema.
 
 ## Assess, revise and submit
 
-Explain the proposed behavior and why the operator's outcome needs it. Review
-effects, audience, lifetime, dependencies, credential custody, disruption and
-what remains unknown. Use the existing service effect model and current
-operator previews where relevant. Component validation and offline network
-simulation are not a complete analysis of combined authority. Candidate-wide
-assessment and adoption remain separate capabilities; discovery does not
-claim those outcomes.
+Explain the proposed behavior and why the operator's outcome needs it. Within
+existing disclosure authority, obtain a full authored-policy snapshot and
+preserve unrelated fields and redaction markers. The compiled `/policy`
+baseline is not a complete copy of authored policy.
 
-Within existing disclosure authority, obtain the current authored source and
-preserve unrelated fields. The compiled `/policy` baseline is not a complete
-copy of authored policy. Do not reconstruct hidden authored fields from an
-undisclosed result. Revise the proposal or discuss a material choice with the
-operator when necessary. Ordinary work within existing approval needs no new
-confirmation ritual.
+Call `assess_policy` with `snapshot_request_id`, the complete TOML in `source`,
+and `definition_version` from discovery. No approval is submitted and no
+operator is notified. Read the effective before/after authority, affected
+identities, lifetime, persistent effects, narrower alternatives and coverage
+limits. Private model contents, current temporary grants and later unapproved
+policy revisions remain undisclosed; the result identifies that limitation.
+Do not infer hidden state or treat missing warnings as safety.
 
-Send the component, definition version, intended behavior and relevant current
-references to the existing policy owner. On the owning host, that owner combines
-the change with the authorized current source, runs `policy check` and relevant
-`policy evaluate` cases, and uses the current preview/apply operation under its
-existing authority. Support and delegation changes retain their exact preview
-acknowledgments. Services retain their existing definition/reference checks.
-Execution revalidates current policy, identity and runtime prerequisites.
+For a support grant, `inspection_only` supplies a supported encoded replacement
+and explains the guest content and repair authority it removes. Apply that
+replacement at its returned path only if it still meets the operator's need.
+Reassess the complete revised source, or discuss the concrete tradeoff in the
+harness. Do not automatically submit or retry. The full command recipe and
+operator review contract are in the shipped `docs/policy-assessment.md`.
+
+Explicitly submit the candidate and relevant references through the authorized
+adoption owner. On the owning host, `safeyolo policy assess SNAPSHOT_REQUEST_ID
+FILE` presents trusted consequences, scope, exact redacted diff and evidence
+from the same assessment implementation. The operator view adds its authorized
+service models and current temporary grants. Its currentness and input identity
+must be revalidated at decision. Existing preview/apply operations retain their
+authority; private assessment grants no application permission. Support and
+delegation changes keep their exact preview acknowledgments. Services retain
+their separate model adoption and reference checks.
 
 After an authorized apply, inspect `policy show` and the affected consumer.
 Saving, activation and actual behavior are separate results. Inspect an
