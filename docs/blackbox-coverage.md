@@ -233,6 +233,8 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-outbound-effects-py).
 - [tests/proxy_contracts/test_single_event_log.py](../tests/proxy_contracts/test_single_event_log.py#L33) — Native scoped evidence API; host identity. Evidence: Real policy traffic and scoped evidence readers.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-single-event-log-py).
+- [proxy/tests/native_coord/diagnostics.rs](../proxy/tests/native_coord/diagnostics.rs#L123) — Native Agent API/MCP; host process; controlled HTTP failures. Evidence: Actual native client and scoped audit reader; canned body/deadline variants. These tests do not establish an installed guest or real-agent journey..
+  Exact identities: [source inventory](#witness-proxy-tests-native-coord-diagnostics-rs).
 
 ### BB-06 — Destination policy / reload
 
@@ -796,6 +798,8 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-catch-up-rs).
 - [proxy/tests/native_coord/continuation.rs](../proxy/tests/native_coord/continuation.rs#L14) — Native Coord/NATS; host process; cfg and ignore annotations retain venue limits. Evidence: Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-continuation-rs).
+- [proxy/tests/native_coord/diagnostics.rs](../proxy/tests/native_coord/diagnostics.rs#L123) — Native Agent API/MCP; host process; controlled HTTP failures. Evidence: Actual native client and scoped audit reader; canned body/deadline variants. These tests do not establish an installed guest or real-agent journey..
+  Exact identities: [source inventory](#witness-proxy-tests-native-coord-diagnostics-rs).
 - [proxy/tests/native_coord/factory.rs](../proxy/tests/native_coord/factory.rs#L69) — Native Coord/NATS; host process; cfg and ignore annotations retain venue limits. Evidence: Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-factory-rs).
 - [proxy/tests/native_coord/github.rs](../proxy/tests/native_coord/github.rs#L90) — Native Coord/NATS; host process; cfg and ignore annotations retain venue limits. Evidence: Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself.
@@ -2695,6 +2699,21 @@ Selection: ignored by default.
 Selection: ignored by default.
 
 - [`cargo test --manifest-path proxy/Cargo.toml --test native_coord continuation::continuation_recovers_once_and_retains_delivery_across_restart -- --exact --ignored`](../proxy/tests/native_coord/continuation.rs#L14) — `#[ignore = "requires pinned NATS; real commit interruption, discarded response and restart delivery"]`
+
+<a id="witness-proxy-tests-native-coord-diagnostics-rs"></a>
+### [`proxy/tests/native_coord/diagnostics.rs`](../proxy/tests/native_coord/diagnostics.rs)
+
+Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::failed_attention_resolution_preserves_each_source_position_and_its_failure -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L123)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::tool_failure_preserves_original_and_bounded_reader_states -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L174)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::diagnostic_limits_and_failures_never_replace_or_repeat_the_original -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L218)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::error_body_states_and_correlation_remain_explicit -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L271)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::reduced_failure_details_preserve_body_retry_information -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L327)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::diagnostic_limits_describe_truncation_after_redaction_and_sanitization -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L353)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::sensitive_and_unbounded_failures_do_not_escape_to_mcp -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L408)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::real_agent_api_refusal_uses_its_existing_scoped_audit_reader -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L454)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord diagnostics::generic_transport_and_explicit_diagnostic_reads_do_not_collect -- --exact`](../proxy/tests/native_coord/diagnostics.rs#L508)
 
 <a id="witness-proxy-tests-native-coord-factory-rs"></a>
 ### [`proxy/tests/native_coord/factory.rs`](../proxy/tests/native_coord/factory.rs)
