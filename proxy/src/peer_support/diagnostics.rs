@@ -236,7 +236,7 @@ fn permitted_row(row: &Value, grant: &Grant) -> bool {
 }
 
 fn path(run: &AgentRun, key: &str) -> Result<PathBuf, Error> {
-    let directory = super::audit_delivery::directory("support-operations")?;
+    let directory = super::audit_delivery::directory("support-diagnostics")?;
     // A bounded receipt, never a second audit archive. Expired data is removed
     // on diagnostic use. The canonical approval preserves a snapshot marker.
     for entry in std::fs::read_dir(&directory)? {

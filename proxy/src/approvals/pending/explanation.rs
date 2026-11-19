@@ -24,6 +24,15 @@ pub(crate) fn explain(
     };
     let kind = action["kind"].as_str().unwrap_or("");
     let (stopped, mut non_grants, graph_node) = match kind {
+        "policy_snapshot" => (
+            "The requester asked to read one identified complete authored policy snapshot from this local instance.",
+            vec![
+                "No policy application, enforcement change or access to a future source revision.",
+                "No config.toml, Admin credentials, credential-store values or arbitrary host files.",
+                "Only the original current requester/run can read the approved retained snapshot. Disclosure cannot be undone.",
+            ],
+            "sym.accept_policy_assurance",
+        ),
         "operator_action" => (
             "Presenting an agent desktop requires the operator's approval for this target, route, browser URL and preview lifetime.",
             vec![
@@ -127,6 +136,7 @@ pub(crate) fn explain(
             | "coord_access"
             | "coord_collaboration"
             | "diagnostic_disclosure"
+            | "policy_snapshot"
     );
     if option.is_some() && record.authority.selected_option(option).is_none() {
         return Err(invalid("select one of this approval's fixed options"));
@@ -164,6 +174,13 @@ pub(crate) fn explain(
         facts["operator_selection"] = view["result"]["diagnostic_selection"].clone();
         facts["authority_delta"] = json!(
             "Read-only diagnostic disclosure through existing support grants. History and access lifetime are independent. Explicit room selections grant no room identity or send rights. Narrow a pending selection through this approval's diagnostic-selection route; after approval use support grant preview/apply/revoke."
+        );
+        unknowns.clear();
+    }
+    if kind == "policy_snapshot" {
+        facts["snapshot"] = action["snapshot"].clone();
+        facts["authority_delta"] = json!(
+            "Permit private reads of this retained snapshot by its original current requester/run. The saved and active revisions identify the approval basis. New policy bytes require a separate decision. Enforcement policy and apply authority remain unchanged."
         );
         unknowns.clear();
     }

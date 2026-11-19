@@ -22,6 +22,7 @@ pub(crate) mod delegation;
 pub(crate) mod diagnostics;
 mod explanation;
 mod gateway;
+pub(crate) mod policy_snapshot;
 pub(crate) mod results;
 pub(crate) mod route_challenge;
 pub(crate) use explanation::explain;
@@ -227,6 +228,8 @@ impl Store {
              CREATE INDEX IF NOT EXISTS equivalent_pending ON approvals(authority_digest, status);
              CREATE TABLE IF NOT EXISTS approval_requests (
                request_id TEXT PRIMARY KEY, approval_id TEXT NOT NULL REFERENCES approvals(approval_id));
+             CREATE TABLE IF NOT EXISTS policy_snapshots (
+               approval_id TEXT PRIMARY KEY REFERENCES approvals(approval_id), record TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS approval_context (
                approval_id TEXT PRIMARY KEY REFERENCES approvals(approval_id), record TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS approval_attention (
@@ -265,10 +268,21 @@ impl Store {
 
     pub(super) fn submit_status(
         &self,
+        authority: Authority,
+        request_id: &str,
+        policy: &Policy,
+        initial_status: &str,
+    ) -> Result<Record> {
+        self.submit_retained(authority, request_id, policy, initial_status, None)
+    }
+
+    fn submit_retained(
+        &self,
         mut authority: Authority,
         request_id: &str,
         policy: &Policy,
         initial_status: &str,
+        snapshot: Option<&crate::policy::snapshot::RetainedPolicySnapshot>,
     ) -> Result<Record> {
         let mut connection = self.connect()?;
         let transaction = connection
@@ -328,6 +342,14 @@ impl Store {
         record.request_count = record.request_count.saturating_add(1);
         record.last_requested_at = time::OffsetDateTime::now_utc().unix_timestamp();
         save(&transaction, &record)?;
+        if let Some(snapshot) = snapshot {
+            let encoded =
+                zeroize::Zeroizing::new(serde_json::to_string(snapshot).map_err(unavailable)?);
+            transaction.execute(
+                "INSERT INTO policy_snapshots VALUES (?1,?2) ON CONFLICT(approval_id) DO NOTHING",
+                params![record.approval_id, encoded.as_str()],
+            ).map_err(unavailable)?;
+        }
         transaction
             .execute(
                 "INSERT INTO approval_requests VALUES (?1,?2)",
@@ -506,6 +528,11 @@ impl Record {
     }
 
     pub(crate) fn committed(&self, policy: &Policy) -> Result<Option<Value>> {
+        if self.authority.action["kind"] == "policy_snapshot" {
+            // Disclosure has no policy effect or authored policy receipt.
+            // Only its canonical human decision can release private source.
+            return Ok(None);
+        }
         let Some(result) = policy.approval_result(&self.approval_id).map_err(invalid)? else {
             return Ok(None);
         };
@@ -546,6 +573,7 @@ impl Record {
             Some("service_authorize") => ("gateway.request_access", "service"),
             Some("operator_action") => ("agent.operator_action_requested", "desktop_present"),
             Some("diagnostic_disclosure") => ("agent.diagnostic_access_requested", "diagnostic"),
+            Some("policy_snapshot") => ("agent.policy_snapshot_requested", "policy_snapshot"),
             Some("coord_access" | "coord_collaboration") => {
                 ("coord.access_requested", "coord_room")
             }
@@ -557,6 +585,12 @@ impl Record {
             .get("host")
             .or_else(|| self.authority.action.get("service"))
             .or_else(|| self.authority.action.get("room_name"))
+            .or_else(|| {
+                self.authority
+                    .action
+                    .get("snapshot")
+                    .and_then(|snapshot| snapshot.get("instance_id"))
+            })
             .or_else(|| self.authority.action.get("agent_id"))
             .and_then(Value::as_str)
             .unwrap_or("");
@@ -617,6 +651,15 @@ pub(crate) fn save_receipt(document: &mut toml_edit::DocumentMut, record: &Recor
 pub(crate) fn revision(policy: &Policy, action: &Value) -> Option<String> {
     if action["kind"] == "diagnostic_disclosure" {
         diagnostics::revision(policy, action)
+    } else if action["kind"] == "policy_snapshot" {
+        (policy.evidence_agent_id(action["agent"].as_str()?) == action["agent_id"].as_str()
+            && policy
+                .native_source_text()
+                .map(crate::policy::snapshot::source_revision)
+                .as_deref()
+                == action["snapshot"]["active_source_revision"].as_str())
+        .then(|| action["basis_revision"].as_str().map(str::to_owned))
+        .flatten()
     } else if action["kind"] == "operator_action" {
         Some(digest(
             &json!({"action_id":crate::operator_actions::DESKTOP_PRESENT,
@@ -849,6 +892,9 @@ pub(crate) fn current_view(
     record: &Record,
     state: Option<&crate::RuntimeState>,
 ) -> Result<Value> {
+    if record.authority.action["kind"] == "policy_snapshot" {
+        return policy_snapshot::approval_view(writer, policy, record, state);
+    }
     let mut view = record.view(policy)?;
     if matches!(record.status.as_str(), "pending" | "challenged")
         && let Some(state) = state
@@ -1230,6 +1276,10 @@ pub(crate) fn resolve_as(
     reviewer: Option<(&crate::peer_support::Caller, &str)>,
 ) -> Result<Option<(u16, Value)>> {
     match lookup(writer, id)? {
+        Some(record) if record.authority.action["kind"] == "policy_snapshot" => {
+            return policy_snapshot::resolve(state, writer, id, decision, option, reviewer)
+                .map(Some);
+        }
         Some(record) if record.authority.action["kind"] == "operator_action" => {
             return crate::operator_actions::resolve(state, writer, id, decision, option, reviewer)
                 .map(Some);

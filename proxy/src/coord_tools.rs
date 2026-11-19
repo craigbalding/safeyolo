@@ -186,6 +186,26 @@ impl Client {
                 }
             };
         }
+        if matches!(name, "request_policy_snapshot" | "read_policy_snapshot") {
+            if self.home.is_some() {
+                return Err("policy snapshots select only the authenticated local instance".into());
+            }
+            return if name == "request_policy_snapshot" {
+                self.request(
+                    Method::POST,
+                    "/policy/snapshots",
+                    args.clone(),
+                    Duration::from_secs(60),
+                )
+                .await
+            } else {
+                self.get(&format!(
+                    "/policy/snapshots/{}",
+                    segment(text(args, "request_id")?)
+                ))
+                .await
+            };
+        }
         if name == "discover_policy_capabilities" {
             return self
                 .get(if args["observe"] == true {
@@ -726,6 +746,18 @@ pub fn tools() -> Vec<Value> {
         result.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}}));
     };
     add(
+        "request_policy_snapshot",
+        "Request human approval to disclose one complete authored policy snapshot from this local instance. Choose operation_id (req- followed by 32 lowercase hex digits) before submission; after a lost response read that same ID. Requester and source are host-derived. Approval grants no apply authority or future-source permission.",
+        json!({"operation_id":string}),
+        &["operation_id"],
+    );
+    add(
+        "read_policy_snapshot",
+        "Read your original full-policy snapshot request and, after human approval, its retained authored source. Use the original operation_id or returned approval_id as request_id. Another requester or replaced run cannot read it. Retries return the same snapshot; preserve its field markers when composing a candidate. Keep source private.",
+        json!({"request_id":string}),
+        &["request_id"],
+    );
+    add(
         "discover_policy_capabilities",
         "Discover installed policy types, operation schemas, owning validators, declared effects, scopes, lifetimes, dependencies and coverage gaps before full-policy disclosure. observe=true adds only current caller-authorized observations; failed or undisclosed reads remain unknown. This read grants no authority and performs no protected operation.",
         json!({"observe":{"type":"boolean","default":false}}),
@@ -1209,6 +1241,8 @@ pub fn tools() -> Vec<Value> {
             Some(
                 "request_room_access"
                     | "request_collaboration"
+                    | "request_policy_snapshot"
+                    | "read_policy_snapshot"
                     | "discover_policy_capabilities"
                     | "validate_policy_capability"
                     | "observe_support_capability"

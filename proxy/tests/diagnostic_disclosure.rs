@@ -72,6 +72,83 @@ fn runs(f: &Fixture) -> Vec<controlled_runs::Backend> {
     .collect()
 }
 
+#[test]
+fn diagnostic_collection_keeps_operation_audit_recovery_healthy() {
+    const CHILD: &str = "SAFEYOLO_DIAGNOSTIC_RECOVERY_CHILD";
+    let Ok(mode) = std::env::var(CHILD) else {
+        for mode in ["healthy", "malformed-operation"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "diagnostic_collection_keeps_operation_audit_recovery_healthy",
+                    "--nocapture",
+                ])
+                .env(CHILD, mode)
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "{mode}: {}\n{stderr}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert_eq!(
+                stderr.contains("Support canonical audit delivery unavailable"),
+                mode == "malformed-operation",
+                "{mode}: {stderr}"
+            );
+        }
+        return;
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let f = Fixture::with_installed_settings().await;
+            let _runs = runs(&f);
+            assert_eq!(f.network("worker", f.address).await.status, 428);
+            let pending = submit(&f, request("recovery", true, vec!["worker"])).await;
+            let id = pending["approval_id"].as_str().unwrap();
+            approve(&f, id).await;
+            let approved = f
+                .agent("helper", "GET", &format!("/approvals/{id}"), None)
+                .await;
+            assert_eq!(approved.json()["status"], "approved");
+            let discovered = f.agent("helper", "GET", "/support/diagnostics", None).await;
+            assert!(
+                discovered.json()["readable"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|grant| grant["grant"] == id && grant["readable"] == true)
+            );
+            let input = json!({"operation_id":"recovery","grant":id});
+            let first = query(&f, input.clone()).await;
+            assert_eq!(first.status, 200, "{}", first.json());
+            assert!(first.json()["total_matches"].as_u64().unwrap() > 0);
+            let receipts = f
+                .admin("POST", "/admin/support-operations/list", Some(json!({})))
+                .await;
+            assert_eq!(receipts.status, 200, "{}", receipts.json());
+            assert_eq!(receipts.json()["total"], 0);
+            if mode == "malformed-operation" {
+                let operations = f.root.path().join("data/support-operations");
+                fs::create_dir_all(&operations).unwrap();
+                fs::write(operations.join(format!("{}.json", "0".repeat(64))), "{}").unwrap();
+            }
+            // Observe several passes of the existing 250 ms audit worker.
+            // The malformed-operation case proves that worker is exercised.
+            for _ in 0..4 {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let retry = query(&f, input.clone()).await;
+                assert_eq!(retry.status, 200, "{}", retry.json());
+                assert_eq!(retry.json()["rows"], first.json()["rows"]);
+            }
+            f.stop().await;
+        });
+}
+
 #[tokio::test]
 async fn snapshot_pages_retries_and_source_loss_keep_the_original_records() {
     let f = Fixture::with_installed_settings().await;
@@ -134,7 +211,7 @@ async fn snapshot_pages_retries_and_source_loss_keep_the_original_records() {
     assert_eq!(after_pruning.status, 200, "{}", after_pruning.json());
     assert_eq!(after_pruning.json()["rows"], lost.json()["rows"]);
     // The canonical snapshot marker prevents replacing a lost private result.
-    for entry in fs::read_dir(f.root.path().join("data/support-operations")).unwrap() {
+    for entry in fs::read_dir(f.root.path().join("data/support-diagnostics")).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|e| e == "json") {
             fs::remove_file(path).unwrap();
@@ -453,7 +530,7 @@ async fn standing_grant_narrowing_revocation_and_snapshot_retention_apply_to_eve
     let input = json!({"operation_id":"retention","grant":id,"limit":1});
     let first = query(&f, input.clone()).await;
     assert_eq!(first.status, 200, "{}", first.json());
-    for entry in fs::read_dir(f.root.path().join("data/support-operations")).unwrap() {
+    for entry in fs::read_dir(f.root.path().join("data/support-diagnostics")).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|e| e == "json") {
             let mut receipt: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();

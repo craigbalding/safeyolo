@@ -469,6 +469,10 @@ fn show_explanation(view: &Value) -> Result<(), Error> {
         show_evidence_fields(&view["action"], 2);
     }
     let facts = &view["observed"];
+    if let Some(snapshot) = facts.get("snapshot") {
+        println!("  Full authored policy snapshot:");
+        show_evidence_fields(snapshot, 4);
+    }
     for (label, key) in [
         ("Agent", "agent"),
         ("Agent ID", "agent_id"),
@@ -609,6 +613,11 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
             "Fixed results retain at most 2000 rows / 4 MiB for seven days. Audit history is independent of access expiry. Current runtime/membership observations are not reconstructed history. No room send, guest administration, lifecycle or policy change is granted. Use approvals narrow-diagnostics APPROVAL_ID --file SELECTION.json to prepare a narrower scope before deciding; inspect its returned preview."
         );
     }
+    if view["action"]["kind"] == "policy_snapshot" {
+        println!("Full authored policy snapshot:");
+        show_evidence_fields(&view["snapshot"], 2);
+    }
+
     if view["action"]["kind"] == "operator_action" {
         if let Some(audit) = view["audit_status"].as_str() {
             println!("Audit: {}", safe(audit));
