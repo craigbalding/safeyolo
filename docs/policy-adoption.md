@@ -68,6 +68,15 @@ identities, scope, lifetime, combined effects, limitations and complete
 separately labelled rationale are untrusted data. Secret fields remain redacted.
 `prior_revision` contains the protected previous source's redacted view.
 
+If the candidate changes request budgets, review the effect on run-scoped
+credential approvals. Those grants are bound to a policy revision that includes
+the request budgets. After adoption, the same credential, destination and run
+can require a fresh credential decision, even when the authored grant remains.
+Read that canonical request and its scope before deciding through ordinary
+approvals. A harness model request can pause at this boundary. Recover the
+policy result by its original operation ID; do not resubmit or replay the
+policy decision to resume the harness.
+
 The retained assessment is the review basis. `observed_policy_state` identifies
 the currently observed saved and active bytes. For a pending request,
 `reviewed_inputs_match_current: false` means the review is stale. The operator

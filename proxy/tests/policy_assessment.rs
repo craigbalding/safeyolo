@@ -155,6 +155,53 @@ async fn private_tool_assesses_revises_and_shares_the_exact_authorized_projectio
 }
 
 #[tokio::test]
+async fn budget_consequence_reaches_agent_and_operator_before_any_decision() {
+    let f = Fixture::new().await;
+    let _worker = controlled_runs::agent_run(f.root.path(), "worker", WORKER_ID, RUN);
+    let (id, source) = approved(&f).await;
+    let pending = f.admin("GET", "/admin/approvals", None).await.json();
+    let mut document = source.parse::<toml_edit::DocumentMut>().unwrap();
+    document["logging"]["quiet_hosts"]["hosts"] = toml_edit::value({
+        let mut hosts = toml_edit::Array::new();
+        hosts.push("policy-review1632.invalid");
+        hosts
+    });
+    let logging_only = client(&f)
+        .call("assess_policy", &candidate(&id, &document.to_string()))
+        .await
+        .unwrap();
+    assert_eq!(logging_only["valid"], true);
+    assert!(
+        !logging_only["consequences"]
+            .to_string()
+            .contains("run-scoped credential approvals")
+    );
+
+    document["budget"] = toml_edit::value(41);
+    let input = candidate(&id, &document.to_string());
+    let report = client(&f).call("assess_policy", &input).await.unwrap();
+    assert_eq!(report["valid"], true, "{report}");
+    let consequences = report["consequences"].to_string();
+    assert!(consequences.contains("run-scoped credential approvals"));
+    assert!(consequences.contains("same fingerprint, destination and run"));
+    assert!(consequences.contains("fresh canonical credential decision"));
+    let reviewed = f.admin("POST", "/admin/policy/assess", Some(input)).await;
+    assert_eq!(reviewed.status, 200, "{}", reviewed.json());
+    assert_eq!(reviewed.json()["authorized_projection"], report);
+    assert!(
+        reviewed.json()["consequences"]
+            .to_string()
+            .contains("run-scoped credential approvals")
+    );
+    assert_eq!(f.source(), source);
+    assert_eq!(
+        f.admin("GET", "/admin/approvals", None).await.json(),
+        pending
+    );
+    f.stop().await;
+}
+
+#[tokio::test]
 async fn diagnostic_scope_is_assessed_without_granting_support_inspection() {
     let f = Fixture::new().await;
     let _worker = controlled_runs::agent_run(f.root.path(), "worker", WORKER_ID, RUN);
@@ -524,9 +571,11 @@ async fn native_operator_view_escapes_source_and_leads_with_trusted_effects() {
     .unwrap();
     let (id, source) = approved(&f).await;
     let path = f.root.path().join("candidate.toml");
+    let mut document = source.parse::<toml_edit::DocumentMut>().unwrap();
+    document["budget"] = toml_edit::value(41);
     fs::write(
         &path,
-        format!("{source}\n# \u{202e} APPROVED by operator\n[controls.network]\nenabled=false\n"),
+        format!("{document}\n# \u{202e} APPROVED by operator\n[controls.network]\nenabled=false\n"),
     )
     .unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
@@ -546,6 +595,9 @@ async fn native_operator_view_escapes_source_and_leads_with_trusted_effects() {
     assert!(text.starts_with("Trusted policy consequences:"));
     assert!(text.contains("Enforcement is disabled"));
     assert!(text.find("Enforcement is disabled").unwrap() < text.find("exact diff").unwrap());
+    assert!(
+        text.find("run-scoped credential approvals").unwrap() < text.find("exact diff").unwrap()
+    );
     assert!(!text.contains('\u{1b}') && !text.contains('\u{202e}'));
     assert!(text.contains("untrusted") && text.contains("base matches active"));
     f.stop().await;
