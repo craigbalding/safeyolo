@@ -16,6 +16,12 @@ use fixture::{Fixture, HELPER_ID, WORKER_ID};
 const PEER_ID: &str = "ag-33333333333333333333333333333333";
 const RUN: &str = "0123456789abcdef0123456789abcdef";
 
+impl Fixture {
+    async fn with_installed_settings() -> Self {
+        Self::configured(1000, true).await
+    }
+}
+
 fn timestamp(seconds: i64) -> String {
     (time::OffsetDateTime::now_utc() + time::Duration::seconds(seconds))
         .format(&time::format_description::well_known::Rfc3339)

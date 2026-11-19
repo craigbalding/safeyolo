@@ -75,11 +75,7 @@ impl Fixture {
         Self::configured(max_flows, false).await
     }
 
-    pub(crate) async fn with_installed_settings() -> Self {
-        Self::configured(1000, true).await
-    }
-
-    async fn configured(max_flows: usize, installed_settings: bool) -> Self {
+    pub(crate) async fn configured(max_flows: usize, installed_settings: bool) -> Self {
         let root = tempfile::tempdir().unwrap();
         let data = root.path().join("data");
         fs::create_dir(&data).unwrap();
