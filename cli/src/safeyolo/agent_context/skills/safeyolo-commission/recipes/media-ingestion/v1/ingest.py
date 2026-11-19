@@ -29,7 +29,7 @@ def acquire(config, directory):
         raise ValueError("Select an HTTPS source without credentials or a fragment")
     media = directory / "media"
     result = subprocess.run([
-        "curl", "--disable", "--silent", "--show-error", "--fail", "--proto", "=https",
+        "curl", "--disable", "--globoff", "--silent", "--show-error", "--fail", "--proto", "=https",
         "--max-time", str(config["download_timeout_seconds"]), "--max-filesize", str(config["max_bytes"]),
         "--output", str(media), "--write-out", "%{http_code}", "--url", source["url"],
     ], check=True, capture_output=True, text=True, timeout=config["download_timeout_seconds"] + 5)
@@ -105,6 +105,20 @@ def import_media(media, config):
     return {"path": str(target), "sha256": sha256(target), "effect": "imported"}
 
 
+def write_receipt(receipt):
+    """Replace the private receipt only after the new record is complete."""
+    destination = Path(receipt["receipt"])
+    with tempfile.NamedTemporaryFile(mode="w", dir=destination.parent, prefix=".receipt-", delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            json.dump(receipt, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
 def ingest(config):
     """Required ordering lives at the trusted effect, not in worker instructions."""
     started = time.time()
@@ -119,8 +133,10 @@ def ingest(config):
     # The executor owns this directory; never expose it as a writable worker mount.
     directory = Path(tempfile.mkdtemp(prefix="media-", dir=quarantine))
     receipt = {"version": 1, "source": config["source"], "controls": {}, "status": "incomplete",
+               "library": str(library), "filename": config["filename"],
                "started_unix": started, "receipt": str(directory / "receipt.json"), "stage": "acquisition"}
     try:
+        write_receipt(receipt)
         media = acquire(config, directory)
         shutil.copyfile(Path(__file__).with_name("check_media.py"), directory / "check_media.py")
         shutil.copytree(config["signatures"], directory / "signatures", symlinks=False)
@@ -129,21 +145,25 @@ def ingest(config):
         # DOC: cli/src/safeyolo/agent_context/skills/safeyolo-commission/recipes/media-ingestion/v1/recipe.md
         for control in ("validate", "scan"):
             receipt["stage"] = control
+            write_receipt(receipt)
             receipt["controls"][control] = required_check(config, control, directory)
+            write_receipt(receipt)
         if time.time() >= config["scan"]["valid_until_unix"]:
             raise ValueError("Scanner qualification expired before import")
         receipt["stage"] = "import"
+        write_receipt(receipt)
         receipt["import"] = import_media(media, config)
         receipt["status"] = "imported_pending_application"
         receipt["library_verification"] = "pending independent application readback; filesystem import is not library indexing"
+        write_receipt(receipt)
         media.unlink()  # Successful import retains the artifact in the selected library.
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         receipt["error"] = f"{type(error).__name__}: {error}"
         raise
     finally:
-        # Cancellation stays incomplete and propagates; the reached evidence remains private.
+        # Python cancellation propagates; abrupt termination leaves the last saved stage.
         receipt["ended_unix"] = time.time()
-        (directory / "receipt.json").write_text(json.dumps(receipt))
+        write_receipt(receipt)
         if receipt["status"] == "incomplete":
             print(f"Media import is incomplete at {receipt['stage']}; inspect {receipt['receipt']}", file=sys.stderr)
     return receipt

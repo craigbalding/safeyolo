@@ -50,9 +50,10 @@ cannot claim that this recipe protects effects through those other grants.
 
 Use [config.example.json](config.example.json) as an editable proposal. It is
 deliberately expired and has unresolved paths and digests. Replace them before
-execution. `source.url` selects one exact public HTTPS URL; redirects require a
-separately selected source. Retain credentials in their existing owner rather
-than embedding signed secrets in source URLs. `source.sha256` selects the actual
+execution. `source.url` selects one exact public HTTPS URL. Curl URL globbing is
+disabled, so braces and brackets cannot expand that selection into more requests.
+Redirects require a separately selected source. Retain credentials in their existing
+owner rather than embedding signed secrets in source URLs. `source.sha256` selects the actual
 edition's bytes. A changed artifact needs its own control runs.
 
 Select actual signature files and record each filename/SHA-256 under
@@ -113,10 +114,15 @@ Scanner warnings remain visible in the result. They do not silently become a
 new refusal policy. A missing or failed control, mismatched artifact/checker, incomplete native
 observation, changed import bytes, expired scanner qualification or unsupported
 runtime prevents import. A failed attempt exits nonzero and retains its reached
-receipt and original job output in private quarantine. An interrupted attempt
-remains `incomplete`; no process/turn status establishes completion. Inspect
-the receipt, exact destination and external job's original operation before
-retrying an uncertain invocation. Ordinary native Work owns the next operation.
+receipt and original job output in private quarantine. Before acquisition, each
+control and import, the executor atomically saves the current stage in that same
+receipt. It also saves each completed control and the import result. The receipt
+identifies the selected library and filename. Abrupt termination leaves the last
+saved record; `incomplete` at `import` can mean that the file was created before
+the result was saved. Cancellation still propagates. No process/turn status
+establishes completion. Inspect the receipt, exact destination and external job's
+original operation before retrying an uncertain invocation. Ordinary native Work
+owns the next operation.
 
 Successful attempts remove the duplicate quarantined media and retain compact
 evidence. Failed media remains private. The existing executor retention policy
@@ -128,7 +134,11 @@ or store. Do not retain credentials in receipts.
 The focused repository control is `tests/test_media_recipe.py`. It exercises
 allowed import, adjacent refused effects, missing/failed checks, subject/checker
 mismatch, changed bytes, database expiry, format/language variations and target
-preservation. Its native-job envelopes are controlled fixtures. Its optional real
+preservation. Real curl requests against an owned HTTPS fixture cover literal
+source URLs. Child-process cancellation probes retain the real receipt and file
+import paths, with acquisition and native checks controlled. They verify retained
+stages and destination inspection after interruption, including after file import.
+Its native-job envelopes are controlled fixtures. Its optional real
 tool case generates media with embedded English captions and runs ffprobe and
 ClamAV with one harmless test signature. That case establishes tool behavior,
 not a production database or installed sandbox/library outcome. Missing tools

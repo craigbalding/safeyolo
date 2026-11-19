@@ -9,10 +9,16 @@ import copy
 import hashlib
 import importlib
 import json
+import os
 import shutil
+import signal
+import ssl
 import subprocess
 import sys
+import textwrap
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -231,6 +237,142 @@ def test_redirect_is_not_an_acquisition(modules, selected, monkeypatch, tmp_path
     with pytest.raises(ValueError, match="HTTP 302"):
         host.acquire(selected, tmp_path)
     assert len(calls) == 1 and "--location" not in calls[0]
+
+
+@pytest.mark.parametrize("path", ["/{one,two}.mkv", "/part[1-2].mkv"])
+def test_real_curl_acquires_one_literal_source(modules, selected, monkeypatch, tmp_path, path):
+    """Use real curl through an owned CONNECT/TLS fixture without external traffic."""
+    from tests.proxy_contracts.test_http2_contract import origin_certificate
+
+    host, _ = modules
+    pem, ca = origin_certificate(tmp_path)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(pem)
+    requests = []
+
+    class Acquisition(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_CONNECT(self):
+            self.send_response(200)
+            self.end_headers()
+            self.connection = context.wrap_socket(self.connection, server_side=True)
+            self.rfile = self.connection.makefile("rb")
+            self.wfile = self.connection.makefile("wb")
+            self.handle_one_request()
+            self.close_connection = True
+
+        def do_GET(self):
+            requests.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Length", "5")
+            self.end_headers()
+            self.wfile.write(b"media")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Acquisition)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    # Only this test's subprocess uses the non-forwarding loopback proxy.
+    for name in ("https_proxy", "HTTPS_PROXY"):
+        monkeypatch.setenv(name, f"http://127.0.0.1:{server.server_port}")
+    for name in ("no_proxy", "NO_PROXY"):
+        monkeypatch.setenv(name, "")
+    monkeypatch.setenv("CURL_CA_BUNDLE", str(ca))
+    selected["source"]["url"] = f"https://localhost{path}"
+    try:
+        media = host.acquire(selected, tmp_path)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert requests == [path]
+    assert media.read_bytes() == b"media"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="The recipe's Linux/macOS executor uses POSIX signals")
+@pytest.mark.parametrize("stop_signal", [signal.SIGINT, signal.SIGTERM])
+@pytest.mark.parametrize("stage", ["acquisition", "validate", "scan", "import", "after_import"])
+def test_interrupted_cli_retains_stage_controls_and_destination(selected, tmp_path, stop_signal, stage):
+    """Keep real CLI, receipt and import behavior; control only acquisition/jobs."""
+    config = tmp_path / "selected.json"
+    config.write_text(json.dumps(selected))
+    driver = textwrap.dedent("""
+        import os
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, sys.argv[1])
+        import ingest
+
+        stage, stop_signal = sys.argv[3], int(sys.argv[4])
+
+        def acquire(config, directory):
+            media = directory / "media"
+            media.write_bytes(b"media")
+            if stage == "acquisition":
+                os.kill(os.getpid(), stop_signal)
+            return media
+
+        def required_check(config, control, directory):
+            if control == stage:
+                os.kill(os.getpid(), stop_signal)
+            return {"run_id": "controlled-" + control, "fixture": True}
+
+        original_import = ingest.import_media
+
+        def import_media(media, config):
+            if stage == "import":
+                os.kill(os.getpid(), stop_signal)
+            result = original_import(media, config)
+            if stage == "after_import":
+                os.kill(os.getpid(), stop_signal)
+            return result
+
+        ingest.acquire = acquire
+        ingest.required_check = required_check
+        ingest.import_media = import_media
+        sys.argv = [str(Path(ingest.__file__)), "--config", sys.argv[2]]
+        raise SystemExit(ingest.main())
+    """)
+    result = subprocess.run([sys.executable, "-c", driver, str(RECIPE), str(config), stage, str(int(stop_signal))],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == -stop_signal
+    assert result.stdout == ""
+    attempt, = Path(selected["quarantine"]).iterdir()
+    receipt = json.loads((attempt / "receipt.json").read_text())
+    assert receipt["status"] == "incomplete"
+    assert receipt["stage"] == ("import" if stage == "after_import" else stage)
+    completed = {"acquisition": [], "validate": [], "scan": ["validate"],
+                 "import": ["validate", "scan"], "after_import": ["validate", "scan"]}[stage]
+    assert list(receipt["controls"]) == completed
+    assert all(receipt["controls"][control]["run_id"] == f"controlled-{control}" for control in completed)
+    destination = Path(receipt["library"]) / receipt["filename"]
+    assert destination == Path(selected["library"]) / selected["filename"]
+    assert destination.exists() == (stage == "after_import")
+    if stage == "after_import":
+        assert hashlib.sha256(destination.read_bytes()).hexdigest() == selected["source"]["sha256"]
+    assert (attempt / "media").read_bytes() == b"media"
+
+
+def test_interrupted_receipt_write_preserves_last_complete_record(modules, monkeypatch, tmp_path):
+    host, _ = modules
+    receipt = {"receipt": str(tmp_path / "receipt.json"), "status": "incomplete", "stage": "validate"}
+    host.write_receipt(receipt)
+    previous = Path(receipt["receipt"]).read_bytes()
+    receipt["stage"] = "scan"
+
+    def interrupt(record, stream):
+        stream.write('{"partial":')
+        stream.flush()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(host.json, "dump", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        host.write_receipt(receipt)
+    assert Path(receipt["receipt"]).read_bytes() == previous
+    assert list(tmp_path.iterdir()) == [Path(receipt["receipt"])]
 
 
 @pytest.mark.parametrize("filename", ["../escape.mkv", "/tmp/escape.mkv", "..", "", "nested\\escape.mkv"])
