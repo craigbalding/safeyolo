@@ -49,6 +49,103 @@ async fn baseline(root: &Path, source: &str) {
     .unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pinned NATS"]
+async fn commissioning_observation_and_followup_use_separate_selected_permissions() {
+    let binary = std::env::var("SAFEYOLO_COORD_NATS_BINARY").expect("set pinned NATS binary");
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    assert!(host_cli(root, &["init"]).await.status.success());
+    fs::write(root.join("config.toml"), "admin_port=0\nflow_store_enabled=false\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n[[listeners]]\nagent_id='bob'\nsocket_path='bob.sock'\n").unwrap();
+    let source = format!(
+        "[controls.network]\nenabled=false\n[agents.alice]\nagent_id='{ALICE}'\n[agents.bob]\nagent_id='{BOB}'\n"
+    );
+    fs::write(root.join("policy.toml"), &source).unwrap();
+    coord_json(root, &["start", "--binary", &binary]).await;
+    let _cleanup = NatsCleanup(root.into());
+    coord_json(root, &["room", "create", "shared"]).await;
+    coord_json(root, &["grant", "shared", "alice"]).await;
+    coord_json(root, &["grant", "shared", "bob", "receive"]).await;
+    let proxy = stage0::start_proxy(root).await;
+    let client = |name: &str| Client {
+        socket: Some(root.join(format!("{name}.sock"))),
+        token_file: root.join("data/agent_token"),
+        home: None,
+    };
+    let alice = client("alice");
+    let bob = client("bob");
+    let open = create(&alice, "unfinished-result").await;
+    let claimed = change(&alice, "claim", &open, "original-claim")
+        .await
+        .unwrap();
+    let evidence = root.join("unavailable-input.txt");
+    fs::write(
+        &evidence,
+        "The selected external input was unavailable; no external effect was repeated.\n",
+    )
+    .unwrap();
+    let output = alice.call("publish_work_output", &json!({"room_name":"shared",
+        "work_id":open["work_id"],"expected_version":claimed["work"]["version"],
+        "expected_generation":claimed["work"]["claim_generation"],"expected_target_generation":0,
+        "operation_id":"original-output","target_ref":evidence,"execution_outcome":"uncertain",
+        "summary":"Selected external input unavailable; execution cannot establish the requested result.",
+        "evidence_refs":[evidence]})).await.unwrap();
+    let completed = change(&alice, "complete", &output["work"], "original-complete")
+        .await
+        .unwrap();
+    let observed = read(&bob, &open).await;
+    assert_eq!(observed, completed["work"]);
+    assert_eq!(observed["state"], "done");
+    assert_eq!(observed["output"]["execution_outcome"], "uncertain");
+    let followup = json!({"room_name":"shared","title":"Explain original input gap without replay",
+        "assignee":{"kind":"agent","id":BOB},"external_ref":format!("coord://shared/{}",open["work_id"].as_str().unwrap()),
+        "operation_id":"selected-followup"});
+    let before = count(root, "SELECT COUNT(*) FROM coord_work");
+    assert!(
+        bob.call("create_work", &followup)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("403")
+    );
+    assert_eq!(count(root, "SELECT COUNT(*) FROM coord_work"), before);
+    coord_json(root, &["grant", "shared", "bob", "send", "receive"]).await;
+    let selected = bob.call("create_work", &followup).await.unwrap();
+    assert_eq!(
+        selected["work"]["created_by"],
+        json!({"kind":"agent","id":BOB})
+    );
+    assert_eq!(
+        selected["work"]["assignee"],
+        json!({"kind":"agent","id":BOB})
+    );
+    let followup_claim = change(&bob, "claim", &selected["work"], "followup-claim")
+        .await
+        .unwrap();
+    assert_eq!(followup_claim["work"]["claim_agent_id"], BOB);
+    let observation = format!(
+        "coord://shared/{}@{}",
+        open["work_id"].as_str().unwrap(),
+        observed["version"]
+    );
+    let explained = bob.call("publish_work_output", &json!({"room_name":"shared",
+        "work_id":selected["work"]["work_id"],"expected_version":followup_claim["work"]["version"],
+        "expected_generation":followup_claim["work"]["claim_generation"],"expected_target_generation":0,
+        "operation_id":"followup-output","target_ref":observation,"execution_outcome":"succeeded",
+        "summary":"The original producer reports unavailable input. External cause is unverified; no effect was replayed.",
+        "evidence_refs":[observation]})).await.unwrap();
+    let followup_done = change(&bob, "complete", &explained["work"], "followup-complete")
+        .await
+        .unwrap();
+    assert_eq!(followup_done["work"]["state"], "done");
+    assert_eq!(read(&bob, &open).await, observed);
+    assert_eq!(
+        fs::read_to_string(root.join("policy.toml")).unwrap(),
+        source
+    );
+    stage0::crash(proxy).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires pinned NATS; set SAFEYOLO_WORK_RETAIN_SECONDS=1800 for real duration proof"]
 async fn native_work_claims_replay_identity_revocation_and_crash_recovery() {

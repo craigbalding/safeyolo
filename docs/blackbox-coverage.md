@@ -2486,7 +2486,8 @@ Selection: ignored by default.
 
 Selection: ignored by default.
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord work::native_work_claims_replay_identity_revocation_and_crash_recovery -- --exact --ignored`](../proxy/tests/native_coord/work.rs#L50) — `#[ignore = "requires pinned NATS; set SAFEYOLO_WORK_RETAIN_SECONDS=1800 for real duration proof"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord work::commissioning_observation_and_followup_use_separate_selected_permissions -- --exact --ignored`](../proxy/tests/native_coord/work.rs#L50) — `#[ignore = "requires pinned NATS"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord work::native_work_claims_replay_identity_revocation_and_crash_recovery -- --exact --ignored`](../proxy/tests/native_coord/work.rs#L147) — `#[ignore = "requires pinned NATS; set SAFEYOLO_WORK_RETAIN_SECONDS=1800 for real duration proof"]`
 
 <a id="witness-proxy-tests-native-coord-outputs-rs"></a>
 ### [`proxy/tests/native_coord/outputs.rs`](../proxy/tests/native_coord/outputs.rs)

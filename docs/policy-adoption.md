@@ -83,6 +83,16 @@ the currently observed saved and active bytes. For a pending request,
 view marks its option unavailable. The final transaction repeats the checks;
 a view alone cannot reserve policy state.
 
+For worker configuration, review `assessment.configured_agents`. It identifies
+each affected worker, before/after durable identity, changed settings, workspace
+and mount access. Saving these settings does not start a sandbox, stage a host
+setup script, change a running mount or give the proposer administration.
+Sandbox resources and launch settings apply on a later authorized start.
+Identity and policy-permission changes can affect current authority through
+their existing owners. The report does not inspect host path contents, scripts,
+launcher defaults or runtime readiness; the ordinary setup/start owners still
+validate their actual inputs.
+
 Only the human decision owner can approve full-policy adoption. Reading the
 policy, approving another candidate, agent prose and unrelated approval
 delegations supply no authority. Proposed approval or risk rules cannot admit

@@ -1,6 +1,7 @@
 //! Authored possible effects. Loading validates references and enforcement;
 //! assessment evaluates potential authority without asserting upstream state.
 
+pub(crate) mod agent_configuration;
 pub mod assessment;
 pub(crate) mod authority;
 pub mod policy;
