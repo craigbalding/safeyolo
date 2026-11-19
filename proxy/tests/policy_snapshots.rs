@@ -450,6 +450,108 @@ async fn paths_identity_overrides_remote_homes_and_delegated_decisions_are_refus
 }
 
 #[test]
+fn array_encoded_credentials_are_redacted_and_restored_at_their_original_fields() {
+    let record = json!({"password":"array-private-password", "api_key":"array-private-key",
+        "token":"provider-reference", "note":"keep-note"})
+    .to_string();
+    for (authored, path, json_prefix) in [
+        (
+            format!("records=['{record}']"),
+            json!(["private", "records", 0]),
+            vec![],
+        ),
+        (
+            format!("records=[['{record}']]"),
+            json!(["private", "records", 0, 0]),
+            vec![],
+        ),
+        (
+            format!("records=[{{record='{record}'}}]"),
+            json!(["private", "records", 0, "record"]),
+            vec![],
+        ),
+        (
+            format!("records=['[{record}]']"),
+            json!(["private", "records", 0]),
+            vec![json!(0)],
+        ),
+        (
+            format!("[[private.records]]\nrecord='{record}'"),
+            json!(["private", "records", 0, "record"]),
+            vec![],
+        ),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let policy_path = root.path().join("policy.toml");
+        let source = format!("# exact authored bytes\nbudget=17\n[hosts]\n[private]\n{authored}\n");
+        fs::write(&policy_path, &source).unwrap();
+        let policy = Policy::from_native_path(&policy_path).unwrap();
+        let run =
+            serde_json::from_value(json!({"agent":"worker","agent_id":WORKER_ID,"run_id":RUN}))
+                .unwrap();
+        let snapshot = policy
+            .full_snapshot(&source, &policy_path, "fixture-instance", &run)
+            .unwrap();
+        let disclosed = snapshot.disclosed();
+        let candidate = disclosed["source"].as_str().unwrap();
+        assert!(!candidate.contains("array-private-password"), "{authored}");
+        assert!(!candidate.contains("array-private-key"), "{authored}");
+        assert!(candidate.contains("provider-reference"));
+        assert_ne!(
+            disclosed["source_revision"],
+            disclosed["disclosed_source_revision"]
+        );
+        assert_eq!(snapshot.materialize(candidate).unwrap().as_str(), source);
+
+        let fields = disclosed["redactions"].as_array().unwrap();
+        assert_eq!(fields.len(), 2);
+        for name in ["password", "api_key"] {
+            let mut json_path = json_prefix.clone();
+            json_path.push(json!(name));
+            let field = fields
+                .iter()
+                .find(|field| field["json_path"] == json!(json_path))
+                .unwrap();
+            assert_eq!(field["path"], path);
+            let marker = field["marker"].as_str().unwrap();
+            assert!(candidate.contains(marker));
+            assert!(
+                snapshot
+                    .materialize(&candidate.replace(marker, "literal-placeholder"))
+                    .is_err()
+            );
+            assert!(
+                snapshot
+                    .materialize(&candidate.replace(marker, "__SAFEYOLO_PRESERVE_forged__"))
+                    .is_err()
+            );
+            assert!(
+                snapshot
+                    .materialize(&format!("{candidate}\ncopied_marker='{marker}'\n"))
+                    .is_err()
+            );
+        }
+
+        let changed = candidate
+            .replace("budget=17", "budget=23")
+            .replace("keep-note", "edited-note");
+        let restored = snapshot.materialize(&changed).unwrap();
+        let expected = source
+            .replace("budget=17", "budget=23")
+            .replace("keep-note", "edited-note");
+        assert_eq!(
+            restored.parse::<toml::Value>().unwrap(),
+            expected.parse::<toml::Value>().unwrap()
+        );
+
+        let mut removed = changed.parse::<toml_edit::DocumentMut>().unwrap();
+        removed["private"].as_table_mut().unwrap().remove("records");
+        assert!(snapshot.materialize(&removed.to_string()).is_err());
+        assert_eq!(fs::read_to_string(policy_path).unwrap(), source);
+    }
+}
+
+#[test]
 fn materialization_restores_hidden_values_and_preserves_unrelated_source() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("policy.toml");

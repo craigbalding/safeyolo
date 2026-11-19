@@ -135,9 +135,17 @@ test -r /usr/local/share/ca-certificates/safeyolo.crt
 
 ## Logs and correlation
 
-The audit JSONL lives at the selected audit_log_path and is not
-mounted into the sandbox. Ask the operator to use the CLI rather than guessing
-its filesystem path:
+For a failed native Coord tool, consume its returned failure and attached
+own-request evidence first. The [native failure reference](agent-api.md#native-tool-failures)
+defines correlation, collection states and limits. Continue permitted read-only
+investigation without asking the operator to copy evidence already returned.
+Diagnosis does not retry a write or authorize recovery.
+
+The audit JSONL lives at the selected audit_log_path and is not mounted into
+the sandbox. Use `/explain` for a known request ID. If the required source is
+outside your current access, request its exact scope through the supported
+approval or authorized support path. If that path is unavailable, report the
+unmet need. The host operator can inspect the same canonical log with:
 
 ```sh
 safeyolo logs --lines 20 --json
@@ -153,7 +161,9 @@ The Rust proxy generates a canonical request ID at ingress; a caller-supplied
 request ID does not select it. Use `/explain?request_id=req-<32hex>` when a
 request ID is known. Block and upstream responses expose that ID in the
 `X-SafeYolo-Request-Id` response header. When a response cannot carry that
-header, ask the operator to obtain the ID from `safeyolo logs`.
+header, report correlation as unavailable. Do not guess an ID from an error
+body or retry an uncertain operation to obtain one. Use an authorized evidence
+path or ask for the exact missing correlation only when it is needed.
 
 ## Ask the operator
 

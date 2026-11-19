@@ -1079,7 +1079,7 @@ async fn rpc(client: Client, request: Value) -> Option<Value> {
             } else {
                 "2025-06-18"
             };
-            json!({"protocolVersion":version,"capabilities":{"tools":{}},"serverInfo":{"name":"safeyolo-coord","version":env!("CARGO_PKG_VERSION")}})
+            json!({"protocolVersion":version,"capabilities":{"tools":{}},"serverInfo":{"name":"safeyolo-coord","version":env!("CARGO_PKG_VERSION")},"instructions":"Failed tools retain available HTTP status, response request_id and bounded error_details. Local Agent API 503s attach bounded own-request diagnostic evidence and its limits. Use the installed SafeYolo skill to investigate; diagnosis never retries the failed operation or advances an attention cursor."})
         }
         "ping" => json!({}),
         "tools/list" => json!({"tools":tools()}),
@@ -1096,7 +1096,13 @@ async fn rpc(client: Client, request: Value) -> Option<Value> {
                     json!({"content":[{"type":"text","text":value.to_string()}],"structuredContent":value,"isError":false})
                 }
                 Err(error) => {
-                    json!({"content":[{"type":"text","text":format!("Coord unavailable or request refused: {error}")}],"isError":true})
+                    let failure = crate::native_client::tool_failure(&error);
+                    let guidance = if failure["http_status"] == 503 {
+                        "\nRead the installed safeyolo skill for this failure and continue permitted read-only investigation using the attached evidence and configured Agent API before reporting. Do not ask the operator to copy evidence already supplied here. Diagnosis does not retry the operation, authorize recovery or advance an attention cursor."
+                    } else {
+                        ""
+                    };
+                    json!({"content":[{"type":"text","text":format!("Coord unavailable or request refused: {}{guidance}\n{}", failure["message"].as_str().unwrap_or("request failed"), failure)}],"structuredContent":failure,"isError":true})
                 }
             }
         }

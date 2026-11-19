@@ -156,7 +156,9 @@ fn record_source(source: &mut Value, result: Result<Value, Error>) -> bool {
         }
         Err(error) => {
             source["availability"] = json!("unavailable");
-            source["error"] = json!(error.to_string());
+            let failure = crate::native_client::tool_failure(&error);
+            source["error"] = failure["message"].clone();
+            source["failure"] = failure;
             false
         }
     }

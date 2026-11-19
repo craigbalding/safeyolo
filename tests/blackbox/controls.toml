@@ -950,6 +950,16 @@ module = "continuation"
 owner = "proxy/tests/native_coord.rs"
 
 [[witnesses]]
+paths = ["proxy/tests/native_coord/diagnostics.rs"]
+controls = ["BB-05", "BB-24"]
+kind = "cargo"
+scope = "Native Agent API/MCP; host process; controlled HTTP failures"
+adapter = "Actual native client and scoped audit reader; canned body/deadline variants. These tests do not establish an installed guest or real-agent journey."
+target = "native_coord"
+module = "diagnostics"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
 paths = ["proxy/tests/native_coord/factory.rs"]
 controls = ["BB-24"]
 kind = "cargo"

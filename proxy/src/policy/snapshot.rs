@@ -105,6 +105,17 @@ fn redact(
     id: &str,
     fields: &mut Vec<Redaction>,
 ) {
+    if let Some(encoded) = item.as_str()
+        && let Ok(mut value) = serde_json::from_str::<Value>(encoded)
+    {
+        let before = fields.len();
+        redact_json(&mut value, path, &mut Vec::new(), id, fields);
+        if fields.len() != before {
+            let decor = item.as_value().expect("encoded value").decor().clone();
+            *item = toml_edit::value(value.to_string());
+            *item.as_value_mut().expect("encoded value").decor_mut() = decor;
+        }
+    }
     if let Some(table) = item.as_table_like_mut() {
         for (key, child) in table.iter_mut() {
             path.push(Field::Name(key.to_owned()));
@@ -121,17 +132,6 @@ fn redact(
                     marker,
                 });
             } else {
-                if let Some(encoded) = child.as_str()
-                    && let Ok(mut value) = serde_json::from_str::<Value>(encoded)
-                {
-                    let before = fields.len();
-                    redact_json(&mut value, path, &mut Vec::new(), id, fields);
-                    if fields.len() != before {
-                        let decor = child.as_value().expect("encoded value").decor().clone();
-                        *child = toml_edit::value(value.to_string());
-                        *child.as_value_mut().expect("encoded value").decor_mut() = decor;
-                    }
-                }
                 redact(child, path, id, fields);
             }
             path.pop();
