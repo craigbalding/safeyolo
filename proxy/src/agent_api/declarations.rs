@@ -128,6 +128,18 @@ where
         Ok(scope) => scope,
         Err(outcome) => return Ok(outcome),
     };
+    if route(request).starts_with("/policy/capabilities") {
+        if let Some(state) = state
+            && let Ok(config) = crate::operator_actions::config_path(state)
+        {
+            return crate::host_platform::in_config(
+                config,
+                capabilities::respond(request, policy, Some(state), controls.gateway, body),
+            )
+            .await;
+        }
+        return capabilities::respond(request, policy, None, None, body).await;
+    }
     if route(request) == "/checks/invoke" {
         return checks::respond(request, state, body).await;
     }

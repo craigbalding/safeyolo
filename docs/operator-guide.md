@@ -200,6 +200,28 @@ page's automatic attempts. Confirmed access failure or target replacement also
 stops attempts. Reopen the intended presentation to renew access; the page does
 not extend access or follow a replacement agent or run.
 
+## Discover supported policy changes
+
+On the owning host, run `safeyolo policy capabilities` for the selected
+executable's supported types, scope, lifetime, declared effects, dependencies
+and coverage gaps. Use `safeyolo policy capabilities --json` for generated
+schemas and authoritative validator references. The definition version covers
+the implementation compiled into that executable; it is separate from current
+instance permission and readiness.
+
+An ordinary installed agent can use `discover_policy_capabilities` before full
+policy disclosure. Its `observe=true` option adds only already authorized
+caller-specific observations. Undisclosed or unavailable state remains unknown.
+Service tokens and other agents' hidden bindings are absent. Reading discovery
+grants no authority. The installed policy-authoring skill describes how to
+compose a component, validate its accepted form, assess the actual change,
+revise or discuss it and submit through the existing policy owner.
+
+A valid component is not a complete policy or a safety assessment. Existing
+support/delegation previews, service validators, policy checks and authorized
+application still own the actual change. Current prohibitions do not prevent
+an operator-directed proposal to change policy.
+
 ## Inspect and decide one request
 
 A network policy with `egress = "prompt"` creates a pending access request.

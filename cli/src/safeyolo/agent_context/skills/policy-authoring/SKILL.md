@@ -1,6 +1,6 @@
 ---
 name: policy-authoring
-description: Prepare a reviewable SafeYolo policy from an operator's brief. In a guest, request an operator-approved full local policy snapshot through installed tools. On the host, use existing policy authority and keep administrative credentials outside the workload.
+description: Turn an operator's cyber brief or research workload and risk choices into a reviewable SafeYolo policy, source and check configuration. Discover installed policy capabilities and request an operator-approved full local policy snapshot in an ordinary guest. Author and apply through the owning host's existing policy authority. Keep administrative credentials outside the research workload.
 ---
 
 # Author a research policy
@@ -10,6 +10,12 @@ configuration. This skill supplies the first cyber research recipe. It grants
 no host or policy access. Inside an ordinary guest, use the approved snapshot
 workflow below to prepare proposed choices. The host owner still performs
 privileged operations and policy application.
+
+Read [capability discovery](references/capabilities.md) for the guest sequence:
+discover → compose → validate the accepted form → assess → revise or discuss
+with the operator → submit through the existing owner. Discovery and component
+validation grant no permission. A valid component is not a complete candidate
+safety assessment. Discovery is available before full-policy disclosure.
 
 ## Read the full local policy in a guest
 

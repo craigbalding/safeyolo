@@ -454,7 +454,7 @@ async fn run() -> Result<(), Error> {
                 "safeyolo [--root ROOT] agent recover NAME [--timeout SECONDS]\nsafeyolo guest-command stage HOME SHARE ASSETS CONTEXT_JSON\nRecovery requires an already booted guest with idle command supervision. Staging is for a stopped guest; the caller supplies this run's context."
             );
             println!(
-                "safeyolo [--root ROOT] policy check FILE\nsafeyolo [--root ROOT] policy evaluate FILE REQUEST_JSON\nsafeyolo [--root ROOT] policy show\nsafeyolo [--root ROOT] policy apply FILE\nsafeyolo [--root ROOT] policy feeds --help\nsafeyolo config check FILE\nsafeyolo test-context --run ID --agent NAME [--role VALUE] [--suite VALUE] [--subject VALUE] [--step VALUE] [--test VALUE] [--intent VALUE] [--expect VALUE] [--field KEY=VALUE] [--header] [--write FILE]\nsafeyolo test-context declare --socket SOCKET --token-file FILE --run ID --agent NAME [--ttl SECONDS]\nsafeyolo test-context current|clear --socket SOCKET --token-file FILE\n\ncheck validates without saving or spending quotas.\nevaluate previews network decisions from captured evidence, without contacting the target or spending live quotas.\nshow reads effective policy and its source from the running process.\napply saves and activates through the operator Admin API.\nROOT contains config.toml and policy.toml. Named controls: network, credentials, patterns, test_context, circuits.\nContext agent is annotation; the trusted listener owns identity. --write atomically replaces a watched file.\n\nsafeyolo --version"
+                "safeyolo [--root ROOT] policy capabilities [--json]\nsafeyolo [--root ROOT] policy check FILE\nsafeyolo [--root ROOT] policy evaluate FILE REQUEST_JSON\nsafeyolo [--root ROOT] policy show\nsafeyolo [--root ROOT] policy apply FILE\nsafeyolo [--root ROOT] policy feeds --help\nsafeyolo config check FILE\nsafeyolo test-context --run ID --agent NAME [--role VALUE] [--suite VALUE] [--subject VALUE] [--step VALUE] [--test VALUE] [--intent VALUE] [--expect VALUE] [--field KEY=VALUE] [--header] [--write FILE]\nsafeyolo test-context declare --socket SOCKET --token-file FILE --run ID --agent NAME [--ttl SECONDS]\nsafeyolo test-context current|clear --socket SOCKET --token-file FILE\n\ncheck validates without saving or spending quotas.\nevaluate previews network decisions from captured evidence, without contacting the target or spending live quotas.\nshow reads effective policy and its source from the running process.\napply saves and activates through the operator Admin API.\nROOT contains config.toml and policy.toml. Named controls: network, credentials, patterns, test_context, circuits.\nContext agent is annotation; the trusted listener owns identity. --write atomically replaces a watched file.\n\nsafeyolo --version"
             );
             Ok(())
         }
@@ -466,6 +466,14 @@ async fn run() -> Result<(), Error> {
                 env!("SAFEYOLO_BUILD_PROFILE"),
             );
             Ok(())
+        }
+        [policy, command] if policy == "policy" && command == "capabilities" => {
+            safeyolo_proxy::policy::capabilities::print(false)
+        }
+        [policy, command, flag]
+            if policy == "policy" && command == "capabilities" && flag == "--json" =>
+        {
+            safeyolo_proxy::policy::capabilities::print(true)
         }
         [policy, feeds, rest @ ..] if policy == "policy" && feeds == "feeds" => {
             let directory = if rest

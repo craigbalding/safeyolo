@@ -26,6 +26,7 @@ use zeroize::Zeroizing;
 
 mod agents;
 mod approvals;
+mod capabilities;
 mod checks;
 pub(crate) mod coord;
 mod declarations;
@@ -64,6 +65,9 @@ const ENDPOINTS: &[&str] = &[
     "/policy",
     "/policy/snapshots (POST)",
     "/policy/snapshots/{request_id}",
+    "/policy/capabilities",
+    "/policy/capabilities/validate (POST)",
+    "/policy/capabilities/support (POST)",
     "/lookup",
     "/checks/invoke (POST)",
     "/budgets",
@@ -701,6 +705,7 @@ async fn authorize(request: Request<'_>, token_path: &Path) -> Result<AuthScope,
             || path.starts_with("/api/coord/")
             || path == "/api/test-context/current"
             || path == "/desktop/present")
+        && !path.starts_with("/policy/capabilities/")
         && path != "/checks/invoke"
         && !path.starts_with("/support/")
         && !path.starts_with("/operator-actions")
