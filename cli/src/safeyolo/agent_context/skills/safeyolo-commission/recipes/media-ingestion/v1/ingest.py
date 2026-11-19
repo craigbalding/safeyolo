@@ -97,7 +97,7 @@ def import_media(media, config):
         # DOC: cli/src/safeyolo/agent_context/skills/safeyolo-commission/recipes/media-ingestion/v1/recipe.md
         if sha256(staging) != config["source"]["sha256"]:
             raise ValueError("Import bytes differ from the checked artifact")
-        # The adopted mode and directory group determine the selected readers.
+        # Ownership uses the executor and any existing directory setgid group.
         staging.chmod(int(config["file_mode"], 8))
         os.link(staging, target)
     finally:

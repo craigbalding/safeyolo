@@ -38,8 +38,8 @@ execution does not prove job isolation.
 Copy this reviewed version to operator-owned storage outside worker-writable
 mounts. The executor, its service job, configuration, instance root, library and
 quarantine must remain outside those mounts. Select a dedicated library directory
-with access for the existing library reader. Select `file_mode` for the imported
-file and the library directory's group for those readers; the example uses
+with access for the existing library reader. Select `file_mode` and executor
+ownership, or an existing directory setgid group, for those readers; the example uses
 `0640`, while broader or narrower modes remain operator choices. Quarantine must
 be private and excluded from every library's watched roots. The executor refuses
 quarantine under the selected library directory, including resolved symlink aliases.
