@@ -1878,7 +1878,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         else {
             return Ok(response(
                 StatusCode::BAD_REQUEST,
-                json!({"error":"supply proposal_id and a new operation_id to prepare deliberate restore"}),
+                json!({"error":"supply approval_id and a new operation_id to prepare deliberate restore"}),
             ));
         };
         let (Some(state), Some(writer), Some(owner)) = (task_state, audit, service_audit) else {

@@ -551,7 +551,7 @@ fn decision_view(state: &crate::RuntimeState, writer: &Writer, id: &str) -> Resu
 #[serde(deny_unknown_fields)]
 pub(crate) struct Restore {
     pub operation_id: String,
-    pub proposal_id: String,
+    pub approval_id: String,
 }
 
 /// A restore is another exact candidate and human decision against the current
@@ -567,14 +567,14 @@ pub(crate) fn restore(
         ));
     }
     if let Some(record) = writer.approvals().get(&input.operation_id)? {
-        if record.authority.action["restore_of"] != input.proposal_id {
+        if record.authority.action["restore_of"] != input.approval_id {
             return Err(invalid("changed restore requires a new operation_id"));
         }
         return operator_view(state, writer, &record.approval_id);
     }
     let original = writer
         .approvals()
-        .get(&input.proposal_id)?
+        .get(&input.approval_id)?
         .ok_or_else(|| invalid("prior revision unavailable"))?;
     let prior = retained(writer, &original)?;
     let path = state
@@ -606,7 +606,7 @@ pub(crate) fn restore(
         .materialize(&prior.snapshot.disclosed_source)
         .map_err(|_| invalid("prior policy restoration unavailable"))?;
     let candidate = Candidate {
-        snapshot_request_id: input.proposal_id.clone(),
+        snapshot_request_id: input.approval_id.clone(),
         source: source.to_string(),
         definition_version: env!("SAFEYOLO_DEFINITION_VERSION").into(),
     };
@@ -632,7 +632,7 @@ pub(crate) fn restore(
         &run,
         &input.operation_id,
         &data,
-        Some(&input.proposal_id),
+        Some(&input.approval_id),
     )?;
     drop(runtime);
     writer

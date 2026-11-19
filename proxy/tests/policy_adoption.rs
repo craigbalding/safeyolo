@@ -264,7 +264,7 @@ async fn restore_explains_intervening_work_and_never_overwrites_a_newer_base() {
     let changed = f.source().replace("budget=58", "budget=62");
     f.apply(&changed).await;
     let restore_op = operation();
-    let input = json!({"operation_id":restore_op,"proposal_id":op});
+    let input = json!({"operation_id":restore_op,"approval_id":op});
     let prepared = f
         .admin("POST", "/admin/policy/restore", Some(input.clone()))
         .await;
@@ -293,7 +293,7 @@ async fn restore_explains_intervening_work_and_never_overwrites_a_newer_base() {
         .admin(
             "POST",
             "/admin/policy/restore",
-            Some(json!({"operation_id":next,"proposal_id":op})),
+            Some(json!({"operation_id":next,"approval_id":op})),
         )
         .await;
     assert_eq!(prepared.status, 200, "{}", prepared.json());

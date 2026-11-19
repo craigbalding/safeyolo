@@ -126,7 +126,9 @@ prepare a restore with a fresh operation ID on the owning host:
 safeyolo policy restore APPROVAL_ID --operation-id req-22222222222222222222222222222222 --json
 ```
 
-This prepares another canonical policy candidate. It does not apply it.
+The host API equivalent is `POST /admin/policy/restore` with `approval_id`
+and the new `operation_id`. This prepares another canonical policy candidate.
+It does not apply it.
 Its complete diff compares the current source with the retained prior source,
 including any intervening work. Inspect the returned approval, then approve or
 decline it through the same commands. The decision explicitly reinstates that
