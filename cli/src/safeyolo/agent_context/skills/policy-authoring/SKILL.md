@@ -8,8 +8,9 @@ description: Turn an operator's cyber brief or research workload and risk choice
 Use the installed `safeyolo` commands and the selected instance's current
 configuration. This skill supplies the first cyber research recipe. It grants
 no host or policy access. Inside an ordinary guest, use the approved snapshot
-workflow below to prepare proposed choices. The host owner still performs
-privileged operations and policy application.
+workflow below to prepare proposed choices. The host owner decides policy
+application through canonical human approvals.
+The guest can submit an exact candidate and read its scoped result.
 
 Read [capability discovery](references/capabilities.md) for the guest sequence:
 discover → compose → validate the accepted form → assess → revise or discuss
@@ -70,9 +71,22 @@ original snapshot request ID, complete candidate source and installed
 Read its consequences, narrower alternatives and coverage limits, then revise
 or discuss the tradeoff. Private assessment does not submit an approval or
 apply a policy. The authorized host owner can inspect the same candidate with
-`policy assess SNAPSHOT_REQUEST_ID FILE`. Final adoption needs that owner's
-explicit current authority. Never request an Admin token or copy host
-configuration into the guest.
+`policy assess SNAPSHOT_REQUEST_ID FILE`. Explicitly submit the same candidate
+with `submit_policy_change`, using
+`{operation_id, candidate: {snapshot_request_id, source, definition_version}}`.
+Choose the operation ID before submission. Only explicit submission creates
+operator attention. Keep source private and send the canonical approval
+reference. The human uses ordinary `approvals show` / `explain --option apply`
+and approves or declines the complete diff under current authority.
+
+Use `read_policy_change` with the original operation ID after a lost reply.
+Pending, declined, stale, failed or unresolved outcomes grant no retry.
+An approved receipt names saved and active revisions; a later edit does not
+turn replay into another apply. A stale candidate needs fresh preparation and
+review. The operator's `policy restore APPROVAL_ID --operation-id req-ID`
+prepares another reviewed candidate against the current base. Restoration
+cannot undo disclosures or external effects. Never request an Admin token or
+copy host configuration into the guest.
 
 Read [the walkthrough](references/recipe.md) for the complete first run,
 host discovery, prerequisites, helper commands and saved-choice updates.

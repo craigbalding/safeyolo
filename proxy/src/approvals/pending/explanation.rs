@@ -15,7 +15,15 @@ pub(crate) fn explain(
     state: Option<&crate::RuntimeState>,
     option: Option<&str>,
 ) -> Result<Value> {
-    let view = current_view(writer, policy, record, state)?;
+    let view = if record.authority.action["kind"] == "policy_change" {
+        super::policy_change::operator_view(
+            state.ok_or_else(|| invalid("policy review owner unavailable"))?,
+            writer,
+            &record.approval_id,
+        )?
+    } else {
+        current_view(writer, policy, record, state)?
+    };
     let action = &record.authority.action;
     let method = match record.authority.method.as_str() {
         method @ ("GET" | "HEAD" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "CONNECT"
@@ -24,6 +32,15 @@ pub(crate) fn explain(
     };
     let kind = action["kind"].as_str().unwrap_or("");
     let (stopped, mut non_grants, graph_node) = match kind {
+        "policy_change" => (
+            "The requester explicitly submitted an immutable complete local policy candidate for the human operator's decision.",
+            vec![
+                "Submission and assessment grant no authority. Only the human operator can decide this exact candidate.",
+                "The recorded base, current requester, definitions, adopted inputs and grants are checked inside the save/activation transaction.",
+                "A restore requires another exact reviewed candidate against its current base. It cannot undo disclosed data or external effects.",
+            ],
+            "sym.accept_policy_assurance",
+        ),
         "policy_snapshot" => (
             "The requester asked to read one identified complete authored policy snapshot from this local instance.",
             vec![
@@ -137,6 +154,7 @@ pub(crate) fn explain(
             | "coord_collaboration"
             | "diagnostic_disclosure"
             | "policy_snapshot"
+            | "policy_change"
     );
     if option.is_some() && record.authority.selected_option(option).is_none() {
         return Err(invalid("select one of this approval's fixed options"));
@@ -182,6 +200,15 @@ pub(crate) fn explain(
         facts["authority_delta"] = json!(
             "Permit private reads of this retained snapshot by its original current requester/run. The saved and active revisions identify the approval basis. New policy bytes require a separate decision. Enforcement policy and apply authority remain unchanged."
         );
+        unknowns.clear();
+    }
+    if kind == "policy_change" {
+        facts["base"] = action["base"].clone();
+        facts["candidate_revision"] = action["candidate_revision"].clone();
+        facts["materialized_revision"] = action["materialized_revision"].clone();
+        facts["assessment_id"] = action["assessment_id"].clone();
+        facts["restore_of"] = action["restore_of"].clone();
+        facts["review_content"] = view["review_content"].clone();
         unknowns.clear();
     }
     if kind == "operator_action" {

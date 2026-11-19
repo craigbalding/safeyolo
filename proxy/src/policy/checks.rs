@@ -961,6 +961,15 @@ impl Checks {
             .collect()
     }
 
+    pub(crate) fn adopted_feed_revisions(&self) -> Value {
+        json!(
+            self.feeds
+                .iter()
+                .map(|(name, feed)| (name, &feed.version))
+                .collect::<BTreeMap<_, _>>()
+        )
+    }
+
     /// Available file versions are checked after collection, before admission.
     /// Atomic replacement or an in-place change cancels this observation.
     pub async fn versions_current(&self, evidence: &BTreeMap<String, Evidence>) -> bool {

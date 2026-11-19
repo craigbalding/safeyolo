@@ -642,6 +642,11 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
             "Fixed results retain at most 2000 rows / 4 MiB for seven days. Audit history is independent of access expiry. Current runtime/membership observations are not reconstructed history. No room send, guest administration, lifecycle or policy change is granted. Use approvals narrow-diagnostics APPROVAL_ID --file SELECTION.json to prepare a narrower scope before deciding; inspect its returned preview."
         );
     }
+    if view["action"]["kind"] == "policy_change" {
+        println!(
+            "Exact policy adoption: inspect the trusted consequences and complete redacted source diff above. Prior content remains available through approvals show; restore prepares a new decision against the current base."
+        );
+    }
     if view["action"]["kind"] == "policy_snapshot" {
         println!("Full authored policy snapshot:");
         show_evidence_fields(&view["snapshot"], 2);

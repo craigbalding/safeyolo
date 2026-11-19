@@ -23,6 +23,7 @@ pub(crate) mod diagnostics;
 mod explanation;
 mod gateway;
 pub(crate) mod policy_assessment;
+pub(crate) mod policy_change;
 pub(crate) mod policy_snapshot;
 pub(crate) mod results;
 pub(crate) mod route_challenge;
@@ -75,6 +76,11 @@ impl Authority {
 
     fn material(&self) -> Value {
         let mut material = json!(self);
+        if self.action["kind"] == "policy_change" {
+            // This owner's retention deadline is frozen by the first exact
+            // equivalent submission, never extended by another request.
+            material["expires_at"] = Value::Null;
+        }
         // Coalesce the permission effect. Incidental paths, query strings or
         // methods must not produce repeated attention for the same reusable
         // network/credential permission. Keep the first observation in the
@@ -283,7 +289,7 @@ impl Store {
         request_id: &str,
         policy: &Policy,
         initial_status: &str,
-        snapshot: Option<&crate::policy::snapshot::RetainedPolicySnapshot>,
+        retained_policy: Option<&str>,
     ) -> Result<Record> {
         let mut connection = self.connect()?;
         let transaction = connection
@@ -343,12 +349,10 @@ impl Store {
         record.request_count = record.request_count.saturating_add(1);
         record.last_requested_at = time::OffsetDateTime::now_utc().unix_timestamp();
         save(&transaction, &record)?;
-        if let Some(snapshot) = snapshot {
-            let encoded =
-                zeroize::Zeroizing::new(serde_json::to_string(snapshot).map_err(unavailable)?);
+        if let Some(encoded) = retained_policy {
             transaction.execute(
                 "INSERT INTO policy_snapshots VALUES (?1,?2) ON CONFLICT(approval_id) DO NOTHING",
-                params![record.approval_id, encoded.as_str()],
+                params![record.approval_id, encoded],
             ).map_err(unavailable)?;
         }
         transaction
@@ -512,6 +516,12 @@ impl Record {
             return Ok("expired".into());
         }
         let action = &self.authority.action;
+        if action["kind"] == "policy_change" {
+            let current = action["initiator"] == "operator"
+                || serde_json::from_value::<crate::host_runs::AgentRun>(action["run"].clone())
+                    .is_ok_and(|run| run.current(policy));
+            return Ok(if current { &self.status } else { "superseded" }.into());
+        }
         if policy.evidence_agent_id(action["agent"].as_str().unwrap_or(""))
             != action["agent_id"].as_str()
             || revision(policy, action).as_deref() != Some(self.authority.revision.as_str())
@@ -529,7 +539,10 @@ impl Record {
     }
 
     pub(crate) fn committed(&self, policy: &Policy) -> Result<Option<Value>> {
-        if self.authority.action["kind"] == "policy_snapshot" {
+        if matches!(
+            self.authority.action["kind"].as_str(),
+            Some("policy_snapshot" | "policy_change")
+        ) {
             // Disclosure has no policy effect or authored policy receipt.
             // Only its canonical human decision can release private source.
             return Ok(None);
@@ -575,26 +588,32 @@ impl Record {
             Some("operator_action") => ("agent.operator_action_requested", "desktop_present"),
             Some("diagnostic_disclosure") => ("agent.diagnostic_access_requested", "diagnostic"),
             Some("policy_snapshot") => ("agent.policy_snapshot_requested", "policy_snapshot"),
+            Some("policy_change") => ("agent.policy_change_submitted", "policy_change"),
             Some("coord_access" | "coord_collaboration") => {
                 ("coord.access_requested", "coord_room")
             }
             _ => ("gateway.contract_binding_requested", "contract_binding"),
         };
-        let target = self
-            .authority
-            .action
-            .get("host")
-            .or_else(|| self.authority.action.get("service"))
-            .or_else(|| self.authority.action.get("room_name"))
-            .or_else(|| {
-                self.authority
-                    .action
-                    .get("snapshot")
-                    .and_then(|snapshot| snapshot.get("instance_id"))
-            })
-            .or_else(|| self.authority.action.get("agent_id"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let target = if self.authority.action["kind"] == "policy_change" {
+            self.authority.action["base"]["instance_id"]
+                .as_str()
+                .unwrap_or("")
+        } else {
+            self.authority
+                .action
+                .get("host")
+                .or_else(|| self.authority.action.get("service"))
+                .or_else(|| self.authority.action.get("room_name"))
+                .or_else(|| {
+                    self.authority
+                        .action
+                        .get("snapshot")
+                        .and_then(|snapshot| snapshot.get("instance_id"))
+                })
+                .or_else(|| self.authority.action.get("agent_id"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+        };
         let mut view = json!({"approval_id":self.approval_id,"request_id":self.request_id,
             "status":self.current_status(policy)?,"created_at":self.created_at,
             "action":self.authority.action,"authority":self.authority,
@@ -652,6 +671,11 @@ pub(crate) fn save_receipt(document: &mut toml_edit::DocumentMut, record: &Recor
 pub(crate) fn revision(policy: &Policy, action: &Value) -> Option<String> {
     if action["kind"] == "diagnostic_disclosure" {
         diagnostics::revision(policy, action)
+    } else if action["kind"] == "policy_change" {
+        (policy.evidence_agent_id(action["agent"].as_str()?) == action["agent_id"].as_str()
+            || action["initiator"] == "operator")
+            .then(|| action["basis_revision"].as_str().map(str::to_owned))
+            .flatten()
     } else if action["kind"] == "policy_snapshot" {
         (policy.evidence_agent_id(action["agent"].as_str()?) == action["agent_id"].as_str()
             && policy
@@ -893,6 +917,9 @@ pub(crate) fn current_view(
     record: &Record,
     state: Option<&crate::RuntimeState>,
 ) -> Result<Value> {
+    if record.authority.action["kind"] == "policy_change" {
+        return policy_change::view(writer, policy, record);
+    }
     if record.authority.action["kind"] == "policy_snapshot" {
         return policy_snapshot::approval_view(writer, policy, record, state);
     }
@@ -1145,6 +1172,13 @@ pub(crate) fn inspect(
     state: Option<&crate::RuntimeState>,
 ) -> Result<Value> {
     let mut view = current_view(writer, policy, record, state)?;
+    if record.authority.action["kind"] == "policy_change" {
+        view = policy_change::operator_view(
+            state.ok_or_else(|| invalid("policy review owner unavailable"))?,
+            writer,
+            &record.approval_id,
+        )?;
+    }
     if record.authority.action["kind"] == "operator_action"
         && view["result"]["status"] == "started"
         && let Some(state) = state
@@ -1277,6 +1311,9 @@ pub(crate) fn resolve_as(
     reviewer: Option<(&crate::peer_support::Caller, &str)>,
 ) -> Result<Option<(u16, Value)>> {
     match lookup(writer, id)? {
+        Some(record) if record.authority.action["kind"] == "policy_change" => {
+            return policy_change::resolve(state, writer, id, decision, option, reviewer).map(Some);
+        }
         Some(record) if record.authority.action["kind"] == "policy_snapshot" => {
             return policy_snapshot::resolve(state, writer, id, decision, option, reviewer)
                 .map(Some);

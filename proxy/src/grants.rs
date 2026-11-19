@@ -569,7 +569,7 @@ impl Store {
     pub(crate) fn edit_native_policy<T>(
         &self,
         skip_unchanged: bool,
-        prepare: impl FnOnce(&str) -> Result<(T, String)>,
+        prepare: impl FnOnce(&str, &[Grant]) -> Result<(T, String)>,
         activate: impl FnMut(
             &str,
             crate::approvals::PolicyActivation,
@@ -581,7 +581,7 @@ impl Store {
             &self.path,
             skip_unchanged,
             |original| {
-                let (result, source) = prepare(original)?;
+                let (result, source) = prepare(original, &current.grants)?;
                 if !skip_unchanged || source != original {
                     let (document, context) = crate::policy::parse_toml_for_edit(&source)
                         .map_err(|error| invalid(error.to_string()))?;

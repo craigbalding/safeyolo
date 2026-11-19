@@ -157,6 +157,26 @@ impl Client {
     }
 
     async fn call_scoped(&self, name: &str, args: &Value) -> Result<Value, Error> {
+        if matches!(name, "submit_policy_change" | "read_policy_change") {
+            if self.home.is_some() {
+                return Err("policy adoption selects only the authenticated local instance".into());
+            }
+            return if name == "submit_policy_change" {
+                self.request(
+                    Method::POST,
+                    "/policy/changes",
+                    args.clone(),
+                    Duration::from_secs(60),
+                )
+                .await
+            } else {
+                self.get(&format!(
+                    "/policy/changes/{}",
+                    segment(text(args, "request_id")?)
+                ))
+                .await
+            };
+        }
         if name == "assess_policy" {
             if self.home.is_some() {
                 return Err(
@@ -761,6 +781,18 @@ pub fn tools() -> Vec<Value> {
         result.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}}));
     };
     add(
+        "submit_policy_change",
+        "Explicitly submit one immutable complete policy candidate for human review after private assessment. Choose operation_id before submission; preserve the approved snapshot's markers and definition_version from discovery. Only this submission creates canonical operator attention. Disclosure or assessment grants no apply authority. The human reviews trusted consequences and the complete redacted diff; current inputs are revalidated through the native transaction. Changed content needs a new operation ID and decision. Read the original ID after a lost response; never infer success or retry permission from attention.",
+        json!({"operation_id":string,"candidate":{"type":"object","properties":{"snapshot_request_id":string,"source":string,"definition_version":string},"required":["snapshot_request_id","source","definition_version"],"additionalProperties":false}}),
+        &["operation_id", "candidate"],
+    );
+    add(
+        "read_policy_change",
+        "Read your canonical policy submission and saved/active result by original operation_id or approval_id. Only the original current requester/run can read it. Readback never applies policy. Pending, declined, stale, failed and unresolved outcomes grant no permission to replay a decision. A restore is a separate human-reviewed candidate against the current base, using the operator policy restore command.",
+        json!({"request_id":string}),
+        &["request_id"],
+    );
+    add(
         "assess_policy",
         "Privately validate and assess complete candidate TOML against your approved full-policy snapshot. Supply its original request ID, preserve redaction markers, and use definition_version from discovery. Returns effective authority, consequences, limitations and narrower supported choices within your disclosure. Later policy, unrelated runtime grants and private service models remain undisclosed. This read submits no approval, notifies nobody and changes no policy or grant. Revise or discuss the tradeoff before explicit submission through the adoption owner.",
         json!({"snapshot_request_id":string,"source":string,"definition_version":string}),
@@ -1262,6 +1294,8 @@ pub fn tools() -> Vec<Value> {
             Some(
                 "request_room_access"
                     | "request_collaboration"
+                    | "submit_policy_change"
+                    | "read_policy_change"
                     | "request_policy_snapshot"
                     | "read_policy_snapshot"
                     | "assess_policy"

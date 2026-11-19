@@ -36,6 +36,7 @@ mod gateway;
 mod memory;
 mod operator_actions;
 mod policy_assessment;
+mod policy_changes;
 mod policy_snapshots;
 mod route_challenges;
 mod support;
@@ -65,6 +66,8 @@ const ENDPOINTS: &[&str] = &[
     "/status",
     "/policy",
     "/policy/snapshots (POST)",
+    "/policy/changes (POST)",
+    "/policy/changes/{request_id}",
     "/policy/assess (POST)",
     "/policy/snapshots/{request_id}",
     "/policy/capabilities",
@@ -715,6 +718,7 @@ async fn authorize(request: Request<'_>, token_path: &Path) -> Result<AuthScope,
         && !path.starts_with("/support/")
         && !path.starts_with("/operator-actions")
         && !path.starts_with("/policy/snapshots")
+        && !path.starts_with("/policy/changes")
         && path != "/policy/assess"
         && !path.starts_with("/approvals/")
     {

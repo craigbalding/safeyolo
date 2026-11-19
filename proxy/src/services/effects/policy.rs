@@ -6,7 +6,7 @@ use crate::{
     grants::Grant,
     policy::{Policy, snapshot::RetainedPolicySnapshot},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -14,7 +14,7 @@ const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 const MAX_RESULT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CHANGES: usize = 2048;
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Candidate {
     pub snapshot_request_id: String,
@@ -113,11 +113,32 @@ pub(crate) fn assess_current(
         return Err("candidate exceeds the 1 MiB assessment limit".into());
     }
     let materialized = snapshot.materialize(&candidate.source).map_err(|_| "candidate cannot be materialized against this approved snapshot; preserve its field markers")?;
-    // Validate preservation against host-held source, then keep literal secrets
-    // out of every compiler/projection input. Scrubbing derived strings by value
+    assess_materialized(
+        snapshot,
+        candidate,
+        registry,
+        grants,
+        current,
+        &materialized,
+    )
+}
+
+/// Only the human restore owner may supply source without guest preservation
+/// markers. Analysis and redaction still use the same consequence owner.
+pub(crate) fn assess_materialized(
+    snapshot: &RetainedPolicySnapshot,
+    candidate: &Candidate,
+    registry: Option<Arc<crate::services::Registry>>,
+    grants: &[Grant],
+    current: Option<&Policy>,
+    materialized: &str,
+) -> Result<Value, Error> {
+    // The guest boundary preserved host-held values, or the human explicitly
+    // selected prior source. Keep literals out of compiler/projection inputs.
+    // Scrubbing derived strings by value
     // would let unrelated attacker-authored text confirm a credential guess.
     let source = snapshot
-        .candidate_view(&materialized)
+        .candidate_view(materialized)
         .map_err(|_| "candidate is not valid authored TOML")?;
     let base = &snapshot.disclosed_source;
     let structural = difference(&authored(base)?, &authored(&source)?);

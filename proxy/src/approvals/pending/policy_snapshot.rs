@@ -7,7 +7,7 @@ use crate::{
     policy::snapshot::{RetainedPolicySnapshot, source_revision},
 };
 
-fn instance_id(config: &crate::Config) -> Result<String> {
+pub(super) fn instance_id(config: &crate::Config) -> Result<String> {
     let id = std::fs::read_to_string(config.data_dir().join("instance_id")).map_err(unavailable)?;
     if id.trim().is_empty() {
         return Err(invalid("local instance identity unavailable"));
@@ -105,9 +105,10 @@ pub(crate) fn request(
     };
     // Snapshot data and its approval are committed together. Never put source
     // or restoration values in the public approval/action/result record.
+    let encoded = zeroize::Zeroizing::new(serde_json::to_string(&snapshot).map_err(unavailable)?);
     writer
         .approvals()
-        .submit_retained(authority, operation_id, &policy, "pending", Some(&snapshot))
+        .submit_retained(authority, operation_id, &policy, "pending", Some(&encoded))
 }
 
 pub(crate) fn approval_view(
@@ -218,16 +219,7 @@ pub(crate) fn retained(writer: &Writer, record: &Record) -> Result<RetainedPolic
     let encoded =
         zeroize::Zeroizing::new(encoded.ok_or_else(|| invalid("retained snapshot unavailable"))?);
     let snapshot: RetainedPolicySnapshot = serde_json::from_str(&encoded).map_err(unavailable)?;
-    let restored = snapshot
-        .materialize(&snapshot.disclosed_source)
-        .map_err(unavailable)?;
-    if snapshot.reference() != record.authority.action["snapshot"]
-        || crate::policy::snapshot::assessment_inputs_revision(&snapshot.assessment_inputs)
-            != snapshot.metadata["assessment_inputs_revision"]
-        || source_revision(&restored) != snapshot.metadata["saved_source_revision"]
-        || source_revision(&snapshot.disclosed_source)
-            != snapshot.metadata["disclosed_source_revision"]
-    {
+    if !snapshot.matches_reference(&record.authority.action["snapshot"]) {
         return Err(invalid(
             "retained snapshot identity differs from approved source",
         ));

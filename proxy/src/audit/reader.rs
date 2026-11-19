@@ -130,6 +130,7 @@ pub fn parse_record(line: &str) -> Result<Value> {
                         | "desktop_present"
                         | "diagnostic"
                         | "policy_snapshot"
+                        | "policy_change"
                 )
             )
             || !approval["key"].is_string()

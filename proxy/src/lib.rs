@@ -1066,7 +1066,7 @@ pub(crate) fn edit_native_policy<T>(
         .gateway_grants
         .clone();
     if let Some(store) = store {
-        Ok(store.edit_native_policy(skip_unchanged, prepare, activate)?)
+        Ok(store.edit_native_policy(skip_unchanged, |source, _| prepare(source), activate)?)
     } else {
         Ok(approvals::policy_transaction(
             &path,
@@ -1074,6 +1074,98 @@ pub(crate) fn edit_native_policy<T>(
             prepare,
             activate,
         )?)
+    }
+}
+
+/// Review admission holds the latest store, source and runtime together, from
+/// comparison through save, activation, receipt and rollback. Candidate loading
+/// belongs to `prepare`; activation publishes that same compiled policy.
+pub(crate) fn adopt_native_policy(
+    state: &RuntimeState,
+    prepare: impl FnOnce(
+        &str,
+        &Runtime,
+        &[grants::Grant],
+    ) -> approvals::Result<(String, policy::Policy)>,
+    committed: impl FnOnce() -> approvals::Result<()>,
+) -> approvals::Result<()> {
+    use std::cell::RefCell;
+    let (path, store) = {
+        let current = state
+            .read()
+            .map_err(|_| approvals::invalid("runtime unavailable"))?;
+        (
+            current
+                .config
+                .policy_file
+                .clone()
+                .ok_or_else(|| approvals::invalid("policy unavailable"))?,
+            current.gateway_grants.clone(),
+        )
+    };
+    let locked = RefCell::new(None);
+    let candidate = RefCell::new(None);
+    let previous = RefCell::new(None);
+    let mut committed = Some(committed);
+    let prepare = |source: &str, grants: &[grants::Grant]| {
+        let current = state
+            .write()
+            .map_err(|_| approvals::invalid("runtime unavailable"))?;
+        let (source, policy) = prepare(source, &current, grants)?;
+        let runtime = prepare_policy_runtime(&current, policy)
+            .map_err(|_| approvals::invalid("candidate runtime could not be prepared"))?;
+        *previous.borrow_mut() = Some(Arc::clone(&current));
+        *candidate.borrow_mut() = Some(runtime);
+        *locked.borrow_mut() = Some(current);
+        Ok(((), source))
+    };
+    let activate = |_: &str, activation| -> Result<(), String> {
+        let mut locked = locked.borrow_mut();
+        let current = locked.as_mut().ok_or("runtime lock unavailable")?;
+        let mut runtime = match activation {
+            approvals::PolicyActivation::Candidate => candidate
+                .borrow_mut()
+                .take()
+                .ok_or("candidate unavailable")?,
+            approvals::PolicyActivation::Rollback { list_mtime } => {
+                let mut runtime = previous
+                    .borrow_mut()
+                    .take()
+                    .ok_or("previous runtime unavailable")?
+                    .as_ref()
+                    .clone();
+                if let Some(policy) = runtime.policy.as_mut() {
+                    Arc::make_mut(policy)
+                        .observe_restored_native_file(list_mtime)
+                        .map_err(|error| error.to_string())?;
+                }
+                runtime
+            }
+        };
+        if matches!(activation, approvals::PolicyActivation::Candidate)
+            && let Some(policy) = runtime.policy.as_mut()
+        {
+            Arc::make_mut(policy)
+                .observe_baseline_files(current.policy.as_deref())
+                .map_err(|error| error.to_string())?;
+        }
+        runtime
+            .configure_declarations()
+            .map_err(|error| error.to_string())?;
+        runtime
+            .withhold_revoked_approval_results(current)
+            .map_err(|error| error.to_string())?;
+        **current = Arc::new(runtime);
+        if matches!(activation, approvals::PolicyActivation::Candidate) {
+            committed.take().ok_or("receipt callback unavailable")?()
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    };
+    if let Some(store) = store {
+        store.edit_native_policy(false, prepare, activate)
+    } else {
+        approvals::policy_transaction(&path, false, |source| prepare(source, &[]), activate)
     }
 }
 
@@ -2623,3 +2715,6 @@ mod audit_runtime_tests;
 
 #[cfg(test)]
 mod listener_reload_tests;
+
+#[cfg(test)]
+mod policy_adoption_tests;

@@ -238,6 +238,7 @@ pub(crate) fn is_operator_event(event: &serde_json::Value) -> bool {
             "admin.approval_added"
                 | "admin.approval_decided"
                 | "admin.policy_snapshot_decided"
+                | "admin.policy_change_decided"
                 | "admin.denial"
                 | "admin.host_allowed"
                 | "admin.host_denied"

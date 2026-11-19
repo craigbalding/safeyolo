@@ -1867,6 +1867,34 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         }
         return Ok(get_baseline(policy, policy_path).await);
     }
+    if method == Method::POST && path == "/admin/policy/restore" {
+        let data = match read_json(request).await? {
+            ParsedBody::Value(data) => data.0.clone(),
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => Value::Null,
+        };
+        let Ok(input) =
+            serde_json::from_value::<crate::approvals::pending::policy_change::Restore>(data)
+        else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"supply approval_id and a new operation_id to prepare deliberate restore"}),
+            ));
+        };
+        let (Some(state), Some(writer), Some(owner)) = (task_state, audit, service_audit) else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"policy restore owner unavailable"}),
+            ));
+        };
+        let (state, writer) = (state.clone(), writer.clone());
+        return owner.mutation_owner.spawn_blocking(move || {
+            Ok(match crate::approvals::pending::policy_change::restore(&state,&writer,&input) {
+                Ok(value)=>response(StatusCode::OK,value),
+                Err(error)=>response(StatusCode::CONFLICT,json!({"error":error.to_string(),"next_action":"read the original operation_id; no restore decision is implied by preparation"})),
+            })
+        }).await?.await.map_err(|_|Error::ServiceMutation)?;
+    }
     if method == Method::POST && path == "/admin/policy/assess" {
         let data = match read_json(request).await? {
             ParsedBody::Value(data) => data.0.clone(),
