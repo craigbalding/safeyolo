@@ -159,6 +159,11 @@ def ingest(config):
         media.unlink()  # Successful import retains the artifact in the selected library.
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         receipt["error"] = f"{type(error).__name__}: {error}"
+        if isinstance(error, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+            receipt["command_error"] = {"exit_code": getattr(error, "returncode", None),
+                                        "timeout_seconds": getattr(error, "timeout", None),
+                                        "stdout": os.fsdecode(error.stdout or ""),
+                                        "stderr": os.fsdecode(error.stderr or "")}
         raise
     finally:
         # Python cancellation propagates; abrupt termination leaves the last saved stage.

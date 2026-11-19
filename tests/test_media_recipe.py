@@ -231,6 +231,45 @@ def test_bad_acquisition_stops_before_jobs(modules, selected, monkeypatch, body,
     assert not list(Path(selected["library"]).iterdir())
 
 
+@pytest.mark.parametrize("timeout", [False, True])
+def test_acquisition_failure_retains_original_diagnostics(modules, selected, monkeypatch, tmp_path, timeout):
+    host, _ = modules
+
+    def fail(argv, **kwargs):
+        Path(argv[argv.index("--output") + 1]).write_bytes(b"partial")
+        if timeout:
+            # TimeoutExpired carries bytes even when subprocess.run uses text=True.
+            raise subprocess.TimeoutExpired(argv, 10, output=b"206", stderr=b"stream stalled\xff")
+        raise AssertionError("The exit-92 case must run the real subprocess capture")
+
+    if timeout:
+        monkeypatch.setattr(host.subprocess, "run", fail)
+    else:
+        # Keep subprocess.run's actual output capture and CalledProcessError.
+        tools = tmp_path / "tools"
+        tools.mkdir()
+        curl = tools / "curl"
+        curl.write_text('#!/bin/sh\nwhile [ "$#" -gt 0 ]; do\n'
+                        '  if [ "$1" = "--output" ]; then printf partial > "$2"; shift; fi\n'
+                        '  shift\ndone\nprintf 200\nprintf "original HTTP/2 stream error" >&2\nexit 92\n')
+        curl.chmod(0o755)
+        monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ["PATH"])
+    jobs = native_jobs(monkeypatch, host, selected)
+    with pytest.raises(subprocess.SubprocessError):
+        host.ingest(selected)
+    assert jobs == []
+    assert not list(Path(selected["library"]).iterdir())
+    attempt, = Path(selected["quarantine"]).iterdir()
+    receipt = json.loads((attempt / "receipt.json").read_text())
+    assert receipt["stage"] == "acquisition" and receipt["status"] == "incomplete"
+    error = receipt["command_error"]
+    assert error["exit_code"] == (None if timeout else 92)
+    assert error["timeout_seconds"] == (10 if timeout else None)
+    assert error["stdout"] == ("206" if timeout else "200")
+    assert os.fsencode(error["stderr"]) == (b"stream stalled\xff" if timeout else b"original HTTP/2 stream error")
+    assert (attempt / "media").read_bytes() == b"partial"
+
+
 def test_redirect_is_not_an_acquisition(modules, selected, monkeypatch, tmp_path):
     host, _ = modules
     calls = acquisition(monkeypatch, host, status=302)

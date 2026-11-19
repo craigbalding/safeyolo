@@ -117,7 +117,9 @@ runtime prevents import. A failed attempt exits nonzero and retains its reached
 receipt and original job output in private quarantine. Before acquisition, each
 control and import, the executor atomically saves the current stage in that same
 receipt. It also saves each completed control and the import result. The receipt
-identifies the selected library and filename. Abrupt termination leaves the last
+identifies the selected library and filename. A failed or timed-out acquisition
+also retains its captured stdout/stderr and exit code or timeout in the receipt.
+Abrupt termination leaves the last
 saved record; `incomplete` at `import` can mean that the file was created before
 the result was saved. Cancellation still propagates. No process/turn status
 establishes completion. Inspect the receipt, exact destination and external job's
