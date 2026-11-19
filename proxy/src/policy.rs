@@ -28,6 +28,7 @@ use serde_json::{Map, Value};
 pub(crate) mod authority;
 mod baseline;
 mod budgets;
+pub mod capabilities;
 pub mod checks;
 pub(crate) mod circuit_settings;
 pub(crate) mod delegation;

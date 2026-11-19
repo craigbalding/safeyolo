@@ -13,6 +13,32 @@
 - [Service gateway](#service-gateway)
 - [Approved collaboration rooms](#approved-collaboration-rooms)
 
+## Policy capabilities
+
+`GET /policy/capabilities` returns generic definitions from the installed
+parsers, validators and tool schemas. No policy disclosure is required.
+`?observe=true` adds only existing caller-authorized support, service and
+operator-action observations. Undisclosed and failed reads remain unknown.
+The API accepts no agent, target, source, snapshot or remote-home override.
+
+`POST /policy/capabilities/validate` accepts `definition`, `value` and the exact
+`definition_version` returned by discovery. It checks a component form with
+its owning validator. It does not read or apply policy, authorize execution or
+perform a complete candidate assessment. Read the returned coverage limits.
+
+`POST /policy/capabilities/support` accepts `definition_version` and a typed
+support `request`. It observes current scope permission and runtime readiness
+without executing the operation. Grant and target selection come from the
+caller's existing support discovery; unknown targets do not disclose state.
+Granted access can coexist with unavailable runtime dependencies. Current
+execution still revalidates through the existing support owner.
+
+The installed tools are `discover_policy_capabilities`,
+`validate_policy_capability` and `observe_support_capability`. The policy-authoring
+skill's [complete guest sequence](../../policy-authoring/references/capabilities.md)
+shows discovery, composition, accepted-form validation, assessment limits,
+revision and submission through the existing policy owner.
+
 ## Operator actions
 
 `GET /operator-actions` discovers the bounded SafeYolo action vocabulary for
