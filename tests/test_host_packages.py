@@ -1023,6 +1023,14 @@ def test_native_bundle_metadata_records_guest_discovery_without_pinning_an_archi
     assert fields["guest_compatibility"] == "v1"
     assert fields["guest_repository"] == "ghcr.io/craigbalding/safeyolo-guest"
     assert fields["guest_discovery_tag"] == "compat-v1"
+    recipe = Path("assets/skills/safeyolo-commission/recipes/media-ingestion/v1")
+    source = REPO / "cli/src/safeyolo/agent_context/skills/safeyolo-commission/recipes/media-ingestion/v1"
+    checksums = (bundle / "SHA256SUMS").read_text()
+    for path in source.iterdir():
+        if path.is_file():
+            packaged = bundle / recipe / path.name
+            assert packaged.read_bytes() == path.read_bytes()
+            assert f"{builder.sha256(packaged)}  ./{recipe / path.name}\n" in checksums
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
