@@ -96,6 +96,10 @@ pub struct ServiceDefinition {
     pub raw: Value,
 }
 impl ServiceDefinition {
+    pub(crate) fn capability_schema() -> Value {
+        json!({"type": "object", "description": "Dynamic service syntax is uncharacterised; use the owning parser.", "x-scope": "Local service definition and its named capabilities", "x-lifetime": "Installed service revision and current policy/bindings", "x-effects": "Define accepted routes, contract operations, credentials and declared effects. Loading a definition grants no service access.", "x-dependencies": "Current service parser, registry, authorization, contracts, credentials and network policy; upstream readiness is separate", "x-gaps": "Dynamic service syntax is uncharacterised here. Configured definitions, hidden bindings and effects are not disclosed by generic discovery."})
+    }
+
     pub fn from_yaml(source: &str) -> Result<Self, Error> {
         let raw = crate::policy::parse_yaml(source)?;
         Self::from_value(raw)
@@ -958,6 +962,29 @@ impl GatewaySnapshot {
         let encoded = crate::python_json::encode(&services);
         wipe_json(&mut services);
         Ok(Secret::new(encoded))
+    }
+
+    /// Project the existing caller-visible catalog without copying secret fields
+    /// into discovery output. Definition effects stay undisclosed when their
+    /// configured contents have no existing disclosure grant.
+    pub(crate) fn policy_capabilities(&self, agent: &str) -> Result<Value, ServiceViewError> {
+        let encoded = self.agent_services_json(agent)?;
+        let visible = GatewayJson(
+            serde_json::from_str(encoded.expose_secret())
+                .map_err(|_| ServiceViewError::Compatibility)?,
+        );
+        let authorized: Vec<_> = visible.0.as_object().ok_or(ServiceViewError::Compatibility)?.iter().map(|(name, binding)| {
+            let revision = self.registry.as_ref().and_then(|registry|registry.services.get(name))
+                .map(|definition|crate::approvals::pending::digest(&definition.raw));
+            json!({"service":name,"capability":binding["capability"],"definition_revision":revision,
+                "supported":revision.is_some(),"granted":null,"configured_authorization":true,"requestable":true,"prohibited":null,"unavailable":null,
+                "permission_observation":"recorded_binding","readiness_observation":"unknown","effects_observation":"undisclosed",
+                "owner":"GET /gateway/services; current gateway/contract/credential/network checks"})
+        }).collect();
+        Ok(
+            json!({"observation":"current","authorized":authorized,"available":self.available_services(agent),
+            "limits":"Available catalog descriptions are requestable, not granted. Configured effect-model contents require their existing disclosure authority. No upstream readiness or credential-resolution probe was performed."}),
+        )
     }
 
     /// Call only after `agent_services_json` succeeds for the same agent. This

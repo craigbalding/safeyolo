@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 
 use super::{Policy, Result, TimestampPaths, invalid, source::ParsedPolicy};
 
-#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     #[default]
@@ -81,7 +81,7 @@ pub(crate) fn control_label(name: &str) -> &str {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Network {
     pub enabled: bool,
@@ -99,7 +99,7 @@ impl Default for Network {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Credentials {
     pub enabled: bool,
@@ -134,13 +134,13 @@ impl Default for Credentials {
     }
 }
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SafeHeaders {
     pub safe_patterns: Vec<String>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Entropy {
     pub min_length: f64,
@@ -158,7 +158,7 @@ impl Default for Entropy {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Patterns {
     pub enabled: bool,
@@ -181,7 +181,7 @@ impl Default for Patterns {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TestContext {
     pub action: Action,
@@ -201,7 +201,7 @@ impl Default for TestContext {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Circuits {
     #[serde(default = "enabled")]
@@ -236,8 +236,9 @@ impl Default for Circuits {
     }
 }
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
+#[schemars(extend("x-scope" = "Local native policy controls", "x-lifetime" = "Saved policy; activation through the current policy owner", "x-effects" = "Configure network, credential, pattern, test-context and circuit controls. Defaults come from the returned types.", "x-dependencies" = "Native policy compiler and current policy application authority", "x-gaps" = "Typed controls do not describe the entire dynamic host/rule/check policy document."))]
 pub struct Controls {
     pub network: Network,
     pub credentials: Credentials,
@@ -260,6 +261,25 @@ struct QuietHosts {
 }
 
 impl Controls {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if !self
+            .test_context
+            .declared_ttl
+            .as_number()
+            .is_some_and(|number| {
+                number
+                    .to_string()
+                    .parse::<super::BigInt>()
+                    .is_ok_and(|value| value > super::BigInt::from(0))
+            })
+        {
+            return Err(invalid(
+                "controls.test_context.declared_ttl must be a positive integer",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn configure(&self, config: &mut crate::Config) {
         config.network_guard_enabled = self.network.enabled;
         config.network_guard_block = self.network.action.blocks();
@@ -414,21 +434,7 @@ impl Policy {
                 .unwrap_or_else(|| json!({})),
         )
         .map_err(|error| invalid(format!("controls: {error}")))?;
-        if !controls
-            .test_context
-            .declared_ttl
-            .as_number()
-            .is_some_and(|number| {
-                number
-                    .to_string()
-                    .parse::<super::BigInt>()
-                    .is_ok_and(|value| value > super::BigInt::from(0))
-            })
-        {
-            return Err(invalid(
-                "controls.test_context.declared_ttl must be a positive integer",
-            ));
-        }
+        controls.validate()?;
         let expired = super::expired_host_entries(&authored, now_ms)?;
         for (agent, host) in &expired {
             let hosts = match agent.as_deref() {
