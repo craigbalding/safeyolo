@@ -7,6 +7,8 @@ use serde_json::{Value, json};
 
 use super::{Policy, Result, delegation::Agent, invalid};
 
+pub(crate) mod diagnostics;
+
 #[derive(
     schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
 )]
@@ -67,6 +69,8 @@ pub(crate) struct Grant {
     pub signal_rooms: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub factory_directions: Vec<FactoryDirection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<diagnostics::Scope>,
     pub expires_at: Option<String>,
     pub acknowledgment: Option<String>,
 }
@@ -100,10 +104,34 @@ impl Grant {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.instance_id.is_empty() || self.targets.is_empty() {
+        if self.instance_id.is_empty() || (self.targets.is_empty() && self.diagnostics.is_none()) {
             return Err(invalid(
                 "support grant needs an owning instance and explicit targets",
             ));
+        }
+        if let Some(scope) = &self.diagnostics {
+            scope.validate()?;
+            if self.support_instance_id.is_some()
+                || self.guest_admin
+                || !self.guest_logs.is_empty()
+                || !self.lifecycle.is_empty()
+                || !self.notifications.is_empty()
+                || !self.signal_rooms.is_empty()
+                || !self.factory_directions.is_empty()
+            {
+                return Err(invalid(
+                    "diagnostic disclosure selects local read-only sources separately from support actions",
+                ));
+            }
+            if scope
+                .runs
+                .keys()
+                .any(|id| !self.targets.iter().any(|target| &target.agent_id == id))
+            {
+                return Err(invalid(
+                    "diagnostic run selection needs an explicit durable subject",
+                ));
+            }
         }
         let mut targets = BTreeSet::new();
         for agent in std::iter::once(&self.support).chain(&self.targets) {

@@ -2,6 +2,7 @@
 
 pub(crate) mod audit_delivery;
 pub(crate) mod authority;
+pub(crate) mod diagnostics;
 pub(crate) mod events;
 pub(crate) mod grants;
 pub(crate) mod operations;
@@ -202,7 +203,12 @@ pub(crate) fn grant_view(
             "binding":if binding.is_ok(){"current"}else{"changed_or_unavailable"},
             "next_action":"On this owner, use configure support to review the current approved snapshot and operator-input agent before a factory direction."})
     }).collect();
-    json!({"name":name,"revision":grant.revision(),"active":targets.iter().any(|target| target["active"] == true),
-        "status":if current && !targets.iter().any(|target|target["active"]==true){"target_identity_changed_or_removed"}else{reason},"target_status":targets,"factory_status":factory_status,"grant":grant,
+    let active = if grant.diagnostics.is_some() {
+        current && targets.iter().all(|target| target["active"] == true)
+    } else {
+        targets.iter().any(|target| target["active"] == true)
+    };
+    json!({"name":name,"revision":grant.revision(),"active":active,
+        "status":if current && !active{"target_identity_changed_or_removed"}else{reason},"target_status":targets,"factory_status":factory_status,"grant":grant,
         "next_action":"On this owner, use configure support to inspect expiry, durable identities and current peer trust. A changed trust generation or recreated same-name identity needs deliberate reselection. Use support report for remaining authority paths; partial coverage is not no access."})
 }

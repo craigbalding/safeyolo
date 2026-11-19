@@ -573,6 +573,40 @@ fn support_facts_inputs(
         &grant.support.agent_id,
     );
     let revision = grant.revision();
+    if let Some(scope) = &grant.diagnostics {
+        let current = grant.instance_id == instance
+            && holder_current
+            && (proposed || grant.active())
+            && !super::delegation::expired(grant.expires_at.as_deref())
+            && grant
+                .targets
+                .iter()
+                .all(|a| policy.evidence_agent_id(&a.name) == Some(&a.agent_id));
+        let mut fact = Fact {
+            fact_id: String::new(),
+            owner_instance_id: instance.into(),
+            source_type: "support_grant".into(),
+            source_id: name.into(),
+            revision,
+            holder,
+            capability: Capability::IssuedPermission {
+                permission: json!({"type":"diagnostic_disclosure","subjects":grant.targets,"scope":scope}),
+            },
+            current,
+            validity: if current {
+                "current read-only diagnostic disclosure"
+            } else {
+                "expired, unacknowledged or replaced identity"
+            }
+            .into(),
+            peer_epoch: None,
+            expires_at: grant.expires_at.clone(),
+            observed_at,
+            proposed,
+        };
+        fact.identify();
+        return vec![fact];
+    }
     for target in &grant.targets {
         let principal = Principal::new(instance, &target.agent_id);
         let current = grant.instance_id == instance

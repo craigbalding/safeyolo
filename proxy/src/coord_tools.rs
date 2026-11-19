@@ -172,6 +172,35 @@ impl Client {
                 )
                 .await;
         }
+        if matches!(
+            name,
+            "diagnostic_evidence" | "request_diagnostic_access" | "query_diagnostic_evidence"
+        ) {
+            if self.home.is_some() {
+                return Err("diagnostic disclosure belongs to the local owning instance".into());
+            }
+            return match name {
+                "diagnostic_evidence" => self.get("/support/diagnostics").await,
+                "request_diagnostic_access" => {
+                    self.request(
+                        Method::POST,
+                        "/support/diagnostics/requests",
+                        args.clone(),
+                        Duration::from_secs(60),
+                    )
+                    .await
+                }
+                _ => {
+                    self.request(
+                        Method::POST,
+                        "/support/diagnostics/query",
+                        args.clone(),
+                        Duration::from_secs(60),
+                    )
+                    .await
+                }
+            };
+        }
         if matches!(name, "request_policy_snapshot" | "read_policy_snapshot") {
             if self.home.is_some() {
                 return Err("policy snapshots select only the authenticated local instance".into());
@@ -1086,6 +1115,39 @@ pub fn tools() -> Vec<Value> {
         "Inspect your operator-owned support grants, explicit durable targets and owning instance. Select home for an authorized remote owner. No room membership or target participation is needed. This tool grants no authority.",
         json!({}),
         &[],
+    );
+    add(
+        "diagnostic_evidence",
+        "Discover your local diagnostic disclosures and requestable sources. Identity and instance are host-bound. Discovery grants no evidence. Existing room receive rights remain usable through normal Coord reads. Read a canonical approval directly even if its notification is unavailable.",
+        json!({}),
+        &[],
+    );
+    add(
+        "request_diagnostic_access",
+        "Ask the operator for explicit local diagnostic disclosure. Choose subject agent names, independent audit/runtime/room/system sources and historical scope. The owner resolves names to durable identities; caller selectors grant no authority. For a fixed snapshot set scope.snapshot=true, future=false and an explicit until cutoff. For temporary access set snapshot=false and expires_at to a selected RFC3339 expiry. For until-revoked access use snapshot=false and expires_at=null. future=true authorizes new records only when the operator approves it. Null history.since selects all retained history. Current runtime/membership observations are collected once per result, not reconstructed history. Snapshot results remain private for seven days, then are deleted on diagnostic use. Use the same operation_id only with identical inputs after canonical readback. Pending/rejected requests disclose no new evidence. No room send, guest administration, lifecycle or policy permission is added.",
+        json!({"operation_id":string,"instance_id":string,"subjects":{"type":"array","items":string},
+            "scope":{"type":"object","properties":{
+                "audit":{"type":"boolean"},"runtime":{"type":"boolean"},"snapshot":{"type":"boolean"},
+                "rooms":{"type":"array","items":{"type":"object","properties":{"room_id":string,"history":{"type":"boolean"},"membership":{"type":"boolean"},"attention":{"type":"boolean"}},"required":["room_id","history","membership","attention"],"additionalProperties":false}},
+                "system_categories":{"type":"array","items":{"type":"string","enum":["coord_health","audit_health"]}},
+                "history":{"type":"object","properties":{"since":{"type":["string","null"]},"until":{"type":["string","null"]},"future":{"type":"boolean"}},"required":["since","until","future"],"additionalProperties":false},
+                "runs":{"type":"object","additionalProperties":{"type":"array","items":string}}},"required":["audit","runtime","snapshot","rooms","system_categories","history"],"additionalProperties":false},
+            "expires_at":{"type":["string","null"]},"reason":string}),
+        &[
+            "operation_id",
+            "instance_id",
+            "subjects",
+            "scope",
+            "expires_at",
+            "reason",
+        ],
+    );
+    add(
+        "query_diagnostic_evidence",
+        "Read/filter/correlate an approved local disclosure. Every read and page checks current requester, subject, instance and grant authority. Use the canonical approval's grant ID. A snapshot freezes one bounded collection across all queries and pages. Other grants freeze each operation_id collection for retries/pagination. Reuse exact filters, limit, operation_id and the returned page token for continuation. Changed filters need a new operation_id for a non-snapshot result. Request/connection correlation requires runtime_id and never follows unrelated raw records or references. Inspect sources, applied_scope, truncation and retention limitations; empty matches do not prove that no event occurred. Lost/expired snapshot data is reported rather than recollected. Narrow/revoke using the owning operator's support grant controls; disclosed bytes cannot be recalled.",
+        json!({"operation_id":string,"grant":string,"limit":{"type":"integer","minimum":1,"maximum":200},"page_token":{"type":["string","null"]},
+            "filter":{"type":"object","properties":{"sources":{"type":"array","items":string},"subject_ids":{"type":"array","items":string},"events":{"type":"array","items":string},"since":string,"until":string,"runtime_id":string,"run_id":string,"request_id":string,"connection_id":string,"failures_only":{"type":"boolean"}},"additionalProperties":false}}),
+        &["operation_id", "grant"],
     );
     add(
         "support_operation",

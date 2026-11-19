@@ -39,6 +39,7 @@ const MAX_DECLARATION_TTL_SECONDS: i64 = 3600;
 const PROJECTION_PAGE: u64 = 200;
 const RECOVERY_INTERVAL: Duration = Duration::from_millis(250);
 mod approval_results;
+mod diagnostics;
 pub(crate) mod federation;
 pub(crate) mod inventory;
 mod operational;

@@ -58,6 +58,15 @@ pub(crate) fn explain(
             ],
             "ev.accept_coord_lane",
         ),
+        "diagnostic_disclosure" => (
+            "The agent requested additional diagnostic evidence from this local instance.",
+            vec![
+                "Only explicitly selected sources, durable subjects and historical reach are disclosed for the selected lifetime.",
+                "No room send, guest administration, lifecycle, policy change or Admin credential is granted. Current authority is checked on every read and continuation.",
+                "Disclosed bytes cannot be recalled. Fixed collections are bounded, retained privately for seven days and never silently recollected after loss.",
+            ],
+            "ev.accept_proxy_lane",
+        ),
         "network_allow" => (
             "The network policy required approval for this agent, destination and port.",
             vec![
@@ -126,6 +135,7 @@ pub(crate) fn explain(
             | "operator_action"
             | "coord_access"
             | "coord_collaboration"
+            | "diagnostic_disclosure"
             | "policy_snapshot"
     );
     if option.is_some() && record.authority.selected_option(option).is_none() {
@@ -159,6 +169,14 @@ pub(crate) fn explain(
         "service":action["service"],"capability":action["capability"],
         "credential_reference":action["credential"],"account":action["account"],
         "request_method":method,"request_scheme":record.authority.scheme});
+    if kind == "diagnostic_disclosure" {
+        facts["requested_disclosure"] = action["grant"].clone();
+        facts["operator_selection"] = view["result"]["diagnostic_selection"].clone();
+        facts["authority_delta"] = json!(
+            "Read-only diagnostic disclosure through existing support grants. History and access lifetime are independent. Explicit room selections grant no room identity or send rights. Narrow a pending selection through this approval's diagnostic-selection route; after approval use support grant preview/apply/revoke."
+        );
+        unknowns.clear();
+    }
     if kind == "policy_snapshot" {
         facts["snapshot"] = action["snapshot"].clone();
         facts["authority_delta"] = json!(
@@ -413,7 +431,7 @@ pub(crate) fn explain_policy_changes(changes: &[Value], effective: bool) -> Vec<
         let meaning = if effective && matches!(root,"support_grants"|"approval_delegations") && last == "expires_at" {
             "This changes the duration of the selected authority. A null expiry is standing authority until revoked. Shortening or expiry cannot undo disclosed data or effects of admitted operations."
         } else if effective && root == "support_grants" {
-            "The named support principal and explicit target peers have these operations and constraints. Inspection is always included. Guest administration reaches target-accessible credentials, mounts and delegations; the authority paths and native warnings explain combinations."
+            "The named principal, durable subjects and explicit scope determine the selected authority. Diagnostic disclosure permits only the selected local evidence sources and history. Other support grants include inspection and their selected actions. Guest administration reaches target-accessible credentials, mounts and delegations; the authority paths and native warnings explain combinations."
         } else if effective && root == "approval_delegations" {
             "Each selected reviewer can decide eligible canonical requests within the complete typed scopes. Beneficiaries, grant duration and source dependencies still bound issuance. The native warnings explain combined and persistent effects; proposed rules cannot approve their own adoption."
         } else if control && last == "enabled" && change["after"] == false {

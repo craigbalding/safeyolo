@@ -155,6 +155,61 @@ async fn private_tool_assesses_revises_and_shares_the_exact_authorized_projectio
 }
 
 #[tokio::test]
+async fn diagnostic_scope_is_assessed_without_granting_support_inspection() {
+    let f = Fixture::new().await;
+    let _worker = controlled_runs::agent_run(f.root.path(), "worker", WORKER_ID, RUN);
+    let (id, source) = approved(&f).await;
+    let discovery = client(&f)
+        .call("diagnostic_evidence", &json!({}))
+        .await
+        .unwrap();
+    assert_eq!(discovery["readable"], json!([]));
+    let scope = json!({"audit":true,"runtime":false,"rooms":[],"system_categories":[],
+        "history":{"since":null,"until":"2026-11-01T00:00:00Z","future":false},
+        "runs":{},"snapshot":true});
+    let grant = json!({"instance_id":INSTANCE,"support":{"name":"worker","agent_id":WORKER_ID},
+        "targets":[{"name":"helper","agent_id":HELPER_ID}],"guest_admin":false,"guest_logs":[],
+        "lifecycle":[],"diagnostics":scope,"expires_at":null,"acknowledgment":null});
+    let mut document = source.parse::<toml_edit::DocumentMut>().unwrap();
+    document["support_grants"] = toml_edit::Item::Table(toml_edit::Table::new());
+    document["support_grants"]["selected-diagnostics"] = toml_edit::value(grant.to_string());
+    let before = f.source();
+    let approvals = f.admin("GET", "/admin/approvals", None).await.json();
+    let input = candidate(&id, &document.to_string());
+    let report = client(&f).call("assess_policy", &input).await.unwrap();
+    assert_eq!(report["valid"], true, "{report}");
+    assert_eq!(
+        report["effective"]["after"]["support_grants"]["selected-diagnostics"]["diagnostics"],
+        scope
+    );
+    let facts = report["authority"]["after_facts"].as_array().unwrap();
+    assert_eq!(facts.len(), 1, "{facts:?}");
+    assert_eq!(
+        facts[0]["capability"]["permission"],
+        json!({"type":"diagnostic_disclosure","subjects":grant["targets"],"scope":scope})
+    );
+    let consequences = report["consequences"].to_string();
+    assert!(consequences.contains("selected local evidence sources and history"));
+    assert!(!consequences.contains("Inspection is always included"));
+    let review = f.admin("POST", "/admin/policy/assess", Some(input)).await;
+    assert_eq!(review.status, 200, "{}", review.json());
+    assert_eq!(review.json()["authorized_projection"], report);
+    assert_eq!(f.source(), before);
+    assert_eq!(
+        f.admin("GET", "/admin/approvals", None).await.json(),
+        approvals
+    );
+    assert_eq!(
+        client(&f)
+            .call("diagnostic_evidence", &json!({}))
+            .await
+            .unwrap(),
+        discovery
+    );
+    f.stop().await;
+}
+
+#[tokio::test]
 async fn hidden_credentials_do_not_change_unrelated_candidate_text() {
     let f = Fixture::new().await;
     let _worker = controlled_runs::agent_run(f.root.path(), "worker", WORKER_ID, RUN);

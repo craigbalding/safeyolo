@@ -27,6 +27,7 @@ safeyolo [--root ROOT] traffic show ID|body ID request|response|websocket ID|mes
 safeyolo [--root ROOT] traffic export ID FORMAT FILE [--agent NAME]
 safeyolo [--root ROOT] approvals list [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals show|explain|approve|reject ID [--option ID] [--agent NAME] [--json]
+safeyolo [--root ROOT] approvals narrow-diagnostics ID --file SELECTION.json [--json]
 safeyolo [--root ROOT] approvals ask|context ID [--agent NAME] [--json]
 safeyolo [--root ROOT] approvals delegations [--json]\nsafeyolo [--root ROOT] approvals delegation check|preview|apply|revoke NAME --file PROPOSAL.json [--json]\nsafeyolo [--root ROOT] approvals review --agent NAME
 safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
@@ -540,6 +541,14 @@ fn show_explanation(view: &Value) -> Result<(), Error> {
             );
         }
     }
+    if facts.get("requested_disclosure").is_some() {
+        println!("Requested diagnostic disclosure:");
+        show_evidence_fields(&facts["requested_disclosure"], 2);
+        if !facts["operator_selection"].is_null() {
+            println!("Narrowed operator selection:");
+            show_evidence_fields(&facts["operator_selection"], 2);
+        }
+    }
     if let Some(routes) = facts["configured_routes"].as_array() {
         for route in routes.iter().take(3) {
             println!(
@@ -623,6 +632,16 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
         show_evidence_fields(options, 2);
     }
 
+    if view["action"]["kind"] == "diagnostic_disclosure" {
+        println!("Local read-only diagnostic disclosure:");
+        let selected = view["result"]
+            .get("diagnostic_selection")
+            .unwrap_or(&view["action"]["grant"]);
+        show_evidence_fields(selected, 2);
+        println!(
+            "Fixed results retain at most 2000 rows / 4 MiB for seven days. Audit history is independent of access expiry. Current runtime/membership observations are not reconstructed history. No room send, guest administration, lifecycle or policy change is granted. Use approvals narrow-diagnostics APPROVAL_ID --file SELECTION.json to prepare a narrower scope before deciding; inspect its returned preview."
+        );
+    }
     if view["action"]["kind"] == "policy_snapshot" {
         println!("Full authored policy snapshot:");
         show_evidence_fields(&view["snapshot"], 2);
@@ -1948,6 +1967,20 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
                 }
                 [] | ["list"] => pending(root, options.agent.as_deref()).await?,
                 ["show", id] => approval(root, id, options.agent.as_deref()).await?,
+                ["narrow-diagnostics", id] => {
+                    let input = options
+                        .files
+                        .last()
+                        .ok_or("diagnostic narrowing requires --file SELECTION.json")?;
+                    let selection = serde_json::from_slice(&std::fs::read(input)?)?;
+                    admin(
+                        root,
+                        &format!("/admin/approvals/{}/diagnostic-selection", encoded(id)),
+                        Method::POST,
+                        selection,
+                    )
+                    .await?
+                }
                 [command @ ("ask" | "context"), id] => {
                     approval_context(root, id, options.agent.as_deref(), *command == "ask").await?
                 }
