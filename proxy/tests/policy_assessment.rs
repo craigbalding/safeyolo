@@ -170,6 +170,16 @@ async fn diagnostic_scope_is_assessed_without_granting_support_inspection() {
     let grant = json!({"instance_id":INSTANCE,"support":{"name":"worker","agent_id":WORKER_ID},
         "targets":[{"name":"helper","agent_id":HELPER_ID}],"guest_admin":false,"guest_logs":[],
         "lifecycle":[],"diagnostics":scope,"expires_at":null,"acknowledgment":null});
+    let preview = f
+        .admin(
+            "POST",
+            "/admin/support-grants/selected-diagnostics/preview",
+            Some(json!({"grant":grant})),
+        )
+        .await;
+    assert_eq!(preview.status, 200, "{}", preview.json());
+    let mut grant = preview.json()["after"].clone();
+    grant["acknowledgment"] = preview.json()["revision"].clone();
     let mut document = source.parse::<toml_edit::DocumentMut>().unwrap();
     document["support_grants"] = toml_edit::Item::Table(toml_edit::Table::new());
     document["support_grants"]["selected-diagnostics"] = toml_edit::value(grant.to_string());

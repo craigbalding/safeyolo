@@ -95,9 +95,12 @@ captured list inputs.
 
 ## Identity, dependencies and limits
 
-`assessment_id` binds `input_identity`: complete field-redacted candidate, base
-revision, captured inputs, relevant temporary grants, adopted service-definition
-revisions, implementation definition version and reached analysis. The operator
+`assessment_id` binds `input_identity`: the complete submitted source revision
+(`candidate_revision`), base revision, captured inputs, relevant temporary grants,
+adopted service-definition revisions, implementation definition version and
+reached analysis. The submitted source retains approved preservation markers for
+hidden base data. A newly authored credential changes the candidate identity;
+the compiler and visible analysis still use field-redacted source. The operator
 result also binds its current policy revision. Observation time is separate.
 A change to a relevant input requires a fresh assessment. The adoption owner
 must compare these identities and revalidate saved/active state at decision;
