@@ -540,8 +540,8 @@ fn array_encoded_credentials_are_redacted_and_restored_at_their_original_fields(
             .replace("budget=17", "budget=23")
             .replace("keep-note", "edited-note");
         assert_eq!(
-            restored.parse::<toml::Value>().unwrap(),
-            expected.parse::<toml::Value>().unwrap()
+            toml::from_str::<toml::Value>(&restored).unwrap(),
+            toml::from_str::<toml::Value>(&expected).unwrap()
         );
 
         let mut removed = changed.parse::<toml_edit::DocumentMut>().unwrap();
