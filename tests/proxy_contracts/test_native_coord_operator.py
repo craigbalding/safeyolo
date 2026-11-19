@@ -628,7 +628,7 @@ def test_agent_watch_checkpoint_and_tool_targets_omit_url_credentials(supervised
         assert not state.with_name(state.name + ".lock").exists()
 
 
-def test_agent_watch_public_references_and_secrets_in_terminal_and_pipe(supervised):
+def test_agent_watch_public_references_and_secrets_in_terminal_and_pipe(supervised, monkeypatch):
     instance, _, state, _ = supervised
     references = [
         "https://github.com/craigbalding/safeyolo/issues/1632#issuecomment-6882721322",
@@ -645,6 +645,7 @@ def test_agent_watch_public_references_and_secrets_in_terminal_and_pipe(supervis
     before = history(instance)
     piped = watch_once(instance, "--history", "10")
     assert piped.returncode == 0, piped.stderr
+    monkeypatch.delitem(instance.environment, "NO_COLOR", raising=False)
     with terminal(instance, ["agent", "watch", "alice", "--once", "--history", "10"], columns=240) as (_, _, until):
         rendered = until(b"references-end").decode()
     assert "\x1b[" in rendered
