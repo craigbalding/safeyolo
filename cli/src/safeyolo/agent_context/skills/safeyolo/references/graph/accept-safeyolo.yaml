@@ -631,11 +631,11 @@ nodes:
         - path: proxy/tests/delegated_approvals/collaboration.rs
           sha256: cc249a3fcdf97f033e57cc1a82f64ac7ef97f2c83f9c59c115eca21a7861ef17
         - path: proxy/tests/native_coord.rs
-          sha256: 58eb2afe33d72f997a105c35f22b94314be76aadd18b72f6364a7a8c696af020
+          sha256: 7b7f413438a593da00464c8c9ffb0ccb3b0d0036246ff9a4279ae9fda903e90c
         - path: proxy/src/coord_rooms/federation/nats.rs
           sha256: 9b378b90317797b44ba3621207dea52bc78a5bd9b765293cca114b4d8e03da44
         - path: proxy/src/coord_tools/sources.rs
-          sha256: 233f6bea4146f20ded5231938012e0282007bb9852d2d7bd8a746ab6ebedaca8
+          sha256: 52dc00c644c4b499c19a1f5dd652c2cd187352a7d82ecdf1a89e9dd85f4275a8
         - path: proxy/src/peer_support/audit_delivery.rs
           sha256: 5fb644b28e9c01f3724e7dca5ede300701f1ed01b13035c064405a90ea67654f
         - path: proxy/src/peer_support/authority.rs
@@ -713,7 +713,7 @@ nodes:
         - path: proxy/src/coord_tools/github.rs
           sha256: da9e4c6e244c232da4aedf17d7f58484862743996c084317a37f4e602d70c164
         - path: proxy/src/native_client.rs
-          sha256: 0ce42c6017fc8fc9b8fa4b8a84d9946f3d867eff829b6b909011186dba9d8264
+          sha256: 61935b4a88ddf3dec9293d87cf29898b88240cdbbd70e5208766a17f4515b5bd
         - path: cli/src/safeyolo/services/github.yaml
           sha256: 38880c71fbe0a2f995a790c64d21d001baa7a5911d10f44d8e50973914f543d3
         - path: proxy/tests/native_coord/upgrade.rs
@@ -819,7 +819,7 @@ nodes:
         - path: proxy/src/coord_operator/signals.rs
           sha256: 90fa9648af1c4c243f776a179142dd267e2a00cc96df9c0b03a2638ec9ec8fee
         - path: proxy/src/coord_tools.rs
-          sha256: 077adc21742042fded1ff271ffa05fb64e79d70a39903bd11a5ab3bfca79ef6a
+          sha256: 983c76a114107a713be64fb7ad6d09ab41dc566638efa563557b544a15856caf
         - path: proxy/src/coord_rooms/room_status.rs
           sha256: 9fcd506d9a465dd2dc3f737727e3232f88f7df43b11b552cf139890fd59d2431
         - path: proxy/src/coord_rooms/room_status/tests.rs
@@ -833,7 +833,7 @@ nodes:
         - path: proxy/src/coord_operator/catch_up/tests.rs
           sha256: b36cec3e532f69faad69fcb314a6273659101b6d530e8ebdf1ff10a605cc8078
         - path: proxy/src/coord_timeline.rs
-          sha256: da3a9e6c293022994dc4df5c7c6288b55eb0d834556f01387cfa5e3fecbba5bf
+          sha256: 3a91213ed277352b16cd7bfcf71bc47c6e3228e84cfdc449cca509027c673e37
         - path: proxy/tests/native_coord/catch_up.rs
           sha256: 7126f4374e070d659d5f4df0be455f8c5881f3dd0a47277689d74de6593c9146
       setup: "Use the pinned Rust toolchain with curl/tar and an approved NATS acquisition route or the configured verified NATS executable. Tests allocate their own roots and endpoints; never use the operator's live Coord data."
