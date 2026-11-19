@@ -42,6 +42,7 @@ user_facing_docs = [
     "docs/installation.md",
     "docs/hyperlight-jobs.md",
     "docs/policy-checks.md",
+    "docs/policy-snapshots.md",
     "docs/windows-wsl2.md",
     "docs/guest-oci.md",
     "docs/credentials.md",

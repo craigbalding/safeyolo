@@ -250,6 +250,8 @@ before retrying. Context remains stored separately from approval authority.
 | `GET` | `/health` | Agent API and PDP health |
 | `GET` | `/status` | PDP evaluation statistics and policy hash |
 | `GET` | `/policy` | Current baseline policy |
+| `POST` | `/policy/snapshots` | Request human approval for one full authored local policy snapshot; installed tool `request_policy_snapshot` |
+| `GET` | `/policy/snapshots/REQUEST_ID` | Read your canonical request and, after approval, its retained source; installed tool `read_policy_snapshot` |
 | `GET` | `/lookup?host=HOST` | Evaluate a host for the calling agent |
 | `GET` | `/budgets` | Domain budget and rate usage |
 | `GET` | `/config` | Current credential rules and scan configuration |

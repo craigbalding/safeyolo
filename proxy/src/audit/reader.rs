@@ -128,6 +128,7 @@ pub fn parse_record(line: &str) -> Result<Value> {
                         | "contract_binding"
                         | "coord_room"
                         | "desktop_present"
+                        | "policy_snapshot"
                 )
             )
             || !approval["key"].is_string()

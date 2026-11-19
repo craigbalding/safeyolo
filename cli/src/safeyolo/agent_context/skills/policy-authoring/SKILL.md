@@ -1,20 +1,73 @@
 ---
 name: policy-authoring
-description: Turn an operator's cyber brief or research workload and risk choices into a reviewable SafeYolo policy, source and check configuration. Discover installed policy capabilities and prepare a candidate in an ordinary guest, or author and apply through the owning host's existing policy authority. Keep administrative credentials outside the research workload.
+description: Turn an operator's cyber brief or research workload and risk choices into a reviewable SafeYolo policy, source and check configuration. Discover installed policy capabilities and request an operator-approved full local policy snapshot in an ordinary guest. Author and apply through the owning host's existing policy authority. Keep administrative credentials outside the research workload.
 ---
 
 # Author a research policy
 
 Use the installed `safeyolo` commands and the selected instance's current
 configuration. This skill supplies the first cyber research recipe. It grants
-no host or policy access. Inside an ordinary guest, use the installed capability tools to prepare and
-validate component forms. The existing host owner performs host operations.
+no host or policy access. Inside an ordinary guest, use the approved snapshot
+workflow below to prepare proposed choices. The host owner still performs
+privileged operations and policy application.
 
 Read [capability discovery](references/capabilities.md) for the guest sequence:
 discover → compose → validate the accepted form → assess → revise or discuss
 with the operator → submit through the existing owner. Discovery and component
 validation grant no permission. A valid component is not a complete candidate
-safety assessment.
+safety assessment. Discovery is available before full-policy disclosure.
+
+## Read the full local policy in a guest
+
+Use the installed `request_policy_snapshot` and `read_policy_snapshot` tools.
+Choose a fresh operation ID (`req-` followed by 32 lowercase hexadecimal
+digits) before submitting. Retain that ID if the response is lost. The tools
+select the authenticated local instance and current requester; they accept no
+host path, remote home or identity override.
+
+For a shell invocation in the ordinary Linux guest, replace the example ID
+with your chosen operation ID. The following command creates a canonical
+request for the human operator; it grants no permission by itself:
+
+```sh
+printf '%s\n' '{"operation_id":"req-0123456789abcdef0123456789abcdef"}' |
+  safeyolo-coord call request_policy_snapshot
+```
+
+The response identifies the canonical approval and snapshot, source revision
+and saved/active status. Ask the existing operator to inspect that approval
+through the normal approval interface. Send the approval reference and purpose,
+not policy contents. An agent deciding delegation cannot approve this request.
+
+After the human approves, read the same operation ID or returned approval ID:
+
+```sh
+printf '%s\n' '{"request_id":"req-0123456789abcdef0123456789abcdef"}' |
+  safeyolo-coord call read_policy_snapshot
+```
+
+Only an approved response contains `snapshot.source`. Pending, rejected,
+superseded, expired or unavailable state supplies no source. Reconcile an
+uncertain request or read with its original ID. Repeated reads return the same
+approved bytes, including after the live policy changes. Request a new snapshot
+when different source bytes are needed. Reads require the original current
+requester/run and use the existing seven-day terminal approval-result retention.
+
+`source_kind: saved_authored_toml` identifies the saved authored document.
+`source_revision`, `saved_source_revision` and `active_source_revision` identify
+its SHA-256 source bytes and active basis. A mismatch is explicit. Effective
+controls/defaults and expanded inputs describe active observations separately;
+do not insert them into authored text by accident. `/policy` remains the
+existing compiled baseline read and omits authored support/delegation settings.
+
+Keep the complete snapshot and candidate private. Preserve its identity,
+credential references and `redactions` field paths. Each hidden literal
+credential has a snapshot-bound preservation marker. Leave that marker at its
+original field; deleting, moving or substituting it cannot authorize a hidden
+value change. The host retains restoration data. Disclosure permits candidate
+preparation, not assessment, approval or application of a policy change. Use
+the existing host owner for those operations until their supported workflow is
+available. Never request an Admin token or copy host configuration into the guest.
 
 Read [the walkthrough](references/recipe.md) for the complete first run,
 host discovery, prerequisites, helper commands and saved-choice updates.

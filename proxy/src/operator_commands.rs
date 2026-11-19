@@ -468,6 +468,10 @@ fn show_explanation(view: &Value) -> Result<(), Error> {
         show_evidence_fields(&view["action"], 2);
     }
     let facts = &view["observed"];
+    if let Some(snapshot) = facts.get("snapshot") {
+        println!("  Full authored policy snapshot:");
+        show_evidence_fields(snapshot, 4);
+    }
     for (label, key) in [
         ("Agent", "agent"),
         ("Agent ID", "agent_id"),
@@ -588,6 +592,11 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
     if let Some(options) = view.get("options") {
         println!("Offered options (identity, effects and lifetime):");
         show_evidence_fields(options, 2);
+    }
+
+    if view["action"]["kind"] == "policy_snapshot" {
+        println!("Full authored policy snapshot:");
+        show_evidence_fields(&view["snapshot"], 2);
     }
 
     if view["action"]["kind"] == "operator_action" {
