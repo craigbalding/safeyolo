@@ -1,6 +1,8 @@
 use sha2::{Digest, Sha256};
-use std::env;
 use std::path::{Path, PathBuf};
+
+#[path = "../scripts/rust_build_identity.rs"]
+mod build_identity;
 
 fn sources(path: &Path, paths: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(path).expect("read implementation sources") {
@@ -22,6 +24,7 @@ fn main() {
         PathBuf::from("Cargo.toml"),
         PathBuf::from("Cargo.lock"),
         PathBuf::from("build.rs"),
+        PathBuf::from("../scripts/rust_build_identity.rs"),
     ];
     sources(Path::new("src"), &mut paths);
     sources(Path::new("vendor"), &mut paths);
@@ -42,22 +45,5 @@ fn main() {
         .map(|byte| format!("{byte:02x}"))
         .collect();
     println!("cargo:rustc-env=SAFEYOLO_DEFINITION_VERSION={version}");
-    println!("cargo:rerun-if-env-changed=SAFEYOLO_BUILD_REVISION");
-    let revision = env::var("SAFEYOLO_BUILD_REVISION")
-        .unwrap_or_else(|_| "unknown".to_string())
-        .to_ascii_lowercase();
-    assert!(
-        revision == "unknown"
-            || ((revision.len() == 40 || revision.len() == 64)
-                && revision.bytes().all(|byte| byte.is_ascii_hexdigit())),
-        "SAFEYOLO_BUILD_REVISION must be a full Git object ID"
-    );
-    println!("cargo:rustc-env=SAFEYOLO_BUILD_REVISION={revision}");
-    let profile = env::var("PROFILE").expect("Cargo supplies the build profile");
-    let profile = if profile == "release" {
-        "production"
-    } else {
-        "debug"
-    };
-    println!("cargo:rustc-env=SAFEYOLO_BUILD_PROFILE={profile}");
+    build_identity::emit();
 }

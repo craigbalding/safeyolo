@@ -335,6 +335,7 @@ fn compiled_definition_version_tracks_operation_source_and_schema_changes() {
         root.join("Cargo.toml"),
         root.join("Cargo.lock"),
         root.join("build.rs"),
+        root.join("../scripts/rust_build_identity.rs"),
     ];
     files(&root.join("src"), &mut paths);
     files(&root.join("vendor"), &mut paths);
