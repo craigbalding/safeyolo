@@ -290,7 +290,7 @@ fn state(root: &Path, name: &str, source: &Source) -> Result<State, Error> {
 
 /// A compiled policy owns entries and metadata from the same accepted file.
 /// Availability is evaluated at request time, including across expiry deadlines.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct List {
     pub(crate) name: String,
     source: Source,

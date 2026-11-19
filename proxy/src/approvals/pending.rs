@@ -22,10 +22,11 @@ pub(crate) mod delegation;
 pub(crate) mod diagnostics;
 mod explanation;
 mod gateway;
+pub(crate) mod policy_assessment;
 pub(crate) mod policy_snapshot;
 pub(crate) mod results;
 pub(crate) mod route_challenge;
-pub(crate) use explanation::explain;
+pub(crate) use explanation::{explain, explain_policy_changes};
 pub(crate) use gateway::{bind_agent_request, bind_risky};
 
 #[derive(Clone)]

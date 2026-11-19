@@ -16,6 +16,24 @@ pub(crate) fn source_revision(source: &str) -> String {
         .collect()
 }
 
+pub(crate) fn assessment_inputs_revision(inputs: &Value) -> String {
+    let mut identity = inputs.clone();
+    for input in identity.as_array_mut().into_iter().flatten() {
+        let managed = &mut input["managed"];
+        if let Some(fields) = managed.as_object_mut() {
+            if let Some(mut source) = fields.shift_remove("source") {
+                fields.insert("max_age_seconds".into(), source["max_age_seconds"].clone());
+                fields.insert("on_stale".into(), source["on_stale"].clone());
+                crate::credentials::wipe_json(&mut source);
+            }
+            if let Some(snapshot) = fields.get_mut("snapshot").and_then(Value::as_object_mut) {
+                snapshot.shift_remove("config_identity");
+            }
+        }
+    }
+    crate::approvals::pending::digest(&identity)
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum Field {
@@ -40,16 +58,119 @@ pub struct RetainedPolicySnapshot {
     pub(crate) disclosed_source: String,
     pub(crate) metadata: Value,
     redactions: Vec<Redaction>,
+    pub(crate) assessment_inputs: Value,
 }
 
 impl Drop for RetainedPolicySnapshot {
     fn drop(&mut self) {
         self.source.zeroize();
         self.disclosed_source.zeroize();
+        crate::credentials::wipe_json(&mut self.assessment_inputs);
     }
 }
 
 impl Policy {
+    pub(crate) fn assessment_task(&mut self, current: &Policy) {
+        self.task = current.task.clone();
+    }
+    pub(crate) fn assessment_list_inputs(&self) -> Value {
+        json!(self.list_files.iter().map(|(name, list)| {
+            json!({"reference":self.native.as_ref().map(|native| &native.authored["lists"][name]),"managed":list.managed,
+                "entries":list.hosts,"include_apex":list.managed.as_ref().is_some_and(|managed|
+                    managed.snapshot.as_ref().is_some_and(|snapshot| matches!(snapshot.scope, crate::policy_feeds::Scope::DomainSuffix)))})
+        }).collect::<Vec<_>>())
+    }
+    pub(crate) fn assessment_network(&self, after: &Policy) -> super::Result<Value> {
+        let agents: std::collections::BTreeSet<_> = std::iter::once(None)
+            .chain(
+                self.agent_identities()
+                    .into_iter()
+                    .chain(after.agent_identities())
+                    .map(|(name, _)| Some(name)),
+            )
+            .collect();
+        let mut cases = std::collections::BTreeSet::from([(
+            "safeyolo-assessment.invalid".to_owned(),
+            443,
+            "GET".to_owned(),
+            "/".to_owned(),
+        )]);
+        for rule in self
+            .rules
+            .iter()
+            .chain(&after.rules)
+            .filter(|rule| matches!(rule.action, super::Action::Network))
+        {
+            let host = rule.resource.strip_suffix("/*").unwrap_or(&rule.resource);
+            let host = if host.contains(['*', '?', '[']) {
+                host.replace('*', "safeyolo-assessment")
+                    .replace('?', "x")
+                    .replace(['[', ']'], "")
+            } else {
+                host.to_owned()
+            };
+            let ports = rule.condition.ports.clone().unwrap_or_else(|| vec![443]);
+            let methods = rule
+                .condition
+                .methods
+                .clone()
+                .unwrap_or_else(|| vec!["GET".into()]);
+            for port in ports {
+                for method in &methods {
+                    if cases.len() >= 512 {
+                        break;
+                    }
+                    cases.insert((
+                        host.clone(),
+                        port,
+                        method.clone(),
+                        rule.condition
+                            .path_prefix
+                            .clone()
+                            .unwrap_or_else(|| "/".into()),
+                    ));
+                }
+            }
+        }
+        let mut rows = Vec::new();
+        for agent in agents {
+            for (host, port, method, path) in &cases {
+                if rows.len() >= 512 {
+                    break;
+                }
+                let request = super::NetworkRequest {
+                    agent,
+                    host,
+                    port: Some(*port),
+                    method,
+                    path,
+                };
+                rows.push(
+                    json!({"agent":agent,"host":host,"port":port,"method":method,"path":path,
+                "before":self.evaluate(request,super::current_time_ms(),false)?,
+                "after":after.evaluate(request,super::current_time_ms(),false)?}),
+                );
+            }
+        }
+        Ok(
+            json!({"cases":rows,"coverage":"Representative decisions from the native matcher, including inherited/default rules. Full compiled selectors remain in effective.permissions; overlapping arbitrary glob regions are not exhaustively modelled.",
+            "truncated":rows.len()>=512 || cases.len()>=512}),
+        )
+    }
+    pub(crate) fn assessment_effective(&self) -> Value {
+        let baseline = self.baseline.as_ref().map(|baseline| &baseline.value);
+        json!({"controls":self.native_controls(),
+            "permissions":baseline.map(|value| &value["permissions"]),
+            "budgets":baseline.map(|value| &value["budgets"]),
+            "default_network":"deny when no applicable rule; agent-scoped rules precede inherited rules",
+            "default_gateway":"prompt when no applicable route; credentials, bindings, network and risk checks remain separate",
+            "logging":{"quiet_hosts":self.request_logger_settings().value()},
+            "checks":self.named_checks(),
+            "support_grants":self.support_grants(),
+            "approval_delegations":self.delegations(),
+            "active_task":self.task.as_ref().map(|task| &task.baseline.value),
+            "lifetime":"Saved permissions persist until changed, revoked or their explicit expiry; activation and current issuance checks remain with their owners."})
+    }
     pub fn full_snapshot(
         &self,
         saved: &str,
@@ -78,7 +199,13 @@ impl Policy {
             "expanded_inputs":{"lists":view["effective"].get("lists"),
                 "status":self.native_list_file_status()},
             "effective_source":"active policy; defaults and expanded inputs are not authored source bytes"});
-        RetainedPolicySnapshot::new(saved, metadata)
+        let mut retained = RetainedPolicySnapshot::new(saved, metadata)?;
+        // Only inputs already loaded by the active policy owner are captured.
+        // Candidate paths are never passed to a file or feed loader.
+        retained.assessment_inputs = self.assessment_list_inputs();
+        retained.metadata["assessment_inputs_revision"] =
+            json!(assessment_inputs_revision(&retained.assessment_inputs));
+        Ok(retained)
     }
 }
 
@@ -264,6 +391,7 @@ impl RetainedPolicySnapshot {
             disclosed_source,
             metadata,
             redactions,
+            assessment_inputs: json!([]),
         })
     }
 
@@ -271,6 +399,138 @@ impl RetainedPolicySnapshot {
         let mut result = self.metadata.clone();
         result["source"] = json!(self.disclosed_source);
         result
+    }
+
+    pub(crate) fn candidate_view(&self, source: &str) -> super::Result<String> {
+        Ok(Self::new(source, self.metadata.clone())?
+            .disclosed_source
+            .clone())
+    }
+
+    /// Compile with captured list contents and definition data supplied by the
+    /// authorized caller. Source must be the audience's field-redacted view;
+    /// hidden literals must not influence derived fields or validation errors.
+    /// This path has no input acquisition or execution.
+    pub(crate) fn compile_assessment(
+        &self,
+        source: &str,
+        registry: Option<std::sync::Arc<crate::services::Registry>>,
+        now_ms: f64,
+    ) -> super::Result<(Option<Policy>, Vec<Value>)> {
+        let (mut document, context) = super::parse_toml_for_edit(source)?;
+        let mut dependencies = Vec::new();
+        let mut resolved_lists = Vec::new();
+        let references: Vec<_> = document
+            .get("hosts")
+            .and_then(toml_edit::Item::as_table_like)
+            .into_iter()
+            .flat_map(|hosts| hosts.iter())
+            .filter_map(|(host, config)| {
+                host.strip_prefix('$')
+                    .map(|name| (host.to_owned(), name.to_owned(), config.clone()))
+            })
+            .collect();
+        let mut missing = false;
+        for (host, name, config) in references {
+            let reference = document
+                .get("lists")
+                .and_then(|lists| lists.get(&name))
+                .map(|item| item.to_string());
+            // Parse the selected value through the ordinary TOML owner. Its
+            // string is data, never a filename supplied to std::fs.
+            let value = reference
+                .as_ref()
+                .and_then(|entry| super::parse_toml_with_timestamps(&format!("value={entry}")).ok())
+                .and_then(|(value, _)| value.get("value").cloned());
+            let accepted = self
+                .assessment_inputs
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|input| Some(&input["reference"]) == value.as_ref());
+            dependencies.push(json!({"kind":"host_list","name":name,"reference":value,
+                "status":if accepted.is_some(){"captured_adopted_input"}else{"trusted_adoption_required"},
+                "content_revision":accepted.map(|input| assessment_inputs_revision(&json!([input])))}));
+            let Some(accepted) = accepted else {
+                missing = true;
+                continue;
+            };
+            resolved_lists.push((name.clone(), accepted.clone()));
+            let hosts = document["hosts"]
+                .as_table_like_mut()
+                .expect("referenced hosts");
+            hosts.remove(&host);
+            for entry in accepted["entries"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                for member in [
+                    Some(entry),
+                    accepted["include_apex"]
+                        .as_bool()
+                        .unwrap_or(false)
+                        .then(|| entry.strip_prefix("*."))
+                        .flatten(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    if !hosts.contains_key(member) {
+                        hosts.insert(member, config.clone());
+                    }
+                }
+            }
+        }
+        document.remove("lists");
+        let (authored, _) = super::parse_toml_with_timestamps(source)?;
+        let (base, _) = super::parse_toml_with_timestamps(&self.disclosed_source)?;
+        for (name, check) in authored
+            .get("checks")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            let input = &check["source"];
+            dependencies.push(json!({"kind":"check_source","name":name,"reference":input,
+                "status":if base["checks"][name]["source"] == *input {"adopted_reference; evidence_not_read"}else{"trusted_adoption_required"}}));
+        }
+        if missing {
+            return Ok((None, dependencies));
+        }
+        let compiled_source = zeroize::Zeroizing::new(super::restore_large_toml_integers(
+            &document.to_string(),
+            &context,
+        ));
+        let (mut policy, _) = Policy::native_source_inputs(
+            &compiled_source,
+            std::path::Path::new("/__safeyolo_assessment__/policy.toml"),
+            registry,
+            now_ms,
+            None,
+            false,
+        )?;
+        // Keep authored scope for authority and structural projections. Network
+        // rules retain the captured expansion compiled above.
+        let native = policy.native.as_mut().expect("native assessment");
+        native.authored = authored;
+        for (name, input) in resolved_lists {
+            let managed = serde_json::from_value(input["managed"].clone())
+                .map_err(|_| invalid("captured managed list unavailable"))?;
+            let hosts = serde_json::from_value(input["entries"].clone())
+                .map_err(|_| invalid("captured list entries unavailable"))?;
+            policy.list_files.insert(
+                name,
+                super::HostList {
+                    path: std::path::PathBuf::from("/__safeyolo_assessment__/captured-list"),
+                    source: zeroize::Zeroizing::new(String::new()),
+                    hosts,
+                    managed,
+                },
+            );
+        }
+        Ok((Some(policy), dependencies))
     }
 
     pub(crate) fn reference(&self) -> Value {

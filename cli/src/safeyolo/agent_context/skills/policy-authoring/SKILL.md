@@ -64,10 +64,15 @@ Keep the complete snapshot and candidate private. Preserve its identity,
 credential references and `redactions` field paths. Each hidden literal
 credential has a snapshot-bound preservation marker. Leave that marker at its
 original field; deleting, moving or substituting it cannot authorize a hidden
-value change. The host retains restoration data. Disclosure permits candidate
-preparation, not assessment, approval or application of a policy change. Use
-the existing host owner for those operations until their supported workflow is
-available. Never request an Admin token or copy host configuration into the guest.
+value change. The host retains restoration data. Use `assess_policy` with the
+original snapshot request ID, complete candidate source and installed
+`definition_version` from discovery. Assessment is private and read-only.
+Read its consequences, narrower alternatives and coverage limits, then revise
+or discuss the tradeoff. Private assessment does not submit an approval or
+apply a policy. The authorized host owner can inspect the same candidate with
+`policy assess SNAPSHOT_REQUEST_ID FILE`. Final adoption needs that owner's
+explicit current authority. Never request an Admin token or copy host
+configuration into the guest.
 
 Read [the walkthrough](references/recipe.md) for the complete first run,
 host discovery, prerequisites, helper commands and saved-choice updates.

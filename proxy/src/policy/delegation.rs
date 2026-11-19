@@ -770,6 +770,27 @@ impl IssuedAccess {
     pub(crate) fn active_snapshot(&self, policy: &Policy) -> bool {
         if self.validate().is_err()
             || !self.beneficiary.current(policy)
+            || !self.source_applicable(policy)
+        {
+            return false;
+        }
+        if self.delegation.is_empty() {
+            return true;
+        }
+        policy
+            .delegations()
+            .get(&self.delegation)
+            .is_some_and(|delegation| {
+                delegation.dependencies_current(policy) && self.reviewer.principal(policy).is_some()
+            })
+    }
+
+    /// Source checks only. Assessments report peer trust and other runtime
+    /// dependencies separately; this never opens a policy file or Coord store.
+    pub(crate) fn source_applicable(&self, policy: &Policy) -> bool {
+        if self.validate().is_err()
+            || policy.evidence_agent_id(&self.beneficiary.agent)
+                != Some(self.beneficiary.agent_id.as_str())
             || expired(self.expires_at.as_deref())
         {
             return false;
@@ -785,10 +806,8 @@ impl IssuedAccess {
         };
         delegation.current()
             && delegation.revision() == self.delegation_revision
-            && delegation.dependencies_current(policy)
             && delegation.contains_effect(&self.action, &self.option)
             && delegation.reviewers.contains(&self.reviewer)
-            && self.reviewer.principal(policy).is_some()
             && crate::approvals::pending::revision(policy, &self.action).as_deref()
                 == Some(self.policy_revision.as_str())
     }

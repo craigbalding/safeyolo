@@ -33,6 +33,7 @@ The approved response contains `snapshot` with these fields:
 | `active_source_revision`, `saved_matches_active` | Active authored-source identity and comparison at capture. |
 | `source`, `disclosed_source_revision` | Disclosed TOML and SHA-256 of those bytes after required redactions. |
 | `effective`, `expanded_inputs`, `effective_source` | Separate observations of active controls/defaults, logging and expanded lists. These are not authored source bytes. |
+| `assessment_inputs_revision` | Identity of captured adopted list contents, scope and expiry semantics used by private assessment. It grants no read of later inputs. |
 | `redactions`, `preservation_ref` | Hidden field paths and markers, with a reference to private host-held restoration data. |
 
 The snapshot includes all agents' authored controls, settings, grants and
@@ -62,8 +63,8 @@ Unchanged disclosed source materializes to the exact original bytes. Ordinary
 edits retain unrelated source fields and comments through the existing TOML
 editor. Materialization itself performs no policy application or file write.
 
-This contract is shared with the later candidate assessment/adoption outcome.
-That owner must separately authorize explicit hidden-field changes, bind the
+The [private policy assessment](policy-assessment.md) uses this materializer
+and captured adopted list contents. The adoption owner must separately authorize explicit hidden-field changes, bind the
 materialized candidate and compare its exact saved/active base before applying
 it through the existing transaction. A disclosure approval grants none of
 those permissions.

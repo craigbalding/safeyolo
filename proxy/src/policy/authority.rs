@@ -244,7 +244,7 @@ impl Policy {
                 .extend(self.reviewer_write_warnings(&disclosed));
         }
         if !snapshot.truncated {
-            self.authority_gateway_facts(&mut snapshot, &selected, deadline);
+            self.authority_gateway_facts(&mut snapshot, &selected, deadline, false);
         }
         let grants_revision = self
             .native
@@ -269,11 +269,88 @@ impl Policy {
         Ok(snapshot)
     }
 
+    /// Source-derived typed facts for a policy assessment. No Coord database,
+    /// process, peer, factory or credential read is performed here.
+    pub(crate) fn assessment_authority(&self, instance: &str) -> Snapshot {
+        let mut snapshot = Snapshot {
+            owner_instance_id: instance.into(),
+            revision: String::new(),
+            policy_revision: String::new(),
+            observed_at: 0,
+            all_agents: true,
+            truncated: false,
+            configured_destinations: None,
+            bindings: self
+                .agent_identities()
+                .into_iter()
+                .map(|(name, id)| Binding {
+                    principal: Principal::new(instance, id),
+                    name: name.into(),
+                    execution: "not_observed".into(),
+                })
+                .collect(),
+            facts: Vec::new(),
+            known_influences: Vec::new(),
+        };
+        for (name, grant) in self.support_grants() {
+            snapshot.known_influences.extend(grant.warnings());
+            let holder = grant.support_instance_id.is_some()
+                || self.evidence_agent_id(&grant.support.name)
+                    == Some(grant.support.agent_id.as_str());
+            for fact in support_facts_inputs(
+                self,
+                instance,
+                &name,
+                &grant,
+                holder,
+                0,
+                AuthoritySource::Authored,
+            ) {
+                if !push(&mut snapshot, fact) {
+                    break;
+                }
+            }
+        }
+        for (name, delegation) in self.delegations() {
+            let beneficiaries = delegation
+                .beneficiaries
+                .iter()
+                .map(|agent| Principal::new(instance, &agent.agent_id))
+                .collect();
+            for fact in delegation_facts_inputs(
+                self,
+                instance,
+                name,
+                delegation,
+                beneficiaries,
+                0,
+                AuthoritySource::Authored,
+            ) {
+                if !push(&mut snapshot, fact) {
+                    break;
+                }
+            }
+            snapshot.known_influences.extend(delegation.warnings());
+        }
+        self.authority_gateway_facts(
+            &mut snapshot,
+            &|_| true,
+            std::time::Instant::now() + std::time::Duration::from_millis(1500),
+            true,
+        );
+        snapshot.policy_revision = self
+            .native_source_text()
+            .map(super::snapshot::source_revision)
+            .unwrap_or_default();
+        snapshot.identify();
+        snapshot
+    }
     fn authority_gateway_facts(
         &self,
         snapshot: &mut Snapshot,
         selected: &impl Fn(&str) -> bool,
         deadline: std::time::Instant,
+        source_only: bool,
     ) {
         let Some(native) = &self.native else {
             return;
@@ -328,6 +405,9 @@ impl Policy {
                     return;
                 }
             }
+            if source_only {
+                continue;
+            }
             for kind in [
                 "network_grants",
                 "credential_grants",
@@ -364,6 +444,13 @@ fn push(snapshot: &mut Snapshot, fact: Fact) -> bool {
     }
 }
 
+#[derive(Clone, Copy)]
+enum AuthoritySource {
+    Current,
+    Proposed,
+    Authored,
+}
+
 pub(crate) fn delegation_facts(
     policy: &Policy,
     instance: &str,
@@ -373,14 +460,44 @@ pub(crate) fn delegation_facts(
     proposed: bool,
     observed_at: i64,
 ) -> Vec<Fact> {
+    delegation_facts_inputs(
+        policy,
+        instance,
+        name,
+        delegation,
+        beneficiaries,
+        observed_at,
+        if proposed {
+            AuthoritySource::Proposed
+        } else {
+            AuthoritySource::Current
+        },
+    )
+}
+
+fn delegation_facts_inputs(
+    policy: &Policy,
+    instance: &str,
+    name: &str,
+    delegation: &super::delegation::Delegation,
+    beneficiaries: Vec<Principal>,
+    observed_at: i64,
+    source: AuthoritySource,
+) -> Vec<Fact> {
+    let proposed = matches!(source, AuthoritySource::Proposed);
+    let source_only = matches!(source, AuthoritySource::Authored);
     let revision = delegation.revision();
     let active = delegation.current()
-        && delegation.dependencies_current(policy)
+        && (source_only || delegation.dependencies_current(policy))
         && (proposed || delegation.acknowledgment.as_deref() == Some(revision.as_str()));
     let mut facts = Vec::new();
     for reviewer in &delegation.reviewers {
-        let reviewer_current =
-            reviewer.principal(policy).is_some() || (proposed && reviewer.instance_id.is_some());
+        let reviewer_current = if source_only {
+            reviewer.instance_id.is_some()
+                || policy.evidence_agent_id(&reviewer.name) == Some(reviewer.agent_id.as_str())
+        } else {
+            reviewer.principal(policy).is_some() || (proposed && reviewer.instance_id.is_some())
+        };
         for beneficiary in &beneficiaries {
             if facts.len() > MAX_FACTS {
                 return facts;
@@ -424,6 +541,32 @@ pub(crate) fn support_facts(
     proposed: bool,
     observed_at: i64,
 ) -> Vec<Fact> {
+    support_facts_inputs(
+        policy,
+        instance,
+        name,
+        grant,
+        holder_current,
+        observed_at,
+        if proposed {
+            AuthoritySource::Proposed
+        } else {
+            AuthoritySource::Current
+        },
+    )
+}
+
+fn support_facts_inputs(
+    policy: &Policy,
+    instance: &str,
+    name: &str,
+    grant: &super::support::Grant,
+    holder_current: bool,
+    observed_at: i64,
+    source: AuthoritySource,
+) -> Vec<Fact> {
+    let proposed = matches!(source, AuthoritySource::Proposed);
+    let source_only = matches!(source, AuthoritySource::Authored);
     let mut result = Vec::new();
     let holder = Principal::new(
         grant.support_instance_id.as_deref().unwrap_or(instance),
@@ -499,15 +642,18 @@ pub(crate) fn support_facts(
             });
         }
         for selected in &grant.factory_directions {
-            let binding = policy.identity_root().and_then(|root| {
-                crate::factory::direction_binding(
-                    root,
-                    &selected.factory,
-                    &selected.snapshot_id,
-                    None,
-                )
-                .ok()
-            });
+            let binding = (!source_only)
+                .then(|| policy.identity_root())
+                .flatten()
+                .and_then(|root| {
+                    crate::factory::direction_binding(
+                        root,
+                        &selected.factory,
+                        &selected.snapshot_id,
+                        None,
+                    )
+                    .ok()
+                });
             if let Some(binding) = &binding
                 && binding.operator_agent() == target.name
             {

@@ -383,6 +383,7 @@ fn show_evidence_fields(value: &Value, indent: usize) {
     match value {
         Value::Object(fields) => {
             let priority = [
+                "agents",
                 "enables",
                 "risk_policy",
                 "persistent_effects",
@@ -454,6 +455,34 @@ fn show_decision_evidence(view: &Value) {
             show_evidence_fields(&value, 2);
         }
     }
+}
+
+/// Reuse the canonical approval renderer and its display-control escaping.
+pub fn show_policy_assessment(view: &Value) {
+    println!("Trusted policy consequences:");
+    for key in [
+        "summary",
+        "assessment_id",
+        "base",
+        "current_state",
+        "consequences",
+        "authority",
+        "services",
+        "network",
+        "alternatives",
+        "limitations",
+        "exact_diff",
+        "dependencies",
+        "input_identity",
+    ] {
+        if let Some(value) = view.get(key) {
+            println!("{}:", safe(&key.replace('_', " ")));
+            show_evidence_fields(value, 2);
+        }
+    }
+    println!(
+        "Authored source and requester rationale are untrusted. Assessment grants no permission."
+    );
 }
 
 fn show_explanation(view: &Value) -> Result<(), Error> {

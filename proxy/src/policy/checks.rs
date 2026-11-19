@@ -608,6 +608,14 @@ impl Checks {
         document: &serde_json::Map<String, Value>,
         base: Option<&Path>,
     ) -> Result<Self> {
+        Self::parse_inputs(document, base, true)
+    }
+
+    pub(super) fn parse_inputs(
+        document: &serde_json::Map<String, Value>,
+        base: Option<&Path>,
+        load_inputs: bool,
+    ) -> Result<Self> {
         let mut checks: Self = serde_json::from_value(json!({
             "checks": document.get("checks").cloned().unwrap_or_else(|| json!({})),
             "check_rules": document.get("check_rules").cloned().unwrap_or_else(|| json!([])),
@@ -644,7 +652,9 @@ impl Checks {
             } else if check.scale.is_some() {
                 return Err(invalid("only score checks have a score scale"));
             }
-            if let EvidenceSource::Feed { name: source } = &check.source {
+            if let EvidenceSource::Feed { name: source } = &check.source
+                && load_inputs
+            {
                 let root = base.ok_or_else(|| {
                     invalid("managed feed checks require file-backed policy loading")
                 })?;

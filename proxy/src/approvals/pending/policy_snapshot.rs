@@ -15,7 +15,7 @@ fn instance_id(config: &crate::Config) -> Result<String> {
     Ok(id.trim().to_owned())
 }
 
-fn owner(record: &Record, policy: &Policy, run: &AgentRun) -> bool {
+pub(crate) fn owner(record: &Record, policy: &Policy, run: &AgentRun) -> bool {
     record.authority.action["kind"] == "policy_snapshot"
         && record.authority.action["run"] == json!(run)
         && context::owner(policy, record, &run.agent)
@@ -179,6 +179,32 @@ pub(crate) fn read_snapshot(
         result["status"] = json!("expired");
         return Ok(Some(result));
     }
+    let snapshot = retained(writer, &record)?;
+    // Recheck after the blocking private read/materialization, before releasing
+    // source. A replacement while that read waited cannot inherit disclosure.
+    let runtime = state.read().map_err(unavailable)?;
+    let current = runtime
+        .policy
+        .as_deref()
+        .ok_or_else(|| invalid("policy unavailable"))?;
+    if !owner(&record, current, run)
+        || snapshot.metadata["instance_id"] != instance_id(&runtime.config)?
+    {
+        return Ok(None);
+    }
+    result["snapshot"] = snapshot.disclosed();
+    Ok(Some(result))
+}
+
+pub(crate) fn retained(writer: &Writer, record: &Record) -> Result<RetainedPolicySnapshot> {
+    if record.authority.action["kind"] != "policy_snapshot"
+        || record.status != "approved"
+        || record
+            .decided_at
+            .is_none_or(|at| results::now() >= at.saturating_add(results::RETAIN_SECONDS))
+    {
+        return Err(invalid("approved snapshot unavailable"));
+    }
     let encoded: Option<String> = writer
         .approvals()
         .connect()?
@@ -196,6 +222,8 @@ pub(crate) fn read_snapshot(
         .materialize(&snapshot.disclosed_source)
         .map_err(unavailable)?;
     if snapshot.reference() != record.authority.action["snapshot"]
+        || crate::policy::snapshot::assessment_inputs_revision(&snapshot.assessment_inputs)
+            != snapshot.metadata["assessment_inputs_revision"]
         || source_revision(&restored) != snapshot.metadata["saved_source_revision"]
         || source_revision(&snapshot.disclosed_source)
             != snapshot.metadata["disclosed_source_revision"]
@@ -204,20 +232,7 @@ pub(crate) fn read_snapshot(
             "retained snapshot identity differs from approved source",
         ));
     }
-    // Recheck after the blocking private read/materialization, before releasing
-    // source. A replacement while that read waited cannot inherit disclosure.
-    let runtime = state.read().map_err(unavailable)?;
-    let current = runtime
-        .policy
-        .as_deref()
-        .ok_or_else(|| invalid("policy unavailable"))?;
-    if !owner(&record, current, run)
-        || snapshot.metadata["instance_id"] != instance_id(&runtime.config)?
-    {
-        return Ok(None);
-    }
-    result["snapshot"] = snapshot.disclosed();
-    Ok(Some(result))
+    Ok(snapshot)
 }
 
 pub(crate) fn resolve(
