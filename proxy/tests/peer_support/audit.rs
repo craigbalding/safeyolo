@@ -33,6 +33,70 @@ fn pending_grants(root: &Path) -> Vec<Value> {
 }
 
 #[tokio::test]
+async fn support_operation_audit_recovers_its_saved_result_after_sink_failure() {
+    let f = fixture().await;
+    let _support = support_run(&f, RUN);
+    grant(&f, proposal()).await;
+    f.make_audit_unavailable();
+    let response = f
+        .agent(
+            "helper",
+            "POST",
+            "/support/operations",
+            Some(inspect("audit-recovery")),
+        )
+        .await;
+    assert_eq!(response.status, 200, "{}", response.json());
+    let saved = response.json();
+    assert_eq!(saved["state"], "refused", "{saved}");
+    assert_eq!(saved["completion_verified"], false);
+    assert!(saved["audit_status"].is_string(), "{saved}");
+    let receipt = fs::read_dir(f.root.path().join("data/support-operations"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .unwrap();
+    let pending: Value = serde_json::from_slice(&fs::read(&receipt).unwrap()).unwrap();
+    assert!(pending["audit_pending"].is_string());
+    f.proxy.shutdown().await;
+    fs::remove_file(f.root.path().join("audit.jsonl")).unwrap();
+    let restarted = Proxy::start(f.config.clone()).await.unwrap();
+    until(|| {
+        serde_json::from_slice::<Value>(&fs::read(&receipt).unwrap()).unwrap()["audit_delivered"]
+            == true
+    })
+    .await;
+    let recovered: Value = serde_json::from_slice(&fs::read(&receipt).unwrap()).unwrap();
+    for field in [
+        "request_digest",
+        "initiator",
+        "operation_id",
+        "state",
+        "completion_verified",
+        "result",
+        "finished_at",
+    ] {
+        assert_eq!(recovered[field], pending[field], "changed {field}");
+    }
+    assert!(recovered["audit_pending"].is_null());
+    let events = fs::read_to_string(f.root.path().join("audit.jsonl")).unwrap();
+    let delivered = events
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|event| event["event_id"] == saved["audit_event_id"])
+        .collect::<Vec<_>>();
+    assert_eq!(delivered.len(), 1, "{events}");
+    assert_eq!(delivered[0]["event"], "agent.support_operation_finished");
+    assert_eq!(delivered[0]["details"]["initiator"]["agent_id"], HELPER_ID);
+    assert_eq!(delivered[0]["details"]["operation_id"], "audit-recovery");
+    assert_eq!(delivered[0]["details"]["state"], "refused");
+    restarted.shutdown().await;
+}
+
+#[tokio::test]
 async fn support_grant_audit_recovers_write_failure_without_repeating_policy_changes() {
     let f = fixture().await;
     f.make_audit_unavailable();
