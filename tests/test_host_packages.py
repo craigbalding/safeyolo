@@ -573,7 +573,7 @@ def package_inputs(tmp_path, request, monkeypatch):
         (assets / f"{name}.sh").write_text("#!/bin/sh\nexit 0\n")
     for name in ("launchers", "agent_context/skills/safeyolo", "services"):
         (assets / name).mkdir(parents=True)
-    for name in ("safeyolo-lab-controller", "safeyolo-factory", "job-authoring", "safeyolo-commission", "harness-authoring"):
+    for name in ("safeyolo-lab-controller", "safeyolo-factory", "job-authoring", "safeyolo-commission", "harness-authoring", "operator-ux"):
         shutil.copytree(
             REPO / "cli/src/safeyolo/agent_context/skills" / name,
             assets / "agent_context/skills" / name,
@@ -1365,6 +1365,9 @@ def test_fresh_install_preserves_prepared_platform_inputs(package_inputs, tmp_pa
     skill_source = REPO / "cli/src/safeyolo/agent_context/skills"
     for name, relative in (
         ("safeyolo-lab-controller", "scripts/prepare-nested.sh"),
+        ("operator-ux", "SKILL.md"),
+        ("operator-ux", "agents/openai.yaml"),
+        ("operator-ux", "LICENSE"),
         ("safeyolo-factory", "SKILL.md"),
         ("job-authoring", "SKILL.md"),
         ("job-authoring", "references/walkthrough.md"),
