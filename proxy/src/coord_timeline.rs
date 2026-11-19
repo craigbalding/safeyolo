@@ -510,7 +510,7 @@ fn event(event: &Value, show_unknown: bool) -> Option<(&'static str, String)> {
 }
 
 // Redaction is an explicit display choice, never a change to stored payloads.
-fn redact_text(text: &str) -> String {
+pub(crate) fn redact_text(text: &str) -> String {
     static PATTERNS: std::sync::LazyLock<Vec<Regex>> = std::sync::LazyLock::new(|| {
         [
         r"(?i)\bBearer\s+[^\s,;]+", r"\b(?:sgw_|sk-|gh[pousr]_)[A-Za-z0-9._-]{8,}",

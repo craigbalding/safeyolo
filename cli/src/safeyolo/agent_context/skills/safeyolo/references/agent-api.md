@@ -262,6 +262,51 @@ before retrying. Context remains stored separately from approval authority.
 Use `/lookup` before asking the operator to add a host. Use `/budgets` for 429
 responses and `/circuits` for circuit-breaker 503 responses.
 
+### Native tool failures
+
+The native Coordination (Coord) Model Context Protocol (MCP) adapter returns
+`isError: true`, readable text and `structuredContent` for a failed tool.
+Available response facts include `http_status`, `http_reason`, a validated
+response-header `request_id`, `correlation`, `blocked_by`, `retry_after` and
+`error_details`. `body_state` distinguishes `json`, `empty`, `malformed`,
+`incomplete` and `too_large`. `response_received: false` means no response
+facts were obtained. A body-supplied ID cannot select diagnostic evidence.
+Malformed or interrupted error bodies do not erase the available HTTP status.
+For an identified failure, `diagnostic_reference` names its own-request
+`/explain` URL, including failures outside the automatic 503 collection. The
+reference grants no additional authority and does not trigger a read.
+
+For a local Agent API 503, the guest client automatically reads the existing
+authenticated `/explain` endpoint for that original request. Generic Admin
+clients do not make these Agent API reads. The failure remains explicit even
+when collection fails. The `diagnostic` object contains:
+
+| Field | Meaning |
+|---|---|
+| `original_request_id`, `reference` | Original correlation and its actionable own-request `/explain` URL. No reference is manufactured when correlation is missing or invalid. |
+| `collection_state` | `collected`, `missing_correlation`, `denied`, `unavailable`, `timeout` or `invalid_response`. |
+| `reads` | Available status and request ID for each diagnostic read, separate from the original ID. |
+| `evidence` | The existing reader's response, retaining its `status`, scoped events and search limits. A mismatched response ID is rejected. |
+| `evidence_limited`, `limits` | Whether client limits omitted content, and the collection budgets. Reader completeness and client limits are separate. |
+
+Collection has a two-second total deadline, at most two reads and only one
+refresh for a pending writer. Each diagnostic response and original HTTP error
+body is limited to 64 KiB. Each protected body and the attached diagnostic
+object is limited to 32 KiB. Named credential fields, the caller's bearer echo
+and recognized secret patterns are redacted. Strings, nesting and event counts
+are bounded. The client does not recursively diagnose a diagnostic read. Missing or unretained
+events, denied access, timeouts and limits do not replace the original failure.
+
+Use the returned evidence to continue permitted read-only investigation. A
+recorded `agent.api_response` 503 with `blocked_by: agent-api` identifies a local
+refusal, not a network-policy cause. A complete retained search does not prove a
+root cause. Request only the missing scope through a supported approval or
+authorized support path; if none is available, report the exact unmet need.
+Diagnosis grants no recovery authority and never retries a write. An uncertain
+send still needs canonical readback before replay. A failed attention-object
+resolution preserves the caller's last safe cursor, including each source's
+position in a multi-source wait.
+
 `/explain` and `/trace` answer different questions.
 
 - `/explain` — retrospective. Returns audit events keyed on `request_id`
@@ -481,10 +526,10 @@ Status precedence, highest first:
 
 | Literal | Meaning | Retry? |
 |---|---|---|
-| `error` | File read, parse or writer freshness check failed. Result is unreliable. | Investigate via `safeyolo logs` |
+| `error` | File read, parse or writer freshness check failed. Result is unreliable. | Continue permitted investigation; report the exact missing source if current access is insufficient. |
 | `pending` | Writer still has queued/mid-flush events after the bounded drain. | Yes, briefly |
 | `incomplete_search` | Retention bound was hit while scanning. Events outside the window may exist. | Only if you can bound the time window differently |
-| `complete` | Retained set fully scanned. `events` is authoritative. | No |
+| `complete` | The retained set was scanned within the reader's limits. Empty events can mean no accessible retained match. This does not establish root cause. | No |
 
 
 ## Flow inspection
