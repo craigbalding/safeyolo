@@ -5,7 +5,7 @@ the same names. Platform exclusions are explicit and do not hide missing setup.
 """
 
 SECTIONS = {
-    "systrap": ("isolation", "workloads", "access", "lifecycle", "continuity", "job-sandbox", "job-network", "mounts", "docker"),
+    "systrap": ("isolation", "workloads", "access", "peer-support", "shared-approvals", "provider", "federation", "lifecycle", "continuity", "job-sandbox", "job-network", "mounts", "docker"),
     "kvm": ("isolation", "ingress", "workloads", "job-sandbox", "job-network", "mounts"),
     "vz": ("isolation", "access", "lifecycle", "continuity", "job-sandbox", "job-network", "mounts"),
 }
@@ -83,9 +83,15 @@ PROCEDURES = {
     "ingress": ("installed_ingress.py", ("identity", "policy", "guest", "origin", "finished")),
     "ingress-pair": ("installed_ingress_pair.py", ("identity", "user-and-root", "restart", "finished")),
     "workloads": ("installed_workloads.py", ("identity", "package-repo", "sse", "wss-ssh", "origin", "finished")),
-    "access": ("installed_access.py", ("identity", "service", "contract", "flow-ownership", "coord", "origin", "finished")),
+    "access": ("installed_access.py", ("identity", "service", "contract", "flow-ownership", "coord", "origin", "desktop-sharing", "finished")),
     "lifecycle": ("installed_lifecycle.py", ("identity", "listener", "tls", "restart", "drain", "recovery", "finished")),
     "continuity": ("installed_state_transition.py", ("initial", "restart", "replacement", "return", "cleanup", "finished")),
+    "peer-support": ("installed_peer_support.py", ("identity", "scope", "permitted-effect", "replay", "stale-run", "narrow-expire-revoke", "finished")),
+    "shared-approvals": ("installed_shared_approvals.py", ("identity", "scope", "permitted-effect", "expire-revoke", "stale-run", "gateway-route", "finished")),
+    "provider": ("installed_provider.py", ("identity", "scope", "delivery", "revoke-recover", "closed-stopped", "observer", "finished")),
+    "native-authority": ("native_authority.py", ("selected-cases", "finished")),
+    "federation": ("installed_federation.py", ("identity", "scope", "destination-effect", "revocation", "finished")),
+    "tailnet": ("installed_tailnet.py", ("identity", "scope", "connection-loss", "destination-effect", "cleanup", "finished")),
     "job-sandbox": ("host/job_sandbox.py", ("identity", "inputs", "privilege-state", "exit-signal", "timeout", "caller-signals", "network-off", "cleanup", "finished")),
     "job-network": ("host/job_network.py", ("identity", "scoped-requests", "revocation", "expiry", "cancellation", "audit", "cleanup", "finished")),
     "mounts": ("../nested-linux/live_mount_backend_proof.py", ("identity", "startup", "path-refusals", "busy-file", "busy-cwd", "busy-mmap", "detach", "saved-live", "cleanup", "finished")),
@@ -101,8 +107,41 @@ BOUNDARY_SECTIONS = ("job-sandbox", "job-network", "mounts", "docker")
 
 SECTION_DRIVERS = {
     "isolation": tuple(PYTEST_PHASES)[:6],
-    **{name: (name,) for name in ("ingress", "workloads", "access", "lifecycle", "continuity", *BOUNDARY_SECTIONS)},
+    **{name: (name,) for name in PROCEDURES if name not in {"ingress-pair", "native-authority"}},
     "claude": ("claude_smoke.py",),
+}
+
+# Each installed authority control retains the observations made at these
+# existing checkpoints. Native BB-24/25 and two-host BB-26 have separate inputs.
+AUTHORITY_CONTROLS = {
+    "BB-18": ("peer-support", ("scope", "permitted-effect", "replay", "stale-run", "narrow-expire-revoke")),
+    "BB-19": ("shared-approvals", ("scope", "permitted-effect", "expire-revoke", "stale-run", "gateway-route")),
+    "BB-20": ("provider", ("scope", "delivery", "revoke-recover", "closed-stopped", "observer")),
+    "BB-23": ("access", ("desktop-sharing",)),
+    "BB-24": (None, ()),
+    "BB-25": ("federation", ("scope", "destination-effect", "revocation")),
+    "BB-26": ("tailnet", ("scope", "connection-loss", "destination-effect", "cleanup")),
+}
+
+# Each case owns isolated native instances and a real pinned NATS broker.
+# Model, human-interaction, long-duration and child-helper tests remain opt-in.
+NATIVE_AUTHORITY = {
+    "BB-24": (
+        "work::native_work_claims_replay_identity_revocation_and_crash_recovery",
+        "attestations::native_attestations_exact_candidate_authorship_replay_and_recovery",
+        "outputs::retained_external_outputs_recover_once_or_reject_stale_publication",
+        "reviews::code_and_report_checks_challenges_corrections_and_independent_dispositions",
+        "factory::factory_selection_enforces_native_obligations_for_direct_callers",
+        "continuation::continuation_recovers_once_and_retains_delivery_across_restart",
+    ),
+    "BB-25": (
+        "federation::two_safeyolos_share_only_home_authority_across_partition_restart_and_revocation",
+        "federation::support::authenticated_mutation_misrouted_to_another_trusted_instance_has_no_effect",
+        "federation::support::remote_support_uses_owner_grants_receipts_and_independent_attention_sources",
+        "federation::operator::remote_saved_deciding_authority_preserves_the_canonical_pending_record",
+        "federation::modes::renewal_and_explicit_rotation_preserve_retained_state_and_report_activation",
+        "federation::modes::same_path_peer_rotation_reports_restart_until_broker_loads_new_credentials",
+    ),
 }
 
 # These checks assert gVisor-specific behavior. VZ has a real guest kernel.

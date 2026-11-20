@@ -19,7 +19,8 @@ reviewer decisions, message/history access, paging and actual worker turnover.
 Fresh delegated model journeys start at the current attention cutoff. Older
 edges are recorded without reading or resolving their payloads. An explicit
 --attention-cutoff must match the current cutoff on the owned instance.
-Python is used only for the black-box driver and guest request transport.
+Deterministic mode uses the shipped curl for guest requests. Other modes use
+Python for the black-box driver and guest request transport.
 """
 
 from __future__ import annotations
@@ -47,8 +48,10 @@ from functools import partial
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from tests.blackbox.execution_receipt import ProcedureReceipt, save
+
 if __package__:
-    from .guest_exec import guest_command_args
+    from .guest_exec import guest_command_args, guest_http_request
     from .installed_host_smoke import (
         _agent_listeners,
         _cli_identity,
@@ -65,7 +68,7 @@ if __package__:
     from .installed_room_approvals import room_exchange
     from .installed_sections import surviving_processes
 else:
-    from guest_exec import guest_command_args
+    from guest_exec import guest_command_args, guest_http_request
     from installed_host_smoke import (
         _agent_listeners,
         _cli_identity,
@@ -347,10 +350,149 @@ def model_failure_diagnosis(output: str, marker: str) -> tuple[str, str]:
     return thread, failure
 
 
+def deterministic_exchange(args, ids, guest, operator, native, ports, marker, hits):
+    """Decide exact real-guest requests through typed delegated authority."""
+    import tomlkit
+
+    receipt = ProcedureReceipt("shared-approvals", args.output)
+    receipt.checkpoint('identity')
+    api = "http://_safeyolo.proxy.internal"
+    name = "blackbox-authority"
+    delegation_path = "/admin/approval-delegations/" + name
+    revision = None
+    port, other_port, gateway_port = ports
+    url = f"http://127.0.0.2:{port}/{marker}"
+    decisions = []
+    refused = []
+
+    def configure(scope, seconds=30, once=False):
+        nonlocal revision
+        proposal = {"expected_revision": revision, "delegation": {
+            "reviewers": [{"name": args.helper, "agent_id": ids[args.helper]}],
+            "beneficiaries": [{"name": args.worker, "agent_id": ids[args.worker]}],
+            "scopes": [scope], "expires_at": None, "grant_seconds": seconds,
+            "gateway_once": once, "acknowledgment": None}}
+        preview = operator("POST", delegation_path + "/preview", proposal)
+        assert preview["status"] == 200, preview
+        proposal["delegation"] = preview["body"]["after"]
+        proposal["delegation"]["acknowledgment"] = preview["body"]["acknowledgment"]
+        proposal["authority"] = preview["body"]["authority"]
+        applied = operator("POST", delegation_path + "/apply", proposal)
+        assert applied["status"] == 200, applied
+        revision = applied["body"]["revision"]
+
+    def decide(identifier, actor=None, status=200, option="run"):
+        actor = actor or args.helper
+        before = list(hits)
+        read = guest(actor, "GET", api + "/approvals/" + identifier)
+        assert read["status"] in ((200, 403, 404) if status == 403 else (200,)), read
+        reply = guest(actor, "POST", api + "/approvals/" + identifier + "/resolve",
+                      {"decision": "approve", "delegation": name, "option": option})
+        assert reply["status"] in ((403, 409) if status == 403 else (status,)), reply
+        assert hits == before, "decision automatically replayed a request"
+        canonical = native("approvals", "show", identifier)
+        decisions.append({"approval_id": identifier, "actor": actor, "status": reply["status"],
+                          "canonical_status": canonical["status"], "effects": len(hits)})
+        return canonical
+
+    def blocked(target=url, actor=None, method="GET", headers=None, statuses=(428,)):
+        before = list(hits)
+        reply = guest(actor or args.worker, method, target, headers=headers)
+        assert reply["status"] in statuses, reply
+        assert hits == before, "refused request reached the origin"
+        refused.append({"status": reply["status"], "origin_before": len(before), "origin_after": len(hits)})
+        return reply
+
+    scope = {"type": "network_egress", "host": "127.0.0.2", "ports": [port],
+             "all_ports": False, "actions": ["request"]}
+    configure(scope)
+    pending = blocked()
+    first = pending["approval_id"]
+    assert decide(first, args.worker, 403)["status"] == "pending"
+    wrong_target = blocked(actor=args.helper)
+    assert decide(wrong_target["approval_id"], status=403)["status"] == "pending"
+    blocked(f"http://127.0.0.2:{other_port}/{marker}", statuses=(403,))
+    receipt.checkpoint('scope', refusals=list(refused), origin_count=len(hits))
+    approved = decide(first)
+    assert approved["status"] == "approved" and approved["grant_active"] is True
+    run = approved["result"]["issued_access"]["beneficiary"]["run_id"]
+    assert decide(first)["result"] == approved["result"]
+    before = len(hits)
+    reply = guest(args.worker, "GET", url)
+    assert reply["status"] == 200 and reply["body"] == marker and len(hits) == before + 1
+    receipt.checkpoint('permitted-effect', status=reply["status"], origin_before=before, origin_after=len(hits))
+
+    revoked = operator("POST", delegation_path + "/revoke", {"expected_revision": revision})
+    assert revoked["status"] == 200
+    revision = None
+    blocked()
+    assert native("approvals", "show", first)["grant_active"] is False
+    configure(scope, seconds=3)
+    short = decide(blocked()["approval_id"])
+    assert short["grant_active"] is True
+    deadline = time.monotonic() + 10
+    while native("approvals", "show", short["approval_id"])["grant_active"]:
+        assert time.monotonic() < deadline, "temporary grant did not expire"
+        time.sleep(.05)
+    blocked()
+    receipt.checkpoint('expire-revoke', refusals=list(refused), origin_count=len(hits))
+
+    configure(scope)
+    current = decide(blocked()["approval_id"])
+    assert current["grant_active"] is True
+    stop_guest(args.transport_cli, args.config_dir, args.worker)
+    # This deterministic journey uses the shipped Bash/curl, including after
+    # turnover; the other approval modes still prepare their Python workload.
+    start_guest(args.transport_cli, args.config_dir, args.worker, python_tests=False)
+    after = json.loads(checked([str(args.native_cli), "--root", str(args.config_dir), "agent", "status", args.worker]))
+    assert after["agent_id"] == ids[args.worker] and after["run_id"] != run
+    assert native("approvals", "show", current["approval_id"])["grant_active"] is False
+    fresh = decide(blocked()["approval_id"])
+    assert fresh["result"]["issued_access"]["beneficiary"]["run_id"] == after["run_id"]
+    before = len(hits)
+    assert guest(args.worker, "GET", url)["status"] == 200 and len(hits) == before + 1
+    receipt.checkpoint('stale-run', old_run=run, new_run=after["run_id"],
+                       origin_before=before, origin_after=len(hits), refusals=list(refused))
+
+    # Reuse the shipped credential-free risky-route fixture for an exact
+    # method/path grant. Network and gateway permissions remain separate.
+    policy = tomlkit.parse((args.config_dir / "policy.toml").read_text())
+    policy.setdefault("hosts", {})["127.0.0.3"] = {"service": "delegated-fixture", "egress": "deny"}
+    policy["agents"][args.worker]["hosts"][f"127.0.0.3:{gateway_port}"] = {"egress": "allow"}
+    policy["agents"][args.helper]["hosts"][f"127.0.0.3:{gateway_port}"] = {"egress": "allow"}
+    policy["agents"][args.worker].setdefault("services", {})["delegated-fixture"] = {"capability": "writer", "account": "bb-authority"}
+    policy.setdefault("risk", []).insert(0, {"account": "bb-authority", "tactics": ["impact"], "decision": "require_approval"})
+    apply_fixture_policy(operator, tomlkit.dumps(policy))
+    route = "/delegated-write/" + marker
+    configure({"type": "gateway_route", "service": "delegated-fixture", "capability": "writer",
+               "binding_id": None, "method": "POST", "path": route}, once=True)
+    services = guest(args.worker, "GET", api + "/gateway/services")
+    token = json.loads(services["body"])["authorized"]["delegated-fixture"]["token"]
+    headers = {"Authorization": "Bearer " + token}
+    gateway = f"http://127.0.0.3:{gateway_port}"
+    held = blocked(gateway + route, method="POST", headers=headers)
+    decide(held["approval_id"], args.worker, 403, "delegated_once")
+    decide(held["approval_id"], option="delegated_once")
+    blocked(gateway + route, method="GET", headers=headers, statuses=(403,))
+    blocked(gateway + route, actor=args.helper, method="POST", headers=headers, statuses=(403,))
+    blocked(gateway + route + "-other", method="POST", headers=headers)
+    before = len(hits)
+    reply = guest(args.worker, "POST", gateway + route, headers=headers)
+    assert reply["status"] == 200 and reply["body"] == marker and len(hits) == before + 1
+    blocked(gateway + route, method="POST", headers=headers)
+    receipt.checkpoint('gateway-route', status=reply["status"], origin_before=before,
+                       origin_after=len(hits), refusals=list(refused))
+    result = {"decisions": decisions, "origin_hits": list(hits), "original_run_id": run,
+              "current_run_id": after["run_id"], "no_model_or_human_decision": True}
+    save(args.output, result)
+    return result, receipt
+
+
 def run(args: argparse.Namespace) -> None:
     root = args.config_dir.resolve(strict=True)
     _require_disposable(root)
     delegated_clients = getattr(args, "delegated_clients", False)
+    deterministic = getattr(args, "deterministic", False)
     delegated_service = getattr(args, "delegated_service", False)
     delegated_binding = getattr(args, "delegated_binding", False)
     delegated_room = getattr(args, "delegated_room", None)
@@ -402,6 +544,8 @@ def run(args: argparse.Namespace) -> None:
             connection.close()
 
     def guest(name: str, method: str, url: str, body: dict | None = None, headers: dict | None = None) -> dict:
+        if deterministic:
+            return guest_http_request(args.transport_cli, name, method, url, body, headers)
         operands = [method, url, body] + ([headers] if headers is not None else [])
         command = shlex.join(["python3", "-c", GUEST_REQUEST, json.dumps(operands)])
         return json.loads(checked(guest_command_args(args.transport_cli, name, command)))
@@ -528,15 +672,24 @@ def run(args: argparse.Namespace) -> None:
                 "approval": native("approvals", "show", identifier, "--agent", args.worker),
                 "policy_unchanged": (root / "policy.toml").read_text() == selected, "origin_hits": list(hits)})
 
-        for index in range(3 if delegated_mode else 2):
+        for index in range(3 if delegated_mode or deterministic else 2):
             model_origin = args.model_unavailable and index == 1
             handler = partial(UnavailableModelOrigin, marker=marker, observe=observe_model) if model_origin else Origin
-            origin = HTTPServer(("127.0.0.3" if model_origin or delegated_mode and index == 2 else "127.0.0.2", 0), handler)
+            origin = HTTPServer(("127.0.0.3" if model_origin or (delegated_mode or deterministic) and index == 2 else "127.0.0.2", 0), handler)
             origins.append(origin)
             thread = threading.Thread(target=origin.serve_forever, kwargs={"poll_interval": 0.05})
             thread.start()
             threads.append(thread)
         port, second_port = (origin.server_port for origin in origins[:2])
+        if deterministic:
+            import tomlkit
+
+            policy = tomlkit.parse(model_fixture_policy(root, names, port))
+            policy.setdefault("controls", {}).setdefault("credentials", {})["enabled"] = False
+            apply_fixture_policy(operator, tomlkit.dumps(policy))
+            result, deterministic_receipt = deterministic_exchange(args, ids, guest, operator, native,
+                                                                   [origin.server_port for origin in origins], marker, hits)
+            return
         if getattr(args, "delegated_lifecycle", False):
             import tomlkit
 
@@ -1310,6 +1463,9 @@ def run(args: argparse.Namespace) -> None:
         if result is not None:
             result["owned_guests_proxy_and_origins_stopped"] = True
             print(json.dumps(result))
+            if deterministic:
+                save(args.output, result)
+                deterministic_receipt.checkpoint('finished')
 
 
 def main() -> None:
@@ -1321,6 +1477,8 @@ def main() -> None:
     parser.add_argument("--worker", default="worker")
     parser.add_argument("--helper", default="helper")
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--deterministic", action="store_true", help="Run bounded delegated network and gateway enforcement without a model or human decision")
+    parser.add_argument("--output", type=Path, help="Retain deterministic effects and the existing procedure receipt")
     parser.add_argument("--interfaces", action="store_true", help="Use the native operator and Helper clients in the same owned fixture")
     parser.add_argument("--real-helper", action="store_true", help="With --interfaces, run one already authenticated Codex Helper instead of deterministic preparation")
     parser.add_argument("--delegated", action="store_true", help="With --interfaces --real-helper, exercise three delegated decisions without a human decision; requires the fixture service and Helper's existing agent room")
@@ -1339,6 +1497,10 @@ def main() -> None:
     parser.add_argument("--helper-events", type=Path, help="New private raw Codex output file; default: unique file in the owned root's logs directory")
     parser.add_argument("--attention-cutoff", type=int, help="For a fresh --delegated, --delegated-service or --delegated-binding journey, require this current attention cursor; older edges are recorded without reading or resolving their payloads. Default: discover the current cutoff across all metadata pages")
     args = parser.parse_args()
+    if args.deterministic and (args.output is None or args.real_helper or args.model_unavailable or args.wait_for_operator
+                              or args.delegated or args.delegated_service or args.delegated_binding or args.delegated_room
+                              or args.delegated_lifecycle or args.delegated_clients or args.shared_room or args.interfaces):
+        parser.error("--deterministic requires --output and runs separately from other modes")
     if args.delegated_room and (args.delegated or args.delegated_service or args.delegated_binding or args.delegated_lifecycle or args.delegated_clients or args.real_helper or args.model_unavailable or args.wait_for_operator or args.shared_room):
         parser.error("--delegated-room runs separately from other delegated and model modes")
     if (args.real_helper or args.model_unavailable) and not args.interfaces:

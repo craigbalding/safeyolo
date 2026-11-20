@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from argparse import Namespace
 from pathlib import Path
 
@@ -59,6 +60,39 @@ sys.exit(int(sys.argv[1]))
     assert log.read_bytes() == b'o' * 131072 + b'e' * 131072
     assert log.stat().st_uid == os.getuid() and log.stat().st_gid == os.getgid()
     assert stat.S_IMODE(log.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("flowing", [False, True])
+def test_guest_output_capture_bounds_an_inherited_pipe_after_exit(tmp_path, flowing):
+    program = f'''
+import sys, time
+print('retained-before-exit', flush=True)
+while True:
+    if {flowing!r}:
+        print('inherited-writer', flush=True)
+    time.sleep(.01)
+'''
+    log, failures = tmp_path / "guest.log", []
+    child, reader, finished = capture_guest_command([sys.executable, "-c", program], os.environ, log, failures)
+    try:
+        deadline = time.monotonic() + 5
+        while not log.exists() or b"retained-before-exit" not in log.read_bytes():
+            assert time.monotonic() < deadline
+            time.sleep(.01)
+        # Model a writer that inherited the pipe from the exited CLI. The
+        # writer remains a direct test child so this control can reap it.
+        finished.set()
+        reader.join(timeout=3)
+        assert not reader.is_alive(), "continued output prevented bounded capture shutdown"
+        assert failures == ["guest output pipe remained open after exit: guest.log"]
+        assert b"retained-before-exit" in log.read_bytes()
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=5)
+        finished.set()
+        reader.join(timeout=5)
+        assert not reader.is_alive()
 
 
 def test_producer_records_accept_before_parsing_and_never_records_authorization(tmp_path):

@@ -6,6 +6,10 @@ and live peer denial, populated owner-positive/peer-negative guest flow search
 and detail, test-context/trace evidence, real NATS Coord and attention, operator
 collaboration approval/exchange/revocation, WebSocket peer effects and traffic-inspector
 filter/transcript/export. These observations stay in one installed composition.
+The fixture prepares guest desktop packages and an owned host opener. Headless
+Linux runs also own a host Xvfb display for the typed action's display check.
+Viewer checks observe VNC bytes, session binding and cessation on revocation,
+expiry and run turnover; they do not require visual UI automation.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ import re
 import select
 import shlex
 import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -30,14 +35,14 @@ import uuid
 from pathlib import Path
 
 if __package__:
-    from .execution_receipt import ProcedureReceipt
+    from .execution_receipt import ProcedureReceipt, save
     from .guest_exec import guest_command_args, prepare_guest_tests
     from .host.sinkhole_client import SinkholeClient
     from .installed_host_smoke import _agent_listeners, _native_config, _sha256
     from .installed_ingress import installed_identity, runsc_identity
     from .installed_workloads import control
 else:
-    from execution_receipt import ProcedureReceipt
+    from execution_receipt import ProcedureReceipt, save
     from guest_exec import guest_command_args, prepare_guest_tests
     from host.sinkhole_client import SinkholeClient
     from installed_host_smoke import _agent_listeners, _native_config, _sha256
@@ -45,6 +50,7 @@ else:
     from installed_workloads import control
 from urllib.parse import urlencode, urlsplit
 
+from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect
 
 from safeyolo.api import AdminAPI, APIError
@@ -370,24 +376,26 @@ def operator_terminal(cli: str, root: Path, agent: str, marker: str) -> dict:
             "launcher": "tmux-window", "command": "owned shell marker and sleep; no model"}
 
 
-def operator_desktop(api: AdminAPI, agent_id: str) -> dict:
+def operator_desktop(api: AdminAPI, agent_id: str, *, presentation=None, after_banner=None) -> dict:
     """Unlock the native desktop page and reach VNC through its viewer route."""
-    presentation = api.present_desktop(agent_id)
+    presentation = presentation or api.present_desktop(agent_id)
     assert presentation["agent_id"] == agent_id, "desktop returned another target"
     url = urlsplit(presentation["url"])
-    assert url.scheme == "http" and url.hostname == "127.0.0.1" and url.port, "fixture requires local presentation"
+    assert url.scheme == "http" and url.port and (url.hostname == "127.0.0.1" or
+            url.hostname is not None and url.hostname.endswith(".localhost")), "fixture requires local presentation"
     assert url.path == "/_safeyolo_desktop/", "presentation did not return the native desktop path"
-    connection = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
+    connection = http.client.HTTPConnection("127.0.0.1", url.port, timeout=10)
+    session = None
     try:
         connection.request("POST", "/_safeyolo_preview/unlock",
                            body=urlencode({"code": presentation["unlock_code"]}),
-                           headers={"Content-Type": "application/x-www-form-urlencoded"})
+                           headers={"Content-Type": "application/x-www-form-urlencoded", "Host": url.netloc})
         response = connection.getresponse()
         response.read(1_000_001)
         assert response.status == 303, f"desktop unlock failed: status={response.status}"
         cookie = response.getheader("Set-Cookie")
         assert cookie, "desktop unlock did not return its session cookie"
-        connection.request("GET", url.path, headers={"Cookie": cookie.split(";", 1)[0]})
+        connection.request("GET", url.path, headers={"Cookie": cookie.split(";", 1)[0], "Host": url.netloc})
         response = connection.getresponse()
         page = response.read(1_000_001)
         page_markers = {
@@ -403,7 +411,8 @@ def operator_desktop(api: AdminAPI, agent_id: str) -> dict:
         viewer_path = "/_safeyolo_desktop/viewer?" + uuid.uuid4().hex
         with connect(f"ws://{url.netloc}{viewer_path}", origin=f"http://{url.netloc}",
                      additional_headers={"Cookie": cookie.split(";", 1)[0]},
-                     subprotocols=["binary"], proxy=None) as websocket:
+                     subprotocols=["binary"], proxy=None,
+                     sock=socket.create_connection(("127.0.0.1", url.port), timeout=10)) as websocket:
             deadline = time.monotonic() + 10
             banner = b""
             # The guest bridge sends TCP reads as separate WebSocket messages.
@@ -416,6 +425,11 @@ def operator_desktop(api: AdminAPI, agent_id: str) -> dict:
             assert re.fullmatch(rb"RFB [0-9]{3}\.[0-9]{3}\n", banner), (
                 f"desktop returned no live VNC banner: bytes_read={len(banner)}"
             )
+            observed = {"agent_id": agent_id, "page_status": 200, "page_bytes": len(page),
+                        "vnc_banner": banner.decode("ascii"),
+                        "observation_scope": "unlocked native desktop page and live VNC banner; no visual interaction"}
+            if after_banner:
+                session = after_banner(websocket, cookie.split(";", 1)[0], url, observed)
     finally:
         connection.close()
     missing = "ag-" + uuid.uuid4().hex
@@ -425,9 +439,163 @@ def operator_desktop(api: AdminAPI, agent_id: str) -> dict:
         assert error.status_code == 404, f"missing desktop target did not report not found: status={error.status_code}"
     else:
         raise AssertionError("missing desktop target unexpectedly opened")
-    return {"agent_id": agent_id, "url": presentation["url"], "page_status": 200,
-            "page_bytes": len(page), "vnc_banner": banner.decode("ascii"), "missing_target_status": 404,
-            "observation_scope": "unlocked native desktop page and live VNC banner; no visual interaction"}
+    result = {**observed, "url": presentation["url"], "missing_target_status": 404}
+    if session is not None:
+        result["session"] = session
+    return result
+
+
+def refused_viewer(url, cookie, *, retired=False):
+    """Observe refusal before a viewer can deliver any VNC bytes."""
+    try:
+        with connect(f"ws://{url.netloc}/_safeyolo_desktop/viewer", origin=f"http://{url.netloc}",
+                     additional_headers={"Cookie": cookie}, subprotocols=["binary"], proxy=None,
+                     sock=socket.create_connection(("127.0.0.1", url.port), timeout=5)):
+            raise AssertionError("unauthorized viewer completed its upgrade")
+    except InvalidStatus as error:
+        assert error.response.status_code in {401, 403, 404, 410}, "unexpected viewer refusal"
+        return error.response.status_code
+    except ConnectionRefusedError:
+        assert retired, "live viewer observer was unavailable"
+        return "listener-closed"
+
+
+def desktop_action_observation(response: dict) -> dict:
+    """Retain bounded diagnostics without copying private response content."""
+    observed = {"http_status": response["status"], "reason": "unrecognized_response"}
+    try:
+        body = json.loads(response["body"])
+    except json.JSONDecodeError:
+        observed["reason"] = "non_json_response"
+        return observed
+    if not isinstance(body, dict):
+        return observed
+    diagnostic = body.get("diagnostic")
+    code = diagnostic.get("code") if isinstance(diagnostic, dict) else None
+    # These codes and errors come from the typed-action owner. Free text,
+    # operator_details and unknown fields can contain session material.
+    if code in ("host_settings_unavailable", "operator_preview_path_unavailable", "sandbox_unavailable",
+                "desktop_missing", "tailnet_serve_permission", "tailscale_command_unavailable",
+                "tailscale_disconnected", "tailnet_preview_unavailable"):
+        observed["reason"] = code
+    elif body.get("error") in ("Could not identify agent", "operator actions unavailable",
+                               "trusted current-run requester identity required",
+                               "requesting agent identity unavailable", "host agent registry unavailable",
+                               "host agent identity is ambiguous", "requesting agent was removed or replaced"):
+        observed["reason"] = body["error"]
+    elif body.get("status") == "pending_approval":
+        observed["reason"] = "pending_approval"
+    return observed
+
+
+def desktop_sharing(api, cli, root, worker, output):
+    """Observe exact target/session binding and active viewer cessation."""
+    from tests.blackbox.installed_shared_approvals import GUEST_REQUEST
+
+    prefix = [cli, "--root", str(root)]
+    policy = tomllib.loads((root / "policy.toml").read_text())
+    ids = {name: policy["agents"][name]["agent_id"] for name in (worker, PEER)}
+    report = {"status": "incomplete", "sessions": {}, "browser_opener": "owned headless marker; no visual UI"}
+    path = output.with_name("desktop-effects.json")
+    save(path, report)
+
+    def request(name, method, route, body=None):
+        command = shlex.join(["python3", "-c", GUEST_REQUEST,
+                              json.dumps([method, "http://_safeyolo.proxy.internal" + route, body])])
+        result = checked(guest_command_args(cli, name, command), timeout=60)
+        return json.loads(result.stdout)
+
+    peer = operator_desktop(api, ids[PEER])
+    report["peer_positive"] = {key: value for key, value in peer.items() if key != "url"}
+    save(path, report)
+    for phase, ttl in (("revocation", 120), ("expiry", 10), ("stale-run", 120)):
+        pending = request(worker, "POST", "/operator-actions",
+                          {"action_id": "desktop.present", "parameters": {"ttl_seconds": ttl}})
+        phase_report = {"request": desktop_action_observation(pending)}
+        report["sessions"][phase] = phase_report
+        save(path, report)
+        assert pending["status"] == 202, f"desktop action request failed: {phase_report['request']}"
+        identifier = json.loads(pending["body"])["approval_id"]
+        action = api.approval(identifier)["action"]
+        phase_report.update(approval_id=identifier, run=action["run"])
+        save(path, report)
+        assert action["agent_id"] == ids[worker] and action["presentation"] == "local"
+        delegation_path = "/admin/approval-delegations/bb-desktop"
+        proposal = {"expected_revision": None, "delegation": {
+            "reviewers": [{"name": PEER, "agent_id": ids[PEER]}],
+            "beneficiaries": [{"name": worker, "agent_id": ids[worker]}],
+            "scopes": [{"type": "desktop_present", "run": action["run"], "presentation": "local",
+                        "browser_urls": [None], "any_browser_url": False, "max_ttl_seconds": 120}],
+            "expires_at": None, "grant_seconds": None, "gateway_once": False, "acknowledgment": None}}
+        preview = api._request("POST", delegation_path + "/preview", json=proposal)
+        proposal["delegation"] = preview["after"]
+        proposal["delegation"]["acknowledgment"] = preview["acknowledgment"]
+        proposal["authority"] = preview["authority"]
+        api._request("POST", delegation_path + "/apply", json=proposal)
+        revision = preview["revision"]
+        revoked = False
+        try:
+            openings = root / "desktop-openings"
+            before = len(openings.read_text().splitlines()) if openings.exists() else 0
+            resolved = request(PEER, "POST", "/approvals/" + identifier + "/resolve",
+                               {"decision": "approve", "delegation": "bb-desktop", "option": "once"})
+            assert resolved["status"] == 200
+            canonical = api.approval(identifier)
+            assert canonical["result"]["status"] == "started" and canonical["result"]["preview_active"] is True
+            assert len(openings.read_text().splitlines()) == before + 1
+            repeated = request(PEER, "POST", "/approvals/" + identifier + "/resolve",
+                               {"decision": "approve", "delegation": "bb-desktop", "option": "once"})
+            assert repeated["status"] == 200 and len(openings.read_text().splitlines()) == before + 1
+
+            def end_session(websocket, cookie, url, observed):
+                nonlocal revoked
+                phase_report["positive"] = dict(observed)
+                save(path, report)
+                observation = {"invalid_session": refused_viewer(url, "invalid=synthetic")}
+                phase_report.update(observation)
+                save(path, report)
+                observation["wrong_target"] = refused_viewer(urlsplit(peer["url"]), cookie)
+                phase_report.update(observation)
+                save(path, report)
+                if phase == "revocation":
+                    api._request("POST", delegation_path + "/revoke", json={"expected_revision": revision})
+                    revoked = True
+                elif phase == "stale-run":
+                    checked([*prefix, "agent", "stop", worker], timeout=130)
+                    checked([*prefix, "agent", "start", worker, "--sandbox-only"], timeout=130)
+                    current = json.loads(checked([*prefix, "agent", "status", worker]).stdout)
+                    assert current["agent_id"] == ids[worker] and current["run_id"] != action["run"]["run_id"]
+                    observation["new_run_id"] = current["run_id"]
+                    phase_report.update(observation)
+                    save(path, report)
+                    prepare_guest_tests(cli, worker)
+                else:
+                    deadline = time.monotonic() + 15
+                    while api.approval(identifier)["result"]["status"] != "expired":
+                        assert time.monotonic() < deadline, "desktop authority did not expire"
+                        time.sleep(.05)
+                try:
+                    websocket.recv(timeout=8)
+                except ConnectionClosed:
+                    observation["active_viewer_closed"] = True
+                else:
+                    raise AssertionError("retired desktop kept delivering viewer bytes")
+                phase_report.update(observation)
+                save(path, report)
+                observation["old_session"] = refused_viewer(url, cookie, retired=True)
+                phase_report.update(observation)
+                save(path, report)
+                return observation
+
+            observed = operator_desktop(api, ids[worker], presentation=canonical["operator_preview"], after_banner=end_session)
+            phase_report["positive"] = {key: value for key, value in observed.items() if key != "url"}
+            save(path, report)
+        finally:
+            if not revoked:
+                api._request("POST", delegation_path + "/revoke", json={"expected_revision": revision})
+    report["status"] = "passed"
+    save(path, report)
+    return report
 
 
 def operator_restart(cli: str, root: Path, agent: str, marker: str, terminal: dict,
@@ -586,7 +754,7 @@ def main() -> None:
         inspector = inspect_traffic(admin, args.output, args.agent, marker)
         receipt.checkpoint('origin')
         report = {
-            "status": "journeys_passed",
+            "status": "desktop_incomplete",
             "source_revision": args.install_commit,
             "platform": args.platform,
             "host": runtime["host"],
@@ -616,6 +784,9 @@ def main() -> None:
             "origin": origin,
             "inspector": inspector,
         }
+        args.output.write_text(json.dumps(report, indent=2) + "\n")
+        report["desktop_sharing"] = desktop_sharing(admin, cli, config_dir, args.agent, args.output)
+        receipt.checkpoint('desktop-sharing', **report["desktop_sharing"])
         if args.operator_journey:
             # Retain the already reached access observations if a later operator
             # step fails. A partial result is not a completed journey.
@@ -627,7 +798,7 @@ def main() -> None:
             report["operator"]["restart"] = operator_restart(
                 cli, config_dir, args.agent, marker, terminal, sinkhole, platform=args.platform,
             )
-            report["status"] = "journeys_passed"
+        report["status"] = "journeys_passed"
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         print(f"{args.platform} access: six installed guest journeys and operator effects verified ({args.output})")
     finally:
