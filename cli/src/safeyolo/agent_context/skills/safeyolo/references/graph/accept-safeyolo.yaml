@@ -260,7 +260,7 @@ nodes:
         - path: guest/build-rootfs.sh
           sha256: f61d285ef806d47f6fca6c747bdae018ca786a039adde63800bd8bd33bba421c
         - path: proxy/src/jobs.rs
-          sha256: b1dea76b55686de2e3fb632bb064bf1c59ddca31f74abadc7c283cd445902183
+          sha256: a90ef49392978eb65706abc1bce51090078d0a9acf796860506489a032a6f4ca
         - path: proxy/src/jobs/input.rs
           sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
         - path: tests/blackbox/host/job_sandbox.py
@@ -272,7 +272,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: e7daf48a665a98c900f1c08293cc551fdc5cec801b77de406cc0dc1fca9d8c4b
         - path: proxy/src/lib.rs
-          sha256: 74cfa8d3dc52a90734ba53f7b8b6bd9ec0afd128f7b81bbec7c0831559b31d29
+          sha256: 90d5b4703052bb71159ab87f889a74629ff0c054cc194f56c246189ed96fc6b1
         - path: proxy/src/bin/safeyolo.rs
           sha256: a9af55a9bcf76719d03d5754108683e8d45eaed36767e33375be933944da6740
         - path: scripts/run_claude_blackbox.py
@@ -357,7 +357,7 @@ nodes:
         - path: proxy/src/host_platform.rs
           sha256: 0f39c1bfde1db3723e2618dae202babab37b92e7807596918f9dec4ed9846815
         - path: proxy/src/jobs.rs
-          sha256: b1dea76b55686de2e3fb632bb064bf1c59ddca31f74abadc7c283cd445902183
+          sha256: a90ef49392978eb65706abc1bce51090078d0a9acf796860506489a032a6f4ca
         - path: proxy/src/jobs/input.rs
           sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
         - path: proxy/src/jobs/macos.rs
@@ -371,7 +371,7 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: e7daf48a665a98c900f1c08293cc551fdc5cec801b77de406cc0dc1fca9d8c4b
         - path: proxy/src/lib.rs
-          sha256: 74cfa8d3dc52a90734ba53f7b8b6bd9ec0afd128f7b81bbec7c0831559b31d29
+          sha256: 90d5b4703052bb71159ab87f889a74629ff0c054cc194f56c246189ed96fc6b1
         - path: proxy/src/bin/safeyolo.rs
           sha256: a9af55a9bcf76719d03d5754108683e8d45eaed36767e33375be933944da6740
         - path: proxy/src/jobs/vz-guest-init.sh

@@ -2679,6 +2679,22 @@ impl Proxy {
             }
         }
 
+        let job_config = self
+            .runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .config
+            .native_config_path
+            .clone();
+        if let Some(config) = job_config {
+            match tokio::task::spawn_blocking(move || jobs::clear_hyperlight_templates(&config))
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => eprintln!("Hyperlight template cleanup failed: {error}"),
+                Err(error) => eprintln!("Hyperlight template cleanup task failed: {error}"),
+            }
+        }
         service_mutations.drain().await;
         let coord = self
             .runtime

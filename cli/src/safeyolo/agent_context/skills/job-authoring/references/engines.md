@@ -18,7 +18,7 @@ by the upstream projects.
 | Filesystem | Bounded `ReadInput` host function under selected read-only inputs; no arbitrary host path | Read-only `/input`; transient RAM root and `/work` | Selected read-only `/input`; disposable `/work` and `/home/agent` | Same job contract using guest mounts and disposable storage |
 | Processes and privilege | No Unix PID, fork or guest-root semantics | One vCPU, cooperative threads; supported `vfork`/PIE exec subset, no `fork`; no full Linux privilege model | Linux process model within gVisor; explicit unprivileged or guest-root job selection | Linux process model within the VM; explicit unprivileged or guest-root job selection |
 | Network/capabilities | No guest sockets; optional bounded mediated service host call | Same; upstream host-socket passthrough is disabled by this integration | Optional existing delegated proxy path with adopted service/network/credential rules | Same through the VZ guest's delegated proxy path |
-| Persistent state | Fresh helper/guest for each invocation; no warm template | Fresh helper/guest for each invocation; no saved runtime snapshot | Disposable writable job state; prepared image/runtime reuse is separate | Disposable overlay/job state; prepared VM assets are separate |
+| Persistent state | Clean initialization template; fresh helper and restored sandbox per invocation | Clean initialized Python template; fresh helper, mounts and restored sandbox per invocation | Disposable writable job state; prepared image/runtime reuse is separate | Disposable overlay/job state; prepared VM assets are separate |
 | Memory setting | `memory_mb` selects scratch, not total host resident memory | Same | Existing sandbox resource controls; check actual enforcement for the selected platform | VM memory and existing job controls; host helper overhead remains separate |
 | Deadline/cancellation | Owning helper process group is stopped and reaped; VM errors remain separate from OS helper status | Same | Existing job process/runtime cleanup | Existing VM/job cleanup |
 
@@ -46,11 +46,16 @@ status, VM `runtime_report`, stream counts/hashes and `observation_error`.
 A VM-reported return is not an OS guest-process exit. The typed evaluator
 separately decides whether successful execution produced a qualifying finding.
 
-There is no implemented warm VM/template lane for either Hyperlight engine.
-Repeating a fresh invocation with cached files is a repeated cold-VM run, not
-a restore measurement. Neither runtime is promised to be faster or smaller than
-gVisor or VZ. Selected scratch sizes (16 MiB for the small core example and
-256 MiB for Python) are configuration, not measured resident-memory peaks.
+Both Hyperlight engines restore clean initialization templates by default.
+Set `reuse_initialization=false` in the engine object for a cold comparison.
+`runtime_report.initialization` identifies construction, restoration and cold
+reasons, with template identities and stage times. See
+[initialized workloads](https://github.com/craigbalding/safeyolo/blob/master/docs/hyperlight-jobs.md#reuse-initialized-workloads)
+for the freeze boundary, current-authority rules, retention and randomness
+limits. A restored invocation does not reuse the preceding call's mutated VM.
+Neither runtime is promised to be faster or smaller than gVisor or VZ. Scratch
+sizes (16 MiB for the small core example and 256 MiB for Python) are
+configuration, not measured resident-memory peaks.
 
 ### Installed offline observations
 
@@ -127,4 +132,5 @@ Pinned upstream references explain the
 [core guest ABI](https://github.com/hyperlight-dev/hyperlight/blob/a03088470d822b538d2525ef9a5ae9e29daea1e8/docs/how-to-build-a-hyperlight-guest-binary.md),
 [Unikraft execution model](https://github.com/hyperlight-dev/hyperlight-unikraft/blob/34c0d647a9f8679c0ce53b76e174894b2c5bfa7a/docs/execution.md)
 and [cooperative scheduling/process subset](https://github.com/hyperlight-dev/hyperlight-unikraft/blob/34c0d647a9f8679c0ce53b76e174894b2c5bfa7a/docs/concurrency.md).
-Upstream snapshots and sockets do not imply that SafeYolo adopts those features.
+SafeYolo uses the initialized snapshot paths described here. Upstream socket
+passthrough remains disabled; use the adopted mediated-service contract.
