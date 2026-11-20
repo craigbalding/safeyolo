@@ -298,6 +298,135 @@ fn advisory_numeric_wire_round_trips_with_the_current_json_features() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires the approved NATS binary via SAFEYOLO_COORD_NATS_BINARY"]
+async fn renewed_finding_refreshes_the_list_without_repeating_approval() {
+    let binary =
+        PathBuf::from(std::env::var_os("SAFEYOLO_COORD_NATS_BINARY").expect("pinned NATS binary"));
+    let temp = tempfile::Builder::new()
+        .prefix("signals-renewal-")
+        .tempdir()
+        .unwrap();
+    let root = temp.path();
+    success(cli(root, &["init"]).await);
+    let (parent, origin) = origin().await;
+    config(root, &parent, true);
+    feed_config(root);
+    let mut feeds: toml::Value =
+        toml::from_str(&fs::read_to_string(root.join("policy-feeds.toml")).unwrap()).unwrap();
+    feeds["sources"]["quarantine"]["on_stale"] = toml::Value::String("deny".into());
+    fs::write(
+        root.join("policy-feeds.toml"),
+        toml::to_string(&feeds).unwrap(),
+    )
+    .unwrap();
+    let available = || {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    };
+    let port = available();
+    coord_rooms::start(root, Some(&binary), Some(port), Some(available()))
+        .await
+        .unwrap();
+    let _cleanup = NatsCleanup(root.to_path_buf());
+    let credentials = root.join("data/coord/nats/creds");
+    let password = fs::read_to_string(&credentials).unwrap();
+    let connection = async_nats::ConnectOptions::with_user_and_password(
+        "safeyolo".into(),
+        password.trim().into(),
+    )
+    .connect(format!("nats://127.0.0.1:{port}"))
+    .await
+    .unwrap();
+    let kv = async_nats::jetstream::new(connection)
+        .create_key_value(async_nats::jetstream::kv::Config {
+            bucket: "signals".into(),
+            history: 1,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let file = signal_config(root, port, &credentials, "approval");
+    success(cli(root, &["signals", "configure", file.to_str().unwrap()]).await);
+    configure_change(root, |value| {
+        value["sources"]["advisories"]["max_age_seconds"] = toml::Value::Integer(60);
+    })
+    .await;
+    let mut proxy = Proxy::start(native_config::read(&root.join("config.toml")).unwrap())
+        .await
+        .unwrap();
+    let mut finding = advisory(1, 9);
+    let mut list = finding.clone();
+    list.id = "lists.current".into();
+    list.evidence = Evidence::List {
+        body: "listed.test\n".into(),
+    };
+    publish(&kv, &list).await;
+    finding.expires_at = now() + 6;
+    publish(&kv, &finding).await;
+    drive(&mut [&mut proxy], root, "initial approval", || {
+        response(root)["status"] == "pending_approval"
+    })
+    .await;
+    let approval = response(root)["approval_id"].as_str().unwrap().to_owned();
+    success(
+        cli(
+            root,
+            &[
+                "approvals",
+                "approve",
+                &approval,
+                "--option",
+                "once",
+                "--json",
+            ],
+        )
+        .await,
+    );
+    drive(&mut [&mut proxy], root, "initial captured list", || {
+        response(root)["status"] == "verified"
+    })
+    .await;
+    assert_eq!(request(root, "alice", "blocked.test").await, 403);
+    assert_eq!(request(root, "alice", "unrelated.test").await, 200);
+    let before = response(root);
+    let mut renewed = advisory(2, 9);
+    renewed.observed_at = finding.observed_at;
+    publish(&kv, &renewed).await;
+    drive(&mut [&mut proxy], root, "renewed evidence", || {
+        revision(root, "advisories", &finding.id) == 2
+    })
+    .await;
+    while now() <= finding.expires_at {
+        proxy.reload_policy_if_changed().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    assert_eq!(request(root, "alice", "blocked.test").await, 403);
+    assert_eq!(request(root, "alice", "unrelated.test").await, 200);
+    assert_eq!(request(root, "bob", "blocked.test").await, 200);
+    let snapshot: Value = serde_json::from_slice(
+        &fs::read(root.join("data/policy-feeds/quarantine/accepted.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(snapshot["expires_at"], renewed.observed_at + 60);
+    let after = response(root);
+    assert_eq!(after["status"], "verified");
+    assert_eq!(after["identity"], before["identity"]);
+    assert_eq!(after["episode"], before["episode"]);
+    assert_eq!(after["approval_id"], approval);
+    assert_eq!(after["result"]["snapshot_version"], snapshot["version"]);
+    assert_eq!(
+        revision(root, "advisories", &finding.id),
+        2,
+        "reconciliation must not republish source evidence"
+    );
+    proxy.shutdown().await;
+    origin.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires the approved NATS binary via SAFEYOLO_COORD_NATS_BINARY"]
 async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
     let binary =
         PathBuf::from(std::env::var_os("SAFEYOLO_COORD_NATS_BINARY").expect("pinned NATS binary"));

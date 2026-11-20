@@ -182,7 +182,10 @@ policy; signal receipt creates no such authority.
 
 `pending_approval`, `attempted`, `applied`, `verified`, `notified`, `dispatched`,
 `failed` and `uncertain` have separate meanings. A list becomes `verified` after
-the running policy captures its snapshot. Dispatched Work has not yet performed
+the running policy captures its current snapshot. Renewed evidence updates the
+list's validity without repeating the approval or changing the completed-effect
+identity. The snapshot expires at the earliest selected finding's expiry or
+source freshness deadline. Dispatched Work has not yet performed
 its requested external effect. Duplicate delivery and unchanged findings reuse
 the prior receipt, including a newer revision with the same finding content.
 An unchanged refresh does not extend a pending approval's original expiry.

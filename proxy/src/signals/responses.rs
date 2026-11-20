@@ -423,6 +423,17 @@ fn debian_compare(a: &str, b: &str) -> std::cmp::Ordering {
         .then_with(|| compare(ar, br))
 }
 
+fn list_expiry(selected: &[Update], source: &Source) -> Option<u64> {
+    selected
+        .iter()
+        .map(|update| {
+            update
+                .expires_at
+                .min(update.observed_at.saturating_add(source.max_age_seconds))
+        })
+        .min()
+}
+
 pub(super) async fn reconcile(
     root: PathBuf,
     runtime: RuntimeState,
@@ -532,24 +543,42 @@ pub(super) async fn reconcile(
             if retain {
                 continue;
             }
-            if reaction.identity == identity && reaction.status == "applied" {
-                next_due = next_due.min(now() + 1);
+            let reconcile_list = reaction.identity == identity
+                && matches!(reaction.status.as_str(), "applied" | "verified")
+                && matches!(rule.response, Response::List { .. });
+            if reconcile_list
+                && reaction.result["expires_at"] == json!(list_expiry(&selected, source))
+            {
                 if let Response::List { feeds, .. } = &rule.response {
-                    let active = policy.native_list_file_status().values().any(|status| {
+                    let captured = policy.native_list_file_status().values().any(|status| {
                         status["active_snapshot"]["source"] == feeds[agent]
+                            && status["active_snapshot"]["version"]
+                                == reaction.result["snapshot_version"]
                             && status["saved_matches_active"] == true
+                            && (!active || status["active_snapshot"]["stale"] == false)
                     });
-                    if active {
-                        reaction.status = "verified".into();
-                        reaction.result["network_activation"] = json!(
-                            "running policy captured the complete local snapshot; new admissions use it"
-                        );
+                    let status = if captured { "verified" } else { "applied" };
+                    if reaction.status != status {
+                        reaction.status = status.into();
+                        reaction.result["network_activation"] = if captured {
+                            json!(
+                                "running policy captured the complete local snapshot; new admissions use it"
+                            )
+                        } else {
+                            json!(
+                                "waiting for the running policy to capture the current local snapshot"
+                            )
+                        };
                         save(&path(&root, rule_name, agent), &reaction)?;
+                    }
+                    if !captured {
+                        next_due = next_due.min(now() + 1);
                     }
                 }
                 continue;
             }
-            if reaction.identity == identity
+            if !reconcile_list
+                && reaction.identity == identity
                 && matches!(
                     reaction.status.as_str(),
                     "verified" | "dispatched" | "notified" | "failed" | "uncertain"
@@ -570,7 +599,9 @@ pub(super) async fn reconcile(
                 "req-{}",
                 &digest(&json!([rule_name, agent, identity, reaction.episode]))[..32]
             );
-            if active && rule.authority == Authority::Approval {
+            // Refreshing validity preserves the already-authorised list effect.
+            // Its identity still binds the rule, target, source and policy scope.
+            if !reconcile_list && active && rule.authority == Authority::Approval {
                 let action = json!({"kind":"signal_response","rule":rule_name,"agent":agent,
                     "agent_id":policy.evidence_agent_id(agent),"basis":digest(rule),"identity":identity,
                     "source_basis":digest(source),
@@ -763,18 +794,26 @@ async fn apply(
     match &rule.response {
         Response::List { feeds, body } => {
             let _lock = approvals::lock_policy(&root.join("policy.toml"))?;
+            let previous = crate::policy_feeds::load_list(root, &feeds[agent])?.snapshot;
+            let prefix = format!("local-response:{rule_name}:");
+            let revision = previous
+                .as_ref()
+                .and_then(|snapshot| snapshot.provider_version.as_deref())
+                .and_then(|version| version.strip_prefix(&prefix))
+                .map(str::parse::<u64>)
+                .transpose()?
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or("response list revision exhausted")?;
+            let expires_at = list_expiry(selected, &config.sources[&rule.source]);
             let update = Update {
                 source_id: "local-response".into(),
                 id: rule_name.into(),
-                revision: reaction.episode,
+                revision,
                 // This is the time of the local desired-state decision. The
                 // originating evidence keeps its own age in the selection.
                 observed_at: now(),
-                expires_at: selected
-                    .iter()
-                    .map(|u| u.expires_at)
-                    .min()
-                    .unwrap_or(now() + 1),
+                expires_at: expires_at.unwrap_or(now() + 1),
                 withdrawn: selected.is_empty(),
                 evidence_refs: vec![],
                 evidence: Evidence::List { body: body.clone() },
@@ -782,7 +821,9 @@ async fn apply(
             crate::policy_feeds::adopt_signal(root, &feeds[agent], &update, body)?;
             Ok((
                 "applied",
-                json!({"effect":"complete_local_list_snapshot","feed":feeds[agent],"membership_active":!selected.is_empty(),"network_activation":"policy watcher; applies to new admissions only"}),
+                json!({"effect":"complete_local_list_snapshot","feed":feeds[agent],"membership_active":!selected.is_empty(),
+                    "expires_at":expires_at,"snapshot_version":digest(&update),
+                    "network_activation":"policy watcher; applies to new admissions only"}),
             ))
         }
         _ if selected.is_empty() => Ok((
