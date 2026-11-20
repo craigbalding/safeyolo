@@ -14,7 +14,9 @@ pub(crate) fn read(name: &str) -> Result<Option<Value>, Error> {
 
 /// Host-owned ingress binding. A stopped or replaced generation is never a
 /// source of current-run authority, even while an old client socket is open.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(deny_unknown_fields)]
 pub struct AgentRun {
     pub agent: String,

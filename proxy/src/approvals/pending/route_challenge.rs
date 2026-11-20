@@ -163,6 +163,7 @@ pub(crate) fn guidance(policy: &crate::policy::Policy, record: &Record) -> Value
         .map(|_| action["prepared_assessment"]["alternatives"].clone())
         .unwrap_or_else(|| json!(alternatives));
     json!({"assessment":action["prepared_assessment"],"admission":"missing_allow","risk_guidance_available":risk.is_some(),
+        "control_update":action["control_update"],"active_control_update":crate::policy::checks::challenges::binding(policy,action),
         "other_controls":"Normal network, credential, contract and risk controls apply on each retry.",
         "reviewed_service_description":definition.map(|service| &service.raw["description"]),
         "reviewed_capability_description":definition.map(|service| &service.raw["capabilities"][action["capability"].as_str().unwrap_or("")]["description"]),
@@ -193,6 +194,7 @@ pub(crate) async fn observe(
         "host":request.host,"scheme":scheme,"port":request.port,"method":request.method,"path":path,
         "irreversible":selection.risky_route.as_ref().is_some_and(|route| route.irreversible)});
     action["prepared_assessment"] = assessment(runtime, policy, &action)?;
+    action["control_update"] = crate::policy::checks::challenges::binding(policy, &action);
     let ttl = runtime
         .gateway_grants
         .as_ref()

@@ -9,6 +9,7 @@ logs/
 .claude/*
 !.claude/skills/
 .claude/skills/*
+!.claude/skills/operator-ux
 !.claude/skills/readme-usability
 !.claude/skills/safeyolo-commission
 CLAUDE.local.md

@@ -30,6 +30,12 @@ pub(crate) fn write_json(path: &Path, value: &Value) -> Result<(), Error> {
 }
 
 pub(crate) fn write_json_with_mode(path: &Path, value: &Value, mode: u32) -> Result<(), Error> {
+    prepare_json(path, value, mode)?.persist(path)?;
+    fs::File::open(path.parent().ok_or("state has no parent")?)?.sync_all()?;
+    Ok(())
+}
+
+fn prepare_json(path: &Path, value: &Value, mode: u32) -> Result<tempfile::NamedTempFile, Error> {
     let parent = path.parent().ok_or("state has no parent")?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     temporary
@@ -42,9 +48,7 @@ pub(crate) fn write_json_with_mode(path: &Path, value: &Value, mode: u32) -> Res
         output.flush()?;
     }
     temporary.as_file().sync_all()?;
-    temporary.persist(path)?;
-    fs::File::open(parent)?.sync_all()?;
-    Ok(())
+    Ok(temporary)
 }
 
 pub fn read_state(path: &Path) -> Result<Option<Value>, Error> {
@@ -72,13 +76,13 @@ pub(crate) fn read_state_bounded(path: &Path, limit: u64) -> Result<Option<Value
     Ok(Some(serde_json::from_slice(&source)?))
 }
 
-fn copy_executable(source: &Path, destination: &Path) -> Result<(), Error> {
+pub(crate) fn copy_executable(source: &Path, destination: &Path, mode: u32) -> Result<(), Error> {
     let parent = destination.parent().ok_or("guest asset has no parent")?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     std::io::copy(&mut fs::File::open(source)?, &mut temporary)?;
     temporary
         .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o755))?;
+        .set_permissions(fs::Permissions::from_mode(mode))?;
     temporary.as_file().sync_all()?;
     temporary.persist(destination)?;
     Ok(())
@@ -124,8 +128,17 @@ pub fn stage(home: &Path, share: &Path, assets: &Path, mut context: Value) -> Re
         }
         let payload = home.join(format!("{name}.payload"));
         if info.len() == WRAPPER.len() as u64 && fs::read(&entrypoint)? == WRAPPER {
-            if !identities.contains_key(name) {
-                identities.insert(name.into(), payload_identity(&payload)?);
+            let identity = payload_identity(&payload)?;
+            if let Some(expected) = identities.get(name) {
+                if expected != &identity {
+                    return Err(format!(
+                        "cannot stage {name}: preserving unrecognized payload {}",
+                        payload.display()
+                    )
+                    .into());
+                }
+            } else {
+                identities.insert(name.into(), identity);
             }
             continue;
         }
@@ -168,25 +181,64 @@ pub fn stage(home: &Path, share: &Path, assets: &Path, mut context: Value) -> Re
         "guest-desktop",
         "safeyolo-guest",
     ] {
-        copy_executable(&assets.join(asset), &share.join(asset))?;
+        copy_executable(&assets.join(asset), &share.join(asset), 0o755)?;
     }
+    let mut prepared = Vec::new();
     for (entrypoint, payload) in pending {
-        fs::rename(&entrypoint, &payload)?;
-        let name = entrypoint
-            .file_name()
-            .ok_or("entrypoint has no name")?
-            .to_string_lossy()
-            .into_owned();
-        identities.insert(name, payload_identity(&payload)?);
         let mut temporary = tempfile::NamedTempFile::new_in(home)?;
         temporary.write_all(WRAPPER)?;
         temporary
             .as_file()
             .set_permissions(fs::Permissions::from_mode(0o755))?;
-        temporary.persist(entrypoint)?;
+        temporary.as_file().sync_all()?;
+        prepared.push((entrypoint, payload, temporary));
     }
-    context["command_payloads"] = json!(identities);
-    write_json(&share.join("host-launch-context.json"), &context)?;
+    let path = share.join("host-launch-context.json");
+    let mut moved = Vec::new();
+    let publication = (|| -> Result<(), Error> {
+        for (entrypoint, payload, wrapper) in prepared {
+            fs::rename(&entrypoint, &payload)?;
+            moved.push((entrypoint.clone(), payload.clone()));
+            let name = entrypoint
+                .file_name()
+                .ok_or("entrypoint has no name")?
+                .to_string_lossy()
+                .into_owned();
+            identities.insert(name, payload_identity(&payload)?);
+            wrapper.persist(entrypoint)?;
+        }
+        context["command_payloads"] = json!(identities);
+        prepare_json(&path, &context, 0o600)?.persist(&path)?;
+        Ok(())
+    })();
+    if let Err(error) = publication {
+        // Restore selected commands as unwrapped inputs. In particular, do not
+        // leave wrappers pointing at new payloads with the previous context's
+        // identities. A retry wraps these inputs again; it never reaccepts an
+        // unrelated payload through a relaxed identity check.
+        let mut failures = Vec::new();
+        for (entrypoint, payload) in moved.into_iter().rev() {
+            if let Err(restore) = fs::rename(&payload, &entrypoint) {
+                failures.push(format!(
+                    "{} to {}: {restore}",
+                    payload.display(),
+                    entrypoint.display()
+                ));
+            }
+        }
+        if !failures.is_empty() {
+            return Err(format!(
+                "{error}; command staging recovery failed; inspect {}: {}",
+                home.display(),
+                failures.join("; ")
+            )
+            .into());
+        }
+        return Err(error);
+    }
+    // Publication has committed. A directory-sync error must not undo the
+    // command inputs while leaving their newly published context in place.
+    fs::File::open(share)?.sync_all()?;
     Ok(context)
 }
 
@@ -355,6 +407,163 @@ mod tests {
         assert_eq!(
             fs::read_to_string(home.join(".safeyolo-command.payload")).unwrap(),
             "operator payload"
+        );
+    }
+
+    #[test]
+    fn stale_payloads_refuse_restaging_both_command_wrappers() {
+        for name in [".safeyolo-command", ".safeyolo-interactive-command"] {
+            for replace_wrapper in [false, true] {
+                let fixture = tempfile::tempdir().unwrap();
+                let home = fixture.path().join("home");
+                let source = fixture.path().join("assets");
+                let share = fixture.path().join("share");
+                fs::create_dir(&home).unwrap();
+                assets(&source);
+                let command = home.join(name);
+                let payload = home.join(format!("{name}.payload"));
+                fs::write(&command, "#!/bin/sh\nexec original\n").unwrap();
+                fs::set_permissions(&command, fs::Permissions::from_mode(0o755)).unwrap();
+                let mut context =
+                    stage(&home, &share, &source, json!({"generation":"old-run"})).unwrap();
+                let saved = fs::read(share.join("host-launch-context.json")).unwrap();
+                if replace_wrapper {
+                    fs::write(&command, "#!/bin/sh\nexec replacement\n").unwrap();
+                }
+                fs::write(&payload, "stale unrecognized payload\n").unwrap();
+                context["generation"] = "new-run".into();
+                assert!(
+                    stage(&home, &share, &source, context)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("preserving unrecognized payload")
+                );
+                assert_eq!(
+                    fs::read(share.join("host-launch-context.json")).unwrap(),
+                    saved
+                );
+                assert_eq!(
+                    fs::read(command).unwrap(),
+                    if replace_wrapper {
+                        b"#!/bin/sh\nexec replacement\n".as_slice()
+                    } else {
+                        WRAPPER
+                    }
+                );
+                assert_eq!(
+                    fs::read_to_string(payload).unwrap(),
+                    "stale unrecognized payload\n"
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn final_context_write_failure_restores_commands_for_retry() {
+        const TEST: &str =
+            "guest_commands::tests::final_context_write_failure_restores_commands_for_retry";
+        if std::env::var_os("SAFEYOLO_TEST_CONTEXT_LIMIT").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env("SAFEYOLO_TEST_CONTEXT_LIMIT", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let fixture = tempfile::tempdir().unwrap();
+        let home = fixture.path().join("home");
+        let share = fixture.path().join("share");
+        let source = fixture.path().join("assets");
+        fs::create_dir(&home).unwrap();
+        assets(&source);
+        let names = [".safeyolo-command", ".safeyolo-interactive-command"];
+        for name in names {
+            fs::write(home.join(name), "#!/bin/sh\nexec original\n").unwrap();
+            fs::set_permissions(home.join(name), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut context = stage(&home, &share, &source, json!({"generation":"old-run"})).unwrap();
+        let saved = fs::read(share.join("host-launch-context.json")).unwrap();
+        for name in names {
+            fs::write(home.join(name), "#!/bin/sh\nexec selected\n").unwrap();
+        }
+        let mounts: Vec<_> = (0..64)
+            .map(|index| {
+                let path = fixture.path().join(format!("writable-mount-{index}"));
+                fs::create_dir(&path).unwrap();
+                path
+            })
+            .collect();
+        context["extra_shares"] = json!(
+            mounts
+                .iter()
+                .map(|path| json!({"host_path":path,"guest_path":path,"read_only":false}))
+                .collect::<Vec<_>>()
+        );
+        context["writable_mounts"] = json!(mounts);
+        context["generation"] = "failed-run".into();
+        assert!(serde_json::to_vec(&context).unwrap().len() > 8192);
+        let mut original_limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, original_limit.as_mut_ptr()) },
+            0
+        );
+        let original_limit = unsafe { original_limit.assume_init() };
+        let limit = libc::rlimit {
+            rlim_cur: 8192,
+            rlim_max: original_limit.rlim_max,
+        };
+        let previous_signal = unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_IGN) };
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &limit) }, 0);
+        let failed = stage(&home, &share, &source, context.clone());
+        assert_eq!(
+            unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &original_limit) },
+            0
+        );
+        unsafe {
+            libc::signal(libc::SIGXFSZ, previous_signal);
+        }
+        let error = failed.unwrap_err().to_string();
+        assert!(error.contains("File too large"), "{error}");
+        eprintln!("final context publication failed as expected: {error}");
+        assert_eq!(
+            fs::read(share.join("host-launch-context.json")).unwrap(),
+            saved
+        );
+        for name in names {
+            assert_eq!(
+                fs::read_to_string(home.join(name)).unwrap(),
+                "#!/bin/sh\nexec selected\n"
+            );
+            assert!(!home.join(format!("{name}.payload")).exists());
+        }
+        let previous = read_state(&share.join("host-launch-context.json"))
+            .unwrap()
+            .unwrap();
+        context["command_payloads"] = previous["command_payloads"].clone();
+        context["generation"] = "recovered-run".into();
+        let recovered = stage(&home, &share, &source, context).unwrap();
+        for name in names {
+            assert_eq!(fs::read(home.join(name)).unwrap(), WRAPPER);
+            let payload = home.join(format!("{name}.payload"));
+            assert_eq!(
+                fs::read_to_string(&payload).unwrap(),
+                "#!/bin/sh\nexec selected\n"
+            );
+            assert_eq!(
+                recovered["command_payloads"][name],
+                payload_identity(&payload).unwrap()
+            );
+        }
+        assert_eq!(
+            read_state(&share.join("host-launch-context.json")).unwrap(),
+            Some(recovered)
         );
     }
 

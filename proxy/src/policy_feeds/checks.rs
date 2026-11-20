@@ -97,6 +97,10 @@ impl CheckFeed {
             entry.unavailable = Some("managed feed snapshot unavailable".into());
             return;
         };
+        if snapshot.withdrawn {
+            entry.unavailable = Some("managed feed was withdrawn".into());
+            return;
+        }
         let Subject::Hostname { hostname } = subject else {
             entry.unavailable = Some("managed feed covers hostname subjects only".into());
             return;
@@ -118,7 +122,15 @@ impl CheckFeed {
             implementation_version: check.implementation_version.clone(),
             configuration_version: check.configuration_version.clone(),
             collected_at_ms: at,
-            valid_until_ms: Some(observed.saturating_add(source_age.saturating_mul(1000))),
+            valid_until_ms: Some(
+                observed
+                    .saturating_add(source_age.saturating_mul(1000))
+                    .min(
+                        snapshot
+                            .expires_at
+                            .map_or(u64::MAX, |expiry| expiry.saturating_mul(1000)),
+                    ),
+            ),
             source: Provenance {
                 source_id: check.source_id.clone(),
                 source_revision: snapshot.provider_version.clone(),

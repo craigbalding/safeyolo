@@ -16,6 +16,8 @@ use serde_json::json;
 struct Escalation {
     context: pending::context::Fields,
     source: String,
+    #[serde(default)]
+    answers: std::collections::BTreeMap<String, String>,
 }
 
 pub(super) async fn respond<B>(
@@ -78,6 +80,47 @@ where
         Ok(runtime) => runtime.clone(),
         Err(_) => return Ok(response(503, json!({"error":"gateway unavailable"}))),
     };
+    let mut assessment = None;
+    if let Some(input) = &input {
+        let record = match pending::lookup(&runtime.audit, id) {
+            Ok(Some(record))
+                if route_challenge::is_exception(&record)
+                    && record.authority.action["run"] == json!(run) =>
+            {
+                record
+            }
+            _ => {
+                return Ok(response(
+                    404,
+                    json!({"error":"challenge unavailable for this run"}),
+                ));
+            }
+        };
+        if runtime.policy.as_ref().is_some_and(|policy| {
+            record
+                .current_status(policy)
+                .is_ok_and(|status| status == "challenged")
+        }) {
+            let result =
+                crate::policy::checks::challenges::assess(&record, &input.answers, &runtime, state)
+                    .await;
+            match result {
+                Ok(result) if result.ready => assessment = Some(result),
+                Ok(result) => {
+                    return Ok(response(
+                        422,
+                        json!({"error":"adopted challenge requirements are incomplete","challenge":result.view}),
+                    ));
+                }
+                Err(error) => {
+                    return Ok(response(
+                        409,
+                        json!({"error":error.to_string(),"next_action":"read the challenge and effective requirements before retrying"}),
+                    ));
+                }
+            }
+        }
+    }
     let (state, run, id) = (state.clone(), run.clone(), id.to_owned());
     let runtime_owned = runtime.clone();
     let result = tokio::task::spawn_blocking(
@@ -99,6 +142,9 @@ where
                     if current.current_status(policy)? != "challenged" {
                         return Ok(());
                     }
+                    if !state.read().is_ok_and(|active|std::sync::Arc::ptr_eq(&runtime, &active)) {
+                        return Err(crate::approvals::invalid("policy changed during challenge assessment"));
+                    }
                     if !pending::check_saved(
                         &state,
                         &std::fs::read_to_string(
@@ -115,7 +161,14 @@ where
                         return Ok(());
                     }
                     current.untrusted_reason_text =
-                        Some(json!({"source":input.source,"context":input.context}).to_string());
+                        Some(json!({"source":input.source,"context":input.context,"answers":input.answers}).to_string());
+                    if let Some(assessment) = &assessment {
+                        current.result=json!({"challenge":assessment.view,"evidence":assessment.evidence});
+                    }
+                    if !crate::policy::checks::challenges::evidence_current(policy,current) {
+                        current.status="superseded".into();
+                        return Ok(());
+                    }
                     current.status = "pending".into();
                     transitioned = true;
                     Ok(())

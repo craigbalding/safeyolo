@@ -25,11 +25,11 @@ from functools import partial
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from tests.blackbox import installed_access, installed_sections, installed_shared_approvals
+from tests.blackbox import installed_access, installed_federation, installed_sections, installed_shared_approvals
 from tests.blackbox import installed_lifecycle as lifecycle
 from tests.blackbox import installed_state_transition as continuity
 from tests.blackbox.harness.vz_fixture import P2Fixture, Parent, VZRequest
@@ -40,6 +40,181 @@ from tests.blackbox.isolation import installed_workloads as guest_workloads
 from tests.blackbox.proxy_backend import SelectionError, identity
 from tests.proxy_contracts import harness as proxy_harness
 from tests.proxy_contracts.websocket_peer import Peer, read_head
+
+
+@pytest.mark.parametrize("failure", [None, "wrong-status", "destination-effect", "transport", "observer", "revocation-status",
+                                   "wrong-origin-instance", "wrong-origin-agent"])
+def test_installed_federation_binds_destination_and_observes_before_asserting(tmp_path, monkeypatch, failure):
+    root, output = tmp_path / "source", tmp_path / "output"
+    destination = tmp_path / "source-destination"
+    messages, requests, homes, observations, cleanups = [], [], [], [], []
+    state = {"revoked": False, "last": None}
+
+    def prepare(base, selected):
+        selected.mkdir()
+        (selected / "config.toml").touch()
+        (selected / ".safeyolo-platform-smoke").touch()
+        (selected / "data").mkdir()
+        (selected / "data/instance_id").write_text(selected.name)
+
+    def command(arguments, **kwargs):
+        if arguments[0] == "openssl":
+            Path(arguments[arguments.index("-keyout") + 1]).touch()
+            return ""
+        selected, words = Path(arguments[2]), arguments[3:]
+        if words[:2] == ["agent", "status"]:
+            return json.dumps({"agent_id": "ag-" + words[2]})
+        if words == ["coord", "start"]:
+            return json.dumps({"client_port": 12345})
+        if words[:3] == ["coord", "federation", "home"]:
+            homes.append(words[3:])
+        if words[:2] == ["coord", "send"]:
+            messages.append({"body": words[3], "sender_kind": "operator"})
+        if words[:2] == ["coord", "watch"]:
+            assert selected == destination
+            observations.append(state["last"])
+            if failure == "observer" and state["last"] == "wrong-instance":
+                raise RuntimeError("destination observer unavailable")
+            return "\n".join(json.dumps(row) for row in messages)
+        if words[:3] == ["coord", "federation", "revoke"]:
+            state["revoked"] = True
+        return ""
+
+    def guest_shell(arguments, **kwargs):
+        # Exercise the real guest HTTP helper through its native-shell boundary.
+        assert arguments[:5] == [str(tmp_path / "bin/safeyolo"), "--root", str(root), "agent", "shell"]
+        actor = arguments[5]
+        words = shlex.split(arguments[-1])
+        url = urlsplit(words[-1])
+        query = parse_qs(url.query)
+        assert url.path == "/api/coord/rooms/shared/send" and query["home"] == ["destination"]
+        body = json.loads(words[words.index("--data-binary") + 1])["body"]
+        label = next(name for name in ("wrong-principal", "wrong-instance", "allowed", "revoked") if body.endswith(name))
+        requests.append((label, actor, query))
+        state["last"] = label
+        if label == "wrong-instance":
+            assert query["instance_id"] == [root.name]
+            if failure == "transport":
+                return subprocess.CompletedProcess(arguments, 28, "", "fixture timeout")
+            status = 200 if failure == "wrong-status" else 409
+            if failure == "destination-effect":
+                messages.append({"body": body, "sender_kind": "agent"})
+        elif actor == "bbpeer" or state["revoked"]:
+            assert "instance_id" not in query
+            status = 200 if failure == "revocation-status" and state["revoked"] else 403
+        else:
+            assert "instance_id" not in query
+            status = 200
+            messages.append({"body": body, "sender_kind": "agent", "sender_agent_name": "remote-bbtest",
+                             "sender_agent_id": "remote-principal",
+                             "origin_instance_id": destination.name if failure == "wrong-origin-instance" else root.name,
+                             "origin_agent_id": "ag-bbpeer" if failure == "wrong-origin-agent" else "ag-bbtest"})
+        return subprocess.CompletedProcess(arguments, 0, f"{{}}\nBB_STATUS:{status}\nBB_APPROVAL:\nBB_REQUEST:", "")
+
+    monkeypatch.setattr(installed_federation, "inputs", lambda *args: {"guest": {"sha256": "fixture-guest"}})
+    monkeypatch.setattr(installed_federation, "prepare_authority_guests", lambda base, selected, native: prepare(base, selected))
+    monkeypatch.setattr(installed_federation, "prepare_native_instance", prepare)
+    monkeypatch.setattr(installed_federation, "copy_prepared_nats", lambda *args: None)
+    monkeypatch.setattr(installed_federation, "checked", command)
+    monkeypatch.setattr(installed_federation, "_sha256", lambda path: "fixture-guest")
+    monkeypatch.setattr(installed_federation, "running_guest", lambda *args: {"backend_pid": 42, "backend_token": "fixture"})
+    monkeypatch.setattr(installed_federation, "cleanup_instance", lambda cli, selected: cleanups.append(selected) or [])
+    monkeypatch.setattr(subprocess, "run", guest_shell)
+    args = SimpleNamespace(prepared_config=tmp_path, root=root, output=output, revision="test")
+    if failure:
+        expected = RuntimeError if failure == "observer" else AssertionError
+        with pytest.raises(expected):
+            installed_federation.run(args)
+    else:
+        installed_federation.run(args)
+
+    report = json.loads((output / "result.json").read_text())
+    assert cleanups == [root, destination] and report["cleanup"] == "stopped"
+    assert len(homes) == 1 and homes[0][:2] == ["destination", destination.name]
+    refused = report["refusals"]["wrong-instance"]
+    assert refused["enforcement"] == "source-instance-selection"
+    assert refused["home"] == "destination" and refused["instance_id"] == root.name
+    assert refused["status"] == (None if failure == "transport" else 200 if failure == "wrong-status" else 409)
+    assert "wrong-instance" in observations
+    assert refused["destination_unchanged"] == (None if failure == "observer" else failure != "destination-effect")
+    assert report["refusals"]["wrong-principal"]["status"] == 403
+    assert report["status"] == ("incomplete" if failure else "passed")
+    if failure is None or failure == "revocation-status":
+        assert [row[0] for row in requests] == ["wrong-principal", "wrong-instance", "allowed", "revoked"]
+        assert report["allowed_status"] == 200 and report["revocation_destination_unchanged"]
+        assert report["revocation_status"] == (200 if failure else 403)
+    elif failure in {"wrong-origin-instance", "wrong-origin-agent"}:
+        assert [row[0] for row in requests] == ["wrong-principal", "wrong-instance", "allowed"]
+        assert report["allowed_status"] == 200 and len(report["destination_messages"]) == 2
+        assert not state["revoked"] and "revocation_status" not in report
+
+
+def test_installed_federation_generates_a_trusted_server_leaf_despite_host_ca_default(tmp_path, monkeypatch):
+    from cryptography import x509
+    from cryptography.x509.oid import ExtendedKeyUsageOID
+
+    configuration = tmp_path / "openssl.cnf"
+    configuration.write_text(
+        "[req]\ndistinguished_name=dn\nx509_extensions=ca\n[dn]\n"
+        "[ca]\nbasicConstraints=critical,CA:TRUE\n"
+    )
+    monkeypatch.setenv("OPENSSL_CONF", str(configuration))
+    root, output = tmp_path / "source", tmp_path / "output"
+    destination = tmp_path / "source-destination"
+    cleanups = []
+    checked = installed_federation.checked
+
+    def prepare(base, selected):
+        selected.mkdir()
+        (selected / "config.toml").touch()
+        (selected / ".safeyolo-platform-smoke").touch()
+        (selected / "data").mkdir()
+        (selected / "data/instance_id").write_text(selected.name)
+
+    def command(arguments, **kwargs):
+        if arguments[0] == "openssl":
+            return checked(arguments, **kwargs)
+        selected, words = Path(arguments[2]), arguments[3:]
+        if words == ["coord", "start"] and (selected / "coord-federation.json").exists():
+            raise RuntimeError("stop before starting TLS broker")
+        if words == ["agent", "status", "bbtest"]:
+            return json.dumps({"agent_id": "ag-source"})
+        return ""
+
+    def cleanup(cli, selected):
+        cleanups.append(selected)
+        return []
+
+    monkeypatch.setattr(installed_federation, "inputs", lambda *args: {})
+    monkeypatch.setattr(installed_federation, "prepare_authority_guests", lambda base, selected, native: prepare(base, selected))
+    monkeypatch.setattr(installed_federation, "prepare_native_instance", prepare)
+    monkeypatch.setattr(installed_federation, "copy_prepared_nats", lambda *args: None)
+    monkeypatch.setattr(installed_federation, "checked", command)
+    monkeypatch.setattr(installed_federation, "cleanup_instance", cleanup)
+    with pytest.raises(RuntimeError, match="stop before starting TLS broker"):
+        installed_federation.run(SimpleNamespace(prepared_config=tmp_path, root=root, output=output, revision="test"))
+
+    broker = json.loads((destination / "coord-federation.json").read_text())
+    certificate, key = Path(broker["cert_file"]), Path(broker["key_file"])
+    assert broker["ca_file"] == str(certificate) and broker["local_server_name"] == "127.0.0.1"
+    leaf = x509.load_pem_x509_certificate(certificate.read_bytes())
+    constraints = leaf.extensions.get_extension_for_class(x509.BasicConstraints)
+    assert constraints.critical and not constraints.value.ca
+    assert list(leaf.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value) == [ExtendedKeyUsageOID.SERVER_AUTH]
+    usage = leaf.extensions.get_extension_for_class(x509.KeyUsage)
+    assert usage.critical and usage.value.digital_signature and usage.value.key_encipherment
+    assert not usage.value.key_cert_sign
+    assert key.stat().st_mode & 0o777 == 0o600
+    for address, expected in (("127.0.0.1", 0), ("127.0.0.2", 2)):
+        result = subprocess.run(
+            ["openssl", "verify", "-CAfile", str(certificate), "-purpose", "sslserver", "-verify_ip", address, str(certificate)],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        assert result.returncode == expected, result.stderr
+    assert cleanups == [root, destination]
+    report = json.loads((output / "result.json").read_text())
+    assert report["status"] == "incomplete" and report["cleanup"] == "stopped"
+    assert report["tls_certificate_sha256"] == hashlib.sha256(certificate.read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize("outcome", ["native", "http403", "http428", "unrelated", "timeout", "origin", "active_grant", "wrong_approval", "http200", "native_with_http"])
@@ -2131,6 +2306,92 @@ OTHER_REVISION = "b" * 40
 SELECTED_REVISION = "a" * 40
 
 
+@pytest.mark.parametrize("mode,expected", [
+    ("ready", 0), ("xrandr-only", 0), ("assertion-failure", 1), ("startup-failure", 2),
+    ("timeout", 2), ("invalid-display", 2), ("missing-xvfb", 2),
+    ("missing-probe", 2), ("supplied-display", 0), ("macos", 0), ("other-section", 0),
+])
+def test_access_host_display_startup_and_owned_cleanup(tmp_path, mode, expected):
+    """Exercise the real launcher/trap with a controlled display child, without X11 or a guest."""
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    xvfb = commands / "Xvfb"
+    xvfb.write_text(f"#!{sys.executable}\n" + '''
+import json, os, pathlib, sys, time
+root = pathlib.Path(os.environ['SAFEYOLO_CONFIG_DIR'])
+(root / 'fixture-display-pid').write_text(str(os.getpid()))
+(root / 'fixture-display-args.json').write_text(json.dumps(sys.argv[1:]))
+mode = os.environ['FIXTURE_DISPLAY_MODE']
+if mode == 'startup-failure':
+    print('controlled startup failure', flush=True)
+    raise SystemExit(7)
+if mode != 'timeout':
+    os.write(3, b'invalid\\n' if mode == 'invalid-display' else b'211\\n')
+time.sleep(60)
+''')
+    xvfb.chmod(0o755)
+    for name, body in (("uname", "Darwin" if mode == "macos" else "Linux"),
+                       ("xdpyinfo", "unused"), ("xrandr", "unused")):
+        program = commands / name
+        program.write_text(f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(body)}\n")
+        program.chmod(0o755)
+    root = tmp_path / "instance"
+    root.mkdir()
+    runner = (ROOT / "tests/blackbox/run-tests.sh").read_text()
+    cleanup = runner[runner.index("cleanup() {"):runner.index("# --- Access host display ---")]
+    display = runner[runner.index("# --- Access host display ---"):runner.index("# --- Clean stale state")]
+    script = tmp_path / "display-probe.sh"
+    script.write_text(
+        "#!/bin/bash\nset -euo pipefail\n"
+        f"SCRIPT_DIR={shlex.quote(str(ROOT / 'tests/blackbox'))}\n"
+        "STARTED_VM=false\nSTARTED_INGRESS_PEER=false\nSTARTED_PROXY=false\n"
+        "STARTED_PARENT=false\nSTARTED_SINKHOLE=false\nLIFECYCLE=false\n"
+        "PARENT_PID=\nSINKHOLE_PID=\nHOST_LISTENER_PID=\nACCESS_XVFB_PID=\nPROXY_IMPL=rust\n"
+        f"ACCESS={'false' if mode == 'other-section' else 'true'}\n"
+        + '''command() {
+    if [ "$1" = -v ]; then
+        case "$FIXTURE_DISPLAY_MODE:$2" in
+            missing-xvfb:Xvfb|missing-probe:xdpyinfo|missing-probe:xrandr|xrandr-only:xdpyinfo) return 1 ;;
+        esac
+    fi
+    builtin command "$@"
+}
+'''
+        + cleanup + display
+        + 'printf "%s\\n" "${DISPLAY:-}" > "$SAFEYOLO_CONFIG_DIR/fixture-selected-display"\n'
+        + f"exit {1 if mode == 'assertion-failure' else 0}\n"
+    )
+    env = dict(os.environ, PATH=f"{commands}:{os.environ['PATH']}",
+               SAFEYOLO_CONFIG_DIR=str(root), SAFEYOLO_COORD_DATA_DIR=str(root / "coord"),
+               FIXTURE_DISPLAY_MODE=mode, DISPLAY=":777" if mode == "supplied-display" else "")
+    foreign = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        result = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, timeout=15)
+        assert result.returncode == expected, (result.stdout, result.stderr)
+        assert "Cleanup complete" in result.stdout
+        assert foreign.poll() is None, "owned cleanup stopped an unrelated process"
+        pid_file = root / "fixture-display-pid"
+        if pid_file.exists():
+            with pytest.raises(ProcessLookupError):
+                os.kill(int(pid_file.read_text()), 0)
+            assert json.loads((root / "fixture-display-args.json").read_text()) == [
+                "-displayfd", "3", "-screen", "0", "1280x800x24", "-nolisten", "tcp",
+            ]
+        if mode in {"ready", "xrandr-only", "assertion-failure", "supplied-display", "macos", "other-section"}:
+            selected = (root / "fixture-selected-display").read_text().strip()
+            owned = mode in {"ready", "xrandr-only", "assertion-failure"}
+            assert selected == (":211" if owned else ":777" if mode == "supplied-display" else "")
+            assert pid_file.exists() == owned
+        else:
+            assert not (root / "fixture-selected-display").exists(), "failed setup reached the test body"
+            assert "host display" in result.stderr or "host Xvfb" in result.stderr
+            if mode == "startup-failure":
+                assert "controlled startup failure" in (root / "desktop-display.log").read_text()
+    finally:
+        foreign.terminate()
+        foreign.wait(timeout=5)
+
+
 @pytest.mark.parametrize("platform,operator_journey", [("systrap", False), ("systrap", True),
                                                         ("vz", False), ("vz", True)])
 def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeypatch, platform, operator_journey):
@@ -2572,7 +2833,7 @@ def installed_section_commands(tmp_path, monkeypatch):
         shutil.copy2(ROOT / "tests/blackbox" / name, scripts / name)
     receipt_script = """
 from execution_receipt import phase_functions
-from selections import SECTION_DRIVERS, PYTEST_PHASES, PROCEDURES
+from selections import AUTHORITY_CONTROLS, SECTION_DRIVERS, PYTEST_PHASES, PROCEDURES
 artifacts = pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR'])
 context = {'platform':sys.argv[sys.argv.index('--expect-platform')+1], 'agent':'bbtest', 'pid':123, 'start_token':'birth'}
 (artifacts / 'platform.json').write_text(json.dumps(context))
@@ -2587,7 +2848,9 @@ for phase in phases:
                       tests={node: dict.fromkeys(('setup','call','teardown'),'passed') for node in nodes})
         name = 'pytest-' + phase + '.json'
     else:
-        report.update(section=phase, finished=True, checkpoints=list(PROCEDURES[phase][1]))
+        required = next((names for section, names in AUTHORITY_CONTROLS.values() if section == phase), ())
+        report.update(section=phase, finished=True, checkpoints=list(PROCEDURES[phase][1]),
+                      observations={name: {'controlled_driver': name} for name in required})
         name = 'procedure.json'
     (artifacts / name).write_text(json.dumps(report))
 """.replace("TRUSTED_ROOT", repr(str(ROOT)))
@@ -2649,6 +2912,11 @@ def test_installed_sections_reuse_preparation_and_separate_live_state(
     report = json.loads((artifacts / "installed-sections.json").read_text())
     assert report["preparation"]["exit"] == 0
     assert [row["section"] for row in report["sections"]] == ["isolation", "access"]
+    assert report["selected_sections"] == ["isolation", "access"]
+    assert report["controls"]["BB-23"]["execution_complete"] is True
+    assert report["controls"]["BB-23"]["execution"]["phases"][0]["observations"]["desktop-sharing"]
+    assert report["controls"]["BB-26"]["selected"] is False
+    assert report["controls"]["BB-26"]["execution_complete"] is False
     assert all(row["cleanup"] == "stopped" for row in report["sections"])
     assert report["sections"][0]["result"] == {
         0: "passed", 1: "assertion_failure", 2: "preparation_failure"
@@ -3042,6 +3310,143 @@ def test_operator_traffic_distinguishes_policy_refusal_from_an_origin_response(m
     assert requests == [("GET", "http://evil.com/installed-flow/r3-owned/bbtest")]
 
 
+@pytest.mark.parametrize("status,body,reason", [
+    (409, {"diagnostic": {"code": "desktop_missing"}}, "desktop_missing"),
+    (409, {"diagnostic": {"code": "operator_preview_path_unavailable"}}, "operator_preview_path_unavailable"),
+    (403, {"error": "trusted current-run requester identity required"}, "trusted current-run requester identity required"),
+    (503, {"error": "operator actions unavailable"}, "operator actions unavailable"),
+    (400, {"error": "private-response"}, "unrecognized_response"),
+    (409, {"diagnostic": {"code": "private-response"}}, "unrecognized_response"),
+    (503, "private-response", "non_json_response"),
+    (503, ["private-response"], "unrecognized_response"),
+])
+def test_desktop_sharing_retains_peer_and_safe_request_failure(tmp_path, monkeypatch, status, body, reason):
+    (tmp_path / "policy.toml").write_text('[agents.worker]\nagent_id="ag-worker"\n[agents.bbpeer]\nagent_id="ag-peer"\n')
+    peer = {"agent_id": "ag-peer", "url": "http://peer.localhost:1234/?private-url",
+            "page_status": 200, "page_bytes": 100, "vnc_banner": "RFB 003.008\n"}
+    monkeypatch.setattr(installed_access, "operator_desktop", lambda api, agent: dict(peer))
+    if isinstance(body, dict):
+        body = {**body, "private": "private-response",
+                "diagnostic": {**body.get("diagnostic", {}), "message": "private-response",
+                               "operator_details": "private-response"}}
+    payload = body if isinstance(body, str) else json.dumps(body)
+
+    def command(arguments, *, timeout):
+        assert arguments[:4] == ["selected-cli", "agent", "shell", "worker"]
+        assert timeout == 60
+        words = shlex.split(arguments[-1])
+        assert words[:2] == ["python3", "-c"]
+        assert json.loads(words[-1]) == ["POST", "http://_safeyolo.proxy.internal/operator-actions",
+                                        {"action_id": "desktop.present", "parameters": {"ttl_seconds": 120}}]
+        return SimpleNamespace(stdout=json.dumps({"status": status, "body": payload, "approval_id": None}))
+
+    monkeypatch.delenv("SAFEYOLO_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(installed_access, "checked", command)
+    with pytest.raises(AssertionError, match="desktop action request failed") as error:
+        installed_access.desktop_sharing(SimpleNamespace(), "selected-cli", tmp_path, "worker", tmp_path / "access.json")
+    raw = (tmp_path / "desktop-effects.json").read_text()
+    report = json.loads(raw)
+    assert report["status"] == "incomplete"
+    assert report["peer_positive"] == {key: value for key, value in peer.items() if key != "url"}
+    assert report["sessions"] == {"revocation": {"request": {"http_status": status, "reason": reason}}}
+    assert "private-response" not in raw + str(error.value) and "private-url" not in raw
+
+
+@pytest.mark.parametrize("failure", [None, "live-viewer", "retired-access"])
+def test_desktop_sharing_uses_body_approval_and_saves_viewer_before_cessation(tmp_path, monkeypatch, failure):
+    (tmp_path / "policy.toml").write_text('[agents.worker]\nagent_id="ag-worker"\n[agents.bbpeer]\nagent_id="ag-peer"\n')
+    phases = ("revocation", "expiry", "stale-run")
+    current = {}
+    resolved = set()
+    revoked = []
+    approval_reads = []
+    observed = {"agent_id": "ag-worker", "page_status": 200, "page_bytes": 100, "vnc_banner": "RFB 003.008\n"}
+
+    def command(arguments, **kwargs):
+        if arguments[1:4] == ["agent", "shell", "worker"] or arguments[1:4] == ["agent", "shell", "bbpeer"]:
+            method, url, body = json.loads(shlex.split(arguments[-1])[-1])
+            if url.endswith("/operator-actions"):
+                assert method == "POST"
+                phase = phases[len(resolved)]
+                current.update(phase=phase, identifier="approval-" + phase, ending=False)
+                assert body["parameters"]["ttl_seconds"] == (10 if phase == "expiry" else 120)
+                payload = {"approval_id": current["identifier"], "status": "pending_approval"}
+                return SimpleNamespace(stdout=json.dumps({"status": 202, "body": json.dumps(payload),
+                                                          "approval_id": None}))
+            assert url.endswith("/approvals/" + current["identifier"] + "/resolve")
+            assert body == {"decision": "approve", "delegation": "bb-desktop", "option": "once"}
+            if current["identifier"] not in resolved:
+                with (tmp_path / "desktop-openings").open("a") as openings:
+                    openings.write("opened\n")
+                resolved.add(current["identifier"])
+            return SimpleNamespace(stdout=json.dumps({"status": 200, "body": "{}"}))
+        assert arguments[:3] == ["selected-cli", "--root", str(tmp_path)]
+        if arguments[3:5] == ["agent", "status"]:
+            return SimpleNamespace(stdout=json.dumps({"agent_id": "ag-worker", "run_id": "run-after"}))
+        assert arguments[3:5] in (["agent", "stop"], ["agent", "start"])
+        return SimpleNamespace(stdout="")
+
+    def approval(identifier):
+        approval_reads.append(identifier)
+        assert identifier == current["identifier"]
+        return {"action": {"agent_id": "ag-worker", "presentation": "local", "run": {"run_id": "run-before"}},
+                "result": {"status": "expired" if current["ending"] and current["phase"] == "expiry" else "started",
+                           "preview_active": True},
+                "operator_preview": {"private": "private-preview"}}
+
+    def admin(method, route, *, json):
+        if route.endswith("/preview"):
+            return {"after": json["delegation"], "acknowledgment": "owned", "authority": {}, "revision": 1}
+        if route.endswith("/revoke"):
+            revoked.append(current["phase"])
+        else:
+            assert route.endswith("/apply")
+
+    class Viewer:
+        def recv(self, *, timeout):
+            assert timeout == 8
+            assert json.loads((tmp_path / "desktop-effects.json").read_text())["sessions"][current["phase"]]["positive"] == observed
+            if failure == "live-viewer":
+                return b"unexpected live bytes"
+            raise installed_access.ConnectionClosed(None, None)
+
+    def desktop(api, agent_id, *, presentation=None, after_banner=None):
+        if agent_id == "ag-peer":
+            return {**observed, "agent_id": agent_id, "url": "http://peer.localhost:1234/?private-url"}
+        assert presentation == {"private": "private-preview"}
+        current["ending"] = True
+        session = after_banner(Viewer(), "private-cookie", urlsplit("http://worker.localhost:1235"), observed)
+        return {**observed, "url": "http://worker.localhost:1235/?private-url", "session": session}
+
+    monkeypatch.delenv("SAFEYOLO_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(installed_access, "checked", command)
+    monkeypatch.setattr(installed_access, "operator_desktop", desktop)
+    monkeypatch.setattr(installed_access, "prepare_guest_tests", lambda *args: None)
+
+    def refused(url, cookie, *, retired=False):
+        if retired and failure == "retired-access":
+            raise AssertionError("retired access still allowed")
+        return 410 if retired else 403
+
+    monkeypatch.setattr(installed_access, "refused_viewer", refused)
+    api = SimpleNamespace(approval=approval, _request=admin)
+    if failure:
+        with pytest.raises(AssertionError, match="retired desktop kept delivering|retired access still allowed"):
+            installed_access.desktop_sharing(api, "selected-cli", tmp_path, "worker", tmp_path / "access.json")
+    else:
+        installed_access.desktop_sharing(api, "selected-cli", tmp_path, "worker", tmp_path / "access.json")
+    raw = (tmp_path / "desktop-effects.json").read_text()
+    report = json.loads(raw)
+    assert report["status"] == ("incomplete" if failure else "passed")
+    assert list(report["sessions"]) == list(phases[:1] if failure else phases)
+    assert report["sessions"]["revocation"]["positive"]["vnc_banner"] == "RFB 003.008\n"
+    assert len(revoked) == (1 if failure else 3)
+    if failure == "retired-access":
+        assert report["sessions"]["revocation"]["active_viewer_closed"] is True
+    assert approval_reads and None not in approval_reads
+    assert all(secret not in raw for secret in ("private-preview", "private-cookie", "private-url"))
+
+
 @pytest.mark.parametrize("failure,diagnosis", [
     (None, None),
     ("split-vnc", None),
@@ -3149,11 +3554,20 @@ def test_operator_desktop_reaches_unlocked_page_and_requires_vnc_and_missing_tar
             assert all(secret not in str(error.value) for secret in (
                 "synthetic-only", "fixture_preview=owned", "private response body"))
         else:
-            observed = installed_access.operator_desktop(api, "ag-owned")
+            callbacks = []
+
+            def after_banner(websocket, cookie, url, observed):
+                callbacks.append(dict(observed))
+                assert cookie == "fixture_preview=owned" and url.netloc == authority
+                assert observed["vnc_banner"] == "RFB 003.008\n" and "url" not in observed
+                return {"observed_before_cessation": True}
+
+            observed = installed_access.operator_desktop(api, "ag-owned", after_banner=after_banner)
             assert observed["agent_id"] == "ag-owned" and observed["missing_target_status"] == 404
             assert observed["page_status"] == 200 and observed["page_bytes"] == len(page)
             assert observed["vnc_banner"] == "RFB 003.008\n" and "unlock_code" not in observed
             assert observed["observation_scope"] == "unlocked native desktop page and live VNC banner; no visual interaction"
+            assert len(callbacks) == 1 and observed["session"] == {"observed_before_cessation": True}
         if failure in {"wrong-target", "nonlocal", "legacy-path"}:
             assert requests == []
         else:
@@ -3232,7 +3646,7 @@ if marker.exists():
     section = scripts / "run-tests.sh"
     first_section = "lifecycle" if owner else "isolation"
     owned_root = '"${SAFEYOLO_CONFIG_DIR%/*}/lifecycle-owner"' if owner else '"$SAFEYOLO_CONFIG_DIR"'
-    access_receipt = "from pathlib import Path; import os,json; from tests.blackbox.execution_receipt import ProcedureReceipt; from tests.blackbox.selections import PROCEDURES; context={'platform':'systrap','agent':'bbtest','pid':123,'start_token':'birth'}; os.environ['SAFEYOLO_BLACKBOX_GUEST_IDENTITY']=json.dumps(context); output=Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR']); (output/'platform.json').write_text(json.dumps(context)); receipt=ProcedureReceipt('access',output/'installed-access.json'); [receipt.checkpoint(name) for name in PROCEDURES['access'][1]]"
+    access_receipt = "from pathlib import Path; import os,json; from tests.blackbox.execution_receipt import ProcedureReceipt; from tests.blackbox.selections import PROCEDURES; context={'platform':'systrap','agent':'bbtest','pid':123,'start_token':'birth'}; os.environ['SAFEYOLO_BLACKBOX_GUEST_IDENTITY']=json.dumps(context); output=Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR']); (output/'platform.json').write_text(json.dumps(context)); receipt=ProcedureReceipt('access',output/'installed-access.json'); [receipt.checkpoint(name, controlled_driver=name) for name in PROCEDURES['access'][1]]"
     section.write_text(
         "#!/bin/bash\nset -euo pipefail\n"
         "export SAFEYOLO_CONFIG_DIR=\"$SAFEYOLO_TEST_CONFIG_DIR\"\n"
@@ -3245,7 +3659,7 @@ if marker.exists():
         "fi\n"
         f"SCRIPT_DIR={str(ROOT / 'tests/blackbox')!r}\n"
         f"STARTED_VM=false\nSTARTED_PROXY={'false' if owner else 'true'}\n"
-        "STARTED_PARENT=false\nSTARTED_SINKHOLE=false\n"
+        "STARTED_PARENT=false\nSTARTED_SINKHOLE=false\nACCESS=false\n"
         "PARENT_PID=\nSINKHOLE_PID=\nHOST_LISTENER_PID=\nPROXY_IMPL=rust\nAGENT_NAME=bbtest\n"
         f"LIFECYCLE={'true' if owner else 'false'}\n"
         + _runner_cleanup_helpers()

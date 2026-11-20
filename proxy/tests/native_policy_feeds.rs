@@ -281,6 +281,52 @@ fn successful(output: &Output) {
 }
 
 #[test]
+fn assessment_keeps_adopted_feed_scope_and_expiry_without_reloading_its_path() {
+    use safeyolo_proxy::{
+        policy::{Policy, capabilities},
+        services::effects::policy::{Candidate, assess},
+    };
+    let origin = Origin::new();
+    origin.feed(FIRST, "\"one\"");
+    let temporary = tempfile::tempdir().unwrap();
+    let instance = Instance::new(&temporary.path().join("i"), &origin);
+    successful(
+        &instance.configure(
+            json!({"scope":"domain_suffix","cadence_seconds":86400,"max_age_seconds":3}),
+        ),
+    );
+    let source = "[lists]\nselected={feed='test'}\n[hosts.'*']\negress='allow'\n[hosts.'$selected']\negress='deny'\n";
+    let path = instance.root.join("policy.toml");
+    fs::write(&path, source).unwrap();
+    let policy = Policy::from_native_path(&path).unwrap();
+    let run=serde_json::from_value(json!({"agent":"worker","agent_id":"ag-11111111111111111111111111111111","run_id":"11111111111111111111111111111111"})).unwrap();
+    let snapshot = policy
+        .full_snapshot(source, &path, "sy-fixture", &run)
+        .unwrap();
+    let input:Candidate=serde_json::from_value(json!({"snapshot_request_id":"req-fixture","source":source,"definition_version":capabilities::discover()["definition_version"]})).unwrap();
+    fs::remove_file(instance.root.join("data/policy-feeds/test/accepted.json")).unwrap();
+    let acquisitions = origin.feed_requests().len();
+    let initial = assess(&snapshot, &input, None, &[]).unwrap();
+    assert_eq!(initial["valid"], true);
+    thread::sleep(Duration::from_millis(3100));
+    let stale = assess(&snapshot, &input, None, &[]).unwrap();
+    assert!(
+        stale["network"]["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["before"]["effect"] == "deny"
+                && row["before"]["matched_resource"] == "$selected")
+    );
+    assert_ne!(initial["assessment_id"], stale["assessment_id"]);
+    assert_eq!(
+        origin.feed_requests().len(),
+        acquisitions,
+        "assessment fetched its captured dependency"
+    );
+}
+
+#[test]
 fn installed_refresh_preserves_literal_initial_and_redirect_endpoints() {
     let origin = Origin::new();
     let temporary = tempfile::tempdir().unwrap();

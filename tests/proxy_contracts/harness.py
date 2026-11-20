@@ -130,7 +130,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
                  test_context_block=None,
                  gateway_services_dir=None, gateway_builtin_services_dir=None, onepassword_executable=None,
                  agents=("alice", "bob"), services_dir=None,
-                 connect_trace_path=None, native_product=False):
+                 connect_trace_path=None, native_product=False, linux_settings=None):
     """Start one native process in isolated fixture state."""
     if backend != "rust":
         raise ValueError(f"Unknown proxy backend: {backend}")
@@ -243,6 +243,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
             for name in ("builtin-services", "services"):
                 (directory / name).mkdir(exist_ok=True)
             config_path = directory / "config.toml"
+            if linux_settings is not None:
+                config["linux"] = linux_settings
             config_path.write_text(tomlkit.dumps(config))
         if connect_trace_path is not None:
             tracer = shutil.which("strace")
@@ -266,11 +268,11 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, parent_p
         yield RunningProxy(paths, Path(config["audit_log_path"]), process, readiness)
 
 
-def connection(path):
+def connection(path, *, timeout=5):
     """Speak ordinary HTTP proxy wire format over the trusted UDS listener."""
-    client = http.client.HTTPConnection("fixture", timeout=5)
+    client = http.client.HTTPConnection("fixture", timeout=timeout)
     client.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.sock.settimeout(5)
+    client.sock.settimeout(timeout)
     try:
         client.sock.connect(path)
     except OSError:
@@ -279,8 +281,8 @@ def connection(path):
     return client
 
 
-def request(path, url, *, headers=None, method="GET", body=None):
-    client = connection(path)
+def request(path, url, *, headers=None, method="GET", body=None, timeout=5):
+    client = connection(path, timeout=timeout)
     try:
         client.request(method, url, headers=headers or {}, body=body)
         response = client.getresponse()

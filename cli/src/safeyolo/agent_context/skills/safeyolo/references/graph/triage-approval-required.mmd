@@ -7,6 +7,9 @@ flowchart TD
     classDef conclusion fill:#e0ffe0,stroke:#484
     classDef operator_ask fill:#f0d0ff,stroke:#748
 
+    sym.control_update_changed(["A control update failed, needs adoption approval, or changed a route challenge"])
+    ev.control_update_current["Read canonical challenge guidance; on the owning host inspect signals status, the exact approval and policy show"]
+    con.control_update_recover(["Use current requirements and the existing adoption/recovery owner"])
     sym.approval_428_generic(["428 with 'action: wait_for_approval' in the body"])
     sym.approval_428_self_correct(["428 with 'action: self_correct' in the body"])
     sym.gateway_202_pending(["202 from '/gateway/request-access' with 'status: pending'"])
@@ -35,6 +38,8 @@ flowchart TD
     ask.approval_watch_collaboration[["Ask operator to run 'safeyolo watch' and approve/reject the collaboration room (inspect topic, durable participants and deadline)"]]
     ask.approval_reconsider_scope[["Explain to the operator what narrower capability/host/binding would work; do NOT ask for 'disable SafeYolo' or 'warn mode'"]]
 
+    sym.control_update_changed -->|"next_check"| ev.control_update_current
+    ev.control_update_current -->|"implies"| con.control_update_recover
     sym.approval_428_generic -->|"next_check"| ev.approval_read_action_field
     sym.approval_428_self_correct -->|"next_check"| ev.approval_read_action_field
     sym.gateway_202_pending -->|"next_check"| ev.approval_read_type_field
@@ -65,6 +70,9 @@ flowchart TD
     con.approval_poll_at_interval -->|"next_check"| ev.approval_check_retry_after
     ask.approval_watch_gateway -->|"escalates_to: operator declined; consider a narrower capability"| ask.approval_reconsider_scope
 
+    class sym.control_update_changed symptom
+    class ev.control_update_current evidence
+    class con.control_update_recover conclusion
     class sym.approval_428_generic symptom
     class sym.approval_428_self_correct symptom
     class sym.gateway_202_pending symptom
@@ -94,6 +102,7 @@ flowchart TD
     class ask.approval_reconsider_scope operator_ask
 
     %% Entry symptoms (bind an observed symptom here)
+    style sym.control_update_changed stroke-width:3px
     style sym.approval_428_generic stroke-width:3px
     style sym.approval_428_self_correct stroke-width:3px
     style sym.gateway_202_pending stroke-width:3px

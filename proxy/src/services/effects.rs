@@ -1,8 +1,10 @@
 //! Authored possible effects. Loading validates references and enforcement;
 //! assessment evaluates potential authority without asserting upstream state.
 
+pub(crate) mod agent_configuration;
 pub mod assessment;
 pub(crate) mod authority;
+pub mod policy;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12,8 +14,9 @@ use serde_json::{Map, Value};
 use super::ServiceDefinition;
 use crate::{Error, contracts::ContractOperation};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("x-scope" = "Authored service operations, argument/resource/effect references", "x-lifetime" = "Definition revision; effects can persist after access ends", "x-effects" = "Declare possible upstream effects, dependencies, omissions and coverage gaps using the existing service effect model.", "x-dependencies" = "ServiceDefinition::from_value validates references/enforcement in the complete service definition", "x-gaps" = "An effect model's shape alone does not validate references or assess a particular candidate or authority combination."))]
 pub struct EffectModel {
     pub sources: BTreeMap<String, Source>,
     pub resources: BTreeMap<String, Resource>,
@@ -26,21 +29,21 @@ pub struct EffectModel {
     pub gaps: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
     pub location: String,
     pub version: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Resource {
     pub description: String,
     pub identity: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NamedEffect {
     pub description: String,
@@ -48,14 +51,14 @@ pub struct NamedEffect {
     pub evidence: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Coverage {
     Modeled,
     Uncharacterised,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Operation {
     pub method: String,
@@ -69,7 +72,7 @@ pub struct Operation {
     pub gaps: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Argument {
     pub location: Location,
@@ -80,7 +83,7 @@ pub struct Argument {
     pub evidence: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Location {
     Path,
@@ -88,7 +91,7 @@ pub enum Location {
     Body,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Omission {
     Invalid,
@@ -97,7 +100,7 @@ pub enum Omission {
     Unresolved { reason: String },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Identity {
     Argument { argument: String },
@@ -106,7 +109,7 @@ pub enum Identity {
     Unresolved { reason: String },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectUse {
     pub effect: String,
@@ -115,7 +118,7 @@ pub struct EffectUse {
     pub evidence: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Condition {
     Always,
@@ -123,14 +126,14 @@ pub enum Condition {
     Equals { argument: String, value: Value },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Enforcement {
     pub capability: String,
     pub operation: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
     pub when: RuleExpression,
@@ -141,7 +144,7 @@ pub struct Rule {
     pub gaps: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RuleExpression {
     AllEffectsSameScope {
@@ -150,7 +153,7 @@ pub enum RuleExpression {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Alternative {
     pub steps: Vec<RecipeStep>,
@@ -160,7 +163,7 @@ pub struct Alternative {
     pub evidence: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecipeStep {
     pub operation: String,
@@ -169,7 +172,7 @@ pub struct RecipeStep {
     pub expected_effects: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Regression {
     pub name: String,
@@ -179,7 +182,7 @@ pub struct Regression {
     pub evidence: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GrantExample {
     pub operation: String,
@@ -189,7 +192,7 @@ pub struct GrantExample {
     pub observed_arguments: Map<String, Value>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExpectedGrant {
     pub possible_effects: Vec<String>,
@@ -200,7 +203,7 @@ pub struct ExpectedGrant {
     pub evidence: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Scope {
     Known {
@@ -216,7 +219,7 @@ pub enum Scope {
     },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Overlap {
     Same,

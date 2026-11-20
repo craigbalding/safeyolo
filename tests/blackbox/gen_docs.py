@@ -130,8 +130,19 @@ def _render(suites: list[tuple[str, list[tuple[Path, list[TestClass]]]]]) -> str
                "The section and hardware readers recompute completeness against the maintained selections. "
                "Missing reports, missing or deselected required cases, required skips, failed preparation, partial procedures and failed cleanup remain incomplete. "
                "Named platform exclusions retain their reasons. Existing opt-in checks retain their explicit selection; a selected opt-in check must pass. Arbitrary skips are not exclusions. "
-               "Product source, controller source and selected guest artifact identity remain separate. "
-               "A source inventory does not establish deployed cadence or a passing installed run. "
+               "Product source, controller source and selected guest artifact identity remain separate.")
+    out.append("")
+    out.append("Installed section reports include a per-control `controls` view for BB-18/19/20/23/24/25/26. "
+               "The view separates selected and executed sections, reached checkpoints and independent observations. "
+               "The maintained drivers record canary states, origin counts, destination provenance and viewer cessation only after their assertions pass. "
+               "Missing observations leave the section incomplete even when the process exits successfully. "
+               "Curated native authority runs retain an aggregate `result.json` with selected and executed cases, controller identity and executable/broker digests. "
+               "A failed prerequisite or timeout preserves unexecuted controls. "
+               "The separate two-host tailnet verifier records its paired observations and cleanup in `procedure.json`. "
+               "`run-controls.sh native-authority` and `run-controls.sh tailnet` forward explicit inputs to those maintained drivers. "
+               "These are execution receipts; independent control acceptance and deployed cadence remain separate.")
+    out.append("")
+    out.append("A source inventory does not establish deployed cadence or a passing installed run. "
                "[#1559](https://github.com/craigbalding/safeyolo/issues/1559) owns material assertion-change notification; "
                "[#889](https://github.com/craigbalding/safeyolo/issues/889) owns hardware deployment; "
                "[#838](https://github.com/craigbalding/safeyolo/issues/838) owns protected acceptance.")

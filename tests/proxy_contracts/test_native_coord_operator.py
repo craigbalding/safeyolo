@@ -588,12 +588,16 @@ def test_agent_watch_checkpoint_and_tool_targets_omit_url_credentials(supervised
     instance, _, state, _ = supervised
     for target, shown in (
         ("https://url-user-canary:url-pass-canary@example.test/item?url-query-canary#url-fragment-canary",
-         "https://example.test/item?<omitted>"),
+         "https://example.test/item?<omitted>#<omitted>"),
         ("http://url-user-canary@example.test:8080/item", "http://example.test:8080/item"),
         ("https://url%40user:url%3Apass@[::1]:8443/item@route?url-query-canary",
          "https://[::1]:8443/item@route?<omitted>"),
         ("https://password:url-pass-canary@example.test/item", "https://example.test/item"),
         ("ssh://url-user-canary:url-pass-canary@example.test/item", "ssh://example.test/item"),
+        ("https://github.com/craigbalding/safeyolo/issues/1632#issuecomment-6882721322",
+         "https://github.com/craigbalding/safeyolo/issues/1632#issuecomment-6882721322"),
+        ("https://github.com/craigbalding/safeyolo/pull/1650?token=url-query-canary#discussion_r1234",
+         "https://github.com/craigbalding/safeyolo/pull/1650?<omitted>#discussion_r1234"),
     ):
         attention_id = "attn-" + "2" * 32
         state.write_text(json.dumps({
@@ -622,6 +626,37 @@ def test_agent_watch_checkpoint_and_tool_targets_omit_url_credentials(supervised
             "url-user-canary", "url-pass-canary", "url%40user", "url%3Apass", "url-query-canary", "url-fragment-canary"))
         assert state.read_bytes() == checkpoint and history(instance) == before
         assert not state.with_name(state.name + ".lock").exists()
+
+
+def test_agent_watch_public_references_and_secrets_in_terminal_and_pipe(supervised, monkeypatch):
+    instance, _, state, _ = supervised
+    references = [
+        "https://github.com/craigbalding/safeyolo/issues/1632#issuecomment-6882721322",
+        "https://github.com/craigbalding/safeyolo/pull/1650#discussion_r1234",
+        "https://github.com/craigbalding/safeyolo/blob/205a9a6efbb87eeb12bd9778b3b61359b2af3a55/proxy/src/coord_timeline.rs#L513-L545",
+    ]
+    for reference in references:
+        agent_send(instance, json.dumps({"type": "item.completed", "item": {
+            "type": "agent_message", "text": f"[reference]({reference}) token=assignment-canary"}}))
+    agent_send(instance, json.dumps({"type": "item.completed", "item": {
+        "type": "agent_message", "text": "https://url-user:url-pass@github.com/craigbalding/safeyolo/issues/1632?private=query-canary#token=fragment-canary"}}))
+    agent_send(instance, json.dumps({"type": "item.completed", "item": {
+        "type": "agent_message", "text": "references-end"}}))
+    before = history(instance)
+    piped = watch_once(instance, "--history", "10")
+    assert piped.returncode == 0, piped.stderr
+    monkeypatch.delitem(instance.environment, "NO_COLOR", raising=False)
+    with terminal(instance, ["agent", "watch", "alice", "--once", "--history", "10"], columns=240) as (_, _, until):
+        rendered = until(b"references-end").decode()
+    assert "\x1b[" in rendered
+    for output in (piped.stdout, rendered):
+        assert all(reference in output for reference in references)
+        assert "token=<redacted>" in output
+        assert "https://github.com/craigbalding/safeyolo/issues/1632?<omitted>#<omitted>" in output
+        assert not any(secret in output for secret in (
+            "assignment-canary", "url-user", "url-pass", "query-canary", "fragment-canary"))
+    assert history(instance) == before
+    assert not state.exists() and not state.with_name(state.name + ".lock").exists()
 
 
 def test_agent_watch_failures_redaction_and_read_only(supervised):
