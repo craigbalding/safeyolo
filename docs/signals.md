@@ -152,7 +152,8 @@ remains unknown. An absent package in a complete fresh inventory is unaffected.
 A package subject has `kind = "package"`, `name`, `distribution`
 and optional `fixed_version`. Omit the version or use `null` when the advisory
 reports no available fix. An installed matching package then remains affected;
-the finding retains that no-fix state. Do not invent a fixed version. The built-in comparison supports Debian epoch, upstream and
+the finding retains that no-fix state. Do not invent a fixed version. The built-in
+comparison supports Debian epoch, upstream and
 Debian revision ordering, including backports and `~`; other distributions stay
 unknown. Package repair, required process restarts, guest selection and actual
 remediation verification remain with the maintenance owner. Retained state is
@@ -228,8 +229,8 @@ selected bound within that limit or use a supported external inventory check.
 
 For a notification or Work rule, `on_stale = 'respond'` uses the same selected
 response for unknown/stale evidence, including a missing advisory source view.
-`retain` and `release` keep their existing meanings. Choose `authority =
-'approval'` when a response needs a decision, or select the existing Work
+`retain` and `release` keep their existing meanings. Choose
+`authority = 'approval'` when a response needs a decision, or select the existing Work
 response to assign maintenance. Pending decisions bind current inventory
 content and applicability as well as source, rule, identity and run. A changed
 package, stale capture or replaced run cannot reuse the old decision. An

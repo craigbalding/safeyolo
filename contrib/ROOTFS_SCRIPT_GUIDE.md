@@ -29,8 +29,9 @@ per-agent file-backed overlay by default and a memory-backed overlay with
 `--ephemeral`. Both Linux modes lose ordinary root OS package and configuration
 writes when the sandbox is recreated. Their download cache remains, so a later
 installation repeats unpacking. A custom rootfs can include packages when
-that repeated work is costly. On macOS, the default writable VZ overlay retains
-root OS changes; ephemeral mode discards them. A retained overlay can mask files
+that repeated work is costly. On macOS, the default writable
+Virtualization.framework (VZ) overlay retains root OS changes; ephemeral mode
+discards them. A retained overlay can mask files
 from a new base. See [guest maintenance](../docs/guest-oci.md#assess-and-maintain-installed-agents)
 for selection, assessment and rollback limits.
 
