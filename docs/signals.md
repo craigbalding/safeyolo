@@ -7,7 +7,7 @@ compete for updates in a shared work queue. Policy admission uses complete local
 snapshots and does not contact the source or broker.
 
 The supported push interface is native NATS JetStream KV. HTTP-only maintained
-lists use the existing [feed downloader](policy-feeds.md) and can publish their
+lists use the existing [feed downloader](https://github.com/craigbalding/safeyolo/blob/master/docs/policy-feeds.md) and can publish their
 accepted snapshots to NATS. Other providers need an adapter that publishes the
 envelope below. There is no general webhook, Server-Sent Events or provider
 WebSocket receiver.
