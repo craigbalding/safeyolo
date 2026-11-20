@@ -292,24 +292,78 @@ async fn guest_staging_copies_installed_skills_before_boot_and_preserves_failed_
         )
         .await
         .unwrap();
-        let error = host_boot::stage(&agent, "10.0.0.2", "fixture-run")
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("installed rootfs tree is missing"),
-            "{error}"
-        );
-        assert_eq!(
-            fs::read_to_string(root.join("agents/fixture/config-share/skills/safeyolo/SKILL.md"))
-                .unwrap(),
-            "Installed source fixture\n"
-        );
-        assert!(
-            root.join("agents/fixture/config-share/host-launch-context.json")
-                .is_file()
-        );
-        assert!(!root.join("agents/fixture/runtime.json").exists());
+        let directory = root.join("agents/fixture");
+        let home = directory.join("home");
+        let share = directory.join("config-share");
+        let context_path = share.join("host-launch-context.json");
+        let names = [".safeyolo-command", ".safeyolo-interactive-command"];
+        let command = b"#!/bin/sh\nexec marker \"$@\"\n";
+        fs::create_dir_all(&home).unwrap();
+        for name in names {
+            fs::write(home.join(name), command).unwrap();
+            fs::set_permissions(home.join(name), fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        for previous_run in [false, true] {
+            let previous = previous_run.then(|| {
+                crate::guest_commands::stage(
+                    &home,
+                    &share,
+                    &root.join("assets/guest"),
+                    json!({"generation":"previous-run","agent_id":agent.id}),
+                )
+                .unwrap()
+            });
+            let saved_context = previous_run.then(|| fs::read(&context_path).unwrap());
+            let command_identities = names
+                .map(|name| crate::guest_commands::payload_identity(&home.join(name)).unwrap());
+            let error = host_boot::stage(&agent, "10.0.0.2", "fixture-run")
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("installed rootfs tree is missing"),
+                "{error}"
+            );
+            assert_eq!(
+                fs::read_to_string(share.join("skills/safeyolo/SKILL.md")).unwrap(),
+                "Installed source fixture\n"
+            );
+            if let Some(saved) = saved_context {
+                assert_eq!(fs::read(&context_path).unwrap(), saved);
+            } else {
+                assert!(!context_path.exists());
+            }
+            for (name, identity) in names.into_iter().zip(command_identities) {
+                assert_eq!(
+                    fs::read(home.join(name)).unwrap(),
+                    if previous_run {
+                        crate::guest_commands::WRAPPER
+                    } else {
+                        command
+                    }
+                );
+                assert_eq!(
+                    crate::guest_commands::payload_identity(&home.join(name)).unwrap(),
+                    identity
+                );
+                let payload = home.join(format!("{name}.payload"));
+                if let Some(context) = &previous {
+                    assert_eq!(fs::read(&payload).unwrap(), command);
+                    assert_eq!(
+                        crate::guest_commands::payload_identity(&payload).unwrap(),
+                        context["command_payloads"][name]
+                    );
+                    assert_eq!(
+                        fs::metadata(&payload).unwrap().permissions().mode() & 0o777,
+                        0o555
+                    );
+                } else {
+                    assert!(!payload.exists());
+                }
+            }
+            assert!(!directory.join("runtime.json").exists());
+            assert!(!directory.join("config.json").exists());
+        }
     })
     .await;
 }
