@@ -1511,6 +1511,8 @@ def test_fresh_install_preserves_prepared_platform_inputs(package_inputs, tmp_pa
         ("safeyolo-commission", "references/adoption.md"),
         ("safeyolo-commission", "references/evolution.md"),
         ("safeyolo-commission", "references/operations.md"),
+        ("safeyolo-commission", "examples/website-role.toml"),
+        ("safeyolo-commission", "examples/website-role.md"),
         ("harness-authoring", "SKILL.md"),
         ("harness-authoring", "references/contract.md"),
         ("harness-authoring", "references/qualification.md"),

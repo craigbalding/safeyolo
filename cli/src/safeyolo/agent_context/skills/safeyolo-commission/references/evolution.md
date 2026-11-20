@@ -87,6 +87,32 @@ Keep saved, approved and active snapshots distinct. Stop affected workers for
 activation when needed; do not require live reconfiguration or simultaneous
 execution. Lifecycle and intentionally dormant status use the existing owner.
 
+The [website role fragment](../examples/website-role.toml) and
+[role contract](../examples/website-role.md) supply concrete native inputs for
+this example. They are proposed inputs, not a complete Factory or a deployed
+worker. In a copy of the selected Factory source, add the role with an available
+agent name and the selected supported harness. Place its contract beside that
+source. Preserve the original roles, room, native work policy and checkpoints;
+use an existing authorized creator to assign the website work. Do not add a
+message handoff alongside native Work. Check the complete candidate through
+`factory check` before its existing approval and preparation path.
+
+Give the website worker a separate writable workspace and explicitly mount
+the selected snapshot directory read-only at `/inputs/movie-results` through the
+existing configured-agent/mount owner. The host operand is
+`SELECTED_SNAPSHOT_DIRECTORY:/inputs/movie-results:ro`; substitute the actual
+host directory containing only the agreed input files. This shares those data
+with the new reader. It grants no source refresh, media acquisition, library,
+credential or public-hosting access. Mount configuration applies on the next
+authorized sandbox start; verify effective mounts there.
+
+If discovery has not established the original worker's identity, Factory
+source or checkpoint, name the missing binding. Continue ordinary role,
+context and sharing preparation with the available inputs. Leave that binding
+unresolved for the existing deployment owner; do not invent an identity,
+recreate a deployment or ask for credentials merely to fill the example.
+Only actual adoption and protected effects need their authorized executor.
+
 Use the deployment's selected native Work or declared message contract for
 the actual handoff. Include or directly identify readable inputs, their
 revision and provenance, applicable authority, expected result and consumer.
