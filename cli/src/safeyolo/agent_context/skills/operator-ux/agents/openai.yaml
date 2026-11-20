@@ -1,0 +1,6 @@
+interface:
+  display_name: "Operator UX"
+  short_description: "Design and review human operator workflows"
+  default_prompt: "Use $operator-ux to design or review this operator workflow against the repository contract."
+policy:
+  allow_implicit_invocation: true

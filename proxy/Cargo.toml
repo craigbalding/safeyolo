@@ -11,7 +11,7 @@ license-file = "../LICENSE"
 debug = "line-tables-only"
 
 [dependencies]
-async-nats = { version = "0.47", default-features = false, features = ["jetstream", "ring", "nuid", "server_2_10", "server_2_11", "server_2_12"] }
+async-nats = { version = "0.47", default-features = false, features = ["jetstream", "kv", "ring", "nuid", "server_2_10", "server_2_11", "server_2_12"] }
 base64 = "0.23"
 brotli-decompressor = "=5.0.3"
 bzip2 = "=0.6.1"
@@ -40,6 +40,7 @@ ring = "0.17"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 rusqlite = { version = "=0.41.0", default-features = false, features = ["bundled"] }
+schemars = "1.2.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "raw_value"] }
 subtle = "2.6.1"
@@ -63,6 +64,9 @@ zstd = { version = "=0.14.3", default-features = false }
 [target.'cfg(target_os = "macos")'.dependencies]
 # Observe exit-status, exit-signal and missing status independently over SSH.
 russh = { version = "=0.65.1", default-features = false, features = ["ring"] }
+
+[build-dependencies]
+sha2 = "0.11"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

@@ -7,7 +7,11 @@ use serde_json::{Value, json};
 
 use super::{Policy, Result, delegation::Agent, invalid};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) mod diagnostics;
+
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Lifecycle {
     StartSandbox,
@@ -17,7 +21,9 @@ pub(crate) enum Lifecycle {
     RestartSandbox,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Notification {
     LaunchFailed,
@@ -33,7 +39,7 @@ pub(crate) enum Notification {
     ObservationHealth,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FactoryDirection {
     pub factory: String,
@@ -41,8 +47,9 @@ pub(crate) struct FactoryDirection {
     pub types: Vec<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("x-scope" = "Explicit durable support and target identities in the owning instance", "x-lifetime" = "Optional expiry; acknowledgment and current identities/trust required", "x-effects" = "Permit inspection and selected guest administration, logs, lifecycle, notices and factory directions. Guest administration reaches target-accessible credentials, mounts and delegations.", "x-dependencies" = "Operator-owned support preview/apply; live target and control for guest execution; current peer trust for remote support", "x-gaps" = "Static validation does not verify identities, trust, runtime or grant acknowledgment."))]
 pub(crate) struct Grant {
     pub instance_id: String,
     pub support: Agent,
@@ -62,6 +69,8 @@ pub(crate) struct Grant {
     pub signal_rooms: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub factory_directions: Vec<FactoryDirection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<diagnostics::Scope>,
     pub expires_at: Option<String>,
     pub acknowledgment: Option<String>,
 }
@@ -81,11 +90,48 @@ impl Grant {
             && self.acknowledgment.as_deref() == Some(self.revision().as_str())
     }
 
+    pub(crate) fn warnings(&self) -> Vec<String> {
+        let mut warnings = vec!["Revocation, narrowing and expiry prevent newly unauthorized operations. Admitted commands may continue; disclosed data and file or external changes cannot be undone.".into()];
+        if self.guest_admin {
+            warnings.push("Guest administration of both producer and reviewer is common administrative control. Configured actor checks still apply, but the reviewer is not independent of this manager. Keep a required independent decider outside the manager's administration.".into());
+            warnings.push("Guest administration permits arbitrary guest commands, including existing passwordless guest sudo, all target-accessible files, writable mounts, credentials, network and services, Agent API permissions and existing delegations. Authority can reach other peers and approval decisions through the target. Standing grants follow capabilities later given to the target. Direct target checks do not confine this indirect reach.".into());
+            warnings.push("The authority report shows typed upstream and downstream reach within the selected owner inventory and authorized disclosure. Inspect its supporting paths and unknown frontier. Partial evidence cannot establish reviewer independence.".into());
+        }
+        if !self.guest_logs.is_empty() {
+            warnings.push("Selected log paths are read inside the guest. Guest links may lead to any target-accessible data, including shared mounts and credentials. This permission is broader than host-observed inspection.".into());
+        }
+        warnings
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.instance_id.is_empty() || self.targets.is_empty() {
+        if self.instance_id.is_empty() || (self.targets.is_empty() && self.diagnostics.is_none()) {
             return Err(invalid(
                 "support grant needs an owning instance and explicit targets",
             ));
+        }
+        if let Some(scope) = &self.diagnostics {
+            scope.validate()?;
+            if self.support_instance_id.is_some()
+                || self.guest_admin
+                || !self.guest_logs.is_empty()
+                || !self.lifecycle.is_empty()
+                || !self.notifications.is_empty()
+                || !self.signal_rooms.is_empty()
+                || !self.factory_directions.is_empty()
+            {
+                return Err(invalid(
+                    "diagnostic disclosure selects local read-only sources separately from support actions",
+                ));
+            }
+            if scope
+                .runs
+                .keys()
+                .any(|id| !self.targets.iter().any(|target| &target.agent_id == id))
+            {
+                return Err(invalid(
+                    "diagnostic run selection needs an explicit durable subject",
+                ));
+            }
         }
         let mut targets = BTreeSet::new();
         for agent in std::iter::once(&self.support).chain(&self.targets) {

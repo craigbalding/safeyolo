@@ -290,7 +290,10 @@ impl EffectModel {
                     .collect()
             })
             .collect();
-        let mut combinations = Vec::new();
+        let mut combinations = Combinations {
+            values: Vec::new(),
+            remaining_work: 50_000,
+        };
         combine(
             &choices,
             resource,
@@ -300,10 +303,13 @@ impl EffectModel {
             false,
             &mut combinations,
         );
+        let remaining_work = combinations.remaining_work;
+        let combinations = combinations.values;
         let matched = combinations.iter().any(|item| item.status == Match::Match);
-        let unresolved = combinations
-            .iter()
-            .any(|item| item.status == Match::Unresolved)
+        let unresolved = remaining_work == 0
+            || combinations
+                .iter()
+                .any(|item| item.status == Match::Unresolved)
             || (!matched
                 && direct
                     .iter()
@@ -333,7 +339,15 @@ impl EffectModel {
             explanation: rule.explanation.clone(),
             combinations,
             unverified_prerequisites: rule.prerequisites.clone(),
-            gaps: rule.gaps.clone(),
+            gaps: if remaining_work == 0 {
+                let mut gaps = rule.gaps.clone();
+                gaps.push(
+                    "Composition work budget reached; further combinations are unknown.".into(),
+                );
+                gaps
+            } else {
+                rule.gaps.clone()
+            },
             evidence: rule.evidence.clone(),
         }
     }
@@ -486,6 +500,11 @@ pub(crate) fn intersect(a: &Scope, b: &Scope) -> Option<Scope> {
     }
 }
 
+struct Combinations {
+    values: Vec<Combination>,
+    remaining_work: usize,
+}
+
 fn combine(
     choices: &[Vec<(&DirectEffects, bool)>],
     resource: &str,
@@ -493,10 +512,14 @@ fn combine(
     scope: BTreeMap<String, Scope>,
     permissions: BTreeSet<String>,
     unresolved: bool,
-    output: &mut Vec<Combination>,
+    output: &mut Combinations,
 ) {
+    if output.remaining_work == 0 {
+        return;
+    }
+    output.remaining_work -= 1;
     if index == choices.len() {
-        output.push(Combination {
+        output.values.push(Combination {
             status: if unresolved {
                 Match::Unresolved
             } else {
@@ -508,6 +531,10 @@ fn combine(
         return;
     }
     for (direct, unknown) in &choices[index] {
+        if output.remaining_work == 0 {
+            break;
+        }
+        output.remaining_work -= 1;
         let mut next = scope.clone();
         let mut disjoint = false;
         for (key, value) in &direct.scopes[resource] {

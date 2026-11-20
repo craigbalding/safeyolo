@@ -1,1 +1,6 @@
-include!("../../proxy/build.rs");
+#[path = "../../scripts/rust_build_identity.rs"]
+mod build_identity;
+
+fn main() {
+    build_identity::emit();
+}

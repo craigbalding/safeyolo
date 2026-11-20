@@ -49,7 +49,7 @@ def test_ingress_native_defaults_trace_and_origin(tmp_path, monkeypatch, control
                 peer_source = "10.0.0.3" if agent == "alice" else "10.0.0.2"
                 observation = {
                     "guest_socket": str(guest.GUEST_SOCKET), "guest_proxy": guest.GUEST_PROXY,
-                    "forwarder": {"pid": 42, "argv": ["/run/sy-proxy-relay", "TCP-LISTEN:8080,bind=127.0.0.1",
+                    "forwarder": {"pid": 42, "argv": ["/run/sy-proxy-relay", "-t", "600", "TCP-LISTEN:8080,bind=127.0.0.1",
                                                       f"UNIX-CONNECT:{guest.GUEST_SOCKET},retry=20"]},
                     "allow": guest.traced_request("unused", 0, agent, f"http://httpbin.org/{marker}", marker, AGENT_TOKEN,
                                                    claimed_agent=peer, claimed_source=peer_source),

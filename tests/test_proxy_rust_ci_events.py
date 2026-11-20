@@ -546,9 +546,10 @@ def test_linux_input_callers_pin_the_supported_ubuntu_runtime_baseline(workflow_
     steps = {step.get("name"): step for step in build["steps"]}
     package = steps["Retain complete Linux production bundle"]["run"]
     # Acquire tmux on the same baseline as the host build and package assembly.
-    assert "sudo -n apt-get install -y -qq --no-install-recommends tmux" in steps["Install patched runtime build dependencies"]["run"]
+    assert "sudo -n apt-get -o Acquire::Retries=3 install -y -qq --no-install-recommends tmux" in steps["Install patched runtime build dependencies"]["run"]
     assert '--artifacts proxy/target/release --guest-artifacts guest/command/target/release' in package
-    assert '--runtime-artifacts "$(dirname "$(command -v tmux)")" --profile production' in package
+    assert '--runtime-artifacts "$(dirname "$(command -v tmux)")"' in package
+    assert '--hyperlight-artifacts "$RUNNER_TEMP/hyperlight" --profile production' in package
 
 
 def test_full_matrix_is_overnight_or_explicit_and_uses_the_exact_head() -> None:
@@ -596,7 +597,10 @@ def test_full_matrix_uses_only_the_native_proxy() -> None:
     )
     rendered = str(steps)
     assert "--proxy-backend python" not in rendered
-    assert "-- --ignored" not in rendered
+    native_tests = named["Test the Rust proxy"]["run"].splitlines()
+    assert "../scripts/cargo_with_space.sh test --release --locked" in native_tests
+    assert "../scripts/cargo_with_space.sh test --release --locked --test native_signals -- --ignored" in native_tests
+    assert "test --release --locked -- --ignored" not in rendered
     assert "git fetch --no-tags --depth=1 origin" not in rendered
     assert "SAFEYOLO_PYTHON_SOURCE" not in rendered
 
@@ -828,7 +832,10 @@ def test_native_producers_and_consumers_share_the_existing_compatible_dependency
                 expected = "production-focused-pr" if workflow is not shared else "${{ inputs.profile }}-focused-pr"
                 assert options["shared-key"] == expected
                 assert "key" not in options  # The pinned action ignores key when shared-key is set.
-                assert options["workspaces"].splitlines() == ["proxy -> target", "guest/command -> target"]
+                workspaces = ["proxy -> target", "guest/command -> target"]
+                if workflow is shared:
+                    workspaces += ["jobs/hyperlight-host -> target", "jobs/hyperlight-guest -> target"]
+                assert options["workspaces"].splitlines() == workspaces
                 assert options["cache-bin"] is False
                 assert "add-rust-environment-hash-key" not in options
                 assert "env-vars" not in options

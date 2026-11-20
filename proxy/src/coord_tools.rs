@@ -157,6 +157,113 @@ impl Client {
     }
 
     async fn call_scoped(&self, name: &str, args: &Value) -> Result<Value, Error> {
+        if matches!(name, "submit_policy_change" | "read_policy_change") {
+            if self.home.is_some() {
+                return Err("policy adoption selects only the authenticated local instance".into());
+            }
+            return if name == "submit_policy_change" {
+                self.request(
+                    Method::POST,
+                    "/policy/changes",
+                    args.clone(),
+                    Duration::from_secs(60),
+                )
+                .await
+            } else {
+                self.get(&format!(
+                    "/policy/changes/{}",
+                    segment(text(args, "request_id")?)
+                ))
+                .await
+            };
+        }
+        if name == "assess_policy" {
+            if self.home.is_some() {
+                return Err(
+                    "policy assessment selects only the authenticated local instance".into(),
+                );
+            }
+            return self
+                .request(
+                    Method::POST,
+                    "/policy/assess",
+                    args.clone(),
+                    Duration::from_secs(60),
+                )
+                .await;
+        }
+        if matches!(
+            name,
+            "diagnostic_evidence" | "request_diagnostic_access" | "query_diagnostic_evidence"
+        ) {
+            if self.home.is_some() {
+                return Err("diagnostic disclosure belongs to the local owning instance".into());
+            }
+            return match name {
+                "diagnostic_evidence" => self.get("/support/diagnostics").await,
+                "request_diagnostic_access" => {
+                    self.request(
+                        Method::POST,
+                        "/support/diagnostics/requests",
+                        args.clone(),
+                        Duration::from_secs(60),
+                    )
+                    .await
+                }
+                _ => {
+                    self.request(
+                        Method::POST,
+                        "/support/diagnostics/query",
+                        args.clone(),
+                        Duration::from_secs(60),
+                    )
+                    .await
+                }
+            };
+        }
+        if matches!(name, "request_policy_snapshot" | "read_policy_snapshot") {
+            if self.home.is_some() {
+                return Err("policy snapshots select only the authenticated local instance".into());
+            }
+            return if name == "request_policy_snapshot" {
+                self.request(
+                    Method::POST,
+                    "/policy/snapshots",
+                    args.clone(),
+                    Duration::from_secs(60),
+                )
+                .await
+            } else {
+                self.get(&format!(
+                    "/policy/snapshots/{}",
+                    segment(text(args, "request_id")?)
+                ))
+                .await
+            };
+        }
+        if name == "discover_policy_capabilities" {
+            return self
+                .get(if args["observe"] == true {
+                    "/policy/capabilities?observe=true"
+                } else {
+                    "/policy/capabilities"
+                })
+                .await;
+        }
+        if name == "validate_policy_capability" || name == "observe_support_capability" {
+            return self
+                .request(
+                    Method::POST,
+                    if name == "validate_policy_capability" {
+                        "/policy/capabilities/validate"
+                    } else {
+                        "/policy/capabilities/support"
+                    },
+                    args.clone(),
+                    Duration::from_secs(60),
+                )
+                .await;
+        }
         if name == "wait_for_coord" && args.get("sources").is_some() {
             return self.wait_sources(args).await;
         }
@@ -315,6 +422,8 @@ impl Client {
             | "release_work"
             | "complete_work"
             | "continue_work"
+            | "resolve_work_prerequisite"
+            | "retry_work_prerequisite"
             | "publish_work_output"
             | "cancel_work"
             | "request_check"
@@ -336,6 +445,8 @@ impl Client {
                     "set_work_requirements" => "set_requirements",
                     "select_work_review" => "select_review",
                     "decide_work_acceptance" => "decide_acceptance",
+                    "resolve_work_prerequisite" => "resolve_prerequisite",
+                    "retry_work_prerequisite" => "retry_prerequisite",
                     _ => name.trim_end_matches("_work"),
                 };
                 body.insert("action".into(), json!(action));
@@ -346,6 +457,15 @@ impl Client {
                     60.0,
                 )
             }
+            "read_work_prerequisite" => (
+                Method::GET,
+                format!(
+                    "{base}/work?invocation_id={}",
+                    segment(text(args, "invocation_id")?)
+                ),
+                Value::Null,
+                60.0,
+            ),
             "read_work" => (
                 Method::GET,
                 format!(
@@ -503,51 +623,144 @@ impl Client {
 }
 
 fn validate_arguments(args: &Value, schema: &Value) -> Result<(), Error> {
-    let args = args.as_object().ok_or("arguments must be an object")?;
-    for field in schema["required"].as_array().ok_or("invalid tool schema")? {
-        if !args.contains_key(field.as_str().ok_or("invalid schema field")?) {
-            return Err(format!("missing argument {field}").into());
+    let fields = args.as_object().ok_or("arguments must be an object")?;
+    for name in schema["required"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if !fields.contains_key(name) {
+            return Err(format!("missing argument {name}").into());
         }
     }
-    for (field, value) in args {
+    for (name, value) in fields {
         let property = schema["properties"]
-            .get(field)
-            .ok_or_else(|| format!("unknown argument {field}"))?;
-        if !valid_property(value, property) {
-            return Err(format!("invalid type or value for {field}").into());
+            .get(name)
+            .ok_or_else(|| format!("unknown argument {name}"))?;
+        if !valid_schema(value, property, schema, 0) {
+            return Err(format!("invalid type or value for {name}").into());
         }
     }
     Ok(())
 }
 
-fn valid_property(value: &Value, property: &Value) -> bool {
-    if property
-        .get("enum")
-        .and_then(Value::as_array)
-        .is_some_and(|values| !values.contains(value))
+fn valid_schema(value: &Value, schema: &Value, root: &Value, depth: usize) -> bool {
+    if depth > 128 || schema == &Value::Bool(false) {
+        return false;
+    }
+    if schema == &Value::Bool(true) {
+        return true;
+    }
+    let root = if schema.get("$schema").is_some() {
+        schema
+    } else {
+        root
+    };
+    if let Some(reference) = schema["$ref"].as_str() {
+        return reference
+            .strip_prefix('#')
+            .and_then(|pointer| root.pointer(pointer))
+            .is_some_and(|target| valid_schema(value, target, root, depth + 1));
+    }
+    if schema
+        .get("const")
+        .is_some_and(|expected| expected != value)
     {
         return false;
     }
-    if let Some(choices) = property.get("oneOf").and_then(Value::as_array) {
-        return choices.iter().filter(|s| valid_property(value, s)).count() == 1;
+    if schema["enum"]
+        .as_array()
+        .is_some_and(|choices| !choices.contains(value))
+    {
+        return false;
     }
-    match property["type"].as_str() {
-        Some("string") => value.is_string(),
-        Some("integer") => value.as_u64().is_some(),
-        Some("number") => value.is_number(),
-        Some("boolean") => value.is_boolean(),
-        Some("null") => value.is_null(),
-        Some("object") => validate_arguments(value, property).is_ok(),
-        Some("array") => value
+    if schema["oneOf"].as_array().is_some_and(|choices| {
+        choices
+            .iter()
+            .filter(|choice| valid_schema(value, choice, root, depth + 1))
+            .count()
+            != 1
+    }) {
+        return false;
+    }
+    if schema["anyOf"].as_array().is_some_and(|choices| {
+        !choices
+            .iter()
+            .any(|choice| valid_schema(value, choice, root, depth + 1))
+    }) {
+        return false;
+    }
+    if schema["allOf"].as_array().is_some_and(|choices| {
+        !choices
+            .iter()
+            .all(|choice| valid_schema(value, choice, root, depth + 1))
+    }) {
+        return false;
+    }
+    let kind_matches = |kind: &str| match kind {
+        "string" => value.is_string(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "number" => value.is_number(),
+        "boolean" => value.is_boolean(),
+        "null" => value.is_null(),
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        _ => false,
+    };
+    if schema["type"]
+        .as_str()
+        .is_some_and(|kind| !kind_matches(kind))
+        || schema["type"]
             .as_array()
-            .is_some_and(|a| a.iter().all(|v| valid_property(v, &property["items"]))),
-        _ => {
-            value.is_string()
-                || value
-                    .as_array()
-                    .is_some_and(|a| a.iter().all(Value::is_string))
+            .is_some_and(|kinds| !kinds.iter().filter_map(Value::as_str).any(kind_matches))
+    {
+        return false;
+    }
+    if value.as_f64().is_some_and(|number| {
+        schema["minimum"]
+            .as_f64()
+            .is_some_and(|minimum| number < minimum)
+            || schema["maximum"]
+                .as_f64()
+                .is_some_and(|maximum| number > maximum)
+    }) {
+        return false;
+    }
+    if let Some(fields) = value.as_object() {
+        if schema["required"].as_array().is_some_and(|required| {
+            required
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|field| !fields.contains_key(field))
+        }) {
+            return false;
+        }
+        for (name, field) in fields {
+            let field_schema = schema["properties"]
+                .get(name)
+                .or_else(|| schema.get("additionalProperties"));
+            if field_schema.is_some_and(|schema| !valid_schema(field, schema, root, depth + 1)) {
+                return false;
+            }
         }
     }
+    if let Some(items) = value.as_array() {
+        if schema["minItems"]
+            .as_u64()
+            .is_some_and(|min| items.len() < (min as usize))
+        {
+            return false;
+        }
+        if let Some(item_schema) = schema.get("items")
+            && !items
+                .iter()
+                .all(|item| valid_schema(item, item_schema, root, depth + 1))
+        {
+            return false;
+        }
+    }
+    true
 }
 
 pub fn tools() -> Vec<Value> {
@@ -567,6 +780,85 @@ pub fn tools() -> Vec<Value> {
     let mut add = |name: &str, description: &str, properties: Value, required: &[&str]| {
         result.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}}));
     };
+    add(
+        "submit_policy_change",
+        "Explicitly submit one immutable complete policy candidate for human review after private assessment. Choose operation_id before submission; preserve the approved snapshot's markers and definition_version from discovery. Only this submission creates canonical operator attention. Disclosure or assessment grants no apply authority. The human reviews trusted consequences and the complete redacted diff; current inputs are revalidated through the native transaction. Changed content needs a new operation ID and decision. Read the original ID after a lost response; never infer success or retry permission from attention.",
+        json!({"operation_id":string,"candidate":{"type":"object","properties":{"snapshot_request_id":string,"source":string,"definition_version":string},"required":["snapshot_request_id","source","definition_version"],"additionalProperties":false}}),
+        &["operation_id", "candidate"],
+    );
+    add(
+        "read_policy_change",
+        "Read your canonical policy submission and saved/active result by original operation_id or approval_id. Only the original current requester/run can read it. Readback never applies policy. Pending, declined, stale, failed and unresolved outcomes grant no permission to replay a decision. A restore is a separate human-reviewed candidate against the current base, using the operator policy restore command.",
+        json!({"request_id":string}),
+        &["request_id"],
+    );
+    add(
+        "assess_policy",
+        "Privately validate and assess complete candidate TOML against your approved full-policy snapshot. Supply its original request ID, preserve redaction markers, and use definition_version from discovery. Returns effective authority, consequences, limitations and narrower supported choices within your disclosure. Later policy, unrelated runtime grants and private service models remain undisclosed. This read submits no approval, notifies nobody and changes no policy or grant. Revise or discuss the tradeoff before explicit submission through the adoption owner.",
+        json!({"snapshot_request_id":string,"source":string,"definition_version":string}),
+        &["snapshot_request_id", "source", "definition_version"],
+    );
+    add(
+        "request_policy_snapshot",
+        "Request human approval to disclose one complete authored policy snapshot from this local instance. Choose operation_id (req- followed by 32 lowercase hex digits) before submission; after a lost response read that same ID. Requester and source are host-derived. Approval grants no apply authority or future-source permission.",
+        json!({"operation_id":string}),
+        &["operation_id"],
+    );
+    add(
+        "read_policy_snapshot",
+        "Read your original full-policy snapshot request and, after human approval, its retained authored source. Use the original operation_id or returned approval_id as request_id. Another requester or replaced run cannot read it. Retries return the same snapshot; preserve its field markers when composing a candidate. Keep source private.",
+        json!({"request_id":string}),
+        &["request_id"],
+    );
+    add(
+        "discover_policy_capabilities",
+        "Discover installed policy types, operation schemas, owning validators, declared effects, scopes, lifetimes, dependencies and coverage gaps before full-policy disclosure. observe=true adds only current caller-authorized observations; failed or undisclosed reads remain unknown. This read grants no authority and performs no protected operation.",
+        json!({"observe":{"type":"boolean","default":false}}),
+        &[],
+    );
+    add(
+        "validate_policy_capability",
+        "Check a proposed component form with its installed authoritative parser/validator and exact definition_version from discovery. Supply definition and value from the returned schema. No policy is read, changed, approved or activated. Full candidate assessment and current execution authority remain separate.",
+        json!({"definition":schemars::schema_for!(crate::policy::capabilities::Definition),"value":{},"definition_version":string}),
+        &["definition", "value", "definition_version"],
+    );
+    add(
+        "observe_support_capability",
+        "Observe permission and readiness for one typed local support operation without executing it. Use a grant and target returned by your current support discovery. Forged, undisclosed or obsolete targets remain unknown. Granted and unavailable can coexist. Current execution still revalidates through the support owner.",
+        json!({"request":{"type":"object"},"definition_version":string}),
+        &["request", "definition_version"],
+    );
+    add(
+        "read_work_prerequisite",
+        "Read a durable before-admission action invocation, including before Work exists. Supply the invocation ID from the held protected operation. Current room receive authority is required. Inspect exact request, binding, reached state, attempts and version before recovery. The record does not imply exactly-once remote effects or protected completion.",
+        json!({"room_name":string,"invocation_id":string}),
+        &["room_name", "invocation_id"],
+    );
+    add(
+        "resolve_work_prerequisite",
+        "Reconcile a failed or uncertain prerequisite at its external authority under separately adopted named-agent permission. Supply the current invocation version and external observation references. Outcome completed satisfies only this exact invocation; current protected-operation authority is still required. Changed/revoked authority refuses recovery. This performs no effect and grants no retry permission. Choose an operation_id before writing; recover ambiguous results with the original inputs.",
+        json!({"room_name":string,"invocation_id":string,"expected_version":integer,"outcome":{"type":"string","enum":["completed","failed","uncertain"]},"summary":string,"evidence_refs":array,"operation_id":string}),
+        &[
+            "room_name",
+            "invocation_id",
+            "expected_version",
+            "outcome",
+            "summary",
+            "evidence_refs",
+        ],
+    );
+    add(
+        "retry_work_prerequisite",
+        "Select a bounded retry of one failed or uncertain prerequisite under separately adopted idempotent retry permission. Requires a current invocation version and external observation references. Selection dispatches no effect: the original requester resumes its unchanged protected operation and operation ID under current authority. Invocation ID and external inputs remain unchanged. No adoption, exhausted bound or revoked authority refuses selection. Choose an operation_id before writing and recover ambiguous results with original inputs.",
+        json!({"room_name":string,"invocation_id":string,"expected_version":integer,"summary":string,"evidence_refs":array,"operation_id":string}),
+        &[
+            "room_name",
+            "invocation_id",
+            "expected_version",
+            "summary",
+            "evidence_refs",
+        ],
+    );
     add(
         "create_signal",
         "Raise an attributed blocker, decision, result or correction. observed means the author reports observation; it is not platform attestation. Summary is 1..1024 UTF-8 bytes; refs are opaque, at most 16 strings of 1024 bytes. Corrections require supersedes with your own signal_id and expected_revision. Only current page_operator permission pages unresolved blocker/decision, subject to dedup and rate limits. Creation remains usable without that permission. Choose operation_id before writing; recover an ambiguous result using its exact original inputs.",
@@ -857,17 +1149,42 @@ pub fn tools() -> Vec<Value> {
         &[],
     );
     add(
+        "diagnostic_evidence",
+        "Discover your local diagnostic disclosures and requestable sources. Identity and instance are host-bound. Discovery grants no evidence. Existing room receive rights remain usable through normal Coord reads. Read a canonical approval directly even if its notification is unavailable.",
+        json!({}),
+        &[],
+    );
+    add(
+        "request_diagnostic_access",
+        "Ask the operator for explicit local diagnostic disclosure. Choose subject agent names, independent audit/runtime/room/system sources and historical scope. The owner resolves names to durable identities; caller selectors grant no authority. For a fixed snapshot set scope.snapshot=true, future=false and an explicit until cutoff. For temporary access set snapshot=false and expires_at to a selected RFC3339 expiry. For until-revoked access use snapshot=false and expires_at=null. future=true authorizes new records only when the operator approves it. Null history.since selects all retained history. Current runtime/membership observations are collected once per result, not reconstructed history. Snapshot results remain private for seven days, then are deleted on diagnostic use. Use the same operation_id only with identical inputs after canonical readback. Pending/rejected requests disclose no new evidence. No room send, guest administration, lifecycle or policy permission is added.",
+        json!({"operation_id":string,"instance_id":string,"subjects":{"type":"array","items":string},
+            "scope":{"type":"object","properties":{
+                "audit":{"type":"boolean"},"runtime":{"type":"boolean"},"snapshot":{"type":"boolean"},
+                "rooms":{"type":"array","items":{"type":"object","properties":{"room_id":string,"history":{"type":"boolean"},"membership":{"type":"boolean"},"attention":{"type":"boolean"}},"required":["room_id","history","membership","attention"],"additionalProperties":false}},
+                "system_categories":{"type":"array","items":{"type":"string","enum":["coord_health","audit_health"]}},
+                "history":{"type":"object","properties":{"since":{"type":["string","null"]},"until":{"type":["string","null"]},"future":{"type":"boolean"}},"required":["since","until","future"],"additionalProperties":false},
+                "runs":{"type":"object","additionalProperties":{"type":"array","items":string}}},"required":["audit","runtime","snapshot","rooms","system_categories","history"],"additionalProperties":false},
+            "expires_at":{"type":["string","null"]},"reason":string}),
+        &[
+            "operation_id",
+            "instance_id",
+            "subjects",
+            "scope",
+            "expires_at",
+            "reason",
+        ],
+    );
+    add(
+        "query_diagnostic_evidence",
+        "Read/filter/correlate an approved local disclosure. Every read and page checks current requester, subject, instance and grant authority. Use the canonical approval's grant ID. A snapshot freezes one bounded collection across all queries and pages. Other grants freeze each operation_id collection for retries/pagination. Reuse exact filters, limit, operation_id and the returned page token for continuation. Changed filters need a new operation_id for a non-snapshot result. Request/connection correlation requires runtime_id and never follows unrelated raw records or references. Inspect sources, applied_scope, truncation and retention limitations; empty matches do not prove that no event occurred. Lost/expired snapshot data is reported rather than recollected. Narrow/revoke using the owning operator's support grant controls; disclosed bytes cannot be recalled.",
+        json!({"operation_id":string,"grant":string,"limit":{"type":"integer","minimum":1,"maximum":200},"page_token":{"type":["string","null"]},
+            "filter":{"type":"object","properties":{"sources":{"type":"array","items":string},"subject_ids":{"type":"array","items":string},"events":{"type":"array","items":string},"since":string,"until":string,"runtime_id":string,"run_id":string,"request_id":string,"connection_id":string,"failures_only":{"type":"boolean"}},"additionalProperties":false}}),
+        &["operation_id", "grant"],
+    );
+    add(
         "support_operation",
         "Inspect or operate on one explicitly delegated target. Select home for a remote owner; Core NATS and that owner's current grant and runtime controls must work. Choose operation_id before submitting; never repeat an uncertain effect with a new ID. expected_run must match the inspected run for commands and lifecycle actions; use null to start a target with no run. Inspection-only permits no caller command. Guest administration includes guest sudo, mounts, credentials, services and the target's delegations. Output is private untrusted evidence, limited to 8192 bytes per stream. After timeout or a lost reply use read_support_operation with the same home. Transport cancellation does not prove guest descendant termination. The current host grant is rechecked at execution; no Coord notification is required.",
-        json!({"operation_id":string,"grant":string,"instance_id":{"oneOf":[string,{"type":"null"}]},"target_id":string,"expected_run":{"oneOf":[string,{"type":"null"}]},"operation":{"oneOf":[
-            {"type":"object","properties":{"action":{"type":"string","enum":["inspect"]}},"required":["action"],"additionalProperties":false},
-            {"type":"object","properties":{"action":{"type":"string","enum":["factory_state"]},"factory":string,"snapshot_id":string},"required":["action","factory","snapshot_id"],"additionalProperties":false},
-            {"type":"object","properties":{"action":{"type":"string","enum":["factory_direction"]},"factory":string,"snapshot_id":string,"kind":string,"text":string},"required":["action","factory","snapshot_id","kind","text"],"additionalProperties":false},
-            {"type":"object","properties":{"action":{"type":"string","enum":["guest_command"]},"command":string,"timeout_seconds":integer},"required":["action","command","timeout_seconds"],"additionalProperties":false},
-            {"type":"object","properties":{"action":{"type":"string","enum":["guest_log"]},"path":string},"required":["action","path"],"additionalProperties":false},
-            {"type":"object","properties":{"action":{"type":"string","enum":["guest_probe"]},"timeout_seconds":integer},"required":["action","timeout_seconds"],"additionalProperties":false},
-            {"type":"object","properties":{"action":{"type":"string","enum":["lifecycle"]},"operation":{"type":"string","enum":["start_sandbox","start_harness","restart_harness","stop_sandbox","restart_sandbox"]}},"required":["action","operation"],"additionalProperties":false}
-        ]}}),
+        json!({}),
         &[
             "operation_id",
             "grant",
@@ -961,9 +1278,31 @@ pub fn tools() -> Vec<Value> {
         &["room_name"],
     );
     for tool in &mut result {
+        if tool["name"] == "support_operation" {
+            tool["inputSchema"] = json!(schemars::schema_for!(
+                crate::peer_support::operations::Request
+            ));
+        }
+        if tool["name"] == "observe_support_capability" {
+            tool["inputSchema"]["properties"]["request"] = json!(schemars::schema_for!(
+                crate::peer_support::operations::Request
+            ));
+        }
+
         if !matches!(
             tool["name"].as_str(),
-            Some("request_room_access" | "request_collaboration")
+            Some(
+                "request_room_access"
+                    | "request_collaboration"
+                    | "submit_policy_change"
+                    | "read_policy_change"
+                    | "request_policy_snapshot"
+                    | "read_policy_snapshot"
+                    | "assess_policy"
+                    | "discover_policy_capabilities"
+                    | "validate_policy_capability"
+                    | "observe_support_capability"
+            )
         ) {
             tool["inputSchema"]["properties"]["home"] = json!({"type":"string","description":"Explicit configured home SafeYolo. Omit for local operations. Attention cursors belong to the selected home."});
         }
@@ -998,7 +1337,7 @@ async fn rpc(client: Client, request: Value) -> Option<Value> {
             } else {
                 "2025-06-18"
             };
-            json!({"protocolVersion":version,"capabilities":{"tools":{}},"serverInfo":{"name":"safeyolo-coord","version":env!("CARGO_PKG_VERSION")}})
+            json!({"protocolVersion":version,"capabilities":{"tools":{}},"serverInfo":{"name":"safeyolo-coord","version":env!("CARGO_PKG_VERSION")},"instructions":"Failed tools retain available HTTP status, response request_id and bounded error_details. Local Agent API 503s attach bounded own-request diagnostic evidence and its limits. Use the installed SafeYolo skill to investigate; diagnosis never retries the failed operation or advances an attention cursor."})
         }
         "ping" => json!({}),
         "tools/list" => json!({"tools":tools()}),
@@ -1015,7 +1354,13 @@ async fn rpc(client: Client, request: Value) -> Option<Value> {
                     json!({"content":[{"type":"text","text":value.to_string()}],"structuredContent":value,"isError":false})
                 }
                 Err(error) => {
-                    json!({"content":[{"type":"text","text":format!("Coord unavailable or request refused: {error}")}],"isError":true})
+                    let failure = crate::native_client::tool_failure(&error);
+                    let guidance = if failure["http_status"] == 503 {
+                        "\nRead the installed safeyolo skill for this failure and continue permitted read-only investigation using the attached evidence and configured Agent API before reporting. Do not ask the operator to copy evidence already supplied here. Diagnosis does not retry the operation, authorize recovery or advance an attention cursor."
+                    } else {
+                        ""
+                    };
+                    json!({"content":[{"type":"text","text":format!("Coord unavailable or request refused: {}{guidance}\n{}", failure["message"].as_str().unwrap_or("request failed"), failure)}],"structuredContent":failure,"isError":true})
                 }
             }
         }

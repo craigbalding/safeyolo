@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Agent {
     pub name: String,
@@ -17,7 +17,7 @@ pub(crate) struct Agent {
 }
 
 /// A deciding agent belongs to this owner or to one explicitly trusted peer.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Reviewer {
     pub name: String,
@@ -64,7 +64,7 @@ impl Reviewer {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Scope {
     DesktopPresent {
@@ -166,12 +166,14 @@ fn deserialize_scopes<'de, D: serde::Deserializer<'de>>(
         .collect()
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("x-scope" = "Named reviewers and beneficiaries; tagged scope choices in the schema", "x-lifetime" = "Optional delegation expiry and bounded grant lifetime; issued grants also depend on the worker run and current delegation", "x-effects" = "Permit one eligible reviewer to issue the selected access. Reviewers need not possess that access. Multiple reviewers are alternatives, not a quorum.", "x-dependencies" = "Existing delegation preview/apply and current scope-specific approval owners", "x-gaps" = "Candidate-specific scope effects are returned by validation through Delegation::warnings; current eligibility is not inferred from syntax."))]
 pub(crate) struct Delegation {
     pub reviewers: Vec<Reviewer>,
     pub beneficiaries: Vec<Agent>,
     #[serde(deserialize_with = "deserialize_scopes")]
+    #[schemars(with = "Vec<Scope>")]
     pub scopes: Vec<Scope>,
     pub expires_at: Option<String>,
     pub grant_seconds: Option<u64>,
@@ -768,6 +770,27 @@ impl IssuedAccess {
     pub(crate) fn active_snapshot(&self, policy: &Policy) -> bool {
         if self.validate().is_err()
             || !self.beneficiary.current(policy)
+            || !self.source_applicable(policy)
+        {
+            return false;
+        }
+        if self.delegation.is_empty() {
+            return true;
+        }
+        policy
+            .delegations()
+            .get(&self.delegation)
+            .is_some_and(|delegation| {
+                delegation.dependencies_current(policy) && self.reviewer.principal(policy).is_some()
+            })
+    }
+
+    /// Source checks only. Assessments report peer trust and other runtime
+    /// dependencies separately; this never opens a policy file or Coord store.
+    pub(crate) fn source_applicable(&self, policy: &Policy) -> bool {
+        if self.validate().is_err()
+            || policy.evidence_agent_id(&self.beneficiary.agent)
+                != Some(self.beneficiary.agent_id.as_str())
             || expired(self.expires_at.as_deref())
         {
             return false;
@@ -783,10 +806,8 @@ impl IssuedAccess {
         };
         delegation.current()
             && delegation.revision() == self.delegation_revision
-            && delegation.dependencies_current(policy)
             && delegation.contains_effect(&self.action, &self.option)
             && delegation.reviewers.contains(&self.reviewer)
-            && self.reviewer.principal(policy).is_some()
             && crate::approvals::pending::revision(policy, &self.action).as_deref()
                 == Some(self.policy_revision.as_str())
     }
@@ -948,6 +969,7 @@ impl IssuedAccess {
                 "scheme",
                 "port",
                 "prepared_assessment",
+                "control_update",
             ],
             _ => return Err(invalid("unsupported issued permission type")),
         };

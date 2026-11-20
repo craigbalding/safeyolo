@@ -13,6 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tokio::io::AsyncReadExt;
+pub mod challenges;
 pub(crate) mod execution;
 pub(crate) mod work;
 
@@ -187,7 +188,7 @@ pub enum Finding {
 
 // Tagged enums buffer JSON numbers as maps with arbitrary_precision enabled.
 // Read through Number to preserve that representation before converting to f64.
-fn deserialize_score_value<'de, D>(deserializer: D) -> std::result::Result<f64, D::Error>
+pub(crate) fn deserialize_score_value<'de, D>(deserializer: D) -> std::result::Result<f64, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -258,6 +259,8 @@ pub enum EvidenceSource {
     Unavailable { reason: String },
     Job {
         spec: PathBuf,
+        #[serde(default)]
+        spec_sha256: Option<String>,
         effects: execution::Effects,
         limits: execution::Limits,
     },
@@ -374,7 +377,7 @@ pub enum Condition {
     },
 }
 impl Condition {
-    fn names(&self, names: &mut BTreeSet<String>) {
+    pub(crate) fn names(&self, names: &mut BTreeSet<String>) {
         match self {
             Self::Finding { check }
             | Self::Fact { check, .. }
@@ -450,6 +453,8 @@ pub struct Checks {
     pub rules: Vec<Rule>,
     #[serde(default)]
     pub work_bindings: Vec<work::Binding>,
+    #[serde(default)]
+    pub route_challenges: BTreeMap<String, challenges::Challenge>,
     #[serde(skip)]
     execution: std::sync::Arc<execution::CheckExecutions>,
     #[serde(skip)]
@@ -608,10 +613,19 @@ impl Checks {
         document: &serde_json::Map<String, Value>,
         base: Option<&Path>,
     ) -> Result<Self> {
+        Self::parse_inputs(document, base, true)
+    }
+
+    pub(super) fn parse_inputs(
+        document: &serde_json::Map<String, Value>,
+        base: Option<&Path>,
+        load_inputs: bool,
+    ) -> Result<Self> {
         let mut checks: Self = serde_json::from_value(json!({
             "checks": document.get("checks").cloned().unwrap_or_else(|| json!({})),
             "check_rules": document.get("check_rules").cloned().unwrap_or_else(|| json!([])),
             "work_bindings": document.get("work_bindings").cloned().unwrap_or_else(|| json!([])),
+            "route_challenges": document.get("route_challenges").cloned().unwrap_or_else(|| json!({})),
         }))
         .map_err(|error| invalid(format!("named checks: {error}")))?;
         for (name, check) in &mut checks.checks {
@@ -644,7 +658,9 @@ impl Checks {
             } else if check.scale.is_some() {
                 return Err(invalid("only score checks have a score scale"));
             }
-            if let EvidenceSource::Feed { name: source } = &check.source {
+            if let EvidenceSource::Feed { name: source } = &check.source
+                && load_inputs
+            {
                 let root = base.ok_or_else(|| {
                     invalid("managed feed checks require file-backed policy loading")
                 })?;
@@ -665,6 +681,7 @@ impl Checks {
             }
         }
         work::validate(&checks)?;
+        challenges::validate(&checks)?;
         for rule in &mut checks.rules {
             if rule.host != "*" {
                 rule.host = if let Some(suffix) = rule.host.strip_prefix("*.") {
@@ -951,6 +968,15 @@ impl Checks {
             .collect()
     }
 
+    pub(crate) fn adopted_feed_revisions(&self) -> Value {
+        json!(
+            self.feeds
+                .iter()
+                .map(|(name, feed)| (name, &feed.version))
+                .collect::<BTreeMap<_, _>>()
+        )
+    }
+
     /// Available file versions are checked after collection, before admission.
     /// Atomic replacement or an in-place change cancels this observation.
     pub async fn versions_current(&self, evidence: &BTreeMap<String, Evidence>) -> bool {
@@ -1112,7 +1138,7 @@ fn severity(action: Action) -> u8 {
     }
 }
 
-fn validate_evidence(check: &Check, entry: &mut Evidence, now: u64) {
+pub(crate) fn validate_evidence(check: &Check, entry: &mut Evidence, now: u64) {
     let Some(record) = entry.result.as_ref() else {
         return;
     };

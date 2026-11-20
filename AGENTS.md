@@ -54,8 +54,12 @@ or resulting behaviour before implementation. Keep this proportional to the
 change; it is not a mandatory questionnaire or approval step. Match implementation
 and verification to the agreed effort, and flag material expansion early.
 
-For changes to operator journeys, apply the
-[operator interaction contract](docs/operator-interaction-contract.md).
+For changes to operator journeys, both the implementation owner and independent
+reviewer must use the
+[operator-ux skill](cli/src/safeyolo/agent_context/skills/operator-ux/SKILL.md)
+to apply the [operator interaction contract](docs/operator-interaction-contract.md).
+This applies to native Factory and message assignments. Follow the skill from
+this checkout even if the harness does not select it automatically.
 
 Before committing, apply this necessity checklist to the diff:
 

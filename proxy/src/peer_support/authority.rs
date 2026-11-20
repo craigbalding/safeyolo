@@ -3,6 +3,7 @@
 
 mod collection;
 mod graph;
+pub(crate) use graph::compare_policy_authority;
 
 use crate::{Error, RuntimeState, policy::Policy};
 use serde::{Deserialize, Serialize};

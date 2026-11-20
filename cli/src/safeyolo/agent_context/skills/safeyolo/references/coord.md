@@ -64,6 +64,20 @@ Unassigned work, recipient changes and abandoned claims use operator
 reassignment. Continuation grants no access or permission to repeat an uncertain
 external effect; reconcile that effect first.
 
+An adopted effectful issue-admission prerequisite may hold a protected operation
+before Work exists. Recover its reported invocation ID through authenticated
+`GET /api/coord/rooms/ROOM/work?invocation_id=ID`. Read its exact request,
+version, reached state and external evidence before acting. The corresponding
+Coord tools are `read_work_prerequisite`, `resolve_work_prerequisite` and
+`retry_work_prerequisite`. Separately adopted
+`resolve_prerequisite` permission records an external observation;
+`retry_prerequisite` selects a bounded idempotent retry. Neither grants the
+recovery actor execution authority for the protected transition. The original
+requester resumes the exact operation ID and inputs under current authority.
+An unknown effect remains uncertain until reconciled; do not create another
+invocation to bypass it. See the
+[before-action adoption and recovery example](https://github.com/craigbalding/safeyolo/blob/master/docs/policy-checks.md#require-an-action-before-issue-admission).
+
 Use a check for a proposition about an exact subject with a meaningful verdict.
 Independent checks require an attributed producer distinct from the reviewer.
 Ordinary Work holds open-ended research; publishing its report supplies an

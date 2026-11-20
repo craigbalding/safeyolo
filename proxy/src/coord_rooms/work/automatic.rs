@@ -13,6 +13,8 @@ use std::{
     sync::{Arc, RwLockReadGuard},
 };
 
+pub(crate) mod prerequisite;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum State {
@@ -319,17 +321,27 @@ pub(super) fn guard(
                         && r.subject == expected_subject
                 })
                 .ok_or_else(|| conflict("required automatic evidence is absent or substituted"))?;
-            if record.evidence.as_ref().is_none_or(|e| {
-                policy.named_checks().work_truth(
-                    binding,
-                    &expected_subject,
-                    e.clone(),
-                    now() as u64,
-                ) != Truth::True
-            }) {
+            let satisfied = if binding.effectful(policy.named_checks()) {
+                matches!(record.state, State::Completed) && prerequisite::current(conn, record)?
+            } else {
+                record.evidence.as_ref().is_some_and(|e| {
+                    policy.named_checks().work_truth(
+                        binding,
+                        &expected_subject,
+                        e.clone(),
+                        now() as u64,
+                    ) == Truth::True
+                })
+            };
+            if !satisfied {
                 return Err(conflict(&format!(
-                    "automatic requirement {} is unmet (job {}, factory {}, policy {}): {}; inspect ops.work_requirement for the operation ID and the current adopted check before retrying",
-                    binding.name, binding.job, binding.factory, record.policy_hash, record.detail
+                    "automatic requirement {} is unmet (invocation {}, job {}, factory {}, policy {}): {}; inspect ops.work_requirement for the operation ID and the current adopted check before retrying",
+                    binding.name,
+                    record.id,
+                    binding.job,
+                    binding.factory,
+                    record.policy_hash,
+                    record.detail
                 )));
             }
             guard.records.push(record.clone());
@@ -386,10 +398,12 @@ pub(crate) fn apply(work: &mut Work, guard: &Guard) {
                 || old.binding.boundary != record.binding.boundary
         });
         let mut record = record.clone();
-        record.id = format!(
-            "{}/{}/{}/{}",
-            work.work_id, work.claim_generation, work.target_generation, record.binding.name
-        );
+        if record.binding.retry.is_none() || record.binding.boundary != Boundary::AdmitIssue {
+            record.id = format!(
+                "{}/{}/{}/{}",
+                work.work_id, work.claim_generation, work.target_generation, record.binding.name
+            );
+        }
         work.automatic.push(record);
     }
 }
@@ -563,13 +577,24 @@ fn files(runtime: &Runtime) -> Option<(&Path, &Path)> {
 }
 
 async fn invoke(runtime: &Runtime, state: &RuntimeState, mut record: Obligation) -> Obligation {
-    let action = record.binding.boundary == Boundary::AfterComplete;
+    let action = record.binding.boundary == Boundary::AfterComplete
+        || runtime
+            .policy
+            .as_ref()
+            .is_some_and(|p| record.binding.effectful(p.named_checks()));
     let Some(policy) = runtime.policy.as_ref() else {
         record.state = State::Unavailable;
         record.detail = "adopted job policy unavailable".into();
         return record;
     };
-    record.source_version = source_version(policy, &record.binding);
+    let selected_source = source_version(policy, &record.binding);
+    if record.source_version.is_some() && record.source_version != selected_source {
+        record.state = State::Unavailable;
+        record.detail =
+            "adopted job definition changed before dispatch; no effect was started".into();
+        return record;
+    }
+    record.source_version = selected_source;
     record.service_definitions_hash = Some(policy.work_service_definitions_digest());
     let result = policy
         .named_checks()
@@ -578,15 +603,20 @@ async fn invoke(runtime: &Runtime, state: &RuntimeState, mut record: Obligation)
             record.subject.clone(),
             runtime,
             state,
-            action,
-            record.binding.boundary == Boundary::AdmitIssue,
+            record.binding.boundary,
+            (action && record.binding.boundary == Boundary::AdmitIssue)
+                .then_some(record.id.as_str()),
         )
         .await;
     match result {
         Ok(evidence) => {
             record.detail = evidence.unavailable.clone().unwrap_or_else(|| {
                 if action {
-                    "action execution completed; the preceding transition remains committed".into()
+                    if record.binding.boundary == Boundary::AfterComplete {
+                        "action execution completed; the preceding transition remains committed".into()
+                    } else {
+                        "prerequisite action completed; protected commit still requires current authority".into()
+                    }
                 } else {
                     "automatic check returned a typed finding".into()
                 }
@@ -771,7 +801,11 @@ pub(crate) async fn mutate(
             resolution: None,
             updated_at: now(),
         };
-        let record = invoke(&runtime, state, record).await;
+        let record = if binding.effectful(policy.named_checks()) {
+            prerequisite::invoke(root, room, actor, operation, &prepared, record).await?
+        } else {
+            invoke(&runtime, state, record).await
+        };
         let mut event = crate::audit::Event::new(
             "ops.work_requirement",
             crate::audit::Kind::Ops,
@@ -970,6 +1004,7 @@ pub(crate) fn recover(state: &RuntimeState) {
     // Freeze and reconcile the interrupted set before listeners admit new work.
     // The asynchronous dispatcher must never label a new live action interrupted.
     let recovered = (|| -> Result<(), WorkError> {
+        prerequisite::recover(&root)?;
         for work in retained(&root, None)? {
             for mut record in work.automatic {
                 if !matches!(record.state, State::Dispatching) {
@@ -1017,6 +1052,12 @@ pub(crate) fn requires_runtime(
     room: &str,
     mutation: &Mutation,
 ) -> Result<bool, WorkError> {
+    if matches!(
+        mutation,
+        Mutation::ResolvePrerequisite { .. } | Mutation::RetryPrerequisite { .. }
+    ) {
+        return Ok(true);
+    }
     let configuration = configuration(files, None)?;
     let input = serde_json::to_value(mutation)?;
     let room_id = authorize(conn, room, Actor::Operator, true)?;
