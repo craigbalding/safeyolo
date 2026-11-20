@@ -359,7 +359,7 @@ mod tests {
         )
         .unwrap();
         let proxy_config: crate::Config = serde_json::from_value(json!({
-            "native_product":true,"policy_file":root.join("policy.toml"),"data_dir":root.join("data"),
+            "native_product":true,"native_config_dir":root,"policy_file":root.join("policy.toml"),"data_dir":root.join("data"),
             "listeners":[],"admin_port":0,"readiness_file":root.join("ready"),
             "audit_log_path":root.join("audit.jsonl"),"flow_store_enabled":false,"circuit_breaker_enabled":false
         })).unwrap();
