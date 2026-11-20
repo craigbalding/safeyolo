@@ -114,7 +114,7 @@ pub enum Subject {
     Destination {
         hostname: String,
     },
-    /// The selected named check owns distribution-aware effective-package assessment.
+    /// Package findings compare the selected check's effective inventory.
     Package {
         name: String,
         distribution: String,

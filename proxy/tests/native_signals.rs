@@ -672,7 +672,7 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
         ap.reload_policy_if_changed().await.unwrap();
         tokio::time::sleep(Duration::from_millis(40)).await;
     }
-    assert_eq!(revision(&a, "advisories", &finding.id), 6);
+    assert_eq!(revision(&a, "advisories", &finding.id), 7);
     assert_eq!(response(&a)["episode"], episode);
     assert!(
         async_nats::ConnectOptions::with_user_and_password(
@@ -741,6 +741,26 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
     };
     assert_eq!(work_count(), 1);
     let dispatched = response(&a);
+    let notification = &dispatched["result"]["input"];
+    assert_eq!(notification["attention_intent"]["mode"], "targeted");
+    assert_eq!(
+        notification["attention_recipients"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(notification["attention_recipients"][0]["agent_id"], ALICE);
+    let attention = notification["attention_recipients"][0]["attention_id"]
+        .as_str()
+        .unwrap();
+    let retained: (String, String, i64) = db.query_row(
+        "SELECT recipient_agent_id,object_id,revision_or_sequence FROM coord_attention_edges WHERE attention_id=?1 AND kind='message'",
+        [attention], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+    ).unwrap();
+    assert_eq!(retained.0, ALICE);
+    assert_eq!(retained.1, notification["envelope"]["msg_id"]);
+    assert_eq!(retained.2, notification["sequence"].as_i64().unwrap());
     publish(&kv, &advisory(12, 9)).await;
     drive(
         &mut [&mut ap],
@@ -957,16 +977,18 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
     .await;
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
-        if request(&standalone, "alice", "standalone.test").await == 403 {
+        let added = request(&standalone, "alice", "standalone.test").await;
+        let removed = request(&standalone, "alice", "http-listed.test").await;
+        if added == 403 && removed == 200 {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "standalone network policy did not activate pushed revision"
+            "standalone network policy did not activate pushed revision: added={added}, removed={removed}; retained status={}",
+            safeyolo_proxy::signals::status(&standalone).unwrap()
         );
         tokio::time::sleep(Duration::from_millis(40)).await;
     }
-    assert_eq!(request(&standalone, "alice", "http-listed.test").await, 200);
     child.kill().await.unwrap();
     ap.shutdown().await;
     bp.shutdown().await;
