@@ -8,11 +8,34 @@
 - [Approved diagnostic evidence](#approved-diagnostic-evidence)
 - [Delegated decisions](#delegated-decisions)
 - [Approval context](#approval-context)
+- [Feed-driven responses](#feed-driven-responses)
 - [Operator actions](#operator-actions)
 - [Delegated local peer support](#delegated-local-peer-support)
 - [Flow inspection](#flow-inspection)
 - [Service gateway](#service-gateway)
 - [Approved collaboration rooms](#approved-collaboration-rooms)
+
+## Feed-driven responses
+
+An operator can adopt native NATS Key Value sources and rules that assess
+service exposure, selected destinations or fresh effective package inventory.
+HTTP-maintained lists can distribute their accepted snapshots through NATS.
+The host keeps credentials and complete policy snapshots outside the guest.
+
+A targeted notification or assigned Work carries the selected source, finding
+revision, evidence time and affected agent. Read that exact input and the current
+native Work before acting. Receipt, authenticated publication and an advisory
+assertion grant no execution or policy-change authority. Use the existing
+effect owner and its current access. A Work request for repair is not proof of
+repair. Unknown or stale inventory does not establish safety.
+
+The operator's host commands are `safeyolo --root ROOT signals status` and
+`approvals show ID`. Status separates source freshness, local applicability,
+standing authority or pending approval, attempted effects and verified local
+policy capture. An operator decides scoped approval through the existing
+approval commands. For failures, retain the original operation receipt; do not
+repeat an uncertain effect. The installed host guide `assets/docs/signals.md`
+contains source configuration, response selection and troubleshooting.
 
 ## Policy capabilities
 

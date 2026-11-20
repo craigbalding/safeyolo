@@ -676,6 +676,50 @@ impl Policy {
         self.native.as_ref().map(|native| native.source.as_str())
     }
 
+    /// Authored selectors and effects of these feed snapshots. Membership itself
+    /// is excluded: accepting evidence must not change an approval's authority.
+    pub(crate) fn signal_list_scope(&self, feeds: &[String]) -> Option<Value> {
+        let native = self.native.as_ref()?;
+        let mut hosts = serde_json::Map::new();
+        if let Some(lists) = native.authored["lists"].as_object() {
+            for (alias, definition) in lists {
+                if !feeds.iter().any(|feed| definition["feed"] == *feed) {
+                    continue;
+                }
+                let key = format!("${alias}");
+                let mut agents = serde_json::Map::new();
+                if let Some(configured) = native.authored["agents"].as_object() {
+                    for (agent, config) in configured {
+                        if let Some(effect) = config["hosts"].get(&key) {
+                            agents.insert(agent.clone(), effect.clone());
+                        }
+                    }
+                }
+                hosts.insert(
+                    alias.clone(),
+                    json!({"definition":definition,
+                    "global":native.authored["hosts"].get(&key),"agents":agents}),
+                );
+            }
+        }
+        let selected = self.checks.checks.iter().filter(|(_, check)| {
+            matches!(&check.source, super::checks::EvidenceSource::Feed { name } if feeds.contains(name))
+        }).map(|(name, check)| (name.clone(), check.clone())).collect::<std::collections::BTreeMap<_,_>>();
+        let rules = self
+            .checks
+            .rules
+            .iter()
+            .filter(|rule| {
+                let mut names = std::collections::BTreeSet::new();
+                rule.when.names(&mut names);
+                names.iter().any(|name| selected.contains_key(name))
+            })
+            .collect::<Vec<_>>();
+        Some(
+            json!({"hosts":hosts,"checks":selected,"check_rules":rules,"network":native.controls.network}),
+        )
+    }
+
     pub(crate) fn native_view(&self, path: &Path) -> Option<Value> {
         let native = self.native.as_ref()?;
         let mut effective = native.authored.clone();
@@ -760,6 +804,9 @@ impl Policy {
             .iter()
             .map(|(name, list)| {
                 let mut status = json!({"source":list.path});
+                if let Some(agents) = &list.agents {
+                    status["agents"] = json!(agents);
+                }
                 if let Some(managed) = &list.managed {
                     status["active_snapshot"] = managed.status(super::current_time_ms());
                     match crate::policy_feeds::load_list(

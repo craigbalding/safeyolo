@@ -374,7 +374,7 @@ pub enum Condition {
     },
 }
 impl Condition {
-    fn names(&self, names: &mut BTreeSet<String>) {
+    pub(crate) fn names(&self, names: &mut BTreeSet<String>) {
         match self {
             Self::Finding { check }
             | Self::Fact { check, .. }

@@ -124,6 +124,7 @@ mod security_indicators;
 #[cfg(test)]
 mod service_catalog_tests;
 pub mod services;
+pub mod signals;
 pub mod ssh_proxy;
 pub mod startup_timings;
 pub mod subscription_login;
@@ -2104,6 +2105,7 @@ pub struct Proxy {
     service_check_at: Option<tokio::time::Instant>,
     policy_check_at: Option<tokio::time::Instant>,
     feed_refresh: policy_feeds::Refresh,
+    signal_follow: signals::Follow,
 }
 
 impl Proxy {
@@ -2167,6 +2169,7 @@ impl Proxy {
             service_check_at: service_files.as_ref().map(|_| tokio::time::Instant::now()),
             service_files,
             feed_refresh: policy_feeds::Refresh::default(),
+            signal_follow: signals::Follow::default(),
             policy_check_at: config
                 .policy_file
                 .as_ref()
@@ -2446,10 +2449,24 @@ impl Proxy {
                 })
                 .flatten()
         });
-        if let Some(root) = root
-            && let Err(error) = self.feed_refresh.poll(root).await
-        {
-            eprintln!("Managed feed refresh: {error}");
+        if let Some(root) = root {
+            if let Err(error) = self.feed_refresh.poll(root.clone()).await {
+                eprintln!("Managed feed refresh: {error}");
+            }
+            let services = {
+                let runtime = self
+                    .runtime
+                    .read()
+                    .map_err(|_| "runtime read lock poisoned")?;
+                external_ingress::status(&self.ingress_bindings, &runtime.config)
+            };
+            if let Err(error) = self
+                .signal_follow
+                .poll(root, self.runtime.clone(), services)
+                .await
+            {
+                eprintln!("Signal reconciliation: {error}");
+            }
         }
         let result = (|| {
             let previous = self
@@ -2579,6 +2596,7 @@ impl Proxy {
         self.service_files = service_files;
         if previous.config.policy_file != config.policy_file {
             self.feed_refresh = policy_feeds::Refresh::default();
+            self.signal_follow = signals::Follow::default();
             self.policy_check_at = config
                 .policy_file
                 .as_ref()
@@ -2595,6 +2613,7 @@ impl Proxy {
 
     pub async fn shutdown(mut self) {
         self.feed_refresh = policy_feeds::Refresh::default();
+        self.signal_follow = signals::Follow::default();
         clear_readiness(&self.readiness_file, &self.default_via);
         let credential_activation = self
             .runtime

@@ -426,6 +426,7 @@ async fn run() -> Result<(), Error> {
         }
         [command] if command == "init" => initialize(&root, &config),
         [help] if matches!(help.as_str(), "--help" | "help") => {
+            println!("{}", safeyolo_proxy::signals::HELP);
             println!("{}", credential_commands::CREDENTIAL_HELP);
             println!("{}", credential_commands::SERVICE_HELP);
             println!("{}", safeyolo_proxy::factory::HELP);
@@ -474,6 +475,14 @@ async fn run() -> Result<(), Error> {
             if policy == "policy" && command == "capabilities" && flag == "--json" =>
         {
             safeyolo_proxy::policy::capabilities::print(true)
+        }
+        [signals, rest @ ..] if signals == "signals" => {
+            let directory = if rest.first().is_some_and(|arg| arg == "--help") {
+                config.parent().unwrap_or(Path::new(".")).to_owned()
+            } else {
+                policy_directory(&config)?
+            };
+            safeyolo_proxy::signals::command(&directory, rest).await
         }
         [policy, feeds, rest @ ..] if policy == "policy" && feeds == "feeds" => {
             let directory = if rest
