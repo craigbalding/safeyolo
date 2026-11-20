@@ -18,6 +18,9 @@ pub(super) struct Procedure {
 }
 
 impl Procedure {
+    pub(super) fn timeout_seconds(&self) -> u64 {
+        self.timeout_seconds
+    }
     pub(super) fn validate(&self) -> Result<(), Error> {
         for command in [
             &self.checkpoint_command,

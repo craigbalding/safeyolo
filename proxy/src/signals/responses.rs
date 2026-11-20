@@ -696,7 +696,7 @@ pub(super) async fn reconcile(
             } else {
                 json!({"external_path":rule.inventory,"max_age_seconds":rule.inventory_max_age_seconds})
             };
-            let current = json!({"rule":rule_name,"agent":agent,"agent_id":policy.evidence_agent_id(agent),"run":policy.agent_run(agent),"source":rule.source,"affected":!selected.is_empty(),"response_identity":identity,
+            let current = json!({"rule":rule_name,"agent":agent,"agent_id":policy.evidence_agent_id(agent),"run":policy.agent_run(agent),"source":rule.source,"affected":!selected.is_empty(),"response_identity":identity,"source_revision":digest(&accepted),
                 "applicability":if unknown {"unknown_or_stale"} else if active {"affected"} else {"unaffected"},
                 "inventory":inventory_status,"source_evidence":accepted.iter().map(|record|json!({"id":record.update.id,"observed_at":record.update.observed_at,"expires_at":record.update.expires_at,"fresh":record.update.fresh(source,now()),"fix_available":match &record.update.evidence {Evidence::Advisory{subject:Subject::Package{fixed_version,..},..}=>Some(fixed_version.is_some()),_=>None}})).collect::<Vec<_>>(),
                 "responding_to_uncertainty":respond_unknown,
@@ -709,6 +709,7 @@ pub(super) async fn reconcile(
             )?;
             if let Response::Maintenance(procedure) = &rule.response {
                 if !procedure.due() {
+                    reaction.identity = identity.clone();
                     reaction.status = "deferred_window".into();
                     reaction.result = json!({"effect":"no_maintenance","next_action":"Maintenance waits for the adopted UTC hours; the affected startup work remains gated."});
                     save(&path(&root, rule_name, agent), &reaction)?;
@@ -717,6 +718,7 @@ pub(super) async fn reconcile(
                 }
                 // Uncertainty is visible and never an instruction to patch.
                 if unknown && selected.is_empty() {
+                    reaction.identity = identity.clone();
                     reaction.status = "unavailable".into();
                     if reaction.result.is_null() {
                         reaction.result = json!({"effect":"no_maintenance","next_action":"Resolve stale, unsupported, partial or no-fix evidence; retained remediation requirements remain in force."});
@@ -1319,8 +1321,16 @@ pub(super) async fn before_work(root: &Path, agent: &str) -> Result<(), Error> {
             save(&request_path, &request)?;
             request
         };
-        let timeout = collection.timeout_seconds.saturating_add(2);
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
+        let timeout = collection
+            .timeout_seconds
+            .saturating_add(match &rule.response {
+                Response::Maintenance(procedure) => procedure.timeout_seconds(),
+                _ => 0,
+            })
+            .saturating_add(2);
+        let deadline = tokio::time::Instant::now()
+            .checked_add(Duration::from_secs(timeout))
+            .ok_or("startup maintenance deadline is outside the supported range")?;
         loop {
             if digest(&configuration(root)?) != digest(&config)
                 || !run.current(&Policy::from_native_path(&root.join("policy.toml"))?)
@@ -1333,14 +1343,39 @@ pub(super) async fn before_work(root: &Path, agent: &str) -> Result<(), Error> {
             )?
             .unwrap_or(Value::Null);
             let reaction = read(root, &name, agent)?;
+            let direct_maintenance = matches!(rule.response, Response::Maintenance(_))
+                && reaction.status == "verified"
+                && reaction.result["run"] == json!(run)
+                && reaction.result["assessment_partial"] == false
+                && reaction.result["receipt"]["updated_at"]
+                    .as_f64()
+                    .is_some_and(|at| {
+                        at >= request["requested_at"].as_u64().unwrap_or(u64::MAX) as f64
+                            && at <= now() as f64 + 1.
+                            && now() as f64 - at
+                                < rule.inventory_max_age_seconds.unwrap_or(0) as f64
+                    })
+                && selection["source_revision"]
+                    == digest(&read_accepted(
+                        root,
+                        &rule.source,
+                        &config.sources[&rule.source],
+                    )?)
+                && selection["findings"].as_array().is_some_and(|findings| {
+                    findings.iter().all(|finding| {
+                        serde_json::from_value::<Update>(finding.clone()).is_ok_and(|finding| {
+                            finding.fresh(&config.sources[&rule.source], now())
+                        })
+                    })
+                });
             let selected_current = collection["request_id"] == request["request_id"]
-                && collection["fresh"] == true
+                && (collection["fresh"] == true || direct_maintenance)
                 && selection["run"]["run_id"] == run.run_id
                 && selection["inventory"]["request_id"] == request["request_id"]
                 && selection["response_identity"] == reaction.identity;
             if selected_current {
                 let complete = match &rule.response {
-                    Response::Maintenance(_) => reaction.status == "verified",
+                    Response::Maintenance(_) => direct_maintenance,
                     _ => {
                         matches!(
                             reaction.status.as_str(),

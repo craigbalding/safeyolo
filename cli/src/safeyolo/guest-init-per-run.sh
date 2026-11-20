@@ -203,7 +203,11 @@ fi
 # credential refresh. Custom images may deliberately omit this integration.
 if [ -r /usr/local/lib/safeyolo/scheduling.sh ]; then  # DOC: cli/src/safeyolo/agent_context/skills/safeyolo/references/scheduling.md
     . /usr/local/lib/safeyolo/scheduling.sh
-    start_guest_schedulers
+    if "$GUEST_HELPER" retained-state startup-allowed >/dev/null 2>&1; then
+        start_guest_schedulers
+    else
+        SCHEDULERS_AFTER_MAINTENANCE=1
+    fi
 else
     mkdir -p /var/log
     echo 'cron/at unsupported in this image: rebuild with the standard Debian scheduling tools' \
@@ -240,7 +244,11 @@ if command -v git >/dev/null 2>&1; then
 fi
 
 if [ -f /home/agent/.safeyolo-hooks/agent-init.sh ]; then
-    su agent -c "bash /home/agent/.safeyolo-hooks/agent-init.sh" || true
+    if "$GUEST_HELPER" retained-state startup-allowed >/dev/null 2>&1; then
+        su agent -c "bash /home/agent/.safeyolo-hooks/agent-init.sh" || true
+    else
+        INIT_AFTER_MAINTENANCE=1
+    fi
 fi
 
 # --------------------------------------------------------------------------
@@ -378,6 +386,22 @@ echo "$(date +%s)" > /safeyolo-status/per-run-started
 echo "ready" > /safeyolo-status/vm-status
 echo "[per-run-started written] pid=$$" > /dev/console 2>/dev/null || true
 
+# Publish transport readiness before this work gate so the host can collect,
+# patch and recover the guest. User hooks, schedulers and coding commands wait;
+# manual-mode boots keep their original early initialization above.
+until "$GUEST_HELPER" retained-state startup-allowed >/dev/null 2>&1; do
+    sleep 0.25 &
+    PID1_IDLE_CHILD=$!
+    wait "$PID1_IDLE_CHILD" || true
+    PID1_IDLE_CHILD=""
+done
+if [ "${SCHEDULERS_AFTER_MAINTENANCE:-}" = "1" ]; then
+    start_guest_schedulers
+fi
+if [ "${INIT_AFTER_MAINTENANCE:-}" = "1" ]; then
+    su agent -c "bash /home/agent/.safeyolo-hooks/agent-init.sh" || true
+fi
+
 # Detach mode: skip vsock terminal, keep VM alive for SSH access.
 # The host-side safeyolo-vm runs with --no-terminal so it doesn't
 # try to connect vsock. sshd is already running in background.
@@ -392,12 +416,6 @@ if [ "${SAFEYOLO_HOST_TERMINAL:-}" = "1" ]; then
     # Keep the container alive so runsc exec has a target.
     keep_pid1_alive
 elif [ -x "$VSOCK_TERM" ]; then
-    # Readiness/SSH remain available for maintenance while coding work waits
-    # for the host's current-run assessment and adopted response.
-    until "$GUEST_HELPER" retained-state startup-allowed >/dev/null 2>&1; do
-        check_guest_schedulers
-        sleep 0.25
-    done
     # macOS: vsock-term sets up the PTY, drops privileges, sets PATH,
     # and execs the command. A shell wrapper (bash -lc) would break
     # the TTY connection, causing process.stdout.isTTY to be undefined

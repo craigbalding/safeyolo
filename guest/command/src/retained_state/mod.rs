@@ -158,7 +158,7 @@ pub(super) fn run(args: &[OsString]) -> Result<i32, Error> {
     }
     if args.is_empty() || args == ["--help"] {
         println!(
-            "safeyolo-guest-state status | capture | paths [add|remove /absolute/path] | require PACKAGE OP VERSION DISTRO ADVISORY | forget PACKAGE | resolve /path | restore [--apply] | history | maintain | maintenance-status OPERATION\nPersistent state: /home/agent/.local/state/safeyolo-guest. Use guest sudo for private contents. restore previews changes; --apply performs them within existing authority. maintain reads an adopted maintenance request from stdin; maintenance-status reads its retained result without repeating effects. OP is a dpkg comparison (ge, gt, eq, le, lt). DISTRO is ID:VERSION_CODENAME. No shutdown capture or security attestation."
+            "safeyolo-guest-state status | capture | paths [add|remove /absolute/path] | require PACKAGE OP VERSION DISTRO ADVISORY | forget PACKAGE | resolve /path | restore [--apply] | history | maintain | maintenance-status OPERATION | maintenance-recover OPERATION\nPersistent state: /home/agent/.local/state/safeyolo-guest. Use guest sudo for private contents. restore previews changes; --apply performs them within existing authority. maintain reads an adopted maintenance request from stdin; maintenance-status reads its retained result without repeating effects. After inspecting an interrupted operation, maintenance-recover selects its unused completed checkpoint once. OP is a dpkg comparison (ge, gt, eq, le, lt). DISTRO is ID:VERSION_CODENAME. No shutdown capture or security attestation."
         );
         return Ok(0);
     }

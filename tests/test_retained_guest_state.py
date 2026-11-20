@@ -22,6 +22,7 @@ import pytest
 
 HELPER = os.environ.get("SAFEYOLO_RETAINED_STATE_HELPER")
 pytestmark = pytest.mark.skipif(not HELPER or not shutil.which("etckeeper"), reason="candidate helper and etckeeper required")
+guest_root_required = pytest.mark.skipif(getattr(os, "geteuid", lambda: -1)() != 0, reason="maintenance verifies protected guest process mappings with guest sudo")
 
 
 def run(*args, check=True, **kwargs):
@@ -151,7 +152,7 @@ def maintenance_request(guest, tmp_path, operation="req-maintenance1"):
     root, _, command = guest
     old = make_deb(tmp_path, "1.0")
     fixed = make_deb(tmp_path, "2.0")
-    run("dpkg", "--root=" + str(root), "--force-not-root", "--force-script-chrootless", "--install", str(old))
+    run("dpkg", "--root=" + str(root), "--log=" + str(root / "var/log/dpkg.log"), "--force-not-root", "--force-script-chrootless", "--install", str(old))
     run(*command, "capture")
     checkpoint = ('r=$SAFEYOLO_GUEST_ROOT; d=$SAFEYOLO_MAINTENANCE_DIRECTORY; '
                   'cp -a "$r/var/lib/dpkg" "$d/dpkg"; cp -a "$r/etc" "$d/etc"; '
@@ -159,7 +160,7 @@ def maintenance_request(guest, tmp_path, operation="req-maintenance1"):
     patch = ('r=$SAFEYOLO_GUEST_ROOT; '
              'v=$(dpkg-query --admindir="$r/var/lib/dpkg" -W -f=\'${Version}\' sy-retention-fixture); '
              'if ! dpkg --compare-versions "$v" ge 2.0; then '
-             f'dpkg --root="$r" --force-not-root --force-script-chrootless --install {shlex.quote(str(fixed))}; '
+             f'dpkg --root="$r" --log="$r/var/log/dpkg.log" --force-not-root --force-script-chrootless --install {shlex.quote(str(fixed))}; '
              'printf applied\\n >> "$r/applied"; fi')
     recovery = ('r=$SAFEYOLO_GUEST_ROOT; d=$SAFEYOLO_MAINTENANCE_DIRECTORY; '
                 'rm -rf "$r/var/lib/dpkg" "$r/etc" "$r/usr/share/retention-fixture"; '
@@ -176,6 +177,7 @@ def maintain(command, request):
     return json.loads(run(*command, "maintain", input=json.dumps(request)).stdout)
 
 
+@guest_root_required
 def test_maintenance_real_patch_retained_requirement_recreation_and_satisfactory_base(guest, tmp_path):
     root, state, command = guest
     request = maintenance_request(guest, tmp_path)
@@ -190,7 +192,7 @@ def test_maintenance_real_patch_retained_requirement_recreation_and_satisfactory
     # Emulate a recreated older root while preserving #1614 state. This is a
     # real dpkg/helper control, not installed gVisor/VZ recreation evidence.
     old = tmp_path / "fixture-1.0.deb"
-    run("dpkg", "--root=" + str(root), "--force-not-root", "--force-script-chrootless", "--install", str(old))
+    run("dpkg", "--root=" + str(root), "--log=" + str(root / "var/log/dpkg.log"), "--force-not-root", "--force-script-chrootless", "--install", str(old))
     request["operation_id"] = "req-restoration"
     request["requirements"] = []
     assert maintain(command, request)["outcome"] == "verified"
@@ -202,6 +204,7 @@ def test_maintenance_real_patch_retained_requirement_recreation_and_satisfactory
     assert saved(state)["requirements"]["sy-retention-fixture"]["version"] == "2.0"
 
 
+@guest_root_required
 def test_maintenance_health_failure_recovers_actual_mutable_state_and_keeps_requirement(guest, tmp_path):
     root, state, command = guest
     request = maintenance_request(guest, tmp_path)
@@ -217,6 +220,7 @@ def test_maintenance_health_failure_recovers_actual_mutable_state_and_keeps_requ
     assert "health_command failed" in record["diagnostic"]
 
 
+@guest_root_required
 def test_maintenance_recovery_failure_and_masked_payload_cannot_claim_repair(guest, tmp_path):
     root, _, command = guest
     request = maintenance_request(guest, tmp_path)
@@ -227,6 +231,7 @@ def test_maintenance_recovery_failure_and_masked_payload_cannot_claim_repair(gue
     assert receipt["commands"]["recover_command"]["exit_code"] == 5
     # Metadata still says 2.0, while an older copied-up payload masks the fix.
     (root / "usr/share/retention-fixture/version").write_text("1.0")
+    run(*command, "paths", "add", "/usr/share/retention-fixture/version")
     request["operation_id"] = "req-masked"
     request["health_command"] = "true"
     receipt = maintain(command, request)
@@ -234,6 +239,7 @@ def test_maintenance_recovery_failure_and_masked_payload_cannot_claim_repair(gue
     assert "effective package file differs" in receipt["diagnostic"]
 
 
+@guest_root_required
 def test_interrupted_maintenance_same_operation_is_inspection_not_retry(guest, tmp_path):
     root, state, command = guest
     request = maintenance_request(guest, tmp_path)
@@ -280,6 +286,7 @@ def test_startup_gate_preserves_manual_mode_and_binds_current_generation(guest):
     run(*command, "startup-allowed")
 
 
+@guest_root_required
 def test_maintenance_reports_old_mapped_payload_until_its_consumer_exits(guest, tmp_path):
     root, _, command = guest
     request = maintenance_request(guest, tmp_path)

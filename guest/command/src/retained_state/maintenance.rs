@@ -38,7 +38,9 @@ pub(super) fn status(store: &GuestState, id: &str) -> Result<i32, Error> {
     }
     if let Some(commands) = record["commands"].as_object_mut() {
         for command in commands.values_mut() {
-            if let Some(command) = command.as_object_mut() { command.remove("output_prefix"); }
+            if let Some(command) = command.as_object_mut() {
+                command.remove("output_prefix");
+            }
         }
     }
     println!("{record}");
@@ -271,11 +273,14 @@ fn verify_files(store: &GuestState, value: &Value) -> Result<Value, Error> {
     let text = String::from_utf8(output.stdout)?;
     let mut retained = Vec::new();
     for line in text.lines() {
-        let (_, path) = line
+        let (flags, path) = line
             .split_once(" /")
             .ok_or("unrecognized dpkg verification output")?;
         let path = format!("/{path}");
-        if actual[&path].is_null() || actual[&path] != value["configuration"][&path] {
+        if flags.split_whitespace().last() != Some("c")
+            || actual[&path].is_null()
+            || actual[&path] != value["configuration"][&path]
+        {
             return Err(format!(
                 "effective package file differs from vendor and retained configuration: {path}"
             )

@@ -241,10 +241,141 @@ Status and notifications show the assessed agent/run, inventory attempt,
 distribution, package count, source observation/expiry, applicability, authority,
 response and next action. Status retains the observation time; it is not a new
 guest observation when the proxy is stopped. A complete package list or an
-unaffected finding does not prove running code adopted a fix. Startup enforcement,
-patch execution, process/service restart, persistent remediation, guest selection
-and mutable-state recovery remain separate maintenance work. See the
+unaffected finding does not prove running code adopted a fix. An explicitly
+adopted maintenance response below executes and verifies a guest recipe.
+Guest-image selection remains an explicit acquisition operation. See the
 [manual procedure and backend limits](guest-oci.md#assess-and-maintain-installed-agents).
+
+### Execute adopted Debian maintenance
+
+Select `kind = 'maintenance'` to run an existing guest maintenance and recovery
+recipe. The rule still owns the affected agents, source, severity, distribution,
+freshness and standing or approval authority. No maintenance rule is enabled by
+default. Commands run with guest sudo through the existing bounded transport;
+they cannot execute host commands. Keep credentials in their existing stores.
+
+For example, extend the `packages` rule above with the following host-owned
+configuration. The `/usr/local/sbin/web-os-*` commands represent your installed
+application-specific checkpoint, restart, health and recovery recipe: replace
+them with actual commands for that guest before adoption. They are not supplied
+SafeYolo commands. A checkpoint must preserve mutable OS state affected by the
+chosen package operation, including dependencies and configuration; restoring
+only a base selection is insufficient.
+
+```toml
+[rules.packages]
+source = 'advisories'
+agents = ['research']
+distribution = 'debian:trixie'
+min_severity = 8
+authority = 'standing'
+on_stale = 'retain'
+on_inactive = 'release'
+inventory_max_age_seconds = 3600
+startup_before_work = true
+
+[rules.packages.guest_inventory]
+interval_seconds = 300
+timeout_seconds = 30
+max_output_bytes = 1048576
+
+[rules.packages.response]
+kind = 'maintenance'
+checkpoint_command = '/usr/local/sbin/web-os-checkpoint "$SAFEYOLO_MAINTENANCE_DIRECTORY"'
+patch_command = 'apt-get update && safeyolo-guest-state restore --apply'
+restart_command = '/usr/local/sbin/web-os-restart'
+health_command = '/usr/local/sbin/web-os-health'
+recover_command = '/usr/local/sbin/web-os-recover "$SAFEYOLO_MAINTENANCE_DIRECTORY"'
+timeout_seconds = 900
+max_output_bytes = 1048576
+utc_hours = [1, 2]
+```
+
+Replace the example risk threshold, cadence and UTC hours with your policy.
+An omitted or empty `utc_hours` allows any hour. Outside the selected hours,
+status reports `deferred_window`; it does not catch up with repeated disruptive
+operations. `standing` performs the adopted procedure without another prompt.
+`approval` uses the existing scoped approval and revalidates evidence, inventory,
+rule, identity and run before execution. Omitting `restart_command` performs no
+service restart. The health command must check the affected service and its
+actual running code; a listening port alone does not show adoption of a fix.
+
+Before patching, the helper retains each distribution/advisory/minimum-version
+requirement separately in the existing persistent guest state. The requirement
+survives a new root and does not disappear when a feed expires or a transaction
+finishes. A later satisfactory package is reused; the requirement does not pin
+an old exact patch version. Review or retire requirements through the existing
+`safeyolo-guest-state require` and `forget` commands under the applicable
+authority. An incompatible retained constraint stays unresolved.
+
+The helper records the previous effective packages and covered configuration,
+then runs the adopted checkpoint and patch commands if restoration is needed.
+`restore --apply` consumes retained package choices and configuration. It reports
+missing APT candidates, conflicting pins/holds and configuration conflicts rather
+than claiming repair. A satisfactory new base avoids redundant installation.
+Custom profiles need the retained-state helper, baseline and an appropriate
+recipe; there is no generic migration of arbitrary overlays.
+
+Verification checks actual dpkg versions and package-file checksums, allowing
+declared configuration changes only when they match retained state. It records
+old package files still mapped by continuing processes. Those mappings produce
+`pending_restart`, including when a package database says the fixed version is
+installed. A deliberately masking executable therefore cannot be accepted from
+the base digest or package version alone. Checksum coverage and the adopted
+health check define the verification scope; this is not exhaustive process or
+application assurance.
+
+`startup_before_work` is optional. When selected, boot leaves the maintenance
+transport available while user init hooks, guest schedulers and coding launches
+wait for the current run's assessment and adopted response. An approval,
+unavailable evidence, deferred window, failed repair or pending restart keeps
+that work gated. Inspect `signals status`, resolve the named condition, then
+repeat `agent start` for the same target when a prior start returned pending.
+No rule means the existing manual startup behavior. Interval assessment also
+works on continuously running guests; stopped agents remain stopped.
+
+A missing fix, unsupported or incomplete inventory, or stale source remains
+unavailable evidence. Known applicable fixes can be maintained while other
+findings remain unknown; status then reports partial assessment. A full startup
+maintenance gate requires complete current evidence and verified maintenance.
+`on_inactive = 'retain'` keeps the previous response. With `release`, maintenance
+can check or restore existing retained requirements even when no new advisory
+applies; it does not retire those requirements.
+
+On patch, restart or health failure after a completed checkpoint, the selected
+recovery command runs once. `recovered` requires the actual previous package and
+covered-file state plus a successful recovery health check. Otherwise the result
+is `recovery_failed`. The original failure, recovery result and private logs
+remain separate. Recovery does not mean the vulnerability is repaired.
+
+A timeout or lost reply is uncertain: the guest process may still be active.
+Read the original operation before another effect. The following commands run
+inside the affected guest, with its original operation ID from `signals status`
+or `safeyolo-guest-state status`:
+
+```sh
+sudo -n safeyolo-guest-state maintenance-status OPERATION
+sudo -n safeyolo-guest-state maintenance-recover OPERATION
+```
+
+The first command only reads the receipt. The second explicitly selects one
+unused completed checkpoint for an interrupted operation, after inspection.
+An active operation or an already attempted recovery is refused. Reusing the
+original maintenance operation reads its result without repeating patching;
+another operation cannot pass an unresolved uncertain operation. Inspect an
+incomplete checkpoint or failed recovery through the selected recovery owner.
+After resolving the original result, `signals assess packages` requests fresh
+assessment; it does not authorize a wider recipe or host operation.
+
+Status identifies the target/run, adopted requirement, command outcomes, actual
+verification, pending restart and next action. Detailed package/file snapshots
+and command output stay in the private persistent guest-state directory. The
+ordinary signal audit records authority, approval and the reached result.
+Published guest eligibility, instance-wide default selection, per-agent rootfs
+overrides, the gVisor runtime and VZ boot kernel retain their existing update
+paths. Use `guest upgrade` and explicit affected-agent lifecycle operations when
+selecting a suitable published image. If acquisition or compatibility fails,
+inspect that result before changing the selected guest.
 
 ## Select an existing response owner
 
