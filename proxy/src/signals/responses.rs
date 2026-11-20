@@ -379,11 +379,17 @@ fn applicability(
                 {
                     return Ok(None);
                 }
-                Ok(Some(versions.iter().any(|version| {
-                    fixed_version
-                        .as_deref()
-                        .is_none_or(|fixed| debian_compare(version, fixed).is_lt())
-                })))
+                if versions.is_empty() {
+                    return Ok(Some(false));
+                }
+                let Some(fixed) = fixed_version else {
+                    return Ok(None);
+                };
+                Ok(Some(
+                    versions
+                        .iter()
+                        .any(|version| debian_compare(version, fixed).is_lt()),
+                ))
             }
             Subject::Destination { .. } => destination(policy, agent, subject),
         };
@@ -668,7 +674,7 @@ pub(super) async fn reconcile(
             };
             let current = json!({"rule":rule_name,"agent":agent,"agent_id":policy.evidence_agent_id(agent),"run":policy.agent_run(agent),"source":rule.source,"affected":!selected.is_empty(),
                 "applicability":if unknown {"unknown_or_stale"} else if active {"affected"} else {"unaffected"},
-                "inventory":inventory_status,"source_evidence":accepted.iter().map(|record|json!({"id":record.update.id,"observed_at":record.update.observed_at,"expires_at":record.update.expires_at,"fresh":record.update.fresh(source,now())})).collect::<Vec<_>>(),
+                "inventory":inventory_status,"source_evidence":accepted.iter().map(|record|json!({"id":record.update.id,"observed_at":record.update.observed_at,"expires_at":record.update.expires_at,"fresh":record.update.fresh(source,now()),"fix_available":match &record.update.evidence {Evidence::Advisory{subject:Subject::Package{fixed_version,..},..}=>Some(fixed_version.is_some()),_=>None}})).collect::<Vec<_>>(),
                 "responding_to_uncertainty":respond_unknown,
                 "next_action":if unknown {"Inspect inventory and source freshness; resolve unavailable evidence. A response does not establish repair."}else if active {"Read the response receipt and the maintenance owner's result; repair and running-code adoption remain unverified."}else{"No finding meets this rule in the current evidence; other maintenance coverage remains outside this assessment."},
                 "findings":selected,"authority":rule.authority,"inactive_evidence":inactive,
@@ -1368,8 +1374,8 @@ mod tests {
                 &Value::Null
             )
             .unwrap(),
-            Some(true),
-            "no-fix advisory stays affected"
+            None,
+            "no-fix evidence keeps version applicability unknown"
         );
         write_inventory("8.0-1", now() - 60, generation);
         assert!(approval_revision(&policy, &action).is_none());

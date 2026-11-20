@@ -151,8 +151,9 @@ identity and evidence age. Missing, stale, malformed or replaced-run evidence
 remains unknown. An absent package in a complete fresh inventory is unaffected.
 A package subject has `kind = "package"`, `name`, `distribution`
 and optional `fixed_version`. Omit the version or use `null` when the advisory
-reports no available fix. An installed matching package then remains affected;
-the finding retains that no-fix state. Do not invent a fixed version. The built-in
+reports no available fix. An installed matching package then has unknown version
+applicability. Status retains the no-fix state and the operator's stale-evidence
+response applies. Do not invent a fixed version. The built-in
 comparison supports Debian epoch, upstream and
 Debian revision ordering, including backports and `~`; other distributions stay
 unknown. Package repair, required process restarts, guest selection and actual
