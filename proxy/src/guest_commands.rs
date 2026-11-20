@@ -72,13 +72,13 @@ pub(crate) fn read_state_bounded(path: &Path, limit: u64) -> Result<Option<Value
     Ok(Some(serde_json::from_slice(&source)?))
 }
 
-fn copy_executable(source: &Path, destination: &Path) -> Result<(), Error> {
+pub(crate) fn copy_executable(source: &Path, destination: &Path, mode: u32) -> Result<(), Error> {
     let parent = destination.parent().ok_or("guest asset has no parent")?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     std::io::copy(&mut fs::File::open(source)?, &mut temporary)?;
     temporary
         .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o755))?;
+        .set_permissions(fs::Permissions::from_mode(mode))?;
     temporary.as_file().sync_all()?;
     temporary.persist(destination)?;
     Ok(())
@@ -168,7 +168,7 @@ pub fn stage(home: &Path, share: &Path, assets: &Path, mut context: Value) -> Re
         "guest-desktop",
         "safeyolo-guest",
     ] {
-        copy_executable(&assets.join(asset), &share.join(asset))?;
+        copy_executable(&assets.join(asset), &share.join(asset), 0o755)?;
     }
     for (entrypoint, payload) in pending {
         fs::rename(&entrypoint, &payload)?;
@@ -356,6 +356,46 @@ mod tests {
             fs::read_to_string(home.join(".safeyolo-command.payload")).unwrap(),
             "operator payload"
         );
+    }
+
+    #[test]
+    fn stale_payloads_refuse_restaging_both_command_wrappers() {
+        for name in [".safeyolo-command", ".safeyolo-interactive-command"] {
+            let fixture = tempfile::tempdir().unwrap();
+            let home = fixture.path().join("home");
+            let source = fixture.path().join("assets");
+            let share = fixture.path().join("share");
+            fs::create_dir(&home).unwrap();
+            assets(&source);
+            let command = home.join(name);
+            let payload = home.join(format!("{name}.payload"));
+            fs::write(&command, "#!/bin/sh\nexec original\n").unwrap();
+            fs::set_permissions(&command, fs::Permissions::from_mode(0o755)).unwrap();
+            let mut context =
+                stage(&home, &share, &source, json!({"generation":"old-run"})).unwrap();
+            let saved = fs::read(share.join("host-launch-context.json")).unwrap();
+            fs::write(&command, "#!/bin/sh\nexec replacement\n").unwrap();
+            fs::write(&payload, "stale unrecognized payload\n").unwrap();
+            context["generation"] = "new-run".into();
+            assert!(
+                stage(&home, &share, &source, context)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("preserving unrecognized payload")
+            );
+            assert_eq!(
+                fs::read(share.join("host-launch-context.json")).unwrap(),
+                saved
+            );
+            assert_eq!(
+                fs::read_to_string(command).unwrap(),
+                "#!/bin/sh\nexec replacement\n"
+            );
+            assert_eq!(
+                fs::read_to_string(payload).unwrap(),
+                "stale unrecognized payload\n"
+            );
+        }
     }
 
     #[test]

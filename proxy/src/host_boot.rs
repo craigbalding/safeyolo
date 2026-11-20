@@ -297,12 +297,6 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
         "extra_shares":shares.iter().map(|(host,guest,ro)| json!({"host_path":host,"guest_path":guest,"read_only":ro})).collect::<Vec<_>>(),
         "writable_mounts":shares.iter().filter(|(_,_,ro)| !ro).map(|(host,_,_)| host).collect::<Vec<_>>(),
         "command_payloads":previous.get("command_payloads").cloned().unwrap_or_else(|| json!({}))});
-    crate::guest_commands::stage(
-        &home,
-        &share,
-        &host_package.join("assets/guest"),
-        context.clone(),
-    )?;
     stage_skills(&host_package.join("assets/skills"), &share).await?;
     for name in ["agent_token", "authorized_keys"] {
         let source = if name == "agent_token" {
@@ -321,10 +315,12 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
         root.join("certs/mitmproxy-ca-cert.pem"),
         share.join("mitmproxy-ca-cert.pem"),
     )?;
-    if host_package.join("assets/guest/guest-sudo").is_file() {
-        fs::copy(
-            host_package.join("assets/guest/guest-sudo"),
-            share.join("guest-sudo"),
+    let guest_sudo = host_package.join("assets/guest/guest-sudo");
+    if guest_sudo.is_file() {
+        crate::guest_commands::copy_executable(
+            &guest_sudo,
+            &share.join("guest-sudo"),
+            guest_sudo.metadata()?.permissions().mode(),
         )?;
     }
     fs::write(share.join("agent-name"), &agent.name)?;
@@ -404,7 +400,10 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
         )?;
         crate::guest_commands::write_json(&directory.join("config.json"), &spec)?;
     }
-    Ok(context)
+    // Publish the new generation only after host preparation succeeds. A
+    // staging failure must leave the stopped run's context and payload
+    // identities together so the same lifecycle operation can recover.
+    crate::guest_commands::stage(&home, &share, &host_package.join("assets/guest"), context)
 }
 
 async fn stage_skills(source: &Path, share: &Path) -> Result<(), Error> {
