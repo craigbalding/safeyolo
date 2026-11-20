@@ -150,11 +150,99 @@ transaction is insufficient. The reader checks the current owned run, durable
 identity and evidence age. Missing, stale, malformed or replaced-run evidence
 remains unknown. An absent package in a complete fresh inventory is unaffected.
 A package subject has `kind = "package"`, `name`, `distribution`
-and `fixed_version`. The built-in comparison supports Debian epoch, upstream and
+and optional `fixed_version`. Omit the version or use `null` when the advisory
+reports no available fix. An installed matching package then remains affected;
+the finding retains that no-fix state. Do not invent a fixed version. The built-in comparison supports Debian epoch, upstream and
 Debian revision ordering, including backports and `~`; other distributions stay
 unknown. Package repair, required process restarts, guest selection and actual
 remediation verification remain with the maintenance owner. Retained state is
 recovery input and grants no policy authority.
+
+### Assess running Debian guests
+
+The instance owner can explicitly adopt collection from selected running agents.
+On the trusted host, extend a private signals configuration with a rule like
+the following. Use an already-adopted advisory source and replace the agent,
+room and durable recipient ID with authorised targets. Severity, freshness,
+cadence and authority are operator choices. This example notifies under standing
+authority; it does not authorise patch execution or interruption.
+
+```toml
+[rules.packages]
+source = 'advisories'
+agents = ['research']
+distribution = 'debian:trixie'
+min_severity = 7
+authority = 'standing'
+on_stale = 'respond'
+on_inactive = 'release'
+inventory_max_age_seconds = 600
+
+[rules.packages.guest_inventory]
+interval_seconds = 300
+timeout_seconds = 30
+max_output_bytes = 1048576
+
+[rules.packages.response]
+kind = 'notify'
+room = 'maintenance'
+recipients = ['ag-11111111111111111111111111111111']
+```
+
+From that host shell, save the file and request an assessment using the selected
+instance. The request targets the rule's configured agents, including each
+agent's current owned run. It starts no stopped agent. Commands work from any
+working directory.
+
+```sh
+safeyolo --root /private/instance signals configure /private/signal-rules.toml
+safeyolo --root /private/instance signals assess packages
+safeyolo --root /private/instance signals status
+```
+
+`assess` returns `requested` with a request ID. The running proxy consumes the
+latest request on its existing control pass and retains the ID in collection
+status. This receipt is not a completed assessment. Requests made before the
+next pass coalesce into the latest request. Collection does not need a harness
+restart. Omit `interval_seconds` for explicit-request-only collection; a positive
+interval also collects on adoption and reassesses continuously running guests.
+Missed intervals coalesce into one current assessment; there is no catch-up
+burst. Removing the collection table stops collection. Instances without this
+adoption retain manual operation.
+
+The collector reads `os-release` and `dpkg-query` from the selected effective
+guest. Each agent has its own complete host-owned package inventory, bound to
+durable identity and current run. Multiarch packages keep their qualified names;
+an advisory applies if any installed architecture is below its fixed version.
+The built-in collection covers Debian packages, including local modifications.
+It does not attest application-service exposure or home-installed dependencies.
+An external `inventory` file remains available for adopted checks that supply
+that evidence; select one inventory producer per rule.
+
+The existing proxy control pass collects and reassesses retained advisories at
+each due interval, even if the publisher sends nothing. A failed, truncated,
+malformed, unsupported or replaced-run capture invalidates the last inventory
+for assessment. Evidence older than `inventory_max_age_seconds` remains unknown.
+The configured output bound is at most 1 MiB per stream; increase an insufficient
+selected bound within that limit or use a supported external inventory check.
+
+For a notification or Work rule, `on_stale = 'respond'` uses the same selected
+response for unknown/stale evidence, including a missing advisory source view.
+`retain` and `release` keep their existing meanings. Choose `authority =
+'approval'` when a response needs a decision, or select the existing Work
+response to assign maintenance. Pending decisions bind current inventory
+content and applicability as well as source, rule, identity and run. A changed
+package, stale capture or replaced run cannot reuse the old decision. An
+unchanged fresh capture does not create another approval or notification.
+
+Status and notifications show the assessed agent/run, inventory attempt,
+distribution, package count, source observation/expiry, applicability, authority,
+response and next action. Status retains the observation time; it is not a new
+guest observation when the proxy is stopped. A complete package list or an
+unaffected finding does not prove running code adopted a fix. Startup enforcement,
+patch execution, process/service restart, persistent remediation, guest selection
+and mutable-state recovery remain separate maintenance work. See the
+[manual procedure and backend limits](guest-oci.md#assess-and-maintain-installed-agents).
 
 ## Select an existing response owner
 

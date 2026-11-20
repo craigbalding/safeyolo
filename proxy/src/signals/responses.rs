@@ -19,7 +19,9 @@ pub(super) struct Rule {
     response: Response,
     /// Optional effective-state record written by an adopted inventory check.
     pub(super) inventory: Option<PathBuf>,
-    inventory_max_age_seconds: Option<u64>,
+    pub(super) inventory_max_age_seconds: Option<u64>,
+    /// Explicit adoption of collection from the current running Debian guest.
+    pub(super) guest_inventory: Option<guest_inventory::CollectionPolicy>,
 }
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +34,7 @@ enum Authority {
 enum Inactive {
     Retain,
     Release,
+    Respond,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -76,12 +79,27 @@ pub(super) fn validate(config: &Configuration) -> Result<(), Error> {
             .inventory
             .as_ref()
             .is_some_and(|path| !path.is_absolute())
-            || (rule.inventory.is_some()
+            || ((rule.inventory.is_some() || rule.guest_inventory.is_some())
                 && rule.inventory_max_age_seconds.is_none_or(|age| age == 0))
         {
             return Err(
                 "inventory needs an absolute host-owned path and positive freshness limit".into(),
             );
+        }
+        if let Some(collection) = &rule.guest_inventory {
+            collection.validate()?;
+            if rule.inventory.is_some() {
+                return Err(
+                    "select guest_inventory collection or an external inventory file for a rule"
+                        .into(),
+                );
+            }
+        }
+        if rule.on_inactive == Inactive::Respond
+            || (rule.on_stale == Inactive::Respond
+                && matches!(rule.response, Response::List { .. }))
+        {
+            return Err("on_stale = 'respond' selects notification or Work for unknown evidence; on_inactive supports retain or release".into());
         }
         match &rule.response {
             Response::List {
@@ -224,20 +242,88 @@ fn findings_current(original: &[Update], current: &[Accepted], source: &Source) 
         })
 }
 
-/// Inventory checks attest effective state, not saved desired packages. This
-/// record is host-selected, freshness-bounded and bound to the current agent run.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Inventory {
-    agent_id: String,
-    run_id: String,
-    observed_at: u64,
-    distribution: String,
-    packages: BTreeMap<String, String>,
-    services: Vec<String>,
+fn inventory_basis(root: &Path, name: &str, rule: &Rule, agent: &str, policy: &Policy) -> Value {
+    let inventory = if rule.guest_inventory.is_some() {
+        guest_inventory::inventory(root, name, agent)
+    } else if let Some(file) = &rule.inventory {
+        crate::guest_commands::read_state_bounded(file, 1024 * 1024).and_then(|value| {
+            value
+                .map(serde_json::from_value::<guest_inventory::Inventory>)
+                .transpose()
+                .map_err(Into::into)
+        })
+    } else {
+        return Value::Null;
+    };
+    match inventory {
+        Ok(Some(inventory)) if guest_inventory::fresh(&inventory, rule, agent, policy) => {
+            json!(digest(&json!([
+                inventory.agent_id,
+                inventory.run_id,
+                inventory.distribution,
+                inventory.packages,
+                inventory.services
+            ])))
+        }
+        _ => json!("unknown_or_stale"),
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn approval_findings_current(
+    root: &Path,
+    name: &str,
+    rule: &Rule,
+    agent: &str,
+    policy: &Policy,
+    action: &Value,
+    original: &[Update],
+    current: &[Accepted],
+    source: &Source,
+) -> bool {
+    if action["inventory_basis"] != inventory_basis(root, name, rule, agent, policy) {
+        return false;
+    }
+    if original.is_empty() {
+        let (_, unknown, _) = select_findings(
+            root,
+            name,
+            rule,
+            agent,
+            current,
+            source,
+            policy,
+            &Value::Null,
+        );
+        return action["respond_unknown"] == true && rule.on_stale == Inactive::Respond && unknown;
+    }
+    findings_current(original, current, source)
+        && original.iter().all(|finding| {
+            if rule.inventory.is_some()
+                || (rule.guest_inventory.is_some()
+                    && matches!(
+                        finding.evidence,
+                        Evidence::Advisory {
+                            subject: Subject::Package { .. },
+                            ..
+                        }
+                    ))
+            {
+                matches!(
+                    applicability(root, name, rule, agent, finding, policy, &Value::Null),
+                    Ok(Some(true))
+                )
+            } else {
+                true
+            }
+        })
+}
+
+/// Inventory checks attest effective state, not saved desired packages. This
+/// record is host-selected, freshness-bounded and bound to the current agent run.
 fn applicability(
+    root: &Path,
+    rule_name: &str,
     rule: &Rule,
     agent: &str,
     update: &Update,
@@ -250,21 +336,21 @@ fn applicability(
     let Evidence::Advisory { subject, .. } = &update.evidence else {
         return Ok(Some(false));
     };
-    if let Some(file) = &rule.inventory {
-        let Some(value) = crate::guest_commands::read_state_bounded(file, 1024 * 1024)? else {
-            return Ok(None);
+    let collected_package =
+        rule.guest_inventory.is_some() && matches!(subject, Subject::Package { .. });
+    if rule.inventory.is_some() || collected_package {
+        let inventory = if let Some(file) = &rule.inventory {
+            crate::guest_commands::read_state_bounded(file, 1024 * 1024)?
+                .map(serde_json::from_value::<guest_inventory::Inventory>)
+                .transpose()?
+        } else {
+            guest_inventory::inventory(root, rule_name, agent)?
         };
-        let inventory: Inventory = serde_json::from_value(value)?;
-        let Some(run) = policy.agent_run(agent) else {
+        let Some(inventory) = inventory else {
             return Ok(None);
         };
         if inventory.agent_id != agent_id
-            || inventory.run_id != run.run_id
-            || inventory.observed_at > now()
-            || now() - inventory.observed_at
-                >= rule
-                    .inventory_max_age_seconds
-                    .expect("validated inventory age")
+            || !guest_inventory::fresh(&inventory, rule, agent, policy)
         {
             return Ok(None);
         }
@@ -281,11 +367,23 @@ fn applicability(
                 if !distribution.starts_with("debian:") {
                     return Ok(None);
                 }
-                Ok(match inventory.packages.get(name) {
-                    None => Some(false), // The adopted record is a complete effective inventory.
-                    Some(version) => valid_debian_version(version)
-                        .then(|| debian_compare(version, fixed_version).is_lt()),
-                })
+                let versions = inventory
+                    .packages
+                    .iter()
+                    .filter(|(package, _)| package.split(':').next() == Some(name.as_str()))
+                    .map(|(_, version)| version)
+                    .collect::<Vec<_>>();
+                if versions
+                    .iter()
+                    .any(|version| !valid_debian_version(version))
+                {
+                    return Ok(None);
+                }
+                Ok(Some(versions.iter().any(|version| {
+                    fixed_version
+                        .as_deref()
+                        .is_none_or(|fixed| debian_compare(version, fixed).is_lt())
+                })))
             }
             Subject::Destination { .. } => destination(policy, agent, subject),
         };
@@ -434,6 +532,61 @@ fn list_expiry(selected: &[Update], source: &Source) -> Option<u64> {
         .min()
 }
 
+#[allow(clippy::too_many_arguments)]
+fn select_findings(
+    root: &Path,
+    rule_name: &str,
+    rule: &Rule,
+    agent: &str,
+    accepted: &[Accepted],
+    source: &Source,
+    policy: &Policy,
+    services: &Value,
+) -> (Vec<Update>, bool, bool) {
+    let mut selected = Vec::new();
+    let mut unknown = accepted.is_empty()
+        || (rule.guest_inventory.is_some()
+            && inventory_basis(root, rule_name, rule, agent, policy) == "unknown_or_stale");
+    let mut inactive = false;
+    for record in accepted {
+        let update = &record.update;
+        let Evidence::Advisory {
+            distribution,
+            severity,
+            ..
+        } = &update.evidence
+        else {
+            unknown = true;
+            continue;
+        };
+        if rule
+            .distribution
+            .as_ref()
+            .is_some_and(|wanted| distribution.as_ref() != Some(wanted))
+        {
+            continue;
+        }
+        if update.withdrawn || *severity < rule.min_severity {
+            inactive = true;
+            continue;
+        }
+        if !update.fresh(source, now()) {
+            unknown = true;
+            continue;
+        }
+        match applicability(root, rule_name, rule, agent, update, policy, services) {
+            Ok(Some(true)) => selected.push(update.clone()),
+            Ok(Some(false)) => {
+                inactive = true;
+            }
+            Ok(None) | Err(_) => {
+                unknown = true;
+            }
+        }
+    }
+    (selected, unknown, inactive)
+}
+
 pub(super) async fn reconcile(
     root: PathBuf,
     runtime: RuntimeState,
@@ -473,46 +626,19 @@ pub(super) async fn reconcile(
             next_due = next_due.min(deadline);
         }
         for agent in &rule.agents {
-            let mut selected = Vec::new();
-            let mut unknown = accepted.is_empty();
-            let mut inactive = false;
-            for record in &accepted {
-                let update = &record.update;
-                let Evidence::Advisory {
-                    distribution,
-                    severity,
-                    ..
-                } = &update.evidence
-                else {
-                    continue;
-                };
-                if rule
-                    .distribution
-                    .as_ref()
-                    .is_some_and(|wanted| distribution.as_ref() != Some(wanted))
-                {
-                    continue;
-                }
-                if update.withdrawn || *severity < rule.min_severity {
-                    inactive = true;
-                    continue;
-                }
-                if !update.fresh(source, now()) {
-                    unknown = true;
-                    continue;
-                }
-                match applicability(rule, agent, update, &policy, &services) {
-                    Ok(Some(true)) => selected.push(update.clone()),
-                    Ok(Some(false)) => {
-                        inactive = true;
-                    }
-                    Ok(None) | Err(_) => {
-                        unknown = true;
-                    }
-                }
+            if rule.guest_inventory.is_some()
+                && let Ok(Some(inventory)) = guest_inventory::inventory(&root, rule_name, agent)
+                && let Some(age) = rule.inventory_max_age_seconds
+                && inventory.observed_at.saturating_add(age) > now()
+            {
+                next_due = next_due.min(inventory.observed_at.saturating_add(age));
             }
+            let (selected, unknown, inactive) = select_findings(
+                &root, rule_name, rule, agent, &accepted, source, &policy, &services,
+            );
             let mut reaction = read(&root, rule_name, agent)?;
-            let active = !selected.is_empty();
+            let respond_unknown = unknown && rule.on_stale == Inactive::Respond;
+            let active = !selected.is_empty() || respond_unknown;
             let retain = !active
                 && if unknown {
                     rule.on_stale == Inactive::Retain
@@ -528,12 +654,23 @@ pub(super) async fn reconcile(
                 (rule.authority == Authority::Approval).then(|| digest(source)),
                 scope,
                 dispatch_findings,
+                respond_unknown,
+                (rule.authority == Authority::Approval)
+                    .then(|| inventory_basis(&root, rule_name, rule, agent, &policy)),
                 policy.evidence_agent_id(agent),
                 policy.agent_run(agent),
                 active
             ]));
-            let current = json!({"rule":rule_name,"agent":agent,"source":rule.source,"affected":active,
+            let inventory_status = if rule.guest_inventory.is_some() {
+                guest_inventory::status(&root, rule_name, rule, agent, Some(&policy))?
+            } else {
+                json!({"external_path":rule.inventory,"max_age_seconds":rule.inventory_max_age_seconds})
+            };
+            let current = json!({"rule":rule_name,"agent":agent,"agent_id":policy.evidence_agent_id(agent),"run":policy.agent_run(agent),"source":rule.source,"affected":!selected.is_empty(),
                 "applicability":if unknown {"unknown_or_stale"} else if active {"affected"} else {"unaffected"},
+                "inventory":inventory_status,"source_evidence":accepted.iter().map(|record|json!({"id":record.update.id,"observed_at":record.update.observed_at,"expires_at":record.update.expires_at,"fresh":record.update.fresh(source,now())})).collect::<Vec<_>>(),
+                "responding_to_uncertainty":respond_unknown,
+                "next_action":if unknown {"Inspect inventory and source freshness; resolve unavailable evidence. A response does not establish repair."}else if active {"Read the response receipt and the maintenance owner's result; repair and running-code adoption remain unverified."}else{"No finding meets this rule in the current evidence; other maintenance coverage remains outside this assessment."},
                 "findings":selected,"authority":rule.authority,"inactive_evidence":inactive,
                 "effect":rule.response,"effect_scope":scope,"observed_at":now()});
             save(
@@ -605,6 +742,7 @@ pub(super) async fn reconcile(
                 let action = json!({"kind":"signal_response","rule":rule_name,"agent":agent,
                     "agent_id":policy.evidence_agent_id(agent),"basis":digest(rule),"identity":identity,
                     "source_basis":digest(source),
+                    "inventory_basis":inventory_basis(&root,rule_name,rule,agent,&policy),"respond_unknown":respond_unknown,
                     "effect_scope":scope,
                     "findings":selected});
                 let record = match writer.approvals().get(&operation)? {
@@ -617,7 +755,7 @@ pub(super) async fn reconcile(
                                     .min(u.observed_at.saturating_add(source.max_age_seconds))
                             })
                             .min()
-                            .expect("active findings");
+                            .unwrap_or_else(|| now().saturating_add(source.max_age_seconds));
                         let expiry = time::OffsetDateTime::from_unix_timestamp(expiry as i64)?
                             .format(&time::format_description::well_known::Rfc3339)?;
                         let record=writer.approvals().submit(pending::Authority{revision:approval_revision(&policy,&action).ok_or("signal approval authority unavailable")?,
@@ -704,6 +842,8 @@ pub(super) async fn reconcile(
                 rule,
                 agent,
                 &selected,
+                &services,
+                respond_unknown,
                 &operation,
                 &mut reaction,
             )
@@ -753,6 +893,8 @@ async fn apply(
     rule: &Rule,
     agent: &str,
     selected: &[Update],
+    services: &Value,
+    respond_unknown: bool,
     operation: &str,
     reaction: &mut Reaction,
 ) -> Result<(&'static str, Value), Error> {
@@ -787,9 +929,25 @@ async fn apply(
             a.update == *update
                 && update.fresh(&config.sources[&rule.source], now())
                 && !update.withdrawn
-        })
+        }) || !matches!(
+            applicability(root, rule_name, rule, agent, update, policy, services),
+            Ok(Some(true))
+        )
     }) {
         return Err("signal evidence changed before response; no effect was requested".into());
+    }
+    let (_, current_unknown, _) = select_findings(
+        root,
+        rule_name,
+        rule,
+        agent,
+        &current,
+        &config.sources[&rule.source],
+        policy,
+        services,
+    );
+    if respond_unknown != (current_unknown && rule.on_stale == Inactive::Respond) {
+        return Err("signal assessment changed before response; reassess current evidence".into());
     }
     match &rule.response {
         Response::List { feeds, body } => {
@@ -826,7 +984,7 @@ async fn apply(
                     "network_activation":"policy watcher; applies to new admissions only"}),
             ))
         }
-        _ if selected.is_empty() => Ok((
+        _ if selected.is_empty() && !respond_unknown => Ok((
             "verified",
             json!({"effect":"no_new_dispatch","prior_dispatch":"a withdrawal does not undo a completed external operation"}),
         )),
@@ -911,8 +1069,12 @@ async fn notify(
     let prepared = if reaction.result["prepared"].is_object() {
         serde_json::from_value(reaction.result["prepared"].clone())?
     } else {
+        let assessment = crate::guest_commands::read_state(
+            &path(root, rule_name, agent).with_extension("status.json"),
+        )?;
         let body = serde_json::to_string(
             &json!({"source":"adopted_signal_rule","rule":rule_name,"affected_agent":agent,"findings":selected,
+            "assessment":assessment,
             "requirement":requirement,"authority":"Evidence and notification grant no execution authority. Execute only within the adopted owner policy."}),
         )?;
         let prepared = coord
@@ -944,7 +1106,8 @@ async fn notify(
 pub(crate) fn approval_revision(policy: &Policy, action: &Value) -> Option<String> {
     let root = policy.source_path()?.parent()?;
     let config = configuration(root).ok()?;
-    let rule = config.rules.get(action["rule"].as_str()?)?;
+    let rule_name = action["rule"].as_str()?;
+    let rule = config.rules.get(rule_name)?;
     let agent = action["agent"].as_str()?;
     let scope = effect_scope(root, rule, policy).ok()?;
     let source = config.sources.get(&rule.source)?;
@@ -952,7 +1115,9 @@ pub(crate) fn approval_revision(policy: &Policy, action: &Value) -> Option<Strin
     let current = read_accepted(root, &rule.source, source).ok()?;
     (digest(rule) == action["basis"]
         && digest(config.sources.get(&rule.source)?) == action["source_basis"]
-        && findings_current(&original, &current, source)
+        && approval_findings_current(
+            root, rule_name, rule, agent, policy, action, &original, &current, source,
+        )
         && scope == action["effect_scope"]
         && rule.agents.iter().any(|a| a == agent)
         && rule.authority == Authority::Approval
@@ -962,7 +1127,8 @@ pub(crate) fn approval_revision(policy: &Policy, action: &Value) -> Option<Strin
             rule,
             scope,
             policy.evidence_agent_id(agent),
-            policy.agent_run(agent)
+            policy.agent_run(agent),
+            inventory_basis(root, rule_name, rule, agent, policy)
         ]))
     })
 }
@@ -995,7 +1161,7 @@ pub(crate) fn resolve(
         let source=&config.sources[&rule.source];
         let current=read_accepted(root,&rule.source,source).map_err(|_|approvals::invalid("signal evidence unavailable"))?;
         let original:Vec<Update>=serde_json::from_value(action["findings"].clone()).map_err(|_|approvals::invalid("signal approval findings unavailable"))?;
-        let valid=findings_current(&original,&current,source);
+        let valid=approval_findings_current(root,action["rule"].as_str().unwrap_or(""),rule,action["agent"].as_str().unwrap_or(""),&policy,action,&original,&current,source);
         record.status=if !valid{"superseded"}else if matches!(decision,approvals::network_action::Decision::Reject){"rejected"}else{"approved"}.into();
         record.option=(record.status=="approved").then(||"once".into());
         record.result=json!({"status":"decision_recorded","effect_applied":false,"next_action":"the running proxy rechecks scope and applicability before dispatch"});
@@ -1010,10 +1176,19 @@ pub(crate) fn resolve(
 pub(super) fn status(root: &Path) -> Result<Value, Error> {
     let config = configuration(root)?;
     let mut responses = Vec::new();
-    for (name, rule) in config.rules {
-        for agent in rule.agents {
-            responses.push(json!({"rule":name,"agent":agent,"response":read(root,&name,&agent)?,
-            "selection":crate::guest_commands::read_state(&path(root,&name,&agent).with_extension("status.json"))?}));
+    for (name, rule) in &config.rules {
+        for agent in &rule.agents {
+            let request =
+                crate::guest_commands::read_state(&guest_inventory::request_path(root, name))?
+                    .unwrap_or(Value::Null);
+            let collection = if rule.guest_inventory.is_some() {
+                guest_inventory::status(root, name, rule, agent, None)?
+            } else {
+                Value::Null
+            };
+            responses.push(json!({"rule":name,"agent":agent,"response":read(root,name,agent)?,
+            "assessment_request":request,"assessment_pending":!request["request_id"].is_null() && collection["request_id"]!=request["request_id"],
+            "recorded_collection":collection,"selection":crate::guest_commands::read_state(&path(root,name,agent).with_extension("status.json"))?}));
         }
     }
     Ok(json!(responses))
@@ -1022,6 +1197,231 @@ pub(super) fn status(root: &Path) -> Result<Value, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn effective_package_changes_freshness_and_run_replacement_revalidate_delayed_approvals() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let id = "ag-11111111111111111111111111111111";
+        let generation = "11111111111111111111111111111111";
+        fs::write(
+            root.join("policy.toml"),
+            format!("[agents.alice]\nagent_id='{id}'\n[hosts.'*']\negress='deny'\n"),
+        )
+        .unwrap();
+        let backend = super::super::test_runs::agent_run(root, "alice", id, generation);
+        let policy = Policy::from_native_path(&root.join("policy.toml")).unwrap();
+        let inventory = root.join("effective.json");
+        let write_inventory = |version: &str, at: u64, run: &str| {
+            save(&inventory,&json!({"agent_id":id,"run_id":run,"observed_at":at,"distribution":"debian:trixie","packages":{"curl:arm64":version},"services":[]})).unwrap()
+        };
+        write_inventory("8.0-1", now(), generation);
+        let mut source = super::super::tests::source();
+        source.list = None;
+        let config:Configuration=serde_json::from_value(json!({"sources":{"test":source},"rules":{"packages":{
+            "source":"test","agents":["alice"],"min_severity":7,"authority":"approval","on_stale":"respond","on_inactive":"release",
+            "inventory":inventory,"inventory_max_age_seconds":60,"response":{"kind":"notify","room":"maintenance","recipients":[id]}}}})).unwrap();
+        fs::write(root.join("signals.toml"), toml::to_string(&config).unwrap()).unwrap();
+        let rule = &config.rules["packages"];
+        let source = &config.sources["test"];
+        let mut finding = Update {
+            source_id: source.source_id.clone(),
+            id: "advisories.curl".into(),
+            revision: 1,
+            observed_at: now() - 1,
+            expires_at: now() + 3600,
+            withdrawn: false,
+            evidence_refs: vec![],
+            evidence: Evidence::Advisory {
+                distribution: Some("debian:trixie".into()),
+                severity: 9.,
+                subject: Subject::Package {
+                    name: "curl".into(),
+                    distribution: "debian:trixie".into(),
+                    fixed_version: Some("8.0-2".into()),
+                },
+            },
+        };
+        save(
+            &accepted_path(root, "test", &finding.id),
+            &Accepted {
+                source_digest: digest(source),
+                update: finding.clone(),
+            },
+        )
+        .unwrap();
+        let unsupported = Accepted {
+            source_digest: digest(source),
+            update: Update {
+                evidence: Evidence::List {
+                    body: "wrong evidence kind".into(),
+                },
+                ..finding.clone()
+            },
+        };
+        assert!(
+            select_findings(
+                root,
+                "packages",
+                rule,
+                "alice",
+                &[unsupported],
+                source,
+                &policy,
+                &Value::Null
+            )
+            .1,
+            "unsupported evidence cannot report an unaffected assessment"
+        );
+        let mut collected_rule = rule.clone();
+        collected_rule.inventory = None;
+        collected_rule.guest_inventory = Some(guest_inventory::CollectionPolicy {
+            interval_seconds: Some(5),
+            timeout_seconds: 1,
+            max_output_bytes: 1024,
+        });
+        let mut below_threshold = finding.clone();
+        if let Evidence::Advisory { severity, .. } = &mut below_threshold.evidence {
+            *severity = 1.;
+        }
+        assert!(
+            select_findings(
+                root,
+                "packages",
+                &collected_rule,
+                "alice",
+                &[Accepted {
+                    source_digest: digest(source),
+                    update: below_threshold
+                }],
+                source,
+                &policy,
+                &Value::Null
+            )
+            .1,
+            "unavailable adopted guest collection stays unknown even below the severity threshold"
+        );
+        assert_eq!(
+            applicability(
+                root,
+                "packages",
+                rule,
+                "alice",
+                &finding,
+                &policy,
+                &Value::Null
+            )
+            .unwrap(),
+            Some(true)
+        );
+        let action = json!({"rule":"packages","agent":"alice","agent_id":id,"basis":digest(rule),"source_basis":digest(source),"effect_scope":Value::Null,
+            "inventory_basis":inventory_basis(root,"packages",rule,"alice",&policy),"findings":[finding.clone()],"respond_unknown":false});
+        let revision = approval_revision(&policy, &action).expect("fresh vulnerable current run");
+        write_inventory("8.0-1", now() + 1, generation);
+        assert!(
+            approval_revision(&policy, &action).is_none(),
+            "future evidence is unknown"
+        );
+        write_inventory("8.0-1", now(), generation);
+        assert_eq!(
+            approval_revision(&policy, &action),
+            Some(revision),
+            "unchanged capture needs no new decision"
+        );
+        write_inventory("8.0-2", now(), generation);
+        assert_eq!(
+            applicability(
+                root,
+                "packages",
+                rule,
+                "alice",
+                &finding,
+                &policy,
+                &Value::Null
+            )
+            .unwrap(),
+            Some(false),
+            "unchanged advisory follows local package repair"
+        );
+        assert!(
+            approval_revision(&policy, &action).is_none(),
+            "old decision cannot dispatch after repair"
+        );
+        if let Evidence::Advisory {
+            subject: Subject::Package { fixed_version, .. },
+            ..
+        } = &mut finding.evidence
+        {
+            *fixed_version = None;
+        }
+        finding
+            .validate(source, &finding.id, now())
+            .expect("no-fix evidence remains a valid explicit finding");
+        assert_eq!(
+            applicability(
+                root,
+                "packages",
+                rule,
+                "alice",
+                &finding,
+                &policy,
+                &Value::Null
+            )
+            .unwrap(),
+            Some(true),
+            "no-fix advisory stays affected"
+        );
+        write_inventory("8.0-1", now() - 60, generation);
+        assert!(approval_revision(&policy, &action).is_none());
+        let mut unknown_action = action.clone();
+        unknown_action["findings"] = json!([]);
+        unknown_action["respond_unknown"] = json!(true);
+        unknown_action["inventory_basis"] =
+            inventory_basis(root, "packages", rule, "alice", &policy);
+        assert!(
+            approval_revision(&policy, &unknown_action).is_some(),
+            "adopted approval can respond to stale inventory"
+        );
+        write_inventory("8.0-2", now(), generation);
+        assert!(
+            approval_revision(&policy, &unknown_action).is_none(),
+            "fresh unaffected evidence supersedes the uncertainty decision"
+        );
+        write_inventory("8.0-1", now() - 60, generation);
+        assert_eq!(
+            applicability(
+                root,
+                "packages",
+                rule,
+                "alice",
+                &finding,
+                &policy,
+                &Value::Null
+            )
+            .unwrap(),
+            None
+        );
+        write_inventory("8.0-1", now(), "replaced-run");
+        assert_eq!(
+            applicability(
+                root,
+                "packages",
+                rule,
+                "alice",
+                &finding,
+                &policy,
+                &Value::Null
+            )
+            .unwrap(),
+            None
+        );
+        write_inventory("8.0-1", now(), generation);
+        drop(backend);
+        assert!(
+            approval_revision(&policy, &action).is_none(),
+            "exited backend cannot retain run authority"
+        );
+    }
     #[test]
     fn finding_identity_ignores_revision_age_and_order_but_keeps_meaning() {
         let a = Update {
