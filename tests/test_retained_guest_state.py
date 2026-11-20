@@ -132,7 +132,7 @@ def test_idle_watcher_does_not_wake_itself_on_recorder_lock_closes(guest):
             watch.wait(timeout=5)
 
 
-def make_deb(directory, version):
+def make_deb(directory, version, *, conffile=False):
     package = directory / f"package-{version}"
     (package / "DEBIAN").mkdir(parents=True)
     (package / "DEBIAN/control").write_text(
@@ -140,19 +140,28 @@ def make_deb(directory, version):
     (package / "usr/share/retention-fixture").mkdir(parents=True)
     (package / "usr/share/retention-fixture/version").write_text(version)
     payload = package / "usr/share/retention-fixture/version"
-    (package / "DEBIAN/md5sums").write_text(
-        hashlib.md5(payload.read_bytes(), usedforsecurity=False).hexdigest()
-        + "  usr/share/retention-fixture/version\n")
+    checksums = (hashlib.md5(payload.read_bytes(), usedforsecurity=False).hexdigest()
+                 + "  usr/share/retention-fixture/version\n")
+    if conffile:
+        (package / "etc").mkdir()
+        config = package / "etc/retention-fixture.conf"
+        config.write_text("vendor configuration\n")
+        (package / "DEBIAN/conffiles").write_text("/etc/retention-fixture.conf\n")
+        checksums += (hashlib.md5(config.read_bytes(), usedforsecurity=False).hexdigest()
+                      + "  etc/retention-fixture.conf\n")
+    (package / "DEBIAN/md5sums").write_text(checksums)
     archive = directory / f"fixture-{version}.deb"
     run("dpkg-deb", "--root-owner-group", "--build", str(package), str(archive))
     return archive
 
 
-def maintenance_request(guest, tmp_path, operation="req-maintenance1"):
+def maintenance_request(guest, tmp_path, operation="req-maintenance1", *, conffile=False):
     root, _, command = guest
-    old = make_deb(tmp_path, "1.0")
-    fixed = make_deb(tmp_path, "2.0")
+    old = make_deb(tmp_path, "1.0", conffile=conffile)
+    fixed = make_deb(tmp_path, "2.0", conffile=conffile)
     run("dpkg", "--root=" + str(root), "--log=" + str(root / "var/log/dpkg.log"), "--force-not-root", "--force-script-chrootless", "--install", str(old))
+    if conffile:
+        (root / "etc/retention-fixture.conf").write_text("retained configuration\n")
     run(*command, "capture")
     checkpoint = ('r=$SAFEYOLO_GUEST_ROOT; d=$SAFEYOLO_MAINTENANCE_DIRECTORY; '
                   'cp -a "$r/var/lib/dpkg" "$d/dpkg"; cp -a "$r/etc" "$d/etc"; '
@@ -205,9 +214,10 @@ def test_maintenance_real_patch_retained_requirement_recreation_and_satisfactory
 
 
 @guest_root_required
-def test_maintenance_health_failure_recovers_actual_mutable_state_and_keeps_requirement(guest, tmp_path):
+@pytest.mark.parametrize("conffile", [False, True])
+def test_maintenance_health_failure_recovers_actual_mutable_state_and_keeps_requirement(guest, tmp_path, conffile):
     root, state, command = guest
-    request = maintenance_request(guest, tmp_path)
+    request = maintenance_request(guest, tmp_path, conffile=conffile)
     request["health_command"] = 'test "$(cat "$SAFEYOLO_GUEST_ROOT/usr/share/retention-fixture/version")" = 1.0'
     receipt = maintain(command, request)
     assert receipt["outcome"] == "recovered"
@@ -217,7 +227,55 @@ def test_maintenance_health_failure_recovers_actual_mutable_state_and_keeps_requ
     assert record["before"] == record["recovered_state"]
     assert record["commands"]["health_command"]["exit_code"] != 0
     assert record["commands"]["recovery_health_command"]["exit_code"] == 0
+    assert record["recovery_package_files"]["packages"] == ["sy-retention-fixture"]
+    if conffile:
+        assert (root / "etc/retention-fixture.conf").read_text() == "retained configuration\n"
+        assert record["recovery_package_files"]["modified_configuration"] == ["/etc/retention-fixture.conf"]
     assert "health_command failed" in record["diagnostic"]
+
+
+@guest_root_required
+@pytest.mark.parametrize("payload_state", ["patched", "missing", "unverifiable"])
+def test_maintenance_recovery_verifies_restored_package_payload(guest, tmp_path, payload_state):
+    root, _, command = guest
+    request = maintenance_request(guest, tmp_path)
+    request["health_command"] = ('d=$SAFEYOLO_MAINTENANCE_DIRECTORY; '
+                                'if test -f "$d/health-checked"; then exit 0; fi; '
+                                'touch "$d/health-checked"; exit 4')
+    request["recover_command"] = (
+        'r=$SAFEYOLO_GUEST_ROOT; d=$SAFEYOLO_MAINTENANCE_DIRECTORY; '
+        'rm -rf "$r/var/lib/dpkg" "$r/etc"; '
+        'cp -a "$d/dpkg" "$r/var/lib/dpkg"; cp -a "$d/etc" "$r/etc"')
+    payload = root / "usr/share/retention-fixture/version"
+    if payload_state == "missing":
+        request["recover_command"] += '; rm "$r/usr/share/retention-fixture/version"'
+    elif payload_state == "unverifiable":
+        request["recover_command"] += (
+            '; cp -a "$d/payload/version" "$r/usr/share/retention-fixture/version"; '
+            'rm "$r/var/lib/dpkg/info/sy-retention-fixture.md5sums"')
+    receipt = maintain(command, request)
+    # The database is restored even though the corresponding payload proof is not.
+    assert run("dpkg-query", "--admindir=" + str(root / "var/lib/dpkg"),
+               "-W", "-f=${Version}", "sy-retention-fixture").stdout == "1.0"
+    verification = run("dpkg", "--root=" + str(root), "--verify", "sy-retention-fixture", check=False)
+    if payload_state == "unverifiable":
+        # dpkg --verify alone silently succeeds without the vendor checksums.
+        assert not verification.stdout and not verification.stderr
+        audit = run("dpkg", "--root=" + str(root), "--audit", "sy-retention-fixture")
+        assert "missing the md5sums control file" in audit.stdout
+    else:
+        assert verification.stdout or verification.stderr
+    if payload_state == "missing":
+        assert not payload.exists()
+    else:
+        assert payload.read_text() == ("2.0" if payload_state == "patched" else "1.0")
+    assert receipt["outcome"] == "recovery_failed"
+    record = json.loads(Path(receipt["record_path"]).read_text())
+    assert record["before"] == record["recovered_state"]
+    assert record["commands"]["recover_command"]["exit_code"] == 0
+    assert "health_command failed" in record["diagnostic"]
+    assert "effective package" in record["recovery_diagnostic"]
+    assert maintain(command, request)["started_at"] == receipt["started_at"]
 
 
 @guest_root_required

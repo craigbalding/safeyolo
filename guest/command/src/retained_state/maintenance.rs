@@ -253,6 +253,7 @@ fn recover(
     if after != record["before"] {
         return Err("recovery does not match the previous package and covered-file state".into());
     }
+    record["recovery_package_files"] = verify_files(store, &value)?;
     let mut recovery_request = request.clone();
     recovery_request["recovery_health_command"] = request["health_command"].clone();
     execute(
@@ -386,6 +387,20 @@ fn verify_files(store: &GuestState, value: &Value) -> Result<Value, Error> {
         .ok_or("invalid requirements")?;
     if names.is_empty() {
         return Ok(json!({"packages":[],"modified_configuration":[]}));
+    }
+    // --verify can report success when the vendor checksum file is absent.
+    // Let dpkg diagnose incomplete metadata before trusting payload verification.
+    let audit = Command::new("dpkg")
+        .arg(format!("--root={}", store.root.display()))
+        .arg("--audit")
+        .args(names.keys())
+        .env("LC_ALL", "C")
+        .output()?;
+    if !audit.status.success() || !audit.stdout.is_empty() || !audit.stderr.is_empty() {
+        return Err(
+            "effective package-file verification has incomplete or unavailable package metadata"
+                .into(),
+        );
     }
     let output = Command::new("dpkg")
         .arg(format!("--root={}", store.root.display()))
