@@ -1317,7 +1317,7 @@ mod tests {
         let action = json!({"rule":"packages","agent":"alice","agent_id":id,"basis":digest(rule),"source_basis":digest(source),"effect_scope":Value::Null,
             "inventory_basis":inventory_basis(root,"packages",rule,"alice",&policy),"findings":[finding.clone()],"respond_unknown":false});
         let revision = approval_revision(&policy, &action).expect("fresh vulnerable current run");
-        write_inventory("8.0-1", now() + 1, generation);
+        write_inventory("8.0-1", now() + 60, generation);
         assert!(
             approval_revision(&policy, &action).is_none(),
             "future evidence is unknown"
