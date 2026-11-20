@@ -1,5 +1,9 @@
 # Maintained policy lists
 
+For recoverable NATS distribution and background responses to advisory changes,
+use [signals and adopted responses](signals.md). Ordinary policy admission
+continues to use local accepted snapshots.
+
 SafeYolo can acquire and refresh named host lists on the trusted host. Choose a
 source once, then reference its accepted snapshot in `policy.toml`. The running
 proxy refreshes sources through its existing policy control loop. A stopped

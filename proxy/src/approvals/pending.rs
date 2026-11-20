@@ -586,6 +586,7 @@ impl Record {
             Some("gateway_route") => ("gateway.risky_route", "gateway_risky_route"),
             Some("service_authorize") => ("gateway.request_access", "service"),
             Some("operator_action") => ("agent.operator_action_requested", "desktop_present"),
+            Some("signal_response") => ("ops.signal_response_requested", "signal_response"),
             Some("diagnostic_disclosure") => ("agent.diagnostic_access_requested", "diagnostic"),
             Some("policy_snapshot") => ("agent.policy_snapshot_requested", "policy_snapshot"),
             Some("policy_change") => ("agent.policy_change_submitted", "policy_change"),
@@ -669,7 +670,9 @@ pub(crate) fn save_receipt(document: &mut toml_edit::DocumentMut, record: &Recor
 }
 
 pub(crate) fn revision(policy: &Policy, action: &Value) -> Option<String> {
-    if action["kind"] == "diagnostic_disclosure" {
+    if action["kind"] == "signal_response" {
+        crate::signals::approval_revision(policy, action)
+    } else if action["kind"] == "diagnostic_disclosure" {
         diagnostics::revision(policy, action)
     } else if action["kind"] == "policy_change" {
         (policy.evidence_agent_id(action["agent"].as_str()?) == action["agent_id"].as_str()
@@ -1311,6 +1314,13 @@ pub(crate) fn resolve_as(
     reviewer: Option<(&crate::peer_support::Caller, &str)>,
 ) -> Result<Option<(u16, Value)>> {
     match lookup(writer, id)? {
+        Some(record) if record.authority.action["kind"] == "signal_response" => {
+            if option.is_some_and(|option| option != "once") {
+                return Err(invalid("select this signal response's fixed once option"));
+            }
+            return crate::signals::resolve(state, writer, id, decision, reviewer.is_some())
+                .map(Some);
+        }
         Some(record) if record.authority.action["kind"] == "policy_change" => {
             return policy_change::resolve(state, writer, id, decision, option, reviewer).map(Some);
         }
