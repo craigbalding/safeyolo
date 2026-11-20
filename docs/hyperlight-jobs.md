@@ -249,7 +249,10 @@ construction never imports arbitrary checker code.
 
 Each call attaches current input, identity, deadline and capability handles.
 Unikraft refreshes its mounts, environment, clock and supported runtime random
-generators on restore. `SY_INVOCATION_ID` and `SY_DEADLINE_MONOTONIC_MS` identify
+generators on restore. Initialization imports Python's module-level `random`
+generator. The restore probe compares its state with the frozen state before
+drawing a value, as well as comparing values across calls. `SY_INVOCATION_ID`
+and `SY_DEADLINE_MONOTONIC_MS` identify
 the current call. Core's `InvocationContext()` host function returns the current
 invocation ID, Unix time in milliseconds, deadline and 32 fresh random bytes.
 Code that keeps a private generator or startup-time value in its own initialized
@@ -263,7 +266,10 @@ checker or guest digest, architecture and effective memory/transport layout.
 The helper's digest binds its initialization code and configuration. Templates
 are local to one host boot. The supported loader checks compatibility and all
 snapshot blob digests against the retained manifest digest. Artifact verification
-still runs for each call. Current policy is checked separately: changing a
+still runs for each call. The cache and its receipts stay in the trusted host's
+private instance directory, outside job mounts. Digest checks detect changed
+bytes; they do not authenticate a cache supplied by an untrusted writer.
+Current policy is checked separately: changing a
 principal or service grant does not itself change initialized bytes or preserve
 the previous call's authority.
 

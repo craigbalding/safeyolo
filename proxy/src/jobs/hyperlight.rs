@@ -73,8 +73,10 @@ fn artifacts(engine: &JobEngine) -> Option<(&PinnedArtifact, &PinnedArtifact)> {
 
 fn template_key(spec: &JobSpec) -> Result<String, Error> {
     let (manifest, artifact) = artifacts(&spec.engine).ok_or("not a Hyperlight engine")?;
-    // The pinned helper covers initialization code, kernel and layout. Policy,
-    // input, principal and entry function do not determine frozen bytes.
+    // The manifest digest transitively binds the verified helper, rootfs,
+    // runtime/ABI versions and host architecture. The helper includes the
+    // kernel, initialization code and fixed transport layout. Policy, input,
+    // principal and entry function do not determine frozen bytes.
     Ok(digest(&serde_json::to_vec(&json!({
         "engine":spec.engine.name(),"runtime":manifest.sha256,
         "artifact":artifact.sha256,"memory_mb":spec.memory_mb,

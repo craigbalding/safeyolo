@@ -580,6 +580,8 @@ def warm_templates(instance, engine, *, remaining_only=False):
     assert initialized["initialization_events"] == 1, first
     first_output = output(first)
     assert first_output["calls"] == 1
+    if engine == "hyperlight-unikraft":
+        assert first_output["initialized_random_state_inherited"] is False, first_output
     runtime_random = ({first_output["context"]["runtime_random"]}
                       if engine == "hyperlight-unikraft" else set())
     spec["gate_id"] = "another-template-principal"
@@ -596,6 +598,8 @@ def warm_templates(instance, engine, *, remaining_only=False):
         assert result["started_unix_ms"] <= value["context"]["unix_ms"] <= result["ended_unix_ms"], value
         assert value["context"]["random"] != first_output["context"]["random"], value
         if engine == "hyperlight-unikraft":
+            if result["runtime_report"]["initialization"]["mode"] != "cold":
+                assert value["initialized_random_state_inherited"] is False, value
             current_random = value["context"]["runtime_random"]
             assert current_random not in runtime_random, value
             runtime_random.add(current_random)

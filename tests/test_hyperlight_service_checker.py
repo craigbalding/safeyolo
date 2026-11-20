@@ -6,6 +6,8 @@ import copy
 import errno
 import importlib.util
 import json
+import random
+import runpy
 import signal
 import sys
 import threading
@@ -386,9 +388,33 @@ def test_spin_observer_waits_for_the_current_live_marker(host_driver, tmp_path):
         host_driver.stop(child)
 
 
+@pytest.mark.parametrize("inherited", [False, True])
+def test_template_probe_compares_frozen_generator_state_before_drawing(
+        tmp_path, monkeypatch, capsys, inherited):
+    import builtins
+
+    (tmp_path / "request.json").write_text("{}")
+    monkeypatch.setattr(builtins, "_sy_initialized_ns", 123, raising=False)
+    state = random.getstate() if inherited else random.Random().getstate()
+    monkeypatch.setattr(builtins, "_sy_initialized_random_state", state, raising=False)
+    monkeypatch.setattr(builtins, "_sy_probe_calls", 0, raising=False)
+    monkeypatch.setenv("SY_INVOCATION_ID", "current-invocation")
+    monkeypatch.setenv("SY_DEADLINE_MONOTONIC_MS", "1234")
+    paths = {"/input/request.json": tmp_path / "request.json",
+             "/work/prior-invocation": tmp_path / "prior-invocation"}
+    with monkeypatch.context() as path_patch:
+        path_patch.setattr("pathlib.Path", lambda path: paths[path])
+        runpy.run_path(str(REPO / "jobs/template_probe.py"))
+    value = json.loads(capsys.readouterr().out)
+    assert value["initialized_random_state_inherited"] is inherited
+    assert value["calls"] == 1 and not value["inherited_file"]
+    assert value["context"]["invocation_id"] == "current-invocation"
+
+
 @pytest.mark.parametrize("unavailable_memory", [False, True])
+@pytest.mark.parametrize("replayed", ["runtime_random", "initialized_random_state"])
 def test_warm_probe_rejects_replayed_runtime_randomness_and_preserves_samples(
-        host_driver, tmp_path, monkeypatch, unavailable_memory):
+        host_driver, tmp_path, monkeypatch, unavailable_memory, replayed):
     (tmp_path / "hyperlight-unikraft.json").write_text(json.dumps({"engine": {}}))
     (tmp_path / "template_probe.py").write_text("probe")
     instance = SimpleNamespace(args=SimpleNamespace(bundle=tmp_path), scratch=tmp_path,
@@ -400,8 +426,9 @@ def test_warm_probe_rejects_replayed_runtime_randomness_and_preserves_samples(
         index = len(results)
         run_id = f"run-{index}"
         payload = json.dumps({"calls": 1, "input": list(request["value"].encode()), "initialized_at": 42,
+                              "initialized_random_state_inherited": replayed == "initialized_random_state" and index > 0,
                               "context": {"invocation_id": run_id, "unix_ms": 100,
-                                          "random": [index], "runtime_random": 0.25}}).encode()
+                                          "random": [index], "runtime_random": 0.25 if replayed == "runtime_random" else index}}).encode()
         result = {"outcome": {"kind": "exit", "code": 0}, "observation_error": None,
                   "run_id": run_id, "started_unix_ms": 99, "ended_unix_ms": 101,
                   "stdout": {"bytes": len(payload), "retained_base64": base64.b64encode(payload).decode(),

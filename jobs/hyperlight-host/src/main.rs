@@ -301,7 +301,10 @@ fn core(request: &Invocation, observation: &mut template::Observation) -> Result
     Ok(json!({"kind":"guest_function_returned"}))
 }
 
-const PYTHON_INITIALIZATION: &str = "import os,sys,json,runpy,builtins,time\nos.makedirs('/work',exist_ok=True)\nos.chdir('/work')\nbuiltins._sy_initialized_ns=time.time_ns()";
+// Import the module-level generator before freezing. The pinned Python driver
+// reseeds it on restore; the probe compares its state before drawing a value,
+// so a lazy first import cannot masquerade as reseeding initialized state.
+const PYTHON_INITIALIZATION: &str = "import os,sys,json,runpy,builtins,time,random\nos.makedirs('/work',exist_ok=True)\nos.chdir('/work')\nbuiltins._sy_initialized_ns=time.time_ns()\nbuiltins._sy_initialized_random_state=random.getstate()";
 
 fn unikraft(request: &Invocation, observation: &mut template::Observation) -> Result<Value, Error> {
     let rootfs = request

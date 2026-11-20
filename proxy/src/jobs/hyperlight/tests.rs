@@ -617,6 +617,64 @@ fn template_identity_tracks_frozen_inputs_and_keeps_invocation_authority_separat
     ));
 }
 
+#[tokio::test]
+async fn template_identity_binds_each_verified_runtime_manifest_input() {
+    // Exercise the manifest reader and artifact copier as well as JobSpec's
+    // digest. These are the producer fields behind the transitive identity.
+    for field in [
+        "helper",
+        "rootfs",
+        "kernel_contract",
+        "protocol",
+        "hyperlight",
+        "unikraft",
+        "os",
+        "architecture",
+    ] {
+        let (root, mut spec, _) = fixture("exit 99");
+        let original = template_key(&spec).unwrap();
+        let JobEngine::HyperlightUnikraft { runtime, .. } = &mut spec.engine else {
+            unreachable!()
+        };
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&runtime.path).unwrap()).unwrap();
+        if field == "helper" || field == "rootfs" {
+            let path = root.path().join(manifest[field]["file"].as_str().unwrap());
+            fs::write(&path, format!("changed {field} initialization bytes")).unwrap();
+            manifest[field]["sha256"] = digest(&fs::read(path).unwrap()).into();
+        } else if field == "protocol" {
+            manifest[field] = 999.into();
+        } else {
+            manifest[field] = "changed".into();
+        }
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        fs::write(&runtime.path, &bytes).unwrap();
+        runtime.sha256 = digest(&bytes);
+        assert_ne!(template_key(&spec).unwrap(), original, "{field}");
+
+        let invocation = root.path().join("prepared");
+        fs::create_dir(&invocation).unwrap();
+        let prepared = prepare(&spec, &invocation).await;
+        if matches!(field, "helper" | "rootfs" | "kernel_contract") {
+            prepared.unwrap();
+            if field == "helper" || field == "rootfs" {
+                let copied = if field == "helper" {
+                    "helper"
+                } else {
+                    "python.cpio"
+                };
+                assert_eq!(
+                    digest(&fs::read(invocation.join(copied)).unwrap()),
+                    manifest[field]["sha256"].as_str().unwrap(),
+                );
+            }
+        } else {
+            assert!(prepared.is_err(), "incompatible {field} was admitted");
+        }
+        assert!(!root.path().join("helper.pid").exists());
+    }
+}
+
 #[test]
 fn shutdown_removes_idle_templates_and_preserves_a_live_mapping_lease() {
     let (root, _spec, config) = fixture("exit 0");
