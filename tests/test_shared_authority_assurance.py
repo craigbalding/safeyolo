@@ -19,8 +19,42 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.blackbox import catalogue, guest_exec, installed_lifecycle, installed_tailnet, native_authority
+from tests.blackbox import (
+    catalogue,
+    execution_receipt,
+    guest_exec,
+    installed_lifecycle,
+    installed_tailnet,
+    native_authority,
+)
 from tests.blackbox.selections import NATIVE_AUTHORITY
+
+
+@pytest.mark.parametrize("selection,expected", [("native-authority", "--test-executable"), ("tailnet", "verify")])
+def test_explicit_authority_selector_exposes_the_maintained_driver_help(selection, expected):
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run([str(root / "tests/blackbox/run-controls.sh"), selection, "--help"],
+                            cwd=root, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert expected in result.stdout
+
+
+@pytest.mark.parametrize("missing", ["executable", "broker"])
+def test_native_prerequisite_failure_keeps_selected_controls_unexecuted(tmp_path, monkeypatch, missing):
+    executable = tmp_path / "executable"
+    broker = tmp_path / "broker"
+    if missing != "executable":
+        executable.touch()
+    if missing != "broker":
+        broker.touch()
+    monkeypatch.setenv("SAFEYOLO_COORD_NATS_BINARY", str(broker))
+    output = tmp_path / "results"
+    with pytest.raises(FileNotFoundError):
+        native_authority.run(executable, output)
+    aggregate = json.loads((output / "result.json").read_text())
+    assert aggregate["complete"] is False and aggregate["prerequisite_error"]
+    assert all(row["selected"] and row["executed"] == [] and row["complete"] is False
+               for row in aggregate["controls"].values())
 
 
 @pytest.mark.parametrize("defect", [None, "refused-bytes", "no-active-connection", "unrelated-active-connection",
@@ -357,6 +391,13 @@ def test_tailnet_verifier_pairs_full_producer_receipts_with_independent_destinat
     assert report["status"] == ("failed" if defect == "destination-cleanup" else "incomplete" if defect else "passed")
     assert stopped == [destination]
     assert report["cleanup"] == ("failed" if defect == "destination-cleanup" else "stopped")
+    receipt = execution_receipt.section_execution(output, "tailnet", "tailnet", initial["nonce"])
+    assert receipt["complete"] is (defect is None)
+    if defect is None:
+        observations = receipt["phases"][0]["observations"]
+        assert observations["destination-effect"]["delivered"] == rows
+        assert observations["connection-loss"]["observer"] == observer
+        assert observations["scope"]["refusals"]["wrong-node"]["exit"] == 1
 
 
 @pytest.mark.parametrize("unexpected", [None, b"", b"CONNECT private-observer-canary\r\n"])
@@ -530,6 +571,11 @@ else:
     assert failed["complete"] is (defect is None)
     assert failed["executed"][0]["passed"] is (defect is None)
     assert healthy["complete"] is True and healthy["executed"][0]["case"] == "good"
+    aggregate = json.loads((output / "result.json").read_text())
+    assert aggregate["complete"] is (defect is None)
+    assert aggregate["controls"]["BB-24"] == failed and aggregate["controls"]["BB-25"] == healthy
+    assert aggregate["run_id"] == healthy["run_id"] == failed["run_id"]
+    assert aggregate["controller"] == healthy["controller"]
     assert json.loads((output / "BB-24/procedure.json").read_text())["finished"] is (defect is None)
     assert json.loads((output / "BB-25/procedure.json").read_text())["finished"] is True
 
@@ -574,6 +620,10 @@ else:
     assert json.loads((output / "BB-24/procedure.json").read_text())["finished"] is False
     assert not (output / "BB-24/must-not-run.log").exists()
     assert not (output / "BB-25").exists()
+    aggregate = json.loads((output / "result.json").read_text())
+    assert aggregate["complete"] is False
+    assert aggregate["controls"]["BB-24"]["executed"] == report["executed"]
+    assert aggregate["controls"]["BB-25"]["executed"] == []
     diagnostics = (output / "BB-24/slow.log").read_text()
     assert "owned-fixture-stdout-before-timeout" in diagnostics
     assert "owned-fixture-stderr-before-timeout" in diagnostics

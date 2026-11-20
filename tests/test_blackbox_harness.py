@@ -2833,7 +2833,7 @@ def installed_section_commands(tmp_path, monkeypatch):
         shutil.copy2(ROOT / "tests/blackbox" / name, scripts / name)
     receipt_script = """
 from execution_receipt import phase_functions
-from selections import SECTION_DRIVERS, PYTEST_PHASES, PROCEDURES
+from selections import AUTHORITY_CONTROLS, SECTION_DRIVERS, PYTEST_PHASES, PROCEDURES
 artifacts = pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR'])
 context = {'platform':sys.argv[sys.argv.index('--expect-platform')+1], 'agent':'bbtest', 'pid':123, 'start_token':'birth'}
 (artifacts / 'platform.json').write_text(json.dumps(context))
@@ -2848,7 +2848,9 @@ for phase in phases:
                       tests={node: dict.fromkeys(('setup','call','teardown'),'passed') for node in nodes})
         name = 'pytest-' + phase + '.json'
     else:
-        report.update(section=phase, finished=True, checkpoints=list(PROCEDURES[phase][1]))
+        required = next((names for section, names in AUTHORITY_CONTROLS.values() if section == phase), ())
+        report.update(section=phase, finished=True, checkpoints=list(PROCEDURES[phase][1]),
+                      observations={name: {'controlled_driver': name} for name in required})
         name = 'procedure.json'
     (artifacts / name).write_text(json.dumps(report))
 """.replace("TRUSTED_ROOT", repr(str(ROOT)))
@@ -2910,6 +2912,11 @@ def test_installed_sections_reuse_preparation_and_separate_live_state(
     report = json.loads((artifacts / "installed-sections.json").read_text())
     assert report["preparation"]["exit"] == 0
     assert [row["section"] for row in report["sections"]] == ["isolation", "access"]
+    assert report["selected_sections"] == ["isolation", "access"]
+    assert report["controls"]["BB-23"]["execution_complete"] is True
+    assert report["controls"]["BB-23"]["execution"]["phases"][0]["observations"]["desktop-sharing"]
+    assert report["controls"]["BB-26"]["selected"] is False
+    assert report["controls"]["BB-26"]["execution_complete"] is False
     assert all(row["cleanup"] == "stopped" for row in report["sections"])
     assert report["sections"][0]["result"] == {
         0: "passed", 1: "assertion_failure", 2: "preparation_failure"
@@ -3639,7 +3646,7 @@ if marker.exists():
     section = scripts / "run-tests.sh"
     first_section = "lifecycle" if owner else "isolation"
     owned_root = '"${SAFEYOLO_CONFIG_DIR%/*}/lifecycle-owner"' if owner else '"$SAFEYOLO_CONFIG_DIR"'
-    access_receipt = "from pathlib import Path; import os,json; from tests.blackbox.execution_receipt import ProcedureReceipt; from tests.blackbox.selections import PROCEDURES; context={'platform':'systrap','agent':'bbtest','pid':123,'start_token':'birth'}; os.environ['SAFEYOLO_BLACKBOX_GUEST_IDENTITY']=json.dumps(context); output=Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR']); (output/'platform.json').write_text(json.dumps(context)); receipt=ProcedureReceipt('access',output/'installed-access.json'); [receipt.checkpoint(name) for name in PROCEDURES['access'][1]]"
+    access_receipt = "from pathlib import Path; import os,json; from tests.blackbox.execution_receipt import ProcedureReceipt; from tests.blackbox.selections import PROCEDURES; context={'platform':'systrap','agent':'bbtest','pid':123,'start_token':'birth'}; os.environ['SAFEYOLO_BLACKBOX_GUEST_IDENTITY']=json.dumps(context); output=Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR']); (output/'platform.json').write_text(json.dumps(context)); receipt=ProcedureReceipt('access',output/'installed-access.json'); [receipt.checkpoint(name, controlled_driver=name) for name in PROCEDURES['access'][1]]"
     section.write_text(
         "#!/bin/bash\nset -euo pipefail\n"
         "export SAFEYOLO_CONFIG_DIR=\"$SAFEYOLO_TEST_CONFIG_DIR\"\n"

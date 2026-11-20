@@ -242,7 +242,8 @@ def run(args):
         assert request("POST", "/support/operations", forged)[0] == 403
         assert canary_snapshot() == before
         if receipt:
-            receipt.checkpoint('scope')
+            receipt.checkpoint('scope', before=before, after=canary_snapshot(),
+                               target_runtime=status(args.target)["runtime_state"], refused_status=403)
         print("PASS standing inspection of stopped target and guest/log/lifecycle/unrelated-target denials", flush=True)
 
         expiry = datetime.datetime.now().astimezone() + datetime.timedelta(minutes=20)
@@ -259,7 +260,8 @@ def run(args):
         assert canaries[args.target].read_text() == args.target + "\neffect\n"
         assert canaries[args.support].read_text() == args.support + "\n"
         if receipt:
-            receipt.checkpoint('permitted-effect')
+            receipt.checkpoint('permitted-effect', canaries=canary_snapshot(),
+                               target_id=target["agent_id"], run_id=generation)
         failed = guest("printf diagnostic; printf problem >&2; exit 7", generation)
         assert failed["exit_code"] == 7 and failed["stdout"] == "diagnostic" and failed["stderr"] == "problem", failed
         bounded = guest("head -c 16384 /dev/zero | tr '\\000' x", generation)
@@ -281,7 +283,7 @@ def run(args):
         assert request("POST", "/support/operations", once)[0] == 409
         assert canary_snapshot() == before
         if receipt:
-            receipt.checkpoint('replay')
+            receipt.checkpoint('replay', before=before, after=canary_snapshot(), changed_input_status=409)
 
         launched = lifecycle("start_harness", generation)
         assert launched["agent_state"] == "running", launched
@@ -300,7 +302,8 @@ def run(args):
         guest(mutation, replacement["run_id"])
         assert canaries[args.target].read_text() == before[args.target] + "effect\n"
         if receipt:
-            receipt.checkpoint('stale-run')
+            receipt.checkpoint('stale-run', before=before, after=canary_snapshot(),
+                               old_run=generation, new_run=replacement["run_id"])
         print("PASS original receipts, changed-input refusal, separate harness/sandbox recovery and stale-run refusal", flush=True)
 
         grant.update(guest_admin=False, lifecycle=[], expires_at=None)
@@ -328,7 +331,7 @@ def run(args):
         assert request("POST", "/support/operations", operation({"action": "guest_command", "command": mutation, "timeout_seconds": 5}))[0] == 403
         assert canary_snapshot() == before
         if receipt:
-            receipt.checkpoint('narrow-expire-revoke')
+            receipt.checkpoint('narrow-expire-revoke', before=before, after=canary_snapshot(), refused_status=403)
         print("PASS narrowing, standing authority across support restart, expiry and revocation", flush=True)
     finally:
         # Preserve canonical receipts and stopped diagnostic records for review.

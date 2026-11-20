@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
-from tests.blackbox.execution_receipt import read_json, save
+from tests.blackbox.execution_receipt import ProcedureReceipt, read_json, save
 from tests.blackbox.guest_exec import guest_http_request
 from tests.blackbox.installed_host_smoke import _cli_identity, _native_config, _runtime_observation, _sha256
 from tests.blackbox.installed_lifecycle import running_guest
@@ -437,6 +437,9 @@ def verify(args, output: Path) -> None:
     assert (root / ".safeyolo-platform-smoke").is_file(), "select an owned disposable destination"
     report = {"status": "incomplete", "destination_root": str(root), "cli": _cli_identity(cli),
               "driver_sha256": _sha256(Path(__file__)), "cleanup": "unverified"}
+    receipt = ProcedureReceipt("tailnet", output / "result.json")
+    report["control"] = "BB-26"
+    report["selected_phases"] = list(PHASES)
     save(output / "result.json", report)
     try:
         phases = {value["phase"]: value for path in args.phase_report if (value := read_json(path))}
@@ -446,6 +449,7 @@ def verify(args, output: Path) -> None:
         observer, cleanup = read_json(args.observer), read_json(args.source_cleanup)
         assert observer["closed"] is True and observer["status"] == "passed" and not observer_problems(observer)
         initial = phases["initial"]
+        receipt.document.update(run_id=initial["nonce"], lane="tailnet", guest=initial["guest"])
         assert report["cli"]["source_revision"] == initial["cli"]["source_revision"], "different destination source"
         paired = ("nonce", "source_node", "destination_node", "port")
         for value in (*phases.values(), *checks.values()):
@@ -456,9 +460,12 @@ def verify(args, output: Path) -> None:
             assert value.get("destination_address", value.get("address")) == initial["address"]
             assert value["source_address"] == initial["source_address"]
         assert all(value["cleanup"] == "stopped" and not value["cleanup_failures"] for value in checks.values())
+        receipt.checkpoint('identity', cli=initial["cli"], binaries=initial["binaries"],
+                           source_instance=initial["source_instance"], guest=initial["guest"])
         for case, value in checks.items():
             assert value["refusal"]["exit"] != 0 and REASONS[case] in value["refusal"]["reason"]
             assert value["coord"]["sha256"] == initial["binaries"]["safeyolo-coord"], "different native Coord bytes"
+        receipt.checkpoint('scope', refusals={name: value["refusal"] for name, value in checks.items()})
         fields = ("root", "cli", "binaries", "proxy", "guest", "source_instance", "home_name", "room")
         for name, value in phases.items():
             assert all(value[key] == initial[key] for key in fields), "source restarted or changed selection"
@@ -483,6 +490,7 @@ def verify(args, output: Path) -> None:
             assert beginning <= value["started_ns"] <= value["finished_ns"] <= end, "attempt was outside its observed phase"
         assert cleanup["root"] == initial["root"] and cleanup["cli"] == initial["cli"]
         assert cleanup["cleanup"] == "stopped" and not cleanup["cleanup_failures"]
+        receipt.checkpoint('connection-loss', observer=observer, source_cleanup=cleanup)
         destination = (root / "data/instance_id").read_text().strip()
         assert destination == initial["home"]["expected_owner"] != initial["source_instance"]
         rows = [json.loads(line) for line in checked([str(cli), "--root", str(root), "coord", "watch", initial["room"],
@@ -496,6 +504,8 @@ def verify(args, output: Path) -> None:
         assert all(row["sender_kind"] == "agent" and row["sender_agent_id"] == principal and
                    row["origin_instance_id"] == source and row["origin_agent_id"] == agent
                    for row in delivered), "wrong federated sender or source"
+        receipt.checkpoint('destination-effect', delivered=delivered, source_instance=source,
+                           destination_instance=destination)
         report.update(status="passed", nonce=initial["nonce"], source_instance=source,
                       destination_instance=destination, observer=observer, phases=phases, checks=checks,
                       source_cleanup=cleanup)
@@ -506,6 +516,8 @@ def verify(args, output: Path) -> None:
             report["status"] = "failed"
         save(output / "result.json", report)
         assert not failures, failures
+        receipt.checkpoint('cleanup', destination=report["cleanup"], source=report.get("source_cleanup"))
+    receipt.checkpoint('finished')
 
 
 def main():

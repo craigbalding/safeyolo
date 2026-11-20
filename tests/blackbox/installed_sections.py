@@ -25,10 +25,10 @@ import uuid
 from pathlib import Path
 
 if __package__:
-    from .execution_receipt import section_execution
+    from .execution_receipt import authority_controls, controller_identity, section_execution
     from .selections import BOUNDARY_SECTIONS, OPTIONAL_SECTIONS, SECTIONS
 else:
-    from execution_receipt import section_execution
+    from execution_receipt import authority_controls, controller_identity, section_execution
     from selections import BOUNDARY_SECTIONS, OPTIONAL_SECTIONS, SECTIONS
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -169,15 +169,19 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
     run_id = uuid.uuid4().hex
     env["SAFEYOLO_BLACKBOX_RUN_ID"] = run_id
     env["SAFEYOLO_BLACKBOX_LANE"] = lane
-    report = {"source_revision": revision, "lane": lane, "run_id": run_id, "preparation": {}, "sections": []}
+    report = {"source_revision": revision, "lane": lane, "run_id": run_id,
+              "selected_sections": list(sections), "preparation": {}, "sections": []}
+    report["controller"] = controller_identity()
     if listener_restart:
         report["isolation_selection"] = "listener-restart"
     artifacts.mkdir(parents=True, exist_ok=True)
     report_path = artifacts / "installed-sections.json"
 
     def save():
+        report["controls"] = authority_controls(report)
         report_path.write_text(json.dumps(report, indent=2) + "\n")
 
+    save()
     try:
         if prepared_config is None:
             prepared = subprocess.run(

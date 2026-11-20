@@ -786,7 +786,7 @@ def main() -> None:
         }
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         report["desktop_sharing"] = desktop_sharing(admin, cli, config_dir, args.agent, args.output)
-        receipt.checkpoint('desktop-sharing')
+        receipt.checkpoint('desktop-sharing', **report["desktop_sharing"])
         if args.operator_journey:
             # Retain the already reached access observations if a later operator
             # step fails. A partial result is not a completed journey.

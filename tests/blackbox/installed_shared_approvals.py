@@ -363,6 +363,7 @@ def deterministic_exchange(args, ids, guest, operator, native, ports, marker, hi
     port, other_port, gateway_port = ports
     url = f"http://127.0.0.2:{port}/{marker}"
     decisions = []
+    refused = []
 
     def configure(scope, seconds=30, once=False):
         nonlocal revision
@@ -399,6 +400,7 @@ def deterministic_exchange(args, ids, guest, operator, native, ports, marker, hi
         reply = guest(actor or args.worker, method, target, headers=headers)
         assert reply["status"] in statuses, reply
         assert hits == before, "refused request reached the origin"
+        refused.append({"status": reply["status"], "origin_before": len(before), "origin_after": len(hits)})
         return reply
 
     scope = {"type": "network_egress", "host": "127.0.0.2", "ports": [port],
@@ -410,7 +412,7 @@ def deterministic_exchange(args, ids, guest, operator, native, ports, marker, hi
     wrong_target = blocked(actor=args.helper)
     assert decide(wrong_target["approval_id"], status=403)["status"] == "pending"
     blocked(f"http://127.0.0.2:{other_port}/{marker}", statuses=(403,))
-    receipt.checkpoint('scope')
+    receipt.checkpoint('scope', refusals=list(refused), origin_count=len(hits))
     approved = decide(first)
     assert approved["status"] == "approved" and approved["grant_active"] is True
     run = approved["result"]["issued_access"]["beneficiary"]["run_id"]
@@ -418,7 +420,7 @@ def deterministic_exchange(args, ids, guest, operator, native, ports, marker, hi
     before = len(hits)
     reply = guest(args.worker, "GET", url)
     assert reply["status"] == 200 and reply["body"] == marker and len(hits) == before + 1
-    receipt.checkpoint('permitted-effect')
+    receipt.checkpoint('permitted-effect', status=reply["status"], origin_before=before, origin_after=len(hits))
 
     revoked = operator("POST", delegation_path + "/revoke", {"expected_revision": revision})
     assert revoked["status"] == 200
@@ -433,7 +435,7 @@ def deterministic_exchange(args, ids, guest, operator, native, ports, marker, hi
         assert time.monotonic() < deadline, "temporary grant did not expire"
         time.sleep(.05)
     blocked()
-    receipt.checkpoint('expire-revoke')
+    receipt.checkpoint('expire-revoke', refusals=list(refused), origin_count=len(hits))
 
     configure(scope)
     current = decide(blocked()["approval_id"])
@@ -449,7 +451,8 @@ def deterministic_exchange(args, ids, guest, operator, native, ports, marker, hi
     assert fresh["result"]["issued_access"]["beneficiary"]["run_id"] == after["run_id"]
     before = len(hits)
     assert guest(args.worker, "GET", url)["status"] == 200 and len(hits) == before + 1
-    receipt.checkpoint('stale-run')
+    receipt.checkpoint('stale-run', old_run=run, new_run=after["run_id"],
+                       origin_before=before, origin_after=len(hits), refusals=list(refused))
 
     # Reuse the shipped credential-free risky-route fixture for an exact
     # method/path grant. Network and gateway permissions remain separate.
@@ -477,7 +480,8 @@ def deterministic_exchange(args, ids, guest, operator, native, ports, marker, hi
     reply = guest(args.worker, "POST", gateway + route, headers=headers)
     assert reply["status"] == 200 and reply["body"] == marker and len(hits) == before + 1
     blocked(gateway + route, method="POST", headers=headers)
-    receipt.checkpoint('gateway-route')
+    receipt.checkpoint('gateway-route', status=reply["status"], origin_before=before,
+                       origin_after=len(hits), refusals=list(refused))
     result = {"decisions": decisions, "origin_hits": list(hits), "original_run_id": run,
               "current_run_id": after["run_id"], "no_model_or_human_decision": True}
     save(args.output, result)

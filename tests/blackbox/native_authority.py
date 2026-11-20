@@ -13,18 +13,31 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import uuid
 from pathlib import Path
 
-from tests.blackbox.execution_receipt import ProcedureReceipt, save
+from tests.blackbox.execution_receipt import ProcedureReceipt, controller_identity, save
 from tests.blackbox.installed_host_smoke import _sha256
 from tests.blackbox.selections import NATIVE_AUTHORITY
 
 
 def run(executable: Path, output: Path) -> None:
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
-    executable = executable.resolve(strict=True)
-    broker = Path(os.environ["SAFEYOLO_COORD_NATS_BINARY"]).resolve(strict=True)
-    env = os.environ | {"TMPDIR": str(output.resolve())}
+    run_id = os.environ.get("SAFEYOLO_BLACKBOX_RUN_ID") or uuid.uuid4().hex
+    summary = {"run_id": run_id, "boundary": "native processes and real NATS; no guest",
+               "controller": controller_identity(), "complete": False,
+               "controls": {control: {"selected": list(cases), "executed": [], "complete": False}
+                            for control, cases in NATIVE_AUTHORITY.items()}}
+    save(output / "result.json", summary)
+    try:
+        executable = executable.resolve(strict=True)
+        broker = Path(os.environ["SAFEYOLO_COORD_NATS_BINARY"]).resolve(strict=True)
+    except (OSError, KeyError) as error:
+        summary["prerequisite_error"] = str(error)
+        save(output / "result.json", summary)
+        raise
+    env = os.environ | {"TMPDIR": str(output.resolve()), "SAFEYOLO_BLACKBOX_RUN_ID": run_id,
+                        "SAFEYOLO_BLACKBOX_LANE": "native-process"}
     # Match coord_test_runner.sh: these cases own their brokers and state.
     env.pop("SAFEYOLO_COORD_DATA_DIR", None)
     env.pop("SAFEYOLO_NATS_TEST_INSTANCE", None)
@@ -33,11 +46,16 @@ def run(executable: Path, output: Path) -> None:
         directory = output / control
         directory.mkdir()
         receipt = ProcedureReceipt("native-authority", directory / "result.json")
-        report = {"control": control, "boundary": "native processes and real NATS; no guest",
+        receipt.document.update(run_id=run_id, lane="native-process")
+        save(receipt.path, receipt.document)
+        report = {"control": control, "run_id": run_id, "controller": summary["controller"],
+                  "boundary": summary["boundary"],
                   "test_executable": {"path": str(executable), "sha256": _sha256(executable)},
                   "nats": {"path": str(broker), "sha256": _sha256(broker)},
                   "selected": list(selected), "executed": [], "complete": False}
         save(directory / "result.json", report)
+        summary["controls"][control] = report
+        save(output / "result.json", summary)
         for case in selected:
             row = {"case": case, "passed": False, "exit": None}
             execution_started = False
@@ -59,6 +77,7 @@ def run(executable: Path, output: Path) -> None:
                     row["cleanup"] = "unverified after test timeout; remaining cases did not run"
             report["executed"].append(row)
             save(directory / "result.json", report)
+            save(output / "result.json", summary)
             if row.get("cleanup"):
                 raise RuntimeError("native test timed out; inspect owned fixture processes before continuing")
             if not row["passed"]:
@@ -68,6 +87,9 @@ def run(executable: Path, output: Path) -> None:
             report["complete"] = True
             save(directory / "result.json", report)
             receipt.checkpoint('finished')
+        save(output / "result.json", summary)
+    summary["complete"] = not failures
+    save(output / "result.json", summary)
     assert not failures, "native authority failures; inspect retained per-control receipts: " + ", ".join(failures)
 
 

@@ -91,6 +91,7 @@ PROCEDURES = {
     "provider": ("installed_provider.py", ("identity", "scope", "delivery", "revoke-recover", "closed-stopped", "observer", "finished")),
     "native-authority": ("native_authority.py", ("selected-cases", "finished")),
     "federation": ("installed_federation.py", ("identity", "scope", "destination-effect", "revocation", "finished")),
+    "tailnet": ("installed_tailnet.py", ("identity", "scope", "connection-loss", "destination-effect", "cleanup", "finished")),
     "job-sandbox": ("host/job_sandbox.py", ("identity", "inputs", "privilege-state", "exit-signal", "timeout", "caller-signals", "network-off", "cleanup", "finished")),
     "job-network": ("host/job_network.py", ("identity", "scoped-requests", "revocation", "expiry", "cancellation", "audit", "cleanup", "finished")),
     "mounts": ("../nested-linux/live_mount_backend_proof.py", ("identity", "startup", "path-refusals", "busy-file", "busy-cwd", "busy-mmap", "detach", "saved-live", "cleanup", "finished")),
@@ -108,6 +109,18 @@ SECTION_DRIVERS = {
     "isolation": tuple(PYTEST_PHASES)[:6],
     **{name: (name,) for name in PROCEDURES if name not in {"ingress-pair", "native-authority"}},
     "claude": ("claude_smoke.py",),
+}
+
+# Each installed authority control retains the observations made at these
+# existing checkpoints. Native BB-24/25 and two-host BB-26 have separate inputs.
+AUTHORITY_CONTROLS = {
+    "BB-18": ("peer-support", ("scope", "permitted-effect", "replay", "stale-run", "narrow-expire-revoke")),
+    "BB-19": ("shared-approvals", ("scope", "permitted-effect", "expire-revoke", "stale-run", "gateway-route")),
+    "BB-20": ("provider", ("scope", "delivery", "revoke-recover", "closed-stopped", "observer")),
+    "BB-23": ("access", ("desktop-sharing",)),
+    "BB-24": (None, ()),
+    "BB-25": ("federation", ("scope", "destination-effect", "revocation")),
+    "BB-26": ("tailnet", ("scope", "connection-loss", "destination-effect", "cleanup")),
 }
 
 # Each case owns isolated native instances and a real pinned NATS broker.

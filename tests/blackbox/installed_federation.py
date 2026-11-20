@@ -144,7 +144,7 @@ def run(args):
                 save(output / "result.json", report)
             assert refusal["status"] == status, f"{label}: expected HTTP {status}"
             assert refusal["destination_unchanged"], "refused federation request changed destination"
-        receipt.checkpoint('scope')
+        receipt.checkpoint('scope', refusals=report["refusals"], destination_count=len(baseline))
         try:
             allowed = send("bbtest", marker + "-allowed")
             report["allowed_status"] = allowed["status"]
@@ -157,7 +157,10 @@ def run(args):
         assert delivered[0]["sender_kind"] == "agent" and delivered[0]["sender_agent_name"] == "remote-bbtest"
         assert delivered[0]["origin_instance_id"] == source_id and delivered[0]["origin_agent_id"] == source_agent
         assert delivered[0]["sender_agent_id"] != source_agent
-        receipt.checkpoint('destination-effect')
+        receipt.checkpoint('destination-effect', status=allowed["status"], before=len(baseline), after=len(rows),
+                           sender_agent_id=delivered[0]["sender_agent_id"],
+                           origin_instance_id=delivered[0]["origin_instance_id"],
+                           origin_agent_id=delivered[0]["origin_agent_id"])
         native(destination, "coord", "federation", "revoke", source_id)
         try:
             revoked = send("bbtest", marker + "-revoked")
@@ -167,7 +170,8 @@ def run(args):
             report["revocation_destination_unchanged"] = observe() == rows
             save(output / "result.json", report)
         assert revoked["status"] == 403 and report["revocation_destination_unchanged"]
-        receipt.checkpoint('revocation')
+        receipt.checkpoint('revocation', status=revoked["status"],
+                           destination_unchanged=report["revocation_destination_unchanged"])
         report["status"] = "passed"
     finally:
         failures = []
