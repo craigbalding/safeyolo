@@ -597,6 +597,7 @@ def package_inputs(tmp_path, request, monkeypatch):
     (source / "LICENSE").write_text("fixture project notice\n")
     (source / "docs").mkdir()
     (source / "docs/AGENTS.md").write_text("fixture baseline\n")
+    shutil.copy2(REPO / "docs/signals.md", source / "docs/signals.md")
     (source / "guest/rootfs").mkdir(parents=True)
     (source / "guest/rootfs/safeyolo-sudo").write_text("#!/bin/sh\nexit 0\n")
     shutil.copytree(REPO / "contrib", source / "contrib")
@@ -904,7 +905,7 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
         skill_path, = [name for name in names if name.endswith("/assets/skills/safeyolo/SKILL.md")]
         assert stream.extractfile(skill_path).read() == b"fixture skill\n- Keep the next instruction.\n"
         assert not any(name.endswith("/repo_map.py") for name in names)
-        for relative in ("repo-map.toml", "docs/AGENTS.md", "contrib/codex-command.sh",
+        for relative in ("repo-map.toml", "docs/AGENTS.md", "docs/signals.md", "contrib/codex-command.sh",
                          "contrib/coord-mcp-bootstrap.sh", "contrib/safeyolo-coord-mcp-launcher.sh",
                          "contrib/codex-coord-host-setup.sh", "contrib/pi-host-setup.sh",
                          "contrib/pi-coord-host-setup.sh", "contrib/pi-coord-extension.ts"):

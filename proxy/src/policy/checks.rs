@@ -187,7 +187,7 @@ pub enum Finding {
 
 // Tagged enums buffer JSON numbers as maps with arbitrary_precision enabled.
 // Read through Number to preserve that representation before converting to f64.
-fn deserialize_score_value<'de, D>(deserializer: D) -> std::result::Result<f64, D::Error>
+pub(crate) fn deserialize_score_value<'de, D>(deserializer: D) -> std::result::Result<f64, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -374,7 +374,7 @@ pub enum Condition {
     },
 }
 impl Condition {
-    fn names(&self, names: &mut BTreeSet<String>) {
+    pub(crate) fn names(&self, names: &mut BTreeSet<String>) {
         match self {
             Self::Finding { check }
             | Self::Fact { check, .. }

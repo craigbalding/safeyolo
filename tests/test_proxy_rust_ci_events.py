@@ -597,7 +597,10 @@ def test_full_matrix_uses_only_the_native_proxy() -> None:
     )
     rendered = str(steps)
     assert "--proxy-backend python" not in rendered
-    assert "-- --ignored" not in rendered
+    native_tests = named["Test the Rust proxy"]["run"].splitlines()
+    assert "../scripts/cargo_with_space.sh test --release --locked" in native_tests
+    assert "../scripts/cargo_with_space.sh test --release --locked --test native_signals -- --ignored" in native_tests
+    assert "test --release --locked -- --ignored" not in rendered
     assert "git fetch --no-tags --depth=1 origin" not in rendered
     assert "SAFEYOLO_PYTHON_SOURCE" not in rendered
 

@@ -268,13 +268,13 @@ nodes:
         - path: tests/blackbox/host/job_network.py
           sha256: 007ab1317bc355bdaf2bffecb0fccf04055ee78ae4ec826c9e6c1bd7b341fbb3
         - path: proxy/Cargo.toml
-          sha256: 4798934126e8fa10e4f50c719574c9c2363080adeeebccc4462eba26281d4770
+          sha256: 58fbeffb2a4513b0b3bdef0258c3cee460c216b8156e318f9aa379f0d7004071
         - path: proxy/Cargo.lock
           sha256: e7daf48a665a98c900f1c08293cc551fdc5cec801b77de406cc0dc1fca9d8c4b
         - path: proxy/src/lib.rs
-          sha256: a8b1bf332b83e813b82cacb73a4e08122183d4b20983bb279663d0ba6ca210f7
+          sha256: 3474fdac126bfd5094059f8c8832f38c8dfb80904c799d4e0dd00b2b37d4871b
         - path: proxy/src/bin/safeyolo.rs
-          sha256: a4702bfb46a16a6fe87abf8d868167856a36b5f3829bb1f1b60f5b68b6f038d1
+          sha256: a9af55a9bcf76719d03d5754108683e8d45eaed36767e33375be933944da6740
         - path: scripts/run_claude_blackbox.py
           sha256: 218890e4ddaef26d7d86a67784a447d3c40640eda4abe1c16a2243880c7e803b
         - path: tests/blackbox/claude_smoke.py
@@ -367,13 +367,13 @@ nodes:
         - path: tests/blackbox/host/job_network.py
           sha256: 007ab1317bc355bdaf2bffecb0fccf04055ee78ae4ec826c9e6c1bd7b341fbb3
         - path: proxy/Cargo.toml
-          sha256: 4798934126e8fa10e4f50c719574c9c2363080adeeebccc4462eba26281d4770
+          sha256: 58fbeffb2a4513b0b3bdef0258c3cee460c216b8156e318f9aa379f0d7004071
         - path: proxy/Cargo.lock
           sha256: e7daf48a665a98c900f1c08293cc551fdc5cec801b77de406cc0dc1fca9d8c4b
         - path: proxy/src/lib.rs
-          sha256: a8b1bf332b83e813b82cacb73a4e08122183d4b20983bb279663d0ba6ca210f7
+          sha256: 3474fdac126bfd5094059f8c8832f38c8dfb80904c799d4e0dd00b2b37d4871b
         - path: proxy/src/bin/safeyolo.rs
-          sha256: a4702bfb46a16a6fe87abf8d868167856a36b5f3829bb1f1b60f5b68b6f038d1
+          sha256: a9af55a9bcf76719d03d5754108683e8d45eaed36767e33375be933944da6740
         - path: proxy/src/jobs/vz-guest-init.sh
           sha256: 7fc4a7442ccf50eea20dad24b7bb5659f69875f7853f11da2bb96665fc25dc4b
         - path: proxy/src/jobs/vz-exec.sh
@@ -699,7 +699,7 @@ nodes:
         - path: proxy/tests/native_coord/federation.rs
           sha256: 7bfc83e871c120479782f1e0d027a6346de321b819e823d7f985a4d4509edcb7
         - path: proxy/src/agent_api/coord.rs
-          sha256: e48333efa48d960d3926afa1b3a506c156704c545c26cba2bae287b8a08f575b
+          sha256: 80b1923d22ccba905e356ecef75613f74a6e87a45aa732ee6416e6f14188df6e
         - path: proxy/src/agent_api/coord/federation.rs
           sha256: 699b6103139e178606c5280d0e8ecd887de4629f13894edd69eb479e49991aef
         - path: proxy/src/agent_api/coord/federation/tests.rs
