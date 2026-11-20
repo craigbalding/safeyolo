@@ -167,6 +167,10 @@ def route_fixture(directory, *, ttl=30, extra="", service_source=None, prepared=
     else:
         from tests.blackbox.installed_sections import prepare_native_instance
         prepare_native_instance(prepared, directory)
+        # Match the maintained installed-boundary fixture: mapped job root
+        # traverses only these fresh state parents, not private credential files.
+        directory.chmod(0o755)
+        (directory / "data").chmod(0o755)
         linux_settings = tomllib.loads((prepared / "config.toml").read_text()).get("linux")
     services, builtin = directory / "services", directory / "builtin"
     services.mkdir(exist_ok=True)

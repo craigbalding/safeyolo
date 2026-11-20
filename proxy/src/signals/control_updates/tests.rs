@@ -182,6 +182,18 @@ async fn receipt_does_not_adopt_automatic_revisions_are_coherent_and_withdrawal_
     let saved = fs::read_to_string(root.join("policy.toml")).unwrap();
     reconcile(root, &proxy.runtime).await.unwrap();
     assert_eq!(fs::read_to_string(root.join("policy.toml")).unwrap(), saved);
+    // Restoring the exact immutable artifact repairs its reported state,
+    // without reactivation or a new generation after a transient disk fault.
+    let artifact = candidate_path(root, &v2.sha256);
+    let bytes = fs::read(&artifact).unwrap();
+    fs::write(&artifact, b"{}").unwrap();
+    reconcile(root, &proxy.runtime).await.unwrap();
+    assert_eq!(status(root).unwrap()["exports"]["state"], "rejected");
+    fs::write(&artifact, bytes).unwrap();
+    reconcile(root, &proxy.runtime).await.unwrap();
+    assert_eq!(status(root).unwrap()["exports"]["state"], "active");
+    assert_eq!(status(root).unwrap()["exports"]["active"]["generation"], 2);
+    assert_eq!(fs::read_to_string(root.join("policy.toml")).unwrap(), saved);
     let mut withdrawal = signed(3, Some(v1.sha256.clone()));
     withdrawal.bundle.withdrawn = true;
     withdrawal.sha256 = digest(&withdrawal.bundle);

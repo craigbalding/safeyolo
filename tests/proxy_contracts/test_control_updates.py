@@ -146,6 +146,9 @@ def test_signed_cli_push_receipt_is_separate_from_adoption(tmp_path):
 @pytest.mark.skipif(not os.environ.get("SAFEYOLO_CONTROL_UPDATE_PREPARED"), reason="requires a prepared installed candidate and real sandbox jobs")
 def test_installed_signed_v1_v2_updates_enforce_checks_and_recover(tmp_path):
     prepared = Path(os.environ["SAFEYOLO_CONTROL_UPDATE_PREPARED"]).resolve()
+    # The dedicated, fresh pytest parent is a runtime traversal path. Native
+    # credential files retain their own private modes, as in installed boundaries.
+    tmp_path.parent.chmod(0o755)
     root = tmp_path.parent / "u"
     receipt = {"cli_version": subprocess.check_output([os.environ["SAFEYOLO_NATIVE_CLI"], "--version"], text=True).strip(),
                "proxy_version": subprocess.check_output([os.environ["SAFEYOLO_RUST_PROXY"], "--version"], text=True).strip(),
@@ -236,9 +239,10 @@ def test_installed_signed_v1_v2_updates_enforce_checks_and_recover(tmp_path):
             _api(fixture, unavailable["escalate"], method="POST", body=dict(attack, answers={"task_origin": "Direct operator request"}), status=422, timeout=45)
             job.write_bytes(original)
 
-            # A meaningful scope expansion needs one existing human decision.
+            # A real resource expansion exceeds standing qualification and
+            # adoption bounds and needs one existing human decision.
             reviewed = _bundle(3, v2["sha256"], check=True)
-            reviewed["challenge"]["methods"].append("DELETE")
+            reviewed["jobs"]["destination.json"]["memory_mb"] = 768
             v3 = _publish(root, reviewed, key_file)
             review = _wait(root, lambda s: _update(s).get("state") == "pending_approval")["control_updates"]["exports"]
             approval_id = review["approval_id"]
@@ -246,7 +250,7 @@ def test_installed_signed_v1_v2_updates_enforce_checks_and_recover(tmp_path):
             assert _cli(root, "signals", "status")["control_updates"]["exports"]["approval_id"] == approval_id
             _admin(fixture, "POST", "/admin/approvals/" + approval_id, {"decision": "approve", "option": "once"})
             _wait(root, lambda s: _active_digest(s) == v3["sha256"])
-            receipt["reviewed_scope_expansion"] = approval_id
+            receipt["reviewed_resource_expansion"] = {"approval_id": approval_id, "from_memory_mb": 512, "to_memory_mb": 768}
 
             # Transport may deliver modified content, but cannot adopt it.
             _publish(root, _bundle(4, v3["sha256"]), key_file, mutate=lambda c: c["bundle"].update(changes="modified after signing"))

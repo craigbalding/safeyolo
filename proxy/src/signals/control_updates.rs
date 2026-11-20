@@ -276,12 +276,16 @@ async fn reconcile_one(
         }
         let prior =
             crate::guest_commands::read_state(&report_path(root, name_))?.unwrap_or(Value::Null);
-        if prior["active"]["sha256"] != target.sha256 {
+        if prior["active"]["sha256"] != target.sha256
+            || !matches!(prior["state"].as_str(), Some("active" | "rolled_back"))
+        {
+            let rolled_back =
+                adoption.pin.is_some() || announcement.is_some_and(|a| a.update.withdrawn);
             record_status(
                 root,
                 name_,
                 state,
-                &json!({"state":"active","candidate":target.sha256,"active":previous,"announcement_withdrawn":announcement.is_some_and(|a|a.update.withdrawn)}),
+                &json!({"state":if rolled_back{"rolled_back"}else{"active"},"candidate":target.sha256,"active":previous,"announcement_withdrawn":announcement.is_some_and(|a|a.update.withdrawn)}),
             )?;
         }
         return Ok(());
