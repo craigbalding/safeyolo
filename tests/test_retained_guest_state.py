@@ -243,15 +243,20 @@ def test_maintenance_recovery_failure_and_masked_payload_cannot_claim_repair(gue
 def test_interrupted_maintenance_same_operation_is_inspection_not_retry(guest, tmp_path):
     root, state, command = guest
     request = maintenance_request(guest, tmp_path)
-    request["patch_command"] = "sleep 60; " + request["patch_command"]
+    request["patch_command"] = ('printf "%s\\n" "$$" > "$SAFEYOLO_MAINTENANCE_DIRECTORY/patch.pid"; '
+                                'sleep 60; ' + request["patch_command"])
     process = subprocess.Popen([*command, "maintain"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, start_new_session=True)
+    patch_group = None
     try:
         process.stdin.write(json.dumps(request))
         process.stdin.close()
-        receipt_path = state / "maintenance" / request["operation_id"] / "result.json"
-        eventually(lambda: receipt_path.exists() and json.loads(receipt_path.read_text()).get("phase") == "patch_command")
-        os.killpg(process.pid, signal.SIGKILL)
+        operation_dir = state / "maintenance" / request["operation_id"]
+        eventually(lambda: (operation_dir / "patch.pid").exists())
+        patch_pid = int((operation_dir / "patch.pid").read_text())
+        patch_group = os.getpgid(patch_pid)
+        # A lost transport can kill the helper while its guest child continues.
+        process.kill()
         process.wait(timeout=5)
         receipt = maintain(command, request)
         assert receipt["outcome"] == "uncertain"
@@ -263,12 +268,23 @@ def test_interrupted_maintenance_same_operation_is_inspection_not_retry(guest, t
         result = run(*command, "maintain", input=json.dumps(changed), check=False)
         assert result.returncode
         assert "original maintenance" in result.stderr
+        recovery = run(*command, "maintenance-recover", request["operation_id"], check=False)
+        assert recovery.returncode, "recovery ran while the original package command was still active"
+        os.killpg(patch_group, signal.SIGKILL)
+        patch_group = None
+        eventually(lambda: json.loads(run(*command, "maintenance-status", request["operation_id"]).stdout)
+                   .get("command_activity", {}).get("state") == "quiescent")
         recovered = json.loads(run(*command, "maintenance-recover", request["operation_id"]).stdout)
         assert recovered["outcome"] == "recovered"
         assert run(*command, "maintenance-recover", request["operation_id"], check=False).returncode
     finally:
+        if patch_group is not None:
+            try:
+                os.killpg(patch_group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         if process.poll() is None:
-            os.killpg(process.pid, signal.SIGKILL)
+            process.kill()
             process.wait(timeout=5)
 
 
@@ -287,9 +303,12 @@ def test_startup_gate_preserves_manual_mode_and_binds_current_generation(guest):
 
 
 @guest_root_required
-def test_maintenance_reports_old_mapped_payload_until_its_consumer_exits(guest, tmp_path):
+@pytest.mark.parametrize("failed_health", [False, True])
+def test_maintenance_reports_old_mapped_payload_until_its_consumer_exits(guest, tmp_path, failed_health):
     root, _, command = guest
     request = maintenance_request(guest, tmp_path)
+    if failed_health:
+        request["health_command"] = 'test "$(cat "$SAFEYOLO_GUEST_ROOT/usr/share/retention-fixture/version")" = 1.0'
     payload = root / "usr/share/retention-fixture/version"
     holder = subprocess.Popen([sys.executable, "-u", "-c",
         "import mmap,sys,time; f=open(sys.argv[1],'rb'); m=mmap.mmap(f.fileno(),0,access=mmap.ACCESS_READ); print('mapped',flush=True); time.sleep(60)",
@@ -297,13 +316,19 @@ def test_maintenance_reports_old_mapped_payload_until_its_consumer_exits(guest, 
     try:
         assert holder.stdout.readline().strip() == "mapped"
         receipt = maintain(command, request)
-        assert receipt["outcome"] == "pending_restart"
-        assert any(str(holder.pid) in mapping for mapping in receipt["deleted_package_mappings"])
-        assert (root / "usr/share/retention-fixture/version").read_text() == "2.0"
+        if failed_health:
+            assert receipt["outcome"] == "recovery_failed"
+            assert any(str(holder.pid) in mapping for mapping in receipt["recovery_deleted_package_mappings"])
+            assert (root / "usr/share/retention-fixture/version").read_text() == "1.0"
+        else:
+            assert receipt["outcome"] == "pending_restart"
+            assert any(str(holder.pid) in mapping for mapping in receipt["deleted_package_mappings"])
+            assert (root / "usr/share/retention-fixture/version").read_text() == "2.0"
     finally:
         holder.terminate()
         holder.wait(timeout=5)
     request["operation_id"] = "req-after-restart"
+    request["health_command"] = "true"
     assert maintain(command, request)["outcome"] == "verified"
 
 

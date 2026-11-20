@@ -3,7 +3,13 @@
 use super::{GuestState, configuration, coverage, packages};
 use crate::{Error, live_token, now, read_json, write_json};
 use serde_json::{Value, json};
-use std::{fs, io::Read, os::fd::AsRawFd, path::Path, process::Command};
+use std::{
+    fs,
+    io::{Read, Write},
+    os::{fd::AsRawFd, unix::process::CommandExt},
+    path::Path,
+    process::{Command, Stdio},
+};
 
 fn operation(value: &str) -> Result<(), Error> {
     if value.is_empty()
@@ -30,6 +36,12 @@ pub(super) fn status(store: &GuestState, id: &str) -> Result<i32, Error> {
     let owner = record["pid"].as_i64().ok_or("maintenance owner missing")? as i32;
     record["owner_alive"] = json!(live_token(owner)?.as_deref() == record["owner"].as_str());
     record["record_path"] = json!(path);
+    record["command_activity"] = match active_commands(&record) {
+        Ok(groups) => {
+            json!({"state":if groups.is_empty() {"quiescent"} else {"active"},"groups":groups})
+        }
+        Err(error) => json!({"state":"unknown","diagnostic":error.to_string()}),
+    };
     for field in ["request", "before", "after", "recovered_state"] {
         record
             .as_object_mut()
@@ -76,8 +88,14 @@ fn execute(
         .ok_or("maintenance directory missing")?
         .join(format!("{stage}.log"));
     let output = fs::File::create(&log)?;
-    let result = Command::new("/bin/sh")
-        .args(["-eu", "-c", script])
+    let spawned = Command::new("/bin/sh")
+        .args([
+            "-eu",
+            "-c",
+            "IFS= read -r permit; [ \"$permit\" = start ]; exec /bin/sh -eu -c \"$1\"",
+            "safeyolo-maintenance",
+            script,
+        ])
         .env("LC_ALL", "C")
         .env("SAFEYOLO_GUEST_ROOT", &store.root)
         .env(
@@ -92,18 +110,113 @@ fn execute(
         )
         .stdout(output.try_clone()?)
         .stderr(output)
-        .status()?;
+        .stdin(Stdio::piped())
+        .process_group(0)
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => {
+            record["commands"][stage] = json!({"state":"not_started","log":log});
+            write_json(path, record)?;
+            return Err(error.into());
+        }
+    };
+    record["commands"][stage] = json!({"pid":child.id(),"owner":live_token(child.id() as i32)?,
+        "group":child.id(),"finished":false,"log":log});
+    write_json(path, record)?;
+    fs::File::open(path.parent().ok_or("maintenance directory missing")?)?.sync_all()?;
+    // The script cannot execute before its identity is durable. If this
+    // helper exits first, EOF releases the waiting child without running it.
+    child
+        .stdin
+        .take()
+        .ok_or("maintenance start pipe missing")?
+        .write_all(b"start\n")?;
+    let result = child.wait()?;
     let mut diagnostic = Vec::new();
     fs::File::open(&log)?
         .take(4096)
         .read_to_end(&mut diagnostic)?;
-    record["commands"][stage] = json!({"exit_code":result.code(),"log":log,
-        "output_prefix":String::from_utf8_lossy(&diagnostic),"output_bytes":fs::metadata(&log)?.len()});
+    record["commands"][stage]["exit_code"] = json!(result.code());
+    record["commands"][stage]["finished"] = json!(true);
+    record["commands"][stage]["output_prefix"] = json!(String::from_utf8_lossy(&diagnostic));
+    record["commands"][stage]["output_bytes"] = json!(fs::metadata(&log)?.len());
     write_json(path, record)?;
     if !result.success() {
         return Err(format!("guest maintenance {stage} failed; inspect its retained log").into());
     }
+    if matches!(
+        stage,
+        "checkpoint_command" | "patch_command" | "recover_command"
+    ) && !active_commands(record)?.is_empty()
+    {
+        return Err(format!(
+            "guest maintenance {stage} left an active command group; inspect its retained identity"
+        )
+        .into());
+    }
     Ok(())
+}
+
+fn active_commands(record: &Value) -> Result<Vec<Value>, Error> {
+    let mut groups = Vec::new();
+    for stage in [
+        "checkpoint_command",
+        "patch_command",
+        "restart_command",
+        "health_command",
+        "recover_command",
+        "recovery_health_command",
+    ] {
+        let command = &record["commands"][stage];
+        if command.is_null() {
+            // No identity means the start pipe was never released.
+            continue;
+        }
+        if command["state"] == "not_started" {
+            continue;
+        }
+        if matches!(
+            stage,
+            "restart_command" | "health_command" | "recovery_health_command"
+        ) && command["finished"] == true
+        {
+            continue;
+        }
+        let group = i32::try_from(
+            command["group"]
+                .as_i64()
+                .ok_or("maintenance command group missing")?,
+        )?;
+        if let Some((owner, _, _)) = crate::process(group)?
+            && command["owner"]
+                .as_str()
+                .is_some_and(|original| original != owner)
+        {
+            continue;
+        } // The original group ended and this PID now belongs to another process.
+        let mut members = Vec::new();
+        for entry in fs::read_dir("/proc")? {
+            let entry = entry?;
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|pid| pid.parse::<i32>().ok())
+            else {
+                continue;
+            };
+            if let Some((owner, state, current_group)) = crate::process(pid)?
+                && current_group == group
+                && !matches!(state, 'Z' | 'X')
+            {
+                members.push(json!({"pid":pid,"owner":owner}));
+            }
+        }
+        if !members.is_empty() {
+            groups.push(json!({"stage":stage,"group":group,"members":members}));
+        }
+    }
+    Ok(groups)
 }
 
 fn observed(store: &GuestState, value: &Value) -> Result<Value, Error> {
@@ -127,6 +240,9 @@ fn recover(
     path: &Path,
     record: &mut Value,
 ) -> Result<(), Error> {
+    if !active_commands(record)?.is_empty() {
+        return Err("original maintenance command group is still active; stop and inspect that exact group before selecting recovery".into());
+    }
     execute(store, request, "recover_command", path, record)?;
     let value = {
         let _lock = store.lock()?;
@@ -145,7 +261,15 @@ fn recover(
         "recovery_health_command",
         path,
         record,
-    )
+    )?;
+    record["recovery_deleted_package_mappings"] = json!(deleted_mappings(store, &value)?);
+    if record["recovery_deleted_package_mappings"]
+        .as_array()
+        .is_some_and(|mappings| !mappings.is_empty())
+    {
+        return Err("recovery left old package files mapped; restart the affected processes before claiming restoration".into());
+    }
+    Ok(())
 }
 
 pub(super) fn recover_selected(store: &GuestState, id: &str) -> Result<i32, Error> {
@@ -160,13 +284,16 @@ pub(super) fn recover_selected(store: &GuestState, id: &str) -> Result<i32, Erro
     let path = directory(store, id).join("result.json");
     let mut record = read_json(&path, 16 * 1024 * 1024)?;
     if record["checkpoint_completed"] != true
-        || record["outcome"] != "uncertain"
-        || matches!(
-            record["phase"].as_str(),
-            Some("recover_command" | "recovery_health_command")
+        || !matches!(
+            record["outcome"].as_str(),
+            Some("uncertain" | "recovery_failed")
         )
+        || !record["commands"]["recover_command"].is_null()
     {
         return Err("no unused completed checkpoint for this uncertain operation; inspect the reached state and original recovery result".into());
+    }
+    if !active_commands(&record)?.is_empty() {
+        return Err("original maintenance command group is still active; stop and inspect that exact group before selecting recovery".into());
     }
     let request = record["request"].clone();
     let result = recover(store, &request, &path, &mut record);
@@ -407,7 +534,7 @@ pub(super) fn run(store: &GuestState) -> Result<i32, Error> {
                 &self::directory(store, previous).join("result.json"),
                 16 * 1024 * 1024,
             )?;
-            if original["outcome"] == "uncertain" {
+            if original["outcome"] == "uncertain" || !active_commands(&original)?.is_empty() {
                 return Err(format!("original maintenance {previous} is uncertain; inspect maintenance-status and select its recovery before another operation").into());
             }
         }

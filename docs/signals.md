@@ -360,7 +360,11 @@ sudo -n safeyolo-guest-state maintenance-recover OPERATION
 
 The first command only reads the receipt. The second explicitly selects one
 unused completed checkpoint for an interrupted operation, after inspection.
-An active operation or an already attempted recovery is refused. Reusing the
+The receipt includes the original command's process identity and group.
+An active original command, unknown interrupted identity or already attempted
+recovery is refused. Recipes must finish their package/configuration writes
+synchronously; a remaining writer group prevents verification or recovery.
+Do not leave background patch processes outside that group. Reusing the
 original maintenance operation reads its result without repeating patching;
 another operation cannot pass an unresolved uncertain operation. Inspect an
 incomplete checkpoint or failed recovery through the selected recovery owner.
