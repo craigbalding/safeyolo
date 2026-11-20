@@ -196,6 +196,34 @@ fn effect_scope(root: &Path, rule: &Rule, policy: &Policy) -> Result<Value, Erro
     )
 }
 
+/// Revision and delivery order alone do not change a finding's meaning.
+fn finding_basis(updates: &[Update]) -> String {
+    digest(
+        &updates
+            .iter()
+            .map(|update| {
+                (
+                    format!("{}/{}", update.source_id, update.id),
+                    &update.evidence,
+                )
+            })
+            .collect::<BTreeMap<_, _>>(),
+    )
+}
+
+fn findings_current(original: &[Update], current: &[Accepted], source: &Source) -> bool {
+    !original.is_empty()
+        && original.iter().all(|finding| {
+            current.iter().any(|accepted| {
+                accepted.update.id == finding.id
+                    && accepted.update.source_id == finding.source_id
+                    && accepted.update.evidence == finding.evidence
+                    && !accepted.update.withdrawn
+                    && accepted.update.fresh(source, now())
+            })
+        })
+}
+
 /// Inventory checks attest effective state, not saved desired packages. This
 /// record is host-selected, freshness-bounded and bound to the current agent run.
 #[derive(Deserialize)]
@@ -483,12 +511,8 @@ pub(super) async fn reconcile(
                     rule.on_inactive == Inactive::Retain
                 };
             let scope = effect_scope(&root, rule, &policy)?;
-            let dispatch_findings = (!matches!(rule.response, Response::List { .. })).then(|| {
-                selected
-                    .iter()
-                    .map(|u| (&u.id, u.revision))
-                    .collect::<Vec<_>>()
-            });
+            let dispatch_findings =
+                (!matches!(rule.response, Response::List { .. })).then(|| finding_basis(&selected));
             let identity = digest(&json!([
                 rule,
                 source.source_id,
@@ -530,7 +554,7 @@ pub(super) async fn reconcile(
             if reaction.identity == identity
                 && matches!(
                     reaction.status.as_str(),
-                    "verified" | "dispatched" | "notified" | "rejected" | "failed" | "uncertain"
+                    "verified" | "dispatched" | "notified" | "failed" | "uncertain"
                 )
             {
                 continue;
@@ -549,12 +573,11 @@ pub(super) async fn reconcile(
                 &digest(&json!([rule_name, agent, identity, reaction.episode]))[..32]
             );
             if active && rule.authority == Authority::Approval {
-                next_due = next_due.min(now() + 1);
                 let action = json!({"kind":"signal_response","rule":rule_name,"agent":agent,
                     "agent_id":policy.evidence_agent_id(agent),"basis":digest(rule),"identity":identity,
                     "source_basis":digest(source),
                     "effect_scope":scope,
-                    "findings":selected.iter().map(|u|(&u.id,u.revision)).collect::<Vec<_>>()});
+                    "findings":selected});
                 let record = match writer.approvals().get(&operation)? {
                     Some(record) => record,
                     None => {
@@ -594,7 +617,21 @@ pub(super) async fn reconcile(
                         record
                     }
                 };
-                if record.authority.action["findings"] != action["findings"] {
+                let original = serde_json::from_value::<Vec<Update>>(
+                    record.authority.action["findings"].clone(),
+                )?;
+                let status = record.current_status(&policy)?;
+                let expired = time::OffsetDateTime::parse(
+                    record
+                        .authority
+                        .expires_at
+                        .as_deref()
+                        .ok_or("signal approval expiry unavailable")?,
+                    &time::format_description::well_known::Rfc3339,
+                )?
+                .unix_timestamp()
+                    <= now() as i64;
+                if finding_basis(&original) != finding_basis(&selected) || expired {
                     // A delayed decision is bound to its original findings.
                     // Select another approval only after real evidence changes.
                     writer.approvals().decide(&record.approval_id, |old| {
@@ -606,10 +643,11 @@ pub(super) async fn reconcile(
                     reaction.episode += 1;
                     reaction.status = "selected".into();
                     save(&path(&root, rule_name, agent), &reaction)?;
+                    next_due = next_due.min(now() + 1);
                     continue;
                 }
                 reaction.approval_id = Some(record.approval_id.clone());
-                reaction.status = match record.current_status(&policy)?.as_str() {
+                reaction.status = match status.as_str() {
                     "approved" => "approved",
                     "pending" => "pending_approval",
                     "rejected" => "rejected",
@@ -617,6 +655,9 @@ pub(super) async fn reconcile(
                 }
                 .into();
                 save(&path(&root, rule_name, agent), &reaction)?;
+                if reaction.status == "pending_approval" {
+                    next_due = next_due.min(now() + 1);
+                }
                 if reaction.status != "approved" {
                     continue;
                 }
@@ -851,8 +892,12 @@ pub(crate) fn approval_revision(policy: &Policy, action: &Value) -> Option<Strin
     let rule = config.rules.get(action["rule"].as_str()?)?;
     let agent = action["agent"].as_str()?;
     let scope = effect_scope(root, rule, policy).ok()?;
+    let source = config.sources.get(&rule.source)?;
+    let original = serde_json::from_value::<Vec<Update>>(action["findings"].clone()).ok()?;
+    let current = read_accepted(root, &rule.source, source).ok()?;
     (digest(rule) == action["basis"]
         && digest(config.sources.get(&rule.source)?) == action["source_basis"]
+        && findings_current(&original, &current, source)
         && scope == action["effect_scope"]
         && rule.agents.iter().any(|a| a == agent)
         && rule.authority == Authority::Approval
@@ -894,9 +939,8 @@ pub(crate) fn resolve(
         let rule=config.rules.get(action["rule"].as_str().unwrap_or("")).ok_or_else(||approvals::invalid("response rule removed"))?;
         let source=&config.sources[&rule.source];
         let current=read_accepted(root,&rule.source,source).map_err(|_|approvals::invalid("signal evidence unavailable"))?;
-        let valid=action["findings"].as_array().is_some_and(|findings|findings.iter().all(|finding|current.iter().any(|a|
-            a.update.id==finding[0] && json!(a.update.revision)==finding[1] && !a.update.withdrawn && a.update.fresh(source,now())
-        )));
+        let original:Vec<Update>=serde_json::from_value(action["findings"].clone()).map_err(|_|approvals::invalid("signal approval findings unavailable"))?;
+        let valid=findings_current(&original,&current,source);
         record.status=if !valid{"superseded"}else if matches!(decision,approvals::network_action::Decision::Reject){"rejected"}else{"approved"}.into();
         record.option=(record.status=="approved").then(||"once".into());
         record.result=json!({"status":"decision_recorded","effect_applied":false,"next_action":"the running proxy rechecks scope and applicability before dispatch"});
@@ -923,6 +967,39 @@ pub(super) fn status(root: &Path) -> Result<Value, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn finding_identity_ignores_revision_age_and_order_but_keeps_meaning() {
+        let a = Update {
+            source_id: "fixture".into(),
+            id: "advisories.one".into(),
+            revision: 1,
+            observed_at: now() - 10,
+            expires_at: now() + 60,
+            withdrawn: false,
+            evidence_refs: vec![],
+            evidence: Evidence::Advisory {
+                distribution: Some("debian:trixie".into()),
+                severity: 8.5,
+                subject: Subject::Service { name: "web".into() },
+            },
+        };
+        let mut b = a.clone();
+        b.id = "advisories.two".into();
+        let basis = finding_basis(&[a.clone(), b.clone()]);
+        let mut renewed = a.clone();
+        renewed.revision += 1;
+        renewed.observed_at += 1;
+        renewed.expires_at += 1;
+        assert_eq!(basis, finding_basis(&[b.clone(), renewed.clone()]));
+        renewed.evidence = Evidence::Advisory {
+            distribution: Some("debian:trixie".into()),
+            severity: 8.5,
+            subject: Subject::Service {
+                name: "another-service".into(),
+            },
+        };
+        assert_ne!(basis, finding_basis(&[b, renewed]));
+    }
     #[test]
     fn destination_uses_canonical_dns_and_the_effective_network_control() {
         let root = tempfile::tempdir().unwrap();

@@ -20,14 +20,21 @@ mod controlled_runs;
 
 const ALICE: &str = "ag-11111111111111111111111111111111";
 const BOB: &str = "ag-22222222222222222222222222222222";
+// Reuse the repository's native-artifact binding to exercise an installed package.
+fn native_binary(name: &str, built: &str) -> PathBuf {
+    std::env::var_os("SAFEYOLO_NATIVE_ARTIFACTS")
+        .map(|directory| PathBuf::from(directory).join(name))
+        .unwrap_or_else(|| PathBuf::from(built))
+}
 struct NatsCleanup(PathBuf);
 impl Drop for NatsCleanup {
     fn drop(&mut self) {
-        let _ = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root")
-            .arg(&self.0)
-            .args(["coord", "stop"])
-            .output();
+        let _ =
+            std::process::Command::new(native_binary("safeyolo", env!("CARGO_BIN_EXE_safeyolo")))
+                .arg("--root")
+                .arg(&self.0)
+                .args(["coord", "stop"])
+                .output();
     }
 }
 fn now() -> u64 {
@@ -36,7 +43,7 @@ fn now() -> u64 {
 async fn cli(root: &Path, args: &[&str]) -> Output {
     tokio::time::timeout(
         Duration::from_secs(20),
-        tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        tokio::process::Command::new(native_binary("safeyolo", env!("CARGO_BIN_EXE_safeyolo")))
             .arg("--root")
             .arg(root)
             .args(args)
@@ -510,6 +517,26 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(response(&a)["approval_id"], old);
+    let preview: Value = serde_json::from_str(&success(
+        cli(&a, &["approvals", "show", &old, "--json"]).await,
+    ))
+    .unwrap();
+    assert_eq!(
+        preview["action"]["findings"][0]["evidence"]["subject"]["name"],
+        "selected-web"
+    );
+    let original_expiry = preview["authority"]["expires_at"].clone();
+    publish(&kv, &advisory(5, 9)).await;
+    drive(&mut [&mut ap],&a,"unchanged finding revision reuses pending approval",||{
+        revision(&a,"advisories",&finding.id)==5
+            && safeyolo_proxy::signals::status(&a).unwrap()["responses"][0]["selection"]["findings"][0]["revision"]==5
+    }).await;
+    assert_eq!(response(&a)["approval_id"], old);
+    let preview: Value = serde_json::from_str(&success(
+        cli(&a, &["approvals", "show", &old, "--json"]).await,
+    ))
+    .unwrap();
+    assert_eq!(preview["authority"]["expires_at"], original_expiry);
     // An unchanged finding cannot carry an old approval into a broader effect.
     let authored = fs::read_to_string(a.join("policy.toml")).unwrap();
     fs::write(
@@ -547,12 +574,12 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
     )
     .await;
     old = response(&a)["approval_id"].as_str().unwrap().to_owned();
-    publish(&kv, &advisory(5, 2)).await;
+    publish(&kv, &advisory(6, 2)).await;
     drive(
         &mut [&mut ap],
         &a,
         "correction before delayed approval",
-        || revision(&a, "advisories", &finding.id) == 5 && response(&a)["active"] == false,
+        || revision(&a, "advisories", &finding.id) == 6 && response(&a)["active"] == false,
     )
     .await;
     let delayed = cli(
@@ -570,7 +597,7 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
         "{delayed}"
     );
     assert_eq!(request(&a, "alice", "blocked.test").await, 200);
-    publish(&kv, &advisory(6, 9)).await;
+    publish(&kv, &advisory(7, 9)).await;
     drive(
         &mut [&mut ap],
         &a,
@@ -617,10 +644,10 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
     ap.reload_policy_if_changed().await.unwrap();
     assert_eq!(response(&a)["episode"], episode);
     // Authenticated assertions still cannot supply commands or another source.
-    let mut forged = advisory(7, 9);
+    let mut forged = advisory(8, 9);
     forged.source_id = "forged".into();
     publish(&kv, &forged).await;
-    let mut command = json!(advisory(8, 9));
+    let mut command = json!(advisory(9, 9));
     command["command"] = json!("stop all agents");
     kv.put(&finding.id, serde_json::to_vec(&command).unwrap().into())
         .await
@@ -641,11 +668,11 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
         .is_err()
     );
     // Expiry changes desired state without a source publication at the deadline.
-    let mut expiring = advisory(9, 9);
+    let mut expiring = advisory(10, 9);
     expiring.expires_at = now() + 2;
     publish(&kv, &expiring).await;
     drive(&mut [&mut ap], &a, "expiring evidence arrived", || {
-        revision(&a, "advisories", &finding.id) == 9
+        revision(&a, "advisories", &finding.id) == 10
     })
     .await;
     drive(
@@ -662,7 +689,7 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
         v["rules"]["web"]["authority"]=toml::Value::String("standing".into());
         v["rules"]["web"]["response"]=toml::from_str(&format!("kind='work'\nroom='missing'\nassignee='{ALICE}'\ntitle='Assess selected signal'\nrequirement='https://fixture.invalid/requirement'\n")).unwrap();
     }).await;
-    publish(&kv, &advisory(10, 9)).await;
+    publish(&kv, &advisory(11, 9)).await;
     drive(&mut [&mut ap], &a, "failed Work owner is explicit", || {
         response(&a)["status"] == "failed"
     })
@@ -697,6 +724,25 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
         .unwrap()
     };
     assert_eq!(work_count(), 1);
+    let dispatched = response(&a);
+    publish(&kv, &advisory(12, 9)).await;
+    drive(
+        &mut [&mut ap],
+        &a,
+        "unchanged finding revision reuses Work",
+        || {
+            safeyolo_proxy::signals::status(&a).unwrap()["responses"][0]["selection"]["findings"][0]
+                ["revision"]
+                == 12
+        },
+    )
+    .await;
+    for _ in 0..5 {
+        ap.reload_policy_if_changed().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    assert_eq!(response(&a)["episode"], dispatched["episode"]);
+    assert_eq!(work_count(), 1);
     // The same retained finding follows actual effective package changes, without
     // a new publication or a desired-image manifest standing in for the guest.
     #[cfg(target_os = "linux")]
@@ -717,7 +763,7 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
             v["rules"]["web"].as_table_mut().unwrap().insert("inventory".into(),toml::Value::String(inventory.to_str().unwrap().into()));
             v["rules"]["web"].as_table_mut().unwrap().insert("inventory_max_age_seconds".into(),toml::Value::Integer(60));
         }).await;
-        let mut package = advisory(11, 9);
+        let mut package = advisory(13, 9);
         package.evidence = Evidence::Advisory {
             distribution: Some("debian:trixie".into()),
             severity: 9.0,
@@ -808,18 +854,19 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
     );
     let input = publisher.join("feed-input.toml");
     fs::write(&input, toml::to_string(&feeds).unwrap()).unwrap();
-    let acquisition = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
-        .arg(&publisher)
-        .args(["policy", "feeds", "configure"])
-        .arg(&input)
-        .env("http_proxy", &parent)
-        .env("https_proxy", &parent)
-        .env("HTTP_PROXY", &parent)
-        .env("HTTPS_PROXY", &parent)
-        .output()
-        .await
-        .unwrap();
+    let acquisition =
+        tokio::process::Command::new(native_binary("safeyolo", env!("CARGO_BIN_EXE_safeyolo")))
+            .arg("--root")
+            .arg(&publisher)
+            .args(["policy", "feeds", "configure"])
+            .arg(&input)
+            .env("http_proxy", &parent)
+            .env("https_proxy", &parent)
+            .env("HTTP_PROXY", &parent)
+            .env("HTTPS_PROXY", &parent)
+            .output()
+            .await
+            .unwrap();
     success(acquisition);
     drive(
         &mut [&mut ap, &mut bp],
@@ -844,6 +891,67 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
         received["provider_observed_at"],
         published["evidence_first_observed_at"]
     );
+    // A standalone native proxy must follow its timer without a test driver
+    // calling reload. With SAFEYOLO_NATIVE_ARTIFACTS this executes packaged bytes.
+    let standalone = temp.path().join("standalone");
+    success(cli(&standalone, &["init"]).await);
+    config(&standalone, &parent, false);
+    feed_config(&standalone);
+    let input = signal_config(&standalone, port, &credentials, "standing");
+    success(
+        cli(
+            &standalone,
+            &["signals", "configure", input.to_str().unwrap()],
+        )
+        .await,
+    );
+    let mut child = tokio::process::Command::new(native_binary(
+        "safeyolo-proxy",
+        env!("CARGO_BIN_EXE_safeyolo-proxy"),
+    ))
+    .arg("--config")
+    .arg(standalone.join("config.toml"))
+    .stdout(std::process::Stdio::null())
+    .stderr(fs::File::create(standalone.join("proxy-stderr.log")).unwrap())
+    .kill_on_drop(true)
+    .spawn()
+    .unwrap();
+    drive(
+        &mut [],
+        &standalone,
+        "standalone proxy recovers current accepted view",
+        || revision(&standalone, "list", "lists.current") == 3,
+    )
+    .await;
+    assert_eq!(request(&standalone, "alice", "http-listed.test").await, 403);
+    let mut pushed = list2.clone();
+    pushed.revision = 4;
+    pushed.observed_at = now();
+    pushed.expires_at = now() + 3600;
+    pushed.evidence = Evidence::List {
+        body: "standalone.test\n".into(),
+    };
+    publish(&kv, &pushed).await;
+    drive(
+        &mut [],
+        &standalone,
+        "standalone connected push activates automatically",
+        || revision(&standalone, "list", "lists.current") == 4,
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        if request(&standalone, "alice", "standalone.test").await == 403 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "standalone network policy did not activate pushed revision"
+        );
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    assert_eq!(request(&standalone, "alice", "http-listed.test").await, 200);
+    child.kill().await.unwrap();
     ap.shutdown().await;
     bp.shutdown().await;
     coord_rooms::stop(&a).await.unwrap();

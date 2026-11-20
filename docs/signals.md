@@ -183,7 +183,9 @@ policy; signal receipt creates no such authority.
 `failed` and `uncertain` have separate meanings. A list becomes `verified` after
 the running policy captures its snapshot. Dispatched Work has not yet performed
 its requested external effect. Duplicate delivery and unchanged findings reuse
-the prior receipt. A withdrawal does not undo a completed external operation.
+the prior receipt, including a newer revision with the same finding content.
+An unchanged refresh does not extend a pending approval's original expiry.
+A withdrawal does not undo a completed external operation.
 
 Inspect the displayed ID with `approvals show` or `approvals explain`. Decide it
 with `approvals approve ID --option once` or `approvals reject ID`. A delayed
