@@ -309,7 +309,8 @@ def test_workflow_apt_acquisition_retries_before_runtime_preparation(
         'Dir::Etc::sourceparts "-";\n'
         f'Dir::State "{tmp_path}/state";\nDir::State::status "{tmp_path}/state/status";\n'
         f'Dir::Cache "{tmp_path}/cache";\nDir::Log "{tmp_path}/log";\n'
-        'Acquire::Languages "none";\nAPT::Get::Download-Only "true";\n',
+        # Require the workflow's explicit retry option regardless of apt's default.
+        'Acquire::Retries "0";\nAcquire::Languages "none";\nAPT::Get::Download-Only "true";\n',
     )
     monkeypatch.setenv("APT_CONFIG", str(config))
     arguments = tmp_path / "apt-arguments"
