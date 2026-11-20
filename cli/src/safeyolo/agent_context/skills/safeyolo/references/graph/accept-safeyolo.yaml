@@ -455,6 +455,12 @@ nodes:
       30-minute ownership boundary. The test overlaps the wait with its other
       checks and reports the observed elapsed time. A shorter run cannot prove
       that duration. The three-model work exercise remains separate.
+      For commissioning observation and follow-up, select
+      work::commissioning_observation_and_followup_use_separate_selected_permissions
+      with --ignored. It reads an uncertain completed execution through a
+      receive-only grant, refuses mutation, then completes an attributed explanation
+      after the operator selects send authority. The original uncertain result
+      remains unchanged; no guest administration is granted.
       For material signals and operator attention, select
       signals::native_signals_author_page_watch_replay_and_restart with
       --ignored. It uses the authenticated Agent API, owned real NATS,
@@ -729,7 +735,7 @@ nodes:
         - path: proxy/src/coord_rooms/inventory.rs
           sha256: 6411a3fe90b708ae479af0bc9df9199ed07c2b429b5f58c77bc3bd371628999e
         - path: proxy/tests/native_coord/work.rs
-          sha256: daf383b72c4e76089aca6ee34d0da32596535508c1d8f23c9392b04628c46761
+          sha256: 0a8e7932cc3e8eb98b2f741bc6151f565b9527225714e9e74f1fbcbfbe788528
         - path: proxy/tests/native_coord/attestations.rs
           sha256: b6f963f9010aeb6b09fa88d66f9f8c9662f68a4f1b2b63513746892783f2fa32
         - path: proxy/src/coord_rooms/work/attestations.rs

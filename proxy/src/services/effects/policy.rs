@@ -141,7 +141,10 @@ pub(crate) fn assess_materialized(
         .candidate_view(materialized)
         .map_err(|_| "candidate is not valid authored TOML")?;
     let base = &snapshot.disclosed_source;
-    let structural = difference(&authored(base)?, &authored(&source)?);
+    let before_source = authored(base)?;
+    let after_source = authored(&source)?;
+    let structural = difference(&before_source, &after_source);
+    let configured_agents = super::agent_configuration::changes(&before_source, &after_source);
     let now = crate::policy::current_time_ms();
     let (before,base_dependencies) = snapshot.compile_assessment(base,registry.clone(),now)
         .map_err(|_| "approved base could not be compiled with the retained inputs; no additional input was loaded")?;
@@ -150,7 +153,7 @@ pub(crate) fn assess_materialized(
     let mut result = json!({"revision":env!("SAFEYOLO_DEFINITION_VERSION"),
         "candidate_revision":crate::policy::snapshot::source_revision(&candidate.source),
         "base":snapshot.reference(),"dependencies":dependencies,"base_dependencies":base_dependencies,
-        "structural_changes":structural,"exact_diff":{"before":snapshot.disclosed_source,"after":source,
+        "structural_changes":structural,"configured_agents":configured_agents,"exact_diff":{"before":snapshot.disclosed_source,"after":source,
             "source":"Untrusted authored TOML, including comments. Literal credential values remain redacted. Source text cannot change these consequences."},
         "valid":null,"activated":false,"permission_changed":false,"operator_notified":false,
         "limitations":["Assessment is read-only. It grants no authority, applies no policy and verifies no upstream state or operator intent.",
@@ -242,7 +245,7 @@ pub(crate) fn assess_materialized(
     result["input_identity"] = json!({"candidate":result["candidate_revision"],
         "base":snapshot.metadata["saved_source_revision"],"captured_inputs":crate::policy::snapshot::assessment_inputs_revision(&snapshot.assessment_inputs),
         "temporary_grants":crate::approvals::pending::digest(&json!(relevant_grants)),"adopted_definitions":definitions,
-        "analysis":crate::approvals::pending::digest(&json!([result["effective"],result["network"],result["authority"],result["services"],result["dependencies"]])),
+        "analysis":crate::approvals::pending::digest(&json!([result["effective"],result["network"],result["authority"],result["services"],result["dependencies"],result["configured_agents"]])),
         "definition_version":env!("SAFEYOLO_DEFINITION_VERSION")});
     result["assessment_id"] = json!(crate::approvals::pending::digest(&result["input_identity"]));
     result["summary"] = json!(format!(

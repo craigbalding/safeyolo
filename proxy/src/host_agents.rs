@@ -12,6 +12,21 @@ use toml_edit::{DocumentMut, Item, value};
 
 use crate::Error;
 
+pub(crate) const CONFIGURATION_FIELDS: &[&str] = &[
+    "agent_id",
+    "folder",
+    "launcher",
+    "host_script",
+    "memory_mb",
+    "rootfs_overlay",
+    "nested_docker",
+    "user_default_args",
+    "mounts",
+    "dangerously_allow_unowned",
+    "network_slot",
+    "tailnet_port",
+];
+
 #[derive(Clone, serde::Serialize)]
 pub(crate) struct Agent {
     pub(crate) name: String,
@@ -400,22 +415,9 @@ pub(crate) fn list() -> Result<Vec<Agent>, Error> {
             let fields = item
                 .as_table_like()
                 .ok_or_else(|| format!("agent {name}: metadata must be a TOML table"))?;
-            let host_settings = [
-                "agent_id",
-                "folder",
-                "launcher",
-                "host_script",
-                "memory_mb",
-                "rootfs_overlay",
-                "nested_docker",
-                "user_default_args",
-                "mounts",
-                "dangerously_allow_unowned",
-                "network_slot",
-                "tailnet_port",
-            ]
-            .iter()
-            .any(|key| fields.contains_key(key));
+            let host_settings = CONFIGURATION_FIELDS
+                .iter()
+                .any(|key| fields.contains_key(key));
             // Retained incarnation evidence also identifies a host record if
             // its configuration was damaged. Do not hide it as a policy entry.
             if !host_settings
