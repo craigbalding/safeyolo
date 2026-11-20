@@ -888,6 +888,10 @@ fn validate_authoring(document: &Value) -> Result<()> {
             }
             validate_hosts(agent.get("hosts"), &format!("agents.{name}.hosts"))?;
             super::evidence::validate_reads(agent.get("evidence_reads"))?;
+            if let Some(lifecycle) = agent.get("lifecycle") {
+                crate::host_lifecycle::scheduled::configuration(lifecycle)
+                    .map_err(|error| invalid(error.to_string()))?;
+            }
         }
     }
     Ok(())

@@ -786,7 +786,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Selection: default `systrap` section `access`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `access`.
 - [proxy/tests/native_coord/reviews.rs](../proxy/tests/native_coord/reviews.rs#L100) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real instances/NATS; controlled run adapters.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-reviews-rs).
-- [proxy/tests/native_coord/work.rs](../proxy/tests/native_coord/work.rs#L50) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real instances/NATS; controlled run adapters.
+- [proxy/tests/native_coord/work.rs](../proxy/tests/native_coord/work.rs#L39) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real instances/NATS; controlled run adapters.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-work-rs).
 - [proxy/tests/native_coord/outputs.rs](../proxy/tests/native_coord/outputs.rs#L23) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real instances/NATS; controlled run adapters.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-outputs-rs).
@@ -2502,8 +2502,9 @@ Selection: ignored by default.
 
 Selection: ignored by default.
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord work::commissioning_observation_and_followup_use_separate_selected_permissions -- --exact --ignored`](../proxy/tests/native_coord/work.rs#L50) — `#[ignore = "requires pinned NATS"]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord work::native_work_claims_replay_identity_revocation_and_crash_recovery -- --exact --ignored`](../proxy/tests/native_coord/work.rs#L147) — `#[ignore = "requires pinned NATS; set SAFEYOLO_WORK_RETAIN_SECONDS=1800 for real duration proof"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord work::self_stop_api_refuses_scope_bypass_and_retains_original_request -- --exact --ignored`](../proxy/tests/native_coord/work.rs#L39) — `#[cfg(target_os = "linux")]`; `#[ignore = "requires pinned NATS; controlled run authority, not an installed sandbox witness"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord work::commissioning_observation_and_followup_use_separate_selected_permissions -- --exact --ignored`](../proxy/tests/native_coord/work.rs#L196) — `#[ignore = "requires pinned NATS"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord work::native_work_claims_replay_identity_revocation_and_crash_recovery -- --exact --ignored`](../proxy/tests/native_coord/work.rs#L293) — `#[ignore = "requires pinned NATS; set SAFEYOLO_WORK_RETAIN_SECONDS=1800 for real duration proof"]`
 
 <a id="witness-proxy-tests-native-coord-outputs-rs"></a>
 ### [`proxy/tests/native_coord/outputs.rs`](../proxy/tests/native_coord/outputs.rs)

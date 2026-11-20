@@ -157,6 +157,33 @@ impl Client {
     }
 
     async fn call_scoped(&self, name: &str, args: &Value) -> Result<Value, Error> {
+        if matches!(
+            name,
+            "read_lifecycle" | "request_self_stop" | "read_self_stop_request"
+        ) {
+            if self.home.is_some() {
+                return Err("self lifecycle selects only the authenticated local worker".into());
+            }
+            return match name {
+                "read_lifecycle" => self.get("/lifecycle").await,
+                "request_self_stop" => {
+                    self.request(
+                        Method::POST,
+                        "/lifecycle/stop",
+                        args.clone(),
+                        Duration::from_secs(60),
+                    )
+                    .await
+                }
+                _ => {
+                    self.get(&format!(
+                        "/lifecycle/requests/{}",
+                        segment(text(args, "operation_id")?)
+                    ))
+                    .await
+                }
+            };
+        }
         if matches!(name, "submit_policy_change" | "read_policy_change") {
             if self.home.is_some() {
                 return Err("policy adoption selects only the authenticated local instance".into());
@@ -781,6 +808,24 @@ pub fn tools() -> Vec<Value> {
         result.push(json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}}));
     };
     add(
+        "read_lifecycle",
+        "Read this worker's configured lifecycle and retained host observations. Saved settings, current activation, accepted stop request and verified resource release are separate facts. No other target or host administration is available.",
+        json!({}),
+        &[],
+    );
+    add(
+        "request_self_stop",
+        "Request this worker's selected checked early stop. First create and claim self-assigned ordinary Work with immutable external_ref=safeyolo:lifecycle/self-stop in the configured completion room. Choose operation_id before writing. The host checks current scoped Work, required acceptance and the adopted job, then fences scope closure and stops this exact run. The shutdown item and operator-excluded future Work are outside the check. A retained request is not proof of shutdown or native Work completion. Read the original request after an uncertain reply; no arbitrary host command, cutoff extension or other-worker target is accepted.",
+        json!({"operation_id":string,"shutdown_work_id":string}),
+        &["operation_id", "shutdown_work_id"],
+    );
+    add(
+        "read_self_stop_request",
+        "Read this durable worker's original self-stop request and host-observed outcome, including after its sandbox exits and resumes. Readback does not retry the request, complete its Work or authorize another effect.",
+        json!({"operation_id":string}),
+        &["operation_id"],
+    );
+    add(
         "submit_policy_change",
         "Explicitly submit one immutable complete policy candidate for human review after private assessment. Choose operation_id before submission; preserve the approved snapshot's markers and definition_version from discovery. Only this submission creates canonical operator attention. Disclosure or assessment grants no apply authority. The human reviews trusted consequences and the complete redacted diff; current inputs are revalidated through the native transaction. Changed content needs a new operation ID and decision. Read the original ID after a lost response; never infer success or retry permission from attention.",
         json!({"operation_id":string,"candidate":{"type":"object","properties":{"snapshot_request_id":string,"source":string,"definition_version":string},"required":["snapshot_request_id","source","definition_version"],"additionalProperties":false}}),
@@ -1302,6 +1347,9 @@ pub fn tools() -> Vec<Value> {
                     | "discover_policy_capabilities"
                     | "validate_policy_capability"
                     | "observe_support_capability"
+                    | "read_lifecycle"
+                    | "request_self_stop"
+                    | "read_self_stop_request"
             )
         ) {
             tool["inputSchema"]["properties"]["home"] = json!({"type":"string","description":"Explicit configured home SafeYolo. Omit for local operations. Attention cursors belong to the selected home."});

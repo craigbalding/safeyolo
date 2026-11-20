@@ -13,7 +13,7 @@ use std::{
 };
 
 const NATS_VERSION: &str = "2.14.5";
-pub(crate) const SCHEMA_VERSION: u32 = 12;
+pub(crate) const SCHEMA_VERSION: u32 = 13;
 pub(crate) const COLLABORATION_MAX_ENVELOPE_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) mod brief;
 mod inventory;
@@ -34,7 +34,7 @@ fn read_config(root: &Path) -> Result<crate::Config, Error> {
     };
     crate::native_config::read(&config_path)
 }
-fn directory(root: &Path) -> Result<PathBuf, Error> {
+pub(crate) fn directory(root: &Path) -> Result<PathBuf, Error> {
     Ok(read_config(root)?
         .data_dir
         .ok_or("data directory is missing")?
@@ -134,7 +134,7 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
         }
         transaction.execute_batch(include_str!("coord_schema.sql"))?;
         transaction.execute("INSERT INTO instance(id) VALUES (?1)", [id.trim()])?;
-    } else if ![5, 6, 7, 8, 9, 10, 11, SCHEMA_VERSION].contains(&version) {
+    } else if ![5, 6, 7, 8, 9, 10, 11, 12, SCHEMA_VERSION].contains(&version) {
         return Err(format!(
             "Coord schema {version} is not operational; expected version {SCHEMA_VERSION}"
         )
@@ -146,6 +146,7 @@ pub fn bootstrap(root: &Path) -> Result<(), Error> {
     }
     transaction.execute_batch(include_str!("coord_signal_schema.sql"))?;
     transaction.execute_batch(include_str!("coord_operational_schema.sql"))?;
+    transaction.execute_batch(include_str!("coord_lifecycle_schema.sql"))?;
     if (5..=10).contains(&version) {
         transaction.execute_batch(
             "ALTER TABLE coord_outbox ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0;",
@@ -723,7 +724,7 @@ pub async fn status(root: &Path) -> Result<Value, Error> {
     }
 }
 
-async fn jetstream(root: &Path) -> Result<async_nats::jetstream::Context, Error> {
+pub(crate) async fn jetstream(root: &Path) -> Result<async_nats::jetstream::Context, Error> {
     let saved = record(root)?.ok_or("NATS is not running; run coord start")?;
     if !verified(root, &saved).await? {
         return Err("NATS ownership or readiness is unverified".into());

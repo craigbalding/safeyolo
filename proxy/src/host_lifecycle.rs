@@ -16,6 +16,8 @@ use serde_json::{Value, json};
 
 use crate::{Error, host_agents::Agent};
 
+pub(crate) mod scheduled;
+
 fn tmux_command() -> tokio::process::Command {
     tokio::process::Command::new(crate::host_platform::config_dir().join("bin/tmux"))
 }
@@ -1477,6 +1479,7 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
         "next_start_configuration":{"workspace":agent.folder,"memory_mb":agent.memory_mb.unwrap_or(4096),"mounts":agent.mounts},
         "terminal_state":if attachable {"running"} else {"absent"},
         "agent_state":state,"launcher":launcher,"attachable":attachable,
+        "lifecycle":scheduled::observation(&crate::host_platform::config_dir(),agent,&sandbox["runtime_state"]),
         "launch_id":launch_id,"exit_code":exit_code,"error":error,
         "hook_errors":hook_errors,"harness":harness(agent)
     }))
@@ -1545,6 +1548,25 @@ pub(crate) async fn start_authorized(
     allow_unowned: bool,
     check: &(dyn Fn() -> Result<(), Error> + Send + Sync),
 ) -> Result<Value, Error> {
+    scheduled::start(
+        agent,
+        operation,
+        setup_lock,
+        arguments,
+        allow_unowned,
+        check,
+    )
+    .await
+}
+
+pub(super) async fn start_inner(
+    agent: &Agent,
+    operation: &str,
+    setup_lock: Option<SetupLock>,
+    arguments: Option<&[String]>,
+    allow_unowned: bool,
+    check: &(dyn Fn() -> Result<(), Error> + Send + Sync),
+) -> Result<Value, Error> {
     let interactive = operation == "start-interactive";
     let foreground = operation == "start-foreground";
     crate::host_agents::refresh(agent)?;
@@ -1591,6 +1613,7 @@ pub(crate) async fn start_authorized(
         agent.dangerously_allow_unowned,
     )?;
     if observed["runtime_state"] == "stopped" {
+        scheduled::release_previous_scope(agent)?;
         if observed["backend"].is_object() {
             crate::host_platform::stop_sandbox(&agent.name).await?;
         }
@@ -1600,7 +1623,8 @@ pub(crate) async fn start_authorized(
         let slot = crate::host_agents::reserve_network_slot(&agent.name)?;
         let address = u32::from(slot) + 1;
         let ip = format!("10.200.{}.{}", address / 256, address % 256);
-        let run_id = uuid::Uuid::new_v4().simple().to_string();
+        let run_id = scheduled::planned_run(agent)?
+            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
         crate::host_boot::stage(agent, &ip, &run_id).await?;
         let mut run = json!({"name":agent.name,"agent_id":agent.id,"run_id":run_id,"ip":ip,"state":"starting"});
         if cfg!(target_os = "linux") {
@@ -2299,6 +2323,7 @@ async fn stop_locked(
         crate::host_platform::check_stop_sandbox(&agent.name).await?;
     }
     check()?;
+    scheduled::stopping(agent)?;
     if let Some(mut run) = crate::host_runs::read(&agent.name)?
         && run["agent_id"] == agent.id
         && matches!(run["state"].as_str(), Some("starting" | "running"))
@@ -2306,11 +2331,29 @@ async fn stop_locked(
         run["state"] = "stopping".into();
         crate::host_runs::save(&agent.name, &run)?;
     }
-    let command_warning = stop_supervisor(&agent.name)
+    let command_warning = if let Some(wait) = scheduled::mandatory_command_wait(agent)? {
+        // A launcher failure or a non-cooperating command cannot veto a
+        // configured cutoff. Share the existing command-termination interval.
+        match tokio::time::timeout(wait, async {
+            let supervisor = stop_supervisor(&agent.name).await;
+            let launcher = stop_launcher(agent).await;
+            supervisor.and(launcher)
+        })
         .await
-        .err()
-        .map(|error| error.to_string());
-    stop_launcher(agent).await?;
+        {
+            Ok(result) => result.err().map(|error| error.to_string()),
+            Err(_) => Some(
+                "command stop interval expired; continuing verified backend termination".into(),
+            ),
+        }
+    } else {
+        let warning = stop_supervisor(&agent.name)
+            .await
+            .err()
+            .map(|error| error.to_string());
+        stop_launcher(agent).await?;
+        warning
+    };
     let observed = crate::host_runs::observe(&agent.name).await;
     if observed["runtime_state"] != "stopped" || observed["backend"].is_object() {
         crate::host_platform::stop_sandbox(&agent.name).await?;
@@ -2334,6 +2377,12 @@ async fn stop_locked(
     if let Some(warning) = command_warning {
         result["command_stop_warning"] = warning.into();
     }
+    scheduled::stopped(agent, &result)?;
+    result["lifecycle"] = scheduled::observation(
+        &crate::host_platform::config_dir(),
+        agent,
+        &result["runtime_state"],
+    );
     Ok(result)
 }
 
@@ -2610,7 +2659,10 @@ async fn stop_launcher(agent: &Agent) -> Result<(), Error> {
             .ok_or("host launcher path missing")?;
         let path = std::path::Path::new(path).canonicalize()?;
         validate_host_script(&path)?;
-        let status = script_command(&path, "stop", &record).status().await?;
+        let status = script_command(&path, "stop", &record)
+            .kill_on_drop(true)
+            .status()
+            .await?;
         if !status.success() {
             return Err("Host launcher stop failed".into());
         }
