@@ -146,6 +146,9 @@ where
     if route(request).starts_with("/support/") {
         return support::respond(request, state, controls.audit, body).await;
     }
+    if route(request) == "/lifecycle" || route(request).starts_with("/lifecycle/") {
+        return lifecycle::respond(request, state, body).await;
+    }
     if route(request) == "/policy/snapshots" || route(request).starts_with("/policy/snapshots/") {
         return super::policy_snapshots::respond(request, state, controls.audit, body).await;
     }

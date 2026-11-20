@@ -970,6 +970,7 @@ mod package_tests {
             user_default_args: vec![],
             mounts: vec![],
             dangerously_allow_unowned: false,
+            lifecycle: None,
         };
         crate::host_platform::in_instance(root.to_owned(), async {
             let old_context = stage(&agent, "10.200.0.1", &"1".repeat(32)).await.unwrap();
