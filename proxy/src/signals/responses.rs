@@ -451,17 +451,15 @@ pub(super) async fn reconcile(
                 next_due = next_due.min(deadline);
             }
         }
-        if let Some(file) = &rule.inventory {
-            if let Ok(Some(value)) = crate::guest_commands::read_state_bounded(file, 1024 * 1024) {
-                if let Some(deadline) = value["observed_at"].as_u64().and_then(|at| {
-                    rule.inventory_max_age_seconds
-                        .map(|age| at.saturating_add(age))
-                }) {
-                    if deadline > now() {
-                        next_due = next_due.min(deadline);
-                    }
-                }
-            }
+        if let Some(file) = &rule.inventory
+            && let Ok(Some(value)) = crate::guest_commands::read_state_bounded(file, 1024 * 1024)
+            && let Some(deadline) = value["observed_at"].as_u64().and_then(|at| {
+                rule.inventory_max_age_seconds
+                    .map(|age| at.saturating_add(age))
+            })
+            && deadline > now()
+        {
+            next_due = next_due.min(deadline);
         }
         for agent in &rule.agents {
             let mut selected = Vec::new();
@@ -804,7 +802,7 @@ async fn apply(
                 agent,
                 selected,
                 room,
-                &[assignee.clone()],
+                std::slice::from_ref(assignee),
                 Some(requirement),
                 reaction,
             )

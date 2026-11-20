@@ -127,7 +127,8 @@ Service findings match currently listening named proxy TCP ingress bindings and
 their selected agents. A binding change reassesses existing findings without a
 new publication. Destination findings use
 `{"kind":"destination","hostname":"affected.example"}` and assess the
-selected agent's current HTTPS policy applicability.
+selected agent's current network rules for an HTTPS `GET /` on port 443.
+This assessment does not probe credentials or prove access for other requests.
 
 For application services or packages, select an absolute host-owned `inventory`
 file and positive `inventory_max_age_seconds` in a rule. An existing adopted

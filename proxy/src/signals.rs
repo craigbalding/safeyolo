@@ -100,6 +100,7 @@ pub enum Evidence {
     },
     Advisory {
         distribution: Option<String>,
+        #[serde(deserialize_with = "crate::policy::checks::deserialize_score_value")]
         severity: f64,
         subject: Subject,
     },

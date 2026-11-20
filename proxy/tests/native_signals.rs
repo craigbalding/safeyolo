@@ -280,6 +280,22 @@ fn advisory(revision: u64, severity: u8) -> Update {
     }
 }
 
+#[test]
+fn advisory_numeric_wire_round_trips_with_the_current_json_features() {
+    for severity in [9.0, 8.5] {
+        let mut update = advisory(1, 9);
+        if let Evidence::Advisory {
+            severity: score, ..
+        } = &mut update.evidence
+        {
+            *score = severity;
+        }
+        let bytes = serde_json::to_vec(&update).unwrap();
+        let received: Update = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(received, update);
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires the approved NATS binary via SAFEYOLO_COORD_NATS_BINARY"]
 async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
