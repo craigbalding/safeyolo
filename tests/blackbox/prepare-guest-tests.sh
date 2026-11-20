@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 # Run as guest root in an owned blackbox fixture, after the guest is ready.
 set -euo pipefail
-offline_inputs=${1:-}
+offline_inputs=
+desktop=false
+for option in "$@"; do
+    if [[ $option == --desktop ]]; then
+        desktop=true
+    else
+        [[ -z $offline_inputs ]] || { echo 'Supply one offline input directory.' >&2; exit 2; }
+        offline_inputs=$option
+    fi
+done
 # Guest test dependencies belong to distro Python. Login shells and user mise
 # runtimes can select different interpreters and unrelated pytest launchers.
 python_and_pip_ready() {
@@ -10,6 +19,14 @@ python_and_pip_ready() {
     # An empty executable can return zero under Bash without running Python.
     [[ $versions == Python\ 3.*$'\npip '[0-9]* ]] || return 1
     printf '%s\n' "$versions"
+}
+desktop_ready() {
+    local program
+    for program in Xvfb x11vnc xdpyinfo; do
+        command -v "$program" >/dev/null 2>&1 || return 1
+    done
+    command -v fluxbox >/dev/null 2>&1 || command -v openbox >/dev/null 2>&1 || return 1
+    [[ -f /usr/share/novnc/vnc.html || -f /usr/share/webapps/novnc/vnc.html ]]
 }
 # Positional arguments also work with an empty list under Bash 3's nounset.
 set --
@@ -38,7 +55,8 @@ if [[ -n "$offline_inputs" ]]; then
     DEBIAN_FRONTEND=noninteractive apt-get -o Dir::Etc::sourcelist=/dev/null \
         -o Dir::Etc::sourceparts=- -o Dpkg::Use-Pty=0 -y --no-install-recommends --reinstall install "${debs[@]}"
     set -- --no-index --find-links "$offline_inputs/wheels"
-elif ! python_and_pip_ready >/dev/null 2>&1 || ! command -v ssh >/dev/null 2>&1; then
+elif ! python_and_pip_ready >/dev/null 2>&1 || ! command -v ssh >/dev/null 2>&1 || \
+     { [[ $desktop == true ]] && ! desktop_ready; }; then
     if command -v apt-get >/dev/null 2>&1; then
         # APT does not read SSL_CERT_FILE. Use the same per-instance CA as
         # the guest's other HTTPS clients, including on retained images.
@@ -56,14 +74,20 @@ elif ! python_and_pip_ready >/dev/null 2>&1 || ! command -v ssh >/dev/null 2>&1;
             apt_tls_options=(-o "Acquire::https::CaInfo=$apt_ca")
         fi
         apt-get ${apt_tls_options[@]+"${apt_tls_options[@]}"} -o APT::Update::Error-Mode=any update
+        packages=(python3 python3-pip openssh-client)
+        if [[ $desktop == true ]]; then packages+=(xvfb x11vnc fluxbox x11-utils novnc); fi
         DEBIAN_FRONTEND=noninteractive apt-get ${apt_tls_options[@]+"${apt_tls_options[@]}"} \
-            install -y --no-install-recommends python3 python3-pip openssh-client
+            install -y --no-install-recommends "${packages[@]}"
     elif command -v apk >/dev/null 2>&1; then
         apk add python3 py3-pip openssh-client
     else
         echo 'The test fixture needs Python, pip, pytest, httpx, pytest-timeout and an OpenSSH client.' >&2
         exit 1
     fi
+fi
+if [[ $desktop == true ]] && ! desktop_ready; then
+    echo 'The access fixture needs Xvfb, x11vnc, a window manager, xdpyinfo and noVNC assets; offline inputs must include their Debian packages and dependencies.' >&2
+    exit 1
 fi
 if ! python_and_pip_ready; then
     echo 'Test guest Python and pip did not report working versions after package preparation.' >&2

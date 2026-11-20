@@ -217,6 +217,15 @@ Apple Silicon and the Swift helper build prerequisites in the
 
 ### Run installed sections with one preparation
 
+For Linux access tests, a supplied `DISPLAY` must reach a usable host X display.
+When `DISPLAY` is unset or empty, prepare host `Xvfb` plus `xdpyinfo` or `xrandr`
+first (Debian packages `xvfb` and `x11-utils` provide the first pair). The access
+runner starts a separate Xvfb display before the proxy and stops it during owned
+cleanup. Xvfb selects a free display number and disables TCP listeners. Missing
+commands or failed startup exit 2; the log stays at the access instance's
+`desktop-display.log`. The production action still probes the display and checks
+guest readiness. Guest desktop packages alone do not satisfy this host prerequisite.
+
 Default installed sections include disposable-job isolation, job network
 authority and live-mount removal. Linux systrap also runs the nested-Docker
 journey. That journey installs Debian Docker tools in its owned guest, pulls
@@ -311,17 +320,24 @@ host that owns that installation:
 The runner retains each procedure's expected checkpoints and reached cases,
 observed backend lifetimes, product/controller/guest identities and cleanup.
 The nightly systrap workflow selects these default sections. KVM/VZ selection
-does not establish hardware deployment under #889. Installed execution and
-independent acceptance of the new controls remain pending in #1562.
+does not establish hardware deployment under #889. [Issue #1562](https://github.com/craigbalding/safeyolo/issues/1562)
+records accepted installed results and remaining platform, catalogue and
+recurring-deployment limits.
 
 For a guest without Debian or Python Package Index (PyPI) network access, first
 stage verified offline test inputs under the test checkout's `offline/`
-directory. Supply `debs/*.deb` for Python, pip and all their Debian dependencies,
+directory. Supply `debs/*.deb` for Python, pip, the OpenSSH client and all their Debian dependencies,
 matched to the selected guest's architecture and installed packages. Supply `wheels/*.whl` for the
 unchanged [`guest-requirements.txt`](guest-requirements.txt), including its
 interpreter-specific dependencies. Verify the input archive against the
 supplier's checksum before extracting it. Keep the host's proxy and certificate
 settings.
+
+The access section also prepares the guest desktop. Its offline archives must
+include `xvfb`, `x11vnc`, `x11-utils`, `novnc` and a window manager (`fluxbox`
+or `openbox`), with their dependencies. Online preparation installs these test
+packages in the owned guest. The host browser opener records a marker; the
+checks observe live VNC bytes without visual UI automation.
 
 Set `SAFEYOLO_GUEST_TEST_INPUTS` to the absolute path **inside each guest**.
 The test checkout is mounted at `/workspace` for the subject, peers and lifecycle
@@ -341,11 +357,17 @@ still needs its usual prepared inputs or network access.
 
 | Lane | Default independent sections |
 |---|---|
-| `systrap` | isolation, workloads, access, lifecycle, host continuity |
+| `systrap` | isolation, workloads, access, peer support, deterministic shared approvals, provider sharing, federation, lifecycle, host continuity |
 | `kvm` | isolation, ingress, workloads |
 | `vz` | isolation, access, lifecycle, host continuity |
 
 `--section NAME` runs just that supported section; repeat it to select several.
+The additional systrap section names are `peer-support`, `shared-approvals`,
+`provider` and `federation`. They reuse the prepared host/guest bytes in separate
+owned instances. The shared-approval and federation HTTP probes use the guest's
+shipped curl. The federation section uses real TLS and NATS on one host; the
+two-host Tailscale venue remains separate and unverified under #1561.
+
 For example, run access on the software-isolation host:
 
 ```sh
@@ -401,6 +423,141 @@ remaining sections and is recorded as `cleanup_failure`. A later inspection
 with no markers cannot clear an inner cleanup failure that already detected a
 surviving owned process. Stop the proxy and each disposable guest: `safeyolo stop`
 alone does not stop a guest.
+
+## Manual two-host tailnet journey
+
+`installed_tailnet.py` pairs native protection checks and one live source
+proxy/guest with an independent destination observer. It covers wrong node,
+wrong route, missing interface, active interface loss and restored delivery.
+The observer forwards to an owned real NATS broker. It records byte counts and
+only the test's nonsecret markers. It never retains incoming credentials.
+Available controllers and passing local controller tests do not establish live
+tailnet execution or deployed cadence.
+
+Use two authorized host accounts with live Tailscale node IDs and assigned
+IPv4 addresses for this fixture. The source uses an owned disposable installation, running proxy and
+sandbox, reusing the guest-to-remote-instance fixture from the federation
+journey. This exercises the proxy's existing cached connection and reconnect
+callback. Keep that proxy, guest, home and credential unchanged across phases.
+On the destination, prepare an owned disposable instance with a dedicated room,
+scoped trust and membership for that source agent, and a real NATS listener.
+Use the current [federation setup](../../docs/coord-reference.md#collaborate-through-a-home-safeyolo).
+Mark both disposable roots with `.safeyolo-platform-smoke`, as the other
+installed drivers do. Keep credentials and instance state outside guest mounts.
+
+The execution owner supplies real isolated network contexts for wrong-route,
+missing-interface and source interface loss/restoration. Do not change shared
+routes, interfaces or a live Tailscale service. A refused provisioning operation
+is not a retry instruction. If an isolated capability is unavailable, retain
+that exact unmet need; independent controls may still run. The driver does not
+provision network namespaces or apply faults. Use the same source host and
+monotonic clock for ordinary-context probes and isolated-context attempts.
+
+Run modules from this checkout with its Python dependencies. Replace uppercase
+inputs below with the selected host addresses, stable node IDs, installed CLI,
+instance roots and paths. Every output directory must be new, private and
+disk-backed. Fresh roots for the three `check` cases differ from the persistent
+`SOURCE_ROOT`. On the destination, `BROKER_PORT` is its actual owned NATS port:
+
+```sh
+python -m tests.blackbox.installed_tailnet observe \
+  --address DEST_IP --source SOURCE_IP --forward-port BROKER_PORT \
+  --duration 900 --output OBSERVER_OUTPUT
+```
+
+Keep this process foreground in its authorized transport. Its `ready.json`
+supplies a fresh `port` and nonsecret `nonce`. Select that port for the source's
+Tailscale home using its existing host-held credential. The literal endpoint
+must match the observer, not the upstream broker port:
+
+```sh
+INSTALLED_ROOT/bin/safeyolo --root SOURCE_ROOT coord federation home destination \
+  DEST_INSTANCE_ID tailscale nats://DEST_IP:PORT DEST_NODE_ID PEER_CREDENTIAL_FILE
+```
+
+For each row below, first run `probe` with that row's `--phase` from the ordinary
+source host context. Then run its attempt in the stated context. The next probe
+closes the previous observation window. Probes before and after each refusal
+prove the observer is functioning. Their source-clock bounds must enclose the
+attempt; the final verifier rejects a result from another window.
+
+| Phase, in order | Attempt and context |
+|---|---|
+| `initial` | Run `phase --phase initial` through the source's working isolated context. Require authenticated owner reachability and one guest-originated destination message. |
+| `wrong-node` | Run `check --expect wrong-node` in the ordinary context, selecting the source's real ID for the destination address. |
+| `wrong-route` | Run `check --expect wrong-route` in an authorized isolated context which retains the assigned source interface but routes the destination through another interface. |
+| `missing-interface` | Run `check --expect missing-interface` in an authorized isolated context without the assigned interface, still reading real host daemon status. |
+| `lost-interface` | Remove the interface only in the source's owned isolated context. This ordinary-host probe closes the observer's active product connections, forcing the live proxy to recheck protection on reconnect. Then run `phase --phase lost-interface` there. |
+| `restored` | Restore that same owned source interface and protected route. Run `phase --phase restored` with the original proxy/guest/home. Require actual destination delivery. |
+| `finished` | No attempt. The observer closes its listener and forwarding connections and writes its final result. |
+
+The representative probe and initial phase commands are:
+
+```sh
+python -m tests.blackbox.installed_tailnet probe \
+  --address DEST_IP --source SOURCE_IP --port PORT --nonce NONCE --phase initial
+python -m tests.blackbox.installed_tailnet phase \
+  --address DEST_IP --source SOURCE_IP --port PORT --nonce NONCE \
+  --source-node SOURCE_NODE_ID --destination-node DEST_NODE_ID \
+  --cli INSTALLED_ROOT/bin/safeyolo --root SOURCE_ROOT --agent SOURCE_AGENT \
+  --home destination --room ROOM --phase initial --output INITIAL_OUTPUT
+```
+
+For `lost-interface` and `restored`, use those phase names and separate output
+directories; add `--initial INITIAL_OUTPUT/result.json`. Every phase checks the
+same live proxy process birth, guest run/birth, binary bytes and selected home.
+Each submits its unique marker once. A timeout or lost reply leaves incomplete
+evidence; inspect the destination's canonical history before any further
+attempt. Restoration must not deliver a delayed marker from the refused phase.
+For each `check` row, use a distinct new root and output directory:
+
+```sh
+python -m tests.blackbox.installed_tailnet check \
+  --address DEST_IP --source SOURCE_IP --port PORT --nonce NONCE \
+  --source-node SOURCE_NODE_ID --destination-node DEST_NODE_ID \
+  --cli INSTALLED_ROOT/bin/safeyolo --root NEW_CHECK_ROOT \
+  --expect wrong-node --output WRONG_NODE_OUTPUT
+```
+
+Use the other two expectation names and their authorized contexts for the
+remaining refusal checks. Each retains the exact native cause and owned stop.
+An absent listener or unavailable observer is incomplete evidence. A silent
+reconnect may reach TCP, but it must send no authentication/application bytes
+while protection is unavailable. The observer requires the permitted markers
+over authenticated connections both before loss and after restoration.
+
+After the `finished` probe and the observer's terminal result, stop the owned
+source with the maintained cleanup helper. This stops its guests, proxy and
+broker; it preserves diagnostic state:
+
+```sh
+python -m tests.blackbox.installed_tailnet stop \
+  --cli INSTALLED_ROOT/bin/safeyolo --root SOURCE_ROOT --output SOURCE_STOP_OUTPUT
+```
+
+Transfer only the nonsecret reports through the existing authorized transport.
+On the destination, `verify` reads its canonical room history, checks the exact
+federated source principal and both permitted markers, and rejects refused or
+delayed delivery. It pairs all phase/refusal reports with the observer nonce,
+port, source-clock windows, identities and source cleanup. **It also stops the
+selected disposable destination, including after a failed assertion.**
+
+```sh
+python -m tests.blackbox.installed_tailnet verify \
+  --cli DEST_INSTALLED_ROOT/bin/safeyolo --root DEST_ROOT \
+  --phase-report INITIAL_OUTPUT/result.json --phase-report LOST_OUTPUT/result.json \
+  --phase-report RESTORED_OUTPUT/result.json \
+  --check-report WRONG_NODE_OUTPUT/result.json --check-report WRONG_ROUTE_OUTPUT/result.json \
+  --check-report MISSING_INTERFACE_OUTPUT/result.json \
+  --observer OBSERVER_OUTPUT/result.json --source-cleanup SOURCE_STOP_OUTPUT/result.json \
+  --output VERIFIED_OUTPUT
+```
+
+Success requires `status: passed` and `cleanup: stopped` in the final destination
+report. Retain the exact product/controller/guest identities and the execution
+owner's isolated-fault/restoration observations with that result. A local
+controlled fixture, script selection or partial receipt does not qualify this
+live two-host journey. Hardware deployment/publication remains with #889.
 
 ## Journey with Python unavailable
 

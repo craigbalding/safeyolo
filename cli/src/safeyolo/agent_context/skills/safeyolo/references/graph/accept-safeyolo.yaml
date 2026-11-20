@@ -217,7 +217,7 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: tests/blackbox/run-tests.sh
-          sha256: 6a52612ce4909eb4e9c5d024cccf4611dc279aaeb011afb0981d1014ad605a1b
+          sha256: 80156a58ac671517fca20b9a28290dedfe66df41dd549153ef9f94952cc5b5d8
         - path: uv.lock
           sha256: fd244df9e559bed2b211bbe93f257831fce8e1087b19cfc7d9d3da2fd1bc3050
       setup: "Use an approved host with native bundle/build inputs and a fresh SAFEYOLO_CONFIG_DIR; the lane owns its separate test instance, ports, certificates and sinkhole."
@@ -252,7 +252,7 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 7e5e42f5c7fc0123d674fc6b8f7d19411ede516ed0170309e0eef34d25df5d33
         - path: tests/blackbox/run-tests.sh
-          sha256: 6a52612ce4909eb4e9c5d024cccf4611dc279aaeb011afb0981d1014ad605a1b
+          sha256: 80156a58ac671517fca20b9a28290dedfe66df41dd549153ef9f94952cc5b5d8
         - path: proxy/src/host_platform.rs
           sha256: 0f39c1bfde1db3723e2618dae202babab37b92e7807596918f9dec4ed9846815
         - path: proxy/src/host_boot.rs
@@ -280,7 +280,7 @@ nodes:
         - path: tests/blackbox/claude_smoke.py
           sha256: 98a1ded436d5c4f395c9014e4d270efcbc9834732b0d0f8049c3c5ba51df1f06
         - path: tests/blackbox/installed_sections.py
-          sha256: d054c772480653503abd2f3a7290dcfe3d405e8cf2af05b31d201211531abc80
+          sha256: a84f2079aebfed5807d9e5558aec82efaa40debb93fd88c77ef2df3440eca848
         - path: tests/blackbox/installed_ingress_pair.py
           sha256: 7528dc814fa524b27b960e9e1ec8efbd0f1ae649344e55486c73d98ab052fc3f
         - path: tests/blackbox/installed_storage.py
@@ -288,17 +288,17 @@ nodes:
         - path: tests/blackbox/isolation/installed_ingress.py
           sha256: a7b7bb92ec4d0a038bbb0c38aba81ead6ca5b9684eef9f199b2a04fdc98a4ec5
         - path: tests/blackbox/retained_inputs.py
-          sha256: f78e88fcbe2026b7873ec172918201c2387a66ca9839254b4b6df7705eebd1c2
+          sha256: 4832f6d98ad282a320811d4faec4152a3349ec03f17b2dd71f7b2da97689633c
         - path: tests/blackbox/installed_boundaries.py
-          sha256: 0d11b2568a08405abd58e79c51f88b6a2d7e299707babc4eaac5d769ee720b4b
+          sha256: 1e2e2796d59d8b433e53258d87c09d56b6b9d94bb0efac6ab1d00d3c6cdd605c
         - path: tests/blackbox/execution_receipt.py
-          sha256: fc132c81b0dc9f77efd122e8d3125bb5d6491648cc12339fba9b457eb933cd3e
+          sha256: d08d4addfb6a6364497d88e6b749dacd0b77001d5634a4a40d8ea388b3747c45
         - path: tests/blackbox/selections.py
-          sha256: 80a234e24271c34395706a4fc7982c6c4819872466c841268908ad624ab139d3
+          sha256: a6769acdff71df79e4f80a52e261dda51103e6d409ade5a849db674b53e4f666
         - path: tests/blackbox/installed_docker_preflight.py
           sha256: 4f7f2eae9ec99a2a8d33815ebe606f7c4dfdfcf1c1d99fa2f12d67cdd78bfc66
         - path: tests/blackbox/installed_provider.py
-          sha256: 775dfed9d0277f72b895fa05727225a1b27c6a916d4c99c579dd36ce7538a768
+          sha256: e14f76386ea480fb8854d9a4b5d7ec021153067f17ab3c0d0a4894fa722226c1
         - path: tests/blackbox/fixtures/nested-docker/Dockerfile
           sha256: bde9ccf0daedc45e5d2af8586c66f8c25064332008287d2e700dfe6b7cd83caa
         - path: tests/blackbox/fixtures/nested-docker/network_probe.py
@@ -381,11 +381,11 @@ nodes:
         - path: tests/fixtures/job-observer-probe.c
           sha256: 0207c5417386d7022d0ffefeb9a6b4b9d162e5017a8684a5225c62533beb0e8b
         - path: tests/blackbox/installed_boundaries.py
-          sha256: 0d11b2568a08405abd58e79c51f88b6a2d7e299707babc4eaac5d769ee720b4b
+          sha256: 1e2e2796d59d8b433e53258d87c09d56b6b9d94bb0efac6ab1d00d3c6cdd605c
         - path: tests/blackbox/execution_receipt.py
-          sha256: fc132c81b0dc9f77efd122e8d3125bb5d6491648cc12339fba9b457eb933cd3e
+          sha256: d08d4addfb6a6364497d88e6b749dacd0b77001d5634a4a40d8ea388b3747c45
         - path: tests/blackbox/selections.py
-          sha256: 80a234e24271c34395706a4fc7982c6c4819872466c841268908ad624ab139d3
+          sha256: a6769acdff71df79e4f80a52e261dda51103e6d409ade5a849db674b53e4f666
         - path: tests/nested-linux/live_mount_backend_proof.py
           sha256: 62c2250117183cc02b109cbe76b8ac3e737077240b71285f870f08ddcaca91a8
         - path: tests/fixtures/live-mount-holder.c
@@ -665,7 +665,7 @@ nodes:
         - path: proxy/tests/support/owned_run.rs
           sha256: ba639e14354fc8425fb735bece123b10529886742d3ed4f1528791c899fbd439
         - path: proxy/tests/native_coord/federation/support.rs
-          sha256: eefb62b1c5033c53b1e5e99b51ca67a498350e1c2cc2d6feb3b45f6bc77e5018
+          sha256: 37c675fb5291a103d43daeab9af1dae31ba16cb3326fa160395341dfe10c5280
         - path: proxy/tests/native_coord/federation/operator.rs
           sha256: 1813968a6c63cdcd6504ac6d48bd5f87b0701f3f4b59f865dcc759b1c8eae693
         - path: proxy/tests/support/controlled_runs.rs
@@ -973,7 +973,7 @@ nodes:
       obtain_from: "the exact trusted-base blackbox and native Cargo tests; Python drivers are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: tests/blackbox/run-tests.sh
-          sha256: 6a52612ce4909eb4e9c5d024cccf4611dc279aaeb011afb0981d1014ad605a1b
+          sha256: 80156a58ac671517fca20b9a28290dedfe66df41dd549153ef9f94952cc5b5d8
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: proxy/tests/native_host_cli.rs
