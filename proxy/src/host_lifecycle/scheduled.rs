@@ -250,8 +250,8 @@ pub(crate) fn observation(root: &Path, agent: &Agent, sandbox_state: &Value) -> 
                     && s["start_error"]["sequence"].as_u64().unwrap_or(0)
                         > s["last_start_sequence"].as_u64().unwrap_or(0)
             });
-            json!({"state":if sandbox_state == "running" {"running"} else if sandbox_state != "stopped" {"unavailable"}
-                else if schedule_unavailable || start_failed {"unavailable"}
+            json!({"state":if sandbox_state == "running" {"running"}
+                else if sandbox_state != "stopped" || schedule_unavailable || start_failed {"unavailable"}
                 else if paused && intentional {"paused"} else if intentional {"dormant"} else {"unexpected_stop"},
                 "intentional":intentional,"paused":paused,"saved_configuration":agent.lifecycle,
                 "receipt":receipt,"automatic_execution":"The running proxy and its managed NATS are required.",
@@ -587,13 +587,12 @@ pub(super) fn stopping(agent: &Agent) -> Result<(), Error> {
     let conn = coord_rooms::open(&root)?;
     if let Some(mut state) = load(&conn, &agent.id)?
         && live_phase(&state)
+        && state["phase"] != "closing"
     {
-        if state["phase"] != "closing" {
-            state["stop_reason"] = json!("deliberate_stop");
-            state["phase"] = json!("closing");
-            state["closed_at"] = json!(now());
-            save(&conn, &agent.id, &state)?;
-        }
+        state["stop_reason"] = json!("deliberate_stop");
+        state["phase"] = json!("closing");
+        state["closed_at"] = json!(now());
+        save(&conn, &agent.id, &state)?;
     }
     Ok(())
 }
