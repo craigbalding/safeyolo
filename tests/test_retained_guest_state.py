@@ -261,7 +261,8 @@ def test_maintenance_recovery_verifies_restored_package_payload(guest, tmp_path,
     if payload_state == "unverifiable":
         # dpkg --verify alone silently succeeds without the vendor checksums.
         assert not verification.stdout and not verification.stderr
-        audit = run("dpkg", "--root=" + str(root), "--audit", "sy-retention-fixture")
+        audit = run("dpkg", "--root=" + str(root), "--audit", "sy-retention-fixture",
+                    env=dict(os.environ, LC_ALL="C"))
         assert "missing the md5sums control file" in audit.stdout
     else:
         assert verification.stdout or verification.stderr

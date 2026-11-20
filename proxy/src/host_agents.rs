@@ -25,6 +25,7 @@ pub(crate) const CONFIGURATION_FIELDS: &[&str] = &[
     "dangerously_allow_unowned",
     "network_slot",
     "tailnet_port",
+    "lifecycle",
 ];
 
 #[derive(Clone, serde::Serialize)]
@@ -40,6 +41,7 @@ pub(crate) struct Agent {
     pub(crate) user_default_args: Vec<String>,
     pub(crate) mounts: Vec<String>,
     pub(crate) dangerously_allow_unowned: bool,
+    pub(crate) lifecycle: Option<crate::host_lifecycle::scheduled::Configuration>,
 }
 
 impl Agent {
@@ -106,6 +108,16 @@ impl Agent {
                 .get("dangerously_allow_unowned")
                 .and_then(Item::as_bool)
                 .unwrap_or(false),
+            lifecycle: table
+                .get("lifecycle")
+                .map(|item| {
+                    let mut document = DocumentMut::new();
+                    document["lifecycle"] = item.clone();
+                    let authored =
+                        crate::policy::parse_toml_with_timestamps(&document.to_string())?.0;
+                    crate::host_lifecycle::scheduled::configuration(&authored["lifecycle"])
+                })
+                .transpose()?,
         })
     }
 }

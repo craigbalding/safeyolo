@@ -306,7 +306,7 @@ pub(crate) struct Work {
     pub version: i64,
 }
 
-pub(super) fn authorize(
+pub(crate) fn authorize(
     conn: &Connection,
     room: &str,
     actor: Actor<'_>,
@@ -1130,6 +1130,18 @@ fn prepare_change(
                     attestation = Some(record);
                 }
                 Mutation::Claim { .. } | Mutation::Reassign { .. } => {
+                    if matches!(mutation, Mutation::Claim { .. })
+                        && crate::host_lifecycle::scheduled::work_deferred(
+                            conn,
+                            actor.id(),
+                            room_id,
+                        )
+                        .map_err(|error| WorkError(503, error.to_string()))?
+                    {
+                        return Err(conflict(
+                            "worker scope is closed for shutdown; retained Work can resume on the next activation",
+                        ));
+                    }
                     let agent_id = match &mutation {
                         Mutation::Reassign { agent_id, .. } if matches!(actor, Actor::Operator) => {
                             agent_id.as_str()
