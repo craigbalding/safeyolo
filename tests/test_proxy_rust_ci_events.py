@@ -546,7 +546,7 @@ def test_linux_input_callers_pin_the_supported_ubuntu_runtime_baseline(workflow_
     steps = {step.get("name"): step for step in build["steps"]}
     package = steps["Retain complete Linux production bundle"]["run"]
     # Acquire tmux on the same baseline as the host build and package assembly.
-    assert "sudo -n apt-get install -y -qq --no-install-recommends tmux" in steps["Install patched runtime build dependencies"]["run"]
+    assert "sudo -n apt-get -o Acquire::Retries=3 install -y -qq --no-install-recommends tmux" in steps["Install patched runtime build dependencies"]["run"]
     assert '--artifacts proxy/target/release --guest-artifacts guest/command/target/release' in package
     assert '--runtime-artifacts "$(dirname "$(command -v tmux)")"' in package
     assert '--hyperlight-artifacts "$RUNNER_TEMP/hyperlight" --profile production' in package

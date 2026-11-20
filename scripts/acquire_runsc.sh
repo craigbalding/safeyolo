@@ -31,8 +31,10 @@ if [[ -z $selected ]]; then
       mkdir -p "$cache/tools"
       if [[ ! -f $cache/tools/bazel ]]; then
         download=$(mktemp "$cache/tools/download.XXXXXX")
+        # Include receive resets. Curl truncates this output file before retrying;
+        # all download errors share the same finite attempt and time limits.
         curl -fLsS --proto '=https' --proto-redir '=https' \
-          --retry 3 --retry-max-time 120 --connect-timeout 15 --max-time 120 \
+          --retry 3 --retry-all-errors --retry-max-time 120 --connect-timeout 15 --max-time 120 \
           "https://github.com/bazelbuild/bazel/releases/download/8.3.1/bazel-8.3.1-linux-$architecture" -o "$download"
         [[ $(file_sha256 "$download") == "$bazel_sha" ]] || { package_error 'Bazel checksum differs'; exit 1; }
         chmod +x "$download"
