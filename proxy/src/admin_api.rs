@@ -695,7 +695,7 @@ async fn get_baseline(policy: Option<&Policy>, path: Option<&Path>) -> Outcome {
     }
 }
 
-fn json_toml_value(value: &Value) -> std::result::Result<toml_edit::Value, ()> {
+pub(crate) fn json_toml_value(value: &Value) -> std::result::Result<toml_edit::Value, ()> {
     Ok(match value {
         Value::String(value) => toml_edit::Value::from(value.clone()),
         Value::Bool(value) => toml_edit::Value::from(*value),

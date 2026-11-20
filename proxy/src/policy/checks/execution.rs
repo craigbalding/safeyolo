@@ -124,6 +124,19 @@ impl CheckExecutions {
 }
 
 pub(super) fn validate_source(source: &mut EvidenceSource) -> Result<()> {
+    if let EvidenceSource::Job {
+        spec_sha256: Some(expected),
+        ..
+    } = source
+        && (expected.len() != 64
+            || !expected
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    {
+        return Err(invalid(
+            "job specification pin must be a full lowercase SHA-256",
+        ));
+    }
     let limits = match source {
         EvidenceSource::Job { limits, .. } => limits,
         EvidenceSource::Service { operation, limits } => {
@@ -171,6 +184,16 @@ pub(super) fn validate_source(source: &mut EvidenceSource) -> Result<()> {
 }
 
 impl Checks {
+    pub(crate) fn invoke_challenge<'a>(
+        &'a self,
+        name: &'a str,
+        subject: Subject,
+        runtime: &'a Runtime,
+        state: &'a RuntimeState,
+    ) -> futures_util::future::BoxFuture<'a, std::result::Result<Evidence, Error>> {
+        self.invoke_adopted(name, None, subject, runtime, state, false, false, None)
+    }
+
     /// Manual invocation is still an adopted check. Callers supply no host
     /// paths, expected values, implementation or authoritative result.
     pub(crate) fn invoke_named<'a>(
@@ -352,8 +375,19 @@ impl Checks {
         invocation_id: Option<&str>,
     ) -> std::result::Result<Evidence, Error> {
         let (limits, prepared) = match &check.source {
-            EvidenceSource::Job { spec, limits, .. } => {
+            EvidenceSource::Job {
+                spec,
+                limits,
+                spec_sha256,
+                ..
+            } => {
                 let (bytes, version) = read_bounded(spec, limits.max_input_bytes).await?;
+                if spec_sha256
+                    .as_ref()
+                    .is_some_and(|expected| *expected != content_digest(&bytes))
+                {
+                    return Err("job specification differs from its adopted SHA-256; no execution was started".into());
+                }
                 let mut job: crate::jobs::JobSpec = serde_json::from_slice(&bytes)?;
                 job.resolve_artifacts(spec.parent().ok_or("check job spec has no parent")?);
                 job.validate()?;

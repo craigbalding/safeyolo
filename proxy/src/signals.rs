@@ -1,7 +1,31 @@
 //! Host-side signal evidence. Receipt never confers effect authority.
+pub mod control_updates;
 mod responses;
 mod transport;
-pub(crate) use responses::{approval_revision, resolve};
+pub(crate) fn approval_revision(policy: &crate::policy::Policy, action: &Value) -> Option<String> {
+    if action["control_update"] == true {
+        control_updates::approval_revision(policy, action)
+    } else {
+        responses::approval_revision(policy, action)
+    }
+}
+pub(crate) fn resolve(
+    state: &crate::RuntimeState,
+    writer: &crate::audit::Writer,
+    id: &str,
+    decision: crate::approvals::network_action::Decision,
+    reviewer: bool,
+) -> crate::approvals::Result<(u16, Value)> {
+    if writer
+        .approvals()
+        .get(id)?
+        .is_some_and(|r| r.authority.action["control_update"] == true)
+    {
+        control_updates::resolve(state, writer, id, decision, reviewer)
+    } else {
+        responses::resolve(state, writer, id, decision, reviewer)
+    }
+}
 #[cfg(test)]
 mod tests;
 
@@ -16,7 +40,7 @@ use std::{
 };
 use transport::Source;
 
-pub const HELP: &str = "safeyolo [--root ROOT] signals configure FILE\nsafeyolo [--root ROOT] signals status\nsafeyolo [--root ROOT] signals publish SOURCE KEY FILE\n\nconfigure validates and saves private host sources and response rules. The running proxy follows NATS KV current state and reconciles responses through its existing control loop. No proxy means no automatic response. status shows retained evidence, freshness, authority and action results; delivery is not verification. publish validates an evidence envelope and writes through the selected host-held NATS credential; broker ACLs own publication authority. Source credentials and endpoints stay outside guests. See docs/signals.md.";
+pub const HELP: &str = "safeyolo [--root ROOT] signals configure FILE\nsafeyolo [--root ROOT] signals status\nsafeyolo [--root ROOT] signals publish SOURCE KEY FILE\nsafeyolo signals keygen-update PRIVATE_KEY.der\nsafeyolo signals sign-update BUNDLE.json PRIVATE_KEY.der SIGNED.json\n\nconfigure validates and saves private host sources and response rules. The running proxy follows NATS KV current state and reconciles responses through its existing control loop. No proxy means no automatic response. status shows retained evidence, freshness, authority and action results; delivery is not verification. publish validates an evidence envelope and writes through the selected host-held NATS credential; broker ACLs own publication authority. keygen-update creates a private Ed25519 PKCS#8 key and reports its public key. sign-update writes a signed immutable native check/challenge bundle without executing or adopting it. Source credentials, publisher private keys and endpoints stay outside guests. See docs/signals.md.";
 
 fn now() -> u64 {
     time::OffsetDateTime::now_utc().unix_timestamp().max(0) as u64
@@ -67,6 +91,7 @@ fn parse(text: &str) -> Result<Configuration, Error> {
         source.validate()?;
     }
     responses::validate(&config)?;
+    control_updates::validate(&config)?;
     Ok(config)
 }
 
@@ -77,6 +102,8 @@ struct Configuration {
     sources: BTreeMap<String, Source>,
     #[serde(default)]
     rules: BTreeMap<String, responses::Rule>,
+    #[serde(default)]
+    control_updates: BTreeMap<String, control_updates::Adoption>,
 }
 
 /// A publisher reports evidence, never a command or a selected response.
@@ -95,6 +122,9 @@ pub struct Update {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Evidence {
+    ControlUpdate {
+        candidate: Value,
+    },
     List {
         body: String,
     },
@@ -386,11 +416,15 @@ impl Follow {
             policy_identity,
             runs
         ]));
-        if !config.rules.is_empty()
+        if (!config.rules.is_empty() || !config.control_updates.is_empty())
             && (identity != self.response_identity || now() >= self.response_due)
         {
             self.response_identity = identity;
-            self.response = Some(tokio::spawn(responses::reconcile(root, runtime, services)));
+            self.response = Some(tokio::spawn(async move {
+                let due = responses::reconcile(root.clone(), runtime.clone(), services).await?;
+                let updates_due = control_updates::reconcile(&root, &runtime).await?;
+                Ok(due.min(updates_due))
+            }));
         }
         Ok(())
     }
@@ -426,6 +460,10 @@ pub async fn command(root: &Path, args: &[String]) -> Result<(), Error> {
             );
         }
         [show] if show == "status" => println!("{}", serde_json::to_string_pretty(&status(root)?)?),
+        [sign, bundle, key, output] if sign == "sign-update" => {
+            control_updates::sign(Path::new(bundle), Path::new(key), Path::new(output))?;
+        }
+        [generate, key] if generate == "keygen-update" => control_updates::keygen(Path::new(key))?,
         [publish, source, key, file] if publish == "publish" => {
             let config = configuration(root)?;
             let source = config.sources.get(source).ok_or("unknown source")?;
@@ -490,7 +528,7 @@ pub fn status(root: &Path) -> Result<Value, Error> {
         sources.insert(name,json!({"source_id":source.source_id,"bucket":source.bucket,"keys":source.keys,"health":health,"accepted":updates}));
     }
     Ok(
-        json!({"root":root,"sources":sources,"responses":responses::status(root)?,"automatic":"while the native proxy is running"}),
+        json!({"root":root,"sources":sources,"responses":responses::status(root)?,"control_updates":control_updates::status(root)?,"automatic":"while the native proxy is running"}),
     )
 }
 fn read_accepted(root: &Path, name: &str, source: &Source) -> Result<Vec<Accepted>, Error> {

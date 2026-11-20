@@ -516,6 +516,12 @@ impl Record {
             return Ok("expired".into());
         }
         let action = &self.authority.action;
+        if self.status == "pending"
+            && route_challenge::is_exception(self)
+            && !crate::policy::checks::challenges::evidence_current(policy, self)
+        {
+            return Ok("superseded".into());
+        }
         if action["kind"] == "policy_change" {
             let current = action["initiator"] == "operator"
                 || serde_json::from_value::<crate::host_runs::AgentRun>(action["run"].clone())
@@ -710,7 +716,11 @@ pub(crate) fn revision(policy: &Policy, action: &Value) -> Option<String> {
             action["service"].as_str(),
         )?;
         if action["route_exception"] == true {
+            if !crate::policy::checks::challenges::current(policy, action) {
+                return None;
+            }
             Some(digest(&json!({"policy":revision,
+                "control_update":crate::policy::checks::challenges::binding(policy,action),
                 "destination_service":policy.gateway()?.canonical_gateway()["host_map"][action["host"].as_str()?]})))
         } else {
             Some(revision)

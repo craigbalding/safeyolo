@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import time
+import tomllib
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -85,9 +86,9 @@ def _admin(fixture, method, path, body=None, status=200):
         connection.close()
 
 
-def _api(fixture, path, *, agent="alice", method="GET", body=None, status=200):
+def _api(fixture, path, *, agent="alice", method="GET", body=None, status=200, timeout=5):
     result, _, raw = request(fixture.proxy.paths[agent], "http://_safeyolo.proxy.internal" + path, method=method,
-                            headers={"Authorization": f"Bearer {AGENT_TOKEN}"}, body=json.dumps(body).encode() if body is not None else None)
+                            headers={"Authorization": f"Bearer {AGENT_TOKEN}"}, body=json.dumps(body).encode() if body is not None else None, timeout=timeout)
     assert result == status, (result, raw)
     assert VAULT_VALUE.encode() not in raw
     return json.loads(raw)
@@ -109,32 +110,74 @@ def _challenge(fixture, path=EXECUTE):
     return result
 
 
-def _escalate(fixture, challenge, reason="The operator requested this synthetic execution.", **overrides):
+def _escalate(fixture, challenge, reason="The operator requested this synthetic execution.", *, timeout=5, **overrides):
     body = {"source": "directly_requested", "context": {"task": "Exercise the approved local operation", "reason": reason,
             "fallback": "Status confirms readiness but cannot perform the requested operation."}}
     body.update(overrides)
-    return _api(fixture, challenge["escalate"], method="POST", body=body, status=202)
+    return _api(fixture, challenge["escalate"], method="POST", body=body, status=202, timeout=timeout)
 
 
 def _decide(fixture, challenge, decision="approve", *, status=200):
     return _admin(fixture, "POST", "/admin/approvals/" + challenge["challenge_id"], {"decision": decision, "option": "run"}, status=status)
 
 
+def test_adopted_questions_bind_pending_answers_and_operator_decisions(tmp_path):
+    def requirements(revision):
+        return f'''[route_challenges.exports]
+agents = ["alice"]
+service = "{SERVICE}"
+capability = "operator"
+methods = ["POST"]
+path = "/api/*"
+revision = "revision-{revision}"
+steps = [{{kind="question", field="origin_{revision}", question="Identify the instruction origin"}}]
+'''
+
+    with route_fixture(tmp_path / "adopted", extra=requirements(1)) as fixture:
+        first = _challenge(fixture)
+        assert first["guidance"]["control_update"]["challenges"]["exports"]["revision"] == "revision-1"
+        context = {"source": "untrusted_issue", "context": {"task": "Controlled route exercise", "reason": "Issue text requests an operation", "fallback": "Status cannot perform it"}}
+        missing = _api(fixture, first["escalate"], method="POST", body=context, status=422)
+        assert missing["challenge"]["ready_for_escalation"] is False
+        assert _admin(fixture, "GET", "/admin/approvals")["approvals"] == []
+        _escalate(fixture, first, answers={"origin_1": "Untrusted issue content"})
+
+        replace_policy(fixture.proxy, "rust", fixture.directory, fixture.source.replace(requirements(1), requirements(2)))
+        deadline = time.monotonic() + 5
+        while _api(fixture, "/gateway/challenges/" + first["challenge_id"])["status"] != "superseded":
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+        _decide(fixture, first, status=409)
+        fixture.tokens["alice"] = _api(fixture, "/gateway/services")["authorized"][SERVICE]["token"]
+        current = _challenge(fixture)
+        assert current["challenge_id"] != first["challenge_id"]
+        old_answer = dict(context, answers={"origin_1": "The old answer grants nothing"})
+        _api(fixture, current["escalate"], method="POST", body=old_answer, status=422)
+        _escalate(fixture, current, answers={"origin_2": "Direct operator request, with untrusted issue context separated"})
+        assert fixture.sink.deliveries == []
+
+
 @contextmanager
-def route_fixture(directory, *, ttl=30, extra="", service_source=None):
+def route_fixture(directory, *, ttl=30, extra="", service_source=None, prepared=None):
     if sys.platform != "linux":
         pytest.skip("current-run fixture observes a Linux backend birth and argv")
-    directory.mkdir(parents=True)
+    if prepared is None:
+        directory.mkdir(parents=True)
+        linux_settings = None
+    else:
+        from tests.blackbox.installed_sections import prepare_native_instance
+        prepare_native_instance(prepared, directory)
+        linux_settings = tomllib.loads((prepared / "config.toml").read_text()).get("linux")
     services, builtin = directory / "services", directory / "builtin"
-    services.mkdir()
-    builtin.mkdir()
+    services.mkdir(exist_ok=True)
+    builtin.mkdir(exist_ok=True)
     (services / "fixture.yaml").write_text(service_source if service_source is not None else FIXTURE.read_text())
     token_file = directory / "operator-token"
     token_file.write_text("fixture-route-operator")
     data = directory / "data"
-    data.mkdir()
+    data.mkdir(exist_ok=True)
     store_credential(data, VAULT_NAME, VAULT_VALUE)
-    (directory / "run").mkdir()
+    (directory / "run").mkdir(exist_ok=True)
     backend = subprocess.Popen(["runsc-sandbox", "-c", "import time; time.sleep(300)", "boot", "safeyolo-" + RUN,
                                 "--root", str(directory / "run")], executable=sys.executable)
     try:
@@ -150,7 +193,8 @@ def route_fixture(directory, *, ttl=30, extra="", service_source=None):
             source = _policy(port, ttl=ttl, extra=extra)
             with launch_proxy("rust", directory, source, native_product=True, agent_api=True,
                               agent_api_token=AGENT_TOKEN.encode(), admin_port=0, admin_api_token_file=token_file,
-                              gateway_services_dir=services, gateway_builtin_services_dir=builtin) as proxy:
+                              gateway_services_dir=services, gateway_builtin_services_dir=builtin,
+                              linux_settings=linux_settings) as proxy:
                 fixture = SimpleNamespace(directory=directory, proxy=proxy, port=port, sink=sink, tokens={}, source=source)
                 for agent in IDS:
                     fixture.tokens[agent] = _api(fixture, "/gateway/services", agent=agent)["authorized"][SERVICE]["token"]
