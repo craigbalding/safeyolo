@@ -400,9 +400,8 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
         )?;
         crate::guest_commands::write_json(&directory.join("config.json"), &spec)?;
     }
-    // Publish the new generation only after host preparation succeeds. A
-    // staging failure must leave the stopped run's context and payload
-    // identities together so the same lifecycle operation can recover.
+    // Select the new context and command wrappers only after host preparation
+    // succeeds. Command staging restores unwrapped inputs if publication fails.
     crate::guest_commands::stage(&home, &share, &host_package.join("assets/guest"), context)
 }
 

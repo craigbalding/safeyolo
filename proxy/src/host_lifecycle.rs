@@ -2946,8 +2946,17 @@ mod tests {
                 previous_sudo.metadata().unwrap().permissions().mode() & 0o7777,
                 0o555
             );
+            let mut holder = tokio::process::Command::new("/bin/sleep")
+                .arg("30")
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let holder_pid = holder.id().unwrap();
+            let holder_token = process_token(i64::from(holder_pid)).unwrap();
+            holder.kill().await.unwrap();
+            holder.wait().await.unwrap();
             let stopped = json!({"name":agent.name,"agent_id":agent.id,"run_id":old_run_id,
-                "ip":"10.200.0.1","state":"stopped"});
+                "ip":"10.200.0.1","state":"stopped","holder_pid":holder_pid,"holder_token":holder_token});
             crate::host_runs::save(&agent.name, &stopped).unwrap();
             let context = std::fs::read(share.join("host-launch-context.json")).unwrap();
             let identities = [".safeyolo-command", ".safeyolo-interactive-command"].map(|name| {
