@@ -110,6 +110,7 @@ def _publish(root, bundle, key_file, *, mutate=None):
 @pytest.mark.skipif(not os.environ.get("SAFEYOLO_COORD_NATS_BINARY"), reason="requires the pinned local NATS binary")
 def test_signed_cli_push_receipt_is_separate_from_adoption(tmp_path):
     root = tmp_path / "p"
+    _cli(root, "init")
     with route_fixture(root) as fixture:
         port = _unused_port()
         _cli(root, "coord", "start", "--binary", os.environ["SAFEYOLO_COORD_NATS_BINARY"], "--client-port", port, "--monitor-port", _unused_port())
@@ -134,7 +135,7 @@ def test_signed_cli_push_receipt_is_separate_from_adoption(tmp_path):
                 "qualification": bounds, "automatic": bounds, "fixtures": [], "on_withdraw": "retain"}}
             file.write_text(tomlkit.dumps(config))
             _cli(root, "signals", "configure", file)
-            _wait(root, lambda s: s["control_updates"].get("exports", {}).get("active", {}).get("sha256") == candidate["sha256"])
+            _wait(root, lambda s: _active_digest(s) == candidate["sha256"])
             _refresh_token(fixture)
             challenge = _challenge(fixture)
             assert challenge["guidance"]["control_update"]["challenges"]["exports"]["revision"] == candidate["sha256"]
@@ -170,6 +171,7 @@ def test_installed_signed_v1_v2_updates_enforce_checks_and_recover(tmp_path):
 
             configure()
             v1 = _publish(root, _bundle(1), key_file)
+            receipt["v1_signed_bytes"] = (root / "signed-update.json").stat().st_size
             _wait(root, lambda s: bool(s["sources"]["updates"]["accepted"]))
             assert not _cli(root, "signals", "status")["control_updates"]
             assert "route_challenges" not in tomlkit.parse((fixture.directory / "policy.toml").read_text())
@@ -183,17 +185,19 @@ def test_installed_signed_v1_v2_updates_enforce_checks_and_recover(tmp_path):
             signal_config["control_updates"] = {"exports": {"source": "updates", "key": "controls.exports", "publisher": "controlled-defender",
                 "public_key": public, "qualification": bounds.copy(), "automatic": bounds.copy(), "fixtures": independent, "on_withdraw": "previous"}}
             configure()
-            _wait(root, lambda s: s["control_updates"].get("exports", {}).get("active", {}).get("sha256") == v1["sha256"])
+            _wait(root, lambda s: _active_digest(s) == v1["sha256"])
             _refresh_token(fixture)
             v1_grant = _challenge(fixture, path=DELETE)
             _escalate(fixture, v1_grant, answers={"origin": "Explicit controlled operator setup"})
             _decide(fixture, v1_grant)
             old = _challenge(fixture)
             _escalate(fixture, old, answers={"origin": "Direct operator request; issue text is untrusted"})
+            receipt["v1_proxy_rss_kib"] = _rss(fixture.proxy.process.pid)
             pid = fixture.proxy.process.pid
             started = time.monotonic()
             v2 = _publish(root, _bundle(2, v1["sha256"], check=True), key_file)
-            current = _wait(root, lambda s: s["control_updates"].get("exports", {}).get("active", {}).get("sha256") == v2["sha256"])
+            receipt["v2_signed_bytes"] = (root / "signed-update.json").stat().st_size
+            current = _wait(root, lambda s: _active_digest(s) == v2["sha256"])
             receipt["v2_activation_seconds"] = time.monotonic() - started
             receipt["v2"] = current["control_updates"]["exports"]
             assert fixture.proxy.process.pid == pid and fixture.proxy.process.poll() is None
@@ -236,22 +240,22 @@ def test_installed_signed_v1_v2_updates_enforce_checks_and_recover(tmp_path):
             reviewed = _bundle(3, v2["sha256"], check=True)
             reviewed["challenge"]["methods"].append("DELETE")
             v3 = _publish(root, reviewed, key_file)
-            review = _wait(root, lambda s: s["control_updates"]["exports"].get("state") == "pending_approval")["control_updates"]["exports"]
+            review = _wait(root, lambda s: _update(s).get("state") == "pending_approval")["control_updates"]["exports"]
             approval_id = review["approval_id"]
             _publish(root, reviewed, key_file)
             assert _cli(root, "signals", "status")["control_updates"]["exports"]["approval_id"] == approval_id
             _admin(fixture, "POST", "/admin/approvals/" + approval_id, {"decision": "approve", "option": "once"})
-            _wait(root, lambda s: s["control_updates"]["exports"].get("active", {}).get("sha256") == v3["sha256"])
+            _wait(root, lambda s: _active_digest(s) == v3["sha256"])
             receipt["reviewed_scope_expansion"] = approval_id
 
             # Transport may deliver modified content, but cannot adopt it.
             _publish(root, _bundle(4, v3["sha256"]), key_file, mutate=lambda c: c["bundle"].update(changes="modified after signing"))
-            rejected = _wait(root, lambda s: s["control_updates"]["exports"].get("state") == "rejected")
+            rejected = _wait(root, lambda s: _update(s).get("state") == "rejected")
             assert rejected["control_updates"]["exports"]["active"]["sha256"] == v3["sha256"]
             # An explicit pin can recover even while the latest signal is invalid.
             signal_config["control_updates"]["exports"]["pin"] = v1["sha256"]
             configure()
-            rolled = _wait(root, lambda s: s["control_updates"]["exports"].get("active", {}).get("sha256") == v1["sha256"])
+            rolled = _wait(root, lambda s: _active_digest(s) == v1["sha256"])
             assert rolled["control_updates"]["exports"]["active"]["generation"] > 1
             _refresh_token(fixture)
             status, _, raw = _traffic(fixture, path=DELETE)
@@ -259,6 +263,8 @@ def test_installed_signed_v1_v2_updates_enforce_checks_and_recover(tmp_path):
             receipt["rollback"] = rolled["control_updates"]["exports"]
             receipt["same_runtime_pid"] = pid
             receipt["proxy_rss_kib"] = _rss(pid)
+            receipt["signed_content_delta_bytes"] = receipt["v2_signed_bytes"] - receipt["v1_signed_bytes"]
+            receipt["proxy_rss_delta_kib"] = receipt["proxy_rss_kib"] - receipt["v1_proxy_rss_kib"]
             receipt["candidate_bytes"] = {name: Path(os.environ[key]).stat().st_size for name, key in [("cli", "SAFEYOLO_NATIVE_CLI"), ("proxy", "SAFEYOLO_RUST_PROXY")]}
         finally:
             _cli(root, "coord", "stop")
@@ -288,3 +294,11 @@ def _rss(pid):
 
 def _refresh_token(fixture):
     fixture.tokens["alice"] = _api(fixture, "/gateway/services")["authorized"][SERVICE]["token"]
+
+
+def _update(status):
+    return status["control_updates"].get("exports") or {}
+
+
+def _active_digest(status):
+    return (_update(status).get("active") or {}).get("sha256")

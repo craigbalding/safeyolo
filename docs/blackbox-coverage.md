@@ -1496,7 +1496,7 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
 - [`tests/proxy_contracts/test_control_updates.py::test_signed_cli_push_receipt_is_separate_from_adoption`](../tests/proxy_contracts/test_control_updates.py#L111)
-- [`tests/proxy_contracts/test_control_updates.py::test_installed_signed_v1_v2_updates_enforce_checks_and_recover`](../tests/proxy_contracts/test_control_updates.py#L146)
+- [`tests/proxy_contracts/test_control_updates.py::test_installed_signed_v1_v2_updates_enforce_checks_and_recover`](../tests/proxy_contracts/test_control_updates.py#L147)
 
 <a id="witness-tests-proxy-contracts-test-https-contract-py"></a>
 ### [`tests/proxy_contracts/test_https_contract.py`](../tests/proxy_contracts/test_https_contract.py)

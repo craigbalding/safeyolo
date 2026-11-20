@@ -162,7 +162,7 @@ def route_fixture(directory, *, ttl=30, extra="", service_source=None, prepared=
     if sys.platform != "linux":
         pytest.skip("current-run fixture observes a Linux backend birth and argv")
     if prepared is None:
-        directory.mkdir(parents=True)
+        directory.mkdir(parents=True, exist_ok=True)
         linux_settings = None
     else:
         from tests.blackbox.installed_sections import prepare_native_instance
