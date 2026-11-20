@@ -1417,7 +1417,10 @@ pub(crate) fn resolve_as(
             if record.authority.action["kind"] == "coord_access" {
                 issued = crate::coord_rooms::membership::prepare(&policy, &saved, record, &issued).map_err(unavailable)?;
             }
-            record.result = json!({"permission_changed":true,"issued_access":issued,"lifetime":"worker_run"});
+            // The grant transaction revalidates the completed challenge evidence.
+            record.result["permission_changed"] = json!(true);
+            record.result["issued_access"] = json!(issued);
+            record.result["lifetime"] = json!("worker_run");
             if record.authority.action["kind"] == "coord_access" {
                 record.result["decider"] = match reviewer {
                     Some((run, name)) => json!({"kind":"agent","run":run,"delegation":name}),

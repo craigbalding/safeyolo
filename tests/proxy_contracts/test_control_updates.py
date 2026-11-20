@@ -139,6 +139,8 @@ def test_signed_cli_push_receipt_is_separate_from_adoption(tmp_path):
             _refresh_token(fixture)
             challenge = _challenge(fixture)
             assert challenge["guidance"]["control_update"]["challenges"]["exports"]["revision"] == candidate["sha256"]
+            active = _cli(root, "signals", "status")["control_updates"]["exports"]["active"]
+            _withdraw_after_broker_restart(root, key, port, candidate["sha256"], active)
         finally:
             _cli(root, "coord", "stop")
 
@@ -215,7 +217,8 @@ def test_installed_signed_v1_v2_updates_enforce_checks_and_recover(tmp_path):
             assert subject["revision"] == v2["sha256"] and subject["action"]["path"] == EXECUTE
             assert evidence["execution"]["outcome"] == {"kind": "exit", "code": 0}
             assert evidence["execution"]["authorization_principal"] is None
-            _decide(fixture, legitimate)
+            approved = _decide(fixture, legitimate)
+            assert approved["result"]["evidence"] == pending["result"]["evidence"]
             assert _traffic(fixture)[0] == 200
 
             suspicious = _challenge(fixture, path=DELETE)
@@ -265,6 +268,16 @@ def test_installed_signed_v1_v2_updates_enforce_checks_and_recover(tmp_path):
             status, _, raw = _traffic(fixture, path=DELETE)
             assert status == 403 and json.loads(raw)["error"] == "GATEWAY_ROUTE_CHALLENGE"
             receipt["rollback"] = rolled["control_updates"]["exports"]
+
+            # The operator can retain protection on withdrawal. A fresh signed
+            # withdrawal after a broker restart proves receipt after reconnect.
+            del signal_config["control_updates"]["exports"]["pin"]
+            signal_config["control_updates"]["exports"]["on_withdraw"] = "retain"
+            configure()
+            recovered = _withdraw_after_broker_restart(root, key_file, port, v1["sha256"], rolled["control_updates"]["exports"]["active"])
+            assert _admin(fixture, "GET", "/admin/approvals")["approvals"] == []
+            assert fixture.proxy.process.pid == pid and fixture.proxy.process.poll() is None
+            receipt["withdrawal_after_reconnect"] = recovered["control_updates"]["exports"]
             receipt["same_runtime_pid"] = pid
             receipt["proxy_rss_kib"] = _rss(pid)
             receipt["signed_content_delta_bytes"] = receipt["v2_signed_bytes"] - receipt["v1_signed_bytes"]
@@ -273,6 +286,21 @@ def test_installed_signed_v1_v2_updates_enforce_checks_and_recover(tmp_path):
         finally:
             _cli(root, "coord", "stop")
             (tmp_path / "control-update-result.json").write_text(json.dumps(receipt, indent=2) + "\n")
+
+
+def _withdraw_after_broker_restart(root, key_file, port, previous, expected_active):
+    withdrawal = _bundle(5, previous)
+    withdrawal["withdrawn"] = True
+    withdrawn = _publish(root, withdrawal, key_file)
+    _wait(root, lambda s: _update(s).get("state") == "withdrawn" and _update(s).get("candidate") == withdrawn["sha256"])
+    _publish(root, withdrawal, key_file)
+    _cli(root, "coord", "stop")
+    _cli(root, "coord", "start", "--binary", os.environ["SAFEYOLO_COORD_NATS_BINARY"], "--client-port", port, "--monitor-port", _unused_port())
+    withdrawal["revision"] = 6
+    reconnected = _publish(root, withdrawal, key_file)
+    recovered = _wait(root, lambda s: _update(s).get("state") == "withdrawn" and _update(s).get("candidate") == reconnected["sha256"])
+    assert recovered["control_updates"]["exports"]["active"] == expected_active
+    return recovered
 
 
 def _unused_port():
