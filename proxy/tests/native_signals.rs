@@ -334,7 +334,7 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
     .connect(format!("nats://127.0.0.1:{port}"))
     .await
     .unwrap();
-    let kv = async_nats::jetstream::new(connection)
+    let kv = async_nats::jetstream::new(connection.clone())
         .create_key_value(async_nats::jetstream::kv::Config {
             bucket: "signals".into(),
             history: 1,
@@ -778,6 +778,79 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
         tokio::time::sleep(Duration::from_millis(40)).await;
     }
     assert_eq!(response(&a)["episode"], dispatched["episode"]);
+    assert_eq!(work_count(), 1);
+    // Recover a crash after publication but before saving the completed response.
+    // Expire broker deduplication so only canonical history can prevent replay.
+    let room_id: String = db
+        .query_row(
+            "SELECT room_id FROM rooms WHERE name='responses'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let broker = async_nats::jetstream::new(connection.clone());
+    let mut stream = broker.get_stream(format!("ROOM_{room_id}")).await.unwrap();
+    let mut settings = stream.info().await.unwrap().config.clone();
+    settings.duplicate_window = Duration::from_millis(100);
+    broker.update_stream(settings).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let sequence = notification["sequence"].as_u64().unwrap();
+    let raw = stream.get_raw_message(sequence).await.unwrap();
+    let manifest: Value = serde_json::from_str(
+        raw.headers
+            .get_last("SafeYolo-Coord-Attention")
+            .unwrap()
+            .as_str(),
+    )
+    .unwrap();
+    let mut interrupted = dispatched.clone();
+    interrupted["status"] = json!("attempted");
+    interrupted["result"] = json!({"prepared":{"room_id":room_id,"since_sequence":sequence-1,"envelope":notification["envelope"],"attention_manifest":manifest},"publish_attempted":true});
+    ap.shutdown().await;
+    fs::write(
+        a.join("data/signals/responses/web/alice.json"),
+        serde_json::to_vec(&interrupted).unwrap(),
+    )
+    .unwrap();
+    ap = Proxy::start(native_config::read(&a.join("config.toml")).unwrap())
+        .await
+        .unwrap();
+    drive(
+        &mut [&mut ap],
+        &a,
+        "interrupted publication reconciles without replay",
+        || {
+            matches!(
+                response(&a)["status"].as_str(),
+                Some("dispatched" | "uncertain" | "failed")
+            )
+        },
+    )
+    .await;
+    assert_eq!(stream.info().await.unwrap().state.last_sequence, sequence);
+    assert_eq!(response(&a)["status"], "dispatched");
+    assert_eq!(response(&a)["result"]["input"]["sequence"], sequence);
+    assert_eq!(work_count(), 1);
+    // If retention no longer confirms the attempted publication, report the
+    // uncertainty without emitting another notification or assigning more Work.
+    ap.shutdown().await;
+    stream.delete_message(sequence).await.unwrap();
+    fs::write(
+        a.join("data/signals/responses/web/alice.json"),
+        serde_json::to_vec(&interrupted).unwrap(),
+    )
+    .unwrap();
+    ap = Proxy::start(native_config::read(&a.join("config.toml")).unwrap())
+        .await
+        .unwrap();
+    drive(
+        &mut [&mut ap],
+        &a,
+        "missing publication history stays uncertain",
+        || response(&a)["status"] == "uncertain",
+    )
+    .await;
+    assert_eq!(stream.info().await.unwrap().state.last_sequence, sequence);
     assert_eq!(work_count(), 1);
     // The same retained finding follows actual effective package changes, without
     // a new publication or a desired-image manifest standing in for the guest.

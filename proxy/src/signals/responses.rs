@@ -881,6 +881,22 @@ async fn notify(
         save(&path(root, rule_name, agent), reaction)?;
         prepared
     };
+    coord.authorize_prepared(room, &prepared).await?;
+    if let Some(sequence) = coord.find_prepared(room, &prepared).await? {
+        return Ok(json!({"sequence":sequence,"envelope":prepared.envelope,
+            "attention_intent":{"mode":"targeted"},
+            "attention_recipients":prepared.attention_manifest["recipients"],
+            "attention_status":"not_verified","publication":"reconciled_from_history"}));
+    }
+    if reaction.result["publish_attempted"] == true {
+        return Err(
+            "signal notification publication remains unknown; no automatic resend was made".into(),
+        );
+    }
+    // A crash after this save must reconcile retained history, even after the
+    // broker's finite duplicate window. Missing history never permits replay.
+    reaction.result["publish_attempted"] = json!(true);
+    save(&path(root, rule_name, agent), reaction)?;
     Ok(coord.publish_prepared(room, &prepared).await?)
 }
 
