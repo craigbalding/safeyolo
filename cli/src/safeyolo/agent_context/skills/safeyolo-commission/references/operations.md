@@ -80,9 +80,5 @@ observations separate.
 
 Use existing signal/update identity and resolution for material changes. Deliver
 results, exceptions and useful improvement suggestions through the selected
-channel/cadence. An unchanged condition or quiet period needs no repeated
-suggestion, approval request or new signal. Do not suppress a new failure by
-calling it unchanged, or turn absent observations into a success report.
-An unchanged return can need no new operation while existing Work and its
-unfinished obligations remain. Say whether new work was created separately
-from whether existing work is present or complete.
+channel/cadence. Follow the skill's return instructions for unchanged conditions
+and quiet periods.
