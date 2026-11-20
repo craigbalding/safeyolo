@@ -159,7 +159,7 @@ steps = [{{kind="question", field="origin_{revision}", question="Identify the in
 
 
 @pytest.mark.parametrize("outcome", ["success", "unavailable", "failed", "stale", "replaced"])
-def test_completed_check_survives_run_approval_and_receipt(tmp_path, monkeypatch, outcome):
+def test_completed_check_survives_run_approval_and_receipt(tmp_path_factory, monkeypatch, outcome):
     calls = []
 
     def finding(handler):
@@ -173,7 +173,7 @@ def test_completed_check_survives_run_approval_and_receipt(tmp_path, monkeypatch
         handler.wfile.write(body)
 
     monkeypatch.setattr(_OriginHandler, "do_GET", finding)
-    with route_fixture(tmp_path / outcome) as fixture:
+    with route_fixture(tmp_path_factory.mktemp("rc")) as fixture:
         extra = {
             "agents": {"gate:route-check": {"services": {SERVICE: {
                 "capability": "operator", "token": VAULT_NAME, "account": "agent"}}}},
