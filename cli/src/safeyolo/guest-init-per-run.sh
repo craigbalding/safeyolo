@@ -313,6 +313,7 @@ stop_command_supervisor_if_requested() {
 }
 
 start_command_supervisor_if_needed() {
+    "$GUEST_HELPER" retained-state startup-allowed >/dev/null 2>&1 || return 0
     [ -f /safeyolo/command-supervisor-enabled ] || return 0
     stop_command_supervisor_if_requested
     [ -f "$COMMAND_SUPERVISOR_STOP" ] && return 0
@@ -391,6 +392,12 @@ if [ "${SAFEYOLO_HOST_TERMINAL:-}" = "1" ]; then
     # Keep the container alive so runsc exec has a target.
     keep_pid1_alive
 elif [ -x "$VSOCK_TERM" ]; then
+    # Readiness/SSH remain available for maintenance while coding work waits
+    # for the host's current-run assessment and adopted response.
+    until "$GUEST_HELPER" retained-state startup-allowed >/dev/null 2>&1; do
+        check_guest_schedulers
+        sleep 0.25
+    done
     # macOS: vsock-term sets up the PTY, drops privileges, sets PATH,
     # and execs the command. A shell wrapper (bash -lc) would break
     # the TTY connection, causing process.stdout.isTTY to be undefined

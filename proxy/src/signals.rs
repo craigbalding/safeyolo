@@ -1,6 +1,7 @@
 //! Host-side signal evidence. Receipt never confers effect authority.
 pub mod control_updates;
 mod guest_inventory;
+mod maintenance;
 mod responses;
 mod transport;
 pub(crate) fn approval_revision(policy: &crate::policy::Policy, action: &Value) -> Option<String> {
@@ -84,6 +85,33 @@ fn configuration(root: &Path) -> Result<Configuration, Error> {
         return Ok(Configuration::default());
     }
     parse(&fs::read_to_string(path).map_err(|_| "cannot read signal configuration")?)
+}
+
+pub(crate) fn stage_startup(root: &Path, agent: &str, run: &str) -> Result<(), Error> {
+    let rules = responses::startup_rules(root, agent)?;
+    save(
+        &root
+            .join("agents")
+            .join(agent)
+            .join("config-share/startup-maintenance.json"),
+        &json!({"run_id":run,"rules":rules,"allowed":rules.is_empty()}),
+    )
+}
+
+pub(crate) async fn before_work(root: &Path, agent: &str) -> Result<(), Error> {
+    let run = crate::host_runs::read(agent)?.ok_or("startup guest record missing")?;
+    let run_id = run["run_id"]
+        .as_str()
+        .ok_or("startup guest generation missing")?;
+    stage_startup(root, agent, run_id)?;
+    responses::before_work(root, agent).await?;
+    save(
+        &root
+            .join("agents")
+            .join(agent)
+            .join("config-share/startup-maintenance.json"),
+        &json!({"run_id":run_id,"allowed":true,"verified_at":now()}),
+    )
 }
 fn parse(text: &str) -> Result<Configuration, Error> {
     let value = crate::policy::parse_toml_document(text)

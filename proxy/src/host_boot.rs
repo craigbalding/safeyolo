@@ -258,6 +258,7 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
     for path in [&directory, &home, &share, &status] {
         fs::create_dir_all(path)?;
     }
+    crate::signals::stage_startup(&root, &agent.name, run_id)?;
     let workspace = workspace(
         Path::new(agent.folder.as_deref().ok_or("missing workspace")?),
         agent.dangerously_allow_unowned,

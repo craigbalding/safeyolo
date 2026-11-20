@@ -1667,6 +1667,8 @@ pub(crate) async fn start_authorized(
             return Err(error.into());
         }
     }
+    crate::signals::before_work(&crate::host_platform::config_dir(), &agent.name).await?;
+    check()?;
     if operation == "sandbox-start" {
         return runtime(agent).await;
     }

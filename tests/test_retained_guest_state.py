@@ -11,7 +11,9 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
+import sys
 import time
 from contextlib import chdir
 from pathlib import Path
@@ -136,9 +138,166 @@ def make_deb(directory, version):
         f"Package: sy-retention-fixture\nVersion: {version}\nArchitecture: all\nMaintainer: Test <test@localhost>\nDescription: isolated retained-state fixture\n")
     (package / "usr/share/retention-fixture").mkdir(parents=True)
     (package / "usr/share/retention-fixture/version").write_text(version)
+    payload = package / "usr/share/retention-fixture/version"
+    (package / "DEBIAN/md5sums").write_text(
+        hashlib.md5(payload.read_bytes(), usedforsecurity=False).hexdigest()
+        + "  usr/share/retention-fixture/version\n")
     archive = directory / f"fixture-{version}.deb"
     run("dpkg-deb", "--root-owner-group", "--build", str(package), str(archive))
     return archive
+
+
+def maintenance_request(guest, tmp_path, operation="req-maintenance1"):
+    root, _, command = guest
+    old = make_deb(tmp_path, "1.0")
+    fixed = make_deb(tmp_path, "2.0")
+    run("dpkg", "--root=" + str(root), "--force-not-root", "--force-script-chrootless", "--install", str(old))
+    run(*command, "capture")
+    checkpoint = ('r=$SAFEYOLO_GUEST_ROOT; d=$SAFEYOLO_MAINTENANCE_DIRECTORY; '
+                  'cp -a "$r/var/lib/dpkg" "$d/dpkg"; cp -a "$r/etc" "$d/etc"; '
+                  'cp -a "$r/usr/share/retention-fixture" "$d/payload"')
+    patch = ('r=$SAFEYOLO_GUEST_ROOT; '
+             'v=$(dpkg-query --admindir="$r/var/lib/dpkg" -W -f=\'${Version}\' sy-retention-fixture); '
+             'if ! dpkg --compare-versions "$v" ge 2.0; then '
+             f'dpkg --root="$r" --force-not-root --force-script-chrootless --install {shlex.quote(str(fixed))}; '
+             'printf applied\\n >> "$r/applied"; fi')
+    recovery = ('r=$SAFEYOLO_GUEST_ROOT; d=$SAFEYOLO_MAINTENANCE_DIRECTORY; '
+                'rm -rf "$r/var/lib/dpkg" "$r/etc" "$r/usr/share/retention-fixture"; '
+                'cp -a "$d/dpkg" "$r/var/lib/dpkg"; cp -a "$d/etc" "$r/etc"; '
+                'cp -a "$d/payload" "$r/usr/share/retention-fixture"')
+    return {"operation_id": operation, "requirements": [{"package": "sy-retention-fixture", "version": "2.0",
+            "distribution": "debian:trixie", "advisory": "unchanged/advisory"}],
+            "checkpoint_command": checkpoint, "patch_command": patch, "restart_command": None,
+            "health_command": 'test -s "$SAFEYOLO_GUEST_ROOT/usr/share/retention-fixture/version"',
+            "recover_command": recovery}
+
+
+def maintain(command, request):
+    return json.loads(run(*command, "maintain", input=json.dumps(request)).stdout)
+
+
+def test_maintenance_real_patch_retained_requirement_recreation_and_satisfactory_base(guest, tmp_path):
+    root, state, command = guest
+    request = maintenance_request(guest, tmp_path)
+    receipt = maintain(command, request)
+    assert receipt["outcome"] == "verified"
+    assert (root / "usr/share/retention-fixture/version").read_text() == "2.0"
+    assert saved(state)["requirements"]["sy-retention-fixture"]["advisory"] == "unchanged/advisory"
+    assert saved(state)["desired_packages"].get("sy-retention-fixture", {}).get("version") is None
+    # A repeated operation reads the same receipt without applying or checkpointing again.
+    assert maintain(command, request)["started_at"] == receipt["started_at"]
+    assert (root / "applied").read_text().count("applied") == 1
+    # Emulate a recreated older root while preserving #1614 state. This is a
+    # real dpkg/helper control, not installed gVisor/VZ recreation evidence.
+    old = tmp_path / "fixture-1.0.deb"
+    run("dpkg", "--root=" + str(root), "--force-not-root", "--force-script-chrootless", "--install", str(old))
+    request["operation_id"] = "req-restoration"
+    request["requirements"] = []
+    assert maintain(command, request)["outcome"] == "verified"
+    assert (root / "applied").read_text().count("applied") == 2
+    # A later already-fixed root uses its working payload, with no redundant install.
+    request["operation_id"] = "req-fixedbase"
+    assert maintain(command, request)["outcome"] == "verified"
+    assert (root / "applied").read_text().count("applied") == 2
+    assert saved(state)["requirements"]["sy-retention-fixture"]["version"] == "2.0"
+
+
+def test_maintenance_health_failure_recovers_actual_mutable_state_and_keeps_requirement(guest, tmp_path):
+    root, state, command = guest
+    request = maintenance_request(guest, tmp_path)
+    request["health_command"] = 'test "$(cat "$SAFEYOLO_GUEST_ROOT/usr/share/retention-fixture/version")" = 1.0'
+    receipt = maintain(command, request)
+    assert receipt["outcome"] == "recovered"
+    assert (root / "usr/share/retention-fixture/version").read_text() == "1.0"
+    assert saved(state)["requirements"]["sy-retention-fixture"]["version"] == "2.0"
+    record = json.loads(Path(receipt["record_path"]).read_text())
+    assert record["before"] == record["recovered_state"]
+    assert record["commands"]["health_command"]["exit_code"] != 0
+    assert record["commands"]["recovery_health_command"]["exit_code"] == 0
+    assert "health_command failed" in record["diagnostic"]
+
+
+def test_maintenance_recovery_failure_and_masked_payload_cannot_claim_repair(guest, tmp_path):
+    root, _, command = guest
+    request = maintenance_request(guest, tmp_path)
+    request["health_command"] = "exit 4"
+    request["recover_command"] = "exit 5"
+    receipt = maintain(command, request)
+    assert receipt["outcome"] == "recovery_failed"
+    assert receipt["commands"]["recover_command"]["exit_code"] == 5
+    # Metadata still says 2.0, while an older copied-up payload masks the fix.
+    (root / "usr/share/retention-fixture/version").write_text("1.0")
+    request["operation_id"] = "req-masked"
+    request["health_command"] = "true"
+    receipt = maintain(command, request)
+    assert receipt["outcome"] == "failed"
+    assert "effective package file differs" in receipt["diagnostic"]
+
+
+def test_interrupted_maintenance_same_operation_is_inspection_not_retry(guest, tmp_path):
+    root, state, command = guest
+    request = maintenance_request(guest, tmp_path)
+    request["patch_command"] = "sleep 60; " + request["patch_command"]
+    process = subprocess.Popen([*command, "maintain"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try:
+        process.stdin.write(json.dumps(request))
+        process.stdin.close()
+        receipt_path = state / "maintenance" / request["operation_id"] / "result.json"
+        eventually(lambda: receipt_path.exists() and json.loads(receipt_path.read_text()).get("phase") == "patch_command")
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=5)
+        receipt = maintain(command, request)
+        assert receipt["outcome"] == "uncertain"
+        assert receipt["owner_alive"] is False
+        assert receipt["phase"] == "patch_command"
+        assert not (root / "applied").exists()
+        assert (root / "usr/share/retention-fixture/version").read_text() == "1.0"
+        changed = dict(request, operation_id="req-cannot-replay")
+        result = run(*command, "maintain", input=json.dumps(changed), check=False)
+        assert result.returncode
+        assert "original maintenance" in result.stderr
+        recovered = json.loads(run(*command, "maintenance-recover", request["operation_id"]).stdout)
+        assert recovered["outcome"] == "recovered"
+        assert run(*command, "maintenance-recover", request["operation_id"], check=False).returncode
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
+
+
+def test_startup_gate_preserves_manual_mode_and_binds_current_generation(guest):
+    root, _, command = guest
+    run(*command, "startup-allowed")
+    share = root / "safeyolo"
+    share.mkdir()
+    (share / "host-launch-context.json").write_text(json.dumps({"generation": "current"}))
+    gate = share / "startup-maintenance.json"
+    for value in ({"allowed": False, "run_id": "current"}, {"allowed": True, "run_id": "previous"}):
+        gate.write_text(json.dumps(value))
+        assert run(*command, "startup-allowed", check=False).returncode
+    gate.write_text(json.dumps({"allowed": True, "run_id": "current"}))
+    run(*command, "startup-allowed")
+
+
+def test_maintenance_reports_old_mapped_payload_until_its_consumer_exits(guest, tmp_path):
+    root, _, command = guest
+    request = maintenance_request(guest, tmp_path)
+    payload = root / "usr/share/retention-fixture/version"
+    holder = subprocess.Popen([sys.executable, "-u", "-c",
+        "import mmap,sys,time; f=open(sys.argv[1],'rb'); m=mmap.mmap(f.fileno(),0,access=mmap.ACCESS_READ); print('mapped',flush=True); time.sleep(60)",
+        str(payload)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "mapped"
+        receipt = maintain(command, request)
+        assert receipt["outcome"] == "pending_restart"
+        assert any(str(holder.pid) in mapping for mapping in receipt["deleted_package_mappings"])
+        assert (root / "usr/share/retention-fixture/version").read_text() == "2.0"
+    finally:
+        holder.terminate()
+        holder.wait(timeout=5)
+    request["operation_id"] = "req-after-restart"
+    assert maintain(command, request)["outcome"] == "verified"
 
 
 def test_direct_dpkg_selections_and_adopted_constraints(guest, tmp_path):

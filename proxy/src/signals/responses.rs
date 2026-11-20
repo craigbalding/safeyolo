@@ -22,6 +22,8 @@ pub(super) struct Rule {
     pub(super) inventory_max_age_seconds: Option<u64>,
     /// Explicit adoption of collection from the current running Debian guest.
     pub(super) guest_inventory: Option<guest_inventory::CollectionPolicy>,
+    #[serde(default)]
+    startup_before_work: bool,
 }
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -39,6 +41,8 @@ enum Inactive {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Response {
+    /// Explicitly adopted guest recipe; the host still owns authority and run selection.
+    Maintenance(super::maintenance::Procedure),
     /// The operator's existing network rules select the effect of each list.
     List {
         feeds: BTreeMap<String, String>,
@@ -95,6 +99,9 @@ pub(super) fn validate(config: &Configuration) -> Result<(), Error> {
                 );
             }
         }
+        if rule.startup_before_work && rule.guest_inventory.is_none() {
+            return Err("startup_before_work needs adopted guest_inventory collection".into());
+        }
         if rule.on_inactive == Inactive::Respond
             || (rule.on_stale == Inactive::Respond
                 && matches!(rule.response, Response::List { .. }))
@@ -102,6 +109,12 @@ pub(super) fn validate(config: &Configuration) -> Result<(), Error> {
             return Err("on_stale = 'respond' selects notification or Work for unknown evidence; on_inactive supports retain or release".into());
         }
         match &rule.response {
+            Response::Maintenance(procedure) => {
+                procedure.validate()?;
+                if rule.guest_inventory.is_none() {
+                    return Err("maintenance needs current guest_inventory collection, not a base or external inventory".into());
+                }
+            }
             Response::List {
                 feeds: targets,
                 body,
@@ -285,7 +298,7 @@ fn approval_findings_current(
         return false;
     }
     if original.is_empty() {
-        let (_, unknown, _) = select_findings(
+        let (selected, unknown, _) = select_findings(
             root,
             name,
             rule,
@@ -295,6 +308,9 @@ fn approval_findings_current(
             policy,
             &Value::Null,
         );
+        if matches!(rule.response, Response::Maintenance(_)) {
+            return selected.is_empty() && !unknown && action["respond_unknown"] == false;
+        }
         return action["respond_unknown"] == true && rule.on_stale == Inactive::Respond && unknown;
     }
     findings_current(original, current, source)
@@ -665,6 +681,14 @@ pub(super) async fn reconcile(
                     .then(|| inventory_basis(&root, rule_name, rule, agent, &policy)),
                 policy.evidence_agent_id(agent),
                 policy.agent_run(agent),
+                matches!(rule.response, Response::Maintenance(_))
+                    .then(
+                        || crate::guest_commands::read_state(&guest_inventory::request_path(
+                            &root, rule_name
+                        ))
+                        .map(|request| request.unwrap_or(Value::Null)["request_id"].clone())
+                    )
+                    .transpose()?,
                 active
             ]));
             let inventory_status = if rule.guest_inventory.is_some() {
@@ -672,7 +696,7 @@ pub(super) async fn reconcile(
             } else {
                 json!({"external_path":rule.inventory,"max_age_seconds":rule.inventory_max_age_seconds})
             };
-            let current = json!({"rule":rule_name,"agent":agent,"agent_id":policy.evidence_agent_id(agent),"run":policy.agent_run(agent),"source":rule.source,"affected":!selected.is_empty(),
+            let current = json!({"rule":rule_name,"agent":agent,"agent_id":policy.evidence_agent_id(agent),"run":policy.agent_run(agent),"source":rule.source,"affected":!selected.is_empty(),"response_identity":identity,
                 "applicability":if unknown {"unknown_or_stale"} else if active {"affected"} else {"unaffected"},
                 "inventory":inventory_status,"source_evidence":accepted.iter().map(|record|json!({"id":record.update.id,"observed_at":record.update.observed_at,"expires_at":record.update.expires_at,"fresh":record.update.fresh(source,now()),"fix_available":match &record.update.evidence {Evidence::Advisory{subject:Subject::Package{fixed_version,..},..}=>Some(fixed_version.is_some()),_=>None}})).collect::<Vec<_>>(),
                 "responding_to_uncertainty":respond_unknown,
@@ -683,6 +707,24 @@ pub(super) async fn reconcile(
                 &path(&root, rule_name, agent).with_extension("status.json"),
                 &current,
             )?;
+            if let Response::Maintenance(procedure) = &rule.response {
+                if !procedure.due() {
+                    reaction.status = "deferred_window".into();
+                    reaction.result = json!({"effect":"no_maintenance","next_action":"Maintenance waits for the adopted UTC hours; the affected startup work remains gated."});
+                    save(&path(&root, rule_name, agent), &reaction)?;
+                    next_due = next_due.min(now() + 60);
+                    continue;
+                }
+                // Uncertainty is visible and never an instruction to patch.
+                if unknown && selected.is_empty() {
+                    reaction.status = "unavailable".into();
+                    if reaction.result.is_null() {
+                        reaction.result = json!({"effect":"no_maintenance","next_action":"Resolve stale, unsupported, partial or no-fix evidence; retained remediation requirements remain in force."});
+                    }
+                    save(&path(&root, rule_name, agent), &reaction)?;
+                    continue;
+                }
+            }
             if retain {
                 continue;
             }
@@ -724,7 +766,13 @@ pub(super) async fn reconcile(
                 && reaction.identity == identity
                 && matches!(
                     reaction.status.as_str(),
-                    "verified" | "dispatched" | "notified" | "failed" | "uncertain"
+                    "verified"
+                        | "dispatched"
+                        | "notified"
+                        | "failed"
+                        | "uncertain"
+                        | "pending_restart"
+                        | "recovered"
                 )
             {
                 continue;
@@ -744,7 +792,10 @@ pub(super) async fn reconcile(
             );
             // Refreshing validity preserves the already-authorised list effect.
             // Its identity still binds the rule, target, source and policy scope.
-            if !reconcile_list && active && rule.authority == Authority::Approval {
+            if !reconcile_list
+                && (active || matches!(rule.response, Response::Maintenance(_)))
+                && rule.authority == Authority::Approval
+            {
                 let action = json!({"kind":"signal_response","rule":rule_name,"agent":agent,
                     "agent_id":policy.evidence_agent_id(agent),"basis":digest(rule),"identity":identity,
                     "source_basis":digest(source),
@@ -956,6 +1007,31 @@ async fn apply(
         return Err("signal assessment changed before response; reassess current evidence".into());
     }
     match &rule.response {
+        Response::Maintenance(procedure) => {
+            let request = super::maintenance::request(procedure, selected, operation)?;
+            reaction.result["prepared"] = json!({"request":request});
+            save(&path(root, rule_name, agent), reaction)?;
+            let mut prepared = reaction.result["prepared"].clone();
+            let (status, mut result) = super::maintenance::execute(
+                root,
+                runtime,
+                config,
+                agent,
+                procedure,
+                &request,
+                &mut prepared,
+            )
+            .await?;
+            result["assessment_partial"] = json!(current_unknown);
+            if current_unknown && status == "verified" {
+                result["next_action"] = json!(
+                    "Selected package requirements were verified, but other source/applicability evidence is unknown. Resolve that evidence before claiming complete maintenance."
+                );
+                Ok(("partial", result))
+            } else {
+                Ok((status, result))
+            }
+        }
         Response::List { feeds, body } => {
             let _lock = approvals::lock_policy(&root.join("policy.toml"))?;
             let previous = crate::policy_feeds::load_list(root, &feeds[agent])?.snapshot;
@@ -1200,9 +1276,138 @@ pub(super) fn status(root: &Path) -> Result<Value, Error> {
     Ok(json!(responses))
 }
 
+pub(super) fn startup_rules(root: &Path, agent: &str) -> Result<Vec<String>, Error> {
+    Ok(configuration(root)?
+        .rules
+        .into_iter()
+        .filter_map(|(name, rule)| {
+            (rule.startup_before_work && rule.agents.iter().any(|selected| selected == agent))
+                .then_some(name)
+        })
+        .collect())
+}
+
+/// The booted guest remains available for authorized maintenance/recovery while
+/// coding launches wait for the already adopted signal response owner.
+pub(super) async fn before_work(root: &Path, agent: &str) -> Result<(), Error> {
+    let config = configuration(root)?;
+    let rules = startup_rules(root, agent)?;
+    if rules.is_empty() {
+        return Ok(());
+    }
+    let policy = Policy::from_native_path(&root.join("policy.toml"))?;
+    let run = policy
+        .agent_run(agent)
+        .ok_or("startup maintenance needs a current owned guest")?;
+    for name in rules {
+        let rule = &config.rules[&name];
+        let collection = rule
+            .guest_inventory
+            .as_ref()
+            .ok_or("startup collection missing")?;
+        let request_path = guest_inventory::request_path(root, &name);
+        let old = crate::guest_commands::read_state(&request_path)?.unwrap_or(Value::Null);
+        let inventory = guest_inventory::status(root, &name, rule, agent, Some(&policy))?;
+        let request = if old["startup_run"] == run.run_id
+            && old["rule_basis"] == digest(rule)
+            && (inventory["request_id"] != old["request_id"] || inventory["fresh"] == true)
+        {
+            old
+        } else {
+            let request = json!({"request_id":uuid::Uuid::new_v4().to_string(),"requested_at":now(),
+                "startup_run":run.run_id,"rule_basis":digest(rule)});
+            save(&request_path, &request)?;
+            request
+        };
+        let timeout = collection.timeout_seconds.saturating_add(2);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
+        loop {
+            if digest(&configuration(root)?) != digest(&config)
+                || !run.current(&Policy::from_native_path(&root.join("policy.toml"))?)
+            {
+                return Err("startup maintenance policy or guest changed; inspect the same agent before starting work".into());
+            }
+            let collection = guest_inventory::status(root, &name, rule, agent, Some(&policy))?;
+            let selection = crate::guest_commands::read_state(
+                &path(root, &name, agent).with_extension("status.json"),
+            )?
+            .unwrap_or(Value::Null);
+            let reaction = read(root, &name, agent)?;
+            let selected_current = collection["request_id"] == request["request_id"]
+                && collection["fresh"] == true
+                && selection["run"]["run_id"] == run.run_id
+                && selection["inventory"]["request_id"] == request["request_id"]
+                && selection["response_identity"] == reaction.identity;
+            if selected_current {
+                let complete = match &rule.response {
+                    Response::Maintenance(_) => reaction.status == "verified",
+                    _ => {
+                        matches!(
+                            reaction.status.as_str(),
+                            "verified" | "dispatched" | "notified"
+                        ) || (selection["affected"] == false
+                            && selection["applicability"] == "unaffected")
+                    }
+                };
+                if complete {
+                    break;
+                }
+                if matches!(
+                    reaction.status.as_str(),
+                    "pending_approval"
+                        | "rejected"
+                        | "superseded"
+                        | "failed"
+                        | "uncertain"
+                        | "unavailable"
+                        | "pending_restart"
+                        | "recovered"
+                        | "deferred_window"
+                ) {
+                    return Err(format!("Startup work for {agent} is waiting on signal rule {name}: {}. Read signals status and the retained approval/maintenance result; the guest remains available for authorized recovery.", reaction.status).into());
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!("Startup work for {agent} is waiting on signal rule {name}. Read signals status; the running proxy must collect current evidence and finish the adopted response. No coding command was launched.").into());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn startup_is_explicit_and_unknown_evidence_does_not_open_the_work_gate() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(startup_rules(root.path(), "alice").unwrap().is_empty());
+        before_work(root.path(), "alice").await.unwrap();
+        let config:Configuration=serde_json::from_value(json!({"sources":{"test":super::super::tests::source()},"rules":{"packages":{
+            "source":"test","agents":["alice"],"min_severity":7,"authority":"standing","on_stale":"retain","on_inactive":"release",
+            "startup_before_work":true,"guest_inventory":{"timeout_seconds":1,"max_output_bytes":65536},"inventory_max_age_seconds":60,
+            "response":{"kind":"notify","room":"maintenance","recipients":["ag-11111111111111111111111111111111"]}}}})).unwrap();
+        validate(&config).unwrap();
+        fs::write(
+            root.path().join("signals.toml"),
+            toml::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            startup_rules(root.path(), "alice").unwrap(),
+            vec!["packages"]
+        );
+        assert!(startup_rules(root.path(), "bob").unwrap().is_empty());
+        fs::write(root.path().join("policy.toml"),"[agents.alice]\nagent_id='ag-11111111111111111111111111111111'\n[hosts.'*']\negress='deny'\n").unwrap();
+        assert!(
+            before_work(root.path(), "alice")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("current owned guest")
+        );
+    }
     #[cfg(target_os = "linux")]
     #[test]
     fn effective_package_changes_freshness_and_run_replacement_revalidate_delayed_approvals() {
