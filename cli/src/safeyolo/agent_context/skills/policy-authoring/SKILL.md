@@ -18,6 +18,11 @@ with the operator → submit through the existing owner. Discovery and component
 validation grant no permission. A valid component is not a complete candidate
 safety assessment. Discovery is available before full-policy disclosure.
 
+For publisher-delivered check/challenge revisions, read
+[control updates](references/control-updates.md). Use the selected publisher,
+standing adoption/qualification bounds and existing approval owner. Receipt,
+signature verification and a satisfactory agent answer do not grant access.
+
 ## Read the full local policy in a guest
 
 Use the installed `request_policy_snapshot` and `read_policy_snapshot` tools.

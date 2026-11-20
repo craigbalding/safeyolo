@@ -37,6 +37,16 @@ approval commands. For failures, retain the original operation receipt; do not
 repeat an uncertain effect. The installed host guide `assets/docs/signals.md`
 contains source configuration, response selection and troubleshooting.
 
+Versioned control updates use the same distribution path, with independent
+Ed25519 publisher trust and host-selected adoption/qualification authority.
+A route challenge exposes its immutable selected revision and active steps in
+guidance. Supply required `answers` with the existing escalation context.
+HTTP 422 means required evidence is incomplete; HTTP 409 or `superseded` means
+the original requirements changed. Read current guidance and obtain a new
+challenge through the original operation. No answer grants permission.
+The policy-authoring skill's [control-update reference](../../policy-authoring/references/control-updates.md)
+explains host status, reviewed/automatic adoption and recovery.
+
 ## Policy capabilities
 
 `GET /policy/capabilities` returns generic definitions from the installed

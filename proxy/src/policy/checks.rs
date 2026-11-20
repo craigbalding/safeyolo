@@ -13,6 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tokio::io::AsyncReadExt;
+pub mod challenges;
 pub(crate) mod execution;
 pub(crate) mod work;
 
@@ -258,6 +259,8 @@ pub enum EvidenceSource {
     Unavailable { reason: String },
     Job {
         spec: PathBuf,
+        #[serde(default)]
+        spec_sha256: Option<String>,
         effects: execution::Effects,
         limits: execution::Limits,
     },
@@ -450,6 +453,8 @@ pub struct Checks {
     pub rules: Vec<Rule>,
     #[serde(default)]
     pub work_bindings: Vec<work::Binding>,
+    #[serde(default)]
+    pub route_challenges: BTreeMap<String, challenges::Challenge>,
     #[serde(skip)]
     execution: std::sync::Arc<execution::CheckExecutions>,
     #[serde(skip)]
@@ -620,6 +625,7 @@ impl Checks {
             "checks": document.get("checks").cloned().unwrap_or_else(|| json!({})),
             "check_rules": document.get("check_rules").cloned().unwrap_or_else(|| json!([])),
             "work_bindings": document.get("work_bindings").cloned().unwrap_or_else(|| json!([])),
+            "route_challenges": document.get("route_challenges").cloned().unwrap_or_else(|| json!({})),
         }))
         .map_err(|error| invalid(format!("named checks: {error}")))?;
         for (name, check) in &mut checks.checks {
@@ -675,6 +681,7 @@ impl Checks {
             }
         }
         work::validate(&checks)?;
+        challenges::validate(&checks)?;
         for rule in &mut checks.rules {
             if rule.host != "*" {
                 rule.host = if let Some(suffix) = rule.host.strip_prefix("*.") {
@@ -1131,7 +1138,7 @@ fn severity(action: Action) -> u8 {
     }
 }
 
-fn validate_evidence(check: &Check, entry: &mut Evidence, now: u64) {
+pub(crate) fn validate_evidence(check: &Check, entry: &mut Evidence, now: u64) {
     let Some(record) = entry.result.as_ref() else {
         return;
     };

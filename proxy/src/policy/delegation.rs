@@ -969,6 +969,7 @@ impl IssuedAccess {
                 "scheme",
                 "port",
                 "prepared_assessment",
+                "control_update",
             ],
             _ => return Err(invalid("unsupported issued permission type")),
         };

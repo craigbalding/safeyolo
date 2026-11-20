@@ -41,6 +41,7 @@ fn setup(root: &Path, source: &Source) {
         toml::to_string(&Configuration {
             sources: BTreeMap::from([("test".into(), source.clone())]),
             rules: BTreeMap::new(),
+            control_updates: BTreeMap::new(),
         })
         .unwrap(),
     )
