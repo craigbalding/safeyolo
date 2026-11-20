@@ -126,16 +126,50 @@ fn scope_work(
     agent: &Agent,
     room: &str,
     cursor: i64,
-) -> Result<Vec<(work::Work, bool)>, Error> {
-    let mut query=conn.prepare("SELECT w.document_json,EXISTS(SELECT 1 FROM coord_attention_edges e WHERE e.recipient_agent_id=?1 AND e.kind='work_changed' AND e.object_id=w.work_id AND e.feed_sequence>?3) FROM coord_work w WHERE w.room_id=?2 AND (json_extract(w.document_json,'$.assignee.id')=?1 OR json_extract(w.document_json,'$.claim_agent_id')=?1 OR json_extract(w.document_json,'$.check.reviewer.id')=?1 OR json_extract(w.document_json,'$.challenge.responder.id')=?1) ORDER BY w.work_id")?;
+    policy: &crate::policy::Policy,
+) -> Result<Vec<(Value, bool)>, Error> {
+    let mut query=conn.prepare("SELECT w.document_json,EXISTS(SELECT 1 FROM coord_attention_edges e WHERE e.recipient_agent_id=?1 AND e.kind='work_changed' AND e.object_id=w.work_id AND e.feed_sequence>?3) FROM coord_work w WHERE w.room_id=?2 ORDER BY w.work_id")?;
     let rows = query
         .query_map(params![agent.id, room, cursor], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    rows.into_iter()
-        .map(|(text, changed)| Ok((serde_json::from_str(&text)?, changed)))
-        .collect()
+    let participant = work::subjects::Principal {
+        kind: "agent".into(),
+        id: agent.id.clone(),
+    };
+    let mut works = Vec::new();
+    for (text, changed) in rows {
+        let work: work::Work = serde_json::from_str(&text)?;
+        let actions: Vec<_> = work::actions::for_work(conn, &work, work::Actor::Agent(&agent.id))?
+            .into_iter()
+            .filter(|action| action.requires_action)
+            .collect();
+        // Retain assigned execution and review scope, including completed work.
+        // Canonical actions also cover decision roles without an execution claim.
+        if work.assignee.as_ref() != Some(&participant)
+            && work.claim_agent_id.as_deref() != Some(&agent.id)
+            && !work
+                .check
+                .as_ref()
+                .is_some_and(|c| c.reviewer == participant)
+            && !work
+                .challenge
+                .as_ref()
+                .is_some_and(|c| c.responder == participant || c.deciders.contains(&participant))
+            && !work
+                .acceptance_requirements
+                .as_ref()
+                .is_some_and(|r| r.deciders.contains(&participant))
+            && actions.is_empty()
+        {
+            continue;
+        }
+        let mut described = work::describe_with_policy(conn, work, Some(policy))?;
+        described["required_actions"] = serde_json::to_value(actions)?;
+        works.push((described, changed));
+    }
+    Ok(works)
 }
 
 pub(super) fn initial_scope(
@@ -166,11 +200,14 @@ pub(super) fn initial_scope(
         .optional()?
         .unwrap_or(0);
     let mut ids = Vec::new();
-    for (work, _) in scope_work(conn, agent, room_id, cursor)? {
-        let id = work.work_id.clone();
-        let described = work::describe_with_policy(conn, work, Some(policy))?;
-        if !execution_and_acceptance_complete(&described) {
-            ids.push(id);
+    for (work, _) in scope_work(conn, agent, room_id, cursor, policy)? {
+        if !execution_and_acceptance_complete(&work) {
+            ids.push(
+                work["work_id"]
+                    .as_str()
+                    .ok_or("Work identity missing")?
+                    .into(),
+            );
         }
     }
     Ok((ids, cursor))
@@ -196,14 +233,18 @@ fn snapshot(
         .ok_or("activation attention reference missing")?;
     let mut works = Vec::new();
     let config: Configuration = serde_json::from_value(current["configuration"].clone())?;
-    for (work, changed) in scope_work(conn, agent, room, cursor)? {
-        if work.work_id == shutdown
-            || config.completion_excluded_work_ids.contains(&work.work_id)
-            || (!changed && !initial.iter().any(|id| id == &work.work_id))
+    for (work, changed) in scope_work(conn, agent, room, cursor, policy)? {
+        let id = work["work_id"].as_str().ok_or("Work identity missing")?;
+        if id == shutdown
+            || config
+                .completion_excluded_work_ids
+                .iter()
+                .any(|excluded| excluded == id)
+            || (!changed && !initial.iter().any(|initial| initial == id))
         {
             continue;
         }
-        works.push(work::describe_with_policy(conn, work, Some(policy))?);
+        works.push(work);
     }
     Ok(json!({"agent_id":agent.id,"run_id":current["run_id"],
         "activation_id":current["activation_id"],"configuration_revision":current["configuration_revision"],
@@ -212,10 +253,13 @@ fn snapshot(
 }
 
 fn execution_and_acceptance_complete(work: &Value) -> bool {
-    work["state"] == "cancelled"
-        || (work["state"] == "done"
-            && (work["acceptance_requirements"].is_null()
-                || work["acceptance_status"]["state"] == "accepted"))
+    work["required_actions"]
+        .as_array()
+        .is_some_and(Vec::is_empty)
+        && (work["state"] == "cancelled"
+            || (work["state"] == "done"
+                && (work["acceptance_requirements"].is_null()
+                    || work["acceptance_status"]["state"] == "accepted")))
 }
 
 fn complete(scope: &Value) -> bool {
@@ -316,7 +360,7 @@ async fn checked_stop(
     let scope = snapshot(&conn, agent, initial, &policy)?;
     if !complete(&scope) {
         return Ok(
-            json!({"state":"refused","reason":"current scoped Work has unfinished execution or required acceptance","scope":scope}),
+            json!({"state":"refused","reason":"current scoped Work has unfinished execution, required native actions or required acceptance","scope":scope}),
         );
     }
     let name = config
@@ -430,28 +474,10 @@ fn close_scope(
 #[cfg(test)]
 mod tests {
     use super::super::tests::{change, work_fixture};
-
-    fn finish_task(conn: &mut Connection, work: &Value, prefix: &str) -> Value {
-        let claimed = change(
-            conn,
-            json!({"action":"claim","work_id":work["work_id"],
-            "expected_version":work["version"],"expected_generation":work["claim_generation"]}),
-            &format!("{prefix}-claim"),
-        )["work"]
-            .clone();
-        change(
-            conn,
-            json!({"action":"complete","work_id":work["work_id"],"expected_version":claimed["version"],
-            "expected_generation":claimed["claim_generation"],"short_result":"Completed"}),
-            &format!("{prefix}-complete"),
-        )
-    }
     use super::*;
 
-    #[test]
-    fn exact_scope_excludes_only_shutdown_and_selected_future_work_and_refuses_arrivals() {
-        let root = work_fixture();
-        let path = root.path().join("policy.toml");
+    fn worker_policy(root: &Path) -> (Agent, crate::policy::Policy) {
+        let path = root.join("policy.toml");
         std::fs::write(
             &path,
             "[controls.network]\nenabled=false\n[agents.worker]\nagent_id='worker'\n",
@@ -472,6 +498,65 @@ mod tests {
             dangerously_allow_unowned: false,
             lifecycle: None,
         };
+        (agent, policy)
+    }
+
+    fn act(conn: &mut Connection, who: &str, input: Value, op: &str) -> Value {
+        work::mutate(
+            None,
+            conn,
+            "work",
+            work::Actor::Agent(who),
+            serde_json::from_value(input).unwrap(),
+            Some(op),
+        )
+        .unwrap()["work"]
+            .clone()
+    }
+
+    fn activation(
+        conn: &Connection,
+        agent: &Agent,
+        policy: &crate::policy::Policy,
+        shutdown: &Value,
+    ) -> Value {
+        let config = json!({"mode":"on_demand","completion_room":"work","completion_check":"done",
+            "completion_require":{"op":"finding","check":"done"}});
+        let (ids, cursor) = initial_scope(
+            conn,
+            agent,
+            &configuration(&config).unwrap(),
+            "rm-work",
+            policy,
+        )
+        .unwrap();
+        let initial = json!({"agent_id":"worker","run_id":"run-a","activation_id":"activation-a",
+            "configuration_revision":"revision-a","phase":"active","configuration":config,"completion_room_id":"rm-work",
+            "initial_work_ids":ids,"work_attention_at_activation":cursor,
+            "stop_request":{"operation_id":"stop-op","shutdown_work_id":shutdown["work_id"]}});
+        save(conn, "worker", &initial).unwrap();
+        initial
+    }
+
+    fn finish_task(conn: &mut Connection, work: &Value, prefix: &str) -> Value {
+        let claimed = change(
+            conn,
+            json!({"action":"claim","work_id":work["work_id"],
+            "expected_version":work["version"],"expected_generation":work["claim_generation"]}),
+            &format!("{prefix}-claim"),
+        )["work"]
+            .clone();
+        change(
+            conn,
+            json!({"action":"complete","work_id":work["work_id"],"expected_version":claimed["version"],
+            "expected_generation":claimed["claim_generation"],"short_result":"Completed"}),
+            &format!("{prefix}-complete"),
+        )
+    }
+    #[test]
+    fn exact_scope_excludes_only_shutdown_and_selected_future_work_and_refuses_arrivals() {
+        let root = work_fixture();
+        let (agent, policy) = worker_policy(root.path());
         let mut conn = coord_rooms::open(root.path()).unwrap();
         let make = |conn: &mut Connection, title: &str, op: &str| {
             change(
@@ -565,5 +650,210 @@ mod tests {
             close_scope(root.path(), &agent, &initial, &policy, &scope, &Value::Null).is_err(),
             "scope closure must recheck current room authority"
         );
+    }
+
+    #[test]
+    fn native_decisions_block_scope_closure_until_their_named_mutations_settle_them() {
+        for kind in [
+            "decide_acceptance",
+            "resolve_challenge",
+            "cancelled_challenge",
+        ] {
+            for arrives_during_check in [false, true] {
+                let root = work_fixture();
+                let (agent, policy) = worker_policy(root.path());
+                let mut conn = coord_rooms::open(root.path()).unwrap();
+                for who in ["producer", "other-decider"] {
+                    conn.execute("INSERT INTO memberships(room_id,principal_kind,principal_id,permissions,granted_at) VALUES('rm-work','agent',?1,'send,receive',1)", [who]).unwrap();
+                }
+                let shutdown = act(
+                    &mut conn,
+                    "worker",
+                    json!({"action":"create","title":"Self-stop",
+                    "assignee":{"kind":"agent","id":"worker"}}),
+                    "shutdown",
+                );
+                let mut output = act(
+                    &mut conn,
+                    "producer",
+                    json!({"action":"create","title":"Another worker's output",
+                    "assignee":{"kind":"agent","id":"producer"}}),
+                    "create-output",
+                );
+                output = act(
+                    &mut conn,
+                    "producer",
+                    json!({"action":"claim","work_id":output["work_id"],
+                    "expected_version":output["version"],"expected_generation":0}),
+                    "claim-output",
+                );
+                output = act(
+                    &mut conn,
+                    "producer",
+                    json!({"action":"publish_output","work_id":output["work_id"],
+                    "expected_version":output["version"],"expected_generation":1,"expected_target_generation":0,
+                    "target_ref":"artifact:decision-proof","execution_outcome":"succeeded","summary":"Retained output","evidence_refs":[]}),
+                    "publish-output",
+                );
+                output = act(
+                    &mut conn,
+                    "producer",
+                    json!({"action":"complete","work_id":output["work_id"],
+                    "expected_version":output["version"],"expected_generation":1}),
+                    "complete-output",
+                );
+
+                let before = activation(&conn, &agent, &policy, &shutdown);
+                let checked = snapshot(&conn, &agent, &before, &policy).unwrap();
+                assert!(complete(&checked));
+                let decision = if kind == "decide_acceptance" {
+                    output = act(
+                        &mut conn,
+                        "producer",
+                        json!({"action":"set_requirements","work_id":output["work_id"],
+                        "expected_version":output["version"],"expected_generation":1,"expected_requirements_version":0,
+                        "authorities":[{"kind":"agent","id":"producer"}],
+                        "deciders":[{"kind":"agent","id":"worker"},{"kind":"agent","id":"other-decider"}],
+                        "independent":true,"checks":[],"challenges":[],"reason":"Select independent decisions"}),
+                        "requirements",
+                    );
+                    // Global acceptance can pass while this worker still owes its own decision.
+                    act(
+                        &mut conn,
+                        "other-decider",
+                        json!({"action":"decide_acceptance","work_id":output["work_id"],
+                        "expected_version":output["version"],"expected_generation":1,"expected_requirements_version":1,
+                        "expected_target_generation":1,"verdict":"approve","summary":"Inspected the exact output"}),
+                        "other-approval",
+                    )
+                } else {
+                    let mut challenge = act(
+                        &mut conn,
+                        "other-decider",
+                        json!({"action":"raise_challenge",
+                        "subject":{"kind":"output","work_id":output["work_id"],"target_generation":1},
+                        "assertion":"Output needs disposition","grounds":"Independent result questioned","evidence_refs":[],
+                        "responder":{"kind":"agent","id":"producer"},"deciders":[{"kind":"agent","id":"worker"}],
+                        "independent":true}),
+                        "challenge",
+                    );
+                    if kind == "cancelled_challenge" {
+                        act(
+                            &mut conn,
+                            "other-decider",
+                            json!({"action":"cancel","work_id":challenge["work_id"],
+                            "expected_version":challenge["version"],"expected_generation":0,"reason":"Response cancelled; disposition still required"}),
+                            "cancel-response",
+                        )
+                    } else {
+                        challenge = act(
+                            &mut conn,
+                            "producer",
+                            json!({"action":"claim","work_id":challenge["work_id"],
+                            "expected_version":challenge["version"],"expected_generation":0}),
+                            "claim-response",
+                        );
+                        act(
+                            &mut conn,
+                            "producer",
+                            json!({"action":"respond_challenge","work_id":challenge["work_id"],
+                            "expected_version":challenge["version"],"expected_generation":1,"summary":"Response retained","evidence_refs":[]}),
+                            "respond",
+                        )
+                    }
+                };
+                let initial = if arrives_during_check {
+                    assert!(
+                        !close_scope(
+                            root.path(),
+                            &agent,
+                            &before,
+                            &policy,
+                            &checked,
+                            &Value::Null
+                        )
+                        .unwrap(),
+                        "new {kind} must invalidate the earlier completed scope"
+                    );
+                    before
+                } else {
+                    let initial = activation(&conn, &agent, &policy, &shutdown);
+                    assert!(
+                        initial["initial_work_ids"]
+                            .as_array()
+                            .unwrap()
+                            .contains(&decision["work_id"]),
+                        "initial {kind} must be retained even when execution/acceptance is complete"
+                    );
+                    initial
+                };
+                let actions = work::actions::read(
+                    &mut conn,
+                    "work",
+                    work::Actor::Agent("worker"),
+                    decision["work_id"].as_str().unwrap(),
+                    true,
+                )
+                .unwrap();
+                let action = actions["actions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|a| a["requires_action"] == true)
+                    .unwrap();
+                assert_eq!(
+                    action["kind"],
+                    if kind == "decide_acceptance" {
+                        kind
+                    } else {
+                        "resolve_challenge"
+                    }
+                );
+                act(
+                    &mut conn,
+                    "worker",
+                    json!({"action":"receive_action","work_id":decision["work_id"],"action_key":action["key"]}),
+                    "receive-decision",
+                );
+                let scope = snapshot(&conn, &agent, &initial, &policy).unwrap();
+                assert_eq!(scope["work"][0]["work_id"], decision["work_id"]);
+                assert_eq!(
+                    scope["work"][0]["required_actions"][0]["kind"],
+                    action["kind"]
+                );
+                assert!(!complete(&scope), "receiving {kind} cannot complete it");
+                assert!(
+                    !close_scope(root.path(), &agent, &initial, &policy, &scope, &Value::Null)
+                        .unwrap()
+                );
+                assert_eq!(
+                    retained(root.path(), "worker").unwrap().unwrap()["phase"],
+                    "active"
+                );
+
+                let settle = if kind == "decide_acceptance" {
+                    json!({"action":"decide_acceptance","work_id":decision["work_id"],"expected_version":decision["version"],
+                        "expected_generation":decision["claim_generation"],"expected_requirements_version":1,"expected_target_generation":1,
+                        "verdict":"approve","summary":"Worker independently decided"})
+                } else {
+                    json!({"action":"resolve_challenge","work_id":decision["work_id"],"expected_version":decision["version"],
+                        "expected_generation":decision["claim_generation"],"expected_response_version":decision["challenge"]["response"]["work_version"].as_i64().unwrap_or(0),
+                        "decision":"dismissed","reason":"Independent disposition retained","evidence_refs":[]})
+                };
+                act(&mut conn, "worker", settle, "settle-decision");
+                let scope = snapshot(&conn, &agent, &initial, &policy).unwrap();
+                assert_eq!(scope["work"][0]["work_id"], decision["work_id"]);
+                assert_eq!(scope["work"][0]["required_actions"], json!([]));
+                assert!(complete(&scope));
+                assert!(
+                    close_scope(root.path(), &agent, &initial, &policy, &scope, &Value::Null)
+                        .unwrap()
+                );
+                assert_eq!(
+                    retained(root.path(), "worker").unwrap().unwrap()["phase"],
+                    "closing"
+                );
+            }
+        }
     }
 }

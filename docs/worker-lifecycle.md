@@ -88,9 +88,11 @@ completes execution. Independent acceptance remains separate. A model exit or
 empty attention page establishes none of those outcomes.
 
 The host checks this worker's assigned and claimed Work in the selected room,
-plus its assigned checks and challenges. Unfinished execution or selected
-acceptance that is not accepted refuses early stop. Follow-up Work in the
-same scope participates in that check. The operator's explicit future-work
+plus its assigned checks, challenge responses and required native decisions.
+Unfinished execution, a pending acceptance or challenge decision, or selected
+acceptance that is not accepted refuses early stop. Receiving an action does
+not settle it. Follow-up Work in the same scope participates in that check.
+The operator's explicit future-work
 exclusions and Work in other rooms do not. The adopted job or service must
 also return the selected, fresh result for the exact scope.
 
