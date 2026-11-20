@@ -247,8 +247,15 @@ fn parse_output(output: &Value, run: &AgentRun, at: u64) -> Result<Inventory, Er
         let [status, package, version] = fields.as_slice() else {
             return Err("malformed guest package row".into());
         };
-        if *status != "installed" {
-            continue;
+        match *status {
+            "installed" => {}
+            "not-installed" | "config-files" => continue,
+            _ => {
+                return Err(format!(
+                    "guest package {package} has transitional or unknown dpkg state {status}; complete package assessment is unavailable"
+                )
+                .into());
+            }
         }
         if package.is_empty()
             || !package.bytes().all(|b| {
@@ -334,6 +341,122 @@ mod tests {
         assert_eq!(inventory.packages["libc6:arm64"], "2.41-1");
         assert_eq!(inventory.run_id, run().run_id);
         assert_eq!(inventory.observed_at, 123);
+    }
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn mixed_dpkg_states_preserve_uncertainty_through_advisory_assessment() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let run = run();
+        let _backend =
+            super::super::test_runs::agent_run(root, &run.agent, &run.agent_id, &run.run_id);
+        fs::write(
+            root.join("policy.toml"),
+            format!(
+                "[agents.alice]\nagent_id='{}'\n[hosts.'*']\negress='deny'\n",
+                run.agent_id
+            ),
+        )
+        .unwrap();
+        let proxy_config: crate::Config = serde_json::from_value(json!({
+            "native_product":true,"policy_file":root.join("policy.toml"),"data_dir":root.join("data"),
+            "listeners":[],"admin_port":0,"readiness_file":root.join("ready"),
+            "audit_log_path":root.join("audit.jsonl"),"flow_store_enabled":false,"circuit_breaker_enabled":false
+        })).unwrap();
+        let proxy = crate::Proxy::start(proxy_config).await.unwrap();
+        let mut source = super::super::tests::source();
+        source.list = None;
+        source.follow = false;
+        let config: Configuration = serde_json::from_value(json!({"sources":{"test":source},"rules":{"packages":{
+            "source":"test","agents":["alice"],"min_severity":7,"authority":"approval","on_stale":"retain","on_inactive":"retain",
+            "inventory_max_age_seconds":60,"guest_inventory":{"timeout_seconds":1,"max_output_bytes":1024},
+            "response":{"kind":"notify","room":"maintenance","recipients":[run.agent_id]}
+        }}})).unwrap();
+        fs::write(root.join("signals.toml"), toml::to_string(&config).unwrap()).unwrap();
+        let finding = Update {
+            source_id: source.source_id.clone(),
+            id: "advisories.curl".into(),
+            revision: 1,
+            observed_at: now() - 1,
+            expires_at: now() + 3600,
+            withdrawn: false,
+            evidence_refs: vec![],
+            evidence: Evidence::Advisory {
+                distribution: Some("debian:trixie".into()),
+                severity: 9.,
+                subject: Subject::Package {
+                    name: "curl".into(),
+                    distribution: "debian:trixie".into(),
+                    fixed_version: Some("8.0-2".into()),
+                },
+            },
+        };
+        save(
+            &accepted_path(root, "test", &finding.id),
+            &Accepted {
+                source_digest: digest(&source),
+                update: finding,
+            },
+        )
+        .unwrap();
+        for status in [
+            "unpacked",
+            "half-configured",
+            "half-installed",
+            "triggers-awaited",
+            "triggers-pending",
+            "unknown",
+            "not-installed",
+            "config-files",
+            "installed",
+        ] {
+            let mut capture = output();
+            capture["stdout"] = json!(
+                capture["stdout"]
+                    .as_str()
+                    .unwrap()
+                    .replace("installed\tcurl", &format!("{status}\tcurl"))
+            );
+            let result = parse_output(&capture, &run, now());
+            let record = Collection {
+                basis: digest(&config.rules["packages"]),
+                request_id: Value::Null,
+                attempted_at: now(),
+                run: Some(run.clone()),
+                state: if result.is_ok() {
+                    "complete"
+                } else {
+                    "unavailable"
+                }
+                .into(),
+                diagnostic: result.as_ref().err().map(ToString::to_string),
+                inventory: result.ok(),
+            };
+            save(&path(root, "packages", "alice"), &record).unwrap();
+            responses::reconcile(root.into(), proxy.runtime.clone(), Value::Null)
+                .await
+                .unwrap();
+            let selection = &responses::status(root).unwrap()[0]["selection"];
+            let expected = match status {
+                "installed" => "affected",
+                "not-installed" | "config-files" => "unaffected",
+                _ => "unknown_or_stale",
+            };
+            assert_eq!(
+                selection["applicability"], expected,
+                "{status}: {selection}"
+            );
+            if expected == "unknown_or_stale" {
+                assert_eq!(selection["inventory"]["state"], "unavailable");
+                assert!(
+                    selection["inventory"]["diagnostic"]
+                        .as_str()
+                        .unwrap()
+                        .contains(status)
+                );
+            }
+        }
+        proxy.shutdown().await;
     }
     #[test]
     fn failed_truncated_unsupported_and_partial_inventory_never_becomes_complete() {
