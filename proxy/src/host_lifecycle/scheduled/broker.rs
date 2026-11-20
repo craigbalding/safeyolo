@@ -117,10 +117,41 @@ async fn reconcile_agent(root: &Path, stream: &stream::Stream, agent: &Agent) ->
         stream.purge().filter(subject).await?;
         return Ok(());
     }
-    let body =
-        json!({"action":"start","agent_id":agent.id,"configuration_revision":revision(agent)?});
+    let revision = revision(agent)?;
+    if retained(root, &agent.id)?.is_some_and(|receipt| {
+        receipt["schedule_observation"]["configuration_revision"] == revision
+            && receipt["schedule_observation"]["next"] == "purge"
+    }) {
+        // A native terminal occurrence remains terminal after checked stop,
+        // cutoff or proxy restart. Remove any already re-armed source too.
+        stream.purge().filter(subject).await?;
+        return Ok(());
+    }
+    let body = json!({"action":"start","agent_id":agent.id,"configuration_revision":revision});
     match stream.get_last_raw_message_by_subject(&subject).await {
         Ok(message) if message.payload.as_ref() == serde_json::to_vec(&body)? => return Ok(()),
+        Ok(_) => {}
+        Err(error) if error.kind() == stream::LastRawMessageErrorKind::NoMessageFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    // NATS can purge an exhausted source before the consumer saves its receipt.
+    // Read its retained native event to close that gap without another schedule.
+    match stream
+        .get_last_raw_message_by_subject(&format!("{PREFIX}.event.{}.start", agent.id))
+        .await
+    {
+        Ok(message)
+            if message.payload.as_ref() == serde_json::to_vec(&body)?
+                && message.headers.get("Nats-Scheduler").map(|h| h.as_str())
+                    == Some(subject.as_str())
+                && message
+                    .headers
+                    .get("Nats-Schedule-Next")
+                    .map(|h| h.as_str())
+                    == Some("purge") =>
+        {
+            return Ok(());
+        }
         Ok(_) => {}
         Err(error) if error.kind() == stream::LastRawMessageErrorKind::NoMessageFound => {}
         Err(error) => return Err(error.into()),
@@ -323,6 +354,116 @@ async fn run(root: std::path::PathBuf, runtime: RuntimeState) -> Result<(), Erro
 mod tests {
     use super::*;
     use futures_util::FutureExt;
+
+    #[tokio::test]
+    #[ignore = "requires the pinned native NATS binary"]
+    async fn exhausted_native_schedule_survives_reconciliation_and_restart() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("data")).unwrap();
+        std::fs::write(root.path().join("config.toml"), "").unwrap();
+        std::fs::write(root.path().join("data/instance_id"), "sy-one-shot-proof").unwrap();
+        let source = |schedule: &str| {
+            format!(
+                "[agents.worker]\nagent_id='ag-worker'\n[agents.worker.lifecycle]\nmode='scheduled'\nschedule={schedule:?}\n"
+            )
+        };
+        // An already due @at is supported natively and delivers promptly.
+        std::fs::write(
+            root.path().join("policy.toml"),
+            source("@at 2020-01-01T00:00:00Z"),
+        )
+        .unwrap();
+        let binary = std::env::var("SAFEYOLO_COORD_NATS_BINARY").unwrap();
+        assert!(std::env::var_os("SAFEYOLO_NATS_TEST_INSTANCE").is_some());
+        coord_rooms::start(root.path(), Some(Path::new(&binary)), None, None)
+            .await
+            .unwrap();
+        let result = std::panic::AssertUnwindSafe(host_platform::in_instance(
+            root.path().to_owned(),
+            async {
+                reconcile(root.path()).await.unwrap();
+                let stream = stream(root.path()).await.unwrap();
+                let subject = activation_subject("ag-worker");
+                let event_subject = format!("{PREFIX}.event.ag-worker.start");
+                let terminal = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        if let Ok(message) =
+                            stream.get_last_raw_message_by_subject(&event_subject).await
+                        {
+                            break message;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                assert_eq!(
+                    terminal.headers.get("Nats-Schedule-Next").unwrap().as_str(),
+                    "purge"
+                );
+                let event: Value = serde_json::from_slice(&terminal.payload).unwrap();
+                // Reconciliation can precede delivery to the lifecycle consumer.
+                assert!(retained(root.path(), "ag-worker").unwrap().unwrap()
+                    ["schedule_observation"]
+                    .is_null());
+                for _ in 0..3 {
+                    reconcile(root.path()).await.unwrap();
+                    assert_eq!(
+                        stream.get_last_raw_message_by_subject(&subject).await.unwrap_err().kind(),
+                        stream::LastRawMessageErrorKind::NoMessageFound
+                    );
+                }
+                // Both checked stop and mandatory cutoff retain this observation.
+                // Each reconciliation reopens SQLite, as a new proxy does.
+                for reason in ["selected completion evidence passed", "mandatory cutoff"] {
+                    let receipt = json!({"agent_id":"ag-worker","phase":"stopped",
+                        "resources_released":true,"result_reason":reason,
+                        "schedule_observation":{"configuration_revision":event["configuration_revision"],
+                            "sequence":terminal.sequence,"next":"purge"}});
+                    save(&coord_rooms::open(root.path()).unwrap(), "ag-worker", &receipt).unwrap();
+                    // Retire an already re-armed source as well as refusing a new one.
+                    publish(root.path(),subject.clone(),event_subject.clone(),
+                        "@at 2099-01-01T00:00:00Z",None,&event).await.unwrap();
+                    reconcile(root.path()).await.unwrap();
+                    assert_eq!(
+                        stream.get_last_raw_message_by_subject(&subject).await.unwrap_err().kind(),
+                        stream::LastRawMessageErrorKind::NoMessageFound
+                    );
+                    assert_eq!(retained(root.path(), "ag-worker").unwrap().unwrap()["phase"], "stopped");
+                }
+                coord_rooms::stop(root.path()).await.unwrap();
+                coord_rooms::start(root.path(), Some(Path::new(&binary)), None, None)
+                    .await.unwrap();
+                reconcile(root.path()).await.unwrap();
+                let stream = super::stream(root.path()).await.unwrap();
+                assert_eq!(
+                    stream.get_last_raw_message_by_subject(&subject).await.unwrap_err().kind(),
+                    stream::LastRawMessageErrorKind::NoMessageFound
+                );
+                assert_eq!(stream.get_last_raw_message_by_subject(&event_subject).await.unwrap().sequence,
+                    terminal.sequence);
+                let agent = crate::host_agents::list().unwrap().remove(0);
+                assert_eq!(next_occurrence(&agent,retained(root.path(),&agent.id).unwrap().as_ref())["state"],
+                    "no_further_occurrence");
+                // A changed one-shot revision and a recurring schedule can arm.
+                for schedule in ["@at 2099-01-01T00:00:00Z", "@every 1s"] {
+                    std::fs::write(root.path().join("policy.toml"), source(schedule)).unwrap();
+                    reconcile(root.path()).await.unwrap();
+                    let armed = stream.get_last_raw_message_by_subject(&subject).await.unwrap();
+                    assert_eq!(armed.headers.get("Nats-Schedule").unwrap().as_str(),schedule);
+                    reconcile(root.path()).await.unwrap();
+                    assert_eq!(stream.get_last_raw_message_by_subject(&subject).await.unwrap().sequence,
+                        armed.sequence);
+                }
+            },
+        ))
+        .catch_unwind()
+        .await;
+        coord_rooms::stop(root.path()).await.unwrap();
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    }
 
     #[tokio::test]
     #[ignore = "requires the pinned native NATS binary"]

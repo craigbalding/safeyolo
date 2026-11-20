@@ -80,6 +80,11 @@ implementation. Native NATS can skip a local time during a forward
 daylight-saving change and produce two distinct occurrences during a backward
 change. Choose the schedule with those semantics in mind.
 
+When native NATS reports no further occurrence, reconciliation does not re-arm
+that configuration after stop or proxy restart. For a one-shot @at schedule,
+select a new timestamp through configuration to schedule another occurrence.
+An explicit agent start remains a manual activation of the same worker.
+
 ## Perform work and request checked early stop
 
 The worker creates authorized self-assigned native Work and receives ordinary

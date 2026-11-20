@@ -1008,7 +1008,7 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
             subject: Subject::Package {
                 name: "curl".into(),
                 distribution: "debian:trixie".into(),
-                fixed_version: "8.0-1+deb13u1".into(),
+                fixed_version: Some("8.0-1+deb13u1".into()),
             },
         };
         publish(&kv, &package).await;

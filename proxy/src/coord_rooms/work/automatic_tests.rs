@@ -818,6 +818,15 @@ async fn prerequisite_pending_revocation_retains_uncertainty_and_prevents_commit
     let (root, proxy, _) = fixture_proxy(&provider).await;
     adopt_prerequisite(root.path(), &proxy, &provider, true);
     provider.mode.store(5, Ordering::SeqCst);
+    // Keep the policy watcher's next 25 ms tick pending while the real response
+    // arrives. Retention must also catch revocation when polling has not yet done so.
+    tokio::time::pause();
+    let clock_hold = tokio::spawn(async {
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(5) {
+            tokio::task::yield_now().await;
+        }
+    });
     let task_root = root.path().to_owned();
     let pending = tokio::spawn(async move { api(&task_root, &prerequisite_request()).await });
     tokio::time::timeout(
@@ -830,12 +839,79 @@ async fn prerequisite_pending_revocation_retains_uncertainty_and_prevents_commit
     assert_eq!(invocation["record"]["state"], "dispatching");
     refresh_checks(root.path(), &proxy);
     provider.release.notify_one();
-    assert_ne!(pending.await.unwrap().0, 200);
+    let response = pending.await.unwrap();
+    clock_hold.abort();
+    tokio::time::resume();
+    assert_ne!(response.0, 200);
+    let retained = prerequisite_value(root.path());
+    assert_eq!(retained["record"]["state"], "uncertain");
+    assert_eq!(retained["id"], invocation["id"]);
+    assert_eq!(retained["attempts"], 1);
     assert_eq!(
-        prerequisite_value(root.path())["record"]["state"],
-        "uncertain"
+        retained["record"]["evidence"]["execution"]["http_status"],
+        200
     );
+    assert!(
+        retained["record"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("authority")
+    );
+    assert_eq!(api(root.path(), &prerequisite_request()).await.0, 409);
+    for action in ["resolve_prerequisite", "retry_prerequisite"] {
+        assert_eq!(
+            submit(
+                &proxy,
+                root.path(),
+                Actor::Agent(BOB),
+                recovery_request(&retained, action),
+                action,
+            )
+            .await
+            .unwrap_err()
+            .0,
+            403
+        );
+    }
+    assert_eq!(prerequisite_value(root.path()), retained);
     let conn = super::super::super::open(root.path()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM coord_work", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(provider.effects.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn prerequisite_completed_effect_does_not_restore_revoked_requester_membership() {
+    let provider = Provider::start().await;
+    let (root, proxy, _) = fixture_proxy(&provider).await;
+    adopt_prerequisite(root.path(), &proxy, &provider, false);
+    provider.mode.store(5, Ordering::SeqCst);
+    let task_root = root.path().to_owned();
+    let pending = tokio::spawn(async move { api(&task_root, &prerequisite_request()).await });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        provider.reached.notified(),
+    )
+    .await
+    .unwrap();
+    let conn = super::super::super::open(root.path()).unwrap();
+    conn.execute("DELETE FROM memberships WHERE principal_id=?1", [ALICE])
+        .unwrap();
+    provider.release.notify_one();
+    assert_eq!(pending.await.unwrap().0, 404);
+    let retained = prerequisite_value(root.path());
+    assert_eq!(retained["record"]["state"], "completed");
+    assert_eq!(
+        retained["record"]["evidence"]["execution"]["http_status"],
+        200
+    );
+    assert_eq!(api(root.path(), &prerequisite_request()).await.0, 404);
     assert_eq!(
         conn.query_row("SELECT count(*) FROM coord_work", [], |r| r
             .get::<_, i64>(0))

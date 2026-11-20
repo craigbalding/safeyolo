@@ -1,5 +1,6 @@
 //! Host-side signal evidence. Receipt never confers effect authority.
 pub mod control_updates;
+mod guest_inventory;
 mod responses;
 mod transport;
 pub(crate) fn approval_revision(policy: &crate::policy::Policy, action: &Value) -> Option<String> {
@@ -26,6 +27,9 @@ pub(crate) fn resolve(
         responses::resolve(state, writer, id, decision, reviewer)
     }
 }
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/support/controlled_runs.rs"]
+mod test_runs;
 #[cfg(test)]
 mod tests;
 
@@ -40,7 +44,7 @@ use std::{
 };
 use transport::Source;
 
-pub const HELP: &str = "safeyolo [--root ROOT] signals configure FILE\nsafeyolo [--root ROOT] signals status\nsafeyolo [--root ROOT] signals publish SOURCE KEY FILE\nsafeyolo signals keygen-update PRIVATE_KEY.der\nsafeyolo signals sign-update BUNDLE.json PRIVATE_KEY.der SIGNED.json\n\nconfigure validates and saves private host sources and response rules. The running proxy follows NATS KV current state and reconciles responses through its existing control loop. No proxy means no automatic response. status shows retained evidence, freshness, authority and action results; delivery is not verification. publish validates an evidence envelope and writes through the selected host-held NATS credential; broker ACLs own publication authority. keygen-update creates a private Ed25519 PKCS#8 key and reports its public key. sign-update writes a signed immutable native check/challenge bundle without executing or adopting it. Source credentials, publisher private keys and endpoints stay outside guests. See docs/signals.md.";
+pub const HELP: &str = "safeyolo [--root ROOT] signals configure FILE\nsafeyolo [--root ROOT] signals status\nsafeyolo [--root ROOT] signals assess RULE\nsafeyolo [--root ROOT] signals publish SOURCE KEY FILE\nsafeyolo signals keygen-update PRIVATE_KEY.der\nsafeyolo signals sign-update BUNDLE.json PRIVATE_KEY.der SIGNED.json\n\nconfigure validates and saves private host sources and response rules. The running proxy follows NATS KV current state and reconciles responses through its existing control loop. No proxy means no automatic response. assess requests current Debian package collection for an explicitly adopted rule; read status for completion. It starts no stopped agent. status shows retained evidence, freshness, authority and action results; delivery is not verification. publish validates an evidence envelope and writes through the selected host-held NATS credential; broker ACLs own publication authority. keygen-update creates a private Ed25519 PKCS#8 key and reports its public key. sign-update writes a signed immutable native check/challenge bundle without executing or adopting it. Source credentials, publisher private keys and endpoints stay outside guests. See docs/signals.md.";
 
 fn now() -> u64 {
     time::OffsetDateTime::now_utc().unix_timestamp().max(0) as u64
@@ -144,11 +148,11 @@ pub enum Subject {
     Destination {
         hostname: String,
     },
-    /// Package findings compare the selected check's effective inventory.
+    /// Package findings compare the host-selected effective inventory.
     Package {
         name: String,
         distribution: String,
-        fixed_version: String,
+        fixed_version: Option<String>,
     },
 }
 impl Update {
@@ -196,9 +200,11 @@ impl Update {
                                 || matches!(b, b'+' | b'-' | b'.')
                         })
                         || distribution.is_empty()
-                        || !responses::valid_debian_version(fixed_version)
+                        || fixed_version
+                            .as_deref()
+                            .is_some_and(|version| !responses::valid_debian_version(version))
                     {
-                        return Err("package evidence needs a package, distribution and valid Debian fixed version".into());
+                        return Err("package evidence needs a package, distribution and a valid Debian fixed version when a fix is available".into());
                     }
                 }
                 _ => {}
@@ -385,6 +391,11 @@ impl Follow {
             .filter_map(|rule| rule.inventory.as_deref())
             .map(&metadata)
             .collect::<Vec<_>>();
+        let assessment_requests = config
+            .rules
+            .keys()
+            .map(|rule| metadata(&guest_inventory::request_path(&root, rule)))
+            .collect::<Vec<_>>();
         let (policy_identity, runs) = {
             let current = runtime.read().map_err(|_| "signal runtime unavailable")?;
             (
@@ -413,6 +424,7 @@ impl Follow {
             services,
             source_changes,
             inventory_changes,
+            assessment_requests,
             policy_identity,
             runs
         ]));
@@ -420,10 +432,21 @@ impl Follow {
             && (identity != self.response_identity || now() >= self.response_due)
         {
             self.response_identity = identity;
+            let host_config = runtime
+                .read()
+                .map_err(|_| "signal runtime unavailable")?
+                .config
+                .native_config_path
+                .clone()
+                .unwrap_or_else(|| root.join("config.toml"));
             self.response = Some(tokio::spawn(async move {
-                let due = responses::reconcile(root.clone(), runtime.clone(), services).await?;
-                let updates_due = control_updates::reconcile(&root, &runtime).await?;
-                Ok(due.min(updates_due))
+                crate::host_platform::in_config(host_config, async move {
+                    let inventory_due = guest_inventory::collect_due(&root, &runtime).await?;
+                    let due = responses::reconcile(root.clone(), runtime.clone(), services).await?;
+                    let updates_due = control_updates::reconcile(&root, &runtime).await?;
+                    Ok(inventory_due.min(due).min(updates_due))
+                })
+                .await
             }));
         }
         Ok(())
@@ -460,6 +483,24 @@ pub async fn command(root: &Path, args: &[String]) -> Result<(), Error> {
             );
         }
         [show] if show == "status" => println!("{}", serde_json::to_string_pretty(&status(root)?)?),
+        [assess, rule] if assess == "assess" => {
+            let _lock = crate::approvals::lock_policy(&root.join("policy.toml"))?;
+            let config = configuration(root)?;
+            let selected = config.rules.get(rule).ok_or("unknown signal rule")?;
+            if selected.guest_inventory.is_none() {
+                return Err(
+                    "rule has no adopted guest_inventory collection; see docs/signals.md".into(),
+                );
+            }
+            let request =
+                json!({"request_id":uuid::Uuid::new_v4().to_string(),"requested_at":now()});
+            save(&guest_inventory::request_path(root, rule), &request)?;
+            println!(
+                "{}",
+                json!({"root":root,"rule":rule,"agents":selected.agents,"request":request,
+                "status":"requested","next_action":"Read signals status after the running proxy's next control pass. This request does not start stopped agents or establish assessment completion."})
+            );
+        }
         [sign, bundle, key, output] if sign == "sign-update" => {
             control_updates::sign(Path::new(bundle), Path::new(key), Path::new(output))?;
         }
@@ -528,7 +569,7 @@ pub fn status(root: &Path) -> Result<Value, Error> {
         sources.insert(name,json!({"source_id":source.source_id,"bucket":source.bucket,"keys":source.keys,"health":health,"accepted":updates}));
     }
     Ok(
-        json!({"root":root,"sources":sources,"responses":responses::status(root)?,"control_updates":control_updates::status(root)?,"automatic":"while the native proxy is running"}),
+        json!({"root":root,"read_at":now(),"response_observations":"recorded at each selection observed_at; reading status does not collect guest state","sources":sources,"responses":responses::status(root)?,"control_updates":control_updates::status(root)?,"automatic":"while the native proxy is running"}),
     )
 }
 fn read_accepted(root: &Path, name: &str, source: &Source) -> Result<Vec<Accepted>, Error> {

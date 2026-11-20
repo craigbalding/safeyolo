@@ -1,7 +1,7 @@
 use super::*;
 use crate::coord_rooms::federation::endpoint::{Endpoint, Mode};
 
-fn source() -> Source {
+pub(super) fn source() -> Source {
     Source {
         endpoint: Endpoint {
             mode: Mode::Loopback,
