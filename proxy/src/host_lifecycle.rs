@@ -2872,6 +2872,9 @@ mod tests {
             }
             std::fs::create_dir_all(root.join("assets/skills/safeyolo")).unwrap();
             std::fs::write(root.join("assets/skills/safeyolo/SKILL.md"), "fixture").unwrap();
+            let sudo_source = root.join("assets/guest/guest-sudo");
+            std::fs::write(&sudo_source, "selected guest sudo\n").unwrap();
+            std::fs::set_permissions(&sudo_source, std::fs::Permissions::from_mode(0o555)).unwrap();
             std::fs::create_dir_all(root.join("certs")).unwrap();
             std::fs::write(root.join("certs/mitmproxy-ca-cert.pem"), "fixture CA").unwrap();
             let peer = json!({"agent_id":"peer", "socket_path":root.join("peer.sock")});
@@ -2903,6 +2906,100 @@ mod tests {
             std::fs::write(directory.join("home/keep"), "saved home").unwrap();
             crate::host_agents::reserve_network_slot(&agent.name).unwrap();
             let policy = std::fs::read(root.join("policy.toml")).unwrap();
+            let home = directory.join("home");
+            let share = directory.join("config-share");
+            std::fs::create_dir_all(&share).unwrap();
+            let sudo = share.join("guest-sudo");
+            std::fs::write(&sudo, "previous guest sudo\n").unwrap();
+            std::fs::set_permissions(&sudo, std::fs::Permissions::from_mode(0o555)).unwrap();
+            assert_eq!(
+                OpenOptions::new()
+                    .write(true)
+                    .open(&sudo)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            let mut previous_sudo = File::open(&sudo).unwrap();
+            for name in [".safeyolo-command", ".safeyolo-interactive-command"] {
+                std::fs::write(home.join(name), "#!/bin/sh\nexec marker\n").unwrap();
+                std::fs::set_permissions(home.join(name), std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
+            }
+            let old_run_id = "0".repeat(32);
+            crate::host_boot::stage(&agent, "10.200.0.1", &old_run_id)
+                .await
+                .unwrap();
+            assert_eq!(
+                std::fs::read(&sudo).unwrap(),
+                std::fs::read(&sudo_source).unwrap()
+            );
+            let info = std::fs::metadata(&sudo).unwrap();
+            assert_eq!(info.uid(), unsafe { libc::geteuid() });
+            assert_eq!(info.gid(), std::fs::metadata(&share).unwrap().gid());
+            assert_eq!(info.permissions().mode() & 0o7777, 0o555);
+            use std::io::Read;
+            let mut previous_bytes = String::new();
+            previous_sudo.read_to_string(&mut previous_bytes).unwrap();
+            assert_eq!(previous_bytes, "previous guest sudo\n");
+            assert_eq!(
+                previous_sudo.metadata().unwrap().permissions().mode() & 0o7777,
+                0o555
+            );
+            let mut holder = tokio::process::Command::new("/bin/sleep")
+                .arg("30")
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let holder_pid = holder.id().unwrap();
+            let holder_token = process_token(i64::from(holder_pid)).unwrap();
+            holder.kill().await.unwrap();
+            holder.wait().await.unwrap();
+            let stopped = json!({"name":agent.name,"agent_id":agent.id,"run_id":old_run_id,
+                "ip":"10.200.0.1","state":"stopped","holder_pid":holder_pid,"holder_token":holder_token});
+            crate::host_runs::save(&agent.name, &stopped).unwrap();
+            let context = std::fs::read(share.join("host-launch-context.json")).unwrap();
+            let identities = [".safeyolo-command", ".safeyolo-interactive-command"].map(|name| {
+                crate::guest_commands::payload_identity(&home.join(format!("{name}.payload")))
+                    .unwrap()
+            });
+            // A real write failure late in host staging must not select a new
+            // generation or disturb the stopped run's wrapped commands.
+            std::fs::remove_file(share.join("network.env")).unwrap();
+            std::fs::create_dir(share.join("network.env")).unwrap();
+            let error = start(&agent, "sandbox-start", None, None, false)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(libc::EISDIR)
+            );
+            assert_eq!(
+                std::fs::read(share.join("host-launch-context.json")).unwrap(),
+                context
+            );
+            assert_eq!(crate::host_runs::read(&agent.name).unwrap(), Some(stopped));
+            assert_eq!(runtime(&agent).await.unwrap()["runtime_state"], "stopped");
+            assert!(!root.join("namespace-attempted").exists());
+            assert!(directory.join("last-start-failure.json").is_file());
+            for (name, identity) in [".safeyolo-command", ".safeyolo-interactive-command"]
+                .iter()
+                .zip(&identities)
+            {
+                assert_eq!(
+                    std::fs::read(home.join(name)).unwrap(),
+                    crate::guest_commands::WRAPPER
+                );
+                assert_eq!(
+                    &crate::guest_commands::payload_identity(&home.join(format!("{name}.payload")))
+                        .unwrap(),
+                    identity
+                );
+            }
+            std::fs::remove_dir(share.join("network.env")).unwrap();
             let error = start(&agent, "sandbox-start", None, None, false)
                 .await
                 .unwrap_err()
@@ -2931,6 +3028,13 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(first_context["agent_id"], agent.id);
+            assert_ne!(first_context["generation"], old_run_id);
+            for (name, identity) in [".safeyolo-command", ".safeyolo-interactive-command"]
+                .iter()
+                .zip(&identities)
+            {
+                assert_eq!(&first_context["command_payloads"][name], identity);
+            }
             script("setfacl", "#!/bin/sh\nexit 0\n");
             let retry = start(&agent, "sandbox-start", None, None, false)
                 .await
