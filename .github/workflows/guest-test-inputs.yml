@@ -262,12 +262,12 @@ jobs:
         run: |
           df -Pk "$RUNNER_TEMP"
           test "$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')" -ge 10485760
-          sudo -n apt-get update -qq
+          sudo -n apt-get -o Acquire::Retries=3 update -qq
           case "$(uname -m)" in
             aarch64) cross_compiler_package=crossbuild-essential-amd64 ;;
             x86_64) cross_compiler_package=crossbuild-essential-arm64 ;;
           esac
-          sudo -n apt-get install -y -qq --no-install-recommends tmux \
+          sudo -n apt-get -o Acquire::Retries=3 install -y -qq --no-install-recommends tmux \
             "$cross_compiler_package" clang libbpf-dev
 
       - name: Prepare the complete patched gVisor runtime
