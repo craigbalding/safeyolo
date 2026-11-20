@@ -281,10 +281,24 @@ fn destination(policy: &Policy, agent: &str, subject: &Subject) -> Result<Option
     let Subject::Destination { hostname } = subject else {
         return Ok(None);
     };
+    let crate::policy::checks::Subject::Hostname { hostname } =
+        (crate::policy::checks::Subject::Hostname {
+            hostname: hostname.clone(),
+        })
+        .normalized()?
+    else {
+        return Ok(None);
+    };
+    if policy.native_controls().is_some_and(|controls| {
+        !controls.network.enabled
+            || matches!(controls.network.action, crate::policy::native::Action::Warn)
+    }) {
+        return Ok(Some(true));
+    }
     let decision = policy.evaluate(
         crate::policy::NetworkRequest {
             agent: Some(agent),
-            host: hostname,
+            host: &hostname,
             port: Some(443),
             method: "GET",
             path: "/",
@@ -909,6 +923,26 @@ pub(super) fn status(root: &Path) -> Result<Value, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn destination_uses_canonical_dns_and_the_effective_network_control() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("policy.toml");
+        let source = "[hosts.'*']\negress='allow'\n[hosts.'blocked.test']\negress='deny'\n";
+        fs::write(&path, source).unwrap();
+        let subject = Subject::Destination {
+            hostname: "BLOCKED.TEST.".into(),
+        };
+        let policy = Policy::from_native_path(&path).unwrap();
+        assert_eq!(
+            destination(&policy, "alice", &subject).unwrap(),
+            Some(false)
+        );
+        for control in ["enabled=false", "action='warn'"] {
+            fs::write(&path, format!("{source}\n[controls.network]\n{control}\n")).unwrap();
+            let policy = Policy::from_native_path(&path).unwrap();
+            assert_eq!(destination(&policy, "alice", &subject).unwrap(), Some(true));
+        }
+    }
     #[test]
     fn debian_ordering_keeps_epoch_revision_backports_and_tilde() {
         for (old, new) in [
