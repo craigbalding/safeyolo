@@ -822,6 +822,10 @@ fn membership_scope_defaults_and_proposal_inputs_do_not_confer_authority() {
 #[test]
 fn one_package_binds_native_gateway_material_and_target_scope() {
     let target = fixture_target();
+    assert_eq!(
+        revision(&target.package),
+        "55ecff2a1f54ce2d19cc1c3d98c1af821fcd02aa47362f2a12d10498225a2928"
+    );
     let projections = target.package.projections().unwrap();
     target.package.verify_projections(&projections).unwrap();
     let service = ServiceDefinition::from_value(projections.gateway["restart"].clone()).unwrap();

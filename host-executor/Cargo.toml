@@ -1,0 +1,19 @@
+[package]
+name = "safeyolo-host-executor"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+publish = false
+license-file = "../LICENSE"
+
+[dependencies]
+base64 = "0.23"
+ring = "0.17"
+schemars = "1.2.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "raw_value"] }
+zeroize = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+rusqlite = { version = "=0.41.0", default-features = false, features = ["bundled"] }

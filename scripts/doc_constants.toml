@@ -10,7 +10,7 @@
 
 [[assertion]]
 name = "host-execution-protocol-version"
-source = "proxy/src/host_execution.rs"
+source = "host-executor/src/lib.rs"
 pattern = 'VERSION: &str = "(?P<version>[^"]+)"'
 docs = ["docs/host-execution-contract.md"]
 must_contain = "`{version}`"

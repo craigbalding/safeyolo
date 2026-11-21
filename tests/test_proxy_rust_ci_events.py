@@ -18,6 +18,9 @@ from scripts import diagnose_ci_apt
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "proxy-rust.yml"
 
 
+MAC_TEST_CONFIG = "${{ matrix.os == 'macos-latest' && '--config profile.release.package.safeyolo-proxy.opt-level=1' || '' }}"
+
+
 def rust_workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
@@ -238,7 +241,7 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     # it does not turn each intermediate PR's focused check into a load probe.
     assert "repeated_service_oauth_activity_runs_concurrently" not in runs
     full_runs = "\n".join(step.get("run", "") for step in rust_workflow()["jobs"]["contracts"]["steps"])
-    assert "cargo_with_space.sh test --release --locked" in full_runs
+    assert f"cargo_with_space.sh {MAC_TEST_CONFIG} test --release --locked" in full_runs
     assert not any("tests/proxy_contracts --proxy-backend rust" in step.get("run", "") for step in job["steps"])
 
 
@@ -598,8 +601,8 @@ def test_full_matrix_uses_only_the_native_proxy() -> None:
     rendered = str(steps)
     assert "--proxy-backend python" not in rendered
     native_tests = named["Test the Rust proxy"]["run"].splitlines()
-    assert "../scripts/cargo_with_space.sh test --release --locked" in native_tests
-    assert "../scripts/cargo_with_space.sh test --release --locked --test native_signals -- --ignored" in native_tests
+    assert f"../scripts/cargo_with_space.sh {MAC_TEST_CONFIG} test --release --locked" in native_tests
+    assert f"../scripts/cargo_with_space.sh {MAC_TEST_CONFIG} test --release --locked --test native_signals -- --ignored" in native_tests
     assert "test --release --locked -- --ignored" not in rendered
     assert "git fetch --no-tags --depth=1 origin" not in rendered
     assert "SAFEYOLO_PYTHON_SOURCE" not in rendered
@@ -613,19 +616,19 @@ def test_overnight_compilation_prepares_shared_outputs_then_keeps_all_release_ta
     integration = steps["Compile Rust agent API and native contract targets"]
     complete = steps["Compile Rust contract executables"]
     assert library["run"] == (
-        "../scripts/cargo_with_space.sh test --release --locked "
+        f"../scripts/cargo_with_space.sh {MAC_TEST_CONFIG} test --release --locked "
         "--lib --no-run --timings --verbose"
     )
     assert binaries["run"] == (
-        "../scripts/cargo_with_space.sh test --release --locked "
+        f"../scripts/cargo_with_space.sh {MAC_TEST_CONFIG} test --release --locked "
         "--bins --test version --no-run --timings --verbose"
     )
     assert integration["run"] == (
-        "../scripts/cargo_with_space.sh test --release --locked "
+        f"../scripts/cargo_with_space.sh {MAC_TEST_CONFIG} test --release --locked "
         "--test 'agent_api*' --test 'native*' --no-run --timings --verbose"
     )
     assert complete["run"] == (
-        "../scripts/cargo_with_space.sh test --release --locked --no-run --timings --verbose"
+        f"../scripts/cargo_with_space.sh {MAC_TEST_CONFIG} test --release --locked --no-run --timings --verbose"
     )
     for step in (library, binaries, integration, complete):
         assert step["working-directory"] == "proxy"
@@ -633,6 +636,14 @@ def test_overnight_compilation_prepares_shared_outputs_then_keeps_all_release_ta
         assert step["env"] == {"SAFEYOLO_PYTHON": "${{ github.workspace }}/.venv/bin/python"}
         assert "if" not in step
         assert not step.get("continue-on-error")
+    execution = steps["Test the Rust proxy"]["run"]
+    test_calls = [line.strip() for line in execution.splitlines()
+                  if "cargo_with_space.sh" in line and " test " in line]
+    assert len(test_calls) == 6
+    assert all(line.count(MAC_TEST_CONFIG) == 1 for line in test_calls)
+    production = steps["Compile production native executables"]["run"]
+    assert "--config" not in production
+    assert execution.splitlines()[-1] == "../scripts/cargo_with_space.sh build --release --locked --bins"
     ordered = [steps[name] for name in (
         "Compile production native executables", "Compile Rust library contract target",
         "Compile Rust binary contract targets",
@@ -648,7 +659,7 @@ def test_overnight_compilation_prepares_shared_outputs_then_keeps_all_release_ta
     assert timings["with"]["path"] == "proxy/target/cargo-timings/*.html"
     assert timings["with"]["if-no-files-found"] == "ignore"
     execution = steps["Test the Rust proxy"]["run"]
-    assert "../scripts/cargo_with_space.sh test --release --locked\n" in execution
+    assert f"../scripts/cargo_with_space.sh {MAC_TEST_CONFIG} test --release --locked\n" in execution
     assert "inventory::native_inventory_uses_current_grants_and_fixture_provider_evidence_across_restart -- --exact --ignored" in execution
     assert "../scripts/cargo_with_space.sh build --release --locked --bins" in execution
 

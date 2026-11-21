@@ -2662,6 +2662,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "safeyolo-host-executor"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "libc",
+ "ring",
+ "rusqlite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "zeroize",
+]
+
+[[package]]
 name = "safeyolo-proxy"
 version = "0.1.0"
 dependencies = [
@@ -2696,6 +2710,7 @@ dependencies = [
  "rustls",
  "rustls-native-certs",
  "rustyline",
+ "safeyolo-host-executor",
  "schemars",
  "serde",
  "serde_json",

@@ -633,7 +633,7 @@ jobs:
         working-directory: proxy
         env:
           SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
-        run: ../scripts/cargo_with_space.sh test --release --locked --lib --no-run --timings --verbose
+        run: ../scripts/cargo_with_space.sh ${{ matrix.os == 'macos-latest' && '--config profile.release.package.safeyolo-proxy.opt-level=1' || '' }} test --release --locked --lib --no-run --timings --verbose
 
       - name: Compile Rust binary contract targets
         # Reuse the library output. The version target prepares CARGO_BIN_EXE.
@@ -641,7 +641,7 @@ jobs:
         working-directory: proxy
         env:
           SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
-        run: ../scripts/cargo_with_space.sh test --release --locked --bins --test version --no-run --timings --verbose
+        run: ../scripts/cargo_with_space.sh ${{ matrix.os == 'macos-latest' && '--config profile.release.package.safeyolo-proxy.opt-level=1' || '' }} test --release --locked --bins --test version --no-run --timings --verbose
 
       - name: Compile Rust agent API and native contract targets
         # These integration targets took over ten minutes in the Mac timeout.
@@ -650,7 +650,7 @@ jobs:
         working-directory: proxy
         env:
           SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
-        run: ../scripts/cargo_with_space.sh test --release --locked --test 'agent_api*' --test 'native*' --no-run --timings --verbose
+        run: ../scripts/cargo_with_space.sh ${{ matrix.os == 'macos-latest' && '--config profile.release.package.safeyolo-proxy.opt-level=1' || '' }} test --release --locked --test 'agent_api*' --test 'native*' --no-run --timings --verbose
 
       - name: Compile Rust contract executables
         # Keep the complete default target selection, including examples.
@@ -659,7 +659,7 @@ jobs:
         working-directory: proxy
         env:
           SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
-        run: ../scripts/cargo_with_space.sh test --release --locked --no-run --timings --verbose
+        run: ../scripts/cargo_with_space.sh ${{ matrix.os == 'macos-latest' && '--config profile.release.package.safeyolo-proxy.opt-level=1' || '' }} test --release --locked --no-run --timings --verbose
 
       - name: Retain Rust compilation timings
         if: always()
@@ -724,12 +724,12 @@ jobs:
         run: |
           export SAFEYOLO_PROXY_COORD_DATA_DIR="$RUNNER_TEMP/safeyolo-coord-fixture/data/coord"
           export SAFEYOLO_PROXY_NATS_TEST_INSTANCE=proxy-rust-fixture
-          ../scripts/cargo_with_space.sh test --release --locked
-          ../scripts/cargo_with_space.sh test --release --locked --lib operator_events::tests -- --include-ignored
-          ../scripts/cargo_with_space.sh test --release --locked --test operator_controls -- --include-ignored
-          ../scripts/cargo_with_space.sh test --release --locked --test native_coord signals::native_ -- --include-ignored
-          ../scripts/cargo_with_space.sh test --release --locked --test native_signals -- --ignored
-          ../scripts/cargo_with_space.sh test --release --locked --test native_coord \
+          ../scripts/cargo_with_space.sh ${{ matrix.os == 'macos-latest' && '--config profile.release.package.safeyolo-proxy.opt-level=1' || '' }} test --release --locked
+          ../scripts/cargo_with_space.sh ${{ matrix.os == 'macos-latest' && '--config profile.release.package.safeyolo-proxy.opt-level=1' || '' }} test --release --locked --lib operator_events::tests -- --include-ignored
+          ../scripts/cargo_with_space.sh ${{ matrix.os == 'macos-latest' && '--config profile.release.package.safeyolo-proxy.opt-level=1' || '' }} test --release --locked --test operator_controls -- --include-ignored
+          ../scripts/cargo_with_space.sh ${{ matrix.os == 'macos-latest' && '--config profile.release.package.safeyolo-proxy.opt-level=1' || '' }} test --release --locked --test native_coord signals::native_ -- --include-ignored
+          ../scripts/cargo_with_space.sh ${{ matrix.os == 'macos-latest' && '--config profile.release.package.safeyolo-proxy.opt-level=1' || '' }} test --release --locked --test native_signals -- --ignored
+          ../scripts/cargo_with_space.sh ${{ matrix.os == 'macos-latest' && '--config profile.release.package.safeyolo-proxy.opt-level=1' || '' }} test --release --locked --test native_coord \
             inventory::native_inventory_uses_current_grants_and_fixture_provider_evidence_across_restart -- --exact --ignored
           # Tests can select binaries linked with dev-dependency features.
           # Restore the normal production outputs for the component consumers.
