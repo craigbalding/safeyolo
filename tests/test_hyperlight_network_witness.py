@@ -163,8 +163,9 @@ def test_redirect_clients_actually_follow_one_location(witness, tmp_path, monkey
 
 
 def test_redirect_origin_serves_the_target_without_another_redirect(witness, tmp_path):
-    with witness.ThreadingHTTPServer(("127.0.0.1", 0), witness.NetworkOrigin) as origin:
+    with witness.RedirectOrigin(("127.0.0.1", 0), witness.NetworkOrigin) as origin:
         origin.contacts, origin.contacts_path = [], tmp_path / "contacts.json"
+        origin.connections, origin.observation_path = [], tmp_path / "connections.json"
         origin.redirect, origin.held, origin.redirect_target = True, None, "/redirected/engine"
         origin.redirect_location = f"http://localhost:{origin.server_port}{origin.redirect_target}"
         thread = threading.Thread(target=origin.serve_forever)
@@ -186,6 +187,7 @@ def test_redirect_origin_serves_the_target_without_another_redirect(witness, tmp
             thread.join(5)
             assert not thread.is_alive()
     assert origin.contacts == [{"path": "/engine"}, {"path": "/redirected/engine"}]
+    assert origin.connections == [{"phase": "accepted"}, {"phase": "accepted"}]
 
 
 @pytest.mark.parametrize("defect", [None, "no_second_request", "allowed_second_request", "wrong_run", "wrong_gate", "wrong_host"])
@@ -214,10 +216,10 @@ def test_redirect_refusal_requires_the_second_exact_run_proxy_observation(witnes
         witness.check_redirect_audit(rows, results, 12345)
 
 
-@pytest.mark.parametrize("defect", [None, "no_follow", "target_contact", "wrong_engine"])
+@pytest.mark.parametrize("defect", [None, "no_follow", "target_contact", "denied_tcp_connection", "wrong_engine"])
 def test_redirect_witness_pairs_permitted_follows_with_contact_free_target_refusal(witness, partial, tmp_path, defect):
     contacts = []
-    origin = SimpleNamespace(redirect=False)
+    origin = SimpleNamespace(redirect=False, connections=[])
     original = {"hosts": {}, "agents": {}}
 
     class Instance:
@@ -236,8 +238,12 @@ def test_redirect_witness_pairs_permitted_follows_with_contact_free_target_refus
         def result(self):
             allowed = len(self.policy["permissions"]) == 3
             contacts.append({"path": "/hyperlight-unikraft"})
+            origin.connections.append({"phase": "accepted"})
             if defect == "target_contact" or allowed and defect != "no_follow":
                 contacts.append({"path": "/redirected/hyperlight-unikraft"})
+                origin.connections.append({"phase": "accepted"})
+            elif not allowed and defect == "denied_tcp_connection":
+                origin.connections.append({"phase": "accepted"})
             result = copy.deepcopy(partial["direct_allowed" if allowed else "direct_after_permission_removal"])
             result["engine"] = "wrong" if defect == "wrong_engine" else "hyperlight-unikraft"
             return result

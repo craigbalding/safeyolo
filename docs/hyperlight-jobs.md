@@ -316,8 +316,9 @@ For that observation, `--redirect` selects a separate one-hop HTTP follow on
 gVisor, VZ or Unikraft. The guest client first follows permitted path and
 destination targets. The same adopted job then runs with only target access
 removed. The witness requires a proxy-observed 403 under each denied run's
-gate identity and no target contact. This mode runs eight jobs and expects
-twelve origin requests if all controls pass. It reuses the prepared runtime;
+gate identity and no target contact, including TCP connections without HTTP.
+This mode runs eight jobs and expects twelve origin requests and twelve TCP
+connections if all controls pass. It reuses the prepared runtime;
 Unikraft receives a pinned diagnostic Python checker using `safeyolo_proxy`.
 Core's installed `NetworkCheck` does not follow redirects and cannot supply
 this observation. A prepared mode is not evidence of an installed pass.

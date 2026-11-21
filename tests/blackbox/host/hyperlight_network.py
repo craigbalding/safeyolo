@@ -119,6 +119,17 @@ class TlsOrigin(ThreadingHTTPServer):
         return tls, address
 
 
+class RedirectOrigin(ThreadingHTTPServer):
+    """Count accepted TCP connections, including peers that send no HTTP."""
+
+    def get_request(self):
+        stream, address = super().get_request()
+        stream.settimeout(8)
+        self.connections.append({"phase": "accepted"})
+        save(self.observation_path, self.connections)
+        return stream, address
+
+
 class HeldResponse:
     """Observe upstream EOF before attempting a deliberately late response."""
 
@@ -597,17 +608,18 @@ def redirect_cases(instance, engine, contacts, origin):
                 instance.policy["permissions"] = permissions + [
                     {"action": "network:request", "resource": "*", "effect": "deny"}]
                 instance.apply()
-                count = len(contacts)
+                count, before_connections = len(contacts), len(origin.connections)
                 direct = instance.run_job(engine, {"subject": subject, "inputs": {}})
                 status, named = instance.invoke(engine, {"subject": subject})
                 case = {"direct": direct, "named_status": status, "named": named,
-                        "new_contacts": contacts[count:]}
+                        "new_contacts": contacts[count:], "new_connections": origin.connections[before_connections:]}
                 results[label]["allowed" if allowed else "denied"] = case
                 save(instance.scratch / f"{engine}-redirect.json", results)
                 check_direct(direct, allowed, expected_engine=engine)
                 check_named(status, named, allowed, expected_engine=engine)
                 expected = [initial, target, initial, target] if allowed else [initial, initial]
                 assert [row["path"] for row in contacts[count:]] == expected, case
+                assert len(origin.connections) == before_connections + len(expected), case
     finally:
         origin.redirect = False
         if hasattr(origin, "redirect_location"):
@@ -830,10 +842,10 @@ def exercise(args):
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(args.root / "certs/upstream.pem", args.root / "certs/upstream.key")
 
-    server = TlsOrigin if args.tls else ThreadingHTTPServer
+    server = TlsOrigin if args.tls else RedirectOrigin if args.redirect else ThreadingHTTPServer
     with server(("127.0.0.1", args.upstream_port), NetworkOrigin) as origin:
         origin.context, origin.connections, origin.held, origin.redirect = context, connections, None, False
-        origin.observation_path = args.scratch / "origin-tls.json"
+        origin.observation_path = args.scratch / ("origin-tcp.json" if args.redirect else "origin-tls.json")
         origin.contacts, origin.contacts_path = contacts, args.scratch / "origin-contacts.json"
         thread = threading.Thread(target=origin.serve_forever)
         thread.start()
@@ -844,7 +856,8 @@ def exercise(args):
                       "mode": ("redirect" if args.redirect else "scope" if args.scope else "caller" if args.caller_only else
                                "lifetimes" if args.lifetimes_only else "authority" if args.authority
                                else "https-inspected" if args.tls else "http"),
-                      "tls_connections": connections,
+                      "tls_connections": connections if args.tls else [],
+                      "redirect_tcp_connections": connections if args.redirect else [],
                       "runtime_manifest_sha256": digest(args.bundle / "runtime.json") if args.bundle else None,
                       "cli_sha256": digest(args.cli), "proxy_sha256": digest(args.proxy)}
             save(args.scratch / "result.json", report)
@@ -867,7 +880,7 @@ def exercise(args):
             thread.join(timeout=10)
             assert not thread.is_alive()
             save(args.scratch / "origin-contacts.json", contacts)
-            save(args.scratch / "origin-tls.json", connections)
+            save(origin.observation_path, connections)
     check_shutdown(args, results)
     if args.redirect or args.scope or args.caller_only:
         print("PASS: " + ("guest-followed redirects, allowed controls, target scope removal and exact-run proxy refusals" if args.redirect else
