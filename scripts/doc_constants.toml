@@ -9,6 +9,13 @@
 # phrases over generic ones ("2048 MiB" beats "MiB").
 
 [[assertion]]
+name = "host-execution-protocol-version"
+source = "proxy/src/host_execution.rs"
+pattern = 'VERSION: &str = "(?P<version>[^"]+)"'
+docs = ["docs/host-execution-contract.md"]
+must_contain = "`{version}`"
+
+[[assertion]]
 name = "hyperlight-guest-abi"
 source = "jobs/hyperlight-guest/Cargo.toml"
 pattern = 'hyperlight-guest-bin = "=(?P<version>[0-9.]+)"'
