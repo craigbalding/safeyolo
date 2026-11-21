@@ -268,6 +268,47 @@ def test_configuration_copy_without_timestamp_permission(guest, tmp_path, monkey
     assert "synthetic copy failure" in saved(state)["capture_error"]
 
 
+@pytest.mark.parametrize("change", ["contents", "mode", "link_target"])
+def test_configuration_change_after_copy_does_not_complete_capture(guest, tmp_path, monkeypatch, change):
+    import sys
+
+    root, state, command = guest
+    config = root / "etc/concurrent-setting"
+    if change == "link_target":
+        config.symlink_to("fixture.conf")
+        mutation = "p.unlink(); p.symlink_to('different.conf')"
+    else:
+        config.write_text("before copy\n")
+        config.chmod(0o644)
+        mutation = "p.write_text('after copy\\n')" if change == "contents" else "p.chmod(0o600)"
+    before = saved(state)
+    tools = tmp_path / "copy-tools"
+    tools.mkdir()
+    copier = tools / "cp"
+    # Change the live input only after a successful copy. The mirror alone
+    # still matches the opening snapshot, so capture must recheck the source.
+    copier.write_text(
+        '#!/bin/sh\n' + shlex.quote(shutil.which("cp")) + ' "$@" || exit "$?"\n'
+        + 'if [ "$3" = ' + shlex.quote(str(config)) + ' ]; then\n'
+        + shlex.join([sys.executable, "-c", f"from pathlib import Path; p = Path({str(config)!r}); {mutation}"])
+        + '\nfi\n'
+    )
+    copier.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ["PATH"])
+    result = run(*command, "capture", check=False)
+    if change == "contents":
+        assert config.read_text() == "after copy\n"
+    elif change == "mode":
+        assert config.stat().st_mode & 0o7777 == 0o600
+    else:
+        assert config.readlink() == Path("different.conf")
+    assert result.returncode
+    record = saved(state)
+    assert "configuration changed during capture" in record["capture_error"]
+    assert record["last_completed_capture"] == before["last_completed_capture"]
+    assert record["configuration_commit"] == before["configuration_commit"]
+
+
 def test_interrupted_dpkg_and_capture_failure_remain_visible(guest, tmp_path):
     import signal
     import socket

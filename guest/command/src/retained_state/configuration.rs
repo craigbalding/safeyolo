@@ -149,6 +149,31 @@ pub(super) fn inventory(root: &Path, paths: &[String]) -> Result<Value, Error> {
     Ok(Value::Object(files))
 }
 
+fn mirror_entry_matches(copied: &Value, recorded: &Value) -> bool {
+    if copied["kind"] == "symlink" && recorded["kind"] == "symlink" {
+        // Linux cannot chmod a symlink. Persistent filesystems may report a
+        // different link mode from the live root; retain the live mode in the
+        // record and check every other field of the copy.
+        let mut copied = copied.clone();
+        copied["mode"] = recorded["mode"].clone();
+        copied == *recorded
+    } else {
+        copied == recorded
+    }
+}
+
+fn mirror_matches_record(copied: &Value, recorded: &Value) -> bool {
+    let (Some(copied), Some(recorded)) = (copied.as_object(), recorded.as_object()) else {
+        return false;
+    };
+    copied.len() == recorded.len()
+        && recorded.iter().all(|(path, state)| {
+            copied
+                .get(path)
+                .is_some_and(|copy| mirror_entry_matches(copy, state))
+        })
+}
+
 struct AccountNames {
     users: Map<String, Value>,
     groups: Map<String, Value>,
@@ -298,7 +323,10 @@ fn completed_mirror(store: &GuestState, value: &Value) -> Result<(), Error> {
             recorded_paths.push(path.clone());
         }
     }
-    if inventory(&mirror, &recorded_paths)? != value["configuration"] {
+    if !mirror_matches_record(
+        &inventory(&mirror, &recorded_paths)?,
+        &value["configuration"],
+    ) {
         return Err("completed configuration history does not match the retained record".into());
     }
     Ok(())
@@ -368,7 +396,10 @@ pub(super) fn capture(store: &GuestState, value: &mut Value) -> Result<(), Error
         }
     }
     for (path, state) in current {
-        if previous.get(path) != Some(state) || !mirror.join(path.trim_start_matches('/')).exists()
+        if !previous
+            .get(path)
+            .is_some_and(|copy| mirror_entry_matches(copy, state))
+            || !mirror.join(path.trim_start_matches('/')).exists()
         {
             copy_file(
                 &store.actual(path),
@@ -377,7 +408,9 @@ pub(super) fn capture(store: &GuestState, value: &mut Value) -> Result<(), Error
             )?;
         }
     }
-    if inventory(&mirror, &paths)? != files {
+    if !mirror_matches_record(&inventory(&mirror, &paths)?, &files)
+        || inventory(&store.root, &paths)? != files
+    {
         return Err("configuration changed during capture; retry after writes settle".into());
     }
     commit_history(&mirror)?;
@@ -576,6 +609,43 @@ pub(super) fn restore(store: &GuestState, value: &mut Value, apply: bool) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mirror_symlink_mode_does_not_hide_other_changes() {
+        let recorded = json!({
+            "/etc/link": {"kind":"symlink","target":"private","mode":0o777,"uid":0,"gid":0},
+            "/etc/private": {"kind":"file","hash":"original","mode":0o600,"uid":0,"gid":0},
+            "/etc": {"kind":"directory","mode":0o700,"uid":0,"gid":0}
+        });
+        let mut copied = recorded.clone();
+        copied["/etc/link"]["mode"] = json!(0o755);
+        assert!(mirror_matches_record(&copied, &recorded));
+        assert_eq!(recorded["/etc/link"]["mode"], json!(0o777));
+        for (path, field, changed) in [
+            ("/etc/link", "target", json!("different")),
+            ("/etc/link", "uid", json!(1)),
+            ("/etc/link", "gid", json!(1)),
+            ("/etc/link", "kind", json!("file")),
+            ("/etc/private", "hash", json!("changed")),
+            ("/etc/private", "mode", json!(0o644)),
+            ("/etc/private", "uid", json!(1)),
+            ("/etc/private", "gid", json!(1)),
+            ("/etc", "mode", json!(0o755)),
+        ] {
+            let mut changed_copy = copied.clone();
+            changed_copy[path][field] = changed;
+            assert!(
+                !mirror_matches_record(&changed_copy, &recorded),
+                "{path} {field}"
+            );
+        }
+        let mut missing = copied.clone();
+        missing.as_object_mut().unwrap().remove("/etc/link");
+        assert!(!mirror_matches_record(&missing, &recorded));
+        copied["/etc/extra"] = json!({"kind":"file"});
+        assert!(!mirror_matches_record(&copied, &recorded));
+    }
+
     #[test]
     fn three_way_restore_preserves_new_defaults_and_exposes_conflicts() {
         let temporary = tempfile::tempdir().unwrap();
