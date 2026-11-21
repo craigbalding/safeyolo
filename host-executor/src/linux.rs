@@ -1,6 +1,6 @@
 //! Linux execution with a private cgroup and bubblewrap namespaces. This path
-//! currently supports read-only, disconnected operations under the executor's
-//! identity. Other required scopes are refused before admission or probing.
+//! supports read-only, disconnected operations under the executor's identity.
+//! Only the pinned native service client receives its fixed manager channel.
 use crate::*;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -9,7 +9,7 @@ use std::{
     os::{
         fd::{AsRawFd, FromRawFd},
         unix::{
-            fs::{MetadataExt, OpenOptionsExt},
+            fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
             process::{CommandExt, ExitStatusExt},
         },
     },
@@ -200,8 +200,9 @@ impl LinuxRuntime {
         protected: &[PathBuf],
     ) -> Result<(), Refusal> {
         let execution = &operation.execution;
+        let service = crate::unix_services::validate(operation)?;
         require(
-            execution.broader.is_empty(),
+            service || execution.broader.is_empty(),
             RefusalCode::Unavailable,
             "this Linux profile enforces required read-only/disconnected bounds; broader profiles are not silently substituted",
         )?;
@@ -238,14 +239,36 @@ impl LinuxRuntime {
         require(
             execution.filesystem.write.is_empty()
                 && execution.network.destinations.is_empty()
-                && execution.network.ipc.is_empty()
-                && execution.delegated_services.is_empty(),
+                && (service || execution.network.ipc.is_empty())
+                && (service || execution.delegated_services.is_empty()),
             RefusalCode::Unavailable,
-            "this backend does not enforce writable storage, selected network/IPC or delegated service scopes",
+            "writable storage and direct network/IPC are unavailable; the service channel requires the fixed native OS client profile",
         )?;
         let mut protected = protected.to_vec();
         protected.push(self.cgroup.clone());
         let mounts = mounts()?;
+        for endpoint in &execution.network.ipc {
+            let IpcEndpoint::UnixSocket { path } = endpoint else {
+                return Err(unavailable(
+                    "Linux service control needs its native Unix socket",
+                ));
+            };
+            let path = Path::new(path);
+            require(
+                absolute(path)
+                    && path.canonicalize().map_err(unavailable)? == path
+                    && fs::symlink_metadata(path)
+                        .map_err(unavailable)?
+                        .file_type()
+                        .is_socket()
+                    && !protected
+                        .iter()
+                        .any(|p| path.starts_with(p) || p.starts_with(path)),
+                RefusalCode::Unavailable,
+                "service channel must be a canonical socket outside executor state",
+            )?;
+            validate_read_mounts(path, &protected, &mounts)?;
+        }
         for path in &execution.filesystem.read {
             let path = Path::new(path);
             require(
@@ -350,7 +373,8 @@ impl LinuxRuntime {
             &self.bubblewrap_sha256,
             self.executable_bytes,
         )?;
-        let seccomp = no_sockets()?;
+        let service = crate::unix_services::validate(operation)?;
+        let seccomp = socket_filter(service)?;
         let command = operation.command(&receipt.prepared.invocation.arguments)?;
         let mut native = ProcessCommand::new(format!("/proc/self/fd/{}", helper.as_raw_fd()));
         native
@@ -360,7 +384,6 @@ impl LinuxRuntime {
             .stderr(Stdio::piped());
         native.args([
             "--unshare-user",
-            "--unshare-pid",
             "--unshare-net",
             "--unshare-ipc",
             "--unshare-uts",
@@ -372,6 +395,9 @@ impl LinuxRuntime {
             "ALL",
             "--clearenv",
         ]);
+        if !service {
+            native.arg("--unshare-pid");
+        }
         native.args([
             "--uid",
             &operation.execution.identity.principal,
@@ -381,6 +407,27 @@ impl LinuxRuntime {
         let mut reads = Vec::new();
         for path in &operation.execution.filesystem.read {
             let file = File::open(path).map_err(unavailable)?;
+            native.args(["--ro-bind-fd", &file.as_raw_fd().to_string(), path]);
+            reads.push(file);
+        }
+        for endpoint in &operation.execution.network.ipc {
+            let IpcEndpoint::UnixSocket { path } = endpoint else {
+                return Err(unavailable("unsupported Linux service socket"));
+            };
+            // O_PATH pins a Unix socket without connecting or running a probe.
+            let file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(path)
+                .map_err(unavailable)?;
+            require(
+                file.metadata()
+                    .map_err(unavailable)?
+                    .file_type()
+                    .is_socket(),
+                RefusalCode::Unavailable,
+                "service endpoint changed before launch",
+            )?;
             native.args(["--ro-bind-fd", &file.as_raw_fd().to_string(), path]);
             reads.push(file);
         }
@@ -568,7 +615,7 @@ impl LinuxRuntime {
                     .map_err(|_| unavailable("output reader failed"))?;
             }
         }
-        let result = NativeObservation {
+        let mut result = NativeObservation {
             backend: "linux-bubblewrap-cgroup-v2".into(),
             enforcement: vec!["read-only opened filesystem mounts; sealed executable snapshot".into(), "separate user/PID/network/IPC/UTS namespaces; no sockets or nested namespaces".into(), "cgroup memory.max, memory.swap.max=0 and pids.max include runtime overhead".into(), "bounded retained merged output, deadline and descendant termination".into()],
             dependencies: vec![format!("host UID {} and supplementary host GIDs {:?}; the user namespace maps the primary GID, while supplementary GIDs are retained for host ACL checks and appear as the kernel overflow GID inside it", operation.execution.identity.principal, operation.execution.identity.groups), "pinned bubblewrap; kernel user namespaces, seccomp and delegated cgroup v2".into(), "adopted read paths include mutable host-owned runtime dependencies; their content is not pinned".into()],
@@ -576,6 +623,11 @@ impl LinuxRuntime {
             processes_stopped: quiescent, output_truncated: truncated || output_open,
             termination_reason: reason.into(),
         };
+        if service {
+            result.enforcement[1] = "separate user/network/IPC/UTS namespaces; only AF_UNIX sockets and the fixed systemd user channel; host process signalling and cross-process memory/FD access are denied".into();
+            result.dependencies.push("EXPLICIT BROADER PROCESS VISIBILITY: the trusted OS client shares the host PID namespace so the service owner has a visible peer PID for SO_PEERCRED authentication. Host /proc is not mounted. The cgroup still bounds and terminates the helper and its descendants".into());
+            result.dependencies.push(crate::unix_services::disclosure());
+        }
         if quiescent {
             fs::remove_dir(&group.path).map_err(unavailable)?;
         }
@@ -729,7 +781,7 @@ impl Drop for JobCgroup {
     }
 }
 
-fn no_sockets() -> Result<File, Refusal> {
+fn socket_filter(service: bool) -> Result<File, Refusal> {
     #[cfg(target_arch = "x86_64")]
     const ARCH: u32 = 0xc000003e;
     #[cfg(target_arch = "aarch64")]
@@ -763,11 +815,47 @@ fn no_sockets() -> Result<File, Refusal> {
         },
         stmt(0x06, 0x00050000 | libc::EPERM as u32),
     ];
+    for syscall in [libc::SYS_socket, libc::SYS_socketpair] {
+        if service {
+            filter.extend([
+                jump(syscall as u32, 0, 4),
+                stmt(0x20, 16),
+                jump(libc::AF_UNIX as u32, 1, 0),
+                stmt(0x06, 0x00050000 | libc::EPERM as u32),
+                stmt(0x20, 0),
+            ]);
+        } else {
+            filter.extend([
+                jump(syscall as u32, 0, 1),
+                stmt(0x06, 0x00050000 | libc::EPERM as u32),
+            ]);
+        }
+    }
+    if service {
+        for syscall in [
+            libc::SYS_kill,
+            libc::SYS_tkill,
+            libc::SYS_tgkill,
+            libc::SYS_pidfd_send_signal,
+        ] {
+            filter.extend([
+                jump(syscall as u32, 0, 1),
+                stmt(0x06, 0x00050000 | libc::EPERM as u32),
+            ]);
+        }
+        // libc can query/change its own limits using pid=0. Other process
+        // limits cannot be inspected or modified through the shared PID view.
+        filter.extend([
+            jump(libc::SYS_prlimit64 as u32, 0, 4),
+            stmt(0x20, 16),
+            jump(0, 1, 0),
+            stmt(0x06, 0x00050000 | libc::EPERM as u32),
+            stmt(0x20, 0),
+        ]);
+    }
     // Block socket creation (including io_uring), privilege/namespace changes,
     // cross-process inspection and huge-page allocations outside memory.max.
     for syscall in [
-        libc::SYS_socket,
-        libc::SYS_socketpair,
         libc::SYS_io_uring_setup,
         libc::SYS_setns,
         libc::SYS_unshare,
@@ -827,6 +915,64 @@ fn no_sockets() -> Result<File, Refusal> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    #[ignore = "requires native Linux kernel seccomp; run with the installed contract fixtures"]
+    fn service_filter_allows_unix_ipc_and_denies_host_process_control() {
+        let mut file = socket_filter(true).unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        let parent = unsafe { libc::getpid() };
+        // SAFETY: the child uses only libc/syscalls and preallocated memory,
+        // then _exit. It sends signal 0 (a permission probe), never a signal
+        // that could alter its parent. The BPF lives until that child exits.
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            unsafe {
+                let program = libc::sock_fprog {
+                    len: (bytes.len() / std::mem::size_of::<libc::sock_filter>()) as u16,
+                    filter: bytes.as_ptr().cast_mut().cast(),
+                };
+                if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                    libc::_exit(1);
+                }
+                if libc::prctl(libc::PR_SET_SECCOMP, 2, &program) != 0 {
+                    libc::_exit(2);
+                }
+                let unix = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
+                if unix < 0 {
+                    libc::_exit(3);
+                }
+                libc::close(unix);
+                if libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) != -1
+                    || *libc::__errno_location() != libc::EPERM
+                {
+                    libc::_exit(4);
+                }
+                if libc::kill(parent, 0) != -1 || *libc::__errno_location() != libc::EPERM {
+                    libc::_exit(5);
+                }
+                let mut limits = libc::rlimit64 {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                if libc::prlimit64(parent, libc::RLIMIT_NOFILE, std::ptr::null(), &mut limits) != -1
+                    || *libc::__errno_location() != libc::EPERM
+                {
+                    libc::_exit(6);
+                }
+                if libc::prlimit64(0, libc::RLIMIT_NOFILE, std::ptr::null(), &mut limits) != 0 {
+                    libc::_exit(7);
+                }
+                libc::_exit(0);
+            }
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 0);
+    }
 
     #[test]
     fn executable_snapshot_is_bounded_digest_bound_and_immutable() {

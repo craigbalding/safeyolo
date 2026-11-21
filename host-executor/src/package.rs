@@ -107,6 +107,7 @@ pub enum BroaderBound {
     Registry,
     NetworkIpc,
     DelegatedServices,
+    ProcessVisibility,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]

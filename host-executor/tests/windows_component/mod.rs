@@ -366,7 +366,7 @@ impl Fixture {
             principal: self.target.issuers["issuer"].authority.grants["grant"]
                 .principal
                 .clone(),
-            expires_at: now() + 120,
+            expires_at: self.target.issuers["issuer"].authority.valid_until,
             expected: Some(self.target.revisions("issuer").unwrap()),
             action,
             untrusted_rationale: "Windows component fixture".into(),

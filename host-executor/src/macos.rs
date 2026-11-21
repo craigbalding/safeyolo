@@ -114,6 +114,7 @@ impl MacRuntime {
         let current = identity()?;
         for op in target.package.operations.values() {
             let e = &op.execution;
+            let service = crate::unix_services::validate(op)?;
             let mut declared = e.identity.groups.clone();
             declared.sort();
             declared.dedup();
@@ -125,7 +126,8 @@ impl MacRuntime {
                 "macOS backend uses this executor account and its exact supplementary groups",
             )?;
             require(
-                e.broader == [BroaderBound::Memory, BroaderBound::ExecutorRestart].into(),
+                service
+                    || e.broader == [BroaderBound::Memory, BroaderBound::ExecutorRestart].into(),
                 RefusalCode::Unavailable,
                 "macOS requires explicit broader memory and executor_restart authority: memory is polled and a controller crash can leave an orphan; restart preserves unknown cleanup and its reservation",
             )?;
@@ -133,7 +135,7 @@ impl MacRuntime {
                 e.filesystem.write.is_empty()
                     && e.network.destinations.is_empty()
                     && e.network.ipc.is_empty()
-                    && e.delegated_services.is_empty(),
+                    && (service || e.delegated_services.is_empty()),
                 RefusalCode::Unavailable,
                 "this macOS profile supports read-only files, no socket or Mach access and no delegated services; service effects require an independently protected executor identity or enforced service boundary",
             )?;
@@ -223,6 +225,7 @@ impl MacRuntime {
         ledger: &Arc<Mutex<Ledger>>,
     ) -> Result<NativeObservation, Refusal> {
         let command = op.command(&receipt.prepared.invocation.arguments)?;
+        let service = crate::unix_services::validate(op)?;
         let root = ledger
             .lock()
             .map_err(unavailable)?
@@ -259,6 +262,15 @@ impl MacRuntime {
             ),
             quoted(snapshot.to_str().unwrap())
         );
+        if service {
+            profile.push_str("(allow mach-lookup)");
+            if op.execution.delegated_services[0].capability == "restart" {
+                // launchd checks the client's signal permission before replacing
+                // this fixed service process. Only the pinned OS client receives
+                // this permission; arbitrary adopted programs remain denied.
+                profile.push_str("(allow signal)");
+            }
+        }
         for path in &op.execution.filesystem.read {
             let real = Path::new(path).canonicalize().map_err(unavailable)?;
             profile.push_str(&format!(
@@ -356,7 +368,13 @@ impl MacRuntime {
             fs::remove_file(snapshot).map_err(unavailable)?;
             child.reaped = true;
         }
-        Ok(NativeObservation { backend: "macos-seatbelt-no-fork".into(), enforcement: vec!["Seatbelt read paths, no file writes, no direct socket connections or Mach lookups, no process fork, pinned private executable snapshot and exact environment".into(), "single process; observed waitpid termination; bounded retained output and wall deadline while the executor remains live".into()], dependencies: vec!["EXPLICIT BROADER MEMORY: resident memory is polled; transient allocations and kernel pressure are not hard-capped".into(), "EXPLICIT BROADER EXECUTOR RESTART: a controller crash may leave the process running beyond its deadline; restart retains unknown cleanup and concurrency until the recorded process birth is absent. macOS Seatbelt, baseline sysctl reads and host-owned libraries are required; no delegated service profile is implemented".into()], exit_code: status.and_then(|s| std::process::ExitStatus::from_raw(s).code()), signal: status.and_then(|s| std::process::ExitStatus::from_raw(s).signal()), processes_stopped: stopped, output_truncated: truncated, termination_reason: reason.into() })
+        let mut result = NativeObservation { backend: "macos-seatbelt-no-fork".into(), enforcement: vec!["Seatbelt read paths, no file writes, no direct socket connections or Mach lookups, no process fork, pinned private executable snapshot and exact environment".into(), "single process; observed waitpid termination; bounded retained output and wall deadline while the executor remains live".into()], dependencies: vec!["EXPLICIT BROADER MEMORY: resident memory is polled; transient allocations and kernel pressure are not hard-capped".into(), "EXPLICIT BROADER EXECUTOR RESTART: a controller crash may leave the process running beyond its deadline; restart retains unknown cleanup and concurrency until the recorded process birth is absent. macOS Seatbelt, baseline sysctl reads and host-owned libraries are required".into()], exit_code: status.and_then(|s| std::process::ExitStatus::from_raw(s).code()), signal: status.and_then(|s| std::process::ExitStatus::from_raw(s).signal()), processes_stopped: stopped, output_truncated: truncated, termination_reason: reason.into() };
+        if service {
+            result.enforcement[0] = "Seatbelt read paths, no file writes, no direct sockets or fork; the pinned trusted launchctl client receives Mach lookup and, for restart, native signal permission, with fixed adopted action/resource and exact environment".into();
+            result.dependencies.push("EXPLICIT BROADER NETWORK/IPC: Mach lookup scope is not per-service isolation; the OS client and its system libraries are trusted executor code".into());
+            result.dependencies.push(crate::unix_services::disclosure());
+        }
+        Ok(result)
     }
 }
 

@@ -106,6 +106,16 @@ pub fn load(config: &Path, state: &Path) -> Result<Configuration, Refusal> {
 }
 
 pub fn command(args: Vec<String>) -> Result<(), Refusal> {
+    if args.as_slice() == ["--version"] {
+        println!(
+            "safeyolo-host-executor {} commit={} profile={} target={}",
+            env!("CARGO_PKG_VERSION"),
+            env!("SAFEYOLO_BUILD_REVISION"),
+            env!("SAFEYOLO_BUILD_PROFILE"),
+            env!("SAFEYOLO_HOST_EXECUTOR_TARGET"),
+        );
+        return Ok(());
+    }
     if args.as_slice() == ["--help"] || args.is_empty() {
         println!(
             "Usage: safeyolo-host-executor <check|serve> --config ABSOLUTE_JSON --state ABSOLUTE_DIRECTORY\n\ncheck validates the complete adopted target without running its programs.\nThe selected state directory must exist, be private and owned by this account.\nRequired enforcement that the selected backend cannot apply is refused."

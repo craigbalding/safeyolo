@@ -11,6 +11,8 @@ mod native;
 mod package;
 mod protocol;
 pub mod server;
+#[cfg(unix)]
+mod unix_services;
 #[cfg(windows)]
 pub mod windows;
 

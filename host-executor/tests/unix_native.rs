@@ -72,7 +72,7 @@ impl Fixture {
             principal: self.target.issuers["issuer"].authority.grants["grant"]
                 .principal
                 .clone(),
-            expires_at: now() + 300,
+            expires_at: self.target.issuers["issuer"].authority.valid_until,
             expected: Some(self.target.revisions("issuer").unwrap()),
             action,
             untrusted_rationale: "fixture".into(),
@@ -84,24 +84,29 @@ impl Fixture {
         let bytes = self.signed(action);
         self.call_bytes(verb, &bytes)
     }
-    fn invoke(&mut self, mode: &str) -> (Receipt, Vec<u8>) {
+    fn invocation(&self, mode: &str) -> Invocation {
         let operation = &self.target.package.operations[mode];
-        let invocation = Invocation {
+        Invocation {
             operation_id: mode.into(),
             resource_id: "fixture".into(),
             package_sha256: revision(&self.target.package),
             implementation_sha256: operation.implementation_sha256(),
             arguments: BTreeMap::new(),
             expected_assessment_sha256: None,
-        };
-        let Response::Proposal { prepared } = self.call(Action::Propose { invocation }) else {
-            panic!("proposal refused")
+        }
+    }
+    fn invoke(&mut self, mode: &str) -> (Receipt, Vec<u8>) {
+        let invocation = self.invocation(mode);
+        let response = self.call(Action::Propose { invocation });
+        let Response::Proposal { prepared } = response else {
+            panic!("{mode} proposal refused: {response:?}")
         };
         let bytes = self.signed(Action::Invoke {
             invocation: prepared.invocation,
         });
-        let Response::Job { receipt } = self.call_bytes(Verb::Invoke, &bytes) else {
-            panic!("invoke refused")
+        let response = self.call_bytes(Verb::Invoke, &bytes);
+        let Response::Job { receipt } = response else {
+            panic!("{mode} invoke refused: {response:?}")
         };
         (*receipt, bytes)
     }
@@ -189,7 +194,7 @@ fn start(root: &Path) -> Child {
     child
 }
 
-fn fixture() -> Fixture {
+fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
     #[cfg(target_os = "linux")]
     let parent = PathBuf::from(
         std::env::var_os("SAFEYOLO_HOST_EXECUTOR_CGROUP")
@@ -242,7 +247,15 @@ fn fixture() -> Fixture {
     };
     let key = Ed25519KeyPair::from_seed_unchecked(&[58; 32]).unwrap();
     let mut operations = BTreeMap::new();
-    for mode in ["observe", "flood", "memory", "tasks", "background", "wait"] {
+    for mode in [
+        "observe",
+        "flood",
+        "memory",
+        "tasks",
+        "background",
+        "wait",
+        "deadline",
+    ] {
         let mut read: Vec<String> = if cfg!(target_os = "macos") {
             vec![
                 "/usr/lib",
@@ -269,7 +282,7 @@ fn fixture() -> Fixture {
                 executable: probe.to_str().unwrap().into(),
                 executable_sha256: hash(&probe),
                 argv: [
-                    mode.to_string(),
+                    if mode == "deadline" { "wait" } else { mode }.to_string(),
                     root.join("allowed").to_str().unwrap().into(),
                     root.join("forbidden").to_str().unwrap().into(),
                 ]
@@ -293,7 +306,7 @@ fn fixture() -> Fixture {
                     ipc: vec![],
                 },
                 resources: ExecutionLimits {
-                    timeout_seconds: 5,
+                    timeout_seconds: if mode == "deadline" { 1 } else { 5 },
                     output_bytes: 4096,
                     memory_bytes: 64 * 1024 * 1024,
                     processes: 12,
@@ -308,6 +321,72 @@ fn fixture() -> Fixture {
             },
         };
         operations.insert(mode.into(), operation);
+    }
+    if let Ok(resource) = std::env::var("SAFEYOLO_HOST_EXECUTOR_SERVICE") {
+        for action in ["restart", "status"] {
+            let mut op = operations["observe"].clone();
+            let e = &mut op.execution;
+            e.executable = if cfg!(target_os = "linux") {
+                "/usr/bin/systemctl"
+            } else {
+                "/bin/launchctl"
+            }
+            .into();
+            e.executable_sha256 = hash(Path::new(&e.executable));
+            e.environment.clear();
+            e.argv = if cfg!(target_os = "linux") {
+                e.broader = [
+                    BroaderBound::DelegatedServices,
+                    BroaderBound::ProcessVisibility,
+                ]
+                .into();
+                e.environment.insert(
+                    "XDG_RUNTIME_DIR".into(),
+                    Word::Literal {
+                        value: format!("/run/user/{}", e.identity.principal),
+                    },
+                );
+                e.environment.insert(
+                    "SYSTEMD_OFFLINE".into(),
+                    Word::Literal { value: "0".into() },
+                );
+                e.network.ipc = vec![IpcEndpoint::UnixSocket {
+                    path: format!("/run/user/{}/systemd/private", e.identity.principal),
+                }];
+                let mut argv = vec!["--user", "--no-pager", "--no-ask-password"];
+                if action == "status" {
+                    argv.extend(["show", "--property=ActiveState", "--property=MainPID"]);
+                } else {
+                    argv.push("restart");
+                }
+                argv.extend(["--", &resource]);
+                argv
+            } else {
+                e.broader
+                    .extend([BroaderBound::NetworkIpc, BroaderBound::DelegatedServices]);
+                if action == "restart" {
+                    vec!["kickstart", "-k", &resource]
+                } else {
+                    vec!["print", &resource]
+                }
+            }
+            .into_iter()
+            .map(|s| Word::Literal {
+                value: s.to_owned(),
+            })
+            .collect();
+            e.delegated_services = vec![DelegatedService {
+                service: if cfg!(target_os = "linux") {
+                    "systemd-user"
+                } else {
+                    "launchd-user"
+                }
+                .into(),
+                capability: action.into(),
+                resources: vec![resource.clone()],
+            }];
+            operations.insert(format!("service-{action}"), op);
+        }
     }
     let target = common::target(name, operations, &key);
     #[cfg(target_os = "linux")]
@@ -328,9 +407,9 @@ fn fixture() -> Fixture {
             executable_bytes: 32 * 1024 * 1024,
         }),
         ledger: LedgerLimits {
-            jobs: 16,
+            jobs,
             mutation_records: 64,
-            output_bytes: 1024 * 1024,
+            output_bytes,
             database_bytes: 8 * 1024 * 1024,
             request_bytes: 65536,
         },
@@ -358,8 +437,15 @@ fn fixture() -> Fixture {
 #[test]
 #[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]
 fn installed_unix_bounds_lifecycle_reload_and_lost_reply() {
-    let mut f = fixture();
-    for mode in ["observe", "background", "tasks", "flood", "memory"] {
+    let mut f = fixture(16, 1024 * 1024);
+    for mode in [
+        "observe",
+        "background",
+        "tasks",
+        "flood",
+        "memory",
+        "deadline",
+    ] {
         let (admitted, replay) = f.invoke(mode);
         let result = f.terminal(&admitted.job_id);
         eprintln!("{mode}: {}", serde_json::to_string(&result).unwrap());
@@ -367,7 +453,7 @@ fn installed_unix_bounds_lifecycle_reload_and_lost_reply() {
         assert!(native.processes_stopped);
         assert_eq!(
             result.state,
-            if ["flood", "memory"].contains(&mode) {
+            if ["flood", "memory", "deadline"].contains(&mode) {
                 JobState::Failed
             } else {
                 JobState::Completed
@@ -378,6 +464,9 @@ fn installed_unix_bounds_lifecycle_reload_and_lost_reply() {
         if mode == "flood" {
             assert!(native.output_truncated);
             assert_eq!(result.output_bytes, 4096);
+        }
+        if mode == "deadline" {
+            assert_eq!(native.termination_reason, "timeout");
         }
         let Response::Output {
             data_base64,
@@ -561,4 +650,175 @@ fn installed_unix_bounds_lifecycle_reload_and_lost_reply() {
     eprintln!(
         "native Unix installed bounds, output/memory/task controls, cancellation, restart/no-replay and complete-catalogue reload refusal observed"
     );
+}
+
+#[test]
+#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]
+fn installed_storage_exhaustion_preserves_output_replay_and_restart() {
+    // Exercise the real server and native dispatch. Both retained-output and
+    // job-record limits must refuse a fresh effect while preserving old jobs.
+    for (jobs, output_bytes) in [(16, 8192), (2, 1024 * 1024)] {
+        let mut f = fixture(jobs, output_bytes);
+        let mut completed = Vec::new();
+        for _ in 0..2 {
+            let (admitted, replay) = f.invoke("flood");
+            let result = f.terminal(&admitted.job_id);
+            assert_eq!(result.state, JobState::Failed);
+            assert_eq!(result.output_bytes, 4096);
+            assert!(result.native.as_ref().unwrap().processes_stopped);
+            completed.push((result, replay));
+        }
+        f.restart();
+        let invocation = f.invocation("observe");
+        let Response::Proposal { prepared } = f.call(Action::Propose { invocation }) else {
+            panic!("storage capacity must not disable proposal qualification")
+        };
+        let response = f.call(Action::Invoke {
+            invocation: prepared.invocation,
+        });
+        assert!(
+            matches!(
+                response,
+                Response::Refused {
+                    refusal: Refusal {
+                        code: RefusalCode::Budget,
+                        ..
+                    }
+                }
+            ),
+            "{response:?}"
+        );
+        for (result, replay) in completed {
+            let Response::Job { receipt } = f.call_bytes(Verb::Invoke, &replay) else {
+                panic!("a retained invocation must remain replayable at capacity")
+            };
+            assert_eq!(receipt.job_id, result.job_id);
+            // A mutation replay returns its original admission response. A
+            // fresh job read supplies current completion facts at capacity.
+            assert_eq!(receipt.state, JobState::Admitted);
+            assert_eq!(f.job(&result.job_id).revision, result.revision);
+            let Response::Output {
+                data_base64,
+                retained_bytes,
+                ..
+            } = f.call(Action::Output {
+                job_id: result.job_id,
+                offset: 0,
+                max_bytes: 4096,
+            })
+            else {
+                panic!("capacity must not hide retained output")
+            };
+            assert_eq!(retained_bytes, 4096);
+            assert_eq!(STANDARD.decode(data_base64).unwrap().len(), 4096);
+        }
+        assert!(
+            fs::metadata(f.root.join("state/jobs.sqlite"))
+                .unwrap()
+                .len()
+                <= 8 * 1024 * 1024
+        );
+        eprintln!(
+            "installed storage ceiling observed: jobs={jobs}, output_bytes={output_bytes}; retained output/replay preserved after restart"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires SAFEYOLO_HOST_EXECUTOR_SERVICE naming an operator-prepared owned user service"]
+fn installed_user_service_profiles_and_channel_refusals() {
+    std::env::var("SAFEYOLO_HOST_EXECUTOR_SERVICE").expect("prepare an owned native user service");
+    let mut f = fixture(8, 1024 * 1024);
+    let mut previous_pid = None;
+    let actions: &[&str] = &["service-status", "service-restart", "service-status"];
+    for &action in actions {
+        let (admitted, _) = f.invoke(action);
+        let result = f.terminal(&admitted.job_id);
+        eprintln!("{action}: {}", serde_json::to_string(&result).unwrap());
+        let Response::Output { data_base64, .. } = f.call(Action::Output {
+            job_id: result.job_id.clone(),
+            offset: 0,
+            max_bytes: 4096,
+        }) else {
+            panic!("service output must remain available")
+        };
+        let output = String::from_utf8(STANDARD.decode(data_base64).unwrap()).unwrap();
+        eprintln!("service output: {output}");
+        assert_eq!(result.state, JobState::Completed, "{result:?}");
+        if action == "service-status" {
+            let pid = output
+                .lines()
+                .find_map(|line| {
+                    line.trim().strip_prefix(if cfg!(target_os = "macos") {
+                        "pid = "
+                    } else {
+                        "MainPID="
+                    })
+                })
+                .and_then(|rest| rest.split_whitespace().next())
+                .expect("prepared service must have an observed PID")
+                .to_owned();
+            if let Some(prior) = previous_pid.replace(pid.clone()) {
+                assert_ne!(
+                    pid, prior,
+                    "restart must replace the actual owned service process"
+                );
+            }
+        }
+        assert!(result.native.as_ref().unwrap().processes_stopped);
+        assert!(
+            result
+                .native
+                .as_ref()
+                .unwrap()
+                .dependencies
+                .iter()
+                .any(|s| s.contains("outside helper-process"))
+        );
+    }
+    let config = f.root.join("target.json");
+    let original = fs::read(&config).unwrap();
+    for invalid in ["program", "environment", "service", "broader"] {
+        let mut changed: Configuration = serde_json::from_slice(&original).unwrap();
+        let e = &mut changed
+            .target
+            .package
+            .operations
+            .get_mut("service-status")
+            .unwrap()
+            .execution;
+        match invalid {
+            "broader" => e.broader.clear(),
+            "program" => {
+                e.executable = f.root.join("probe").to_str().unwrap().into();
+                e.executable_sha256 = hash(Path::new(&e.executable));
+            }
+            "environment" => {
+                e.environment.insert(
+                    "LD_PRELOAD".into(),
+                    Word::Literal {
+                        value: "/workload.so".into(),
+                    },
+                );
+            }
+            "service" => {
+                e.delegated_services[0].resources[0] = "another-service".into();
+            }
+            _ => unreachable!(),
+        }
+        fs::write(&config, serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert!(
+            matches!(
+                f.call(Action::Discover),
+                Response::Refused {
+                    refusal: Refusal {
+                        code: RefusalCode::Unavailable,
+                        ..
+                    }
+                }
+            ),
+            "invalid {invalid} must not open the manager channel"
+        );
+    }
+    fs::write(config, original).unwrap();
 }

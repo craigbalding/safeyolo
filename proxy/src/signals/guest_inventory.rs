@@ -630,7 +630,7 @@ mod tests {
                 );
             }
             "ubuntu" => assert_eq!(
-                parsed.unwrap_err().to_string(),
+                parsed.err().expect("Ubuntu must be refused").to_string(),
                 "guest distribution is unsupported; only Debian package assessment is implemented"
             ),
             other => panic!("real collector fixture requires Debian or Ubuntu, found {other}"),

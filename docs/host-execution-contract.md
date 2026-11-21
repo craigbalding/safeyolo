@@ -153,6 +153,48 @@ values, to a grant with the discovery action. Adoption must account for that
 disclosure. Host-held service credentials remain with their existing owners;
 the package's delegated service references do not contain those credential values.
 
+## Standalone binary and build dependencies
+
+The standalone executable is `safeyolo-host-executor` (`.exe` on Windows).
+It does not require Python, Rust, WSL, a container runtime or a full SafeYolo
+installation on the target. Its `--version` output identifies the source commit,
+build profile and Rust target. A local build without a supplied source revision
+reports `commit=unknown`; this is not a release identity.
+
+| Target | Required runtime components and current native profile |
+|---|---|
+| Linux x86-64 / ARM64 | Compatible C runtime; a pinned bubblewrap with the options used by the backend; kernel user namespaces, seccomp and delegated cgroup v2 memory/pids controls. The executor must run where it can migrate its own jobs into that delegation. Ordinary programs receive read paths with no writes, network or IPC. The fixed service profile below separately admits its trusted OS client. |
+| macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive no fork, writes, sockets or Mach access. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
+| Windows x86-64 | Native Windows security, Credential Manager, local named pipes, Job Objects and the Service Control Manager. GNU builds also need the DLLs reported by their toolchain; MSVC builds need their selected C runtime. Cross-compilation is available; native foreground/Service qualification and a supported Windows release package remain incomplete. |
+
+SQLite is bundled into the executable. Operation definitions separately declare
+their runtime libraries, tools, interpreters and service permissions. A server
+binary that loads does not establish that an adopted operation's dependencies
+or native guarantees are available. The required native starter operations
+must not hide a Python dependency.
+
+For a release producer, run the following from a clean, committed source
+checkout with the repository's Rust toolchain, native linker/C build tools,
+Bash and Python 3.11 or later. The build uses the existing Cargo reserve guard and inherits
+its configured reserve, target directory and one-job settings. It can download
+locked build dependencies. Choose a new archive path outside the checkout;
+replace `/release/executor.zip` below with that path before running the command.
+
+```sh
+python3 scripts/build_host_executor.py --output /release/executor.zip
+```
+
+The command builds a production executable for the build host and writes a ZIP
+archive with the binary, licence and `host-executor.json`.
+It prints the archive and binary SHA-256 digests. The metadata records the
+source, target, compiler, selected build flags and a link to this contract at
+the built source revision. `--target` selects an
+installed Rust cross-compilation target and its linker; otherwise
+`CARGO_BUILD_TARGET`, when set, selects the target. Python and build tools are
+not included or needed when running the extracted binary. The archive does not
+install accounts, service-manager configuration, bubblewrap or cgroup delegation.
+Build completion does not establish native enforcement or release qualification.
+
 ## Execution scope and enforcement limits
 
 Each implementation digest covers its arguments, effects, enforcement
@@ -200,10 +242,54 @@ process to remain running beyond its deadline if the controller crashes. Restart
 retains uncertain cleanup and concurrency until the recorded process birth is
 absent; it does not signal a recovered PID. The macOS backend requires both
 exceptions. An enforcement label cannot select either exception. The Linux and
-macOS adapters refuse unsupported filesystem, network, IPC and delegated-service
-profiles. In particular, permitting service IPC under the same account
-could let a service launch a process outside the sandbox and modify executor
-inputs; a service name alone does not protect those inputs.
+macOS adapters refuse unsupported filesystem, network and IPC profiles.
+An ordinary adopted program cannot receive a service-manager channel: under
+the executor account that channel could launch code outside the sandbox and
+modify executor inputs. A service name or executable digest alone does not
+make an arbitrary program a trusted service client.
+
+The fixed service profile admits only the native, root-owned OS client and
+protected parents, pinned by content digest. It checks literal action/resource
+arguments and an exact native environment; callers cannot substitute a program,
+unit, loader variable or interpreter. This client and its system libraries are
+part of the trusted executor boundary. The selected unit definition, executable,
+dependencies and service-manager permissions remain adopted external trust
+dependencies. Linux supports `restart` and `status` for one existing user
+service. macOS supports `restart` and `status`. Neither profile creates or replaces units
+or their configuration.
+
+For Linux, the delegated service owner is `systemd-user`, with capability
+`restart` or `status` and one literal `.service` resource. The executable is
+`/usr/bin/systemctl`. Its literal arguments begin with `--user --no-pager
+--no-ask-password`, followed by `restart -- UNIT` or
+`show --property=ActiveState --property=MainPID -- UNIT`. Its exact environment is
+`XDG_RUNTIME_DIR=/run/user/UID` and `SYSTEMD_OFFLINE=0`; the latter prevents
+systemctl from skipping the requested operation inside the filesystem sandbox.
+The declared Unix socket is
+`/run/user/UID/systemd/private`. Only AF_UNIX sockets and that mounted manager
+channel are available. This profile requires `delegated_services` and
+`process_visibility` in `execution.broader`. The trusted client shares the
+host process namespace so systemd can verify peer credentials. It receives no
+host proc filesystem, and the seccomp filter denies signals, foreign-process
+limit changes, ptrace, cross-process memory access and file-descriptor copying. Cgroup limits
+and descendant cleanup still apply to the client job.
+
+For macOS, the owner is `launchd-user`, with one literal `gui/UID/LABEL` or
+`user/UID/LABEL` resource. The executable is `/bin/launchctl` with literal
+`print RESOURCE` or `kickstart -k RESOURCE` arguments and an empty environment.
+The trusted client receives Mach lookup permission. Restart also permits the
+signal permission that launchd checks before replacing the selected process.
+The profile requires `network_ipc` and
+`delegated_services` exceptions in addition to `memory` and `executor_restart`.
+For both profiles the working directory is `/`; UID is the executor's adopted
+numeric identity. The complete client specification remains bound by the
+operation digest and both authority ceilings.
+
+Service processes and persistent effects are outside helper-process memory,
+task, deadline and cleanup controls. A receipt's `processes_stopped` describes
+the helper, not the selected service. Restart can intentionally leave a service
+running. The native receipt discloses these limits; transport completion or
+helper cleanup does not establish a service's final state.
 
 The Windows adapter requires explicit `filesystem`, `registry`, `network_ipc`
 and `delegated_services` exceptions. Job Objects bound aggregate process memory,
@@ -231,7 +317,9 @@ request does not create one.
 `native.credential` selects a generic Windows Credential Manager entry owned by
 the executor account. `credential-store --name NAME --account DOMAIN\user`
 reads a UTF-8 password from private stdin. The password is not a configuration
-field or command argument. `identity --credential NAME` reports the workload SID
+field or command argument. A PowerShell/.NET caller must write UTF-8 bytes
+without a byte-order mark to the child input pipe; a writer's preamble otherwise
+becomes part of the password. `identity --credential NAME` reports the workload SID
 and stable token groups. The changing logon-session SID is excluded from that
 stable list. Native launch requires `SeImpersonatePrivilege`, or the appropriate
 assign-primary-token and quota privileges. Windows Service installation selects
