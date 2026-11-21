@@ -249,9 +249,15 @@ def test_configuration_copy_without_timestamp_permission(guest, tmp_path, monkey
     config.unlink()
     link.unlink()
     run(*command, "restore")
-    assert config.read_text() == "synthetic private configuration\n"
-    assert config.stat().st_mode & 0o7777 == mode
-    assert link.readlink() == Path(config.name)
+    assert {"/etc/private.conf", "/etc/private-link"} <= set(saved(state)["restore"]["configuration_changes"])
+    assert not config.exists()
+    assert not link.is_symlink()
+    # Alternate roots support previews. Installed --apply remains separate proof.
+    config.write_text("reviewed private configuration\n")
+    config.chmod(mode)
+    run(*command, "resolve", "/etc/private.conf")
+    assert (state / "configuration/etc/private.conf").read_text() == "reviewed private configuration\n"
+    assert (state / "configuration/etc/private.conf").stat().st_mode & 0o7777 == mode
     before = saved(state)
     copier.write_text('#!/bin/sh\necho "synthetic copy failure" >&2\nexit 23\n')
     (root / "etc/new-setting").write_text("not completed\n")
