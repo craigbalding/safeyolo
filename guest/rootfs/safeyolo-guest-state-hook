@@ -1,0 +1,9 @@
+#!/bin/sh
+# Recording is recovery information, not permission to prevent package use.
+[ "${SAFEYOLO_RESTORE_ACTIVE:-}" != 1 ] || exit 0
+helper=/run/safeyolo/safeyolo-guest
+[ -x "$helper" ] || helper=/safeyolo/safeyolo-guest
+[ -x "$helper" ] || exit 0
+if ! "$helper" retained-state "$@"; then
+    echo 'SafeYolo guest state capture failed; inspect safeyolo-guest-state status.' >&2
+fi

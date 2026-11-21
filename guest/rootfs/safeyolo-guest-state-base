@@ -1,0 +1,18 @@
+#!/bin/bash
+# Run at the end of the Debian image build, before runtime-generated identity.
+set -euo pipefail
+base=/usr/share/safeyolo/guest-base
+rm -rf "$base/configuration"
+install -d -m 0700 "$base/configuration"
+dpkg-query -W '-f=${binary:Package}\t${Version}\t${Architecture}\t${db:Status-Abbrev}\n' > "$base/packages.tsv"
+# This immutable reference distinguishes base defaults from later local edits.
+# Runtime fields and recorder bookkeeping are excluded again by the reader.
+tar -C / --exclude=.git --exclude=.etckeeper --exclude=etc/.gitignore \
+    --exclude=etc/environment --exclude=etc/resolv.conf --exclude=etc/hostname \
+    --exclude=etc/hosts --exclude=etc/machine-id --exclude=etc/mtab \
+    --exclude=etc/passwd --exclude=etc/shadow --exclude=etc/group --exclude=etc/gshadow \
+    --exclude=etc/ssh/ssh_host_\* --exclude=etc/ssl/certs/safeyolo.pem \
+    --exclude=etc/safeyolo-mise-environment --exclude=etc/profile.d/safeyolo-proxy.sh \
+    --exclude=etc/apt/apt.conf.d/99safeyolo-proxy \
+    -cf - etc usr/local/etc | tar -C "$base/configuration" -xf -
+chmod 0700 "$base" "$base/configuration"

@@ -48,6 +48,12 @@ flowchart TD
     ask.tools_watch_for_download_approval[["Ask operator to run 'safeyolo watch' and approve the specific download"]]
     ask.suggest_client_upgrade[["Determine how the package manager / tool was installed, propose the specific upgrade command, and ask the operator to approve running it -- do not upgrade unilaterally, do not make the operator choose the command"]]
     ask.report_client_bug[["Report a package manager / tool bug upstream (include version, exact failure signature, minimal repro); apply a targeted workaround where one exists"]]
+    sym.tools_guest_prerequisite_lost(["A package or local configuration is missing after recreation or a selected guest upgrade"])
+    ev.tools_retained_capture["Run safeyolo-guest-state status and restore in the selected guest; inspect coverage, baseline, capture completion, watcher and the preview"]
+    con.tools_restore_retained(["Within existing authority, reconcile the preview and run safeyolo-guest-state restore --apply; verify the task prerequisites and reuse working packages"])
+    con.tools_capture_uncovered(["Select the application's real configuration path with paths add, run capture and inspect its private history; do not infer uncaptured contents"])
+    con.tools_restore_unresolved(["Preserve the retained state; inspect interrupted transactions, unknown baselines, capture errors, conflicting files or unavailable package requirements and resolve the specific need without wider authority"])
+    con.tools_capture_absent(["Check the installed Debian image/helper and existing setup notes; absent capture cannot reconstruct lost contents. Use existing operator recovery if the harness cannot start"])
 
     sym.tools_sudo_asks_password -->|"next_check"| ev.tools_check_sudo_path
     sym.tools_sudo_command_not_found -->|"next_check"| ev.tools_check_sudo_path
@@ -91,6 +97,11 @@ flowchart TD
     cls.tools_yama_stale_scope -->|"implies"| con.tools_retry_under_setpriv
     ev.tools_check_setpriv_helps_ptrace -->|"implies: attach succeeds under setpriv -- CAP_SYS_PTRACE bypasses YAMA on this run"| con.tools_retry_under_setpriv
     ev.tools_check_procmem_readable -->|"implies: the tool uses /proc/mem AND ptrace_scope is 0 -- no relationship or elevation needed"| con.tools_use_non_ptrace_tool
+    sym.tools_guest_prerequisite_lost -->|"next_check"| ev.tools_retained_capture
+    ev.tools_retained_capture -->|"implies: a retained completed capture has a usable preview with no unresolved conflict or requirement"| con.tools_restore_retained
+    ev.tools_retained_capture -->|"implies: the application configuration path was outside coverage"| con.tools_capture_uncovered
+    ev.tools_retained_capture -->|"implies: capture failed, a transaction is incomplete, the baseline is unknown, a file conflicts or a package constraint is unavailable"| con.tools_restore_unresolved
+    ev.tools_retained_capture -->|"implies: the record or image integration is absent"| con.tools_capture_absent
 
     class sym.tools_sudo_asks_password symptom
     class sym.tools_sudo_command_not_found symptom
@@ -133,6 +144,12 @@ flowchart TD
     class ask.tools_watch_for_download_approval operator_ask
     class ask.suggest_client_upgrade operator_ask
     class ask.report_client_bug operator_ask
+    class sym.tools_guest_prerequisite_lost symptom
+    class ev.tools_retained_capture evidence
+    class con.tools_restore_retained conclusion
+    class con.tools_capture_uncovered conclusion
+    class con.tools_restore_unresolved conclusion
+    class con.tools_capture_absent conclusion
 
     %% Entry symptoms (bind an observed symptom here)
     style sym.tools_sudo_asks_password stroke-width:3px
@@ -144,3 +161,4 @@ flowchart TD
     style sym.tools_pip_ssl_or_timeout stroke-width:3px
     style sym.tools_download_28x_block stroke-width:3px
     style sym.tools_ptrace_denied stroke-width:3px
+    style sym.tools_guest_prerequisite_lost stroke-width:3px
