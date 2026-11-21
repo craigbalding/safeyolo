@@ -360,7 +360,7 @@ fn descriptor(handle: HANDLE) -> Result<Local, Refusal> {
         GetSecurityInfo(
             handle,
             SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             null_mut(),
             null_mut(),
             null_mut(),
