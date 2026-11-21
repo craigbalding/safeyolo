@@ -472,7 +472,7 @@ fn private_acl(file: &File, path: &Path, leaf: bool) -> Result<(), Refusal> {
             } == 0
                 || trusted_sid(&sid((&ace.SidStart as *const u32).cast_mut().cast())?)?,
             RefusalCode::Unavailable,
-            format!(
+            &format!(
                 "another account can read/change protected state or replace its path: {}",
                 path.display()
             ),
@@ -577,7 +577,7 @@ pub(crate) fn deny_workload_write(path: &Path, token: &Handle) -> Result<(), Ref
                 }
                 == 0,
             RefusalCode::Unavailable,
-            format!(
+            &format!(
                 "workload account can modify protected executor inputs, executable or an ancestor: {}",
                 parent.display()
             ),
