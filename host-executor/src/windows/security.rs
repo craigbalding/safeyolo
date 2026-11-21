@@ -417,7 +417,18 @@ const CHANGE: u32 = DELETE
     | FILE_DELETE_CHILD;
 const REPLACE_CHILD: u32 = DELETE | WRITE_DAC | WRITE_OWNER | FILE_DELETE_CHILD;
 
-fn private_acl(file: &File, leaf: bool) -> Result<(), Refusal> {
+fn replacement_access(path: &Path) -> u32 {
+    // Windows cannot rename a volume root. Its ordinary DELETE grant therefore
+    // cannot replace an ancestor; changing its DACL or deleting its children can.
+    // https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information
+    if path.parent().is_none() {
+        REPLACE_CHILD & !DELETE
+    } else {
+        REPLACE_CHILD
+    }
+}
+
+fn private_acl(file: &File, path: &Path, leaf: bool) -> Result<(), Refusal> {
     let descriptor = descriptor(file.as_raw_handle())?;
     trusted_owner(&descriptor)?;
     let (mut present, mut defaulted, mut acl) = (0, 0, null_mut());
@@ -454,10 +465,17 @@ fn private_acl(file: &File, leaf: bool) -> Result<(), Refusal> {
             MapGenericMask(&mut mask, &mapping());
         }
         require(
-            mask & if leaf { FILE_ALL_ACCESS } else { REPLACE_CHILD } == 0
+            mask & if leaf {
+                FILE_ALL_ACCESS
+            } else {
+                replacement_access(path)
+            } == 0
                 || trusted_sid(&sid((&ace.SidStart as *const u32).cast_mut().cast())?)?,
             RefusalCode::Unavailable,
-            "another account can read/change protected state or replace its path",
+            format!(
+                "another account can read/change protected state or replace its path: {}",
+                path.display()
+            ),
         )?;
     }
     Ok(())
@@ -471,7 +489,7 @@ pub(crate) fn protected(path: &Path, directory: bool) -> Result<PathBuf, Refusal
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             OPEN_EXISTING,
         )?;
-        private_acl(&file, index == 0)?;
+        private_acl(&file, parent, index == 0)?;
         if index == 0 {
             require(
                 file.metadata().map_err(native::unavailable)?.is_dir() == directory,
@@ -500,7 +518,7 @@ pub(crate) fn private_file(path: &Path) -> Result<File, Refusal> {
         RefusalCode::Unavailable,
         "ledger requires a private regular file with one link",
     )?;
-    private_acl(&file, true)?;
+    private_acl(&file, path, true)?;
     Ok(file)
 }
 fn granted(file: &File, token: &Handle) -> Result<u32, Refusal> {
@@ -551,9 +569,18 @@ pub(crate) fn deny_workload_write(path: &Path, token: &Handle) -> Result<(), Ref
             OPEN_EXISTING,
         )?;
         require(
-            granted(&file, token)? & if index == 0 { CHANGE } else { REPLACE_CHILD } == 0,
+            granted(&file, token)?
+                & if index == 0 {
+                    CHANGE
+                } else {
+                    replacement_access(parent)
+                }
+                == 0,
             RefusalCode::Unavailable,
-            "workload account can modify protected executor inputs, executable or an ancestor",
+            format!(
+                "workload account can modify protected executor inputs, executable or an ancestor: {}",
+                parent.display()
+            ),
         )?;
     }
     Ok(())

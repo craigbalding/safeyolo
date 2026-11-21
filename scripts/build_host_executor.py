@@ -63,7 +63,7 @@ def main() -> None:
         "target": target,
         "profile": "production",
         "rustc": compiler,
-        "sha256": sha256(binary),
+        "binary_sha256": sha256(binary),
         "documentation": f"https://github.com/craigbalding/safeyolo/blob/{revision}/docs/host-execution-contract.md",
         "build_environment": {
             name: value for name, value in sorted(os.environ.items())
@@ -81,7 +81,7 @@ def main() -> None:
         archive.write(binary, binary.name)
         archive.write(ROOT / "LICENSE", "LICENSE")
         archive.writestr("host-executor.json", json.dumps(metadata, indent=2) + "\n")
-    print(json.dumps({"archive": str(args.output), "sha256": sha256(args.output), **metadata}))
+    print(json.dumps({"archive": str(args.output), "archive_sha256": sha256(args.output), **metadata}))
 
 
 if __name__ == "__main__":
