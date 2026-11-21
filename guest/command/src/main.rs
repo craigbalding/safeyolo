@@ -8,6 +8,7 @@ mod git_credential;
 mod lab_evidence;
 mod observation;
 mod probe;
+mod retained_state;
 mod supervision;
 
 use serde_json::Value;
@@ -173,6 +174,7 @@ fn run() -> Result<i32, Error> {
     match args.as_slice() {
         [clock] if clock == "clock-sync" => clock::run(false),
         [clock, watch] if clock == "clock-sync" && watch == "watch" => clock::run(true),
+        [state, rest @ ..] if state == "retained-state" => retained_state::run(rest),
         [git, rest @ ..] if git == "git-credential" => git_credential::run(&paths, rest),
         [version] if version == "--version" => {
             println!("{}", self::version());
