@@ -1,6 +1,7 @@
 """The HTTP witness keeps typed denial separate from failed execution and reuse."""
 
 import base64
+import contextlib
 import copy
 import hashlib
 import http.client
@@ -9,10 +10,12 @@ import json
 import os
 import runpy
 import shlex
+import shutil
 import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +30,7 @@ REPO = Path(__file__).resolve().parents[1]
 @pytest.fixture
 def witness(monkeypatch):
     directory = REPO / "tests/blackbox/host"
+    monkeypatch.syspath_prepend(str(directory.parent))
     monkeypatch.syspath_prepend(str(directory))
     spec = importlib.util.spec_from_file_location("hyperlight_network", directory / "hyperlight_network.py")
     module = importlib.util.module_from_spec(spec)
@@ -328,7 +332,7 @@ def test_scope_witness_requires_negative_findings_zero_denied_contacts_and_selec
     assert instance.policy == original
 
 
-@pytest.mark.parametrize("defect", [None, "expired_cached", "expired_run", "wrong_gate", "borrowed_positive", "denied_contact"])
+@pytest.mark.parametrize("defect", [None, "subject_cached", "subject_run", "subject_binding", "expired_cached", "expired_run", "wrong_gate", "borrowed_positive", "denied_contact"])
 def test_cache_witness_requires_expiry_and_separate_adopted_gate_evidence(
         witness, partial, tmp_path, monkeypatch, defect):
     contacts, calls, activations = [], [], []
@@ -352,17 +356,27 @@ def test_cache_witness_requires_expiry_and_separate_adopted_gate_evidence(
             index = len(calls)
             value = copy.deepcopy(partial["named_allowed"]["body"])
             evidence = value["evidence"]
+            evidence["subject"] = evidence["result"]["subject"] = request["subject"]
             evidence["acquisition"] = "reused_live_evidence" if index == 2 else "live"
             evidence["execution"]["run_id"] = "owned-1" if index <= 2 else f"owned-{index}"
             evidence["result"]["collected_at_ms"] = 1000 if index <= 2 else 2100
-            if index in (1, 3):
+            if index in (1, 3, 4):
                 contacts.append(request["subject"])
             if index == 3:
+                assert request["subject"] != calls[0][1]["subject"]
+                if defect == "subject_cached":
+                    evidence["acquisition"] = "reused_live_evidence"
+                if defect == "subject_run":
+                    evidence["execution"]["run_id"] = "owned-1"
+                if defect == "subject_binding":
+                    evidence["result"]["subject"] = calls[0][1]["subject"]
+            if index == 4:
+                assert request["subject"] == calls[0][1]["subject"]
                 if defect == "expired_cached":
                     evidence["acquisition"] = "reused_live_evidence"
                 if defect == "expired_run":
                     evidence["execution"]["run_id"] = "owned-1"
-            if index == 4:
+            if index == 5:
                 assert name == "hyperlight-other-gate"
                 evidence["execution"].update(gate_principal="gate:network-other-gate",
                     authorization_principal="gate:network-other-gate")
@@ -379,7 +393,7 @@ def test_cache_witness_requires_expiry_and_separate_adopted_gate_evidence(
             witness.cache_expiry_and_gate_separation(instance, "hyperlight", contacts)
     else:
         result = witness.cache_expiry_and_gate_separation(instance, "hyperlight", contacts)
-        assert len(calls) == 4 and len(contacts) == 2 and len(result) == 4
+        assert len(calls) == 5 and len(contacts) == 3 and len(result) == 5
     assert instance.policy == original and len(activations) == 2
     spec = json.loads((tmp_path / "hyperlight-other-gate-adopted.json").read_bytes())
     assert spec["gate_id"] == "network-other-gate"
@@ -726,7 +740,7 @@ def test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts(
     assert not config.get("ignore_hosts")
 
 
-@pytest.mark.parametrize("selected_engine", ["hyperlight", "hyperlight-unikraft"])
+@pytest.mark.parametrize("selected_engine", ["hyperlight", "hyperlight-unikraft", "gvisor", "vz"])
 def test_lifetime_continuation_skips_completed_authority_and_transport_cases(
         witness, selected_inputs, monkeypatch, selected_engine):
     args = selected_inputs
@@ -734,6 +748,12 @@ def test_lifetime_continuation_skips_completed_authority_and_transport_cases(
     args.continue_from = None
     witness.save(args.bundle / f"{selected_engine}-network.json", {
         "engine": {"guest": {"path": "core.elf", "sha256": "a" * 64}}})
+    if selected_engine in ("gvisor", "vz"):
+        args.base_root, args.bundle = args.bundle, None
+        (args.base_root / "config.toml").write_text("")
+        monkeypatch.setattr(witness, "stage_runtime", lambda *_args: None)
+        monkeypatch.setattr(witness.sys, "platform", "darwin" if selected_engine == "vz" else "linux")
+    witness.validate_engine_selection(witness.argparse.ArgumentParser(), args)
     calls, stopped = [], []
 
     class Instance:
@@ -768,6 +788,9 @@ def test_lifetime_continuation_skips_completed_authority_and_transport_cases(
     assert report["mode"] == "lifetimes"
     assert report["engines"] == {selected_engine: {"lifetimes": {"selected": selected_engine}}}
     assert report["contacts"] == [{"path": "/held-and-fresh"}]
+    if args.base_root is not None:
+        adopted = json.loads((args.scratch / f"{selected_engine}-adopted.json").read_bytes())
+        assert adopted["argv"][-1].endswith("/hold/" + selected_engine)
 
 
 def test_held_response_observes_eof_before_late_release(witness, tmp_path):
@@ -854,6 +877,149 @@ def test_live_delegation_filters_stopped_and_foreign_generations_before_uniquene
             witness.live_delegation(tmp_path, {old}, 789)
 
 
+@pytest.fixture
+def platform_job(witness, tmp_path):
+    # Only tiny records and a socket use /tmp, to fit sockaddr_un's path bound.
+    temporary = tempfile.TemporaryDirectory(prefix="bb-")
+    root = Path(temporary.name)
+    (root / "data").mkdir(parents=True)
+    (root / "config.toml").write_text("")
+    instance = SimpleNamespace(root=root, scratch=tmp_path)
+    children = []
+
+    @contextlib.contextmanager
+    def start(subject, *, stop_backend=True):
+        directory = root / "data/job-current"
+        (directory / "config.toml").parent.mkdir()
+        (directory / "config.toml").symlink_to(root / "config.toml")
+        (directory / "input").mkdir()
+        witness.save(directory / "input/request.json", {"subject": subject})
+        agent = directory / ("agents/job-" + "c" * 32)
+        (agent / "proxy").mkdir(parents=True)
+        # This is a CPU adapter, with a real process birth and argument vector.
+        # It does not start runsc or a guest.
+        child = subprocess.Popen(["runsc-sandbox", "-c", "import time; time.sleep(30)",
+                                  "--bundle=" + str(agent), "--platform=systrap"], executable=sys.executable,
+                                 env={**os.environ, "PYTHONHOME": sys.base_prefix})
+        children.append(child)
+        witness.save(agent / "runtime.json", {"name": agent.name, "agent_id": agent.name,
+            "run_id": "c" * 32, "backend_pid": child.pid, "backend_token": witness._process_start_token(child.pid)})
+        delegated = agent / "proxy/proxy.sock"
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(delegated))
+            listener.listen()
+            try:
+                yield instance, directory, delegated, child
+            finally:
+                if stop_backend:
+                    witness.stop(child)
+                shutil.rmtree(directory)
+
+    try:
+        yield instance, start
+    finally:
+        for child in children:
+            witness.stop(child)
+        temporary.cleanup()
+
+
+@pytest.mark.parametrize("defect", [None, "subject", "generation", "stale", "foreign_bundle", "missing_socket"])
+def test_platform_delegate_binds_input_generation_and_live_backend(witness, platform_job, defect):
+    instance, start = platform_job
+    subject = {"kind": "value", "value": "held-input"}
+    before = witness.job_directories(instance.root)
+    # Retained and unrelated roots share the instance but cannot select this run.
+    for name, value in (("old", subject), ("foreign", {"kind": "value", "value": "other"})):
+        directory = instance.root / ("data/job-" + name)
+        (directory / "input").mkdir(parents=True)
+        (directory / "config.toml").symlink_to(instance.root / "config.toml")
+        witness.save(directory / "input/request.json", {"subject": value})
+        if name == "old":
+            before.add(directory)
+    with start(subject) as (_, directory, delegated, _child):
+        record = delegated.parents[1] / "runtime.json"
+        run = json.loads(record.read_bytes())
+        if defect == "subject":
+            subject = {"kind": "value", "value": "unmatched"}
+        elif defect == "generation":
+            run["run_id"] = "d" * 32
+        elif defect == "stale":
+            run["backend_token"] = "stale-birth"
+        elif defect == "foreign_bundle":
+            run["backend_pid"] = os.getpid()
+            run["backend_token"] = witness._process_start_token(os.getpid())
+        elif defect == "missing_socket":
+            delegated.unlink()
+        witness.save(record, run)
+        if defect:
+            with pytest.raises((AssertionError, ValueError)):
+                witness.live_platform_delegation(instance, "gvisor", before, subject)
+        else:
+            selected, endpoint, observed = witness.live_platform_delegation(instance, "gvisor", before, subject)
+            assert (selected, endpoint) == (directory, delegated)
+            assert observed["agent"] == record.parent.name and observed["platform"] == "systrap"
+
+
+@pytest.mark.parametrize("mode", ["deadline", "revoke"])
+@pytest.mark.parametrize("defect", [None, "late_positive", "surviving_backend"])
+def test_platform_named_lifetime_observes_http_eof_and_backend_teardown(
+        witness, platform_job, tmp_path, monkeypatch, mode, defect):
+    instance, start = platform_job
+    observed, revoked = threading.Event(), threading.Event()
+    select_delegate = witness.live_platform_delegation
+
+    def select(*arguments):
+        result = select_delegate(*arguments)
+        observed.set()
+        return result
+
+    monkeypatch.setattr(witness, "live_platform_delegation", select)
+    with witness.ThreadingHTTPServer(("127.0.0.1", 0), witness.NetworkOrigin) as origin:
+        origin.contacts, origin.contacts_path = [], tmp_path / "contacts.json"
+        instance.args = SimpleNamespace(upstream_port=origin.server_port)
+        instance.proxy = SimpleNamespace(pid=os.getpid())
+        instance.policy = {"agents": {"gate:hyperlight-network-check": {"hosts": {
+            f"127.0.0.1:{origin.server_port}": {"egress": "allow"}}}}}
+        instance.apply = revoked.set
+
+        def invoke(_engine, request):
+            with start(request["subject"], stop_backend=defect != "surviving_backend"):
+                connection = http.client.HTTPConnection("127.0.0.1", origin.server_port, timeout=2)
+                try:
+                    connection.request("GET", "/hold/gvisor")
+                    assert observed.wait(3)
+                    if mode == "revoke":
+                        assert revoked.wait(3)
+                finally:
+                    connection.close()
+            if defect == "late_positive":
+                return 200, {"evidence": {"result": {"finding": {"positive": True}}}}
+            return ((409, {"error": "check authority changed while pending; late result discarded"}) if mode == "revoke"
+                    else (422, {"error": "check execution deadline exceeded; late result discarded"}))
+
+        instance.invoke = invoke
+        thread = threading.Thread(target=origin.serve_forever)
+        thread.start()
+        try:
+            if defect:
+                with pytest.raises(AssertionError):
+                    witness.held_named(instance, "gvisor", origin, mode)
+            else:
+                result = witness.held_named(instance, "gvisor", origin, mode)
+                assert result["run_id"] == "job-" + "c" * 32
+                assert result["subject"]["value"].endswith("/named-" + mode)
+                assert origin.held.closed.is_set() and origin.held.finished.is_set()
+                assert not witness.job_directories(instance.root)
+            # Preserve the actual failure response before any observer rejects it.
+            assert (tmp_path / f"gvisor-named-{mode}-result.json").is_file()
+            assert origin.contacts == [{"path": "/hold/gvisor"}]
+        finally:
+            origin.held.release.set()
+            origin.shutdown()
+            thread.join(timeout=3)
+    assert not thread.is_alive()
+
+
 @pytest.mark.parametrize("mode", ["deadline", "revoke"])
 @pytest.mark.parametrize("defect", [None, "positive", "cause", "status"])
 def test_named_lifetime_refuses_a_positive_or_unrelated_failure(witness, mode, defect):
@@ -928,6 +1094,7 @@ def test_lifetime_driver_requires_fresh_runs_and_current_policy_cache(witness, p
                 self.generation += 1
                 body["evidence"]["execution"]["run_id"] = f"fresh-{self.generation}"
                 body["evidence"]["acquisition"] = "reused_live_evidence" if defect == "fresh_cached" else "live"
+                body["evidence"]["subject"] = body["evidence"]["result"]["subject"] = request["subject"]
                 contacts.append({"path": subject})
                 self.cache[subject] = copy.deepcopy(body)
             return 200, body
@@ -946,6 +1113,80 @@ def test_lifetime_driver_requires_fresh_runs_and_current_policy_cache(witness, p
         results = witness.exercise_lifetimes(Instance(), "hyperlight", None, contacts)
         assert len(held_calls) == 5 and len(contacts) == 11
         assert results["policy-invalidated-cache"]["evidence"]["execution"]["run_id"] == "fresh-6"
+
+
+@pytest.mark.parametrize("engine", ["gvisor", "vz"])
+@pytest.mark.parametrize("defect", [None, "late_cached", "retired_run", "policy_cache", "wrong_engine", "wrong_subject"])
+def test_platform_named_lifetimes_require_same_subject_freshness_without_direct_replay(
+        witness, partial, tmp_path, monkeypatch, engine, defect):
+    contacts, held_calls, clock = [], [], [100.0]
+    monkeypatch.setattr(witness.time, "time", lambda: clock[0])
+    monkeypatch.setattr(witness.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    witness.save(tmp_path / f"{engine}-adopted.json", {"gate_id": "hyperlight-network-check"})
+
+    class Instance:
+        scratch = tmp_path
+        args = SimpleNamespace(upstream_port=12345)
+
+        def __init__(self):
+            self.cache, self.generation = {}, 0
+            self.policy = {"checks": {engine: {"max_age_seconds": 60, "source": {"limits": {}}}}}
+
+        def apply(self):
+            if not (defect == "policy_cache" and held_calls):
+                self.cache.clear()
+
+        def invoke(self, name, request):
+            subject = request["subject"]["value"]
+            key = name, subject
+            maximum_age = self.policy["checks"][name]["max_age_seconds"]
+            previous = self.cache.get(key)
+            if previous and clock[0] - previous[0] <= maximum_age:
+                body = copy.deepcopy(previous[1])
+                body["evidence"]["acquisition"] = "reused_live_evidence"
+            else:
+                body = copy.deepcopy(partial["named_allowed"]["body"])
+                self.generation += 1
+                evidence = body["evidence"]
+                evidence["subject"] = evidence["result"]["subject"] = request["subject"]
+                evidence["acquisition"] = "live"
+                evidence["execution"].update(engine=engine, outcome_source="guest_process",
+                    rootfs={"profile": "shared"}, run_id=f"fresh-{self.generation}")
+                evidence["result"]["collected_at_ms"] = int(clock[0] * 1000)
+                if name.endswith("-other-gate"):
+                    evidence["execution"].update(gate_principal="gate:network-other-gate",
+                        authorization_principal="gate:network-other-gate")
+                    evidence["result"]["finding"]["positive"] = False
+                else:
+                    contacts.append(request["subject"])
+                if defect == "retired_run" and subject.startswith("retired-"):
+                    evidence["execution"]["run_id"] = "retired"
+                if defect == "wrong_engine":
+                    evidence["execution"]["engine"] = "hyperlight"
+                if defect == "wrong_subject":
+                    evidence["result"]["subject"] = {"kind": "value", "value": "borrowed"}
+                self.cache[key] = clock[0], copy.deepcopy(body)
+            return 200, body
+
+    def held(instance, selected, origin, mode):
+        assert selected == engine
+        subject = {"kind": "value", "value": "retired-" + mode}
+        contacts.append(subject)
+        held_calls.append(mode)
+        if defect == "late_cached":
+            instance.invoke(engine, {"subject": subject})
+            contacts.pop()
+        return {"subject": subject, "run_id": "retired", "delegate": str(tmp_path / "retired.sock")}
+
+    monkeypatch.setattr(witness, "held_direct", lambda *_args: pytest.fail("completed direct job replayed"))
+    monkeypatch.setattr(witness, "held_named", held)
+    if defect:
+        with pytest.raises(AssertionError):
+            witness.exercise_lifetimes(Instance(), engine, None, contacts)
+    else:
+        result = witness.exercise_lifetimes(Instance(), engine, None, contacts)
+        assert held_calls == ["deadline", "revoke"] and len(contacts) == 8
+        assert set(result["freshness"]) == {"first", "cached", "different_subject", "expired", "different_gate"}
 
 
 @pytest.mark.parametrize("defect", [None, "caller_contact", "forged_accepted", "live_preview", "cycle_positive"])

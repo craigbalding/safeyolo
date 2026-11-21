@@ -323,9 +323,18 @@ Unikraft receives a pinned diagnostic Python checker using `safeyolo_proxy`.
 Core's installed `NetworkCheck` does not follow redirects and cannot supply
 this observation. A prepared mode is not evidence of an installed pass.
 The platform job and isolation witnesses cover their retained connections,
-direct-socket/DNS refusal and teardown. `--lifetimes-only` remains the focused
-Hyperlight continuation. None of these selections establishes unrun warm-state
-or checked-source-capture behavior.
+direct-socket/DNS refusal and teardown. On a prepared gVisor or VZ host,
+`--lifetimes-only` selects only the missing named-check observations. The origin
+holds a response until the check deadline or gate revocation closes the
+connection. The witness checks the selected input, run generation, live backend
+birth, removed socket and stopped backend before releasing the late response.
+The same subject must then acquire fresh evidence. Further calls check cache
+reuse, policy invalidation, expiry and separation by subject and adopted gate.
+This platform mode runs nine jobs and expects eight origin requests if all
+controls pass. It does not repeat the direct-job or caller/cycle cases.
+On Hyperlight, `--lifetimes-only` retains its direct and named lifetime cases.
+Prepared selections and CPU observer controls do not establish an installed
+pass, unrun warm-state behavior or checked-source capture.
 
 ## Mediated service access
 

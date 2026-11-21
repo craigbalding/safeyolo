@@ -689,14 +689,14 @@ paths = ["tests/test_hyperlight_network_witness.py"]
 controls = ["BB-29", "BB-31"]
 kind = "pytest"
 scope = "HTTP/HTTPS, shared engine scopes and authority/lifetime witness controls"
-adapter = "Retained Core observations, actual platform curl client over owned proxy sockets, and controlled job adapters with loopback HTTP/TLS, EOF, endpoint, contact and cache assertions; no VM or installed authority claim"
+adapter = "Retained Core observations, actual platform curl client over owned proxy sockets, and controlled job adapters with loopback HTTP/TLS, EOF, process-birth/backend teardown, endpoint, contact and cache assertions; no VM or installed authority claim"
 
 [[witnesses]]
 paths = ["tests/blackbox/host/hyperlight_network.py::main"]
 controls = ["BB-29", "BB-31"]
 kind = "procedure"
 scope = "Manual installed public-network direct/named witness for the selected job engine"
-adapter = "Shared public HTTP/HTTPS cases select Hyperlight bundles or installed gVisor/VZ inputs. Separate scope/caller modes cover method/path/destination refusal, adopted gates, expiry, cycle and offline effects. The scope HTTP 302 case proves only a negative finding without following. The separate redirect mode follows one hop in a gVisor/VZ/Unikraft guest, pairs allowed targets with scope removal, and requires exact-run proxy denial plus no target contact; Core follow remains unproved. Hyperlight lifetime mode retains held EOF and fresh/cache cases. Unrun modes/platforms remain unqualified, with no recurring maintained-run claim"
+adapter = "Shared public HTTP/HTTPS cases select Hyperlight bundles or installed gVisor/VZ inputs. Separate scope/caller modes cover method/path/destination refusal, adopted gates, expiry, cycle and offline effects. The scope HTTP 302 case proves only a negative finding without following. The separate redirect mode follows one hop in a gVisor/VZ/Unikraft guest, pairs allowed targets with scope removal, and requires exact-run proxy denial plus no target contact; Core follow remains unproved. Lifetime mode retains Hyperlight direct/named cases and selects only platform named deadline/revocation cases, with held EOF, backend teardown, same-subject late-result discard, policy invalidation, expiry and subject/gate cache separation. Unrun modes/platforms remain unqualified, with no recurring maintained-run claim"
 
 [[witnesses]]
 paths = ["tests/test_blackbox_execution_receipt.py", "tests/test_blackbox_catalogue.py"]

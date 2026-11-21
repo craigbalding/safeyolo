@@ -27,7 +27,9 @@ receipts retain their own source, artifact identities and contact counters.
 For gVisor or VZ select --engine gvisor or --engine vz and --base-root pointing
 to that host's prepared installation instead of --bundle. The same direct/named
 HTTP and TLS cases use the platform guest's existing curl client. Platform
-lifetime and direct-socket/DNS isolation remain in job_network.py/job_sandbox.py.
+direct-job lifetime and direct-socket/DNS isolation remain in
+job_network.py/job_sandbox.py. Platform --lifetimes-only selects named-check
+deadline/revocation, held-response teardown and current-policy/cache isolation.
 Use --scope for destination/method/path refusal, a negative HTTP 302 finding
 without automatic following, separate adopted gates and cache expiry. The 302
 case does not prove policy refusal of an attempted redirected request.
@@ -59,8 +61,9 @@ from pathlib import Path
 
 import tomlkit
 from hyperlight_services import Instance, digest, job_result, output, save, stop
+from installed_host_smoke import _process_start_token
 from job_network import create_upstream_certificate, stage_runtime, wait_ready
-from job_sandbox import job_directories
+from job_sandbox import job_directories, observe_backend
 
 # The adopted argv fixes this public probe's URL; no guest JSON parser or extra
 # package is needed. curl runs inside the platform guest, through its injected
@@ -208,6 +211,28 @@ def live_delegation(root, before, parent_pid):
     return directory, delegated
 
 
+def live_platform_delegation(instance, engine, before, subject):
+    """Bind a platform socket to this input, run and live backend birth."""
+    matches = []
+    for directory in job_directories(instance.root) - before:
+        request = json.loads((directory / "input/request.json").read_bytes())
+        if request.get("subject") != subject:
+            continue
+        for delegated in directory.glob("agents/job-*/proxy/proxy.sock"):
+            if not delegated.is_socket():
+                continue
+            record = delegated.parents[1] / "runtime.json"
+            run = json.loads(record.read_bytes())
+            assert run["name"] == run["agent_id"] == record.parent.name, run
+            assert record.parent.name == "job-" + run["run_id"], run
+            observed = observe_backend(record)
+            save(instance.scratch / f"{engine}-live-backend.json", observed)
+            assert observed["platform"] in (("vz",) if engine == "vz" else ("kvm", "systrap")), observed
+            matches.append((directory, delegated, observed))
+    assert len(matches) == 1, matches
+    return matches[0]
+
+
 def check_closed_delegation(path):
     with socket.socket(socket.AF_UNIX) as probe:
         probe.settimeout(2)
@@ -343,7 +368,8 @@ def held_direct(instance, engine, origin, mode):
 
 def held_named(instance, engine, origin, mode):
     held = origin.held = HeldResponse(instance.scratch / f"{engine}-named-{mode}-origin.json")
-    before = set((instance.root / "data").glob("job-hyperlight-*"))
+    platform = engine in ("gvisor", "vz")
+    before = job_directories(instance.root) if platform else set((instance.root / "data").glob("job-hyperlight-*"))
     subject = {"kind": "value", "value": f"http://127.0.0.1:{instance.args.upstream_port}/hold/{engine}/named-{mode}"}
     permission = None
     try:
@@ -352,9 +378,14 @@ def held_named(instance, engine, origin, mode):
             try:
                 assert held.entered.wait(20), f"{engine}/named-{mode}: no held origin request"
                 assert not pending.done(), "named invocation ended before trigger"
-                directory, delegated = live_delegation(instance.root, before, instance.proxy.pid)
+                if platform:
+                    directory, delegated, backend = live_platform_delegation(instance, engine, before, subject)
+                else:
+                    directory, delegated = live_delegation(instance.root, before, instance.proxy.pid)
+                    backend = None
                 save(instance.scratch / f"{engine}-named-{mode}-held.json",
-                     {"directory": str(directory), "delegate": str(delegated), "parent_pid": instance.proxy.pid})
+                     {"directory": str(directory), "delegate": str(delegated), "parent_pid": instance.proxy.pid,
+                      "subject": subject, "observed_backend": backend})
                 if mode == "revoke":
                     hosts = instance.policy["agents"]["gate:hyperlight-network-check"]["hosts"]
                     permission = hosts.pop(f"127.0.0.1:{instance.args.upstream_port}")
@@ -365,13 +396,19 @@ def held_named(instance, engine, origin, mode):
                 # bounded invocation thread; preserve its reached observations.
                 if not pending.done():
                     held.release.set()
+        result = {"status": status, "body": value, "subject": subject, "delegate": str(delegated)}
+        save(instance.scratch / f"{engine}-named-{mode}-result.json", result)
         check_unavailable_named(status, value, mode)
         assert held.closed.wait(5), "named teardown left the held upstream connection usable"
         check_closed_delegation(delegated)
         assert not directory.exists(), directory
+        if backend is not None:
+            assert _process_start_token(backend["pid"]) != backend["start_token"], backend
+            result.update(run_id=backend["agent"], observed_backend=backend)
         held.release.set()
         assert held.finished.wait(5), "late named origin response was not observed"
-        return {"status": status, "body": value}
+        save(instance.scratch / f"{engine}-named-{mode}-result.json", result)
+        return result
     finally:
         held.release.set()
         if permission is not None:
@@ -381,13 +418,16 @@ def held_named(instance, engine, origin, mode):
 
 
 def exercise_lifetimes(instance, engine, origin, contacts):
-    """Use the same held-response cases for both guest client implementations."""
+    """Keep platform named checks separate from already covered direct jobs."""
     results = {}
     check = instance.policy["checks"][engine]
     check["source"]["limits"]["timeout_ms"] = 20_000
     check["source"]["limits"]["max_cached"] = 2
     instance.apply()
-    for entry, modes in (("direct", ("cancel", "deadline", "revoke")), ("named", ("deadline", "revoke"))):
+    cases = (("direct", ("cancel", "deadline", "revoke")), ("named", ("deadline", "revoke")))
+    if engine in ("gvisor", "vz"):
+        cases = cases[1:]
+    for entry, modes in cases:
         for mode in modes:
             count = len(contacts)
             result = (held_direct if entry == "direct" else held_named)(instance, engine, origin, mode)
@@ -395,14 +435,21 @@ def exercise_lifetimes(instance, engine, origin, contacts):
             save(instance.scratch / f"{engine}-lifetimes.json", results)
             assert len(contacts) == count + 1, contacts
             subject = {"kind": "value", "value": f"http://127.0.0.1:{instance.args.upstream_port}/fresh/{engine}/{entry}-{mode}"}
+            if engine in ("gvisor", "vz"):
+                # Reuse the interrupted subject: a late positive result must
+                # not populate its cache. The held origin is now released.
+                subject = result["subject"]
             status, fresh = instance.invoke(engine, {"subject": subject})
-            check_named(status, fresh, True)
+            check_named(status, fresh, True, expected_engine=engine)
+            assert fresh["evidence"]["subject"] == fresh["evidence"]["result"]["subject"] == subject, fresh
             assert fresh["evidence"]["acquisition"] == "live", fresh
             assert len(contacts) == count + 2, contacts
-            if entry == "direct":
+            if "run_id" in result:
                 assert fresh["evidence"]["execution"]["run_id"] != result["run_id"], fresh
+            if "delegate" in result:
+                check_closed_delegation(Path(result["delegate"]))
             status, cached = instance.invoke(engine, {"subject": subject})
-            check_named(status, cached, True)
+            check_named(status, cached, True, expected_engine=engine)
             assert cached["evidence"]["acquisition"] == "reused_live_evidence", cached
             assert cached["evidence"]["execution"]["run_id"] == fresh["evidence"]["execution"]["run_id"], cached
             assert len(contacts) == count + 2, contacts
@@ -411,12 +458,15 @@ def exercise_lifetimes(instance, engine, origin, contacts):
     count = len(contacts)
     instance.apply()
     status, after_policy = instance.invoke(engine, {"subject": subject})
-    check_named(status, after_policy, True)
+    check_named(status, after_policy, True, expected_engine=engine)
     assert after_policy["evidence"]["acquisition"] == "live", after_policy
     assert after_policy["evidence"]["execution"]["run_id"] != fresh["evidence"]["execution"]["run_id"], after_policy
     assert len(contacts) == count + 1, contacts
     results["policy-invalidated-cache"] = after_policy
     save(instance.scratch / f"{engine}-lifetimes.json", results)
+    if engine in ("gvisor", "vz"):
+        results["freshness"] = cache_expiry_and_gate_separation(instance, engine, contacts)
+        save(instance.scratch / f"{engine}-lifetimes.json", results)
     return results
 
 
@@ -670,30 +720,39 @@ def cache_expiry_and_gate_separation(instance, engine, contacts):
         instance.apply()
         count = len(contacts)
         status, first = instance.invoke(engine, {"subject": subject})
-        check_named(status, first, True)
+        check_named(status, first, True, expected_engine=engine)
         assert first["evidence"]["acquisition"] == "live", first
         status, cached = instance.invoke(engine, {"subject": subject})
-        check_named(status, cached, True)
+        check_named(status, cached, True, expected_engine=engine)
         assert cached["evidence"]["acquisition"] == "reused_live_evidence", cached
         assert cached["evidence"]["execution"] == first["evidence"]["execution"], cached
         assert len(contacts) == count + 1, contacts
+        separate_subject = {**subject, "value": subject["value"] + "-other-subject"}
+        status, separate = instance.invoke(engine, {"subject": separate_subject})
+        check_named(status, separate, True, expected_engine=engine)
+        assert separate["evidence"]["subject"] == separate["evidence"]["result"]["subject"] == separate_subject, separate
+        assert separate["evidence"]["acquisition"] == "live", separate
+        assert separate["evidence"]["execution"]["run_id"] != first["evidence"]["execution"]["run_id"], separate
+        assert len(contacts) == count + 2, contacts
         # Do not activate another policy: that would test invalidation instead
         # of expiration of evidence from the current policy.
         collected = first["evidence"]["result"]["collected_at_ms"]
         time.sleep(max(0, (collected + 1100 - time.time() * 1000) / 1000))
         status, expired = instance.invoke(engine, {"subject": subject})
-        check_named(status, expired, True)
+        check_named(status, expired, True, expected_engine=engine)
         assert expired["evidence"]["acquisition"] == "live", expired
         assert expired["evidence"]["execution"]["run_id"] != first["evidence"]["execution"]["run_id"], expired
         assert expired["evidence"]["result"]["collected_at_ms"] > collected, expired
-        assert len(contacts) == count + 2, contacts
+        assert len(contacts) == count + 3, contacts
         status, denied = instance.invoke(other, {"subject": subject})
-        check_named(status, denied, False, gate="gate:network-other-gate")
+        check_named(status, denied, False, gate="gate:network-other-gate", expected_engine=engine)
         assert denied["evidence"]["acquisition"] == "live", denied
         assert denied["evidence"]["execution"]["run_id"] not in {
-            first["evidence"]["execution"]["run_id"], expired["evidence"]["execution"]["run_id"]}, denied
-        assert len(contacts) == count + 2, contacts
-        return {"first": first, "cached": cached, "expired": expired, "different_gate": denied}
+            first["evidence"]["execution"]["run_id"], expired["evidence"]["execution"]["run_id"],
+            separate["evidence"]["execution"]["run_id"]}, denied
+        assert len(contacts) == count + 3, contacts
+        return {"first": first, "cached": cached, "different_subject": separate,
+                "expired": expired, "different_gate": denied}
     finally:
         instance.policy = original
         instance.apply()
@@ -778,7 +837,8 @@ def adopt_network_checks(instance, engines):
                        "controls": {"test_context": {"action": "warn"}}, "checks": {}}
     for engine in engines:
         if engine in ("gvisor", "vz"):
-            url = f"{'https' if args.tls else 'http'}://127.0.0.1:{args.upstream_port}/{engine}"
+            route = f"/hold/{engine}" if args.lifetimes_only else f"/{engine}"
+            url = f"{'https' if args.tls else 'http'}://127.0.0.1:{args.upstream_port}{route}"
             spec = {"engine": {"kind": "platform"}, "gate_id": "hyperlight-network-check",
                     "argv": ["/bin/bash", "-euo", "pipefail", "-c",
                              PLATFORM_REDIRECT_CHECKER if args.redirect else PLATFORM_CHECKER,
@@ -887,7 +947,9 @@ def exercise(args):
                          "adopted gate scopes, cache expiry and separate-gate evidence" if args.scope else
                          "adopted caller/gate separation, forged inputs/headers, cycle refusal and offline effects"))
     elif args.authority or args.lifetimes_only:
-        print("PASS: generic stream direct/named deadlines and revocation, cancellation, EOF/endpoint teardown and fresh/cached invocations")
+        print("PASS: " + ("platform named deadline/revocation, EOF/backend teardown, late-result discard and policy/expiry/subject/gate cache separation"
+                         if args.base_root is not None else
+                         "generic stream direct/named deadlines and revocation, cancellation, EOF/endpoint teardown and fresh/cached invocations"))
     else:
         protocol = "HTTPS/CONNECT refusal" if args.tls else "HTTP"
         print(f"PASS: public {protocol} direct/named allow, permission removal and validation contact counters"
@@ -901,8 +963,8 @@ def validate_engine_selection(parser, args):
         parser.error("select --engine gvisor/vz with --base-root; Hyperlight engines require --bundle")
     if args.base_root is not None and (sys.platform == "darwin") != (args.engine == "vz"):
         parser.error("select the host's actual platform engine: VZ on macOS, gVisor on Linux")
-    if args.base_root is not None and (args.authority or args.lifetimes_only):
-        parser.error("platform engines use --scope, --caller-only or HTTP/TLS; their lifetime witness is job_network.py")
+    if args.base_root is not None and args.authority:
+        parser.error("platform engines use --lifetimes-only for named checks; direct lifetimes remain in job_network.py; use --caller-only for authority")
 
 
 def main():
