@@ -464,6 +464,60 @@ def test_uncommitted_mirror_does_not_replace_completed_checkpoint(guest):
     assert "/etc/fixture.conf" in saved(state)["restore"]["configuration_changes"]
 
 
+@pytest.mark.parametrize("mode", [0o400, 0o440])
+def test_configuration_copy_without_timestamp_permission(guest, tmp_path, monkeypatch, mode):
+    root, state, command = guest
+    tools = tmp_path / "copy-tools"
+    tools.mkdir()
+    copier = tools / "cp"
+    # Model the actual gofer refusal without requiring a protected runtime.
+    # Ownership and mode still come from the retained configuration record.
+    copier.write_text(
+        '#!/bin/sh\nfor option do\n'
+        '  case "$option" in --preserve=*timestamps*) echo "timestamps denied" >&2; exit 1;; esac\n'
+        'done\nexec ' + shlex.quote(shutil.which("cp")) + ' "$@"\n'
+    )
+    copier.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ["PATH"])
+    config = root / "etc/private.conf"
+    config.write_text("synthetic private configuration\n")
+    config.chmod(mode)
+    os.utime(config, (1700000000, 1700000000))
+    link = root / "etc/private-link"
+    link.symlink_to(config.name)
+    run(*command, "capture")
+    record = saved(state)
+    expected = record["configuration"]["/etc/private.conf"]
+    for copied in (config, state / "configuration/etc/private.conf"):
+        metadata = copied.stat()
+        assert hashlib.sha256(copied.read_bytes()).hexdigest() == expected["hash"]
+        assert metadata.st_mode & 0o7777 == mode == expected["mode"]
+        assert (metadata.st_uid, metadata.st_gid) == (expected["uid"], expected["gid"])
+    assert (state / "configuration/etc/private-link").readlink() == Path(config.name)
+    assert state.stat().st_mode & 0o7777 == 0o700
+    assert (state / "configuration").stat().st_mode & 0o7777 == 0o700
+    config.unlink()
+    link.unlink()
+    run(*command, "restore")
+    assert {"/etc/private.conf", "/etc/private-link"} <= set(saved(state)["restore"]["configuration_changes"])
+    assert not config.exists()
+    assert not link.is_symlink()
+    # Alternate roots support previews. Installed --apply remains separate proof.
+    config.write_text("reviewed private configuration\n")
+    config.chmod(mode)
+    run(*command, "resolve", "/etc/private.conf")
+    assert (state / "configuration/etc/private.conf").read_text() == "reviewed private configuration\n"
+    assert (state / "configuration/etc/private.conf").stat().st_mode & 0o7777 == mode
+    before = saved(state)
+    copier.write_text('#!/bin/sh\necho "synthetic copy failure" >&2\nexit 23\n')
+    (root / "etc/new-setting").write_text("not completed\n")
+    result = run(*command, "capture", check=False)
+    assert result.returncode
+    assert "synthetic copy failure" in result.stderr
+    assert saved(state)["last_completed_capture"] == before["last_completed_capture"]
+    assert "synthetic copy failure" in saved(state)["capture_error"]
+
+
 def test_interrupted_dpkg_and_capture_failure_remain_visible(guest, tmp_path):
     import signal
     import socket

@@ -194,13 +194,11 @@ fn copy_file(source: &Path, target: &Path, value: &Value) -> Result<(), Error> {
         if target.symlink_metadata().is_ok() {
             remove(target)?;
         }
+        // Apply recorded ownership and mode below. Timestamps are not recorded.
+        // Preserving source timestamps can fail across the guest home mount.
         output(
             Command::new("cp")
-                .args([
-                    "--no-dereference",
-                    "--preserve=mode,ownership,timestamps",
-                    "--",
-                ])
+                .args(["--no-dereference", "--"])
                 .arg(source)
                 .arg(target),
         )?;
