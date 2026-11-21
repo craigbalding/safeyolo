@@ -2,11 +2,13 @@
 //! containment remain with their owners; validation alone never executes code.
 
 mod authority;
+mod ledger;
 mod package;
 mod protocol;
 
 pub use crate::host_runs::AgentRun;
 pub use authority::*;
+pub use ledger::*;
 pub use package::*;
 pub use protocol::*;
 

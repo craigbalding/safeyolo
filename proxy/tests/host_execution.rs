@@ -117,11 +117,441 @@ fn signed(request: Request) -> Vec<u8> {
 }
 
 fn prepare(target: &Target, invocation: Invocation) -> Prepared {
-    let bytes = signed(request(Action::Propose { invocation }, "proposal"));
+    let bytes = signed(request_for(
+        target,
+        Action::Propose { invocation },
+        "proposal",
+    ));
     let auth = target
         .authenticate("POST", Verb::Propose.path(), &bytes, NOW)
         .unwrap();
     target.prepare(&auth, Usage::default()).unwrap()
+}
+
+fn ledger_root() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    root
+}
+
+fn ledger_limits() -> LedgerLimits {
+    LedgerLimits {
+        jobs: 8,
+        mutation_records: 16,
+        output_bytes: 4096,
+        database_bytes: 1024 * 1024,
+        request_bytes: 65536,
+    }
+}
+
+fn ledger_invoke(target: &Target, id: &str) -> Request {
+    request_for(
+        target,
+        Action::Invoke {
+            invocation: prepare(target, invocation(target)).invocation,
+        },
+        id,
+    )
+}
+
+fn job_response(response: Response) -> Receipt {
+    match response {
+        Response::Job { receipt } => *receipt,
+        _ => panic!("expected a retained job receipt"),
+    }
+}
+
+#[test]
+fn durable_admission_replay_restart_and_uncertain_process_reservation() {
+    let root = ledger_root();
+    let target = fixture_target();
+    let req = ledger_invoke(&target, "ledger-first");
+    let mut ledger = Ledger::open(root.path(), &target.target_id, ledger_limits()).unwrap();
+    let first = ledger
+        .handle(&target, Verb::Invoke.path(), &signed(req.clone()), NOW)
+        .unwrap();
+    assert!(first.dispatch);
+    let admitted = job_response(first.response);
+    ledger.begin(&target, &admitted.job_id, NOW).unwrap();
+    assert_eq!(
+        ledger
+            .append_output(&admitted.job_id, b"observed output", NOW)
+            .unwrap(),
+        15
+    );
+    drop(ledger);
+
+    let mut ledger = Ledger::open(root.path(), &target.target_id, ledger_limits()).unwrap();
+    let recovered = ledger.recover(NOW + 1).unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].state, JobState::Uncertain);
+    let replay = ledger
+        .handle(&target, Verb::Invoke.path(), &signed(req.clone()), NOW + 1)
+        .unwrap();
+    assert!(!replay.dispatch);
+    assert_eq!(job_response(replay.response).revision, admitted.revision);
+    assert!(ledger.begin(&target, &admitted.job_id, NOW + 1).is_err());
+
+    let req2 = ledger_invoke(&target, "ledger-second");
+    assert_eq!(
+        ledger
+            .handle(&target, Verb::Invoke.path(), &signed(req2.clone()), NOW + 1)
+            .err()
+            .unwrap()
+            .code,
+        RefusalCode::Budget,
+        "uncertain processes must still consume concurrency"
+    );
+    let quiescent = ledger
+        .confirm_quiescent(
+            &admitted.job_id,
+            NOW + 2,
+            "fixture has launched no native process",
+        )
+        .unwrap();
+    assert_eq!(quiescent.state, JobState::Uncertain);
+    let next = ledger
+        .handle(&target, Verb::Invoke.path(), &signed(req2), NOW + 2)
+        .unwrap();
+    assert!(next.dispatch);
+
+    let read = request_for(
+        &target,
+        Action::Output {
+            job_id: admitted.job_id.clone(),
+            offset: 0,
+            max_bytes: 512,
+        },
+        "ledger-output",
+    );
+    let Response::Output {
+        data_base64,
+        retained_bytes,
+        ..
+    } = ledger
+        .handle(&target, Verb::Output.path(), &signed(read), NOW + 2)
+        .unwrap()
+        .response
+    else {
+        panic!("output unavailable")
+    };
+    assert_eq!(retained_bytes, 15);
+    assert_eq!(STANDARD.decode(data_base64).unwrap(), b"observed output");
+    let mut conflict = req;
+    conflict.untrusted_rationale.push('!');
+    assert_eq!(
+        ledger
+            .handle(&target, Verb::Invoke.path(), &signed(conflict), NOW + 2)
+            .err()
+            .unwrap()
+            .code,
+        RefusalCode::Conflict
+    );
+}
+
+#[test]
+fn durable_cancellation_output_limits_ownership_and_fresh_authority() {
+    let root = ledger_root();
+    let mut target = fixture_target();
+    let mut ledger = Ledger::open(root.path(), &target.target_id, ledger_limits()).unwrap();
+    let req = ledger_invoke(&target, "ledger-running");
+    let admitted = job_response(
+        ledger
+            .handle(&target, Verb::Invoke.path(), &signed(req.clone()), NOW)
+            .unwrap()
+            .response,
+    );
+    let running = ledger.begin(&target, &admitted.job_id, NOW).unwrap();
+    assert!(ledger.begin(&target, &admitted.job_id, NOW).is_err());
+    assert_eq!(
+        ledger
+            .append_output(&admitted.job_id, &[7; 600], NOW)
+            .unwrap(),
+        512
+    );
+    let read = request_for(
+        &target,
+        Action::Job {
+            job_id: admitted.job_id.clone(),
+        },
+        "ledger-read",
+    );
+    let current = job_response(
+        ledger
+            .handle(&target, Verb::Job.path(), &signed(read), NOW)
+            .unwrap()
+            .response,
+    );
+    assert_eq!(current.revision, running.revision + 1);
+    let cancel = request_for(
+        &target,
+        Action::Cancel {
+            job_id: admitted.job_id.clone(),
+            expected_revision: current.revision,
+        },
+        "ledger-cancel",
+    );
+    let cancellation = job_response(
+        ledger
+            .handle(&target, Verb::Cancel.path(), &signed(cancel.clone()), NOW)
+            .unwrap()
+            .response,
+    );
+    assert!(cancellation.cancellation_requested);
+    assert_eq!(cancellation.state, JobState::Running);
+    assert!(
+        ledger
+            .finish(
+                &admitted.job_id,
+                JobState::Cancelled,
+                false,
+                NOW,
+                "not observed".into()
+            )
+            .is_err()
+    );
+    let ended = ledger
+        .finish(
+            &admitted.job_id,
+            JobState::Cancelled,
+            true,
+            NOW,
+            "fixture confirms no native process was launched".into(),
+        )
+        .unwrap();
+    assert_eq!(ended.output_bytes, 512);
+    assert!(ended.output_sha256.is_some());
+    assert!(
+        !ledger
+            .handle(&target, Verb::Cancel.path(), &signed(cancel), NOW)
+            .unwrap()
+            .dispatch
+    );
+
+    let grant = target.issuers["sy-issuer"].authority.grants["grant-demo"].clone();
+    target
+        .issuers
+        .get_mut("sy-issuer")
+        .unwrap()
+        .authority
+        .grants
+        .insert("other-grant".into(), grant);
+    let mut read = request_for(
+        &target,
+        Action::Job {
+            job_id: admitted.job_id,
+        },
+        "ledger-wrong-owner",
+    );
+    read.grant_id = "other-grant".into();
+    assert_eq!(
+        ledger
+            .handle(&target, Verb::Job.path(), &signed(read), NOW)
+            .err()
+            .unwrap()
+            .code,
+        RefusalCode::Authority
+    );
+    target
+        .issuers
+        .get_mut("sy-issuer")
+        .unwrap()
+        .authority
+        .grants
+        .remove("grant-demo");
+    assert_eq!(
+        ledger
+            .handle(&target, Verb::Invoke.path(), &signed(req), NOW)
+            .err()
+            .unwrap()
+            .code,
+        RefusalCode::Authority
+    );
+}
+
+#[test]
+fn durable_ledger_lock_target_and_capacity_refusals_leave_no_admission() {
+    let root = ledger_root();
+    let target = fixture_target();
+    let mut limits = ledger_limits();
+    limits.output_bytes = 511;
+    let mut ledger = Ledger::open(root.path(), &target.target_id, limits.clone()).unwrap();
+    assert!(Ledger::open(root.path(), &target.target_id, limits.clone()).is_err());
+    let req = ledger_invoke(&target, "ledger-capacity");
+    assert_eq!(
+        ledger
+            .handle(&target, Verb::Invoke.path(), &signed(req.clone()), NOW)
+            .err()
+            .unwrap()
+            .code,
+        RefusalCode::Budget
+    );
+    assert!(ledger.recover(NOW).unwrap().is_empty());
+    drop(ledger);
+    assert!(Ledger::open(root.path(), "another-target", limits).is_err());
+    let mut ledger = Ledger::open(root.path(), &target.target_id, ledger_limits()).unwrap();
+    let admitted = ledger
+        .handle(&target, Verb::Invoke.path(), &signed(req), NOW)
+        .unwrap();
+    assert!(
+        admitted.dispatch,
+        "failed reservations must not spend a call or request ID"
+    );
+}
+
+#[test]
+fn durable_ledger_refuses_links_and_public_files() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let root = ledger_root();
+    let external = tempfile::NamedTempFile::new().unwrap();
+    symlink(external.path(), root.path().join("jobs.sqlite")).unwrap();
+    assert!(Ledger::open(root.path(), "target-demo", ledger_limits()).is_err());
+    assert_eq!(std::fs::read(external.path()).unwrap(), b"");
+    std::fs::remove_file(root.path().join("jobs.sqlite")).unwrap();
+    std::fs::write(root.path().join("jobs.sqlite"), b"").unwrap();
+    std::fs::set_permissions(
+        root.path().join("jobs.sqlite"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    assert!(Ledger::open(root.path(), "target-demo", ledger_limits()).is_err());
+}
+
+#[test]
+#[ignore = "child process for durable_process_failure_after_committed_admission"]
+fn durable_crash_child() {
+    let Some(root) = std::env::var_os("SAFEYOLO_LEDGER_CRASH_ROOT") else {
+        return;
+    };
+    let target = fixture_target();
+    let mut ledger = Ledger::open(
+        std::path::Path::new(&root),
+        &target.target_id,
+        ledger_limits(),
+    )
+    .unwrap();
+    let req = ledger_invoke(&target, "ledger-crash");
+    assert!(
+        ledger
+            .handle(&target, Verb::Invoke.path(), &signed(req), NOW)
+            .unwrap()
+            .dispatch
+    );
+    // Do not run destructors or deliver a response. The admission transaction
+    // must already be durable and must never select another native dispatch.
+    std::process::exit(77);
+}
+
+#[test]
+fn durable_process_failure_after_committed_admission() {
+    let root = ledger_root();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "durable_crash_child", "--ignored"])
+        .env("SAFEYOLO_LEDGER_CRASH_ROOT", root.path())
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(77));
+    let target = fixture_target();
+    let mut ledger = Ledger::open(root.path(), &target.target_id, ledger_limits()).unwrap();
+    let recovered = ledger.recover(NOW).unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].state, JobState::Uncertain);
+    let req = ledger_invoke(&target, "ledger-crash");
+    let replay = ledger
+        .handle(&target, Verb::Invoke.path(), &signed(req), NOW)
+        .unwrap();
+    assert!(!replay.dispatch);
+    assert_eq!(job_response(replay.response).job_id, recovered[0].job_id);
+}
+
+#[test]
+fn durable_storage_failure_rolls_back_call_and_replay_reservations() {
+    let root = ledger_root();
+    let target = fixture_target();
+    let mut limits = ledger_limits();
+    limits.database_bytes = 128 * 1024;
+    limits.request_bytes = 400 * 1024;
+    let mut ledger = Ledger::open(root.path(), &target.target_id, limits).unwrap();
+    let mut req = ledger_invoke(&target, "ledger-full");
+    req.untrusted_rationale = "x".repeat(200 * 1024);
+    assert_eq!(
+        ledger
+            .handle(&target, Verb::Invoke.path(), &signed(req.clone()), NOW)
+            .err()
+            .unwrap()
+            .code,
+        RefusalCode::Unavailable
+    );
+    assert!(ledger.recover(NOW).unwrap().is_empty());
+    req.untrusted_rationale.clear();
+    assert!(
+        ledger
+            .handle(&target, Verb::Invoke.path(), &signed(req), NOW)
+            .unwrap()
+            .dispatch
+    );
+    assert!(
+        std::fs::metadata(root.path().join("jobs.sqlite"))
+            .unwrap()
+            .len()
+            <= 128 * 1024
+    );
+}
+
+#[test]
+fn durable_uncertain_concurrency_survives_a_new_grant_revision() {
+    let root = ledger_root();
+    let mut target = fixture_target();
+    let mut ledger = Ledger::open(root.path(), &target.target_id, ledger_limits()).unwrap();
+    let first = ledger_invoke(&target, "ledger-old-grant");
+    let admitted = job_response(
+        ledger
+            .handle(&target, Verb::Invoke.path(), &signed(first), NOW)
+            .unwrap()
+            .response,
+    );
+    ledger.begin(&target, &admitted.job_id, NOW).unwrap();
+    ledger
+        .finish(
+            &admitted.job_id,
+            JobState::Uncertain,
+            false,
+            NOW,
+            "fixture has no process-termination observation".into(),
+        )
+        .unwrap();
+    target
+        .issuers
+        .get_mut("sy-issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant-demo")
+        .unwrap()
+        .expires_at += 1;
+    let next = ledger_invoke(&target, "ledger-new-grant");
+    assert_eq!(
+        ledger
+            .handle(&target, Verb::Invoke.path(), &signed(next.clone()), NOW)
+            .err()
+            .unwrap()
+            .code,
+        RefusalCode::Budget
+    );
+    ledger
+        .confirm_quiescent(
+            &admitted.job_id,
+            NOW,
+            "fixture has launched no native process",
+        )
+        .unwrap();
+    assert!(
+        ledger
+            .handle(&target, Verb::Invoke.path(), &signed(next), NOW)
+            .unwrap()
+            .dispatch
+    );
 }
 
 #[test]
