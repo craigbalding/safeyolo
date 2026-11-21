@@ -2,6 +2,8 @@
 //! Run --prepare ROOT CREDENTIAL, then --native ROOT [--service]. The test host
 //! supplies an ordinary workload account, private control/state ACLs, a readable
 //! programs directory and writable work directory. No compiler/Python is used.
+//! --recover ROOT ATTEMPT and --storage ROOT ATTEMPT run focused checks using the
+//! retained prepared account, catalogue and ledger; they do not repeat starters.
 #[cfg(windows)]
 mod common;
 #[cfg(windows)]

@@ -15,8 +15,20 @@ use windows_sys::Win32::{
     Foundation::*,
     Security::{Authorization::*, *},
     Storage::FileSystem::*,
-    System::{Pipes::GetNamedPipeServerProcessId, Services::*, Threading::*},
+    System::{
+        JobObjects::*, Pipes::GetNamedPipeServerProcessId, Services::*,
+        SystemServices::JOB_OBJECT_QUERY, Threading::*,
+    },
 };
+
+struct Handle(HANDLE);
+impl Drop for Handle {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
 
 fn server_identity(pipe: &std::fs::File) -> std::io::Result<()> {
     // Identify the selected executor before sending a signed request. SQOS on
@@ -28,14 +40,6 @@ fn server_identity(pipe: &std::fs::File) -> std::io::Result<()> {
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if process.is_null() {
         return Err(std::io::Error::last_os_error());
-    }
-    struct Handle(HANDLE);
-    impl Drop for Handle {
-        fn drop(&mut self) {
-            unsafe {
-                CloseHandle(self.0);
-            }
-        }
     }
     let process = Handle(process);
     let mut own = null_mut();
@@ -606,26 +610,142 @@ fn native(root: PathBuf, service: bool) {
     ));
     fs::write(config_path(&fixture.root), &original).unwrap();
     if !service {
-        let (receipt, signed) = fixture.invoke("wait");
-        let end = Instant::now() + Duration::from_secs(2);
-        while fixture.job(&receipt.job_id).output_bytes == 0 {
-            assert!(Instant::now() < end);
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        fixture.server.as_mut().unwrap().kill().unwrap();
-        fixture.server.as_mut().unwrap().wait().unwrap();
-        fixture.start();
-        assert_eq!(fixture.job(&receipt.job_id).state, JobState::Uncertain);
-        let Response::Job { receipt: replay } = fixture.bytes(Verb::Invoke, &signed) else {
-            panic!("lost-reply replay refused");
-        };
-        assert_eq!(replay.job_id, receipt.job_id);
-        assert_eq!(fixture.job(&receipt.job_id).state, JobState::Uncertain);
+        recover_controller(&mut fixture);
     }
     println!(
         "Windows {} native observations, broader profile, lifecycle, reload and starter commands passed",
         fixture.phase
     );
+}
+
+fn restart(fixture: &mut Fixture) {
+    fixture.server.as_mut().unwrap().kill().unwrap();
+    fixture.server.as_mut().unwrap().wait().unwrap();
+    fixture.start();
+}
+
+fn recover_controller(fixture: &mut Fixture) {
+    let (receipt, signed) = fixture.invoke("wait");
+    println!("crash check admitted job {}", receipt.job_id);
+    let end = Instant::now() + Duration::from_secs(2);
+    while fixture.job(&receipt.job_id).output_bytes == 0 {
+        assert!(Instant::now() < end);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Observe the exact process handle before the crash; PID reuse cannot make
+    // this check mistake another process for the original workload. Close our
+    // temporary Job handle before killing the executor so kill-on-close applies.
+    let job_name = wide(&format!(
+        "Local\\SafeYolo-host-{}-{}",
+        fixture.target.target_id, receipt.job_id
+    ));
+    let job = Handle(unsafe { OpenJobObjectW(JOB_OBJECT_QUERY, 0, job_name.as_ptr()) });
+    assert!(!job.0.is_null());
+    #[repr(C)]
+    struct ProcessIds {
+        assigned: u32,
+        listed: u32,
+        // The prepared wait operation admits at most twelve Job processes.
+        pids: [usize; 12],
+    }
+    let mut ids = ProcessIds {
+        assigned: 0,
+        listed: 0,
+        pids: [0; 12],
+    };
+    assert_ne!(
+        unsafe {
+            QueryInformationJobObject(
+                job.0,
+                JobObjectBasicProcessIdList,
+                (&mut ids as *mut ProcessIds).cast(),
+                std::mem::size_of_val(&ids) as u32,
+                null_mut(),
+            )
+        },
+        0,
+        "Job process list: {}; assigned={}, listed={}",
+        std::io::Error::last_os_error(),
+        ids.assigned,
+        ids.listed
+    );
+    assert!(ids.listed > 0 && ids.listed as usize <= ids.pids.len());
+    let processes: Vec<_> = ids.pids[..ids.listed as usize]
+        .iter()
+        .map(|pid| {
+            let process = Handle(unsafe { OpenProcess(SYNCHRONIZE, 0, *pid as u32) });
+            assert!(
+                !process.0.is_null(),
+                "open original Job process: {}",
+                std::io::Error::last_os_error()
+            );
+            process
+        })
+        .collect();
+    drop(job);
+    restart(fixture);
+    for process in &processes {
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.0, 5000) },
+            WAIT_OBJECT_0
+        );
+    }
+    assert_eq!(fixture.job(&receipt.job_id).state, JobState::Uncertain);
+    let Response::Job { receipt: replay } = fixture.bytes(Verb::Invoke, &signed) else {
+        panic!("lost-reply replay refused");
+    };
+    assert_eq!(replay.job_id, receipt.job_id);
+    assert_eq!(fixture.job(&receipt.job_id).state, JobState::Uncertain);
+    println!(
+        "original {} Job processes stopped after controller crash; uncertain receipt and exact replay retained without redispatch",
+        processes.len()
+    );
+}
+
+fn storage_exhaustion(fixture: &mut Fixture) {
+    let (receipt, signed) = fixture.invoke("flood");
+    let completed = fixture.terminal(&receipt.job_id);
+    assert!(completed.native.as_ref().unwrap().processes_stopped);
+    assert_eq!(
+        completed.native.as_ref().unwrap().termination_reason,
+        "output_limit"
+    );
+    let output = fixture.output(&receipt.job_id);
+    assert!(!output.is_empty());
+    let path = config_path(&fixture.root);
+    let original = fs::read(&path).unwrap();
+    for (jobs, retained_output) in [(1, 8 * 1024 * 1024), (128, 1)] {
+        let mut config: Configuration = serde_json::from_slice(&original).unwrap();
+        config.ledger.jobs = jobs;
+        config.ledger.output_bytes = retained_output;
+        fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        restart(fixture);
+        let operation = &fixture.target.package.operations["observe"];
+        let invocation = Invocation {
+            operation_id: "observe".into(),
+            resource_id: "fixture".into(),
+            package_sha256: revision(&fixture.target.package),
+            implementation_sha256: operation.implementation_sha256(),
+            arguments: BTreeMap::new(),
+            expected_assessment_sha256: None,
+        };
+        let Response::Proposal { prepared } = fixture.call(Action::Propose { invocation }) else {
+            panic!("storage exhaustion disabled proposal")
+        };
+        assert!(
+            matches!(fixture.call(Action::Invoke { invocation: prepared.invocation }), Response::Refused { refusal } if refusal.code == RefusalCode::Budget)
+        );
+        let Response::Job { receipt: replay } = fixture.bytes(Verb::Invoke, &signed) else {
+            panic!("storage exhaustion lost replay")
+        };
+        assert_eq!(replay.job_id, receipt.job_id);
+        assert_eq!(fixture.output(&receipt.job_id), output);
+        println!(
+            "storage ceiling jobs={jobs}, output_bytes={retained_output}: fresh effect refused; old replay and output retained after restart"
+        );
+    }
+    fs::write(path, original).unwrap();
+    restart(fixture);
 }
 
 fn probe(args: &[String]) {
@@ -781,6 +901,15 @@ pub fn main() {
             PathBuf::from(&args[1]),
             args.get(2).is_some_and(|s| s == "--service"),
         ),
+        Some(mode @ ("--recover" | "--storage")) if args.len() == 3 => {
+            let mut fixture = Fixture::new(PathBuf::from(&args[1]), false);
+            fixture.phase = format!("{}-{}", mode.trim_start_matches("--"), args[2]);
+            if mode == "--recover" {
+                recover_controller(&mut fixture);
+            } else {
+                storage_exhaustion(&mut fixture);
+            }
+        }
         Some("--dummy-service") => {
             let mut name = wide("SafeYolo1671Fixture");
             let table = [
