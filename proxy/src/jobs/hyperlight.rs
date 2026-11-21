@@ -85,13 +85,6 @@ pub(super) fn validate_spec(spec: &JobSpec) -> Result<(), Error> {
                 .into(),
         );
     }
-    if spec.network {
-        // DOC: docs/hyperlight-jobs.md
-        return Err(
-            "Hyperlight jobs require network=false; use mediated_services for service access"
-                .into(),
-        );
-    }
     if spec.privilege != Privilege::Unprivileged {
         return Err("Hyperlight jobs cannot supply Unix guest-root privilege".into());
     }
@@ -325,13 +318,43 @@ async fn stop(helper: &mut Helper) -> Result<HelperProcessStatus, Error> {
     {
         let error = std::io::Error::last_os_error();
         if error.raw_os_error() != Some(libc::ESRCH) {
-            return Err(error.into());
+            let failure =
+                format!("could not SIGKILL Hyperlight helper process group {group}: {error}");
+            // Darwin can deny group signalling while the helper is exiting.
+            // Closing the bridge starts exit; it need not be waitable yet.
+            // Reuse the bounded stop wait, then prove the group is absent.
+            // DOC: docs/hyperlight-jobs.md
+            if error.raw_os_error() == Some(libc::EPERM) {
+                return reap_after_denied_group_kill(helper)
+                    .await
+                    .map_err(|cleanup| format!("{failure}; {cleanup}").into());
+            }
+            return Err(failure.into());
         }
     }
     let status = tokio::time::timeout(Duration::from_secs(5), helper.child.wait())
         .await
         .map_err(|_| "Hyperlight helper did not stop after SIGKILL; VM cleanup is unproved")??;
     helper.group = None;
+    observed_status(status)
+}
+
+async fn reap_after_denied_group_kill(helper: &mut Helper) -> Result<HelperProcessStatus, Error> {
+    let status = tokio::time::timeout(Duration::from_secs(5), helper.child.wait())
+        .await
+        .map_err(|_| "Hyperlight helper did not exit within 5 seconds after denied SIGKILL; VM cleanup is unproved")??;
+    // Reaping releases the group ID. Clear it before any error can drop the
+    // Helper, and use signal zero only: a reused foreign group is not ours.
+    if let Some(group) = helper.group.take() {
+        let exists = unsafe { libc::kill(-(group as i32), 0) };
+        if exists == 0 {
+            return Err(format!("Hyperlight helper exited but process group {group} still exists; no further signal sent; VM cleanup is unproved").into());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            return Err(format!("Hyperlight helper exited but process group {group} absence is unproved: {error}; no further signal sent").into());
+        }
+    }
     observed_status(status)
 }
 
@@ -424,7 +447,7 @@ pub(super) async fn run(
     let mut socket_directory = None;
     let work = async {
         let bundle = prepare(spec, &root).await?;
-        if let Some(limits) = &spec.mediated_services {
+        if spec.network || spec.mediated_services.is_some() {
             // Only two sockets use TMPDIR. Artifacts and captured inputs stay
             // on disk under the instance; deep instance paths need not fit the
             // platform's much shorter Unix socket address limit.
@@ -438,11 +461,33 @@ pub(super) async fn run(
             )
             .await?;
             policy_hash = Some(client.policy_hash.clone());
-            let listener = tokio::net::UnixListener::bind(sockets.path().join("s.sock"))?;
-            let bridge =
-                super::mediated::Bridge::new(listener, &client, limits.clone(), captures.clone())?;
-            bridge_task = Some(tokio::spawn(bridge.serve()));
             delegation = Some(client);
+            let listener = tokio::net::UnixListener::bind(sockets.path().join("s.sock"))?;
+            bridge_task = Some(if spec.network {
+                let ca = tokio::fs::read_to_string(
+                    config
+                        .parent()
+                        .ok_or("job instance config has no parent")?
+                        .join("certs/mitmproxy-ca-cert.pem"),
+                )
+                .await?;
+                let client = delegation.as_ref().ok_or("job delegation unavailable")?;
+                let bridge = super::proxy_stream::Bridge::new(listener, client, ca)?;
+                tokio::spawn(bridge.serve())
+            } else {
+                let client = delegation.as_ref().ok_or("job delegation unavailable")?;
+                let limits = spec
+                    .mediated_services
+                    .as_ref()
+                    .ok_or("missing service limits")?;
+                let bridge = super::mediated::Bridge::new(
+                    listener,
+                    client,
+                    limits.clone(),
+                    captures.clone(),
+                )?;
+                tokio::spawn(bridge.serve())
+            });
             socket_directory = Some(sockets);
         }
         let function = if let JobEngine::Hyperlight { function, .. } = &spec.engine {
@@ -519,14 +564,18 @@ pub(super) async fn run(
         match task.await {
             Err(error) if error.is_cancelled() => {}
             Ok(Ok(())) => {}
-            Ok(Err(error)) => cleanup_errors.push(error.to_string()),
-            Err(error) => cleanup_errors.push(error.to_string()),
+            Ok(Err(error)) => {
+                cleanup_errors.push(format!("Hyperlight proxy bridge stop failed: {error}"))
+            }
+            Err(error) => {
+                cleanup_errors.push(format!("Hyperlight proxy bridge task failed: {error}"))
+            }
         }
     }
     if let Some(client) = delegation
         && let Err(error) = client.close().await
     {
-        cleanup_errors.push(error.to_string());
+        cleanup_errors.push(format!("Hyperlight delegation close failed: {error}"));
     }
     if let Some(directory) = socket_directory {
         let path = directory.path().to_owned();
@@ -542,7 +591,7 @@ pub(super) async fn run(
     {
         match stop(helper).await {
             Ok(status) => helper_process_status = Some(status),
-            Err(error) => cleanup_errors.push(error.to_string()),
+            Err(error) => cleanup_errors.push(format!("Hyperlight helper stop failed: {error}")),
         }
     }
     let service_evidence = captures.finish()?;
@@ -629,7 +678,8 @@ pub(super) async fn run(
         service_evidence,
         rootfs: json!({"kind":spec.engine.name(),"runtime_manifest_sha256":manifest.sha256,
             "artifact_sha256":artifact.sha256,"bundle":runtime,"policy_hash":policy_hash,
-            "service_access":if spec.mediated_services.is_some() {"mediated"} else {"disabled"},
+            "network":spec.network,
+            "service_access":if spec.mediated_services.is_some() {"mediated"} else if spec.network {"in_guest"} else {"disabled"},
             "console_encoding":if matches!(spec.engine,JobEngine::Hyperlight {..}) {"utf-8"} else {"utf-8-with-replacement"}}),
         input_sha256,
         started_unix_ms,

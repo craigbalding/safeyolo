@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import platform
@@ -20,6 +21,88 @@ ROOTFS_LAYERS = {
     "aarch64": ("448fbf853530c9a78f238b1eb3f6782c3d5162b516d2701bdcc1d7620b435b9d", 14181185),
     "x86_64": ("79215ef44af8f66fcf068c8d9f487d93a39daad476b4dcdb0a5b4ad5fb81ac26", 14651436),
 }
+# The upstream Python image is based on Debian 12 but omits the native
+# libraries needed by its _ssl and _hashlib extensions. Keep the same glibc
+# ABI; do not copy build-host libraries into a cross-platform guest bundle.
+OPENSSL_VERSION = "3.0.22-1~deb12u2"
+OPENSSL_PACKAGES = {
+    "aarch64": ("arm64", "aarch64-linux-gnu", 1829128,
+                "3d04ecd8d0f57fed50d205abaeedfcc84c1960073ea085719c00add44b0ccd7f"),
+    "x86_64": ("amd64", "x86_64-linux-gnu", 2039888,
+               "cb4784740daa9b3b0eaea2b444bbefa686794afbbf3d678d238c1fd9875f2efd"),
+}
+
+
+def cpio_entry(stream, name: str, data: bytes, mode: int) -> None:
+    """Write one newc entry, the format of the pinned Unikraft image."""
+    encoded = name.encode() + b"\0"
+    fields = (0, mode, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(encoded), 0)
+    header = b"070701" + b"".join(f"{value:08x}".encode() for value in fields) + encoded
+    stream.write(header + b"\0" * (-len(header) % 4))
+    stream.write(data + b"\0" * (-len(data) % 4))
+
+
+def add_ssl_to_rootfs(image: Path, files: dict[str, bytes]) -> None:
+    """Insert SSL dependencies and expose the image's existing public CA roots."""
+    files = dict(files)
+    with image.open("r+b") as stream:
+        names = set()
+        while True:
+            offset = stream.tell()
+            header = stream.read(110)
+            if len(header) != 110 or header[:6] != b"070701":
+                raise ValueError("Python runtime has an invalid newc archive")
+            size, name_size = int(header[54:62], 16), int(header[94:102], 16)
+            name = stream.read(name_size).rstrip(b"\0").decode()
+            if name == "TRAILER!!!":
+                break
+            names.add(name.removeprefix("./"))
+            start = (offset + 110 + name_size + 3) & ~3
+            if name == "usr/local/lib/python3.12/site-packages/pip/_vendor/certifi/cacert.pem":
+                stream.seek(start)
+                files["usr/lib/ssl/cert.pem"] = stream.read(size)
+            stream.seek((start + size + 3) & ~3)
+        if "usr/lib/ssl/cert.pem" not in files:
+            raise ValueError("Python runtime is missing its bundled public CA roots")
+        if names.intersection(files):
+            raise ValueError("Python runtime already contains the added libraries")
+        stream.seek(offset)
+        for name, data in files.items():
+            for parent in reversed(Path(name).parents):
+                if str(parent) != "." and str(parent) not in names:
+                    cpio_entry(stream, str(parent), b"", 0o40755)
+                    names.add(str(parent))
+            cpio_entry(stream, name, data, 0o100644)
+        cpio_entry(stream, "TRAILER!!!", b"", 0)
+        stream.truncate()
+
+
+def add_openssl(image: Path, scratch: Path, architecture: str) -> None:
+    """Add only the pinned guest's SSL dependencies and their copyright notice."""
+    debian_arch, library_arch, expected_size, digest = OPENSSL_PACKAGES[architecture]
+    url = ("https://security.debian.org/debian-security/pool/updates/main/o/openssl/"
+           f"libssl3_{OPENSSL_VERSION}_{debian_arch}.deb")
+    with urllib.request.urlopen(url, timeout=30) as response:
+        data = response.read(expected_size + 1)
+    if len(data) != expected_size or hashlib.sha256(data).hexdigest() != digest:
+        raise ValueError("OpenSSL guest package size or digest mismatch")
+    package = scratch / "openssl.deb"
+    package.write_bytes(data)
+    # ar is supplied by the native toolchain already needed to build the helper.
+    result = subprocess.run(["ar", "p", str(package), "data.tar.xz"], check=True, capture_output=True)
+    names = [f"usr/lib/{library_arch}/{name}" for name in ("libssl.so.3", "libcrypto.so.3")]
+    names.append("usr/share/doc/libssl3/copyright")
+    files = {}
+    with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:xz") as archive:
+        for name in names:
+            member = archive.getmember("./" + name)
+            if not member.isfile():
+                raise ValueError("OpenSSL guest package member is not a regular file")
+            files[name] = archive.extractfile(member).read()
+    files["usr/share/common-licenses/Apache-2.0"] = (
+        Path(__file__).resolve().parents[1] / "jobs/licenses/hyperlight-LICENSE.txt"
+    ).read_bytes()
+    add_ssl_to_rootfs(image, files)
 
 
 def file_digest(path: Path) -> str:
@@ -74,6 +157,7 @@ def rootfs(output: Path, architecture: str) -> str:
                 raise ValueError("Python runtime layer does not contain one regular initrd.cpio")
             with archive.extractfile(members[0]) as source, (output / "python.cpio").open("xb") as stream:
                 shutil.copyfileobj(source, stream)
+        add_openssl(output / "python.cpio", Path(scratch), architecture)
     return f"https://ghcr.io/v2/{ROOTFS_REPOSITORY}/blobs/sha256:{digest}"
 
 
@@ -174,6 +258,13 @@ def write_job_definitions(output: Path) -> None:
             artifact_spec["engine"]["checker"] = {"path": "artifact_checker.py",
                                                 "sha256": file_digest(output / "artifact_checker.py")}
         (output / f"{kind}-artifact.json").write_text(json.dumps(artifact_spec, indent=2) + "\n", encoding="utf-8")
+        network_spec = {**spec, "gate_id": "hyperlight-network-check", "network": True, "engine": dict(engine)}
+        if kind == "hyperlight":
+            network_spec["engine"]["function"] = "NetworkCheck"
+        else:
+            network_spec["engine"]["checker"] = {"path": "network_checker.py",
+                                                "sha256": file_digest(output / "network_checker.py")}
+        (output / f"{kind}-network.json").write_text(json.dumps(network_spec, indent=2) + "\n", encoding="utf-8")
 
 
 def bundle(repository: Path, output: Path, profile: str) -> None:
@@ -238,6 +329,7 @@ def bundle(repository: Path, output: Path, profile: str) -> None:
         guest_target / f"{architecture}-hyperlight-none" / cargo_profile / "safeyolo-checker", output / "core.elf"
     )
     shutil.copyfile(repository / "jobs/checker.py", output / "checker.py")
+    shutil.copyfile(repository / "jobs/network_checker.py", output / "network_checker.py")
     shutil.copyfile(repository / "jobs/service_checker.py", output / "service_checker.py")
     shutil.copyfile(repository / "jobs/artifact_checker.py", output / "artifact_checker.py")
     source = rootfs(output, architecture)

@@ -6,6 +6,7 @@ mod input;
 mod macos;
 mod mediated;
 pub(crate) mod network;
+mod proxy_stream;
 
 use crate::{Error, host_platform, host_runs};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -37,12 +38,13 @@ Inputs are copied without following symlinks. No job receives an Agent API, Coor
 Spec fields: gate_id, argv, timeout_seconds, max_input_bytes, max_input_entries, retain_bytes.
 Optional: memory_mb (default 4096), privilege (unprivileged or guest-root; default unprivileged), network (default false), engine (default {"kind":"platform"}).
 The platform engine uses gVisor on Linux and VZ on macOS. It executes fixed argv, mounts inputs read-only at /input, and discards /work and /home/agent.
-With network=true, the platform engine delegates gate:<gate_id> through the running proxy. Existing network, credential and Service Gateway policy applies. SAFEYOLO_GATEWAY_TOKENS contains scoped service-token JSON; provider credentials stay on the host. No saved access is created.
+With network=true, every engine delegates gate:<gate_id> through the running proxy. Existing network, credential and Service Gateway policy applies. Public endpoints need no service grant. Gate authority is independent of the invoking agent. No saved access is created.
 Hyperlight selects {"kind":"hyperlight","runtime":{"path":"runtime.json","sha256":"..."},"guest":{"path":"core.elf","sha256":"..."},"function":"Check"}.
 Hyperlight-Unikraft selects {"kind":"hyperlight-unikraft","runtime":{"path":"runtime.json","sha256":"..."},"checker":{"path":"checker.py","sha256":"..."}}.
 Artifact digests are full SHA-256 values. Relative paths resolve beside the trusted spec. The invocation directory cannot replace the engine or adopted artifacts.
 Both Hyperlight engines require KVM on Linux x86_64/aarch64 or entitled HVF on Apple-silicon macOS. validate checks pinned artifacts and runtime discovery without running the checker. No engine fallback occurs.
-Hyperlight has no Unix process or guest-root semantics. Core calls the named function with argv as a JSON string and offers bounded ReadInput(relative_path); its returned string is ordinary stdout. Unikraft runs the pinned Python checker with argv, read-only /input, and fresh in-memory /work and rootfs. It supports a Linux subset, without fork or full Unix privilege semantics. Both reject network=true and guest-root. memory_mb sizes scratch memory; it is not a total helper RSS limit.
+Hyperlight has no Unix process or guest-root semantics. Core calls the named function with argv as a JSON string and offers bounded ReadInput(relative_path); its returned string is ordinary stdout. Unikraft runs the pinned Python checker with argv, read-only /input, and fresh in-memory /work and rootfs. It supports a Linux subset, without fork or full Unix privilege semantics. Both reject guest-root. memory_mb sizes scratch memory; it is not a total helper RSS limit.
+Platform jobs receive proxy/CA environment and scoped SAFEYOLO_GATEWAY_TOKENS. Hyperlight network jobs use bounded SYCall proxy stream operations; Core's NetworkCheck uses reqwless/Rustls and Unikraft's safeyolo_proxy.open_url uses Python HTTP/OpenSSL in the guest. Raw guest sockets/DNS stay disabled. The host opens only the selected delegated proxy socket. Provider credentials stay on the host; generic streams do not produce independent source capture. See docs/hyperlight-jobs.md for client modes and limits.
 For mediated service access, set mediated_services={services:[NAME],max_calls:N,max_request_bytes:N,max_response_bytes:N} in the adopted Hyperlight specification, with network=false. Core SYCall(JSON) and Unikraft hyperlight.call("sy.call", REQUEST) use the same named-service request. The host delegates gate:<gate_id> through the existing proxy, keeps credentials outside the guest, and retains service_evidence. Guest sockets stay disabled. Host-call messages are at most 49152 bytes; captured responses use handles and reads of at most 16384 bytes.
 Print observed execution evidence as JSON. A PASS string is ordinary output. engine identifies the selected backend; outcome_source distinguishes a guest process from a host helper. runtime_report retains VM completion or error separately. helper_process_status retains the actual OS exit or signal even after a watchdog deadline or cancellation.
 All captured stream bytes are counted and hashed; retain_bytes bounds retained output. Unikraft's console decodes UTF-8 with replacement; console_encoding identifies that representation.

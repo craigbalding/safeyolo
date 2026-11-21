@@ -2,6 +2,8 @@
 #![no_std]
 extern crate alloc;
 
+pub mod network;
+
 use alloc::{
     string::{String, ToString},
     vec::Vec,

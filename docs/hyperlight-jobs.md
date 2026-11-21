@@ -147,12 +147,12 @@ trusted definition, so copying the complete bundle preserves its bindings.
 | Mutable state | Fresh guest memory | Fresh writable RAM filesystem and `/work` |
 | Process model | No Unix process, PID, fork or guest-root authority | Single-vCPU cooperative Unikraft; `vfork`/PIE execution is a subset, `fork` is unsupported |
 | Privilege | No Unix privilege model | Guest user IDs do not supply full Linux privilege semantics |
-| Networking | No guest sockets; optional mediated service host call | Host-socket passthrough is disabled; the same optional mediated service host call |
+| Networking | Bounded byte I/O to the delegated proxy; optional separate mediated service host call | Same byte I/O; host-socket passthrough stays disabled |
 | Memory | `memory_mb` selects scratch size | `memory_mb` selects scratch size |
-| Cancellation | Kill the owning helper process group, then reap the helper | Same |
+| Cancellation | Stop the owning helper process group and reap the helper | Same |
 | State reuse | No snapshots or warm templates | No snapshots or warm templates |
 
-Both engines reject `network=true` and `privilege=guest-root`. Core is not an
+Both engines reject `privilege=guest-root`. Core is not an
 ordinary Linux executable environment. Unikraft does not implement every Linux
 system call, signal, resource limit or Python extension. Neither scratch size
 is a total host-process resident-memory limit. Use the existing gVisor/VZ
@@ -166,6 +166,14 @@ The execution deadline covers artifact preparation, VM startup and execution.
 Bounded input copying happens first. Cleanup failures and incomplete observation
 cannot report successful completion. No successful result is returned before
 the helper has exited and the transient directory has been removed.
+
+If group signalling returns `EPERM`, cleanup waits up to five seconds for the
+owned helper to exit. Closing a proxy bridge can start helper exit before the
+exit status is available. Cleanup succeeds only when the helper has exited and
+the process group is absent after reaping. A helper that remains live at the
+deadline or an unverified group produces a cleanup error and preserves the runtime.
+After reaping, cleanup never sends another signal to the former group.
+Errors identify the bridge, delegation, socket directory or helper operation.
 
 The helper also enforces the same monotonic deadline in an independent thread.
 It exits without waiting for a guest callback when the deadline expires or its
@@ -196,6 +204,137 @@ provider latency. Compare with the host's existing engine using the same input,
 authority and output retention. Cold invocation currently starts a fresh
 helper and VM each time; there is no implemented warm lane or universal
 performance advantage.
+
+## Network access through the delegated proxy
+
+Set `network=true` in an adopted job to use the existing `gate:<gate_id>`
+network policy. That authority is independent of the invoking agent: a check
+can reach a dependency its caller cannot reach. Invocation inputs and headers
+cannot change the selected gate, run identity or dependency ancestry. Public
+destinations need no Service Gateway definition or service grant. Gateway
+credentials and capabilities remain separate requirements for protected services.
+
+For the installed network examples, select the owning host's instance. Keep
+its proxy running. Add the intended destination to its existing gate policy,
+then apply that policy with the [normal policy workflow](installation.md#check-show-and-apply).
+For example, the public HTTPS endpoint `https://example.com/` needs this gate
+network permission and no service grant:
+
+```toml
+[agents."gate:hyperlight-network-check".hosts."example.com"]
+egress = "allow"
+```
+
+Create `/absolute/path/to/input/request.json` on that host:
+
+```json
+{"subject":{"kind":"value","value":"https://example.com/"},"inputs":{"expected_status":200}}
+```
+
+From the same host, run either pinned example against that input directory:
+
+```sh
+safeyolo --root "$HOME/.safeyolo" job run "$HOME/.safeyolo/assets/hyperlight/hyperlight-network.json" --input /absolute/path/to/input
+safeyolo --root "$HOME/.safeyolo" job run "$HOME/.safeyolo/assets/hyperlight/hyperlight-unikraft-network.json" --input /absolute/path/to/input
+```
+
+Both examples return a typed finding that compares the HTTP status with
+`expected_status` (default 200). They issue one GET. They do not follow
+redirects or retry. Every later request a workload makes still passes through
+the delegated proxy. Removing the gate's permission denies the unchanged job.
+The same JobSpec can be the source of an
+[adopted named job check](policy-checks.md#adopt-an-installed-public-network-job-as-a-named-check).
+
+Core's `NetworkCheck` uses reqwless for HTTP and Rustls/ring for TLS and
+certificate validation. Its byte adapter, TLS buffers and client execute in
+the Core guest. The guest obtains fresh clock and cryptographic entropy through
+bounded host calls. The build uses the narrow ring
+[Hyperlight target patch](../jobs/hyperlight-guest/vendor/ring/SAFEYOLO.md).
+The Unikraft helper supplies `safeyolo_proxy.open_url` from its pinned bytes;
+that adapter uses Python's `http.client` and OpenSSL `ssl.MemoryBIO` in the
+guest. Other client libraries need a compatible adapter; ordinary Linux socket
+APIs are not enabled. Both provided clients validate the server certificate
+and hostname. Core includes public roots and the selected proxy CA; Python uses
+its runtime roots and the selected proxy CA.
+The bundle builder supplies the Python image's missing OpenSSL 3 libraries
+from digest-pinned Debian 12 packages for the guest architecture. It keeps
+the package's copyright and license and exposes the image's bundled public
+CA roots at OpenSSL's default path. The completed CPIO image has its own
+runtime-manifest digest; replacing it requires regenerating the job pins.
+
+For HTTP, the guest sends an absolute-form proxy request. For HTTPS, the guest
+performs CONNECT and TLS. DNS and destination connections remain with SafeYolo.
+The host transports bytes only to the invocation's selected proxy Unix socket.
+There is no guest-selected host path, general host dialer or host HTTP client
+in this path. Calls carry at most 49152 bytes; each stream read/write carries
+at most 16384 data bytes. Core's client bounds its TLS buffers at 65536 bytes.
+Ordinary proxy method/path/redirect checks apply where the proxy can inspect
+them; an opaque CONNECT tunnel does not expose those HTTP fields.
+
+For a Gateway-backed dependency, separately authorize `github` for
+`gate:hyperlight-network-check` using the existing
+[service commands](credentials.md), and permit its destination in gate network
+policy. The same examples accept this adopted input:
+
+```json
+{"subject":{"kind":"value","value":"https://api.github.com/repos/craigbalding/safeyolo/issues/1584"},"inputs":{"service":"github","expected_status":200}}
+```
+
+The guest receives only that gate's scoped Gateway tokens; provider credentials
+stay on the host. Network capability alone supplies no service credential,
+route capability or provider exception. The existing service examples below
+remain the choice when the check requires independently captured source data.
+
+Generic network findings remain guest-produced results. Normal proxy evidence
+records reached traffic under the gate/run identity and check ancestry. Stream
+bytes, a successful status, guest stdout or its hash do not establish an
+independently captured response body. In particular, the GitHub checked-input
+path still requires the host's `service_evidence`; missing capture cannot
+satisfy that binding. Named service sources remain Gateway-backed.
+
+Policy revocation, cancellation, expiry and teardown close the delegated
+listener and its connections. The helper's existing deadline and process-group
+cleanup still apply. No stream or token is donated to another invocation.
+Offline validation and preview do not open a proxy stream or query a dependency.
+CPU client checks and guest ELF builds alone do not establish installed VM
+execution or isolation on a different host.
+
+The existing `tests/blackbox/host/hyperlight_network.py` witness shares public
+direct/named allow/removal cases across all four engines. Select a pinned
+Hyperlight `--bundle`, or select `--engine gvisor`/`--engine vz` with that
+host's prepared `--base-root`. Platform cases use its existing Bash and curl;
+the adopted argv fixes the endpoint while the shared cases vary gate policy.
+`--scope` adds destination/method/path refusal, a negative HTTP 302 finding
+without automatic following, cache expiry and a
+separately adopted gate without dependency access. `--caller-only` selects
+caller and cycle checks and offline effects without repeating lifetimes.
+Each selected mode retains its own contact counters and
+execution facts; selecting another engine does not carry over a platform pass.
+The 302 case records only the two original direct/named requests. It does not
+prove that SafeYolo denied an attempted redirected or off-scope second request.
+For that observation, `--redirect` selects a separate one-hop HTTP follow on
+gVisor, VZ or Unikraft. The guest client first follows permitted path and
+destination targets. The same adopted job then runs with only target access
+removed. The witness requires a proxy-observed 403 under each denied run's
+gate identity and no target contact, including TCP connections without HTTP.
+This mode runs eight jobs and expects twelve origin requests and twelve TCP
+connections if all controls pass. It reuses the prepared runtime;
+Unikraft receives a pinned diagnostic Python checker using `safeyolo_proxy`.
+Core's installed `NetworkCheck` does not follow redirects and cannot supply
+this observation. A prepared mode is not evidence of an installed pass.
+The platform job and isolation witnesses cover their retained connections,
+direct-socket/DNS refusal and teardown. On a prepared gVisor or VZ host,
+`--lifetimes-only` selects only the missing named-check observations. The origin
+holds a response until the check deadline or gate revocation closes the
+connection. The witness checks the selected input, run generation, live backend
+birth, removed socket and stopped backend before releasing the late response.
+The same subject must then acquire fresh evidence. Further calls check cache
+reuse, policy invalidation, expiry and separation by subject and adopted gate.
+This platform mode runs nine jobs and expects eight origin requests if all
+controls pass. It does not repeat the direct-job or caller/cycle cases.
+On Hyperlight, `--lifetimes-only` retains its direct and named lifetime cases.
+Prepared selections and CPU observer controls do not establish an installed
+pass, unrun warm-state behavior or checked-source capture.
 
 ## Mediated service access
 

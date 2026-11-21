@@ -17,7 +17,7 @@ adoption = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(adoption)
 
 
-@pytest.mark.parametrize("change", [None, "digest", "number", "author", "pull_request"])
+@pytest.mark.parametrize("change", [None, "digest", "number", "author", "pull_request", "substituted_snapshot", "missing_capture", "duplicate_capture"])
 def test_checked_snapshot_is_consumed_only_for_its_exact_subject(change):
     issue = json.loads((REPO / "proxy/tests/fixtures/policy-check-github-issue.json").read_bytes())
     witness = adoption.Witness.__new__(adoption.Witness)
@@ -33,8 +33,19 @@ def test_checked_snapshot_is_consumed_only_for_its_exact_subject(change):
     capture = {"content_base64": base64.b64encode(raw).decode(), "sha256": hashlib.sha256(raw).hexdigest()}
     if change == "digest":
         capture["sha256"] = "0" * 64
+    source = {"service": "github", "method": "GET", "url": issue["url"], "status": 200, "error": None,
+              "response_sha256": hashlib.sha256(raw).hexdigest(), "response_bytes": len(raw)}
+    execution = {"checked_input": capture, "service_evidence": [source]}
+    if change == "substituted_snapshot":
+        issue["title"] = "Substituted title with its own valid digest"
+        raw = json.dumps(issue).encode()
+        capture.update(content_base64=base64.b64encode(raw).decode(), sha256=hashlib.sha256(raw).hexdigest())
+    if change == "missing_capture":
+        execution["service_evidence"] = []
+    if change == "duplicate_capture":
+        execution["service_evidence"].append(source)
     work = {"automatic": [{"binding": {"boundary": "admit_issue"}, "state": "satisfied",
-                           "evidence": {"execution": {"checked_input": capture}}}]}
+                           "evidence": {"execution": execution}}]}
     if change is None:
         assert witness.checked_issue(work) == (capture, issue)
     else:

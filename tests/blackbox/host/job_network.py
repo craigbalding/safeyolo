@@ -36,10 +36,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from execution_receipt import ProcedureReceipt
 
 
-def prepare(cli: Path, proxy: Path, base: Path, root: Path, port: int, upstream: int):
-    """Reuse installed runtime inputs without changing the original instance."""
-    root.mkdir(mode=0o755)
-    subprocess.run([str(cli), "--root", str(root), "init"], check=True)
+def stage_runtime(cli: Path, proxy: Path, base: Path, root: Path):
+    """Link prepared platform inputs into an initialized disposable instance."""
+    root.chmod(0o755)
     selected = base / "current"
     host = selected / "host" if (selected / "share").is_dir() else base
     share = selected / "share" if (selected / "share").is_dir() else base / "share"
@@ -59,6 +58,13 @@ def prepare(cli: Path, proxy: Path, base: Path, root: Path, port: int, upstream:
     # Mapped gVisor processes must traverse the installation's runtime parent.
     # Secret files written by init and the vault retain their private modes.
     (root / "data").chmod(0o755)
+
+
+def prepare(cli: Path, proxy: Path, base: Path, root: Path, port: int, upstream: int):
+    """Reuse installed runtime inputs without changing the original instance."""
+    root.mkdir(mode=0o755)
+    subprocess.run([str(cli), "--root", str(root), "init"], check=True)
+    stage_runtime(cli, proxy, base, root)
     config = {
         "admin_port": port,
         "listeners": [],
@@ -96,6 +102,11 @@ action = "warn"
         [str(cli), "--root", str(root), "credentials", "add", "job-secret", "--stdin", "--storage", "local"],
         input=b"synthetic-job-provider-secret\n", check=True,
     )
+    create_upstream_certificate(root)
+
+
+def create_upstream_certificate(root: Path):
+    """Sign an owned loopback origin with the instance's disposable CA."""
     # Use a portable OpenSSL config rather than version-specific -addext flags.
     request = root / "certs/upstream.cnf"
     request.write_text(
@@ -103,6 +114,7 @@ action = "warn"
         "[dn]\nCN=127.0.0.1\n[extensions]\nsubjectAltName=IP:127.0.0.1\n"
         "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\n"
         "extendedKeyUsage=serverAuth\n"
+        "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n"
     )
     subprocess.run(
         ["openssl", "req", "-sha256", "-new", "-newkey", "rsa:2048", "-nodes",

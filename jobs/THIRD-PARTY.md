@@ -10,6 +10,14 @@ license and patch explanation are retained in
 The Unikraft integration embeds its released kernel;
 the kernel uses Unikraft's BSD-3-Clause sources and the licenses of its selected
 libraries. The Python image contains CPython and its runtime libraries.
+The bundle builder adds Debian 12's OpenSSL 3 shared libraries, pinned by
+architecture, version and package digest in `scripts/build_hyperlight_jobs.py`.
+Their copyright and Apache-2.0 license notice remain inside the guest at
+`/usr/share/doc/libssl3/copyright`, with the full license at
+`/usr/share/common-licenses/Apache-2.0`. The builder exposes the Python image's
+bundled certifi public roots at OpenSSL's default CA file, `/usr/lib/ssl/cert.pem`.
+The runtime manifest's `rootfs_source` identifies the base image; its rootfs
+digest covers the completed image, including these additions.
 
 Keep the upstream license and notice files with any distributed runtime bundle.
 The builder retains available Rust-package license files and their license
