@@ -510,7 +510,11 @@ fn event(event: &Value, show_unknown: bool) -> Option<(&'static str, String)> {
 }
 
 // Redaction is an explicit display choice, never a change to stored payloads.
-fn redact_text(text: &str) -> String {
+pub(crate) fn redact_text(text: &str) -> String {
+    static REFERENCE_FRAGMENT: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"^(?:issuecomment-[0-9]+|pullrequestreview-[0-9]+|discussion_r[0-9]+|r[0-9]+|L[0-9]+(?:-L[0-9]+)?|(?:diff-)?[a-fA-F0-9]{7,64}(?:[LR][0-9]+(?:-[LR][0-9]+)?)?)$")
+            .expect("fixed public reference fragment expression")
+    });
     static PATTERNS: std::sync::LazyLock<Vec<Regex>> = std::sync::LazyLock::new(|| {
         [
         r"(?i)\bBearer\s+[^\s,;]+", r"\b(?:sgw_|sk-|gh[pousr]_)[A-Za-z0-9._-]{8,}",
@@ -523,7 +527,10 @@ fn redact_text(text: &str) -> String {
     // such as "password" cannot cause the useful host and path to be hidden.
     let mut text = PATTERNS[4]
         .replace_all(text, |c: &regex::Captures<'_>| {
-            let mut url = c[0].to_owned();
+            // Markdown/prose delimiters are display text, not part of the reference.
+            let matched = c[0].trim_end_matches([')', ']', '}', '.', ',', ';', ':', '!', '`']);
+            let suffix = &c[0][matched.len()..];
+            let mut url = matched.to_owned();
             let start = url.find("://").expect("matched URL authority") + 3;
             let end = url[start..]
                 .find(['/', '\\', '?', '#'])
@@ -531,10 +538,26 @@ fn redact_text(text: &str) -> String {
             if let Some(index) = url[start..end].rfind('@') {
                 url.replace_range(start..=start + index, "");
             }
-            url.find(['?', '#'])
-                .filter(|index| index + 1 < url.len())
-                .map(|index| format!("{}?<omitted>", &url[..index]))
-                .unwrap_or(url)
+            let (base, fragment) = url
+                .split_once('#')
+                .map_or((url.as_str(), None), |(base, fragment)| {
+                    (base, Some(fragment))
+                });
+            let base = base
+                .split_once('?')
+                .map(|(path, query)| {
+                    format!("{path}?{}", if query.is_empty() { "" } else { "<omitted>" })
+                })
+                .unwrap_or_else(|| base.to_owned());
+            // Recognize reference syntax, not a trusted host. Opaque fragments
+            // and parameter data stay omitted; secret patterns still run below.
+            let fragment = match fragment {
+                Some("") => "#".into(),
+                Some(fragment) if REFERENCE_FRAGMENT.is_match(fragment) => format!("#{fragment}"),
+                Some(_) => "#<omitted>".into(),
+                None => String::new(),
+            };
+            format!("{base}{fragment}{suffix}")
         })
         .into_owned();
     for pattern in &PATTERNS[..3] {
@@ -882,11 +905,11 @@ mod tests {
         for (input, expected) in [
             (
                 "https://alice:private@example.test/item?query#fragment",
-                "https://example.test/item?<omitted>",
+                "https://example.test/item?<omitted>#<omitted>",
             ),
             (
                 "HTTPS://user%40name:pass%3Aword@[::1]:8443/item@route#fragment",
-                "HTTPS://[::1]:8443/item@route?<omitted>",
+                "HTTPS://[::1]:8443/item@route#<omitted>",
             ),
             (
                 "https://password:private@example.test/item",
@@ -902,6 +925,101 @@ mod tests {
             ),
         ] {
             assert_eq!(redact_text(input), expected);
+            assert_eq!(redact_text(expected), expected);
+        }
+    }
+
+    #[test]
+    fn redacted_urls_keep_public_reference_fragments() {
+        let source = "https://github.com/craigbalding/safeyolo/blob/205a9a6efbb87eeb12bd9778b3b61359b2af3a55/proxy/src/coord_timeline.rs";
+        for fragment in [
+            "issuecomment-6882721322",
+            "pullrequestreview-1234",
+            "discussion_r1234",
+            "r1234",
+            "L513",
+            "L513-L545",
+            "205a9a6",
+            "205a9a6efbb87eeb12bd9778b3b61359b2af3a55",
+            "diff-205a9a6efbb87eeb12bd9778b3b61359b2af3a55R513",
+        ] {
+            let url = format!("{source}#{fragment}");
+            assert_eq!(redact_text(&url), url);
+            assert_eq!(
+                redact_text(&format!("[source]({url}).")),
+                format!("[source]({url}).")
+            );
+        }
+        for url in [
+            "https://github.com/craigbalding/safeyolo/issues/1632",
+            "https://github.com/craigbalding/safeyolo/pull/1650",
+            "https://github.com/craigbalding/safeyolo/pull/1650/commits/205a9a6efbb87eeb12bd9778b3b61359b2af3a55",
+        ] {
+            assert_eq!(redact_text(url), url);
+        }
+        // Query omission does not consume a subsequent public reference.
+        assert_eq!(
+            redact_text(&format!("{source}?plain=1#L513-L545")),
+            format!("{source}?<omitted>#L513-L545")
+        );
+    }
+
+    #[test]
+    fn public_looking_urls_do_not_exempt_secrets() {
+        let public = "https://github.com/craigbalding/safeyolo/issues/1632";
+        for fragment in [
+            "opaque-private-fragment",
+            "token=fragment-canary",
+            "access_token=fragment-canary",
+            "password%3Dfragment-canary",
+            "sgw_fragment_canary",
+            "L513&token=fragment-canary",
+            "issuecomment-123?secret=fragment-canary",
+        ] {
+            assert_eq!(
+                redact_text(&format!("{public}#{fragment}")),
+                format!("{public}#<omitted>")
+            );
+        }
+        assert_eq!(
+            redact_text(&format!("{public}?token=query-canary#L513")),
+            format!("{public}?<omitted>#L513")
+        );
+        assert_eq!(
+            redact_text(
+                "https://password:userinfo-canary@github.com/craigbalding/safeyolo/issues/1632#issuecomment-123"
+            ),
+            format!("{public}#issuecomment-123")
+        );
+        assert_eq!(
+            redact_text(&format!("{public}/sgw_path_canary#L513")),
+            format!("{public}/<redacted>#L513")
+        );
+        for secret in [
+            "Bearer bearer-canary",
+            "sgw_service_canary",
+            "sk-service-canary",
+            "ghp_servicecanary",
+            "eyJfixturecanary12.fixturecanary12.fixturecanary",
+        ] {
+            assert_eq!(
+                redact_text(&format!("{public} {secret}")),
+                format!("{public} <redacted>")
+            );
+        }
+        for key in [
+            "authorization",
+            "api_key",
+            "token",
+            "password",
+            "secret",
+            "cookie",
+            "private_key",
+        ] {
+            assert_eq!(
+                redact_text(&format!("{public} {key}=assignment-canary")),
+                format!("{public} {key}=<redacted>")
+            );
         }
     }
 

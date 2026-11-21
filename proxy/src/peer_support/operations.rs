@@ -17,8 +17,9 @@ use crate::{
 
 pub(crate) mod receipts;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(extend("x-scope" = "One granted target and current expected run", "x-lifetime" = "Operation receipts retain uncertain/completed results; authority is rechecked at execution", "x-effects" = "Inspection, guest commands/logs/probes, lifecycle or attributed factory direction, as selected by the action variant.", "x-dependencies" = "Current support grant, owning instance, target identity, runtime/control and peer transport when remote", "x-gaps" = "A valid action alone does not authorize its target or prove runtime readiness."))]
 pub(crate) enum Action {
     Inspect,
     FactoryState {
@@ -47,7 +48,60 @@ pub(crate) enum Action {
 }
 
 impl Action {
-    fn permitted(&self, grant: &Grant) -> bool {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        if let Action::FactoryDirection { text, .. } = self
+            && (text.trim().is_empty() || text.len() > 256 * 1024)
+        {
+            return Err(super::refuse(
+                400,
+                "factory direction needs nonempty text within the Coord message bound",
+            ));
+        }
+        if let Action::GuestCommand {
+            command,
+            timeout_seconds,
+        } = self
+            && (command.is_empty() || command.contains('\0') || *timeout_seconds == 0)
+        {
+            return Err(super::refuse(
+                400,
+                "guest command needs a command without NUL and a positive timeout_seconds",
+            ));
+        }
+        if matches!(self, Action::GuestProbe { timeout_seconds: 0 }) {
+            return Err(super::refuse(
+                400,
+                "guest probe needs a positive timeout_seconds",
+            ));
+        }
+        if let Action::GuestLog { path } = self
+            && (!path.starts_with('/') || path.contains('\0') || path.len() >= 4096)
+        {
+            return Err(super::refuse(
+                400,
+                "select an absolute guest log path that fits the Linux guest's 4096-byte path limit including NUL",
+            ));
+        }
+        if let Action::GuestCommand {
+            timeout_seconds, ..
+        }
+        | Action::GuestProbe { timeout_seconds } = self
+            && std::time::Instant::now()
+                .checked_add(Duration::from_secs(*timeout_seconds))
+                .is_none()
+        {
+            return Err(super::refuse(
+                400,
+                "timeout exceeds the host clock's representable interval",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn permitted(&self, grant: &Grant) -> bool {
+        if grant.diagnostics.is_some() {
+            return false;
+        }
         match self {
             Self::Inspect => true,
             Self::FactoryState {
@@ -110,7 +164,7 @@ impl Action {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Request {
     pub operation_id: String,
@@ -275,6 +329,103 @@ fn agent_view(receipt: Value, active: bool, grant: Option<&Grant>) -> Value {
     value
 }
 
+fn capability_unknown() -> Value {
+    json!({"observation":"unknown","granted":null,"requestable":null,"prohibited":null,"unavailable":null})
+}
+
+pub(crate) async fn capability_observation(
+    state: &RuntimeState,
+    caller: &Caller,
+    input: Request,
+) -> Value {
+    if input.operation.validate().is_err() {
+        return json!({"error":"invalid support operation form"});
+    }
+    let Ok(policy) = super::current_policy(state) else {
+        return capability_unknown();
+    };
+    let Ok(instance) = super::instance_id() else {
+        return capability_unknown();
+    };
+    let Some(grant) = policy
+        .support_grants()
+        .remove(&input.grant)
+        .filter(|grant| grant.instance_id == instance && caller.matches(&policy, grant))
+    else {
+        return capability_unknown();
+    };
+    if input
+        .instance_id
+        .as_ref()
+        .is_some_and(|selected| selected != &instance)
+    {
+        return capability_unknown();
+    }
+    let Some(target) = grant
+        .targets
+        .iter()
+        .find(|target| target.agent_id == input.target_id)
+        .filter(|target| policy.evidence_agent_id(&target.name) == Some(target.agent_id.as_str()))
+    else {
+        return capability_unknown();
+    };
+    let active = grant.active();
+    let permitted = input.operation.permitted(&grant);
+    if active && permitted && authorize(&policy, caller, &input).is_err() {
+        return capability_unknown();
+    }
+    let observed = if active {
+        let inspection = Request {
+            operation: Action::Inspect,
+            ..input.clone()
+        };
+        if authorize(&policy, caller, &inspection).is_err() {
+            return capability_unknown();
+        }
+        crate::host_platform::in_config(
+            match crate::operator_actions::config_path(state) {
+                Ok(path) => path,
+                Err(_) => return capability_unknown(),
+            },
+            crate::host_runs::observe(&target.name),
+        )
+        .await
+    } else {
+        json!({"runtime_state":"unknown"})
+    };
+    // Do not disclose an observation after the grant, caller or target changes.
+    let Ok(current) = super::current_policy(state) else {
+        return capability_unknown();
+    };
+    if !caller.current(&current)
+        || current.evidence_agent_id(&target.name) != Some(target.agent_id.as_str())
+        || current
+            .support_grants()
+            .get(&input.grant)
+            .is_none_or(|now| now.revision() != grant.revision())
+    {
+        return capability_unknown();
+    }
+    let live_required = matches!(
+        input.operation,
+        Action::GuestCommand { .. } | Action::GuestLog { .. }
+    );
+    let unavailable = if observed["runtime_state"] == "unknown" {
+        Value::Null
+    } else if live_required {
+        json!(observed["exec"] != true)
+    } else {
+        Value::Null
+    };
+    json!({"observation":"current","observed_at_ms":crate::policy::current_time_ms(),
+        "definition_version":env!("SAFEYOLO_DEFINITION_VERSION"),"grant_revision":grant.revision(),
+        "policy_revision":current.policy_hash(),"supported":true,"granted":active && permitted,
+        "requestable":true,"request_route":"operator support preview/apply",
+        "prohibited":active && !permitted,"unavailable":unavailable,
+        "runtime_observation":if observed["runtime_state"] == "unknown" {"unknown"} else {"observed"},
+        "limits":"This is an observation, not authorization. Other prerequisites and exact run expectations remain with support_operation; unknown readiness is not availability. A current prohibition does not prevent an operator-directed policy proposal."})
+}
+
 pub(crate) fn discover(state: &RuntimeState, run: &Caller) -> Result<Value, Error> {
     let policy = super::current_policy(state)?;
     if !run.current(&policy) {
@@ -319,52 +470,7 @@ pub(crate) async fn submit(
     if !valid_operation_id(&input.operation_id) {
         return Err(super::refuse(400, "invalid support operation_id"));
     }
-    if let Action::FactoryDirection { text, .. } = &input.operation
-        && (text.trim().is_empty() || text.len() > 256 * 1024)
-    {
-        return Err(super::refuse(
-            400,
-            "factory direction needs nonempty text within the Coord message bound",
-        ));
-    }
-    if let Action::GuestCommand {
-        command,
-        timeout_seconds,
-    } = &input.operation
-        && (command.is_empty() || command.contains('\0') || *timeout_seconds == 0)
-    {
-        return Err(super::refuse(
-            400,
-            "guest command needs a command without NUL and a positive timeout_seconds",
-        ));
-    }
-    if matches!(input.operation, Action::GuestProbe { timeout_seconds: 0 }) {
-        return Err(super::refuse(
-            400,
-            "guest probe needs a positive timeout_seconds",
-        ));
-    }
-    if let Action::GuestLog { path } = &input.operation
-        && (!path.starts_with('/') || path.contains('\0') || path.len() >= 4096)
-    {
-        return Err(super::refuse(
-            400,
-            "select an absolute guest log path that fits the Linux guest's 4096-byte path limit including NUL",
-        ));
-    }
-    if let Action::GuestCommand {
-        timeout_seconds, ..
-    }
-    | Action::GuestProbe { timeout_seconds } = &input.operation
-        && std::time::Instant::now()
-            .checked_add(Duration::from_secs(*timeout_seconds))
-            .is_none()
-    {
-        return Err(super::refuse(
-            400,
-            "timeout exceeds the host clock's representable interval",
-        ));
-    }
+    input.operation.validate()?;
     let owner = state
         .read()
         .map_err(|_| "runtime unavailable")?
@@ -883,7 +989,7 @@ async fn lifecycle(
 
 /// Whitelist diagnostic facts. Host paths, scripts, control tokens, arbitrary
 /// guest stderr, launch arguments and unrelated worker records never cross it.
-fn inspection(observed: &Value) -> Value {
+pub(super) fn inspection(observed: &Value) -> Value {
     let mut value = json!({});
     for field in [
         "agent_id",

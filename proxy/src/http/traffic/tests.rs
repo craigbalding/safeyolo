@@ -177,7 +177,7 @@ fn attribution(agent: &str) -> Value {
         "attribution_status":"resolved","attribution_provenance":{"transport_source":"uds","uds_agent":agent}})
 }
 // Compare complete source-shaped values and insertion order. Only live clock,
-// elapsed duration and generated request ID are taken from the observed event.
+// elapsed duration and generated request/connection/runtime IDs are observed.
 fn check_event(
     row: &Value,
     agent: &str,
@@ -214,6 +214,22 @@ fn check_event(
     } else {
         json!({"method":"POST","path":path,"size":size,"client":null,"attribution":attribution(agent)})
     };
+    let details = &row["details"];
+    assert_eq!(details["instance_id"], details["runtime_id"]);
+    assert!(!details["runtime_id"].as_str().unwrap().is_empty());
+    assert!(
+        details["client_connection_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("conn-")
+    );
+    assert!(
+        details.get("sandbox_run").is_none(),
+        "standalone traffic acquired managed-run authority"
+    );
+    for field in ["instance_id", "runtime_id", "client_connection_id"] {
+        expected["details"][field] = details[field].clone();
+    }
     assert_eq!(row, &expected);
     assert_eq!(
         serde_json::to_string(row).unwrap(),

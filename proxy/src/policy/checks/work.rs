@@ -197,10 +197,30 @@ impl Checks {
         &self,
         binding: &Binding,
         subject: &Subject,
+        evidence: Evidence,
+        at: u64,
+    ) -> Truth {
+        let Some(condition) = binding.require.as_ref() else {
+            return Truth::Unavailable;
+        };
+        self.named_truth(&binding.job, condition, subject, evidence, at)
+    }
+
+    pub(crate) fn named_truth(
+        &self,
+        name: &str,
+        condition: &Condition,
+        subject: &Subject,
         mut evidence: Evidence,
         at: u64,
     ) -> Truth {
-        let Some(check) = self.checks.get(&binding.job) else {
+        let mut names = BTreeSet::new();
+        condition.names(&mut names);
+        if names != BTreeSet::from([name.to_owned()]) || self.validate_condition(condition).is_err()
+        {
+            return Truth::Unavailable;
+        }
+        let Some(check) = self.checks.get(name) else {
             return Truth::Unavailable;
         };
         if evidence.subject.as_ref() != Some(subject)
@@ -209,16 +229,11 @@ impl Checks {
             return Truth::Unavailable;
         }
         validate_evidence(check, &mut evidence, at);
-        binding
-            .require
-            .as_ref()
-            .map_or(Truth::Unavailable, |condition| {
-                condition_truth(
-                    condition,
-                    &BTreeMap::from([(binding.job.clone(), evidence)]),
-                    at,
-                )
-            })
+        condition_truth(
+            condition,
+            &BTreeMap::from([(name.to_owned(), evidence)]),
+            at,
+        )
     }
 }
 

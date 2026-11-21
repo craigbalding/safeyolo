@@ -30,6 +30,7 @@ from pathlib import Path
 
 import tomlkit
 
+from tests.blackbox.execution_receipt import ProcedureReceipt, save
 from tests.blackbox.guest_exec import guest_command_args
 from tests.blackbox.installed_host_smoke import (
     _agent_listeners,
@@ -145,7 +146,16 @@ def capture_guest_command(command, env, path, failures):
             with child.stdout as stream:
                 descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with os.fdopen(descriptor, "wb") as log:
+                    drain_deadline = None
                     while True:
+                        # A descendant can keep writing after the CLI exits.
+                        # Bound that drain so owned teardown can finish.
+                        if finished.is_set():
+                            if drain_deadline is None:
+                                drain_deadline = time.monotonic() + 1
+                            elif time.monotonic() >= drain_deadline:
+                                failures.append(f"guest output pipe remained open after exit: {path.name}")
+                                return
                         readable, _, _ = select.select([stream], [], [], 0.1)
                         if readable:
                             chunk = os.read(stream.fileno(), 65536)
@@ -198,7 +208,9 @@ def inputs(base, revision):
 def run(args):
     base, root, output = args.prepared_config.resolve(), args.root.resolve(), args.output.resolve()
     assert not root.exists(), "--root must be new"
-    output.mkdir(parents=True, exist_ok=False, mode=0o700)
+    output.mkdir(parents=True, exist_ok=True, mode=0o700)
+    assert not any(output.iterdir()), "--output must be empty"
+    output.chmod(0o700)
     runtime_revision = args.runtime_revision or args.revision
     report = {"started_at": datetime.now(UTC).isoformat(), "revision": args.revision,
               "runtime_revision": runtime_revision,
@@ -254,6 +266,13 @@ def run(args):
         doctor = json.loads(native("doctor"))
         runtime_path = Path(doctor["linux"]["path"])
         report["runsc"] = {**doctor["linux"], "sha256": _sha256(runtime_path)}
+        observed = report["participants"]["caller"]["runtime"]
+        context = {"platform": "systrap", "agent": "caller", "pid": observed["backend_pid"],
+                   "start_token": observed["backend_token"]}
+        save(output / "platform.json", context)
+        receipt = ProcedureReceipt("provider", output / "result.json")
+        receipt.document["guest"] = context
+        receipt.checkpoint('identity')
 
         def guest_process(name, command):
             child, reader, finished = capture_guest_command(
@@ -290,23 +309,29 @@ def run(args):
         report["unrelated_identity_status"] = int(unrelated)
         report["origin"] = origin_observation(producer)
         assert int(unrelated) == 403 and report["origin"]["accepts"] == 0
+        receipt.checkpoint('scope', clients=dict(report["clients"]), origin=report["origin"],
+                           unrelated_identity_status=report["unrelated_identity_status"])
         phase("allowed", {"allowed": {200}}, 1)
         caller_id = report["participants"]["caller"]["runtime"]["agent_id"]
         assert report["origin"]["requests"] == [["GET /api/v1/value HTTP/1.1", caller_id, "caller",
                                                 "proofspot.safeyolo.internal:8088", "0", "0", "1", "1"]]
         assert report["clients"]["allowed"]["body_sha256"] == hashlib.sha256(b"native-http-service\n").hexdigest()
+        receipt.checkpoint('delivery', client=report["clients"]["allowed"], origin=report["origin"])
         native("services", "revoke", "caller", "proofspot")
         phase("revoked", {"revoked": {403}}, 1)
         native("services", "authorize", "caller", "proofspot", "--capability", "reader")
         phase("recovered", {"recovered": {200}}, 2)
         assert report["origin"]["requests"] == [report["origin"]["requests"][0]] * 2
         assert report["clients"]["recovered"]["body_sha256"] == report["clients"]["allowed"]["body_sha256"]
+        receipt.checkpoint('revoke-recover', clients=dict(report["clients"]), origin=report["origin"])
         native("agent", "shell", "proofspot", "-c", 'kill -TERM "$(cat /workspace/server.pid)"')
         server.wait(timeout=20)
         phase("closed", {"closed": {502, 503}}, 2)
         native("agent", "stop", "proofspot")
         phase("stopped", {"stopped": {502, 503}}, 2)
         assert worker.wait(timeout=20) == 0
+        receipt.checkpoint('closed-stopped', clients=dict(report["clients"]), origin=report["origin"],
+                           fallback_accepts=report["parent_accepts"])
         # Prove that the parent observer was live throughout the zero-hit checks.
         control = http.client.HTTPConnection("127.0.0.1", parent.server_port, timeout=5)
         try:
@@ -317,6 +342,8 @@ def run(args):
             control.close()
         report["parent_control_accepts"] = parent.accepts
         assert parent.accepts == 1
+        receipt.checkpoint('observer', control_accepts=parent.accepts,
+                           denied_fallback_accepts=report["parent_accepts"])
         report["status"] = "passed"
     finally:
         failures = []
@@ -389,6 +416,7 @@ def run(args):
         # Cleanup findings must not replace an exception from the journey.
         if report["status"] == "passed":
             assert not failures, failures
+    receipt.checkpoint('finished')
     return report
 
 

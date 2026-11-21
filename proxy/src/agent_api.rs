@@ -26,14 +26,19 @@ use zeroize::Zeroizing;
 
 mod agents;
 mod approvals;
+mod capabilities;
 mod checks;
 pub(crate) mod coord;
 mod declarations;
 mod explain;
 mod flows;
 mod gateway;
+mod lifecycle;
 mod memory;
 mod operator_actions;
+mod policy_assessment;
+mod policy_changes;
+mod policy_snapshots;
 mod route_challenges;
 mod support;
 mod trace;
@@ -61,6 +66,14 @@ const ENDPOINTS: &[&str] = &[
     "/health",
     "/status",
     "/policy",
+    "/policy/snapshots (POST)",
+    "/policy/changes (POST)",
+    "/policy/changes/{request_id}",
+    "/policy/assess (POST)",
+    "/policy/snapshots/{request_id}",
+    "/policy/capabilities",
+    "/policy/capabilities/validate (POST)",
+    "/policy/capabilities/support (POST)",
     "/lookup",
     "/checks/invoke (POST)",
     "/budgets",
@@ -76,6 +89,9 @@ const ENDPOINTS: &[&str] = &[
     "/memory",
     "/agents",
     "/support/grants",
+    "/support/diagnostics",
+    "/support/diagnostics/requests (POST)",
+    "/support/diagnostics/query (POST)",
     "/support/operations (POST)",
     "/support/operations/{operation_id}",
     "/circuits",
@@ -94,6 +110,9 @@ const ENDPOINTS: &[&str] = &[
     "/gateway/submit-binding",
     "/desktop/present",
     "/operator-actions",
+    "/lifecycle",
+    "/lifecycle/stop (POST)",
+    "/lifecycle/requests/{operation_id}",
     "/operator-actions/{action_request_id}",
     "/api/flows/{id}",
     "/api/flows/{id}/request-body",
@@ -698,9 +717,14 @@ async fn authorize(request: Request<'_>, token_path: &Path) -> Result<AuthScope,
             || path.starts_with("/api/coord/")
             || path == "/api/test-context/current"
             || path == "/desktop/present")
+        && !path.starts_with("/policy/capabilities/")
         && path != "/checks/invoke"
+        && path != "/lifecycle/stop"
         && !path.starts_with("/support/")
         && !path.starts_with("/operator-actions")
+        && !path.starts_with("/policy/snapshots")
+        && !path.starts_with("/policy/changes")
+        && path != "/policy/assess"
         && !path.starts_with("/approvals/")
     {
         return Err(response(

@@ -34,7 +34,11 @@ fn push(
     });
 }
 
-fn for_work(conn: &Connection, work: &Work, actor: Actor<'_>) -> Result<Vec<Action>, WorkError> {
+pub(crate) fn for_work(
+    conn: &Connection,
+    work: &Work,
+    actor: Actor<'_>,
+) -> Result<Vec<Action>, WorkError> {
     let mut actions = Vec::new();
     let participant = actor.principal();
     // A claim is part of the same assignment delivery, not a second model job.

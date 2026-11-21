@@ -3,6 +3,49 @@
 use std::{io::ErrorKind, path::PathBuf, time::Duration};
 
 use crate::{Error, coord_supervisor, host_agents, host_platform};
+use serde_json::{Value, json};
+
+/// Project only a selected recipient's recorded cursor for an approved room.
+/// The checkpoint is recipient-writable evidence, never proof of consumption.
+pub(crate) fn recipient_cursor(agent: &host_agents::Agent, room: &str) -> Value {
+    let observe = || -> Result<Value, Error> {
+        host_agents::refresh(agent)?;
+        let directory = host_platform::config_dir()
+            .join("agents")
+            .join(&agent.name)
+            .join("home/.safeyolo");
+        let config = coord_supervisor::Config::load(&directory.join("coord-supervisor.json"))?;
+        if config.agent_name != agent.name || !config.rooms.iter().any(|name| name == room) {
+            return Err("selected room has no matching supervised recipient".into());
+        }
+        let path = directory.join("coord-supervisor-state.json");
+        let context_path = host_platform::config_dir()
+            .join("agents")
+            .join(&agent.name)
+            .join("config-share/host-launch-context.json");
+        let context = crate::guest_commands::read_state(&context_path)?
+            .ok_or("recipient launch identity unavailable")?;
+        if context["agent_id"] != agent.id
+            || std::fs::metadata(&path)?.modified()?
+                < std::fs::metadata(context_path)?.modified()?
+        {
+            return Err("checkpoint cannot be attributed to the current recipient run".into());
+        }
+        let state = coord_supervisor::State::read_existing(&path)?;
+        let age = std::fs::metadata(path)?
+            .modified()?
+            .elapsed()
+            .unwrap_or_default();
+        Ok(
+            json!({"status":"recorded","safe_cursor":state.safe_cursor,"checkpoint_age_seconds":age.as_secs()}),
+        )
+    };
+    let mut result = observe().unwrap_or_else(|_| json!({"status":"unavailable"}));
+    result["meaning"] = json!(
+        "Recipient-writable supervisor checkpoint. Its cursor covers the recipient feed across rooms. It does not establish current supervisor liveness or application consumption. No checkpoint content or other room identifiers are disclosed."
+    );
+    result
+}
 
 pub(crate) const HELP: &str = "safeyolo [--root ROOT] agent watch NAME [--history COUNT] [--since SEQUENCE] [--once] [--max-text COUNT] [--plain]\n\nWatch the named supervised agent's configured room and checkpoint. The view is read-only, compact and redacted, with 30 recent messages and at most 600 characters per line by default. Ctrl-C detaches. Checkpoint observations are labelled separately from retained agent events. They do not prove supervisor liveness. Missing or damaged checkpoints remain visible while the room follows. Use agent diagnostics NAME to inspect runtime failures.";
 

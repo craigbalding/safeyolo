@@ -117,7 +117,9 @@ mod tests;
 
 /// The audience is part of the approval effect, including rights of existing
 /// members. Operator membership is independent of every approval source.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Participant {
     pub principal_kind: String,

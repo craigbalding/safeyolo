@@ -12,6 +12,22 @@ use toml_edit::{DocumentMut, Item, value};
 
 use crate::Error;
 
+pub(crate) const CONFIGURATION_FIELDS: &[&str] = &[
+    "agent_id",
+    "folder",
+    "launcher",
+    "host_script",
+    "memory_mb",
+    "rootfs_overlay",
+    "nested_docker",
+    "user_default_args",
+    "mounts",
+    "dangerously_allow_unowned",
+    "network_slot",
+    "tailnet_port",
+    "lifecycle",
+];
+
 #[derive(Clone, serde::Serialize)]
 pub(crate) struct Agent {
     pub(crate) name: String,
@@ -25,6 +41,7 @@ pub(crate) struct Agent {
     pub(crate) user_default_args: Vec<String>,
     pub(crate) mounts: Vec<String>,
     pub(crate) dangerously_allow_unowned: bool,
+    pub(crate) lifecycle: Option<crate::host_lifecycle::scheduled::Configuration>,
 }
 
 impl Agent {
@@ -91,6 +108,16 @@ impl Agent {
                 .get("dangerously_allow_unowned")
                 .and_then(Item::as_bool)
                 .unwrap_or(false),
+            lifecycle: table
+                .get("lifecycle")
+                .map(|item| {
+                    let mut document = DocumentMut::new();
+                    document["lifecycle"] = item.clone();
+                    let authored =
+                        crate::policy::parse_toml_with_timestamps(&document.to_string())?.0;
+                    crate::host_lifecycle::scheduled::configuration(&authored["lifecycle"])
+                })
+                .transpose()?,
         })
     }
 }
@@ -400,22 +427,9 @@ pub(crate) fn list() -> Result<Vec<Agent>, Error> {
             let fields = item
                 .as_table_like()
                 .ok_or_else(|| format!("agent {name}: metadata must be a TOML table"))?;
-            let host_settings = [
-                "agent_id",
-                "folder",
-                "launcher",
-                "host_script",
-                "memory_mb",
-                "rootfs_overlay",
-                "nested_docker",
-                "user_default_args",
-                "mounts",
-                "dangerously_allow_unowned",
-                "network_slot",
-                "tailnet_port",
-            ]
-            .iter()
-            .any(|key| fields.contains_key(key));
+            let host_settings = CONFIGURATION_FIELDS
+                .iter()
+                .any(|key| fields.contains_key(key));
             // Retained incarnation evidence also identifies a host record if
             // its configuration was damaged. Do not hide it as a policy entry.
             if !host_settings

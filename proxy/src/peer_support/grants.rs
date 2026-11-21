@@ -115,14 +115,7 @@ pub(crate) fn preview(policy: &Policy, name: &str, proposal: &Proposal) -> Resul
             "state_disclosure":"The selected factory's role identities and observed runtime states; no checkpoint, contract, guest output or room history."}));
         warnings.push(format!("Factory {}: selected direction types {} reach its approved operator-input agent under the manager's own identity. This grants selected factory state and direction publication, not room history, native work ownership, acceptance or policy administration. Required checks, challenges and actor rules remain in force.",selected.factory,selected.types.join(", ")));
     }
-    if grant.guest_admin {
-        warnings.push("Guest administration of both producer and reviewer is common administrative control. Configured actor checks still apply, but the reviewer is not independent of this manager. Keep a required independent decider outside the manager's administration.".into());
-        warnings.push("Guest administration permits arbitrary guest commands, including existing passwordless guest sudo, all target-accessible files, writable mounts, credentials, network and services, Agent API permissions and existing delegations. Authority can reach other peers and approval decisions through the target. Standing grants follow capabilities later given to the target. Direct target checks do not confine this indirect reach.".into());
-        warnings.push("The authority report shows typed upstream and downstream reach within the selected owner inventory and authorized disclosure. Inspect its supporting paths and unknown frontier. Partial evidence cannot establish reviewer independence.".into());
-    }
-    if !grant.guest_logs.is_empty() {
-        warnings.push("Selected log paths are read inside the guest. Guest links may lead to any target-accessible data, including shared mounts and credentials. This permission is broader than host-observed inspection.".into());
-    }
+    warnings.extend(grant.warnings());
     if !grant.signal_rooms.is_empty() {
         let connection = crate::coord_rooms::open(&crate::host_platform::config_dir())
             .map_err(|_| invalid("signal disclosure needs the owning instance's Coord store"))?;
@@ -147,7 +140,7 @@ pub(crate) fn preview(policy: &Policy, name: &str, proposal: &Proposal) -> Resul
         "lifetime":if grant.expires_at.is_some() {"temporary"} else {"standing"},
         "notifications":{"subjects":grant.targets,"recipient":grant.support,"kinds":grant.notifications,"signal_rooms":grant.signal_rooms,
             "disclosure":"Selected operational references and current observation evidence. Signal text requires the explicit signal_rooms selection. Current authority is checked at delivery and resolution. Notifications do not grant or execute repair."},
-        "effect":"Inspection is always included. Only the selected guest evidence, administration and lifecycle actions are granted. Routine in-scope operations require no further prompt. Ordinary support and target restarts preserve a standing grant; recreated identities do not inherit it. Lifecycle uses saved worker configuration and accepts no host scripts, mounts, credentials or host commands.",
+        "effect":if grant.diagnostics.is_some(){"Only the selected local diagnostic sources, durable subjects and historical range are readable. Each read and page checks current authority. A fixed snapshot is never recollected after data loss or expiry. Current runtime/membership are observations rather than reconstructed history. This grants no support operation, guest administration, lifecycle, policy change or room send right. Already disclosed bytes cannot be recalled."}else{"Inspection is always included. Only the selected guest evidence, administration and lifecycle actions are granted. Routine in-scope operations require no further prompt. Ordinary support and target restarts preserve a standing grant; recreated identities do not inherit it. Lifecycle uses saved worker configuration and accepts no host scripts, mounts, credentials or host commands."},
         "warnings":warnings}),
     )
 }

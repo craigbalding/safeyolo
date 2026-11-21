@@ -21,7 +21,7 @@ macro_rules! names {
 names!(Kind { Security=>"security", Gateway=>"gateway", Traffic=>"traffic", Ops=>"ops", Admin=>"admin", Agent=>"agent", Coord=>"coord", Network=>"network" });
 names!(Severity { Critical=>"critical", High=>"high", Medium=>"medium", Low=>"low" });
 names!(Decision { Allow=>"allow", Deny=>"deny", Warn=>"warn", RequireApproval=>"require_approval", BudgetExceeded=>"budget_exceeded", Log=>"log" });
-names!(ApprovalType { Credential=>"credential", NetworkEgress=>"network_egress", GatewayRoute=>"gateway_route", Service=>"service", ContractBinding=>"contract_binding", CoordRoom=>"coord_room", DesktopPresent=>"desktop_present" });
+names!(ApprovalType { Credential=>"credential", NetworkEgress=>"network_egress", GatewayRoute=>"gateway_route", Service=>"service", ContractBinding=>"contract_binding", CoordRoom=>"coord_room", DesktopPresent=>"desktop_present", Diagnostic=>"diagnostic", PolicySnapshot=>"policy_snapshot", PolicyChange=>"policy_change", SignalResponse=>"signal_response" });
 names!(Initiator { Agent=>"agent", Operator=>"operator", External=>"external", Unknown=>"unknown" });
 names!(AttributionStatus { Resolved=>"resolved", Delegated=>"delegated", Unavailable=>"unavailable", Conflict=>"conflict" });
 
@@ -47,7 +47,7 @@ pub struct Approval {
 /// Details retain the existing typed JSON number and temporal representation.
 pub struct Event {
     validation_failed: bool,
-    request_scope: Option<RequestScope>,
+    pub(crate) request_scope: Option<RequestScope>,
     pub event: String,
     pub kind: Kind,
     pub severity: Severity,
@@ -64,11 +64,12 @@ pub struct Event {
 }
 
 /// Set only by the native connection owner at a request-path publication.
-struct RequestScope {
-    instance_id: String,
-    runtime_id: String,
-    client_connection_id: String,
-    sandbox_run: Option<crate::host_runs::AgentRun>,
+#[derive(Clone)]
+pub(crate) struct RequestScope {
+    pub(crate) instance_id: String,
+    pub(crate) runtime_id: String,
+    pub(crate) client_connection_id: String,
+    pub(crate) sandbox_run: Option<crate::host_runs::AgentRun>,
 }
 
 impl Event {
@@ -282,8 +283,7 @@ impl Event {
         }
         fields.insert("details".into(), CircuitValue::Object(details));
         let value = CircuitValue::Object(fields);
-        if self.request_scope.is_some()
-            || self.kind == Kind::Network
+        if self.kind == Kind::Network
             || super::nsm::is_event(&self.event)
             || (super::nsm::is_request_decision(&self.event)
                 && super::nsm::is_scoped(&value.json().map_err(|_| invalid())?))

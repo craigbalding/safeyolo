@@ -10,6 +10,53 @@ fn version_reports_the_compiled_source_and_profile() {
     assert!(text.contains(&format!("profile={}", env!("SAFEYOLO_BUILD_PROFILE"))));
 }
 
+#[test]
+fn guest_build_script_stamps_identity_without_proxy_dependencies() {
+    let guest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("guest/command");
+    let scratch = tempfile::tempdir().unwrap();
+    let executable = scratch.path().join("guest-build-script");
+    let compiled = std::process::Command::new("rustc")
+        .current_dir(&guest)
+        .args(["--edition=2024", "build.rs", "-o"])
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let revision = "0123456789abcdef0123456789abcdef01234567";
+    for (profile, expected) in [("debug", "debug"), ("release", "production")] {
+        let output = std::process::Command::new(&executable)
+            .current_dir(&guest)
+            .env("SAFEYOLO_BUILD_REVISION", revision)
+            .env("PROFILE", profile)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains(&format!(
+            "cargo:rustc-env=SAFEYOLO_BUILD_REVISION={revision}"
+        )));
+        assert!(text.contains(&format!(
+            "cargo:rustc-env=SAFEYOLO_BUILD_PROFILE={expected}"
+        )));
+        assert!(!text.contains("SAFEYOLO_DEFINITION_VERSION"));
+    }
+    let invalid = std::process::Command::new(executable)
+        .current_dir(guest)
+        .env("SAFEYOLO_BUILD_REVISION", "short-id")
+        .env("PROFILE", "debug")
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("must be a full Git object ID"));
+}
+
 #[inline(never)]
 fn controlled_panic() {
     panic!("controlled production backtrace probe");

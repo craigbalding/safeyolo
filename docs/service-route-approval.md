@@ -8,6 +8,17 @@ missing route admission.
 
 ## Reconsider a denied request
 
+An operator can adopt [versioned check and challenge updates](signals.md#adopt-versioned-checks-and-challenges).
+For a matching missing-route challenge, read `guidance.control_update` and
+`guidance.active_control_update`. The selected steps can require named answer
+fields, a real isolated check or an additional question after a positive finding.
+Submit the answer fields in the escalation body's `answers` object alongside
+the existing `source` and `context`. Missing evidence returns HTTP 422 and
+creates no pending route approval. A changed revision supersedes incompatible
+pending decisions; obtain a new challenge through the original operation.
+These steps grant no route, credential or other capability. Approval of an
+already admitted risky route remains a separate path.
+
 In a current agent run, send the service request through the proxy with the
 service's gateway token. If the route has no allow rule and other controls
 permit the request, HTTP 403 returns `GATEWAY_ROUTE_CHALLENGE`. The response

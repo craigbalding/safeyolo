@@ -25,10 +25,15 @@ Inside an agent, use `mise use -g python@3.12` for Python or
 `mise use -g ripgrep` for `rg`. Mise installs live in the persistent agent home.
 For compilers and system libraries, use guest `sudo -n apt-get update` followed
 by `sudo -n apt-get install -y build-essential pkg-config`. Linux uses a
-per-agent directory overlay by default. With `--ephemeral`, unpacked OS
-packages disappear on stop. Their download cache remains, so a later
+per-agent file-backed overlay by default and a memory-backed overlay with
+`--ephemeral`. Both Linux modes lose ordinary root OS package and configuration
+writes when the sandbox is recreated. Their download cache remains, so a later
 installation repeats unpacking. A custom rootfs can include packages when
-that repeated work is costly.
+that repeated work is costly. On macOS, the default writable
+Virtualization.framework (VZ) overlay retains root OS changes; ephemeral mode
+discards them. A retained overlay can mask files
+from a new base. See [guest maintenance](../docs/guest-oci.md#assess-and-maintain-installed-agents)
+for selection, assessment and rollback limits.
 
 You don't need a custom rootfs unless you actually want a different
 distro. The default base (Debian trixie with `mise` plus a compact
