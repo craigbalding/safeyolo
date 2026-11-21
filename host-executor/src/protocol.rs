@@ -252,7 +252,32 @@ pub struct Receipt {
     pub cancellation_requested: bool,
     pub output_bytes: u64,
     pub output_sha256: Option<String>,
+    pub native: Option<NativeObservation>,
+    pub process: Option<NativeProcess>,
     pub detail: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NativeProcess {
+    pub pid: u32,
+    pub birth_seconds: u64,
+    pub birth_microseconds: u32,
+}
+
+/// Observed native facts. An absent exit code or cleanup observation stays
+/// unknown; a transport reply does not establish either fact.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NativeObservation {
+    pub backend: String,
+    pub enforcement: Vec<String>,
+    pub dependencies: Vec<String>,
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+    pub processes_stopped: bool,
+    pub output_truncated: bool,
+    pub termination_reason: String,
 }
 
 impl Receipt {
@@ -292,6 +317,8 @@ impl Receipt {
             cancellation_requested: false,
             output_bytes: 0,
             output_sha256: None,
+            native: None,
+            process: None,
             detail: "admitted; execution has not started".into(),
         })
     }

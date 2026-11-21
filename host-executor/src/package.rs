@@ -80,6 +80,9 @@ pub enum Word {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Execution {
+    /// Required guarantees remain the default contract. Each explicitly broader
+    /// bound is part of the implementation digest and both authority ceilings.
+    pub broader: BTreeSet<BroaderBound>,
     pub executable: String,
     pub executable_sha256: String,
     pub argv: Vec<Word>,
@@ -91,6 +94,19 @@ pub struct Execution {
     pub network: Network,
     pub resources: ExecutionLimits,
     pub delegated_services: Vec<DelegatedService>,
+}
+
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BroaderBound {
+    Memory,
+    ExecutorRestart,
+    Filesystem,
+    Registry,
+    NetworkIpc,
+    DelegatedServices,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]

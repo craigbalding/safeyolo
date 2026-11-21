@@ -1,0 +1,14 @@
+//! Explicit native Windows component fixture and its prebuilt workload probe.
+//! Run --prepare ROOT CREDENTIAL, then --native ROOT [--service]. The test host
+//! supplies an ordinary workload account, private control/state ACLs, a readable
+//! programs directory and writable work directory. No compiler/Python is used.
+#[cfg(windows)]
+mod common;
+#[cfg(windows)]
+mod windows_component;
+fn main() {
+    #[cfg(windows)]
+    windows_component::main();
+    #[cfg(not(windows))]
+    println!("Windows native fixture requires Windows and explicitly prepared inputs; skipped");
+}

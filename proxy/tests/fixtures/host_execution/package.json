@@ -11,6 +11,7 @@
         "mode": {"type": "enum", "required": false, "default": "normal", "options": ["normal", "quiet"]}
       },
       "execution": {
+        "broader": [],
         "executable": "/usr/bin/fixed-demo-restart",
         "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "argv": [{"kind": "literal", "value": "demo.service"}, {"kind": "argument", "name": "wait"}],

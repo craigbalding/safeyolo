@@ -3,14 +3,15 @@
 The `safeyolo.host-execution/v1` contract connects an issuing SafeYolo instance
 to a named execution target. The target can run independently or alongside
 SafeYolo. The maintained types and validators are in
-[`host_execution`](../proxy/src/host_execution.rs). `schemas()` derives the JSON
-schemas from those types. The shared fixtures and authenticated HTTP witness
+[`host-executor`](../host-executor/src/lib.rs). The proxy's
+[`host_execution`](../proxy/src/host_execution.rs) module reuses those types and
+owns the service projections. `schemas()` derives the JSON schemas from the
+shared types. The shared fixtures and authenticated HTTP witness
 are in [`host_execution.rs`](../proxy/tests/host_execution.rs).
 
-This increment supplies the protocol, package projections and contract witness.
-It does not install a native executor, enrol an issuer, change policy, or add a
-gateway route to a running instance. The platform executor, adoption, effect
-authoring and gateway consumers are the separate children of
+Loading the contract does not install an executor, enrol an issuer, change
+policy, or add a gateway route to a running instance. Native execution,
+adoption, effect authoring and gateway consumers belong to the children of
 [#1669](https://github.com/craigbalding/safeyolo/issues/1669).
 
 ## Ownership and trust
@@ -190,7 +191,88 @@ or configuration. An operation that declares broader executable or writable
 scope needs explicit adoption and matching authority; the word “restart” adds
 no restriction or guarantee by itself.
 
+The `execution.broader` set identifies explicitly adopted exceptions to required
+native guarantees. It is part of the implementation digest, issuer grant and
+target ceiling binding. An empty set requires every declared bound. The current
+`memory` exception permits the macOS backend to poll resident memory without
+claiming a hard kernel memory cap. The `executor_restart` exception permits a
+process to remain running beyond its deadline if the controller crashes. Restart
+retains uncertain cleanup and concurrency until the recorded process birth is
+absent; it does not signal a recovered PID. The macOS backend requires both
+exceptions. An enforcement label cannot select either exception. The Linux and
+macOS adapters refuse unsupported filesystem, network, IPC and delegated-service
+profiles. In particular, permitting service IPC under the same account
+could let a service launch a process outside the sandbox and modify executor
+inputs; a service name alone does not protect those inputs.
+
+The Windows adapter requires explicit `filesystem`, `registry`, `network_ipc`
+and `delegated_services` exceptions. Job Objects bound aggregate process memory,
+active processes and direct descendant lifetime. Job Objects do not confine
+files, disk writes, registry access, network destinations or service-manager
+effects. Those permissions come from the selected workload account's operating
+system (OS) access. Declared paths, destinations and services are assessments in
+that profile. Delegated service, Windows Management Instrumentation and task
+scheduler effects can continue outside the Job Object. A receipt's
+`processes_stopped` observation covers associated Job processes only.
+
+The Windows executor uses a separate, non-administrative workload account.
+The executor rejects workload privileges that can bypass protected ACLs or
+impersonate the executor. Configuration, state, executables and their ancestors
+must prevent workload replacement. The adapter checks native access control
+lists (ACLs), refuses reparse points and holds executable/ancestor handles
+against replacement. Local drive paths are supported; UNC/device paths,
+alternate data streams and trailing-dot/space aliases are refused. Host-owned
+DLLs and OS tool dependencies remain unpinned and must be assessed. The native
+launcher does not load the workload's user profile or current-user registry
+hive automatically. Event Log and registry commands need the corresponding OS
+read permission. Fixed service commands need an explicit service ACL; a signed
+request does not create one.
+
+`native.credential` selects a generic Windows Credential Manager entry owned by
+the executor account. `credential-store --name NAME --account DOMAIN\user`
+reads a UTF-8 password from private stdin. The password is not a configuration
+field or command argument. `identity --credential NAME` reports the workload SID
+and stable token groups. The changing logon-session SID is excluded from that
+stable list. Native launch requires `SeImpersonatePrivilege`, or the appropriate
+assign-primary-token and quota privileges. Windows Service installation selects
+the executor account explicitly; credential provisioning must use that same
+account. `service --name SCM_NAME --config ABSOLUTE_JSON --state ABSOLUTE_DIRECTORY`
+uses the same validation, admission and execution code as `serve`. Service stop
+requests native Job cleanup before reporting `SERVICE_STOPPED`.
+
+The local Windows transport is `\\.\pipe\safeyolo-host-TARGET_ID`. The server
+uses a private DACL, rejects remote clients and refuses a pre-existing pipe name
+at startup. A client must verify the pipe server's OS account before sending a
+signed request; a pipe name or target label alone does not authenticate the
+server. Clients should open with identification-level security quality of
+service to prevent server impersonation. The component fixture verifies the
+server process token against its selected executor account. Connections,
+pending instances and whole request/response deadlines are bounded. Native
+command lines use Windows CRT quoting with an explicit application path and
+exact case-insensitive environment names. Native command lines are limited to
+32767 UTF-16 units, including the terminating NUL. If the selected executor lacks
+assign-primary-token/quota privileges, the token-launch fallback has a shorter
+1024-unit limit. A longer command then fails before process creation and names
+the required executor privilege; no shell is implicit.
+
+The Windows launcher supplies the Job Object in the process-creation attribute
+list and verifies membership before resuming the suspended workload. This closes
+the controller-crash gap between creating a process and assigning it to its Job.
+The required creation-time Job attribute is available on Windows 10 and newer
+and Windows Server 2016 and newer. See Microsoft's
+[creation-time Job assignment explanation](https://devblogs.microsoft.com/oldnewthing/20230209-00/?p=107812/).
+
 ## Lifecycle, replay and revocation
+
+`Receipt.native` contains native observations when the executor has retained
+them. The observations identify the backend, enforced properties, dependencies,
+exit code or signal, process cleanup, output truncation and termination reason.
+A missing native observation or exit value stays unknown. A retained admission
+or successful transport reply does not establish native execution or cleanup.
+The executor records native completion facts and concurrency release in the
+same transaction. `Receipt.process`, when present, retains the process ID and
+start time used by native restart reconciliation. A PID alone does not prove
+that a current process is the recorded job.
 
 The target retains admission before dispatch and returns a revisioned `Receipt`.
 States are `admitted`, `running`, `completed`, `failed`, `cancelled` and

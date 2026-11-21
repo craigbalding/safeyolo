@@ -500,6 +500,96 @@ fn durable_storage_failure_rolls_back_call_and_replay_reservations() {
 }
 
 #[test]
+fn durable_mutation_capacity_preserves_one_cancellation_per_active_job() {
+    let root = ledger_root();
+    let mut target = fixture_target();
+    target
+        .ceiling
+        .get_mut("restart")
+        .unwrap()
+        .budgets
+        .concurrent = 2;
+    target
+        .issuers
+        .get_mut("sy-issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant-demo")
+        .unwrap()
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .budgets
+        .concurrent = 2;
+    let mut limits = ledger_limits();
+    limits.jobs = 2;
+    limits.mutation_records = 4;
+    let mut ledger = Ledger::open(root.path(), &target.target_id, limits).unwrap();
+    let mut jobs = Vec::new();
+    for id in ["reserve-first", "reserve-second"] {
+        let result = ledger
+            .handle(
+                &target,
+                Verb::Invoke.path(),
+                &signed(ledger_invoke(&target, id)),
+                NOW,
+            )
+            .unwrap();
+        jobs.push(job_response(result.response));
+    }
+    let cancel = request_for(
+        &target,
+        Action::Cancel {
+            job_id: jobs[0].job_id.clone(),
+            expected_revision: jobs[0].revision,
+        },
+        "cancel-first",
+    );
+    let first = job_response(
+        ledger
+            .handle(&target, Verb::Cancel.path(), &signed(cancel), NOW)
+            .unwrap()
+            .response,
+    );
+    assert!(first.cancellation_requested);
+    let duplicate = request_for(
+        &target,
+        Action::Cancel {
+            job_id: first.job_id,
+            expected_revision: first.revision,
+        },
+        "cancel-first-again",
+    );
+    assert_eq!(
+        ledger
+            .handle(&target, Verb::Cancel.path(), &signed(duplicate), NOW)
+            .err()
+            .unwrap()
+            .code,
+        RefusalCode::Budget,
+        "a new request for an already requested cancellation cannot consume another job's reserved slot"
+    );
+    let cancel = request_for(
+        &target,
+        Action::Cancel {
+            job_id: jobs[1].job_id.clone(),
+            expected_revision: jobs[1].revision,
+        },
+        "cancel-second",
+    );
+    assert!(
+        job_response(
+            ledger
+                .handle(&target, Verb::Cancel.path(), &signed(cancel), NOW)
+                .unwrap()
+                .response
+        )
+        .cancellation_requested
+    );
+}
+
+#[test]
 fn durable_uncertain_concurrency_survives_a_new_grant_revision() {
     let root = ledger_root();
     let mut target = fixture_target();
@@ -824,7 +914,7 @@ fn one_package_binds_native_gateway_material_and_target_scope() {
     let target = fixture_target();
     assert_eq!(
         revision(&target.package),
-        "55ecff2a1f54ce2d19cc1c3d98c1af821fcd02aa47362f2a12d10498225a2928"
+        "7133ca6760addf13af4944a9794f93f47d26ff1e58a7c1a142aed041c3021384"
     );
     let projections = target.package.projections().unwrap();
     target.package.verify_projections(&projections).unwrap();

@@ -2,10 +2,17 @@
 //! containment remain with their owners; validation alone never executes code.
 
 mod authority;
-#[cfg(unix)]
 mod ledger;
+#[cfg(target_os = "linux")]
+pub mod linux;
+#[cfg(target_os = "macos")]
+pub mod macos;
+mod native;
 mod package;
 mod protocol;
+pub mod server;
+#[cfg(windows)]
+pub mod windows;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -42,8 +49,8 @@ pub fn valid_agent_id(value: &str) -> bool {
     })
 }
 pub use authority::*;
-#[cfg(unix)]
 pub use ledger::*;
+pub use native::{NativeRuntime, now};
 pub use package::*;
 pub use protocol::*;
 

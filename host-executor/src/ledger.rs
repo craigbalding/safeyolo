@@ -4,11 +4,13 @@ use super::*;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
-use std::{
-    fs::{File, OpenOptions},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::Path,
-};
+#[cfg(unix)]
+use std::fs::OpenOptions;
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
+use std::{fs::File, path::Path};
 
 /// Target-owned admission and retention bounds. database_bytes caps logical
 /// database pages. The native owner must also reserve space for the rollback
@@ -28,6 +30,8 @@ pub struct Ledger {
     limits: LedgerLimits,
     target_id: String,
     _lock: File,
+    #[cfg(target_os = "macos")]
+    root: PathBuf,
 }
 
 pub struct Admission {
@@ -119,14 +123,18 @@ impl Ledger {
             RefusalCode::Budget,
             "ledger needs literal target identity and positive bounded storage, output and record limits",
         )?;
+        #[cfg(unix)]
         let metadata = std::fs::symlink_metadata(root).map_err(unavailable)?;
         // SAFETY: geteuid has no pointer arguments and reads this process's UID.
+        #[cfg(unix)]
         let uid = unsafe { libc::geteuid() };
+        #[cfg(unix)]
         require(
             metadata.is_dir() && metadata.uid() == uid && metadata.mode() & 0o077 == 0,
             RefusalCode::Unavailable,
             "ledger directory must be owned by the executor and private",
         )?;
+        #[cfg(unix)]
         let file = |name: &str| -> Result<File, Refusal> {
             let path = root.join(name);
             let file = OpenOptions::new()
@@ -149,6 +157,8 @@ impl Ledger {
             )?;
             Ok(file)
         };
+        #[cfg(windows)]
+        let file = |name: &str| crate::windows::security::private_file(&root.join(name));
         let lock = file("executor.lock")?;
         lock.try_lock().map_err(unavailable)?;
         let database = file("jobs.sqlite")?;
@@ -203,6 +213,7 @@ impl Ledger {
             "ledger belongs to another durable target",
         )?;
         database.sync_all().map_err(unavailable)?;
+        #[cfg(unix)]
         File::open(root)
             .and_then(|directory| directory.sync_all())
             .map_err(unavailable)?;
@@ -211,6 +222,8 @@ impl Ledger {
             limits,
             target_id: target_id.into(),
             _lock: lock,
+            #[cfg(target_os = "macos")]
+            root: root.to_owned(),
         })
     }
 
@@ -223,6 +236,28 @@ impl Ledger {
         path: &str,
         bytes: &[u8],
         now: u64,
+    ) -> Result<Admission, Refusal> {
+        self.handle_runtime(target, path, bytes, now, None)
+    }
+
+    pub(crate) fn handle_native(
+        &mut self,
+        target: &Target,
+        path: &str,
+        bytes: &[u8],
+        now: u64,
+        runtime: &NativeRuntime,
+    ) -> Result<Admission, Refusal> {
+        self.handle_runtime(target, path, bytes, now, Some(runtime))
+    }
+
+    fn handle_runtime(
+        &mut self,
+        target: &Target,
+        path: &str,
+        bytes: &[u8],
+        now: u64,
+        runtime: Option<&NativeRuntime>,
     ) -> Result<Admission, Refusal> {
         require(
             target.target_id == self.target_id,
@@ -269,16 +304,43 @@ impl Ledger {
                 RefusalCode::Budget,
                 "retained mutation record ceiling reached",
             )?;
+            let uncancelled: i64 = transaction.query_row(
+                "SELECT count(*) FROM jobs WHERE active=1 AND json_extract(receipt,'$.cancellation_requested')=0",
+                [], |row| row.get(0)
+            ).map_err(unavailable)?;
+            let releases_reserve = if let Action::Cancel { job_id, .. } = &req.action {
+                let retained = receipt(&transaction, job_id)?;
+                target.authorize_job(&auth, &retained)?;
+                !retained.state.terminal() && !retained.cancellation_requested
+            } else {
+                false
+            };
+            let reserve = (uncancelled as u64)
+                .saturating_sub(u64::from(releases_reserve))
+                .saturating_add(u64::from(matches!(req.action, Action::Invoke { .. })));
+            require(
+                (count as u64).saturating_add(1).saturating_add(reserve)
+                    <= self.limits.mutation_records,
+                RefusalCode::Budget,
+                "mutation storage must retain capacity to cancel each active job",
+            )?;
         }
         let mut dispatch = false;
         let response = match &req.action {
             Action::Discover => Response::Discovery {
                 discovery: target.discover(&auth)?,
             },
-            Action::Propose { invocation } => Response::Proposal {
-                prepared: target
-                    .prepare(&auth, usage(&transaction, &auth, &invocation.operation_id)?)?,
-            },
+            Action::Propose { invocation } => {
+                let prepared =
+                    target.prepare(&auth, usage(&transaction, &auth, &invocation.operation_id)?)?;
+                if let Some(runtime) = runtime {
+                    runtime.validate_command(
+                        &target.package.operations[&invocation.operation_id]
+                            .command(&prepared.invocation.arguments)?,
+                    )?;
+                }
+                Response::Proposal { prepared }
+            }
             Action::Invoke { invocation } => {
                 let (jobs, output): (i64, i64) = transaction
                     .query_row(
@@ -292,6 +354,12 @@ impl Ledger {
                     usage(&transaction, &auth, &invocation.operation_id)?,
                     now,
                 )?;
+                if let Some(runtime) = runtime {
+                    runtime.validate_command(
+                        &target.package.operations[&invocation.operation_id]
+                            .command(&receipt.prepared.invocation.arguments)?,
+                    )?;
+                }
                 require(
                     (jobs as u64) < self.limits.jobs
                         && receipt.prepared.limits.output_bytes
@@ -481,6 +549,61 @@ impl Ledger {
         now: u64,
         detail: String,
     ) -> Result<Receipt, Refusal> {
+        self.finish_observed(job_id, next, quiescent, now, detail, None)
+    }
+
+    pub fn observe(&self, job_id: &str) -> Result<Receipt, Refusal> {
+        let value: String = self
+            .connection
+            .query_row(
+                "SELECT receipt FROM jobs WHERE job_id=?1",
+                [job_id],
+                |row| row.get(0),
+            )
+            .map_err(unavailable)?;
+        serde_json::from_str(&value).map_err(unavailable)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn artifact_root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Save the identity of a suspended native process before it can perform
+    /// workload effects. Failed capture must not be treated as absent execution.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn attach_process(
+        &mut self,
+        job_id: &str,
+        process: NativeProcess,
+    ) -> Result<(), Refusal> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(unavailable)?;
+        let mut retained = receipt(&transaction, job_id)?;
+        require(
+            retained.state == JobState::Running && retained.process.is_none(),
+            RefusalCode::Conflict,
+            "native process requires a running job without a prior process",
+        )?;
+        retained.process = Some(process);
+        retained.revision += 1;
+        save_receipt(&transaction, &retained)?;
+        transaction.commit().map_err(unavailable)
+    }
+
+    /// Finish with the native observation in the same transaction as lifecycle
+    /// and concurrency release. Only the trusted executor calls this method.
+    pub fn finish_observed(
+        &mut self,
+        job_id: &str,
+        next: JobState,
+        quiescent: bool,
+        now: u64,
+        detail: String,
+        native: Option<NativeObservation>,
+    ) -> Result<Receipt, Refusal> {
         require(
             next.terminal() && (quiescent || next == JobState::Uncertain),
             RefusalCode::Conflict,
@@ -491,6 +614,14 @@ impl Ledger {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(unavailable)?;
         let mut retained = receipt(&transaction, job_id)?;
+        require(
+            native
+                .as_ref()
+                .is_none_or(|facts| facts.processes_stopped == quiescent),
+            RefusalCode::Conflict,
+            "native cleanup observation differs from reservation release",
+        )?;
+        retained.native = native;
         retained.transition(retained.revision, next, now, detail)?;
         save_receipt(&transaction, &retained)?;
         transaction
