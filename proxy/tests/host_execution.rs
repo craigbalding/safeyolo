@@ -619,7 +619,9 @@ impl Witness {
                 self.usage.entry(key).and_modify(|n| *n += 1).or_insert(1);
                 self.jobs.insert(receipt.job_id.clone(), receipt.clone());
                 self.dispatches += 1;
-                Response::Job { receipt }
+                Response::Job {
+                    receipt: Box::new(receipt),
+                }
             }
             Action::Job { job_id }
             | Action::Output { job_id, .. }
@@ -635,7 +637,7 @@ impl Witness {
                     } => {
                         receipt.request_cancellation(expected_revision, NOW)?;
                         Response::Job {
-                            receipt: receipt.clone(),
+                            receipt: Box::new(receipt.clone()),
                         }
                     }
                     Action::Output {
@@ -664,7 +666,7 @@ impl Witness {
                         }
                     }
                     _ => Response::Job {
-                        receipt: receipt.clone(),
+                        receipt: Box::new(receipt.clone()),
                     },
                 }
             }

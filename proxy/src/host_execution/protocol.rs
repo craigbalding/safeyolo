@@ -404,7 +404,7 @@ pub enum Response {
         prepared: Prepared,
     },
     Job {
-        receipt: Receipt,
+        receipt: Box<Receipt>,
     },
     Output {
         job_id: String,
