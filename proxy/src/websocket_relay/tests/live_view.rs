@@ -1,5 +1,5 @@
 //! Owned decoded-message/spool and in-memory relay observations. No sockets,
-//! HTTP service, operational files, or process sampling are involved.
+//! HTTP service or process sampling is involved. Audit files use owned directories.
 
 use super::*;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -339,6 +339,7 @@ async fn duplex_relay_retains_dropped_and_spooled_messages_and_open_session() {
             >= messages[2]["timestamp"].as_f64().unwrap()
     );
     assert_eq!(closed["messages"], observed["messages"]);
+    assert!(runtime.audit.shutdown(Duration::from_secs(1)).unwrap());
     assert!(
         !std::fs::read_to_string(directory.path().join("audit.jsonl"))
             .unwrap()
@@ -351,7 +352,6 @@ async fn duplex_relay_retains_dropped_and_spooled_messages_and_open_session() {
         runtime.traffic_view.detail("req-owned").is_none(),
         "closed released session becomes eligible for eviction"
     );
-    assert!(runtime.audit.shutdown(Duration::from_secs(1)).unwrap());
 }
 
 #[tokio::test]

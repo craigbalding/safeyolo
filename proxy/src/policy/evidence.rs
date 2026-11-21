@@ -6,16 +6,17 @@ use serde_json::{Value, json};
 
 use super::{Policy, Result, invalid};
 
-#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Read {
     Diagnostic,
     Approval,
 }
 
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct EvidenceRead {
+#[schemars(extend("x-scope" = "Exact reader, subject identities and request IDs", "x-lifetime" = "Current policy and exact retained request ownership", "x-effects" = "Disclose selected diagnostics or canonical approvals; already read information cannot be retracted.", "x-dependencies" = "Existing evidence-read sharing and diagnostic/approval read owners", "x-gaps" = "Full authored-policy snapshot disclosure is not implemented by this definition; baseline /policy is a separate existing read."))]
+pub(crate) struct EvidenceRead {
     reader_id: String,
     agent: String,
     agent_id: String,

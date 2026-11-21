@@ -18,9 +18,22 @@ do not reload Coord or GitHub references already supplied by the role contract.
 
 ## Start with evidence
 
-1. Capture the failing request's status, response headers, and JSON body.
-2. Read `X-Blocked-By`, `type`, `action`, `reflection`, `reason`, and
-   `Retry-After` when present.
+1. For a failed native Coord tool, read its `structuredContent` and text result.
+   The failure retains available `http_status`, validated response `request_id`,
+   `blocked_by`, `retry_after`, bounded `error_details` and `body_state`.
+   `isError: true` still means the original operation failed or is uncertain.
+   Missing correlation and incomplete bodies remain explicit.
+   For an identified failure, `diagnostic_reference` names its own-request
+   `/explain` read. The reference grants no access; automatic collection is
+   limited to local Agent API 503s.
+2. For a local Agent API 503, consume the attached `diagnostic` first. It uses
+   your current identity to read `/explain` for the original request. Collection
+   adds at most two seconds and two reads, with only one refresh for `pending`.
+   Read `collection_state`, `evidence.status`, `evidence_limited` and `limits`.
+   Diagnostic reads have their own IDs in `reads`; use `original_request_id`
+   and `reference` for the failed operation. For other clients, capture the
+   status, response headers and JSON body. Read `X-Blocked-By`, `type`, `action`,
+   `reflection`, `reason` and `Retry-After` when present.
 3. Check the Agent API before changing the request:
 
    ```sh
@@ -31,10 +44,30 @@ do not reload Coord or GitHub references already supplied by the role contract.
    )
    ```
 
-4. Use `/lookup?host=...`, `/budgets`, or `/circuits` to test the relevant
-   policy, quota, or upstream-health hypothesis.
-5. Retry only after self-correcting the request, waiting for backoff, or
-   receiving operator approval. Do not loop on a 428 or 429.
+4. Continue permitted read-only investigation through the existing Agent API.
+   Use `/lookup?host=...`, `/budgets` or `/circuits` when the returned evidence
+   supports a policy, quota or upstream-health hypothesis. A recorded
+   `agent.api_response` refusal or `blocked_by: agent-api` does not identify a
+   network-policy cause. A `complete` search does not establish a root cause;
+   empty, pending, incomplete, refused and unavailable evidence have limits.
+5. Separate diagnosis from recovery and replay. Diagnosis never retries the
+   original operation, approves recovery or advances an attention cursor.
+   Before repeating an uncertain send, inspect canonical retained history.
+   Preserve the last safe attention position if any object resolution fails.
+   Follow an endpoint's supported approval path for missing scope; when no
+   such path is available, report the exact unmet evidence need. An approval
+   notification alone grants no permission. Read the canonical approval and
+   effective access before deciding or retrying. Do not loop on a 428 or 429.
+
+For an investigation that needs more retained evidence, use
+`diagnostic_evidence` to discover current local disclosure. Use
+`request_diagnostic_access` to request explicit subjects, sources, history and
+a fixed snapshot, selected expiry, or until-revoked lifetime. Read the canonical
+approval before `query_diagnostic_evidence`. Inspect completeness and source
+limitations on every result. The operator can narrow or revoke access through
+the existing support grant controls. Observation grants no repair or publication.
+See [diagnostic disclosure](references/agent-api.md#approved-diagnostic-evidence)
+for filters, pagination, retention and attribution limits.
 
 ## Select the needed reference
 

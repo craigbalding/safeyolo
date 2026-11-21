@@ -277,7 +277,10 @@ def check_named_evidence(first, named, path, subject):
     # The executor hashes the exact adopted file bytes, without a prefix.
     assert execution["definition_digest"] == digest(path), execution
     assert named["evidence"]["result"]["subject"] == subject, named
-    assert "retained_base64" not in execution["service_evidence"][0], execution
+    assert execution["service_evidence"], execution
+    for capture in execution["service_evidence"]:
+        assert "retained_base64" not in capture and "request_body_base64" not in capture, execution
+    assert "checked_input" not in execution, execution
     assert execution["gate_principal"] == first["gate_principal"], execution
 
 

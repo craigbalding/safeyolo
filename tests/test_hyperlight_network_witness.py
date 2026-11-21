@@ -7,10 +7,12 @@ import http.client
 import importlib.util
 import json
 import os
+import runpy
 import shlex
 import socket
 import ssl
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -97,6 +99,167 @@ def test_platform_client_uses_only_selected_proxy_and_strict_guest_tls(witness, 
         assert bridge.requests[0].startswith(expected)
         assert b"#private" not in bridge.requests[0]
         assert b"Authorization:" not in bridge.requests[0]
+
+
+@pytest.mark.parametrize("client", ["platform", "unikraft"])
+@pytest.mark.parametrize("allowed", [False, True])
+def test_redirect_clients_actually_follow_one_location(witness, tmp_path, monkeypatch, capsys, client, allowed):
+    from tests.test_hyperlight_proxy_client import ProxyBytes, head
+
+    class RedirectProxy(ProxyBytes):
+        def respond(self, stream):
+            request = head(stream)
+            self.requests.append(request)
+            if request.startswith(b"GET http://example.test/start "):
+                response = b"302 Found\r\nLocation: http://other.test/target"
+            else:
+                assert request.startswith(b"GET http://other.test/target "), request
+                response = b"200 OK" if allowed else b"403 Forbidden"
+            stream.sendall(b"HTTP/1.1 " + response + b"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+
+    bridge = RedirectProxy("", None, https=False)
+    try:
+        if client == "unikraft":
+            module_spec = importlib.util.spec_from_file_location("redirect_client", REPO / "jobs/proxy_client.py")
+            module = importlib.util.module_from_spec(module_spec)
+            module_spec.loader.exec_module(module)
+            monkeypatch.setitem(sys.modules, "hyperlight", SimpleNamespace(call=lambda _name, value: bridge.reply(value)))
+            monkeypatch.setitem(sys.modules, "safeyolo_proxy", module)
+            request = tmp_path / "request.json"
+            request.write_text(json.dumps({"subject": {"value": "http://example.test/start"}}))
+            checker = tmp_path / "checker.py"
+            checker.write_text(witness.UNIKRAFT_REDIRECT_CHECKER.replace("/input/request.json", str(request)))
+            runpy.run_path(str(checker))
+            result = json.loads(capsys.readouterr().out)
+        else:
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen()
+                listener.settimeout(5)
+
+                def serve():
+                    for _ in range(2):
+                        bridge.origin(listener.accept()[0])
+
+                thread = threading.Thread(target=serve)
+                thread.start()
+                try:
+                    program = witness.PLATFORM_REDIRECT_CHECKER.replace('/work/response', shlex.quote(str(tmp_path / 'response')))
+                    completed = subprocess.run(["bash", "-euo", "pipefail", "-c", program,
+                                                "redirect-check", "http://example.test/start"],
+                        capture_output=True, timeout=8,
+                        env={**os.environ, "HTTP_PROXY": f"http://127.0.0.1:{listener.getsockname()[1]}",
+                             "SSL_CERT_FILE": str(tmp_path / "ca.pem")})
+                    assert completed.returncode == 0, completed.stderr
+                    result = json.loads(completed.stdout)
+                finally:
+                    thread.join(6)
+                    assert not thread.is_alive()
+        assert result == {"finding": {"kind": "finding", "positive": allowed}}
+        assert len(bridge.requests) == 2 and not bridge.errors
+        assert not bridge.streams
+    finally:
+        bridge.close()
+
+
+def test_redirect_origin_serves_the_target_without_another_redirect(witness, tmp_path):
+    with witness.ThreadingHTTPServer(("127.0.0.1", 0), witness.NetworkOrigin) as origin:
+        origin.contacts, origin.contacts_path = [], tmp_path / "contacts.json"
+        origin.redirect, origin.held, origin.redirect_target = True, None, "/redirected/engine"
+        origin.redirect_location = f"http://localhost:{origin.server_port}{origin.redirect_target}"
+        thread = threading.Thread(target=origin.serve_forever)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", origin.server_port, timeout=3)
+            try:
+                for path, status in (("/engine", 302), (origin.redirect_target, 200)):
+                    connection.request("GET", path)
+                    response = connection.getresponse()
+                    assert response.status == status
+                    if status == 302:
+                        assert response.getheader("Location") == origin.redirect_location
+                    response.read()
+            finally:
+                connection.close()
+        finally:
+            origin.shutdown()
+            thread.join(5)
+            assert not thread.is_alive()
+    assert origin.contacts == [{"path": "/engine"}, {"path": "/redirected/engine"}]
+
+
+@pytest.mark.parametrize("defect", [None, "no_second_request", "allowed_second_request", "wrong_run", "wrong_gate", "wrong_host"])
+def test_redirect_refusal_requires_the_second_exact_run_proxy_observation(witness, defect):
+    identity = {"trusted_transport_identity": "owned-run", "attribution_provenance": {
+        "authorization_principal": "gate:hyperlight-network-check"}}
+    rows = [{"event": "traffic.request_outcome", "details": {
+        "host": host, "port": 12345, "status": status, "decision": decision, "attribution": copy.deepcopy(identity)}}
+        for host, status, decision in (("127.0.0.1", 302, "allow"), ("localhost", 403, "deny"))]
+    results = {"engine": {"destination": {"target_host": "localhost", "denied": {
+        "direct": {"run_id": "owned-run"}, "named": {"evidence": {"execution": {"run_id": "owned-run"}}}}}}}
+    if defect == "no_second_request":
+        rows.pop()
+    elif defect == "allowed_second_request":
+        rows[1]["details"].update(status=200, decision="allow")
+    elif defect == "wrong_run":
+        rows[1]["details"]["attribution"]["trusted_transport_identity"] = "old-run"
+    elif defect == "wrong_gate":
+        rows[1]["details"]["attribution"]["attribution_provenance"]["authorization_principal"] = "gate:other"
+    elif defect == "wrong_host":
+        rows[1]["details"]["host"] = "another.test"
+    if defect:
+        with pytest.raises(AssertionError):
+            witness.check_redirect_audit(rows, results, 12345)
+    else:
+        witness.check_redirect_audit(rows, results, 12345)
+
+
+@pytest.mark.parametrize("defect", [None, "no_follow", "target_contact", "wrong_engine"])
+def test_redirect_witness_pairs_permitted_follows_with_contact_free_target_refusal(witness, partial, tmp_path, defect):
+    contacts = []
+    origin = SimpleNamespace(redirect=False)
+    original = {"hosts": {}, "agents": {}}
+
+    class Instance:
+        args = SimpleNamespace(upstream_port=12345)
+        scratch = tmp_path
+
+        def __init__(self):
+            self.policy = copy.deepcopy(original)
+
+        def command(self, *_args):
+            pass  # Native validation is observed only in the installed procedure.
+
+        def apply(self):
+            pass  # This control selects the adapter's current policy below.
+
+        def result(self):
+            allowed = len(self.policy["permissions"]) == 3
+            contacts.append({"path": "/hyperlight-unikraft"})
+            if defect == "target_contact" or allowed and defect != "no_follow":
+                contacts.append({"path": "/redirected/hyperlight-unikraft"})
+            result = copy.deepcopy(partial["direct_allowed" if allowed else "direct_after_permission_removal"])
+            result["engine"] = "wrong" if defect == "wrong_engine" else "hyperlight-unikraft"
+            return result
+
+        def run_job(self, *_args):
+            return self.result()
+
+        def invoke(self, *_args):
+            direct = self.result()
+            named = copy.deepcopy(partial["named_allowed"]["body"])
+            named["evidence"]["result"]["finding"] = witness.output(direct)["finding"]
+            named["evidence"]["execution"]["engine"] = direct["engine"]
+            return 200, named
+
+    instance = Instance()
+    if defect:
+        with pytest.raises(AssertionError):
+            witness.redirect_cases(instance, "hyperlight-unikraft", contacts, origin)
+    else:
+        result = witness.redirect_cases(instance, "hyperlight-unikraft", contacts, origin)
+        assert len(contacts) == 12 and set(result) == {"path", "destination"}
+    assert instance.policy == original and not origin.redirect and not hasattr(origin, "redirect_location")
 
 
 @pytest.mark.parametrize("defect", [None, "denied_contact", "path_positive", "other_engine"])
@@ -217,10 +380,10 @@ def test_cache_witness_requires_expiry_and_separate_adopted_gate_evidence(
 
 
 @pytest.mark.parametrize("engine", ["gvisor", "vz", "hyperlight", "hyperlight-unikraft"])
-@pytest.mark.parametrize("mode", ["scope", "caller_only"])
+@pytest.mark.parametrize("mode", ["scope", "caller_only", "redirect"])
 def test_shared_modes_do_not_replay_completed_cases(witness, monkeypatch, engine, mode):
     args = SimpleNamespace(scope=mode == "scope", caller_only=mode == "caller_only",
-                           authority=False, lifetimes_only=False)
+                           authority=False, lifetimes_only=False, redirect=mode == "redirect")
     calls = []
 
     def selected(_instance, selected_engine, *_args):
@@ -231,11 +394,12 @@ def test_shared_modes_do_not_replay_completed_cases(witness, monkeypatch, engine
         pytest.fail("a completed or unselected case was replayed")
 
     monkeypatch.setattr(witness, "scope_cases", selected if mode == "scope" else unselected)
+    monkeypatch.setattr(witness, "redirect_cases", selected if mode == "redirect" else unselected)
     monkeypatch.setattr(witness, "authority_cases", selected if mode == "caller_only" else unselected)
     monkeypatch.setattr(witness, "exercise_lifetimes", unselected)
     result = witness.exercise_engine(SimpleNamespace(args=args), engine, [], False, None)
     assert calls == [engine]
-    assert result == ({"selected": mode} if mode == "scope" else {"authority": {"selected": mode}})
+    assert result == ({"authority": {"selected": mode}} if mode == "caller_only" else {"selected": mode})
 
 
 @pytest.mark.parametrize("defect", ["exit", "observation", "missing", "malformed", "truncated", "hash", "integer", "positive"])
@@ -365,7 +529,7 @@ def selected_inputs(witness, partial, tmp_path, monkeypatch):
     monkeypatch.setattr(witness.subprocess, "run", run)
     return SimpleNamespace(bundle=bundle, scratch=scratch, root=tmp_path / "instance", cli=cli, proxy=proxy,
                            continue_from=receipt, engine=None, tls=False, admin_port=12345, upstream_port=0, issue=1584,
-                           scope=False, caller_only=False, base_root=None)
+                           scope=False, caller_only=False, base_root=None, redirect=False)
 
 
 @pytest.mark.parametrize("defect", [None, "guest", "runtime", "helper", "cpio", "source", "contacts", "policy"])

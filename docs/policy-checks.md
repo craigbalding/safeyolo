@@ -103,6 +103,14 @@ Preview reads snapshots without refreshing or contacting their members.
 
 ## Execute adopted checks
 
+The same executor qualifies and runs checks in
+[versioned control updates](signals.md#adopt-versioned-checks-and-challenges).
+Native `route_challenges` compose ordered questions and typed job/service
+findings before missing-route escalation. Their host-generated subject binds
+the request/effect identity and selected revision. Agent answers are explicitly
+untrusted context. Missing or failed required evidence prevents escalation;
+it is not a negative finding or permission grant.
+
 An active native policy can use `source.kind = "job"` or `"service"`. Each
 source declares its effects and execution limits. Effects are `passive`,
 `retains_input`, `active` or `unknown`. These are the operator's adopted
@@ -135,6 +143,9 @@ must fit the adopted check bounds. The check copies one host-generated
 `subject`, `input_digest`, policy-owned `inputs` and implementation/configuration
 versions. There are no workload-selected mount paths. The existing job runner
 retains isolation, rootfs/input hashes, observed wait status and cleanup.
+An optional `source.spec_sha256` pins the complete job specification bytes.
+Versioned control updates set this pin from the signed bundled job. A mismatch
+is unavailable evidence and starts no execution.
 The check retains those execution facts and the specification digest in its
 explanation. The existing audit stream records reached execution and result
 provenance before admission revalidates current policy. Discarded results remain

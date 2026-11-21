@@ -520,6 +520,52 @@ commands. Local source controls cover selection, guest boot staging, failure
 recovery and state preservation. Public GHCR and clean booted-platform proof
 remain under #239.
 
+### Assess and maintain installed agents
+
+Without an adopted assessment rule, OS maintenance remains an explicit operator
+operation. A published guest does not update an installed selection. A selected
+guest does not change a running sandbox. `guest upgrade` changes the instance-wide
+default for future boots. A per-agent custom `rootfs` or `rootfs.ext4` still takes
+precedence over that default; VZ boot kernel/initramfs selection is separate.
+
+For an instance with an OCI guest selection and installed `package-info`, the
+instance owner runs the following from a host terminal in any working directory.
+Replace `NAME` with the configured agent. Stop/start interrupts its current work;
+repeat it only for the other agents you choose to recreate.
+
+```sh
+safeyolo guest upgrade
+safeyolo agent stop NAME
+safeyolo agent start NAME
+```
+
+For another instance, put `--root /absolute/instance/path` before each subcommand.
+A harness restart, or `agent start` on an already-running sandbox, does not
+replace its guest. A compatible host-only upgrade retains the selected guest
+unless a guest change is explicitly selected.
+
+Both Linux/gVisor overlay modes lose ordinary root OS writes on recreation.
+Download caches do not preserve installed packages or replay configuration.
+An in-place package patch can therefore disappear at the next boot. The default
+macOS Virtualization.framework (VZ) writable overlay retains root changes;
+ephemeral VZ discards them. Retained VZ files and package metadata can mask a new
+base's files. Base selection alone does not prove effective repair.
+
+`guest rollback` restores the previous base selection. It does not restore a
+mutable overlay or reverse package/configuration changes. Recreate the affected
+sandbox to use the restored selection. Preserve home, workspace and required
+customisations through their existing owners; home-installed tools, the host's
+gVisor runtime and the separately supplied VZ boot kernel need their own updates.
+
+For already-running Debian agents, [adopted signal assessment](signals.md#assess-running-debian-guests)
+can collect actual installed packages on explicit request or at a selected
+interval. It reassesses retained advisories without waiting for republication
+and uses the selected notification, approval or maintenance-Work response.
+It does not patch packages, enforce a check before harness startup, select a
+guest, restart processes, restore customisations or verify repair. Those effects
+remain with their authorised maintenance and lifecycle owners. A notification
+or dispatched Work is not completed maintenance.
+
 ## Prepare and publish a default guest release
 
 The [guest workflow](../.github/workflows/guest-oci.yml) builds and stages at

@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 
 use super::{Policy, Result, TimestampPaths, invalid, source::ParsedPolicy};
 
-#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     #[default]
@@ -81,7 +81,7 @@ pub(crate) fn control_label(name: &str) -> &str {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Network {
     pub enabled: bool,
@@ -99,7 +99,7 @@ impl Default for Network {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Credentials {
     pub enabled: bool,
@@ -134,13 +134,13 @@ impl Default for Credentials {
     }
 }
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SafeHeaders {
     pub safe_patterns: Vec<String>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Entropy {
     pub min_length: f64,
@@ -158,7 +158,7 @@ impl Default for Entropy {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Patterns {
     pub enabled: bool,
@@ -181,7 +181,7 @@ impl Default for Patterns {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TestContext {
     pub action: Action,
@@ -201,7 +201,7 @@ impl Default for TestContext {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Circuits {
     #[serde(default = "enabled")]
@@ -236,8 +236,9 @@ impl Default for Circuits {
     }
 }
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
+#[schemars(extend("x-scope" = "Local native policy controls", "x-lifetime" = "Saved policy; activation through the current policy owner", "x-effects" = "Configure network, credential, pattern, test-context and circuit controls. Defaults come from the returned types.", "x-dependencies" = "Native policy compiler and current policy application authority", "x-gaps" = "Typed controls do not describe the entire dynamic host/rule/check policy document."))]
 pub struct Controls {
     pub network: Network,
     pub credentials: Credentials,
@@ -260,6 +261,25 @@ struct QuietHosts {
 }
 
 impl Controls {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if !self
+            .test_context
+            .declared_ttl
+            .as_number()
+            .is_some_and(|number| {
+                number
+                    .to_string()
+                    .parse::<super::BigInt>()
+                    .is_ok_and(|value| value > super::BigInt::from(0))
+            })
+        {
+            return Err(invalid(
+                "controls.test_context.declared_ttl must be a positive integer",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn configure(&self, config: &mut crate::Config) {
         config.network_guard_enabled = self.network.enabled;
         config.network_guard_block = self.network.action.blocks();
@@ -405,6 +425,17 @@ impl Policy {
         now_ms: f64,
         previous: Option<&Self>,
     ) -> Result<(Self, super::ExpiredHosts)> {
+        Self::native_source_inputs(source, path, registry, now_ms, previous, true)
+    }
+
+    pub(super) fn native_source_inputs(
+        source: &str,
+        path: &Path,
+        registry: Option<Arc<crate::services::Registry>>,
+        now_ms: f64,
+        previous: Option<&Self>,
+        load_inputs: bool,
+    ) -> Result<(Self, super::ExpiredHosts)> {
         let (mut authored, mut timestamps) = super::parse_toml_with_timestamps(source)?;
         validate_authoring(&authored)?;
         let controls: Controls = serde_json::from_value(
@@ -414,21 +445,7 @@ impl Policy {
                 .unwrap_or_else(|| json!({})),
         )
         .map_err(|error| invalid(format!("controls: {error}")))?;
-        if !controls
-            .test_context
-            .declared_ttl
-            .as_number()
-            .is_some_and(|number| {
-                number
-                    .to_string()
-                    .parse::<super::BigInt>()
-                    .is_ok_and(|value| value > super::BigInt::from(0))
-            })
-        {
-            return Err(invalid(
-                "controls.test_context.declared_ttl must be a positive integer",
-            ));
-        }
+        controls.validate()?;
         let expired = super::expired_host_entries(&authored, now_ms)?;
         for (agent, host) in &expired {
             let hosts = match agent.as_deref() {
@@ -504,7 +521,7 @@ impl Policy {
                         registry.as_ref(),
                     )
                 });
-        let mut policy = Self::from_document(
+        let mut policy = Self::from_document_inputs(
             ParsedPolicy {
                 document: fields,
                 timestamps,
@@ -513,6 +530,7 @@ impl Policy {
             registry,
             false,
             gateway_policy,
+            load_inputs,
         )?;
         policy.native = Some(Snapshot {
             identity_root: path.parent().unwrap_or(Path::new(".")).to_owned(),
@@ -658,6 +676,50 @@ impl Policy {
         self.native.as_ref().map(|native| native.source.as_str())
     }
 
+    /// Authored selectors and effects of these feed snapshots. Membership itself
+    /// is excluded: accepting evidence must not change an approval's authority.
+    pub(crate) fn signal_list_scope(&self, feeds: &[String]) -> Option<Value> {
+        let native = self.native.as_ref()?;
+        let mut hosts = serde_json::Map::new();
+        if let Some(lists) = native.authored["lists"].as_object() {
+            for (alias, definition) in lists {
+                if !feeds.iter().any(|feed| definition["feed"] == *feed) {
+                    continue;
+                }
+                let key = format!("${alias}");
+                let mut agents = serde_json::Map::new();
+                if let Some(configured) = native.authored["agents"].as_object() {
+                    for (agent, config) in configured {
+                        if let Some(effect) = config["hosts"].get(&key) {
+                            agents.insert(agent.clone(), effect.clone());
+                        }
+                    }
+                }
+                hosts.insert(
+                    alias.clone(),
+                    json!({"definition":definition,
+                    "global":native.authored["hosts"].get(&key),"agents":agents}),
+                );
+            }
+        }
+        let selected = self.checks.checks.iter().filter(|(_, check)| {
+            matches!(&check.source, super::checks::EvidenceSource::Feed { name } if feeds.contains(name))
+        }).map(|(name, check)| (name.clone(), check.clone())).collect::<std::collections::BTreeMap<_,_>>();
+        let rules = self
+            .checks
+            .rules
+            .iter()
+            .filter(|rule| {
+                let mut names = std::collections::BTreeSet::new();
+                rule.when.names(&mut names);
+                names.iter().any(|name| selected.contains_key(name))
+            })
+            .collect::<Vec<_>>();
+        Some(
+            json!({"hosts":hosts,"checks":selected,"check_rules":rules,"network":native.controls.network}),
+        )
+    }
+
     pub(crate) fn native_view(&self, path: &Path) -> Option<Value> {
         let native = self.native.as_ref()?;
         let mut effective = native.authored.clone();
@@ -742,6 +804,9 @@ impl Policy {
             .iter()
             .map(|(name, list)| {
                 let mut status = json!({"source":list.path});
+                if let Some(agents) = &list.agents {
+                    status["agents"] = json!(agents);
+                }
                 if let Some(managed) = &list.managed {
                     status["active_snapshot"] = managed.status(super::current_time_ms());
                     match crate::policy_feeds::load_list(
@@ -823,6 +888,10 @@ fn validate_authoring(document: &Value) -> Result<()> {
             }
             validate_hosts(agent.get("hosts"), &format!("agents.{name}.hosts"))?;
             super::evidence::validate_reads(agent.get("evidence_reads"))?;
+            if let Some(lifecycle) = agent.get("lifecycle") {
+                crate::host_lifecycle::scheduled::configuration(lifecycle)
+                    .map_err(|error| invalid(error.to_string()))?;
+            }
         }
     }
     Ok(())

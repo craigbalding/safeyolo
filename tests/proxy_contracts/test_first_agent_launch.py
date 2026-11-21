@@ -690,11 +690,17 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
             previous = command.stat()
             command_bytes = command.read_bytes()
             home = command.parent
+            if os.uname().sysname == "Linux":
+                # Missing rootfs preparation fails before command wrapping or
+                # selection of a launch generation. Keep the setup input.
+                assert not (home / ".safeyolo-command.payload").exists()
+                assert not (home.parent / "config-share/host-launch-context.json").exists()
             if harness == "codex":
-                # Boot staging wraps the generated command with the existing
-                # guest observer; Codex remains the unchanged payload.
-                payload = home / ".safeyolo-command.payload"
-                assert payload.read_bytes() == (REPO / "contrib/codex-command.sh").read_bytes()
+                # macOS reaches backend input validation after wrapping. Linux
+                # retains the original command until rootfs preparation passes.
+                codex_command = (home / ".safeyolo-command.payload"
+                                 if os.uname().sysname == "Darwin" else command)
+                assert codex_command.read_bytes() == (REPO / "contrib/codex-command.sh").read_bytes()
                 config = home / ".codex/config.toml"
                 document = tomlkit.parse(config.read_text())
                 document["model"] = "operator-selected-model"
@@ -741,7 +747,7 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
             assert command.read_bytes() == command_bytes
             if harness == "codex":
                 assert {path: path.read_bytes() for path in selected_state} == selected_state
-                assert payload.read_bytes() == (REPO / "contrib/codex-command.sh").read_bytes()
+                assert codex_command.read_bytes() == (REPO / "contrib/codex-command.sh").read_bytes()
             # Explicit repair uses the existing TOML writer. Whitespace can
             # change, while every saved policy choice and agent field stays.
             assert tomllib.loads(instance.policy.read_text()) == tomllib.loads(policy_bytes.decode())

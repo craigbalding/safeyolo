@@ -1912,7 +1912,7 @@ fn record_agent_api(
 ) -> Result<(), Error> {
     // Retain the response/handler result without copying the canonical intent.
     // An intent name on a failed submission is not a second event emission.
-    runtime.audit.emit(identity.request_event(
+    let mut event = identity.request_event(
         "agent.api_response",
         crate::audit::Kind::Agent,
         request_id,
@@ -1924,7 +1924,11 @@ fn record_agent_api(
             "failure": outcome.failure.map(|failure| format!("{failure:?}")),
             "policy_evaluations": outcome.policy_evaluations,
         }),
-    ))?;
+    );
+    if let Some(events) = &runtime.connection_events {
+        events.bind_request(identity, &mut event);
+    }
+    runtime.audit.emit(event)?;
     Ok(())
 }
 
@@ -5971,6 +5975,9 @@ pub(crate) fn serve_request(
             "deny" => Some(crate::audit::Decision::Deny),
             _ => None,
         };
+        if let Some(events) = &runtime.connection_events {
+            events.bind_request(&identity, &mut event);
+        }
         if let Err(error) = runtime.audit.emit(event) {
             eprintln!("request evidence write failed: {error}");
             reply

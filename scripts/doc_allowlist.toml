@@ -42,6 +42,7 @@ user_facing_docs = [
     "docs/installation.md",
     "docs/hyperlight-jobs.md",
     "docs/policy-checks.md",
+    "docs/policy-snapshots.md",
     "docs/windows-wsl2.md",
     "docs/guest-oci.md",
     "docs/credentials.md",
@@ -54,6 +55,7 @@ user_facing_docs = [
     "docs/federation-setup.md",
     "docs/settings.md",
     "docs/policy-feeds.md",
+    "docs/signals.md",
     "docs/operator-guide.md",
     "docs/operator-interaction-contract.md",
     "docs/DEVELOPERS.md",
@@ -89,6 +91,9 @@ user_facing_docs = [
 # Skill reference files shipped into agent sandboxes. Globs expanded at
 # load time; new references/*.md files get automatic coverage.
 skill_files = [
+    "cli/src/safeyolo/agent_context/skills/operator-ux/SKILL.md",
+    "cli/src/safeyolo/agent_context/skills/harness-authoring/SKILL.md",
+    "cli/src/safeyolo/agent_context/skills/harness-authoring/references/*.md",
     "cli/src/safeyolo/agent_context/skills/job-authoring/SKILL.md",
     "cli/src/safeyolo/agent_context/skills/job-authoring/references/*.md",
     "cli/src/safeyolo/agent_context/skills/policy-authoring/SKILL.md",

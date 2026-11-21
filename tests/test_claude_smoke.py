@@ -458,6 +458,8 @@ def test_installed_section_uses_provisioned_root_and_preserves_cleanup_failure(t
         return subprocess.CompletedProcess(arguments, 2 if cleanup_failed else 0)
 
     monkeypatch.setenv("SAFEYOLO_CLAUDE_SMOKE_CREDENTIAL", "host-subscription")
+    monkeypatch.setattr(installed_sections, "controller_identity",
+                        lambda: {"controller_revision": SOURCE, "controller_dirty": False})
     monkeypatch.setattr(installed_sections.subprocess, "run", execute)
     sections = ("claude", "isolation") if cleanup_failed else ("claude",)
     result = installed_sections.run_sections("systrap", sections, tmp_path, SOURCE,

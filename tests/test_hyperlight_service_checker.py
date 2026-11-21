@@ -409,6 +409,17 @@ def test_named_evidence_binds_the_raw_adopted_definition_digest(host_driver, tmp
                       "definition_digest": host_driver.digest(path), "service_evidence": [{}]}}}
     host_driver.check_named_evidence(first, named, path, subject)
 
+    for leak in ("retained_base64", "request_body_base64", "checked_input"):
+        changed = copy.deepcopy(named)
+        execution = changed["evidence"]["execution"]
+        if leak == "checked_input":
+            execution[leak] = {"content_base64": "private-snapshot"}
+        else:
+            # The old observer inspected only the first capture.
+            execution["service_evidence"].append({leak: "private-provider-data"})
+        with pytest.raises(AssertionError):
+            host_driver.check_named_evidence(first, changed, path, subject)
+
     rewritten = tmp_path / "rewritten.json"
     rewritten.write_text(json.dumps(json.loads(path.read_bytes()), sort_keys=True))
     assert host_driver.digest(rewritten) != host_driver.digest(path)

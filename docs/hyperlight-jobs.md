@@ -312,6 +312,15 @@ Each selected mode retains its own contact counters and
 execution facts; selecting another engine does not carry over a platform pass.
 The 302 case records only the two original direct/named requests. It does not
 prove that SafeYolo denied an attempted redirected or off-scope second request.
+For that observation, `--redirect` selects a separate one-hop HTTP follow on
+gVisor, VZ or Unikraft. The guest client first follows permitted path and
+destination targets. The same adopted job then runs with only target access
+removed. The witness requires a proxy-observed 403 under each denied run's
+gate identity and no target contact. This mode runs eight jobs and expects
+twelve origin requests if all controls pass. It reuses the prepared runtime;
+Unikraft receives a pinned diagnostic Python checker using `safeyolo_proxy`.
+Core's installed `NetworkCheck` does not follow redirects and cannot supply
+this observation. A prepared mode is not evidence of an installed pass.
 The platform job and isolation witnesses cover their retained connections,
 direct-socket/DNS refusal and teardown. `--lifetimes-only` remains the focused
 Hyperlight continuation. None of these selections establishes unrun warm-state

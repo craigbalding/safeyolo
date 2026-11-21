@@ -19,11 +19,15 @@ pub(crate) mod attention;
 pub(crate) mod context;
 pub(crate) mod coord;
 pub(crate) mod delegation;
+pub(crate) mod diagnostics;
 mod explanation;
 mod gateway;
+pub(crate) mod policy_assessment;
+pub(crate) mod policy_change;
+pub(crate) mod policy_snapshot;
 pub(crate) mod results;
 pub(crate) mod route_challenge;
-pub(crate) use explanation::explain;
+pub(crate) use explanation::{explain, explain_policy_changes};
 pub(crate) use gateway::{bind_agent_request, bind_risky};
 
 #[derive(Clone)]
@@ -72,6 +76,11 @@ impl Authority {
 
     fn material(&self) -> Value {
         let mut material = json!(self);
+        if self.action["kind"] == "policy_change" {
+            // This owner's retention deadline is frozen by the first exact
+            // equivalent submission, never extended by another request.
+            material["expires_at"] = Value::Null;
+        }
         // Coalesce the permission effect. Incidental paths, query strings or
         // methods must not produce repeated attention for the same reusable
         // network/credential permission. Keep the first observation in the
@@ -226,6 +235,8 @@ impl Store {
              CREATE INDEX IF NOT EXISTS equivalent_pending ON approvals(authority_digest, status);
              CREATE TABLE IF NOT EXISTS approval_requests (
                request_id TEXT PRIMARY KEY, approval_id TEXT NOT NULL REFERENCES approvals(approval_id));
+             CREATE TABLE IF NOT EXISTS policy_snapshots (
+               approval_id TEXT PRIMARY KEY REFERENCES approvals(approval_id), record TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS approval_context (
                approval_id TEXT PRIMARY KEY REFERENCES approvals(approval_id), record TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS approval_attention (
@@ -264,10 +275,21 @@ impl Store {
 
     pub(super) fn submit_status(
         &self,
+        authority: Authority,
+        request_id: &str,
+        policy: &Policy,
+        initial_status: &str,
+    ) -> Result<Record> {
+        self.submit_retained(authority, request_id, policy, initial_status, None)
+    }
+
+    fn submit_retained(
+        &self,
         mut authority: Authority,
         request_id: &str,
         policy: &Policy,
         initial_status: &str,
+        retained_policy: Option<&str>,
     ) -> Result<Record> {
         let mut connection = self.connect()?;
         let transaction = connection
@@ -327,6 +349,12 @@ impl Store {
         record.request_count = record.request_count.saturating_add(1);
         record.last_requested_at = time::OffsetDateTime::now_utc().unix_timestamp();
         save(&transaction, &record)?;
+        if let Some(encoded) = retained_policy {
+            transaction.execute(
+                "INSERT INTO policy_snapshots VALUES (?1,?2) ON CONFLICT(approval_id) DO NOTHING",
+                params![record.approval_id, encoded],
+            ).map_err(unavailable)?;
+        }
         transaction
             .execute(
                 "INSERT INTO approval_requests VALUES (?1,?2)",
@@ -488,6 +516,18 @@ impl Record {
             return Ok("expired".into());
         }
         let action = &self.authority.action;
+        if self.status == "pending"
+            && route_challenge::is_exception(self)
+            && !crate::policy::checks::challenges::evidence_current(policy, self)
+        {
+            return Ok("superseded".into());
+        }
+        if action["kind"] == "policy_change" {
+            let current = action["initiator"] == "operator"
+                || serde_json::from_value::<crate::host_runs::AgentRun>(action["run"].clone())
+                    .is_ok_and(|run| run.current(policy));
+            return Ok(if current { &self.status } else { "superseded" }.into());
+        }
         if policy.evidence_agent_id(action["agent"].as_str().unwrap_or(""))
             != action["agent_id"].as_str()
             || revision(policy, action).as_deref() != Some(self.authority.revision.as_str())
@@ -505,6 +545,14 @@ impl Record {
     }
 
     pub(crate) fn committed(&self, policy: &Policy) -> Result<Option<Value>> {
+        if matches!(
+            self.authority.action["kind"].as_str(),
+            Some("policy_snapshot" | "policy_change")
+        ) {
+            // Disclosure has no policy effect or authored policy receipt.
+            // Only its canonical human decision can release private source.
+            return Ok(None);
+        }
         let Some(result) = policy.approval_result(&self.approval_id).map_err(invalid)? else {
             return Ok(None);
         };
@@ -544,20 +592,35 @@ impl Record {
             Some("gateway_route") => ("gateway.risky_route", "gateway_risky_route"),
             Some("service_authorize") => ("gateway.request_access", "service"),
             Some("operator_action") => ("agent.operator_action_requested", "desktop_present"),
+            Some("signal_response") => ("ops.signal_response_requested", "signal_response"),
+            Some("diagnostic_disclosure") => ("agent.diagnostic_access_requested", "diagnostic"),
+            Some("policy_snapshot") => ("agent.policy_snapshot_requested", "policy_snapshot"),
+            Some("policy_change") => ("agent.policy_change_submitted", "policy_change"),
             Some("coord_access" | "coord_collaboration") => {
                 ("coord.access_requested", "coord_room")
             }
             _ => ("gateway.contract_binding_requested", "contract_binding"),
         };
-        let target = self
-            .authority
-            .action
-            .get("host")
-            .or_else(|| self.authority.action.get("service"))
-            .or_else(|| self.authority.action.get("room_name"))
-            .or_else(|| self.authority.action.get("agent_id"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let target = if self.authority.action["kind"] == "policy_change" {
+            self.authority.action["base"]["instance_id"]
+                .as_str()
+                .unwrap_or("")
+        } else {
+            self.authority
+                .action
+                .get("host")
+                .or_else(|| self.authority.action.get("service"))
+                .or_else(|| self.authority.action.get("room_name"))
+                .or_else(|| {
+                    self.authority
+                        .action
+                        .get("snapshot")
+                        .and_then(|snapshot| snapshot.get("instance_id"))
+                })
+                .or_else(|| self.authority.action.get("agent_id"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+        };
         let mut view = json!({"approval_id":self.approval_id,"request_id":self.request_id,
             "status":self.current_status(policy)?,"created_at":self.created_at,
             "action":self.authority.action,"authority":self.authority,
@@ -613,7 +676,25 @@ pub(crate) fn save_receipt(document: &mut toml_edit::DocumentMut, record: &Recor
 }
 
 pub(crate) fn revision(policy: &Policy, action: &Value) -> Option<String> {
-    if action["kind"] == "operator_action" {
+    if action["kind"] == "signal_response" {
+        crate::signals::approval_revision(policy, action)
+    } else if action["kind"] == "diagnostic_disclosure" {
+        diagnostics::revision(policy, action)
+    } else if action["kind"] == "policy_change" {
+        (policy.evidence_agent_id(action["agent"].as_str()?) == action["agent_id"].as_str()
+            || action["initiator"] == "operator")
+            .then(|| action["basis_revision"].as_str().map(str::to_owned))
+            .flatten()
+    } else if action["kind"] == "policy_snapshot" {
+        (policy.evidence_agent_id(action["agent"].as_str()?) == action["agent_id"].as_str()
+            && policy
+                .native_source_text()
+                .map(crate::policy::snapshot::source_revision)
+                .as_deref()
+                == action["snapshot"]["active_source_revision"].as_str())
+        .then(|| action["basis_revision"].as_str().map(str::to_owned))
+        .flatten()
+    } else if action["kind"] == "operator_action" {
         Some(digest(
             &json!({"action_id":crate::operator_actions::DESKTOP_PRESENT,
             "configuration_revision":action["configuration_revision"],
@@ -635,7 +716,11 @@ pub(crate) fn revision(policy: &Policy, action: &Value) -> Option<String> {
             action["service"].as_str(),
         )?;
         if action["route_exception"] == true {
+            if !crate::policy::checks::challenges::current(policy, action) {
+                return None;
+            }
             Some(digest(&json!({"policy":revision,
+                "control_update":crate::policy::checks::challenges::binding(policy,action),
                 "destination_service":policy.gateway()?.canonical_gateway()["host_map"][action["host"].as_str()?]})))
         } else {
             Some(revision)
@@ -845,6 +930,12 @@ pub(crate) fn current_view(
     record: &Record,
     state: Option<&crate::RuntimeState>,
 ) -> Result<Value> {
+    if record.authority.action["kind"] == "policy_change" {
+        return policy_change::view(writer, policy, record);
+    }
+    if record.authority.action["kind"] == "policy_snapshot" {
+        return policy_snapshot::approval_view(writer, policy, record, state);
+    }
     let mut view = record.view(policy)?;
     if matches!(record.status.as_str(), "pending" | "challenged")
         && let Some(state) = state
@@ -859,6 +950,25 @@ pub(crate) fn current_view(
     view["request_history"] = writer.approvals().request_history(record)?;
     view["attention"] = json!(record.attention);
     view["result_delivery"] = record.result_delivery.view();
+    if record.authority.action["kind"] == "diagnostic_disclosure" {
+        let saved = state.map(|state| saved_policy(state, policy)).transpose()?;
+        let effective = saved.as_ref().unwrap_or(policy);
+        let instance = effective
+            .identity_root()
+            .and_then(|root| crate::peer_support::events::instance(root).ok());
+        let disclosure = effective.support_grants().remove(&record.approval_id);
+        let active = disclosure.as_ref().is_some_and(|grant| {
+            grant.active()
+                && instance.as_deref() == Some(grant.instance_id.as_str())
+                && effective.evidence_agent_id(&grant.support.name)
+                    == Some(grant.support.agent_id.as_str())
+                && grant
+                    .targets
+                    .iter()
+                    .all(|a| effective.evidence_agent_id(&a.name) == Some(a.agent_id.as_str()))
+        });
+        view["effective_access"] = json!({"active":active,"disclosure":disclosure,"next_action":"A canonical decision is recorded history. Current host-held disclosure, identity, expiry and retention govern each diagnostic read."});
+    }
     if view["status"] == "pending"
         && record.authority.action["kind"] == "operator_action"
         && state.is_some_and(|state| {
@@ -1075,6 +1185,13 @@ pub(crate) fn inspect(
     state: Option<&crate::RuntimeState>,
 ) -> Result<Value> {
     let mut view = current_view(writer, policy, record, state)?;
+    if record.authority.action["kind"] == "policy_change" {
+        view = policy_change::operator_view(
+            state.ok_or_else(|| invalid("policy review owner unavailable"))?,
+            writer,
+            &record.approval_id,
+        )?;
+    }
     if record.authority.action["kind"] == "operator_action"
         && view["result"]["status"] == "started"
         && let Some(state) = state
@@ -1207,6 +1324,20 @@ pub(crate) fn resolve_as(
     reviewer: Option<(&crate::peer_support::Caller, &str)>,
 ) -> Result<Option<(u16, Value)>> {
     match lookup(writer, id)? {
+        Some(record) if record.authority.action["kind"] == "signal_response" => {
+            if option.is_some_and(|option| option != "once") {
+                return Err(invalid("select this signal response's fixed once option"));
+            }
+            return crate::signals::resolve(state, writer, id, decision, reviewer.is_some())
+                .map(Some);
+        }
+        Some(record) if record.authority.action["kind"] == "policy_change" => {
+            return policy_change::resolve(state, writer, id, decision, option, reviewer).map(Some);
+        }
+        Some(record) if record.authority.action["kind"] == "policy_snapshot" => {
+            return policy_snapshot::resolve(state, writer, id, decision, option, reviewer)
+                .map(Some);
+        }
         Some(record) if record.authority.action["kind"] == "operator_action" => {
             return crate::operator_actions::resolve(state, writer, id, decision, option, reviewer)
                 .map(Some);
@@ -1217,8 +1348,8 @@ pub(crate) fn resolve_as(
     let mut changed = false;
     let selected = writer.approvals().decide(id, |record| {
         let policy = active_policy(state)?;
-        if record.authority.action["kind"] == "coord_collaboration" && reviewer.is_some() {
-            return Err(invalid("new collaboration requires an operator decision"));
+        if matches!(record.authority.action["kind"].as_str(), Some("coord_collaboration" | "diagnostic_disclosure")) && reviewer.is_some() {
+            return Err(invalid("this disclosure requires an operator decision"));
         }
         let delegated = reviewer.map(|(reviewer, name)| delegation::authorize(&policy, record, reviewer, name, option.unwrap_or("run"))).transpose()?;
         if record.status != "pending" { return Ok(()); }
@@ -1260,6 +1391,11 @@ pub(crate) fn resolve_as(
             return Err(invalid("the selected session expired; make a new request"));
         }
         record.option = Some(selected.id.clone());
+        if record.authority.action["kind"] == "diagnostic_disclosure" {
+            diagnostics::issue(state, record)?;
+            changed = true;
+            return Ok(());
+        }
         if record.authority.action["kind"] == "coord_collaboration" {
             record.result = json!({"permission_changed":true,"room_id":record.authority.action["room_id"],
                 "room_name":record.authority.action["room_name"],"expires_at":record.authority.expires_at});
@@ -1281,7 +1417,10 @@ pub(crate) fn resolve_as(
             if record.authority.action["kind"] == "coord_access" {
                 issued = crate::coord_rooms::membership::prepare(&policy, &saved, record, &issued).map_err(unavailable)?;
             }
-            record.result = json!({"permission_changed":true,"issued_access":issued,"lifetime":"worker_run"});
+            // The grant transaction revalidates the completed challenge evidence.
+            record.result["permission_changed"] = json!(true);
+            record.result["issued_access"] = json!(issued);
+            record.result["lifetime"] = json!("worker_run");
             if record.authority.action["kind"] == "coord_access" {
                 record.result["decider"] = match reviewer {
                     Some((run, name)) => json!({"kind":"agent","run":run,"delegation":name}),

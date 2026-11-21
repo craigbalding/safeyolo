@@ -130,6 +130,19 @@ def test_current_catalogue_resolves_all_controls_and_external_families():
     assert any("tests/test_guest_acquisition.py" in witness["paths"] for witness in witnesses)
 
 
+@pytest.mark.parametrize("tokens,selected", [
+    (["python", "-m", "tests.blackbox.installed_federation"], True),
+    (["python", "tests/blackbox/installed_federation.py"], True),
+    (["python", "-m", "tests.blackbox.installed_provider"], False),
+])
+def test_procedure_workflow_selection_preserves_repository_and_module_paths(tokens, selected):
+    command = {"tokens": tokens, "job": "fixture", "path": ".github/workflows/test.yml",
+               "cadence": "manual", "condition": ""}
+    result = catalogue.selection({"kind": "procedure"}, "tests/blackbox/installed_federation.py::run",
+                                 {}, [command], {})
+    assert any("[fixture]" in item for item in result) is selected
+
+
 @pytest.mark.parametrize("arguments", [
     ("tests/", "--ignore=tests/blackbox/"),
     ("tests/", "--ignore", "tests/blackbox/host/identity/test_named.py"),

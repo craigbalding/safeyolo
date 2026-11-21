@@ -206,6 +206,28 @@ page's automatic attempts. Confirmed access failure or target replacement also
 stops attempts. Reopen the intended presentation to renew access; the page does
 not extend access or follow a replacement agent or run.
 
+## Discover supported policy changes
+
+On the owning host, run `safeyolo policy capabilities` for the selected
+executable's supported types, scope, lifetime, declared effects, dependencies
+and coverage gaps. Use `safeyolo policy capabilities --json` for generated
+schemas and authoritative validator references. The definition version covers
+the implementation compiled into that executable; it is separate from current
+instance permission and readiness.
+
+An ordinary installed agent can use `discover_policy_capabilities` before full
+policy disclosure. Its `observe=true` option adds only already authorized
+caller-specific observations. Undisclosed or unavailable state remains unknown.
+Service tokens and other agents' hidden bindings are absent. Reading discovery
+grants no authority. The installed policy-authoring skill describes how to
+compose a component, validate its accepted form, assess the actual change,
+revise or discuss it and submit through the existing policy owner.
+
+A valid component is not a complete policy or a safety assessment. Existing
+support/delegation previews, service validators, policy checks and authorized
+application still own the actual change. Current prohibitions do not prevent
+an operator-directed proposal to change policy.
+
 ## Inspect and decide one request
 
 A network policy with `egress = "prompt"` creates a pending access request.
@@ -328,6 +350,35 @@ structured evidence. `safeyolo approvals show REQUEST_ID --json` provides the
 full canonical record under the same operator permissions. Existing traffic
 views and the [approval troubleshooting graph](../cli/src/safeyolo/agent_context/skills/safeyolo/references/graph/triage-approval-required.yaml)
 provide deeper diagnostics; explanation does not require traffic recording.
+
+An approval with type `policy_snapshot` permits disclosure of one complete
+authored local policy snapshot. Inspect its requester/run, instance, source
+revisions, saved/active status and redaction fields before deciding. In the host
+account that owns the selected instance, use the returned approval ID:
+
+```sh
+safeyolo approvals show APPROVAL_ID --json
+safeyolo approvals explain APPROVAL_ID --option snapshot --json
+safeyolo approvals approve APPROVAL_ID --option snapshot --json
+```
+
+Use `approvals reject` to decline. Approval returns the fixed snapshot to its
+original current requester through installed guest tools. It changes no
+enforcement policy and grants no application authority. A stale source or
+requester cannot be approved for different bytes. See
+[full policy snapshots](policy-snapshots.md) for source identity, preservation
+markers, retention and result reconciliation.
+
+An approval with type `policy_change` is a separate human decision to save and
+activate an immutable agent-authored candidate. Inspect its trusted assessment,
+complete redacted source diff and current saved/active basis with
+`approvals show APPROVAL_ID` or `approvals explain APPROVAL_ID --option apply`.
+Approve only that exact content with `approvals approve APPROVAL_ID --option
+apply`, or decline with `approvals reject`. An agent delegation cannot decide
+it. After a lost reply, read the same canonical approval before retrying.
+`policy restore APPROVAL_ID --operation-id req-ID` prepares a separate restore
+review against the current base. See [exact policy adoption](policy-adoption.md)
+for stale recovery, durable result readback, retention and restore limits.
 
 If the scope is what you intend, type the following input at `inspect>` with
 the same full ID:
@@ -730,6 +781,54 @@ To return to an existing agent terminal, use `attach` in inspect. It requires
 a running, attachable command. A missing terminal produces an error and keeps
 your selection; attach does not launch another command. Returning from the
 terminal or using `back` also keeps the selected agent.
+
+## Approve diagnostic evidence
+
+An agent can request local audit records, selected Coordination (Coord) room
+history/membership/recipient attention, runtime observations and selected
+unattributed health categories. The normal pending approval shows the owning
+instance, requester, durable subjects, independent sources, history and lifetime.
+It grants observation only. It does not add room send rights, guest
+administration, lifecycle actions, policy mutation or an Admin credential.
+
+On the owning host, use `safeyolo watch` or
+`safeyolo approvals show APPROVAL_ID`. Inspect the fixed selection before
+`safeyolo approvals approve APPROVAL_ID --option diagnostics` or
+`safeyolo approvals reject APPROVAL_ID`. Agent reasons remain untrusted context.
+The agent reads the canonical decision and uses normal diagnostic tools;
+the operator does not copy logs or construct log-processing commands.
+
+To narrow a pending request, prepare a local JSON selection file with
+`expected_authority_digest` from the current approval,
+`expected_selection_revision` (null before the first narrowing), retained
+`subject_ids`, a narrower typed `scope`, and `expires_at`. Use the original
+scope's field names. Narrowing cannot add subjects, sources, historical reach,
+runs, future access or lifetime. On that host, run:
+
+```sh
+safeyolo approvals narrow-diagnostics APPROVAL_ID --file SELECTION.json
+safeyolo approvals show APPROVAL_ID
+```
+
+The first command saves a fixed preview in the same canonical pending record.
+It does not grant access. Inspect the returned scope before approving. After
+approval, use the existing `support grants`, `support preview`, `support apply`
+and `support revoke` commands to inspect, narrow or revoke the named grant.
+Those commands retain their current-revision and acknowledgment checks.
+
+Historical reach is independent of access lifetime. A fixed snapshot freezes
+one bounded collection; temporary access ends at its selected expiry; standing
+access lasts until changed or revoked. Future records require an explicit
+selection. Each read/page checks current authority. Private collections retain
+at most 2000 rows / 4 MiB for seven days and are removed on later diagnostic
+use. Snapshot loss or expiry is reported rather than silently recollected.
+Name-only audit history cannot establish durable ownership. Current runtime
+and membership observations do not reconstruct history. Selected attention can
+include a timestamped recipient supervisor cursor. This recipient-writable
+checkpoint does not prove liveness or application consumption; unavailable
+checkpoints remain explicit. Already disclosed bytes
+cannot be recalled. See the [agent interface](../cli/src/safeyolo/agent_context/skills/safeyolo/references/agent-api.md#approved-diagnostic-evidence)
+for source permissions, filters and completeness limits.
 
 ## Inspect a pending approval
 

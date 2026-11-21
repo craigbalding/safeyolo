@@ -31,6 +31,11 @@ lifetime and direct-socket/DNS isolation remain in job_network.py/job_sandbox.py
 Use --scope for destination/method/path refusal, a negative HTTP 302 finding
 without automatic following, separate adopted gates and cache expiry. The 302
 case does not prove policy refusal of an attempted redirected request.
+Use --redirect for an actual one-hop client follow on gVisor, VZ or Unikraft.
+Allowed target controls precede path/destination removal with the same job.
+The denied follow needs an exact-run proxy 403 and no target-origin contact.
+Core's installed NetworkCheck does not follow redirects; this mode cannot
+establish that missing Core observation and does not replace its guest.
 Use --caller-only for caller/ancestry/offline cases where
 those observations remain unrun. These modes share logical cases across all
 engines without rerunning completed lifetime or authority cases.
@@ -66,6 +71,30 @@ status=$(curl --silent --show-error --max-time 40 --proxy "$HTTP_PROXY" \
 positive=false
 if [ "$status" = 200 ]; then positive=true; fi
 printf '{"finding":{"kind":"finding","positive":%s}}\n' "$positive"
+'''
+
+PLATFORM_REDIRECT_CHECKER = PLATFORM_CHECKER.replace(
+    "--max-time 40", "--max-time 40 --location --max-redirs 1 --proto-redir =http").replace(
+    "'%{http_code}'", "'%{http_code} %{num_redirects}'").replace(
+    "positive=false", 'test "${status#* }" = 1 || exit 1\nstatus=${status%% *}\npositive=false')
+
+# Only this diagnostic checker follows a single response Location. HTTP parsing
+# and both requests remain inside Unikraft's maintained client implementation.
+UNIKRAFT_REDIRECT_CHECKER = '''
+import json
+from pathlib import Path
+from urllib.parse import urljoin
+from safeyolo_proxy import open_url
+
+request = json.loads(Path("/input/request.json").read_bytes())
+url = request["subject"]["value"]
+with open_url(url) as response:
+    assert response.status == 302
+    location = response.getheader("Location")
+    assert location
+with open_url(urljoin(url, location)) as response:
+    positive = response.status == 200
+print(json.dumps({"finding": {"kind": "finding", "positive": positive}}))
 '''
 
 
@@ -129,10 +158,11 @@ class NetworkOrigin(BaseHTTPRequestHandler):
         if held is not None:
             held.wait(self.connection)
         try:
-            redirect = getattr(self.server, "redirect", False)
+            redirect = getattr(self.server, "redirect", False) and self.path != getattr(self.server, "redirect_target", None)
             self.send_response(302 if redirect else 200)
             if redirect:
-                self.send_header("Location", f"http://localhost:{self.server.server_port}/scope/denied")
+                self.send_header("Location", getattr(self.server, "redirect_location",
+                                                     f"http://localhost:{self.server.server_port}/scope/denied"))
             self.send_header("Content-Length", "0")
             self.end_headers()
         except (BrokenPipeError, ConnectionResetError) as error:
@@ -537,6 +567,77 @@ def scope_cases(instance, engine, contacts, origin):
     return results
 
 
+def redirect_cases(instance, engine, contacts, origin):
+    """Follow one hop in the guest; remove only its destination/path authority."""
+    original = copy.deepcopy(instance.policy)
+    port = instance.args.upstream_port
+    initial = f"/{engine}"
+    target = f"/redirected/{engine}"
+    subject = {"kind": "value", "value": f"http://127.0.0.1:{port}{initial}"}
+    results = {}
+    try:
+        count = len(contacts)
+        instance.command("job", "validate", str(instance.scratch / f"{engine}-adopted.json"))
+        assert len(contacts) == count, contacts
+        instance.policy.pop("hosts", None)
+        instance.policy.pop("agents", None)
+        for label, host in (("path", "127.0.0.1"), ("destination", "localhost")):
+            origin.redirect_location = f"http://{host}:{port}{target}"
+            origin.redirect_target = target
+            origin.redirect = True
+            results[label] = {"target_host": host, "target_path": target}
+            for allowed in (True, False):
+                permissions = [{"action": "network:request", "resource": "127.0.0.1/*", "effect": "allow",
+                                "condition": {"agent": "gate:hyperlight-network-check", "port": port,
+                                              "method": "GET", "path_prefix": initial}}]
+                if allowed:
+                    permissions.append({"action": "network:request", "resource": f"{host}/*", "effect": "allow",
+                                        "condition": {"agent": "gate:hyperlight-network-check", "port": port,
+                                                      "method": "GET", "path_prefix": target}})
+                instance.policy["permissions"] = permissions + [
+                    {"action": "network:request", "resource": "*", "effect": "deny"}]
+                instance.apply()
+                count = len(contacts)
+                direct = instance.run_job(engine, {"subject": subject, "inputs": {}})
+                status, named = instance.invoke(engine, {"subject": subject})
+                case = {"direct": direct, "named_status": status, "named": named,
+                        "new_contacts": contacts[count:]}
+                results[label]["allowed" if allowed else "denied"] = case
+                save(instance.scratch / f"{engine}-redirect.json", results)
+                check_direct(direct, allowed, expected_engine=engine)
+                check_named(status, named, allowed, expected_engine=engine)
+                expected = [initial, target, initial, target] if allowed else [initial, initial]
+                assert [row["path"] for row in contacts[count:]] == expected, case
+    finally:
+        origin.redirect = False
+        if hasattr(origin, "redirect_location"):
+            del origin.redirect_location
+            del origin.redirect_target
+        instance.policy = original
+        instance.apply()
+    return results
+
+
+def check_redirect_audit(rows, results, port):
+    """A failed or non-following client cannot substitute for policy refusal."""
+    for engine in results.values():
+        for variant in engine.values():
+            denied = variant["denied"]
+            runs = (denied["direct"]["run_id"], denied["named"]["evidence"]["execution"]["run_id"])
+            for run in runs:
+                outcomes = []
+                for row in rows:
+                    detail = row["details"]
+                    identity = detail.get("attribution", {})
+                    if (row["event"] == "traffic.request_outcome"
+                            and identity.get("trusted_transport_identity") == run):
+                        assert identity["attribution_provenance"]["authorization_principal"] == "gate:hyperlight-network-check"
+                        assert detail["port"] == port
+                        outcomes.append((detail["host"], detail["status"], detail["decision"]))
+                assert sorted(outcomes) == sorted([
+                    ("127.0.0.1", 302, "allow"), (variant["target_host"], 403, "deny")]), (run, outcomes)
+
+
 def cache_expiry_and_gate_separation(instance, engine, contacts):
     """A result expires, and another adopted gate cannot borrow its evidence."""
     original = copy.deepcopy(instance.policy)
@@ -588,6 +689,8 @@ def cache_expiry_and_gate_separation(instance, engine, contacts):
 
 def exercise_engine(instance, engine, contacts, continuing_core, origin):
     """Observe the selected calls and require denied calls to add no contact."""
+    if getattr(instance.args, "redirect", False):
+        return redirect_cases(instance, engine, contacts, origin)
     if instance.args.scope:
         return scope_cases(instance, engine, contacts, origin)
     if instance.args.caller_only:
@@ -599,8 +702,7 @@ def exercise_engine(instance, engine, contacts, continuing_core, origin):
     connections = origin.connections
     destination = f"127.0.0.1:{instance.args.upstream_port}"
     gate = "gate:hyperlight-network-check"
-    before = len(contacts)
-    before_connections = len(connections)
+    before, before_connections = len(contacts), len(connections)
     scheme = "https" if instance.args.tls else "http"
     subject = {"kind": "value", "value": f"{scheme}://{destination}/{engine}"}
     request = {"subject": subject, "inputs": {}}
@@ -666,7 +768,9 @@ def adopt_network_checks(instance, engines):
         if engine in ("gvisor", "vz"):
             url = f"{'https' if args.tls else 'http'}://127.0.0.1:{args.upstream_port}/{engine}"
             spec = {"engine": {"kind": "platform"}, "gate_id": "hyperlight-network-check",
-                    "argv": ["/bin/bash", "-euo", "pipefail", "-c", PLATFORM_CHECKER, "network-check", url], "network": True,
+                    "argv": ["/bin/bash", "-euo", "pipefail", "-c",
+                             PLATFORM_REDIRECT_CHECKER if args.redirect else PLATFORM_CHECKER,
+                             "network-check", url], "network": True,
                     "memory_mb": 512, "max_input_bytes": 16384, "max_input_entries": 1,
                     "retain_bytes": 16384}
             implementation = digest(Path(__file__))
@@ -676,6 +780,11 @@ def adopt_network_checks(instance, engines):
         for key in ("runtime", "guest", "checker"):
             if key in spec["engine"]:
                 spec["engine"][key]["path"] = str(args.bundle / spec["engine"][key]["path"])
+        if args.redirect and engine == "hyperlight-unikraft":
+            checker = args.scratch / "redirect_checker.py"
+            checker.write_text(UNIKRAFT_REDIRECT_CHECKER)
+            spec["engine"]["checker"] = {"path": str(checker), "sha256": digest(checker)}
+            implementation = digest(checker)
         spec["timeout_seconds"] = 30
         path = args.scratch / f"{engine}-adopted.json"
         save(path, spec)
@@ -695,7 +804,7 @@ def check_shutdown(args, results):
     assert not list((args.root / "data").glob("job-hyperlight-*"))
     if args.base_root is not None:
         assert not job_directories(args.root), "platform job runtime remains"
-    if args.tls or args.authority or args.lifetimes_only or args.caller_only:
+    if args.tls or args.authority or args.lifetimes_only or args.caller_only or args.redirect:
         # Shutdown flushes the ordinary audit writer. Keep the complete private
         # audit and raw job streams even when the exact refusal assertion fails.
         rows = [json.loads(line) for line in (args.root / "logs/audit.jsonl").read_text().splitlines()]
@@ -705,6 +814,8 @@ def check_shutdown(args, results):
         runs = [run for result in results.values() for run in
                 (result["denied_direct"], result["denied"]["evidence"]["execution"]["run_id"])]
         check_connect_audit(rows, runs, args.upstream_port)
+    if args.redirect:
+        check_redirect_audit(rows, results, args.upstream_port)
 
 
 def exercise(args):
@@ -730,7 +841,7 @@ def exercise(args):
             adopt_network_checks(instance, engines)
             results = {}
             report = {"engines": results, "contacts": contacts, "reused_core": reused,
-                      "mode": ("scope" if args.scope else "caller" if args.caller_only else
+                      "mode": ("redirect" if args.redirect else "scope" if args.scope else "caller" if args.caller_only else
                                "lifetimes" if args.lifetimes_only else "authority" if args.authority
                                else "https-inspected" if args.tls else "http"),
                       "tls_connections": connections,
@@ -758,8 +869,9 @@ def exercise(args):
             save(args.scratch / "origin-contacts.json", contacts)
             save(args.scratch / "origin-tls.json", connections)
     check_shutdown(args, results)
-    if args.scope or args.caller_only:
-        print("PASS: " + ("adopted gate scopes, cache expiry and separate-gate evidence" if args.scope else
+    if args.redirect or args.scope or args.caller_only:
+        print("PASS: " + ("guest-followed redirects, allowed controls, target scope removal and exact-run proxy refusals" if args.redirect else
+                         "adopted gate scopes, cache expiry and separate-gate evidence" if args.scope else
                          "adopted caller/gate separation, forged inputs/headers, cycle refusal and offline effects"))
     elif args.authority or args.lifetimes_only:
         print("PASS: generic stream direct/named deadlines and revocation, cancellation, EOF/endpoint teardown and fresh/cached invocations")
@@ -770,6 +882,8 @@ def exercise(args):
 
 
 def validate_engine_selection(parser, args):
+    if args.redirect and args.engine not in ("gvisor", "vz", "hyperlight-unikraft"):
+        parser.error("--redirect needs an explicit gvisor/vz/Unikraft engine; installed Core NetworkCheck does not follow redirects")
     if (args.base_root is not None) != (args.engine in ("gvisor", "vz")):
         parser.error("select --engine gvisor/vz with --base-root; Hyperlight engines require --bundle")
     if args.base_root is not None and (sys.platform == "darwin") != (args.engine == "vz"):
@@ -795,6 +909,7 @@ def main():
     modes.add_argument("--authority", action="store_true", help="run generic HTTP authority, cycle/offline and lifetime cases")
     modes.add_argument("--lifetimes-only", action="store_true", help="run lifetime cases without caller, offline or cycle replays")
     modes.add_argument("--scope", action="store_true", help="run shared scopes and separate-gate evidence/expiry cases")
+    modes.add_argument("--redirect", action="store_true", help="follow one guest HTTP redirect and remove only target authority")
     modes.add_argument("--caller-only", action="store_true", help="run shared caller/cycle/offline cases without lifetimes")
     args = parser.parse_args()
     for name in ("cli", "proxy", "scratch"):
@@ -805,7 +920,7 @@ def main():
     args.root = args.root.absolute()
     validate_engine_selection(parser, args)
     if args.continue_from is not None:
-        if args.engine is not None or args.tls or args.authority or args.lifetimes_only or args.scope or args.caller_only:
+        if args.engine is not None or args.tls or args.authority or args.lifetimes_only or args.scope or args.caller_only or args.redirect:
             parser.error("--continue-from selects its partial HTTP cases; do not combine an engine or another mode")
         args.continue_from = args.continue_from.resolve(strict=True)
     # Instance.invoke uses this only as a default subject; every call overrides it.

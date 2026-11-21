@@ -182,7 +182,9 @@ impl Writer {
     /// Read retained events for an already validated request ID and trusted
     /// agent. This performs blocking file I/O and a best-effort freshness wait;
     /// async callers must use their blocking executor. The returned document
-    /// can contain private event details and must not enter diagnostics.
+    /// can contain private event details. The authenticated Agent API filters
+    /// them to the requester. Do not copy them into generic logs or unscoped
+    /// diagnostics.
     pub fn explain(
         &self,
         request_id: &str,
