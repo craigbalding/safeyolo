@@ -33,6 +33,7 @@ mod declarations;
 mod explain;
 mod flows;
 mod gateway;
+mod lifecycle;
 mod memory;
 mod operator_actions;
 mod policy_assessment;
@@ -109,6 +110,9 @@ const ENDPOINTS: &[&str] = &[
     "/gateway/submit-binding",
     "/desktop/present",
     "/operator-actions",
+    "/lifecycle",
+    "/lifecycle/stop (POST)",
+    "/lifecycle/requests/{operation_id}",
     "/operator-actions/{action_request_id}",
     "/api/flows/{id}",
     "/api/flows/{id}/request-body",
@@ -715,6 +719,7 @@ async fn authorize(request: Request<'_>, token_path: &Path) -> Result<AuthScope,
             || path == "/desktop/present")
         && !path.starts_with("/policy/capabilities/")
         && path != "/checks/invoke"
+        && path != "/lifecycle/stop"
         && !path.starts_with("/support/")
         && !path.starts_with("/operator-actions")
         && !path.starts_with("/policy/snapshots")

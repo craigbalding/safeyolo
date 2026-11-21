@@ -2106,6 +2106,7 @@ pub struct Proxy {
     policy_check_at: Option<tokio::time::Instant>,
     feed_refresh: policy_feeds::Refresh,
     signal_follow: signals::Follow,
+    lifecycle_follow: host_lifecycle::scheduled::Follow,
 }
 
 impl Proxy {
@@ -2170,6 +2171,7 @@ impl Proxy {
             service_files,
             feed_refresh: policy_feeds::Refresh::default(),
             signal_follow: signals::Follow::default(),
+            lifecycle_follow: host_lifecycle::scheduled::Follow::default(),
             policy_check_at: config
                 .policy_file
                 .as_ref()
@@ -2449,6 +2451,7 @@ impl Proxy {
                 })
                 .flatten()
         });
+        let lifecycle_configured = root.is_some();
         if let Some(root) = root {
             if let Err(error) = self.feed_refresh.poll(root.clone()).await {
                 eprintln!("Managed feed refresh: {error}");
@@ -2501,6 +2504,12 @@ impl Proxy {
         self.policy_check_at = self
             .policy_check_at
             .map(|_| tokio::time::Instant::now() + Duration::from_secs(2));
+        if lifecycle_configured
+            && result.is_ok()
+            && let Err(error) = self.lifecycle_follow.poll(self.runtime.clone()).await
+        {
+            eprintln!("Worker lifecycle: {error}");
+        }
         result
     }
 
