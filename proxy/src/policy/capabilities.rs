@@ -15,10 +15,11 @@ pub enum Definition {
     EvidenceReads,
     ServiceEffects,
     ServiceDefinition,
+    HostExecutionPackage,
 }
 
 impl Definition {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Controls,
         Self::SupportGrant,
         Self::Delegation,
@@ -27,6 +28,7 @@ impl Definition {
         Self::EvidenceReads,
         Self::ServiceEffects,
         Self::ServiceDefinition,
+        Self::HostExecutionPackage,
     ];
 
     fn schema(self) -> Value {
@@ -53,6 +55,7 @@ impl Definition {
             Self::ServiceEffects => json!(schema_for!(crate::services::effects::EffectModel)),
             // This owner parses a dynamic document. Do not invent a second schema.
             Self::ServiceDefinition => crate::services::ServiceDefinition::capability_schema(),
+            Self::HostExecutionPackage => json!(schema_for!(crate::host_execution::Package)),
         }
     }
 
@@ -66,6 +69,7 @@ impl Definition {
             Self::EvidenceReads => "policy::evidence::validate_reads",
             Self::ServiceEffects => "services::effects::EffectModel",
             Self::ServiceDefinition => "services::ServiceDefinition::from_value",
+            Self::HostExecutionPackage => "host_execution::Package::validate",
         }
     }
 
@@ -129,6 +133,9 @@ pub fn validate(input: Candidate) -> Result<Value, Error> {
         }
         Definition::ServiceDefinition => {
             crate::services::ServiceDefinition::from_value(input.value)?;
+        }
+        Definition::HostExecutionPackage => {
+            serde_json::from_value::<crate::host_execution::Package>(input.value)?.validate()?;
         }
     }
     Ok(

@@ -17,6 +17,11 @@ read-only terminal inspector. The CLI reads and updates instance configuration,
 uses the authenticated Admin API, and displays JSON Lines (JSONL) audit events.
 The instance policy file is the source of truth for durable permissions.
 
+The [host execution contract](host-execution-contract.md) defines the shared
+issuer/target protocol, versioned operation package and executable contract
+witness. Native platform execution and gateway adoption remain separate from
+contract validation.
+
 ## Repository Structure
 
 - `proxy/src/` contains the Rust proxy and its policy, inspection, API, and

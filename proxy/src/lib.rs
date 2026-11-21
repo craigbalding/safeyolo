@@ -61,6 +61,7 @@ mod host_client_auth;
 pub mod host_commands;
 mod host_doctor;
 mod host_events;
+pub mod host_execution;
 mod host_launch;
 mod host_lifecycle;
 mod host_mounts;

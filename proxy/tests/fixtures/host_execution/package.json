@@ -1,0 +1,33 @@
+{
+  "format": "safeyolo.host-execution/v1",
+  "name": "fixed-service",
+  "version": 1,
+  "source": {"location": "repo:proxy/tests/fixtures/host_execution/package.json", "version": "1"},
+  "operations": {
+    "restart": {
+      "resources": ["service:demo"],
+      "arguments": {
+        "wait": {"type": "integer", "required": false, "default": 5, "options": []},
+        "mode": {"type": "enum", "required": false, "default": "normal", "options": ["normal", "quiet"]}
+      },
+      "execution": {
+        "executable": "/usr/bin/fixed-demo-restart",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [{"kind": "literal", "value": "demo.service"}, {"kind": "argument", "name": "wait"}],
+        "environment": {"LANG": {"kind": "literal", "value": "C"}},
+        "working_directory": "/var/empty",
+        "identity": {"principal": "uid:1000", "groups": ["gid:1000"]},
+        "filesystem": {"read": ["/usr/bin/fixed-demo-restart"], "write": []},
+        "network": {"destinations": [], "ipc": [{"kind":"unix_socket","path":"/run/demo-control.sock"}]},
+        "resources": {"timeout_seconds": 20, "output_bytes": 1024, "memory_bytes": 33554432, "processes": 2},
+        "delegated_services": []
+      },
+      "effects": {"restart": {"description": "Restart the already adopted demo service", "persists_after_access": true, "evidence": ["package"]}},
+      "enforcement": {
+        "enforced": ["The contract validates signed requests, selectors, revisions and intersected scope."],
+        "adopted": ["The operator adopts the fixed implementation's declared service semantics."],
+        "unresolved": ["The witness starts no native command. Platform containment, file integrity and service credential enforcement belong to the native executor."]
+      }
+    }
+  }
+}
