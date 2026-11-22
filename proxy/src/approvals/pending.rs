@@ -394,6 +394,66 @@ impl Store {
             .collect()
     }
 
+    /// Reserve a model attempt in the existing approval transaction before
+    /// sending data. A new request ID cannot reset an unresolved episode;
+    /// a completed check ends that episode without erasing its history.
+    pub(crate) fn reserve_task_action_attempt(
+        &self,
+        authority: &str,
+        key: &str,
+        limit: u32,
+    ) -> Result<bool> {
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(unavailable)?;
+        let mut selected = None;
+        let mut used = 0u64;
+        {
+            let mut statement = transaction
+                .prepare("SELECT record FROM approvals ORDER BY rowid DESC")
+                .map_err(unavailable)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(unavailable)?;
+            for row in rows {
+                let record = decode_record(&row.map_err(unavailable)?)?;
+                let count = record.result["task_action_attempts"][key]
+                    .as_u64()
+                    .unwrap_or(0);
+                // Only a successful record for this exact budget ends the
+                // episode. Older challenged records cannot reopen it.
+                if count > 0 && record.status == "completed" {
+                    // DOC: docs/policy-checks.md
+                    break;
+                }
+                used = used.saturating_add(count);
+                if record.authority_digest == authority && record.status == "challenged" {
+                    selected = Some(record);
+                }
+            }
+        }
+        let Some(mut record) = selected else {
+            return Ok(false);
+        };
+        if used >= u64::from(limit) {
+            return Ok(false);
+        }
+        if !record.result.is_object() {
+            record.result = json!({});
+        }
+        if !record.result["task_action_attempts"].is_object() {
+            record.result["task_action_attempts"] = json!({});
+        }
+        let count = record.result["task_action_attempts"][key]
+            .as_u64()
+            .unwrap_or(0);
+        record.result["task_action_attempts"][key] = json!(count + 1);
+        save(&transaction, &record)?;
+        transaction.commit().map_err(unavailable)?;
+        Ok(true)
+    }
+
     /// Shared host recovery uses the same current view as the operator API.
     /// Retain one record at a time rather than a second pending-work store.
     pub(crate) fn pending_fingerprint(

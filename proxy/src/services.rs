@@ -37,7 +37,7 @@ fn bearer() -> String {
 fn basic_username() -> String {
     "x-access-token".into()
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AuthConfig {
     #[serde(rename = "type")]
     pub kind: String,
@@ -51,6 +51,28 @@ pub struct AuthConfig {
     pub refresh_on_401: bool,
     #[serde(default)]
     pub allow_http: bool,
+}
+
+/// Wrap a synthetic gateway token using the adopted service's authentication.
+/// Upstream credential resolution remains inside the proxy.
+pub(crate) fn gateway_token_header(auth: Option<&AuthConfig>, token: &str) -> (String, Secret) {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    let value = match auth {
+        Some(auth) if auth.kind == "basic" => {
+            format!(
+                "Basic {}",
+                STANDARD.encode(format!("{}:{token}", auth.username))
+            )
+        }
+        Some(auth) if auth.kind != "bearer" => token.to_owned(),
+        _ => format!("Bearer {token}"),
+    };
+    (
+        auth.map_or("Authorization", |auth| auth.header.as_str())
+            .to_owned(),
+        Secret::new(value),
+    )
 }
 
 #[derive(Clone, Debug)]

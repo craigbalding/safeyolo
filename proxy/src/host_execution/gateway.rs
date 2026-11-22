@@ -237,12 +237,13 @@ pub(crate) fn binding(policy: &Policy, name: &str) -> Result<Binding, Refusal> {
 }
 
 fn action(
-    policy: &Policy,
+    runtime: &Runtime,
     name: &str,
     binding: &Binding,
     request: &Request,
     credential_binding: &str,
-) -> Value {
+) -> Result<Value, Error> {
+    let policy = runtime.policy.as_ref().ok_or("host policy unavailable")?;
     let operation = match &request.action {
         Action::Invoke { invocation } => invocation.operation_id.as_str(),
         _ => "",
@@ -252,7 +253,41 @@ fn action(
         "host_binding":name,"binding_revision":revision(binding),"request":request,"credential":binding.credential,
         "credential_binding":credential_binding,"policy_revision":policy.host_gateway_revision()});
     action["control_update"] = crate::policy::checks::challenges::binding(policy, &action);
-    action
+    if policy.named_checks().route_challenges.values().any(|c| {
+        c.applies(&action)
+            && c.steps.iter().any(|s| {
+                matches!(
+                    s,
+                    crate::policy::checks::challenges::Step::TaskAction { .. }
+                )
+            })
+    }) {
+        let task = runtime.tasks.active()?.ok_or("approved task unavailable")?;
+        let operation = &binding.target.package.operations[operation];
+        let invocation = match &request.action {
+            Action::Invoke { invocation } => invocation,
+            _ => unreachable!(),
+        };
+        let mut normalized = invocation.clone();
+        normalized.arguments = operation.arguments(&invocation.arguments)?;
+        let history = crate::policy::checks::task_action::history(
+            runtime,
+            &request.principal.run,
+            &request.request_id,
+        )?;
+        action["task_action"] = json!({
+            "task":{"id":task.0,"revision":binding.task_revision,"objective":task.1.document()["metadata"]["description"]},
+            "requester":request.principal,
+            "action":{"kind":"host_operation","target":request.target_id,"invocation":normalized,
+                "package_revision":revision(&binding.target.package)},
+            "prepared":{"effects":operation.effects,"semantics":operation.semantics,"enforcement":operation.enforcement,
+                "revisions":request.expected,"grant":binding.target.effective_operations(binding.grant()?).get(&invocation.operation_id)},
+            "constraints":{"task_permissions":task.1.document()["permissions"],"policy_revision":policy.host_gateway_revision(),
+                "binding_revision":revision(binding),"expiry":request.expires_at},
+            "history":history
+        });
+    }
+    Ok(action)
 }
 
 /// Approval/current-state readers use the same binding and revision owners.
@@ -328,9 +363,10 @@ pub(crate) async fn execute(
         );
         event.agent = Some(run.agent.clone());
         event.request_id = Some(input.request_id.clone());
-        event.details = json!({"host_binding":name,"action":input.action,"expected":input.expected,
+        event.details =
+            json!({"host_binding":name,"run":run,"action":input.action,"expected":input.expected,
             "refusal":error.downcast_ref::<Refusal>(),"outcome":"issuer_refused_or_unavailable"})
-        .into();
+            .into();
         runtime.audit.emit_confirmed(event).await?;
     }
     result
@@ -402,14 +438,22 @@ async fn dispatch(
     ) {
         binding.target.prepare(&authorized, Usage::default())?;
     }
-    if matches!(request.action, Action::Invoke { .. }) {
-        let action = action(policy, name, &binding, &request, &credential_binding);
-        if let Some(reply) =
-            admission(state, &runtime, action, input.challenge_id.as_deref()).await?
+    let assessed_action = if matches!(request.action, Action::Invoke { .. }) {
+        let action = action(&runtime, name, &binding, &request, &credential_binding)?;
+        if let Some(reply) = admission(
+            state,
+            &runtime,
+            action.clone(),
+            input.challenge_id.as_deref(),
+        )
+        .await?
         {
             return Ok(reply);
         }
-    }
+        Some(action)
+    } else {
+        None
+    };
     let mut event = crate::audit::Event::new(
         "gateway.host_admission",
         crate::audit::Kind::Gateway,
@@ -445,6 +489,16 @@ async fn dispatch(
                 "host authority changed before transport admission",
             )
             .into());
+        }
+        if let Some(previous) = &assessed_action {
+            let current_action = action(&current, name, &binding, &request, &credential_binding)?;
+            if *previous != current_action {
+                return Err(refused(
+                    RefusalCode::Stale,
+                    "task/action history changed before dispatch; reassess this action",
+                )
+                .into());
+            }
         }
         Ok(())
     })
@@ -499,7 +553,7 @@ async fn dispatch(
             event.agent = Some(run.agent.clone());
             event.request_id = Some(input.request_id.clone());
             // Output bytes stay in the target's bounded output owner.
-            event.details = json!({"host_binding":name,"target_id":binding.target.target_id,"result":match &response {
+            event.details = json!({"host_binding":name,"run":run,"target_id":binding.target.target_id,"result":match &response {
                 Response::Output { job_id, revision, sha256, .. } => json!({"kind":"output","job_id":job_id,"revision":revision,"sha256":sha256}),
                 _ => json!(response)
             }}).into();
@@ -564,6 +618,16 @@ async fn unavailable_result(
 pub(crate) fn assess(policy: &Policy) -> Result<Value, Error> {
     let entries=policy.host_bindings()?.into_iter().map(|(name,binding)| {
         let grant=binding.grant()?;
+        let checkers = policy.named_checks().route_challenges.iter().flat_map(|(name,challenge)| {
+            challenge.steps.iter().filter_map(move |step| {
+                let crate::policy::checks::challenges::Step::TaskAction { check, max_attempts, disclose_rationale, .. } = step else { return None };
+                let definition = policy.named_checks().checks.get(check)?;
+                Some(json!({"challenge":name,"selectors":challenge,"check":check,
+                    "definition_revision":revision(definition),"source":definition.source,
+                    "implementation_version":definition.implementation_version,"configuration_version":definition.configuration_version,
+                    "model_inputs":definition.inputs,"max_attempts":max_attempts,"disclose_rationale":disclose_rationale}))
+            })
+        }).collect::<Vec<_>>();
         let model=if binding.target.package.semantics.is_some() {
             semantics::assess_target(&binding.target,&binding.issuer_id,&grant.principal,None,&[],now())
                 .unwrap_or_else(|error|json!({"status":"unavailable","reason":error.to_string()}))
@@ -573,7 +637,11 @@ pub(crate) fn assess(policy: &Policy) -> Result<Value, Error> {
             "target_families":binding.target.families,"binding_revision":revision(&binding),"task_revision":binding.task_revision,
             "credential_custody":"Signing material remains in the existing encrypted vault. The binding contains only its reference.",
             "enforcement_and_effects":model,"limitations":["Issuer-adopted input, not a current target or running-job observation. Gateway policy and action checks still apply.",
-                "A grant ending does not undo persistent effects or stop an admitted job. Target execution deadlines and explicit cancellation govern running work."]}))
+                "A grant ending does not undo persistent effects or stop an admitted job. Target execution deadlines and explicit cancellation govern running work."],
+            "independent_task_action_checks":{"adopted":checkers,
+                "configuration_owner":"The issuing instance's policy, task registry, pinned job and existing service grants. Agent rationale selects none of these.",
+                "composed_authority":"Compare the full grant, target ceiling and modeled combined effects with the checker paths and model dependencies shown here. Broad host authority can include authority to change the checker, policy or credentials; configuration separation alone cannot establish independence.",
+                "limitation":"Another model can share failure modes or be misled. Its finding is an additional signal, never a containment guarantee."}}))
     }).collect::<Result<Vec<_>,Error>>()?;
     Ok(json!(entries))
 }
@@ -666,6 +734,31 @@ async fn admission(
     // Use the existing action subject and adopted check runner even for a
     // route already allowed by policy. Private iteration never pages anyone.
     let authority_digest = pending::digest(&authority.material());
+    let private_record = if policy.named_checks().route_challenges.values().any(|c| {
+        c.applies(&action)
+            && c.steps.iter().any(|s| {
+                matches!(
+                    s,
+                    crate::policy::checks::challenges::Step::TaskAction { .. }
+                )
+            })
+    }) {
+        let store = runtime.audit.approvals().clone();
+        let (authority, policy) = (authority.clone(), policy.clone());
+        Some(
+            tokio::task::spawn_blocking(move || {
+                store.submit_status(
+                    authority,
+                    &uuid::Uuid::new_v4().to_string(),
+                    &policy,
+                    "challenged",
+                )
+            })
+            .await??,
+        )
+    } else {
+        None
+    };
     let assessment = crate::policy::checks::challenges::assess(
         &authority_digest,
         &authority.action,
@@ -674,7 +767,38 @@ async fn admission(
         state,
     )
     .await?;
+    if assessment.denied {
+        if let Some(record) = private_record {
+            runtime
+                .audit
+                .approvals()
+                .decide(&record.approval_id, |record| {
+                    record.status = "rejected".into();
+                    record.result["refusal_source"] = json!("adopted_task_action_check");
+                    record.result["challenge"] = assessment.view.clone();
+                    record.result["evidence"] = json!(assessment.evidence);
+                    Ok(())
+                })?;
+        }
+        return Ok(Some(Reply {
+            status: 403,
+            value: json!({"error":"HOST_OPERATION_REFUSED",
+            "assessment":assessment.view,"next_action":"Propose a narrower or relevant action under current authority."}),
+        }));
+    }
     if assessment.ready {
+        if let Some(record) = private_record {
+            runtime
+                .audit
+                .approvals()
+                .decide(&record.approval_id, |record| {
+                    record.result["challenge"] = assessment.view.clone();
+                    record.result["evidence"] = json!(assessment.evidence);
+                    // A passed optional check needs no permission exception.
+                    record.status = "completed".into();
+                    Ok(())
+                })?;
+        }
         return Ok(None);
     }
     let store = runtime.audit.approvals().clone();
@@ -682,10 +806,14 @@ async fn admission(
     // The client operation ID belongs to the target ledger; the private
     // challenge uses a distinct host-owned request ID in the approval owner.
     let request_id = uuid::Uuid::new_v4().to_string();
-    let record = tokio::task::spawn_blocking(move || {
-        store.submit_status(authority, &request_id, &policy_owned, "challenged")
-    })
-    .await??;
+    let record = if let Some(record) = private_record {
+        record
+    } else {
+        tokio::task::spawn_blocking(move || {
+            store.submit_status(authority, &request_id, &policy_owned, "challenged")
+        })
+        .await??
+    };
     Ok(Some(Reply {
         status: 428,
         value: json!({"error":"HOST_OPERATION_CHALLENGE","challenge_id":record.approval_id,"status":record.current_status(policy)?,

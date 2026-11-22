@@ -168,7 +168,9 @@ where
                     current.untrusted_reason_text =
                         Some(json!({"source":input.source,"context":input.context,"answers":input.answers}).to_string());
                     if let Some(assessment) = &assessment {
-                        current.result=json!({"challenge":assessment.view,"evidence":assessment.evidence});
+                        if !current.result.is_object() { current.result=json!({}); }
+                        current.result["challenge"]=assessment.view.clone();
+                        current.result["evidence"]=json!(assessment.evidence);
                     }
                     if !crate::policy::checks::challenges::evidence_current(policy,current) {
                         current.status="superseded".into();
