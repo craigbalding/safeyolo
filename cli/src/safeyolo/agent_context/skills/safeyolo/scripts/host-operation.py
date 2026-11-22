@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import sys
 import urllib.error
@@ -37,23 +38,31 @@ def request(path: str, value: dict[str, Any] | None = None) -> dict[str, Any]:
             "Content-Type": "application/json",
         },
     )
+    http_status = None
     try:
-        with urllib.request.build_opener(NoRedirect()).open(operation, timeout=60) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as error:
-        # Preserve private assessments/refusals as returned. A notification or
-        # challenge is not permission to submit the original invocation again.
         try:
-            result = json.load(error)
-        except (ValueError, UnicodeDecodeError):
-            result = {"error": "Agent API returned a non-JSON error", "http_status": error.code}
-        raise RequestFailed(result) from error
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
-        raise RequestFailed({
+            response = urllib.request.build_opener(NoRedirect()).open(operation, timeout=60)
+        except urllib.error.HTTPError as error:
+            response = error
+            http_status = error.code
+        # Error responses can also be truncated or undecodable after an effect.
+        # Read both kinds through the same uncertain/unavailable failure path.
+        with response:
+            result = json.load(response)
+    except (http.client.HTTPException, urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
+        failure = {
             "error": str(error), "request_id": None if value is None else value.get("request_id"),
             "execution_outcome": "uncertain" if value and value["action"]["kind"] in {"invoke", "cancel"} else "unavailable",
             "next_action": "Inspect the original request/job through this binding or ask its target operator; no request was retried.",
-        }) from error
+        }
+        if http_status is not None:
+            failure["http_status"] = http_status
+        raise RequestFailed(failure) from error
+    if http_status is not None:
+        # Preserve valid private assessments/refusals as returned. A notification
+        # or challenge is not permission to submit the original invocation again.
+        raise RequestFailed(result) from response
+    return result
 
 
 def call(binding: str, request_id: str, action: dict[str, Any], expected: Any = None) -> dict[str, Any]:

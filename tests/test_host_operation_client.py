@@ -6,7 +6,9 @@ import importlib.util
 import io
 import json
 import urllib.error
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from threading import Thread
 
 import pytest
 
@@ -150,3 +152,95 @@ def test_private_refusal_is_preserved_without_escalation_or_resubmit(transport):
 
 def test_redirect_does_not_create_another_authenticated_request():
     assert client.NoRedirect().redirect_request(None, None, 302, "redirect", {}, "https://other.invalid") is None
+
+
+@pytest.mark.parametrize("command", ["invoke", "cancel"])
+@pytest.mark.parametrize("reply", ["success", "disconnect", "truncated", "invalid-json", "non-json-error", "truncated-error", "refusal", "uncertain"])
+def test_real_http_mutation_reply_retains_recovery_context(tmp_path, monkeypatch, capsys, command, reply):
+    mutations = []
+    canonical = {"execution_outcome": "uncertain", "request_id": "original-id", "possible_job_id": "job-gateway",
+                 "target_id": "gateway-target", "host_binding": "case"}
+    refusal = {"challenge_id": "private-finding", "reason": "unavailable required check"}
+    success = {"kind": "job", "receipt": {"job_id": "job-original", "request_id": "original-id"}}
+
+    class AgentAPI(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def respond(self, status, body, length=None):
+            if isinstance(body, dict):
+                body = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body) if length is None else length))
+            self.end_headers()
+            self.wfile.write(body)
+            self.close_connection = True
+
+        def do_GET(self):
+            self.respond(200, {"host_bindings": [{"binding": "case", "target_id": "local-test", "issuer_id": "issuer"}]})
+
+        def do_POST(self):
+            value = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if value["action"]["kind"] == "discover":
+                self.respond(200, {"discovery": {"target_id": "local-test", "revisions": {"authority": "observed"}}})
+                return
+            mutations.append(value)
+            if reply == "disconnect":
+                self.close_connection = True
+            elif reply in {"truncated", "truncated-error"}:
+                self.respond(200 if reply == "truncated" else 503, b'{"kind":"job",', length=1000)
+            elif reply in {"invalid-json", "non-json-error"}:
+                self.respond(200 if reply == "invalid-json" else 503, b"Unavailable")
+            elif reply == "refusal":
+                self.respond(403, refusal)
+            elif reply == "uncertain":
+                self.respond(503, canonical)
+            else:
+                self.respond(200, success)
+
+    token = tmp_path / "agent-token"
+    token.write_text("fixture-agent")
+    monkeypatch.setattr(client, "TOKEN_PATH", token)
+    prepared = tmp_path / "prepared.json"
+    prepared.write_text(json.dumps({"prepared": {"invocation": {"typed": True}, "revisions": {"authority": "observed"}}}))
+    arguments = [str(SOURCE), command, "case", "--request-id", "original-id"]
+    arguments.extend(["--prepared", str(prepared)] if command == "invoke" else ["--job", "job-original", "--revision", "3"])
+    monkeypatch.setattr(client.sys, "argv", arguments)
+    with HTTPServer(("127.0.0.1", 0), AgentAPI) as server:
+        monkeypatch.setattr(client, "BASE_URL", f"http://127.0.0.1:{server.server_port}")
+        worker = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+        worker.start()
+        try:
+            status = client.main()
+        finally:
+            server.shutdown()
+            worker.join(timeout=5)
+    result = json.loads(capsys.readouterr().out)
+    assert len(mutations) == 1
+    assert mutations[0]["action"]["kind"] == command
+    assert mutations[0]["request_id"] == "original-id"
+    assert status == (0 if reply == "success" else 1)
+    if reply in {"success", "refusal", "uncertain"}:
+        assert result == {"success": success, "refusal": refusal, "uncertain": canonical}[reply]
+    else:
+        assert result["execution_outcome"] == "uncertain"
+        assert result["request_id"] == "original-id"
+        assert result["possible_job_id"] == ("job-32a58fdae1911df72559aebfe25b6b88cfe2f3fd049473eca697be20c6b18796" if command == "invoke" else "job-original")
+        assert result["target_id"] == "local-test"
+        assert result["host_binding"] == "case"
+        assert "no request was retried" in result["next_action"]
+        if reply in {"non-json-error", "truncated-error"}:
+            assert result["http_status"] == 503
+
+
+@pytest.mark.parametrize("action", [None, {"kind": "discover"}])
+def test_undecodable_read_error_is_unavailable(transport, action):
+    calls, responses = transport
+    responses.append(urllib.error.HTTPError(client.BASE_URL, 503, "unavailable", {}, Reply(b"Unavailable")))
+    with pytest.raises(client.RequestFailed) as caught:
+        client.request("/gateway/host", None if action is None else {"request_id": "read-id", "action": action})
+    assert caught.value.value["execution_outcome"] == "unavailable"
+    assert caught.value.value["http_status"] == 503
+    assert "possible_job_id" not in caught.value.value
+    assert len(calls) == 1
