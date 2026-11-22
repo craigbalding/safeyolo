@@ -687,22 +687,8 @@ fn service_request(
         .services
         .get(&operation.service)
         .and_then(|service| service.auth.as_ref());
-    let auth_header = auth
-        .map_or("Authorization", |auth| auth.header.as_str())
-        .to_owned();
-    let authorization =
-        crate::credentials::Secret::new(match auth.map(|auth| auth.kind.as_str()) {
-            Some("basic") => format!(
-                "Basic {}",
-                STANDARD.encode(format!(
-                    "{}:{}",
-                    auth.unwrap().username,
-                    token.expose_secret()
-                ))
-            ),
-            Some("bearer") | None => format!("Bearer {}", token.expose_secret()),
-            _ => token.expose_secret().to_owned(),
-        });
+    let (auth_header, authorization) =
+        crate::services::gateway_token_header(auth, token.expose_secret());
     let mut headers = vec![
         (
             auth_header.clone(),
