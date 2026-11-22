@@ -116,10 +116,9 @@ log is `/var/log/safeyolo-scheduling.log`.
 
 `/home/agent` and `/workspace` persist across ordinary stop/run cycles. mise
 installs therefore persist. Keep task-authored code and retained data in the
-assigned workspace folder; for engagements, use the engagement folder for scripts,
-flows, fixtures, downloads, private configuration, analysis, evidence and working
-files. A persistent home directory is not a substitute for keeping engagement work
-together. Tool installations and runtime caches can remain in persistent home.
+assigned workspace folder, including scripts, downloads, configuration, analysis
+and working files. Tool installations and runtime caches can remain in persistent
+home.
 
 `/tmp` is ephemeral and may be a RAM-backed filesystem. Do not rely on its contents
 surviving a sandbox restart or recovery. Use a workspace-local `scratch/` directory
