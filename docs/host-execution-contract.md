@@ -140,7 +140,7 @@ One `Package` holds the stable operations/resources, typed arguments and
 defaults, execution specifications, native effect declarations and enforcement
 disclosures. Optional `semantics` carries reviewed resource identity,
 conditional effects, composition rules, alternatives, evidence and limitations.
-An operation without reviewed semantics remains uncharacterised.
+Missing identity and consequence annotations remain explicit assessment gaps.
 `Package::projections()` derives the target material, native gateway definitions
 and shared effect-assessment definition. They carry the common package version
 and digest. `verify_projections()` checks them against regeneration. The target and

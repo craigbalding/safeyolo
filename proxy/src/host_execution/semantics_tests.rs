@@ -455,7 +455,8 @@ fn retained_writes_compose_after_expiry_without_recreating_current_write_permiss
             version: "1".into(),
         }],
     };
-    let retained = semantics::assess(&package, &[runner], &[observation.clone()]).unwrap();
+    let retained =
+        semantics::assess(&package, &[runner], std::slice::from_ref(&observation)).unwrap();
     assert_eq!(
         retained["model"]["rules"]["changed_service_execution"]["status"],
         "match"
