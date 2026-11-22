@@ -566,6 +566,53 @@ fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
     f.target = saved.target;
     let (receipt, _) = f.invoke("observe");
     assert_eq!(f.terminal(&receipt.job_id).state, JobState::Completed);
+    // A signed, in-envelope candidate can fail actual native qualification.
+    // Keep its verified announcement while retaining the usable active bytes.
+    let mut unavailable = package.clone();
+    unavailable
+        .operations
+        .get_mut("observe")
+        .unwrap()
+        .execution
+        .executable_sha256 = "b".repeat(64);
+    let signed = SignedCatalogue::sign(
+        CatalogueRevision {
+            publisher: "publisher".into(),
+            announcement_revision: package.version * 2 + 1,
+            package: unavailable,
+            observed_at: now() - 1,
+            expires_at: now() + 600,
+            withdrawn: false,
+            previous: None,
+        },
+        &f.key,
+    );
+    fs::write(&observed, serde_json::to_vec(&signed).unwrap()).unwrap();
+    let Response::Discovery { discovery } = f.call(Action::Discover) else {
+        panic!("failed qualification discovery")
+    };
+    let status = discovery.catalogue.unwrap();
+    assert_eq!(status.state, "refused");
+    assert_eq!(status.active, revision(&package));
+    let saved: Configuration = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        saved
+            .catalogue
+            .as_ref()
+            .unwrap()
+            .observed
+            .catalogue
+            .announcement_revision,
+        signed.catalogue.announcement_revision
+    );
+    fs::write(&observed, serde_json::to_vec(&sign(&package)).unwrap()).unwrap();
+    let Response::Discovery { discovery } = f.call(Action::Discover) else {
+        panic!("older discovery after failed qualification")
+    };
+    let status = discovery.catalogue.unwrap();
+    assert_eq!(status.state, "refused");
+    assert!(status.reason.contains("older catalogue announcement"));
+    assert_eq!(status.active, revision(&package));
     let mut unsupported = package.clone();
     unsupported
         .operations
@@ -577,7 +624,7 @@ fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
     let signed = SignedCatalogue::sign(
         CatalogueRevision {
             publisher: "publisher".into(),
-            announcement_revision: package.version * 2 + 1,
+            announcement_revision: package.version * 2 + 2,
             package: unsupported,
             observed_at: now() - 1,
             expires_at: now() + 600,

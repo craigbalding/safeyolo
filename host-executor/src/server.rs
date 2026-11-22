@@ -127,6 +127,11 @@ pub fn load(config: &Path, state: &Path) -> Result<Configuration, Refusal> {
                 plan.status.reason = format!("candidate platform qualification failed: {error}");
                 plan.status.qualified = None;
                 plan.status.active = revision(&settings.target.package);
+                settings
+                    .catalogue
+                    .as_mut()
+                    .expect("configured adoption")
+                    .advance(&plan);
                 settings.target.catalogue = Some(plan.status.clone());
                 settings
                     .native
