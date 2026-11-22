@@ -97,12 +97,24 @@ pub struct Target {
     pub catalogue: Option<CatalogueStatus>,
 }
 
-/// Consumption belongs to an atomic durable target ledger, keyed by issuer,
-/// grant revision and operation. The witness supplies its small reference ledger.
+/// Consumption of one selected exact-operation or family scope.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Usage {
+pub struct ScopeUsage {
     pub admitted: u64,
     pub active: u64,
+}
+
+/// The durable ledger reserves both scopes atomically. Issuer usage belongs to
+/// the selected grant; target usage is shared across issuers and grants.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Usage {
+    pub issuer: ScopeUsage,
+    pub target: ScopeUsage,
+}
+
+pub(crate) struct SelectedScope<'a> {
+    pub operation: String,
+    pub scope: &'a OperationScope,
 }
 
 pub struct Authorized<'a> {
@@ -123,14 +135,34 @@ impl Authorized<'_> {
         revision(self.grant)
     }
 
-    pub(crate) fn usage_operation(&self, id: &str) -> String {
-        if !self.grant.operations.contains_key(id)
-            && let Some(op) = self.target.package.operations.get(id)
-            && let Some(family) = self.grant.families.iter().find(|f| f.contains(id, op))
-        {
-            return format!("@family:{}", family.prefix);
-        }
-        id.into()
+    pub(crate) fn scopes(
+        &self,
+        id: &str,
+    ) -> Result<(SelectedScope<'_>, SelectedScope<'_>), Refusal> {
+        let op = self
+            .target
+            .package
+            .operations
+            .get(id)
+            .ok_or_else(|| Refusal {
+                code: RefusalCode::Selector,
+                message: "operation is not adopted".into(),
+            })?;
+        let delegated = self
+            .target
+            .scope(id, op, &self.grant.operations, &self.grant.families)
+            .ok_or_else(|| Refusal {
+                code: RefusalCode::Authority,
+                message: "operation membership grants no invocation authority".into(),
+            })?;
+        let ceiling = self
+            .target
+            .scope(id, op, &self.target.ceiling, &self.target.families)
+            .ok_or_else(|| Refusal {
+                code: RefusalCode::Authority,
+                message: "operation exceeds the target local ceiling".into(),
+            })?;
+        Ok((delegated, ceiling))
     }
 }
 
@@ -185,16 +217,25 @@ impl Target {
         op: &Operation,
         exact: &'a BTreeMap<String, OperationScope>,
         families: &'a [OperationFamily],
-    ) -> Option<&'a OperationScope> {
-        exact.get(id).or_else(|| {
-            self.catalogue
-                .as_ref()
-                .filter(|s| s.active == revision(&self.package))?;
-            families
-                .iter()
-                .find(|f| f.contains(id, op))
-                .map(|f| &f.scope)
-        })
+    ) -> Option<SelectedScope<'a>> {
+        exact
+            .get(id)
+            .map(|scope| SelectedScope {
+                operation: id.into(),
+                scope,
+            })
+            .or_else(|| {
+                self.catalogue
+                    .as_ref()
+                    .filter(|s| s.active == revision(&self.package))?;
+                families
+                    .iter()
+                    .find(|f| f.contains(id, op))
+                    .map(|f| SelectedScope {
+                        operation: format!("@family:{}", f.prefix),
+                        scope: &f.scope,
+                    })
+            })
     }
 
     /// Bind owner revision references together with the actual trusted inputs.
@@ -501,26 +542,16 @@ impl Target {
             RefusalCode::Stale,
             "adopted operation or implementation changed",
         )?;
-        let delegated = self
-            .scope(
-                &invocation.operation_id,
-                op,
-                &authorized.grant.operations,
-                &authorized.grant.families,
-            )
-            .ok_or_else(|| Refusal {
-                code: RefusalCode::Authority,
-                message: "operation membership grants no invocation authority".into(),
-            })?;
-        let ceiling = self
-            .scope(&invocation.operation_id, op, &self.ceiling, &self.families)
-            .ok_or_else(|| Refusal {
-                code: RefusalCode::Authority,
-                message: "operation exceeds the target local ceiling".into(),
-            })?;
+        let (delegated, ceiling) = authorized.scopes(&invocation.operation_id)?;
+        let (delegated, ceiling) = (delegated.scope, ceiling.scope);
         let arguments = op.arguments(&invocation.arguments)?;
         op.command(&arguments)?;
-        for scope in [delegated, ceiling] {
+        for (scope, used) in [(delegated, usage.issuer), (ceiling, usage.target)] {
+            require(
+                used.admitted < scope.budgets.calls && used.active < scope.budgets.concurrent,
+                RefusalCode::Budget,
+                "selected issuer or target admission budget is exhausted",
+            )?;
             require(
                 scope.implementation_sha256 == op.implementation_sha256()
                     || self
@@ -566,10 +597,7 @@ impl Target {
             .budgets
             .intersect(&ceiling.budgets, &op.execution.resources);
         require(
-            usage.admitted < limits.calls
-                && usage.active < limits.concurrent
-                && limits.timeout_seconds > 0
-                && limits.output_bytes > 0,
+            limits.timeout_seconds > 0 && limits.output_bytes > 0,
             RefusalCode::Budget,
             "effective admission or execution budget is exhausted",
         )?;

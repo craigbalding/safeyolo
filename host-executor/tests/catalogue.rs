@@ -756,6 +756,374 @@ fn family_call_budget_counts_distinct_operation_selectors_together() {
     );
 }
 
+fn budget_fixture(
+    issuer_prefix: Option<&str>,
+    target_prefix: Option<&str>,
+    issuer_limit: u64,
+    target_limit: u64,
+    concurrent: bool,
+) -> (Target, Ed25519KeyPair) {
+    let (mut target, key, mut adoption) = fixture();
+    let mut family = OperationFamily {
+        prefix: "diagnose:".into(),
+        excluded: Default::default(),
+        rule: adoption.policy.operations["restart"].clone(),
+        scope: target.ceiling["restart"].clone(),
+    };
+    family.scope.budgets.calls = 32;
+    family.scope.budgets.concurrent = 32;
+    adoption.policy.families.push(family.clone());
+    let grant = target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant")
+        .unwrap();
+    // Keep the prepared validity bound stable while this table crosses a UTC
+    // second. Per-request expiry is later than this fixed grant expiry.
+    grant.expires_at = now() + 120;
+    for (prefix, limit, exact, families) in [
+        (
+            issuer_prefix,
+            issuer_limit,
+            &mut grant.operations,
+            &mut grant.families,
+        ),
+        (
+            target_prefix,
+            target_limit,
+            &mut target.ceiling,
+            &mut target.families,
+        ),
+    ] {
+        let mut scope = family.scope.clone();
+        if concurrent {
+            scope.budgets.concurrent = limit;
+        } else {
+            scope.budgets.calls = limit;
+        }
+        if let Some(prefix) = prefix {
+            let mut selected = family.clone();
+            selected.prefix = prefix.into();
+            selected.scope = scope;
+            families.push(selected);
+        } else {
+            for id in ["diagnose:sub:first", "diagnose:sub:second"] {
+                exact.insert(id.into(), scope.clone());
+            }
+        }
+    }
+    target.package.version += 1;
+    for id in ["diagnose:sub:first", "diagnose:sub:second"] {
+        target
+            .package
+            .operations
+            .insert(id.into(), target.package.operations["restart"].clone());
+    }
+    adoption.observed = signed_catalogue(&target.package, &key, false, None);
+    let current = activate(&target, &adoption);
+    current.validate().unwrap();
+    (current, key)
+}
+
+fn independent_budget_scopes(concurrent: bool) {
+    // The first six cases share an exhausted scope. The final three have
+    // independent exact scopes whose smaller limits must not be applied to
+    // the other owner's wider family consumption.
+    for (issuer, target, issuer_limit, target_limit, second_allowed) in [
+        (None, Some("diagnose:"), 32, 1, false),
+        (Some("diagnose:"), None, 1, 32, false),
+        (Some("diagnose:"), Some("diagnose:sub:"), 32, 1, false),
+        (Some("diagnose:sub:"), Some("diagnose:"), 1, 32, false),
+        (Some("diagnose:"), Some("diagnose:"), 32, 1, false),
+        (Some("diagnose:"), Some("diagnose:"), 1, 32, false),
+        (None, Some("diagnose:"), 1, 32, true),
+        (Some("diagnose:"), None, 32, 1, true),
+        (None, None, 1, 1, true),
+    ] {
+        let (current, key) = budget_fixture(issuer, target, issuer_limit, target_limit, concurrent);
+        let mut store = Store::new(&current);
+        let mut prepared = Vec::new();
+        for id in ["diagnose:sub:first", "diagnose:sub:second"] {
+            let Response::Proposal { prepared: proposal } = store.call(
+                &current,
+                Action::Propose {
+                    invocation: invocation(&current, id),
+                },
+                id,
+                &key,
+            ) else {
+                panic!("proposal");
+            };
+            prepared.push(proposal);
+        }
+        let first = bytes(
+            &current,
+            Action::Invoke {
+                invocation: prepared[0].invocation.clone(),
+            },
+            "first-call",
+            &key,
+        );
+        let ledger = store.ledger.as_mut().unwrap();
+        let admitted = ledger
+            .handle(&current, Verb::Invoke.path(), &first, now())
+            .unwrap();
+        assert!(admitted.dispatch);
+        let Response::Job { receipt } = admitted.response else {
+            panic!("admission");
+        };
+        // Revalidation excludes this job's own reservation in both scopes.
+        ledger.begin(&current, &receipt.job_id, now()).unwrap();
+        assert!(
+            !ledger
+                .handle(&current, Verb::Invoke.path(), &first, now())
+                .unwrap()
+                .dispatch
+        );
+        ledger
+            .finish(
+                &receipt.job_id,
+                if concurrent {
+                    JobState::Uncertain
+                } else {
+                    JobState::Failed
+                },
+                !concurrent,
+                now(),
+                "ledger control; no workload was launched".into(),
+            )
+            .unwrap();
+        store.ledger.take();
+        store.ledger = Some(
+            Ledger::open(
+                &store.root,
+                &current.target_id,
+                LedgerLimits {
+                    jobs: 10,
+                    mutation_records: 20,
+                    output_bytes: 40960,
+                    database_bytes: 1024 * 1024,
+                    request_bytes: 131072,
+                },
+            )
+            .unwrap(),
+        );
+        let second = bytes(
+            &current,
+            Action::Invoke {
+                invocation: prepared[1].invocation.clone(),
+            },
+            "second-call",
+            &key,
+        );
+        let ledger = store.ledger.as_mut().unwrap();
+        let result = ledger.handle(&current, Verb::Invoke.path(), &second, now());
+        if second_allowed {
+            assert!(
+                result.unwrap().dispatch,
+                "issuer={issuer:?}, target={target:?}"
+            );
+        } else {
+            assert_eq!(
+                result.err().unwrap().code,
+                RefusalCode::Budget,
+                "issuer={issuer:?}, target={target:?}"
+            );
+            let proposal = bytes(
+                &current,
+                Action::Propose {
+                    invocation: invocation(&current, "diagnose:sub:second"),
+                },
+                "fresh-second",
+                &key,
+            );
+            assert_eq!(
+                ledger
+                    .handle(&current, Verb::Propose.path(), &proposal, now())
+                    .err()
+                    .unwrap()
+                    .code,
+                RefusalCode::Budget
+            );
+        }
+        let db = rusqlite::Connection::open_with_flags(
+            store.root.join("jobs.sqlite"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM jobs", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1 + i64::from(second_allowed)
+        );
+    }
+}
+
+#[test]
+fn call_budgets_reserve_issuer_and_target_scopes_independently() {
+    independent_budget_scopes(false);
+}
+
+#[test]
+fn concurrency_budgets_retain_both_scopes_across_replay_and_restart() {
+    independent_budget_scopes(true);
+}
+
+#[test]
+fn target_budget_is_shared_across_issuers_and_grants() {
+    for concurrent in [false, true] {
+        for separate_issuer in [false, true] {
+            let (mut target, key) = budget_fixture(None, Some("diagnose:"), 32, 1, concurrent);
+            let original = target.issuers["issuer"].clone();
+            if separate_issuer {
+                target.issuers.insert("other".into(), original);
+            } else {
+                target
+                    .issuers
+                    .get_mut("issuer")
+                    .unwrap()
+                    .authority
+                    .grants
+                    .insert("other".into(), original.authority.grants["grant"].clone());
+            }
+            let mut store = Store::new(&target);
+            let Response::Proposal { prepared } = store.call(
+                &target,
+                Action::Propose {
+                    invocation: invocation(&target, "diagnose:sub:first"),
+                },
+                "first-proposal",
+                &key,
+            ) else {
+                panic!("proposal");
+            };
+            let Response::Job { receipt } = store.call(
+                &target,
+                Action::Invoke {
+                    invocation: prepared.invocation,
+                },
+                "first-call",
+                &key,
+            ) else {
+                panic!("admission");
+            };
+            store
+                .ledger
+                .as_mut()
+                .unwrap()
+                .finish(
+                    &receipt.job_id,
+                    if concurrent {
+                        JobState::Uncertain
+                    } else {
+                        JobState::Failed
+                    },
+                    !concurrent,
+                    now(),
+                    "no workload launched".into(),
+                )
+                .unwrap();
+            // An unrelated grant edit changes its call epoch, but cannot reset
+            // target calls or release uncertain concurrency reservations.
+            for trust in target.issuers.values_mut() {
+                for grant in trust.authority.grants.values_mut() {
+                    grant.expires_at += 1;
+                }
+            }
+            if concurrent {
+                target.families[0].scope.budgets.calls += 1;
+            }
+            let action = Action::Propose {
+                invocation: invocation(&target, "diagnose:sub:second"),
+            };
+            let mut req = request(&target, action, "other-proposal");
+            if separate_issuer {
+                req.issuer_id = "other".into();
+            } else {
+                req.grant_id = "other".into();
+            }
+            req.expected = Some(
+                target
+                    .request_revisions(&req.issuer_id, &req.grant_id, &req.action)
+                    .unwrap(),
+            );
+            let body = serde_json::to_vec(&SignedRequest::sign(req, "key".into(), &key)).unwrap();
+            assert_eq!(
+                store
+                    .ledger
+                    .as_mut()
+                    .unwrap()
+                    .handle(&target, Verb::Propose.path(), &body, now())
+                    .err()
+                    .unwrap()
+                    .code,
+                RefusalCode::Budget
+            );
+        }
+    }
+}
+
+#[test]
+fn pending_dispatch_excludes_only_its_own_grant_revision_reservation() {
+    let (mut target, key) = budget_fixture(Some("diagnose:"), None, 1, 32, false);
+    let mut store = Store::new(&target);
+    let mut jobs = Vec::new();
+    for (index, id) in ["diagnose:sub:first", "diagnose:sub:second"]
+        .into_iter()
+        .enumerate()
+    {
+        if index == 1 {
+            // This edit changes the grant's usage revision while preserving the
+            // first operation's scoped request/assessment identities.
+            target
+                .issuers
+                .get_mut("issuer")
+                .unwrap()
+                .authority
+                .grants
+                .get_mut("grant")
+                .unwrap()
+                .operations
+                .get_mut("restart")
+                .unwrap()
+                .budgets
+                .calls += 1;
+        }
+        let Response::Proposal { prepared } = store.call(
+            &target,
+            Action::Propose {
+                invocation: invocation(&target, id),
+            },
+            &format!("proposal-{index}"),
+            &key,
+        ) else {
+            panic!("proposal");
+        };
+        let Response::Job { receipt } = store.call(
+            &target,
+            Action::Invoke {
+                invocation: prepared.invocation,
+            },
+            &format!("invoke-{index}"),
+            &key,
+        ) else {
+            panic!("admission");
+        };
+        jobs.push(receipt.job_id);
+    }
+    let ledger = store.ledger.as_mut().unwrap();
+    assert_eq!(
+        ledger.begin(&target, &jobs[0], now()).unwrap_err().code,
+        RefusalCode::Budget
+    );
+    // The new grant revision has its own call allowance. Excluding this job
+    // leaves no other call charged to that revision.
+    ledger.begin(&target, &jobs[1], now()).unwrap();
+}
+
 #[test]
 fn dependency_byte_ceilings_compare_as_bounds_without_granting_update_trust() {
     let (target, _, _) = fixture();

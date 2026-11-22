@@ -200,10 +200,14 @@ effect explanations retain their meaning. Canonical-equivalent edits preserve
 source provenance without replacing adopted explanations with publisher prose.
 New selectors stay discoverable while awaiting authority. A family explicitly
 names a literal prefix ending in `:`, exclusions, a complete operation ceiling
-and invocation scope. Both issuer and target must grant that family. An exact
-operation grant never gains future membership implicitly. The whole potential
-family authority and its compositions must be assessed at initial adoption.
-Issuer family call and concurrency budgets aggregate all members of that family.
+and invocation scope. The issuer and target each authorise membership through
+their selected exact-operation or family scope. Their family prefixes need not
+match. An exact operation grant never gains future membership implicitly. The
+whole potential family authority and its compositions must be assessed at
+initial adoption. Each selected scope's call and concurrency budgets aggregate
+its members independently. Target ceilings apply across issuers and grants.
+Call usage belongs to the current grant or selected target-scope revision;
+active reservations, including uncertain jobs, survive revision changes.
 
 An operation's implementation, represented authority, effect/assessment and
 complete operation identities are distinct. The implementation digest retains

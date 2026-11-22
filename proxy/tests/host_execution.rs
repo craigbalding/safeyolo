@@ -812,8 +812,14 @@ fn membership_scope_defaults_and_proposal_inputs_do_not_confer_authority() {
             .admit(
                 &auth,
                 Usage {
-                    admitted: 1,
-                    active: 0
+                    issuer: ScopeUsage {
+                        admitted: 1,
+                        active: 0
+                    },
+                    target: ScopeUsage {
+                        admitted: 1,
+                        active: 0
+                    },
                 },
                 NOW
             )
@@ -824,8 +830,14 @@ fn membership_scope_defaults_and_proposal_inputs_do_not_confer_authority() {
             .admit(
                 &auth,
                 Usage {
-                    admitted: 2,
-                    active: 0
+                    issuer: ScopeUsage {
+                        admitted: 2,
+                        active: 0
+                    },
+                    target: ScopeUsage {
+                        admitted: 2,
+                        active: 0
+                    },
                 },
                 NOW
             )
@@ -838,8 +850,14 @@ fn membership_scope_defaults_and_proposal_inputs_do_not_confer_authority() {
             .admit(
                 &auth,
                 Usage {
-                    admitted: 0,
-                    active: 1
+                    issuer: ScopeUsage {
+                        admitted: 0,
+                        active: 1
+                    },
+                    target: ScopeUsage {
+                        admitted: 0,
+                        active: 1
+                    },
                 },
                 NOW
             )
@@ -1137,18 +1155,30 @@ impl Witness {
                     auth.grant_revision(),
                     invocation.operation_id.clone(),
                 );
+                let operation_jobs: Vec<_> = self
+                    .jobs
+                    .values()
+                    .filter(|j| j.prepared.invocation.operation_id == invocation.operation_id)
+                    .collect();
                 let usage = Usage {
-                    admitted: *self.usage.get(&key).unwrap_or(&0),
-                    active: self
-                        .jobs
-                        .values()
-                        .filter(|j| {
-                            !j.state.terminal()
-                                && j.issuer_id == req.issuer_id
-                                && j.grant_id == req.grant_id
-                                && j.prepared.invocation.operation_id == invocation.operation_id
-                        })
-                        .count() as u64,
+                    issuer: ScopeUsage {
+                        admitted: *self.usage.get(&key).unwrap_or(&0),
+                        active: operation_jobs
+                            .iter()
+                            .filter(|j| {
+                                !j.state.terminal()
+                                    && j.issuer_id == req.issuer_id
+                                    && j.grant_id == req.grant_id
+                            })
+                            .count() as u64,
+                    },
+                    target: ScopeUsage {
+                        admitted: operation_jobs.len() as u64,
+                        active: operation_jobs
+                            .iter()
+                            .filter(|j| !j.state.terminal())
+                            .count() as u64,
+                    },
                 };
                 let receipt = self.target.admit(&auth, usage, NOW)?;
                 self.usage.entry(key).and_modify(|n| *n += 1).or_insert(1);
