@@ -796,39 +796,43 @@ fn starters(root: PathBuf, service: bool, selected: Option<&str>) {
         }
     }
     if selected.is_none() {
-        for (name, field, value) in [
-            ("service-status", "service", "WinDefend"),
-            ("event-log-query", "channel", "Security"),
-            ("registry-query-machine", "hive", "HKCU"),
-            ("registry-query-user", "hive", "HKLM"),
-            ("registry-query-machine", "key", "SOFTWARE\\Other"),
-            ("registry-query-machine", "view", "128"),
-            ("file-inspect", "path", "C:\\Windows\\win.ini"),
-        ] {
-            let operation = &fixture.target.package.operations[name];
-            let invocation = Invocation {
-                operation_id: name.into(),
-                resource_id: operation.resources.iter().next().unwrap().clone(),
-                operation_sha256: fixture.target.package.operation_sha256(name).unwrap(),
-                implementation_sha256: operation.implementation_sha256(),
-                arguments: BTreeMap::from([(field.into(), serde_json::json!(value))]),
-                expected_assessment_sha256: None,
-            };
-            let response = fixture.call(Action::Propose { invocation });
-            assert!(
-                matches!(&response, Response::Refused { refusal } if matches!(refusal.code, RefusalCode::Arguments | RefusalCode::Authority)),
-                "{name}/{field}: {response:?}"
-            );
-            println!(
-                "{}",
-                serde_json::json!({"negative":name,"field":field,"value":value,"response":response})
-            );
-        }
+        starter_refusals(&mut fixture);
     }
     assert!(
         failed.is_empty(),
         "starter jobs failed; inspect retained receipts/output before any continuation: {failed:?}"
     );
+}
+
+fn starter_refusals(fixture: &mut Fixture) {
+    for (name, field, value) in [
+        ("service-status", "service", "WinDefend"),
+        ("event-log-query", "channel", "Security"),
+        ("registry-query-machine", "hive", "HKCU"),
+        ("registry-query-user", "hive", "HKLM"),
+        ("registry-query-machine", "key", "SOFTWARE\\Other"),
+        ("registry-query-machine", "view", "128"),
+        ("file-inspect", "path", "C:\\Windows\\win.ini"),
+    ] {
+        let operation = &fixture.target.package.operations[name];
+        let invocation = Invocation {
+            operation_id: name.into(),
+            resource_id: operation.resources.iter().next().unwrap().clone(),
+            operation_sha256: fixture.target.package.operation_sha256(name).unwrap(),
+            implementation_sha256: operation.implementation_sha256(),
+            arguments: BTreeMap::from([(field.into(), serde_json::json!(value))]),
+            expected_assessment_sha256: None,
+        };
+        let response = fixture.call(Action::Propose { invocation });
+        assert!(
+            matches!(&response, Response::Refused { refusal } if matches!(refusal.code, RefusalCode::Arguments | RefusalCode::Authority)),
+            "{name}/{field}: {response:?}"
+        );
+        println!(
+            "{}",
+            serde_json::json!({"negative":name,"field":field,"value":value,"response":response})
+        );
+    }
 }
 
 fn native(root: PathBuf, service: bool) {
@@ -1246,6 +1250,14 @@ pub fn main() {
             args.get(3).is_some_and(|s| s == "--service"),
             Some(&args[2]),
         ),
+        Some("--starter-refusals") if args.len() == 2 || args.len() == 3 => {
+            let mut fixture = Fixture::new(
+                PathBuf::from(&args[1]),
+                args.get(2).is_some_and(|s| s == "--service"),
+            );
+            fixture.phase = format!("starter-refusals-{}", fixture.phase);
+            starter_refusals(&mut fixture);
+        }
         Some("--native") if args.len() == 2 || args.len() == 3 => native(
             PathBuf::from(&args[1]),
             args.get(2).is_some_and(|s| s == "--service"),
