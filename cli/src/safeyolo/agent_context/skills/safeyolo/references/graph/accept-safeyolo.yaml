@@ -268,9 +268,9 @@ nodes:
         - path: tests/blackbox/host/job_network.py
           sha256: 007ab1317bc355bdaf2bffecb0fccf04055ee78ae4ec826c9e6c1bd7b341fbb3
         - path: proxy/Cargo.toml
-          sha256: 58fbeffb2a4513b0b3bdef0258c3cee460c216b8156e318f9aa379f0d7004071
+          sha256: 9b652cdef7c58dc2778a3f1d682ff26fcbbba3c829fd216e6da5a8be4a89be92
         - path: proxy/Cargo.lock
-          sha256: e7daf48a665a98c900f1c08293cc551fdc5cec801b77de406cc0dc1fca9d8c4b
+          sha256: c101fc58243f6d393040c3b3517e8f845837ebbe8c4f7e47e67091db3402f962
         - path: proxy/src/lib.rs
           sha256: 6b02aebbad6753a294c0613ab434793566e22d52ff113c408765357f3fb282ee
         - path: proxy/src/bin/safeyolo.rs
@@ -367,9 +367,9 @@ nodes:
         - path: tests/blackbox/host/job_network.py
           sha256: 007ab1317bc355bdaf2bffecb0fccf04055ee78ae4ec826c9e6c1bd7b341fbb3
         - path: proxy/Cargo.toml
-          sha256: 58fbeffb2a4513b0b3bdef0258c3cee460c216b8156e318f9aa379f0d7004071
+          sha256: 9b652cdef7c58dc2778a3f1d682ff26fcbbba3c829fd216e6da5a8be4a89be92
         - path: proxy/Cargo.lock
-          sha256: e7daf48a665a98c900f1c08293cc551fdc5cec801b77de406cc0dc1fca9d8c4b
+          sha256: c101fc58243f6d393040c3b3517e8f845837ebbe8c4f7e47e67091db3402f962
         - path: proxy/src/lib.rs
           sha256: 6b02aebbad6753a294c0613ab434793566e22d52ff113c408765357f3fb282ee
         - path: proxy/src/bin/safeyolo.rs
@@ -699,7 +699,7 @@ nodes:
         - path: proxy/tests/native_coord/federation.rs
           sha256: 7bfc83e871c120479782f1e0d027a6346de321b819e823d7f985a4d4509edcb7
         - path: proxy/src/agent_api/coord.rs
-          sha256: 80b1923d22ccba905e356ecef75613f74a6e87a45aa732ee6416e6f14188df6e
+          sha256: 288bd7872c898b3fea19a8d4b18d524fecbca1ce5698ba3d809f48e9faee5ba1
         - path: proxy/src/agent_api/coord/federation.rs
           sha256: 699b6103139e178606c5280d0e8ecd887de4629f13894edd69eb479e49991aef
         - path: proxy/src/agent_api/coord/federation/tests.rs

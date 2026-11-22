@@ -840,6 +840,12 @@ def test_native_producers_and_consumers_share_the_existing_compatible_dependency
                 if not str(step.get("uses", "")).startswith("Swatinem/rust-cache@"):
                     continue
                 options = step["with"]
+                if job is workflow["jobs"].get("host-executor"):
+                    assert options["shared-key"] == "executor-${{ matrix.target }}"
+                    assert options["workspaces"] == "host-executor -> target"
+                    assert "key" not in options
+                    assert options["cache-bin"] is False
+                    continue
                 expected = "production-focused-pr" if workflow is not shared else "${{ inputs.profile }}-focused-pr"
                 assert options["shared-key"] == expected
                 assert "key" not in options  # The pinned action ignores key when shared-key is set.

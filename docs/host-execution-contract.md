@@ -165,13 +165,43 @@ reports `commit=unknown`; this is not a release identity.
 |---|---|
 | Linux x86-64 / ARM64 | Compatible C runtime; a pinned bubblewrap with the options used by the backend; kernel user namespaces, seccomp and delegated cgroup v2 memory/pids controls. The executor must run where it can migrate its own jobs into that delegation. Ordinary programs receive read paths with no writes, network or IPC. The fixed service profile below separately admits its trusted OS client. |
 | macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive no fork, writes, sockets or Mach access. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
-| Windows x86-64 | Native Windows security, Credential Manager, local named pipes, Job Objects and the Service Control Manager. GNU builds also need the DLLs reported by their toolchain; MSVC builds need their selected C runtime. Cross-compilation is available; native foreground/Service qualification and a supported Windows release package remain incomplete. |
+| Windows x86-64 | Native Windows security, Credential Manager, local named pipes, Job Objects, the Service Control Manager and the Universal C Runtime supplied by current Windows. The GNU package statically links its compiler runtime. Its remaining imports are Windows system DLLs. No MinGW installation is required on the target. |
 
 SQLite is bundled into the executable. Operation definitions separately declare
 their runtime libraries, tools, interpreters and service permissions. A server
 binary that loads does not establish that an adopted operation's dependencies
 or native guarantees are available. The required native starter operations
 must not hide a Python dependency.
+
+The native proxy workflow retains an executor archive for each target below,
+named `host-executor-TARGET-COMMIT`. Download the archive for the selected source
+from that workflow's artifacts. The separate `packages_only` dispatch continues
+to select full SafeYolo packages. The executor job runs during ordinary pull
+request, push, scheduled and manual contract runs. Windows binaries are built
+with the GNU cross compiler; compiling Windows tests does not run them.
+
+| Archive target | Native component evidence and deployment scope |
+|---|---|
+| `x86_64-unknown-linux-gnu` | Ubuntu 24.04, ordinary user, delegated cgroup v2 and pinned bubblewrap; observation, fixed user-service control and lifecycle fixtures. |
+| `aarch64-unknown-linux-gnu` | Linux ARM64 executable and contract checks. Native namespace/cgroup fixture results use x86-64; ARM64 enforcement remains unqualified. |
+| `aarch64-apple-darwin` | macOS ARM64; observation, fixed user-service control and lifecycle fixtures with the explicit broader bounds below. |
+| `x86_64-pc-windows-gnu` | Native Windows 11 foreground and Service component fixtures, with a separate ordinary workload account. Other Windows versions and Windows ARM64 remain unqualified. |
+
+The GNU Linux packages need a compatible glibc; the workflow builds them on
+Ubuntu 24.04. A package's executable identity and metadata identify its exact
+source and target. This component evidence does not establish integrated
+gateway or starter-catalogue release qualification; those consumers have their
+own acceptance.
+
+On Linux or macOS, extract the selected ZIP into an operator-owned directory,
+make `safeyolo-host-executor` executable if the extraction tool omitted its
+mode, then run `./safeyolo-host-executor --version`. On Windows, use
+`Expand-Archive` in an operator-owned directory and run
+`.\safeyolo-host-executor.exe --version`. Compare the binary's SHA-256 with
+`host-executor.json` and its reported commit with the selected workflow source.
+Extraction and a version result do not create configuration, accounts, service
+permissions or an isolation delegation. Then use `check` with the explicitly
+adopted configuration and private state directory before starting `serve`.
 
 For a release producer, run the following from a clean, committed source
 checkout with the repository's Rust toolchain, native linker/C build tools,

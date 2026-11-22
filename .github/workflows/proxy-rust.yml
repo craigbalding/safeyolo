@@ -22,6 +22,8 @@ on:
     paths:
       - "cli/tests/test_rust_proxy.py"
       - "proxy/**"
+      - "host-executor/**"
+      - "scripts/build_host_executor.py"
       - "jobs/**"
       - "scripts/build_hyperlight_jobs.py"
       - "site/**"
@@ -63,6 +65,71 @@ concurrency:
   cancel-in-progress: ${{ github.event.action != 'ready_for_review' }}
 
 jobs:
+  host-executor:
+    name: Standalone executor (${{ matrix.target }})
+    if: github.event.action != 'ready_for_review' && !inputs.packages_only
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-pc-windows-gnu
+    env:
+      CARGO_BUILD_JOBS: "1"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/host-executor/target
+      SAFEYOLO_BUILD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+      EXECUTOR_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install the pinned Rust toolchain
+        working-directory: proxy
+        run: |
+          rustup show active-toolchain
+          printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
+      - name: Prepare the Windows cross compiler
+        if: matrix.target == 'x86_64-pc-windows-gnu'
+        run: |
+          sudo -n apt-get update -qq
+          sudo -n apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+          rustup target add "$EXECUTOR_TARGET"
+          printf '%s\n' 'CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc' \
+            'AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar' \
+            'CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc' \
+            'CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS=-C target-feature=+crt-static -C link-arg=-static' >> "$GITHUB_ENV"
+      - name: Restore executor build dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cmd-format: bash "${{ github.workspace }}/scripts/rust_cache_command.sh" {0}
+          workspaces: host-executor -> target
+          shared-key: executor-${{ matrix.target }}
+          cache-bin: false
+      - name: Check the shared contract
+        run: |
+          args=()
+          if [[ "$EXECUTOR_TARGET" == x86_64-pc-windows-gnu ]]; then args+=(--no-run); fi
+          scripts/cargo_with_space.sh test --locked --manifest-path host-executor/Cargo.toml \
+            --target "$EXECUTOR_TARGET" "${args[@]}"
+      - name: Build the Python-free target archive
+        run: |
+          python3 scripts/build_host_executor.py --target "$EXECUTOR_TARGET" \
+            --output "$RUNNER_TEMP/safeyolo-host-executor-$EXECUTOR_TARGET.zip"
+      - name: Retain the exact-source executor archive
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: host-executor-${{ matrix.target }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/safeyolo-host-executor-${{ matrix.target }}.zip
+          if-no-files-found: error
+
   package-inputs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
