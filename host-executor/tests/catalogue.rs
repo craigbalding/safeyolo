@@ -104,7 +104,9 @@ fn request(target: &Target, action: Action, id: &str) -> Request {
         principal: target.issuers["issuer"].authority.grants["grant"]
             .principal
             .clone(),
-        expires_at: now() + 300,
+        // Proposal and invocation must select the same lifetime even if the
+        // fixture crosses a wall-clock second between these two requests.
+        expires_at: target.issuers["issuer"].authority.grants["grant"].expires_at,
         expected: Some(
             target
                 .request_revisions("issuer", "grant", &action)
