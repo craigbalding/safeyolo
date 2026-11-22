@@ -71,14 +71,36 @@ def test_discovery_pins_and_typed_data_cross_preparation_without_authority_field
     assert invoke["expected"] == {"authority": "observed"}
 
 
-def test_lost_invocation_reply_is_uncertain_and_is_not_retried(transport):
+@pytest.mark.parametrize("kind", ["invoke", "cancel"])
+def test_lost_mutation_reply_is_uncertain_and_is_not_retried(transport, kind):
     calls, responses = transport
     responses.append(TimeoutError("lost reply"))
     with pytest.raises(client.RequestFailed) as caught:
-        client.call("case", "original-id", {"kind": "invoke"})
+        client.call("case", "original-id", {"kind": kind})
     assert len(calls) == 1
     assert caught.value.value["execution_outcome"] == "uncertain"
     assert caught.value.value["request_id"] == "original-id"
+
+
+@pytest.mark.parametrize("gateway_reply", [False, True])
+def test_lost_cancel_reply_retains_the_selected_job_without_repeating_cancellation(transport, gateway_reply, monkeypatch, capsys):
+    calls, responses = transport
+    canonical = {"execution_outcome": "uncertain", "request_id": "cancel-1", "possible_job_id": "job-original",
+                 "target_id": "gateway-target", "host_binding": "case"}
+    failure = (urllib.error.HTTPError(client.BASE_URL, 503, "lost cancel reply", {}, Reply(json.dumps(canonical).encode()))
+               if gateway_reply else TimeoutError("complete cancellation reply lost"))
+    responses.extend([{"discovery": {"target_id": "discovered-target", "revisions": {"authority": "observed"}}}, failure])
+    monkeypatch.setattr(client.sys, "argv", [str(SOURCE), "cancel", "case", "--request-id", "cancel-1", "--job", "job-original", "--revision", "3"])
+    assert client.main() == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["execution_outcome"] == "uncertain"
+    assert result["possible_job_id"] == "job-original"
+    assert result["target_id"] == ("gateway-target" if gateway_reply else "discovered-target")
+    assert result["host_binding"] == "case"
+    assert len(calls) == 2
+    assert json.loads(calls[-1].data)["action"] == {"kind": "cancel", "job_id": "job-original", "expected_revision": 3}
+    if gateway_reply:
+        assert result == canonical
 
 
 @pytest.mark.parametrize("gateway_reply", [False, True])

@@ -172,9 +172,12 @@ transport. Target configuration is not implicitly synchronized, and saved
 inputs do not establish running-target readiness. The deployment guide shows
 configuration, rotation and current-revision inspection.
 
-The gateway sends each request once. A missing or mismatched target reply
-returns an uncertain outcome with the original request ID and derived possible
-job ID. Inspect that job under current read authority before retrying. An exact
+The gateway sends each request once. A missing or mismatched invocation or
+cancellation reply returns an uncertain outcome with the original request ID
+and possible job ID. Cancellation retains the selected job's ID. An unavailable
+read or proposal reports `execution_outcome: unavailable`; it sent no invocation.
+Mismatched discovery also reports the expected and observed package digests.
+Inspect an uncertain job under current read authority before retrying. An exact
 duplicate mutation uses the target's durable receipt; changed content with the
 same ID conflicts. After revocation removes read authority, the target operator
 must inspect the retained result. Gateway or credential revocation stops new

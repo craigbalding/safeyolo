@@ -51,7 +51,7 @@ def request(path: str, value: dict[str, Any] | None = None) -> dict[str, Any]:
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
         raise RequestFailed({
             "error": str(error), "request_id": None if value is None else value.get("request_id"),
-            "execution_outcome": "uncertain" if value and value["action"]["kind"] == "invoke" else "unavailable",
+            "execution_outcome": "uncertain" if value and value["action"]["kind"] in {"invoke", "cancel"} else "unavailable",
             "next_action": "Inspect the original request/job through this binding or ask its target operator; no request was retried.",
         }) from error
 
@@ -112,7 +112,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         action.update(offset=args.offset, max_bytes=args.bytes)
     if args.command == "cancel":
         action["expected_revision"] = args.revision
-    return call(args.binding, args.request_id, action, discovery["revisions"])
+    try:
+        return call(args.binding, args.request_id, action, discovery["revisions"])
+    except RequestFailed as error:
+        if args.command == "cancel" and error.value.get("execution_outcome") == "uncertain":
+            error.value.setdefault("possible_job_id", args.job)
+            error.value.setdefault("target_id", discovery["target_id"])
+            error.value.setdefault("host_binding", args.binding)
+        raise
 
 
 def main() -> int:

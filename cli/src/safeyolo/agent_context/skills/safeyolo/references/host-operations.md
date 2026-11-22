@@ -54,7 +54,7 @@ For cancellation, read the current job revision, then use `cancel BINDING
 --request-id ID --job JOB_ID --revision REVISION`. Inspect the next receipt;
 requesting cancellation is not observed termination.
 
-If the helper reports an uncertain invocation, its error JSON retains
+If the helper reports an uncertain invocation or cancellation, its error JSON retains
 `possible_job_id`, the original request ID and selected target context. Inspect that possible job
 with `job --job POSSIBLE_JOB_ID` before any retry. A possible ID does not prove
 admission or execution. If the binding changed, ask the original target operator

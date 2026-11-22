@@ -322,7 +322,7 @@ python3 "$HOST_CLIENT" job case --request-id metadata-status-1 --job JOB_ID
 python3 "$HOST_CLIENT" output case --request-id metadata-output-1 --job JOB_ID --offset 0 --bytes 65536
 ```
 
-If the helper reports an uncertain invocation, its error JSON preserves
+If the helper reports an uncertain invocation or cancellation, its error JSON preserves
 `possible_job_id`, the original request ID and selected target context. Use `job`
 with that possible job ID before another invocation. A possible ID does not
 prove admission or execution. If the binding changed or current access no
