@@ -415,11 +415,17 @@ async fn adaptive_operations_and_lost_reply_use_real_target_receipts_without_dup
         discovery.value["discovery"]["operations"][0]["operation_id"],
         "restart"
     );
-    let first = f.prepared("first", None).await;
+    let first = f.prepared("original-id", None).await;
     f.lose_reply.store(true, Ordering::SeqCst);
     let lost = f.call(first.clone()).await;
     assert_eq!(lost.value["execution_outcome"], "uncertain");
     let job = lost.value["possible_job_id"].as_str().unwrap().to_string();
+    // The installed helper can locate this exact job even when the complete
+    // invocation reply was lost, using its retained request and binding IDs.
+    assert_eq!(
+        job,
+        "job-32a58fdae1911df72559aebfe25b6b88cfe2f3fd049473eca697be20c6b18796"
+    );
     let inspected = f
         .call(f.input(
             "inspect-first",
@@ -428,7 +434,7 @@ async fn adaptive_operations_and_lost_reply_use_real_target_receipts_without_dup
             },
         ))
         .await;
-    assert_eq!(inspected.value["receipt"]["request_id"], "first");
+    assert_eq!(inspected.value["receipt"]["request_id"], "original-id");
     let replay = f.call(first).await;
     assert_eq!(replay.status, 200);
     assert_eq!(f.mutations.load(Ordering::SeqCst), 1);
@@ -518,6 +524,7 @@ async fn native_scopes_defaults_current_policy_and_cross_agent_objects_are_enfor
         400
     );
     let visible = f.api("/gateway/host", "GET", Value::Null).await;
+    assert_eq!(visible.value["host_bindings"][0]["issuer_id"], "issuer");
     assert_eq!(
         visible.value["host_bindings"][0]["principal"]["task_id"],
         "approved-task"

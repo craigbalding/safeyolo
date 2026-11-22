@@ -294,23 +294,83 @@ fn starter(settings: &Starter, identity: ExecutionIdentity) -> Result<Package, R
             "{action} the fixed {} service. Service definitions, accounts, executable/configuration changes and dependent service effects remain separately governed. Native service stdout is retained inside the structured receipt.",
             settings.service
         );
-        operation.effects = BTreeMap::from([(
-            if action == "status" {
-                "disclosure"
-            } else {
-                "service_control"
-            }
-            .into(),
-            NamedEffect {
-                description: operation.description.clone(),
-                persists_after_access: action != "status",
-                evidence: vec!["package".into()],
-            },
-        )]);
+        let effects: &[&str] = match action {
+            "status" => &["disclosure"],
+            "start" => &["service_start", "execute"],
+            "stop" => &["service_stop"],
+            _ => &["service_stop", "service_start", "execute"],
+        };
+        operation.effects = effects
+            .iter()
+            .map(|name| {
+                let effect = if *name == "disclosure" {
+                    package.operations["bundle-metadata"].effects["disclosure"].clone()
+                } else {
+                    NamedEffect {
+                        description: match *name {
+                            "service_start" => "Can start the selected fixed service.",
+                            "service_stop" => "Can stop or signal the selected fixed service; configured restart and dependent effects remain separately governed.",
+                            _ => "Can execute the service's current configured program with its service-account authority. Service code, configuration and dependencies are not pinned by the helper hash.",
+                        }.into(),
+                        persists_after_access: true,
+                        evidence: vec!["package".into()],
+                    }
+                };
+                ((*name).into(), effect)
+            })
+            .collect();
         operation.enforcement.unresolved.push("Service effects and service processes outlive the helper and its process bounds. macOS stop signals the existing service; launchd KeepAlive can restart it. Disabling or changing the definition is separate authority.".into());
         package
             .operations
             .insert(format!("service-{action}"), operation);
+    }
+    package.semantics = Some(HostSemantics {
+        sources: BTreeMap::new(),
+        resources: ["service", "evidence"]
+            .into_iter()
+            .map(|name| (name.into(), crate::effects::Resource {
+                description: format!("Selected target {name}"),
+                identity: vec!["target".into(), "id".into()],
+            }))
+            .collect(),
+        rules: BTreeMap::new(),
+        alternatives: BTreeMap::new(),
+        gaps: vec!["Only these packaged fixed recipes are characterized. Ambient service/dependency changes and missing historical evidence remain unobserved. No model inference or execution permission follows from these annotations.".into()],
+    });
+    for (name, operation) in &mut package.operations {
+        let resource = if name.starts_with("service-") {
+            "service"
+        } else {
+            "evidence"
+        };
+        let id = if resource == "service" {
+            HostIdentity::Fixed {
+                value: settings.service.clone(),
+            }
+        } else {
+            HostIdentity::Resource {
+                aliases: BTreeMap::new(),
+            }
+        };
+        operation.semantics = Some(HostOperationSemantics {
+            resources: BTreeMap::from([(
+                resource.into(),
+                BTreeMap::from([("target".into(), HostIdentity::Target), ("id".into(), id)]),
+            )]),
+            effects: operation
+                .effects
+                .keys()
+                .map(|effect| crate::effects::EffectUse {
+                    effect: effect.clone(),
+                    resource: resource.into(),
+                    when: crate::effects::Condition::Always,
+                    evidence: vec!["package".into()],
+                })
+                .collect(),
+            prerequisites: operation.enforcement.adopted.clone(),
+            limitations: operation.enforcement.unresolved.clone(),
+            evidence: vec!["package".into()],
+        });
     }
     Ok(package)
 }

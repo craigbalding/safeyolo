@@ -49,7 +49,7 @@ where
                 200,
                 json!({"host_bindings":bindings.into_iter().filter_map(|(name,binding)| {
                 let principal=binding.principal(&runtime,run).ok()?;
-                Some(json!({"binding":name,"target_id":binding.target.target_id,"principal":principal,"service":binding.service,
+                Some(json!({"binding":name,"target_id":binding.target.target_id,"issuer_id":binding.issuer_id,"principal":principal,"service":binding.service,
                     "endpoint":format!("/gateway/host/{name}"),"authority":"operator-adopted; discover current target revisions before proposing an invocation"}))
             }).collect::<Vec<_>>()}),
             ),

@@ -54,8 +54,11 @@ For cancellation, read the current job revision, then use `cancel BINDING
 --request-id ID --job JOB_ID --revision REVISION`. Inspect the next receipt;
 requesting cancellation is not observed termination.
 
-A lost reply can include `possible_job_id`. Inspect that original job before
-any retry. Changed content with an old mutation ID conflicts; a new ID can
+If the helper reports an uncertain invocation, its error JSON retains
+`possible_job_id`, the original request ID and selected target context. Inspect that possible job
+with `job --job POSSIBLE_JOB_ID` before any retry. A possible ID does not prove
+admission or execution. If the binding changed, ask the original target operator
+to inspect its ledger. Changed content with an old mutation ID conflicts; a new ID can
 repeat a real effect. If grant revocation removes read access, the target
 operator must inspect retained state. Neither revocation nor expiry undoes an
 admitted effect. The helper never automatically retries a failed call.

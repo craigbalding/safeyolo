@@ -53,6 +53,24 @@ fn standalone_preparation_keeps_saved_authority_activation_and_observation_disti
     ]);
     assert_eq!(result["permission_granted"], false);
     let document: Value = serde_json::from_slice(&fs::read(&package).unwrap()).unwrap();
+    assert!(
+        document["semantics"].is_object(),
+        "the packaged Unix workflow must support private authority assessment"
+    );
+    let annotated: safeyolo_host_executor::Package =
+        serde_json::from_value(document.clone()).unwrap();
+    annotated.validate().unwrap();
+    assert!(
+        annotated
+            .operations
+            .values()
+            .all(|operation| operation.semantics.is_some())
+    );
+    assert!(
+        annotated.operations["service-restart"]
+            .effects
+            .contains_key("execute")
+    );
     let actual = safeyolo_host_executor::revision(&document);
     assert_eq!(result["package_sha256"], actual);
     for name in [

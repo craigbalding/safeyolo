@@ -62,7 +62,8 @@ def test_discovery_pins_and_typed_data_cross_preparation_without_authority_field
     assert proposal["action"]["invocation"]["arguments"] == values
     assert proposal["expected"] == {"authority": "observed"}
     assert set(proposal) == {"request_id", "expected", "action"}
-    responses.append({"kind": "job", "receipt": {"job_id": "original", "request_id": "invoke-1"}})
+    responses.extend([{"host_bindings": [{"binding": "case", "target_id": "local-test", "issuer_id": "issuer"}]},
+                      {"kind": "job", "receipt": {"job_id": "original", "request_id": "invoke-1"}}])
     result = client.run(argparse.Namespace(command="invoke", binding="case", request_id="invoke-1", prepared=str(prepared)))
     assert result["receipt"]["job_id"] == "original"
     invoke = json.loads(calls[-1].data)
@@ -78,6 +79,41 @@ def test_lost_invocation_reply_is_uncertain_and_is_not_retried(transport):
     assert len(calls) == 1
     assert caught.value.value["execution_outcome"] == "uncertain"
     assert caught.value.value["request_id"] == "original-id"
+
+
+@pytest.mark.parametrize("gateway_reply", [False, True])
+def test_lost_complete_reply_retains_original_job_context_without_another_effect(tmp_path, transport, gateway_reply):
+    calls, responses = transport
+    prepared = tmp_path / "prepared.json"
+    prepared.write_text(json.dumps({"prepared": {"invocation": {"typed": True}, "revisions": {"authority": "observed"}}}))
+    canonical = {"execution_outcome": "uncertain", "request_id": "original-id", "possible_job_id": "job-gateway",
+                 "target_id": "gateway-target", "host_binding": "case"}
+    failure = (urllib.error.HTTPError(client.BASE_URL, 503, "lost target reply", {}, Reply(json.dumps(canonical).encode()))
+               if gateway_reply else TimeoutError("complete invocation reply lost"))
+    responses.extend([{"host_bindings": [{"binding": "case", "target_id": "local-test", "issuer_id": "issuer"}]}, failure])
+    with pytest.raises(client.RequestFailed) as caught:
+        client.run(argparse.Namespace(command="invoke", binding="case", request_id="original-id", prepared=str(prepared)))
+    expected_job = "job-gateway" if gateway_reply else "job-32a58fdae1911df72559aebfe25b6b88cfe2f3fd049473eca697be20c6b18796"
+    assert caught.value.value["possible_job_id"] == expected_job
+    assert caught.value.value["target_id"] == ("gateway-target" if gateway_reply else "local-test")
+    assert caught.value.value["host_binding"] == "case"
+    assert caught.value.value["execution_outcome"] == "uncertain"
+    assert len(calls) == 2
+    assert calls[0].data is None
+    assert json.loads(calls[-1].data)["action"]["kind"] == "invoke"
+    if gateway_reply:
+        assert caught.value.value == canonical
+
+
+def test_unavailable_binding_prevents_invocation_after_preparation(tmp_path, transport):
+    calls, responses = transport
+    prepared = tmp_path / "prepared.json"
+    prepared.write_text(json.dumps({"prepared": {"invocation": {}, "revisions": {}}}))
+    responses.append({"host_bindings": []})
+    with pytest.raises(client.RequestFailed) as caught:
+        client.run(argparse.Namespace(command="invoke", binding="case", request_id="original-id", prepared=str(prepared)))
+    assert "no invocation was sent" in caught.value.value["next_action"]
+    assert len(calls) == 1 and calls[0].data is None
 
 
 def test_private_refusal_is_preserved_without_escalation_or_resubmit(transport):

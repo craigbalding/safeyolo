@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import urllib.error
@@ -61,16 +62,38 @@ def call(binding: str, request_id: str, action: dict[str, Any], expected: Any = 
     })
 
 
+def invoke(args: argparse.Namespace) -> dict[str, Any]:
+    preparation = json.loads(Path(args.prepared).read_text())["prepared"]
+    bindings = request("/gateway/host")["host_bindings"]
+    binding = next((item for item in bindings if item["binding"] == args.binding), None)
+    if binding is None:
+        raise RequestFailed({"error": "Binding is unavailable to this current run/task", "request_id": args.request_id,
+                             "next_action": "Rediscover the selected binding; no invocation was sent."})
+    # Match the native ledger's canonical tuple before sending the effect.
+    # Retain this original target context if the complete reply is lost.
+    identity = [binding["target_id"], binding["issuer_id"], args.request_id]
+    job_id = "job-" + hashlib.sha256(json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    try:
+        return call(args.binding, args.request_id, {
+            "kind": "invoke", "invocation": preparation["invocation"],
+        }, preparation["revisions"])
+    except RequestFailed as error:
+        if error.value.get("execution_outcome") == "uncertain":
+            # A received gateway diagnostic has its own authoritative job
+            # context. Supply the pre-dispatch context only when absent.
+            error.value.setdefault("possible_job_id", job_id)
+            error.value.setdefault("target_id", binding["target_id"])
+            error.value.setdefault("host_binding", args.binding)
+        raise
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "bindings":
         return request("/gateway/host")
     if args.command == "discover":
         return call(args.binding, args.request_id, {"kind": "discover"})
     if args.command == "invoke":
-        preparation = json.loads(Path(args.prepared).read_text())["prepared"]
-        return call(args.binding, args.request_id, {
-            "kind": "invoke", "invocation": preparation["invocation"],
-        }, preparation["revisions"])
+        return invoke(args)
     discovery = call(args.binding, args.request_id + "-discovery", {"kind": "discover"})["discovery"]
     if args.command == "propose":
         operation = next((op for op in discovery["operations"] if op["operation_id"] == args.operation), None)
