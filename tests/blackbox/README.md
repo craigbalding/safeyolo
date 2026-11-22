@@ -55,6 +55,7 @@ observed write after its permission expires. Both Unix backends must still
 refuse a writable native profile. Fixed-service start/stop is checked against
 the host service manager. The case does not prove native agent writes, run a
 model or renew a grant.
+An assessment with additional uncharacterised authority must remain unresolved.
 
 These are installed Unix component witnesses. They do not complete
 [#1677](https://github.com/craigbalding/safeyolo/issues/1677)'s eight witness
