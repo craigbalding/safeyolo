@@ -100,11 +100,29 @@ impl Fixture {
 }
 
 fn records(directory: &Path, name: &str) -> Vec<Value> {
-    std::fs::read_to_string(directory.join(name))
-        .unwrap_or_default()
-        .lines()
+    // A later connection event can append after a live reader drains the writer.
+    let _lock =
+        crate::host_platform::lock_host_state(&directory.join(format!("{name}.lock"))).unwrap();
+    let text = match std::fs::read_to_string(directory.join(name)) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => panic!("read {name}: {error}"),
+    };
+    text.lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+#[test]
+#[should_panic]
+fn records_reject_malformed_audit_rows() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("audit.jsonl"),
+        "{\"event\":\"complete\"}\n{\"event\":\"unfinished",
+    )
+    .unwrap();
+    records(directory.path(), "audit.jsonl");
 }
 
 async fn exchange(directory: &Path, agent: &str, request: &str) -> Vec<u8> {
