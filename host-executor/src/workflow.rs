@@ -129,8 +129,8 @@ struct Preparation {
     https: Option<crate::https::Listener>,
 }
 
-#[cfg(windows)]
-fn starter(settings: &Starter, identity: ExecutionIdentity) -> Result<Package, Refusal> {
+#[cfg(any(windows, test))]
+fn windows_starter_package(settings: &Starter) -> Result<Package, Refusal> {
     let mut document: Value =
         serde_json::from_str(include_str!("../examples/windows-starter.json")).map_err(failure)?;
     fn replace(value: &mut Value, settings: &Starter) {
@@ -138,8 +138,18 @@ fn starter(settings: &Starter, identity: ExecutionIdentity) -> Result<Package, R
             Value::String(text) if text == "Demo" || text == "demo" => {
                 *text = settings.service.clone()
             }
-            Value::String(text) if text.starts_with("C:\\SafeYolo\\Demo") => {
-                *text = text.replacen("C:\\SafeYolo\\Demo", &settings.root.to_string_lossy(), 1)
+            Value::String(text)
+                if text
+                    .get(.."C:\\SafeYolo\\Demo".len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("C:\\SafeYolo\\Demo")) =>
+            {
+                let root = settings.root.to_string_lossy();
+                let root = if text.starts_with("C:\\SafeYolo\\Demo") {
+                    root.into_owned()
+                } else {
+                    root.to_ascii_lowercase()
+                };
+                *text = format!("{root}{}", &text["C:\\SafeYolo\\Demo".len()..]);
             }
             Value::Array(values) => values.iter_mut().for_each(|v| replace(v, settings)),
             Value::Object(values) => values.values_mut().for_each(|v| replace(v, settings)),
@@ -147,7 +157,12 @@ fn starter(settings: &Starter, identity: ExecutionIdentity) -> Result<Package, R
         }
     }
     replace(&mut document, settings);
-    let mut package: Package = serde_json::from_value(document).map_err(failure)?;
+    serde_json::from_value(document).map_err(failure)
+}
+
+#[cfg(windows)]
+fn starter(settings: &Starter, identity: ExecutionIdentity) -> Result<Package, Refusal> {
+    let mut package = windows_starter_package(settings)?;
     let system =
         std::env::var_os("SystemRoot").ok_or_else(|| failure("SystemRoot is unavailable"))?;
     let system = Path::new(&system).join("System32");
@@ -665,6 +680,79 @@ pub(crate) fn command(args: &[String]) -> Result<bool, Refusal> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_starter_paths_follow_the_selected_root_as_data() {
+        for root in [
+            r"C:\SafeYolo\Case",
+            r"D:\Cases\O'Brien $(whoami); café",
+        ] {
+            let package = windows_starter_package(&Starter {
+                root: root.into(),
+                service: "CaseService".into(),
+                credential: None,
+            })
+            .unwrap();
+            package.validate().unwrap();
+            let config = format!(r"{root}\config.json");
+            for name in ["file-inspect", "file-hash"] {
+                let operation = &package.operations[name];
+                let paths = &operation.arguments["path"];
+                assert_eq!(
+                    paths.options,
+                    vec![json!(config), json!(config.to_ascii_lowercase())]
+                );
+                assert_eq!(
+                    operation.command(&BTreeMap::new()).unwrap().environment["SY_PATH"],
+                    config
+                );
+                for path in &paths.options {
+                    let command = operation
+                        .command(&BTreeMap::from([("path".into(), path.clone())]))
+                        .unwrap();
+                    assert!(command.environment["SY_PATH"].eq_ignore_ascii_case(&config));
+                    assert!(!command.argv.iter().any(|word| word.contains(root)));
+                }
+                assert!(
+                    operation
+                        .arguments(&BTreeMap::from([(
+                            "path".into(),
+                            json!(r"C:\SafeYolo\Demo\config.json")
+                        )]))
+                        .is_err()
+                );
+            }
+            let directory = package.operations["directory-list"]
+                .command(&BTreeMap::new())
+                .unwrap();
+            assert_eq!(directory.environment["SY_PATH"], root);
+            for name in ["write-service-config", "transmit-data"] {
+                let supplied = if name == "write-service-config" {
+                    BTreeMap::from([("content".into(), json!("complete configuration"))])
+                } else {
+                    BTreeMap::new()
+                };
+                let command = package.operations[name].command(&supplied).unwrap();
+                assert_eq!(command.environment["SY_PATH"], config);
+                assert!(command.argv.last().unwrap().contains("$env:SY_PATH"));
+                assert!(!command.argv.iter().any(|word| word.contains(root)));
+            }
+            assert_eq!(
+                package.operations["service-status"]
+                    .command(&BTreeMap::new())
+                    .unwrap()
+                    .environment["SY_SERVICE"],
+                "CaseService"
+            );
+            let document = serde_json::to_value(&package).unwrap();
+            assert_eq!(
+                document["semantics"]["alternatives"]["file-metadata-before-content"]["steps"][0]["arguments"]
+                    ["path"],
+                config
+            );
+        }
+    }
+
     #[test]
     fn bounded_observations_distinguish_complete_partial_and_missing_evidence() {
         let root = std::env::temp_dir().join(format!("workflow-{}-{}", std::process::id(), now()));

