@@ -10,10 +10,10 @@ interfaces; do not try to bypass or weaken it.
 
 ## Keep task files durable
 
-Keep authored code and retained task data under the assigned workspace folder.
-For an engagement, use its engagement folder, including working scripts and data;
-do not substitute agent home. `/tmp` is ephemeral and may be RAM-backed, so it is
-not a recovery location for scripts, downloads, evidence or build artifacts.
+Keep authored code and retained task data under the assigned workspace folder,
+including working scripts and their inputs and outputs. `/tmp` is ephemeral and
+may be RAM-backed, so it is not a recovery location for scripts, downloads,
+evidence or build artifacts.
 Persistent home remains appropriate for installed tools and runtime caches. See
 [what persists](references/guest-tools.md#know-what-persists) when choosing paths.
 
