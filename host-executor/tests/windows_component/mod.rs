@@ -794,7 +794,7 @@ fn starters(root: PathBuf, service: bool, selected: Option<&str>) {
             };
             let response = fixture.call(Action::Propose { invocation });
             assert!(
-                matches!(&response, Response::Refused { refusal } if matches!(refusal.code, RefusalCode::Arguments | RefusalCode::Scope)),
+                matches!(&response, Response::Refused { refusal } if matches!(refusal.code, RefusalCode::Arguments | RefusalCode::Authority)),
                 "{name}/{field}: {response:?}"
             );
             println!(
