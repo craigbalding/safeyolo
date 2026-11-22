@@ -49,7 +49,7 @@ impl Fixture {
     fn open(&self) -> Ledger {
         Ledger::open(&self.root, &self.target.target_id, self.limits.clone()).unwrap()
     }
-    fn signed(&self, action: Action, id: &str, rationale: usize) -> Vec<u8> {
+    fn signed(&self, action: Action, id: &str, rationale: usize, expires_at: u64) -> Vec<u8> {
         serde_json::to_vec(&SignedRequest::sign(
             Request {
                 version: VERSION.into(),
@@ -61,7 +61,7 @@ impl Fixture {
                 principal: self.target.issuers["issuer"].authority.grants["grant"]
                     .principal
                     .clone(),
-                expires_at: now() + 300,
+                expires_at,
                 expected: Some(
                     self.target
                         .request_revisions("issuer", "grant", &action)
@@ -90,6 +90,7 @@ impl Fixture {
             },
             "proposal",
             0,
+            now() + 300,
         );
         let Response::Proposal { prepared } = ledger
             .handle(&self.target, Verb::Propose.path(), &proposal, now())
@@ -104,6 +105,7 @@ impl Fixture {
             },
             "invoke",
             rationale,
+            prepared.valid_until,
         )
     }
     fn fill_database(&self) {
@@ -191,6 +193,7 @@ fn admitted_work_finishes_and_replays_when_every_database_page_is_used() {
             },
             &"c".repeat(70000),
             0,
+            now() + 300,
         );
         let cancellation = ledger
             .handle(&f.target, Verb::Cancel.path(), &cancel, now())
@@ -244,6 +247,7 @@ fn admitted_work_finishes_and_replays_when_every_database_page_is_used() {
             },
             "output",
             0,
+            now() + 300,
         );
         let Response::Output { retained_bytes, .. } = ledger
             .handle(&f.target, Verb::Output.path(), &output, now())
