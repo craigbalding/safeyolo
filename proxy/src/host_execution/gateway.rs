@@ -542,18 +542,20 @@ async fn dispatch(
         Ok(())
     })
     .await;
-    let job_id = format!(
-        "job-{}",
-        revision(&(
-            &binding.target.target_id,
-            &binding.issuer_id,
-            &input.request_id
-        ))
-    );
+    let job_id = input.action.job_id().map(str::to_owned).unwrap_or_else(|| {
+        format!(
+            "job-{}",
+            revision(&(
+                &binding.target.target_id,
+                &binding.issuer_id,
+                &input.request_id
+            ))
+        )
+    });
     match response {
         Ok(mut response) => {
             if validate_response(&binding, &request, &response).is_err() {
-                return Ok(unavailable_result(
+                let mut reply = unavailable_result(
                     &runtime,
                     name,
                     &binding,
@@ -561,7 +563,13 @@ async fn dispatch(
                     &job_id,
                     "HOST_RESPONSE_MISMATCH",
                 )
-                .await);
+                .await;
+                if let Response::Discovery { discovery } = &response {
+                    reply.value["expected_package_sha256"] =
+                        json!(revision(&binding.target.package));
+                    reply.value["observed_package_sha256"] = json!(discovery.package_sha256);
+                }
+                return Ok(reply);
             }
             if let Response::Discovery { discovery } = &mut response {
                 let grant = binding.grant()?;
@@ -626,11 +634,31 @@ async fn unavailable_result(
     job_id: &str,
     code: &str,
 ) -> Reply {
+    let uncertain = matches!(input.action, Action::Invoke { .. } | Action::Cancel { .. });
+    let outcome = if uncertain {
+        "uncertain"
+    } else {
+        "unavailable"
+    };
+    let next_action = if uncertain {
+        "Inspect the original job through this binding before retrying. Do not change the operation ID or replay a mutation whose effect is unknown."
+    } else if code == "HOST_RESPONSE_MISMATCH" && matches!(input.action, Action::Discover) {
+        "Compare expected_package_sha256 and observed_package_sha256 with the target and gateway owners; adopt a compatible package snapshot, then rediscover. No invocation was retried."
+    } else {
+        "Inspect the selected target connection and active revisions, then repeat this read or proposal when ready. No invocation was sent by this request."
+    };
+    let mut value = json!({"error":code,"execution_outcome":outcome,"request_id":input.request_id,
+        "host_binding":name,"target_id":binding.target.target_id,"next_action":next_action});
+    if uncertain {
+        value["possible_job_id"] = json!(job_id);
+    } else if let Some(job_id) = input.action.job_id() {
+        value["job_id"] = json!(job_id);
+    }
     let mut event = crate::audit::Event::new(
         "gateway.host_result_unavailable",
         crate::audit::Kind::Gateway,
         crate::audit::Severity::High,
-        "Host target reply unavailable or mismatched; execution outcome is uncertain",
+        "Host target reply unavailable or mismatched",
     );
     event.agent = Some(
         binding
@@ -642,14 +670,11 @@ async fn unavailable_result(
             .clone(),
     );
     event.request_id = Some(input.request_id.clone());
-    event.details=json!({"host_binding":name,"target_id":binding.target.target_id,"possible_job_id":job_id,"reason":code,"execution_outcome":"uncertain"}).into();
+    event.details = json!({"host_binding":name,"target_id":binding.target.target_id,
+        "possible_job_id":uncertain.then_some(job_id),"reason":code,"execution_outcome":outcome})
+    .into();
     let _ = runtime.audit.emit_confirmed(event).await;
-    Reply {
-        status: 503,
-        value: json!({"error":code,"execution_outcome":"uncertain","request_id":input.request_id,"host_binding":name,
-        "target_id":binding.target.target_id,"possible_job_id":job_id,
-        "next_action":"Inspect the original job through this binding before retrying. Do not change the operation ID or replay a mutation whose effect is unknown."}),
-    }
+    Reply { status: 503, value }
 }
 
 /// Full operator-adopted authority, rather than an example payload. The

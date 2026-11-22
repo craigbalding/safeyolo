@@ -402,6 +402,12 @@ only the operations and scope intended for the current task.
 | Changed TLS certificate/key, listener or runtime | Stop at a safe boundary, preserve state and restart the selected executor. Adopt the new target certificate at the issuer. Saved TLS paths do not prove the running listener changed. |
 | Upgrade failure | Keep the previous verified binary, config and ledger; inspect the original process/listener and jobs before restarting or restoring. Never launch a second executor against the same state. |
 
+A discovery `HOST_RESPONSE_MISMATCH` reports `expected_package_sha256` and
+`observed_package_sha256` for comparison by the gateway and target owners.
+Its `execution_outcome: unavailable` describes the failed read; discovery
+does not dispatch an invocation. An uncertain invocation or cancellation
+instead retains the original job to inspect before another effect.
+
 `status --config ABSOLUTE_JSON --state ABSOLUTE_DIRECTORY` reports saved target
 identity, desired package/catalogue and native validation. It explicitly reports
 that running-target state was not observed. Use authenticated discovery for the

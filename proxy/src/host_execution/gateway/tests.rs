@@ -400,6 +400,58 @@ impl Fixture {
 
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn package_mismatch_discovery_reports_revisions_without_a_possible_job() {
+    let mut f = Fixture::new("").await;
+    let original = serde_json::to_string(&serde_json::to_string(&f.binding).unwrap()).unwrap();
+    let mut stale = f.binding.clone();
+    stale.target.package.version += 1;
+    let replacement = serde_json::to_string(&serde_json::to_string(&stale).unwrap()).unwrap();
+    f.install(f.source.replace(&original, &replacement));
+    let reply = f.call(f.input("stale-discovery", Action::Discover)).await;
+    assert_eq!(reply.status, 503, "{}", reply.value);
+    assert_eq!(reply.value["error"], "HOST_RESPONSE_MISMATCH");
+    assert_eq!(reply.value["execution_outcome"], "unavailable");
+    assert!(reply.value.get("possible_job_id").is_none());
+    assert_eq!(
+        reply.value["expected_package_sha256"],
+        revision(&stale.target.package)
+    );
+    assert_eq!(
+        reply.value["observed_package_sha256"],
+        revision(&f.binding.target.package)
+    );
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    f.stop().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lost_cancel_reply_retains_the_original_job_for_inspection() {
+    let f = Fixture::new("").await;
+    let admitted = f.call(f.prepared("cancel-subject", None).await).await;
+    let job = admitted.value["receipt"]["job_id"].as_str().unwrap();
+    f.lose_reply.store(true, Ordering::SeqCst);
+    let lost = f
+        .call(f.input(
+            "lost-cancel",
+            Action::Cancel {
+                job_id: job.into(),
+                expected_revision: admitted.value["receipt"]["revision"].as_u64().unwrap(),
+            },
+        ))
+        .await;
+    assert_eq!(lost.value["execution_outcome"], "uncertain");
+    assert_eq!(lost.value["possible_job_id"], job);
+    let inspected = f
+        .call(f.input("inspect-cancel", Action::Job { job_id: job.into() }))
+        .await;
+    assert_eq!(inspected.value["receipt"]["cancellation_requested"], true);
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 1);
+    f.stop().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn adaptive_operations_and_lost_reply_use_real_target_receipts_without_duplicate_dispatch() {
     let f = Fixture::new("").await;
     let discovery = f.call(f.input("discover", Action::Discover)).await;
