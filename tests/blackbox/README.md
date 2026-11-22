@@ -23,6 +23,8 @@ on macOS. Linux also needs the delegated cgroup v2 subtree, pinned bubblewrap
 and native account setup described in the
 [host-operation guide](../../docs/host-operations.md#acquire-and-prepare-the-target).
 This runner does not provision or broaden those host capabilities.
+The update case edits its own copied probe. On macOS it uses the system
+`codesign` tool to give the changed fixture a valid ad-hoc signature.
 
 Before running, set `SAFEYOLO_HOST_EXECUTOR_PROBE` to the prebuilt probe and
 `SAFEYOLO_HOST_EXECUTOR_SERVICE` to that service selector. Set
@@ -40,7 +42,7 @@ required account/containment launcher when invoking this command.
 bash tests/blackbox/run-controls.sh native-authority --suite host-execution --test-executable /owned/unix_native --executor /owned/safeyolo-host-executor --output /owned/host-operation-results
 ```
 
-Success requires all nine selected cases to execute and pass. `result.json`
+Success requires all ten selected cases to execute and pass. `result.json`
 retains the host, controller, installed executable/version, fixture/probe
 digests, exact cases and exits. Each case retains its log and the existing
 procedure receipt. Missing inputs, an ignored/missing case, a failure or a
@@ -56,6 +58,13 @@ refuse a writable native profile. Fixed-service start/stop is checked against
 the host service manager. The case does not prove native agent writes, run a
 model or renew a grant.
 An assessment with additional uncharacterised authority must remain unresolved.
+
+The update case observes useful execution before and after equivalent,
+narrower and explicitly trusted implementation updates. Changed recipes,
+defaults, aliases, resource selectors and unavailable enforcement must await
+review without changing the active bytes, grants or job count. Restart must
+retain earlier receipts without replay. These are executor catalogue
+observations; gateway approval counts remain a separate workflow witness.
 
 These are installed Unix component witnesses. They do not complete
 [#1677](https://github.com/craigbalding/safeyolo/issues/1677)'s eight witness

@@ -760,6 +760,279 @@ fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
 }
 
 #[test]
+#[ignore = "requires the prepared native Unix fixture"]
+fn installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authority() {
+    use ring::signature::KeyPair;
+    let mut f = fixture(16, 64 * 1024);
+    let path = f.root.join("target.json");
+    let observed = f.root.join("observed.json");
+    let program = f.root.join("update-probe");
+    fs::copy(f.root.join("probe"), &program).unwrap();
+    let mut config: Configuration = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let op = config.target.package.operations.get_mut("observe").unwrap();
+    op.execution.executable = program.to_str().unwrap().into();
+    let rule = UpdateRule {
+        ceiling: op.clone(),
+        allow_narrower: true,
+        allow_implementation_updates: true,
+    };
+    for scope in [
+        config.target.ceiling.get_mut("observe").unwrap(),
+        config
+            .target
+            .issuers
+            .get_mut("issuer")
+            .unwrap()
+            .authority
+            .grants
+            .get_mut("grant")
+            .unwrap()
+            .operations
+            .get_mut("observe")
+            .unwrap(),
+    ] {
+        scope.implementation_sha256 = op.implementation_sha256();
+        scope.updates = Some(rule.clone());
+    }
+    let sign = |package: &Package| {
+        SignedCatalogue::sign(
+            CatalogueRevision {
+                publisher: "publisher".into(),
+                announcement_revision: package.version,
+                package: package.clone(),
+                observed_at: now() - 1,
+                expires_at: now() + 600,
+                withdrawn: false,
+                previous: None,
+            },
+            &f.key,
+        )
+    };
+    let active = sign(&config.target.package);
+    fs::write(&observed, serde_json::to_vec(&active).unwrap()).unwrap();
+    config.catalogue = Some(CatalogueAdoption {
+        policy: CataloguePolicy {
+            publisher: "publisher".into(),
+            public_key: STANDARD.encode(f.key.public_key().as_ref()),
+            package_name: config.target.package.name.clone(),
+            operations: BTreeMap::from([("observe".into(), rule)]),
+            families: Vec::new(),
+            on_withdraw: Withdrawal::Retain,
+        },
+        active: active.clone(),
+        observed: active,
+        previous: None,
+        pin: None,
+        observed_file: Some(ObservedCatalogueFile {
+            path: observed.clone(),
+            max_bytes: 1024 * 1024,
+        }),
+    });
+    let adopted_authority = revision(&(&config.target.ceiling, &config.target.issuers));
+    let adopted_policy = revision(&config.catalogue.as_ref().unwrap().policy);
+    fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    f.target = config.target.clone();
+    let announce = |f: &mut Fixture, package: &Package| {
+        let candidate = SignedCatalogue::sign(
+            CatalogueRevision {
+                publisher: "publisher".into(),
+                announcement_revision: package.version,
+                package: package.clone(),
+                observed_at: now() - 1,
+                expires_at: now() + 600,
+                withdrawn: false,
+                previous: None,
+            },
+            &f.key,
+        );
+        fs::write(&observed, serde_json::to_vec(&candidate).unwrap()).unwrap();
+        let Response::Discovery { discovery } = f.call(Action::Discover) else {
+            panic!("update discovery refused")
+        };
+        let saved: Configuration = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            revision(&(&saved.target.ceiling, &saved.target.issuers)),
+            adopted_authority,
+            "catalogue updates must not create or renew invocation authority"
+        );
+        assert_eq!(
+            revision(&saved.catalogue.as_ref().unwrap().policy),
+            adopted_policy
+        );
+        f.target = saved.target;
+        discovery.catalogue.unwrap()
+    };
+    let observe = |f: &mut Fixture, marker: &str| {
+        let (receipt, _) = f.invoke("observe");
+        let result = f.terminal(&receipt.job_id);
+        assert_eq!(result.state, JobState::Completed, "{result:?}");
+        let Response::Output {
+            data_base64, eof, ..
+        } = f.call(Action::Output {
+            job_id: receipt.job_id.clone(),
+            offset: 0,
+            max_bytes: 4096,
+        })
+        else {
+            panic!("updated implementation output")
+        };
+        assert!(eof);
+        let output = String::from_utf8(STANDARD.decode(data_base64).unwrap()).unwrap();
+        assert!(output.contains(marker), "{output}");
+        assert!(result.native.as_ref().unwrap().processes_stopped);
+        f.assert_no_side_effects();
+        receipt.job_id
+    };
+    let original_job = observe(&mut f, "safeyolo-native-probe-revision=1");
+    let mut package = f.target.package.clone();
+    package.version += 1;
+    package.source.version = "cosmetic publisher metadata".into();
+    let op = package.operations.get_mut("observe").unwrap();
+    op.description = "Current readable diagnostic description".into();
+    op.execution.filesystem.read.reverse();
+    let status = announce(&mut f, &package);
+    assert_eq!(status.state, "active");
+    assert_eq!(status.changes["observe"].comparison, Comparison::Equivalent);
+    observe(&mut f, "safeyolo-native-probe-revision=1");
+    eprintln!(
+        "installed update: canonical-equivalent edit active under unchanged authority/policy"
+    );
+
+    package.version += 1;
+    package
+        .operations
+        .get_mut("observe")
+        .unwrap()
+        .execution
+        .resources
+        .timeout_seconds = 4;
+    let status = announce(&mut f, &package);
+    assert_eq!(status.state, "active");
+    assert_eq!(status.changes["observe"].comparison, Comparison::Narrower);
+    observe(&mut f, "safeyolo-native-probe-revision=1");
+    eprintln!("installed update: authorised narrower timeout active and useful read completed");
+
+    // Change a diagnostic marker in this test-owned executable. On macOS the
+    // altered fixture needs a new ad-hoc signature before it is a valid program.
+    let before = fs::read(&program).unwrap();
+    let needle = b"safeyolo-native-probe-revision=1";
+    let positions: Vec<_> = before
+        .windows(needle.len())
+        .enumerate()
+        .filter_map(|(index, bytes)| (bytes == needle).then_some(index))
+        .collect();
+    assert_eq!(
+        positions.len(),
+        1,
+        "fixture must contain one revision marker"
+    );
+    let mut changed = before;
+    changed[positions[0] + needle.len() - 1] = b'2';
+    fs::write(&program, changed).unwrap();
+    #[cfg(target_os = "macos")]
+    assert!(
+        Command::new("/usr/bin/codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&program)
+            .status()
+            .unwrap()
+            .success()
+    );
+    package.version += 1;
+    let old = package.operations["observe"].clone();
+    package
+        .operations
+        .get_mut("observe")
+        .unwrap()
+        .execution
+        .executable_sha256 = hash(&program);
+    assert_ne!(
+        old.implementation_sha256(),
+        package.operations["observe"].implementation_sha256()
+    );
+    assert_eq!(
+        old.authority_sha256(),
+        package.operations["observe"].authority_sha256()
+    );
+    let status = announce(&mut f, &package);
+    assert_eq!(status.state, "active");
+    assert_eq!(status.changes["observe"].comparison, Comparison::Unknown);
+    let updated_job = observe(&mut f, "safeyolo-native-probe-revision=2");
+    assert_ne!(original_job, updated_job);
+    eprintln!("installed update: trusted new executable bytes active and observed revision=2");
+
+    let active = package.clone();
+    for label in ["recipe", "default", "alias", "selector", "enforcement"] {
+        let mut candidate = active.clone();
+        package.version += 1;
+        candidate.version = package.version;
+        let op = candidate.operations.get_mut("observe").unwrap();
+        match label {
+            "recipe" => {
+                op.execution.argv[0] = Word::Literal {
+                    value: "flood".into(),
+                }
+            }
+            "default" => {
+                op.arguments.insert(
+                    "new-default".into(),
+                    Argument {
+                        kind: ArgumentType::Integer,
+                        required: false,
+                        default: Some(1.into()),
+                        options: Vec::new(),
+                    },
+                );
+            }
+            "alias" => {
+                let op = op.clone();
+                candidate.operations.insert("observe-alias".into(), op);
+            }
+            "selector" => {
+                op.resources.insert("other-resource".into());
+            }
+            "enforcement" => op
+                .enforcement
+                .unresolved
+                .push("required containment unavailable".into()),
+            _ => unreachable!(),
+        }
+        let jobs = retained_job_count(&f);
+        let status = announce(&mut f, &candidate);
+        assert_eq!(status.state, "awaiting_review", "{label}: {status:?}");
+        assert_eq!(status.active, revision(&active), "{label}");
+        assert_eq!(revision(&f.target.package), revision(&active));
+        assert_eq!(retained_job_count(&f), jobs, "{label} must not dispatch");
+        if label == "alias" {
+            assert!(status.discovered.contains_key("observe-alias"));
+            assert!(!f.target.ceiling.contains_key("observe-alias"));
+            assert!(
+                !f.target.issuers["issuer"].authority.grants["grant"]
+                    .operations
+                    .contains_key("observe-alias")
+            );
+        }
+        f.assert_no_side_effects();
+        eprintln!("installed update: {label} awaits review; active bytes/authority/jobs unchanged");
+    }
+    // A later legitimate announcement restores the usable active selection;
+    // neither restart nor rejected updates recreate previous jobs.
+    package.operations = active.operations;
+    package.version += 1;
+    assert_eq!(announce(&mut f, &package).state, "active");
+    let jobs = retained_job_count(&f);
+    f.restart();
+    assert_eq!(f.job(&original_job).state, JobState::Completed);
+    assert_eq!(f.job(&updated_job).state, JobState::Completed);
+    assert_eq!(retained_job_count(&f), jobs);
+    observe(&mut f, "safeyolo-native-probe-revision=2");
+    assert_eq!(retained_job_count(&f), 5);
+    eprintln!(
+        "independent ledger: five legitimate jobs only; restart retains both implementation receipts without replay"
+    );
+}
+
+#[test]
 #[ignore = "requires the same installed native Unix fixture as the lifecycle test"]
 fn installed_check_serve_and_reload_share_ledger_validation() {
     let mut f = fixture(16, 1024 * 1024);

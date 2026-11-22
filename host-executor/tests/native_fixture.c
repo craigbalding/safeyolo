@@ -31,6 +31,7 @@ int main(int argc, char **argv) {
         return fclose(output) || !written ? 26 : 0;
     }
     if (!strcmp(argv[1], "observe")) {
+        puts("safeyolo-native-probe-revision=1");
         gid_t groups[128];
         int count = getgroups(128, groups);
         if (count < 0) return 9;

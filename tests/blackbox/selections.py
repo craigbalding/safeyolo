@@ -160,6 +160,7 @@ HOST_EXECUTION_AUTHORITY = {
         "installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch",
         "installed_api_authentication_and_cross_principal_reads_cannot_change_authority",
         "installed_adaptive_investigation_and_retained_configuration_effects",
+        "installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authority",
     ),
 }
 
