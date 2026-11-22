@@ -1744,6 +1744,7 @@ fn stale_preparation_refreshes_through_real_discovery_proposal_and_ledger_withou
         pin: None,
         observed_file: None,
     };
+    target.catalogue = Some(adoption.plan(NOW).unwrap().status);
     let root = ledger_root();
     let mut ledger = Ledger::open(root.path(), &target.target_id, ledger_limits()).unwrap();
     let original = request_for(
