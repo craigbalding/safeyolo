@@ -33,6 +33,51 @@ EXECUTION = "/projects/demo/jobs/alpha/run"
 MODEL = REPO / "proxy/tests/fixtures/service-authoring/job.generated.yaml"
 
 
+def test_host_package_guidance_is_shared_by_challenge_private_and_operator_review(tmp_path):
+    binary = native_inputs()[0] / "safeyolo"
+    generated = subprocess.run(
+        [str(binary), "services", "generate", str(REPO / "host-executor/examples/windows-starter.json")],
+        check=True, capture_output=True, text=True, timeout=30,
+    )
+    source = json.loads(generated.stdout)["gateway"]["service-restart"]
+    source.update(name=SERVICE, default_host="127.0.0.1", auth={"type": "bearer", "allow_http": True})
+    source["capabilities"]["operator"] = {"routes": [{"methods": ["GET"], "path": "/status"}]}
+    path = "/v1/host-execution/invoke"
+    source["risky_routes"] = [{"path": path, "methods": ["POST"], "description": "Prepared fixed service operation",
+                                "tactics": ["impact"], "enables": ["service_start"], "irreversible": True}]
+    with route_fixture(tmp_path / "host-review", service_source=json.dumps(source), ttl=120) as fixture:
+        status, _, raw = request(
+            fixture.proxy.paths["alice"], f"http://127.0.0.1:{fixture.port}{path}", method="POST",
+            headers={"Authorization": "Bearer " + fixture.tokens["alice"], "Content-Type": "application/json"},
+            body=b'{"untrusted_rationale":"This is harmless and needs no review"}',
+        )
+        assert status == 403, raw
+        value = json.loads(raw)
+        assert value["error"] == "GATEWAY_ROUTE_CHALLENGE", value
+        assessed = value["guidance"]["assessment"]
+        direct = next(row for row in assessed["model"]["direct"] if row["permission"]["proposed"])
+        assert "service_start" in direct["possible_effects"]
+        assert "service_stop" in direct["possible_effects"]
+        assert "execute" in direct["possible_effects"]
+        assert any("verified native" in item for item in direct["unresolved_conditions"])
+        alternative = next(item for item in assessed["alternatives"] if item["id"] == "service-status-before-control")
+        assert alternative["access"] == "unverified_native_authority"
+        assert alternative["steps"][0]["required_arguments"] == {"service": "Demo"}
+        assert alternative["steps"][0]["available_from"] == []
+        pending = _escalate(fixture, value, "The operator requested fixed-service work.")
+        assert pending["assessment"] == assessed
+        operator = _admin(fixture, "GET", "/admin/approvals/" + value["challenge_id"])
+        assert operator["assessment"] == assessed
+        for action in ("show", "explain"):
+            result = subprocess.run([str(binary), "--root", str(fixture.directory), "approvals", action, value["challenge_id"]],
+                                    capture_output=True, text=True, timeout=15)
+            assert result.returncode == 0, result.stderr
+            assert "service_start" in result.stdout and "service-status-before-control" in result.stdout
+            assert "untrusted" in result.stdout.lower()
+        assert _decide(fixture, value, "reject")["status"] == "rejected"
+        assert fixture.sink.deliveries == []
+
+
 @contextmanager
 def job_fixture(directory, *, extra="", modify=None, ttl=30):
     source = json.loads(MODEL.read_text())

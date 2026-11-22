@@ -1,4 +1,5 @@
 //! Gateway projections validate through the existing service-definition owner.
+pub mod semantics;
 use crate::services::ServiceDefinition;
 pub use safeyolo_host_executor::*;
 use schemars::JsonSchema;
@@ -13,6 +14,7 @@ pub struct Projections {
     pub package_version: u64,
     pub target: BTreeMap<String, Operation>,
     pub gateway: BTreeMap<String, Value>,
+    pub assessment: Option<Value>,
 }
 
 pub trait PackageGateway {
@@ -30,6 +32,7 @@ impl PackageGateway for Package {
             package_sha256: revision(self),
             package_version: self.version,
             target: self.operations.clone(),
+            assessment: semantics::service(self)?.map(|service| service.raw),
             gateway: self
                 .operations
                 .iter()
@@ -79,8 +82,8 @@ impl PackageGateway for Package {
         for value in named_effects.as_object_mut().expect("effects").values_mut() {
             value["evidence"] = json!(["package"]);
         }
-        json!({"schema_version":1,"name":format!("{}:{id}",self.name),"default_host":"",
-        "host_execution_source":{"package_sha256":revision(self),"package_version":self.version,"operation_id":id,"implementation_sha256":op.implementation_sha256()},
+        let mut generated = json!({"schema_version":1,"name":format!("{}:{id}",self.name),"default_host":"",
+        "host_execution_source":{"package_sha256":revision(self),"package_version":self.version,"operation_id":id,"implementation_sha256":op.implementation_sha256(),"semantic_revisions":self.operation_revisions(id)},
         "capabilities":{"invoke":{"routes":[{"methods":["POST"],"path":Verb::Invoke.path()}],"contract":{
             "template":format!("host-execution:{}:{id}",revision(self)),"bindings":bindings,"enforcement":{"request_shape":"enforced"},
             "operations":[{"name":"invoke","request":{"method":"POST","path":Verb::Invoke.path(),"query":{"deny_unknown":true},"body":{"allow":{"request":request,"key_id":string,"signature":string},"deny_unknown":true}}}]
@@ -92,7 +95,29 @@ impl PackageGateway for Package {
                 "effects":uses,"execution_authority":"Authenticated issuer grant intersected with target adoption and local ceiling; native executor dependencies remain explicit.","evidence":["package"],"gaps":op.enforcement.unresolved}},
             "enforcement":{},"rules":{},"alternatives":{},"regressions":[],
             "gaps":["Gateway route membership grants no target invocation. Native effect analysis does not prove nested signed selectors or arbitrary executable behavior."]
-        }})
+        }});
+        if self.semantics.is_some() {
+            // Native argument/target enforcement is not a flat HTTP binding.
+            // Preserve the reviewed inventory, but never infer its identity
+            // from an example signed request at this route-only boundary.
+            if let Ok(Some(service)) = semantics::service(self) {
+                let mut model = service.raw["effect_model"].clone();
+                model["operations"][id]["path"] = json!(Verb::Invoke.path());
+                for operation in model["operations"].as_object_mut().unwrap().values_mut() {
+                    for identity in operation["resources"].as_object_mut().unwrap().values_mut() {
+                        for value in identity.as_object_mut().unwrap().values_mut() {
+                            if value["kind"] == "argument" {
+                                *value = json!({"kind":"unresolved","reason":"This route-only assessment has no verified native target/argument authority. Use the adopted native authority assessment; gateway invocation integration retains its own owner."});
+                            }
+                        }
+                    }
+                }
+                generated["effect_model"] = model;
+                generated["host_operation_guidance"] =
+                    semantics::route_guidance(self).expect("validated host guidance");
+            }
+        }
+        generated
     }
 }
 

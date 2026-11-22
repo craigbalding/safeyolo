@@ -121,6 +121,8 @@ fn operation(
     root: &Path,
 ) -> Operation {
     Operation {
+        description: String::new(),
+        semantics: None,
         resources: ["fixture".into()].into(), arguments: BTreeMap::new(),
         execution: Execution {
             broader: [BroaderBound::Filesystem, BroaderBound::Registry, BroaderBound::NetworkIpc, BroaderBound::DelegatedServices].into(),

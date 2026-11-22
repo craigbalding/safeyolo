@@ -183,6 +183,7 @@ impl std::error::Error for Refusal {}
 pub struct OperationDiscovery {
     pub operation_id: String,
     pub implementation_sha256: String,
+    pub semantic_revisions: HostOperationRevisions,
     pub definition: Operation,
     /// Membership is not authority. Concrete arguments/resources still need proposal.
     pub has_invocation_scope: bool,

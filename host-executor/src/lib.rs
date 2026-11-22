@@ -2,6 +2,7 @@
 //! containment remain with their owners; validation alone never executes code.
 
 mod authority;
+pub mod effects;
 mod ledger;
 #[cfg(target_os = "linux")]
 pub mod linux;
@@ -10,6 +11,7 @@ pub mod macos;
 mod native;
 mod package;
 mod protocol;
+mod semantics;
 pub mod server;
 #[cfg(unix)]
 mod unix_services;
@@ -55,6 +57,7 @@ pub use ledger::*;
 pub use native::{NativeRuntime, now};
 pub use package::*;
 pub use protocol::*;
+pub use semantics::*;
 
 use serde::Serialize;
 use serde_json::Value;

@@ -492,6 +492,7 @@ mod tests {
                 issuers: Default::default(),
                 ceiling: Default::default(),
                 package: Package {
+                    semantics: None,
                     format: VERSION.into(),
                     name: "fixture".into(),
                     version: 1,

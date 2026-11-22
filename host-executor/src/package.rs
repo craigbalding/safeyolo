@@ -14,11 +14,18 @@ pub struct Package {
     pub version: u64,
     pub source: Source,
     pub operations: BTreeMap<String, Operation>,
+    /// Absent means uncharacterised host semantics, not absence of effects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantics: Option<HostSemantics>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Operation {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantics: Option<HostOperationSemantics>,
     pub resources: BTreeSet<String>,
     pub arguments: BTreeMap<String, Argument>,
     pub execution: Execution,
@@ -57,7 +64,7 @@ pub enum ArgumentType {
 }
 
 impl Argument {
-    fn accepts(&self, value: &Value) -> bool {
+    pub fn accepts(&self, value: &Value) -> bool {
         match self.kind {
             ArgumentType::String => value.is_string(),
             ArgumentType::Integer => value.as_i64().is_some() || value.as_u64().is_some(),
@@ -349,6 +356,7 @@ impl Package {
                 }
             }
         }
+        self.validate_semantics()?;
         Ok(())
     }
 }

@@ -10,8 +10,43 @@ const METHODS: &[&str] = &[
     "get", "post", "put", "patch", "delete", "head", "options", "trace",
 ];
 
+pub fn check(source: &str, generated: Option<&str>) -> Result<String, Error> {
+    use crate::host_execution::{Package, PackageGateway, Projections, VERSION};
+    let value = crate::policy::parse_yaml(source)?;
+    if value["format"] == VERSION {
+        let package: Package = serde_json::from_value(value)?;
+        if let Some(generated) = generated {
+            let projections: Projections = serde_json::from_str(generated)?;
+            package.verify_projections(&projections)?;
+            return Ok(format!(
+                "Host projections match package {}. No adoption or access changed.",
+                package.name
+            ));
+        }
+        package.projections()?;
+        return Ok(format!(
+            "Host package is valid: {} ({} operations). Validation grants no access and does not verify executable behavior.",
+            package.name,
+            package.operations.len()
+        ));
+    }
+    if generated.is_some() {
+        return Err("Projection correspondence needs a host package source".into());
+    }
+    let definition = ServiceDefinition::from_value(value)?;
+    Ok(format!(
+        "Service definition is valid: {}. Validation does not establish exhaustive semantic correctness or grant access.",
+        definition.name
+    ))
+}
+
 pub fn generate(source: &str) -> Result<Value, Error> {
     let spec = crate::policy::parse_yaml(source)?;
+    if spec["format"] == crate::host_execution::VERSION {
+        use crate::host_execution::PackageGateway;
+        let package: crate::host_execution::Package = serde_json::from_value(spec)?;
+        return Ok(serde_json::to_value(package.projections()?)?);
+    }
     if !spec["openapi"]
         .as_str()
         .is_some_and(|version| version.starts_with("3.0.") || version.starts_with("3.1."))

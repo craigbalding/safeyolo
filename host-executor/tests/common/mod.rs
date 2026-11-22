@@ -9,6 +9,7 @@ pub fn target(
     key: &Ed25519KeyPair,
 ) -> Target {
     let package = Package {
+        semantics: None,
         format: VERSION.into(),
         name: "native-fixture".into(),
         version: 1,

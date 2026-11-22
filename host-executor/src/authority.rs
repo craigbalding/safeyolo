@@ -330,6 +330,10 @@ impl Target {
                 .map(|(id, op)| OperationDiscovery {
                     operation_id: id.clone(),
                     implementation_sha256: op.implementation_sha256(),
+                    semantic_revisions: self
+                        .package
+                        .operation_revisions(id)
+                        .expect("adopted operation"),
                     definition: op.clone(),
                     has_invocation_scope: authorized.grant.verbs.contains(&Verb::Invoke)
                         && authorized.grant.operations.contains_key(id)
