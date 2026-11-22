@@ -754,3 +754,52 @@ fn family_call_budget_counts_distinct_operation_selectors_together() {
         RefusalCode::Budget
     );
 }
+
+#[test]
+fn dependency_byte_ceilings_compare_as_bounds_without_granting_update_trust() {
+    let (target, _, _) = fixture();
+    let mut before = target.package.operations["restart"].clone();
+    before.execution.dependencies.insert(
+        "/etc/adopted-config".into(),
+        Dependency {
+            sha256: "a".repeat(64),
+            bytes: 16,
+        },
+    );
+    let mut after = before.clone();
+    after
+        .execution
+        .dependencies
+        .get_mut("/etc/adopted-config")
+        .unwrap()
+        .bytes = 8;
+    assert_eq!(
+        compare_operations(&before, &after).comparison,
+        Comparison::Narrower
+    );
+    let rule = UpdateRule {
+        ceiling: before.clone(),
+        allow_narrower: true,
+        allow_implementation_updates: false,
+    };
+    assert!(rule.allows(&after));
+    after
+        .execution
+        .dependencies
+        .get_mut("/etc/adopted-config")
+        .unwrap()
+        .sha256 = "b".repeat(64);
+    assert!(!rule.allows(&after));
+    after = before.clone();
+    after
+        .execution
+        .dependencies
+        .get_mut("/etc/adopted-config")
+        .unwrap()
+        .bytes = 32;
+    assert_eq!(
+        compare_operations(&before, &after).comparison,
+        Comparison::Broader
+    );
+    assert!(!rule.allows(&after));
+}

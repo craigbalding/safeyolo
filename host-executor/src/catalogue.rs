@@ -151,15 +151,24 @@ pub fn within_operation(op: &Operation, ceiling: &Operation, allow_code: bool) -
             b["arguments"][name]["options"] = Value::Null;
         }
     }
-    if allow_code {
-        for (path, dependency) in a["execution"]["dependencies"].as_object().unwrap() {
-            let Some(ceiling) = b["execution"]["dependencies"].get(path) else {
-                return false;
-            };
-            if dependency["bytes"].as_u64() > ceiling["bytes"].as_u64() {
-                return false;
-            }
+    for (path, dependency) in a["execution"]["dependencies"].as_object().unwrap() {
+        let Some(ceiling) = b["execution"]["dependencies"].get(path) else {
+            return false;
+        };
+        if dependency["bytes"].as_u64() > ceiling["bytes"].as_u64() {
+            return false;
         }
+    }
+    for value in [&mut a, &mut b] {
+        for dependency in value["execution"]["dependencies"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+        {
+            dependency["bytes"] = Value::Null;
+        }
+    }
+    if allow_code {
         a["execution"]["executable_sha256"] = Value::Null;
         b["execution"]["executable_sha256"] = Value::Null;
         // Dependencies cannot acquire new paths or a weaker enforcement mode.
@@ -170,7 +179,6 @@ pub fn within_operation(op: &Operation, ceiling: &Operation, allow_code: bool) -
                 .values_mut()
             {
                 dependency["sha256"] = Value::Null;
-                dependency["bytes"] = Value::Null;
             }
         }
     }
