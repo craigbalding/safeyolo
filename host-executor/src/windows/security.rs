@@ -682,6 +682,34 @@ pub(crate) fn private_descriptor() -> Result<Local, Refusal> {
     Ok(Local(result))
 }
 
+pub(crate) fn create_private_file(path: &Path) -> Result<File, Refusal> {
+    let name = path_wide(path)?;
+    let descriptor = private_descriptor()?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: 0,
+    };
+    // SAFETY: both buffers remain live through creation. The protected DACL is
+    // installed before any secret bytes are written, with no inherited readers.
+    let handle = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_WRITE | READ_CONTROL,
+            0,
+            &attributes,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL,
+            null_mut(),
+        )
+    };
+    let handle = Handle::new(handle, "create private file")?;
+    // SAFETY: transfer this handle's unique ownership to File's closer.
+    let file = unsafe { File::from_raw_handle(handle.0) };
+    std::mem::forget(handle);
+    Ok(file)
+}
+
 pub(crate) fn own_job(handle: HANDLE) -> Result<(), Refusal> {
     let mut owner = null_mut();
     let mut descriptor = null_mut();
@@ -709,4 +737,84 @@ pub(crate) fn own_job(handle: HANDLE) -> Result<(), Refusal> {
         RefusalCode::Unavailable,
         "retained job name has another owner; leave it untouched and retain unknown cleanup",
     )
+}
+
+#[cfg(test)]
+mod private_creation_tests {
+    use super::*;
+
+    #[test]
+    fn created_file_does_not_inherit_readers_and_never_overwrites() {
+        let path = std::env::temp_dir().join(format!(
+            "host-private-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // An inherit-only reader has no effective right on the parent itself,
+        // but ordinary child creation would grant it access to the key file.
+        let owner = identity(&token().unwrap()).unwrap().principal;
+        let text = wide(&format!(
+            "O:{owner}D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;{owner})(A;OICIIO;GR;;;WD)"
+        ))
+        .unwrap();
+        let mut parent_descriptor = null_mut();
+        assert_ne!(
+            unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    text.as_ptr(),
+                    1,
+                    &mut parent_descriptor,
+                    null_mut(),
+                )
+            },
+            0
+        );
+        let parent_descriptor = Local(parent_descriptor);
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: parent_descriptor.0,
+            bInheritHandle: 0,
+        };
+        let parent = path;
+        assert_ne!(
+            unsafe { CreateDirectoryW(path_wide(&parent).unwrap().as_ptr(), &attributes) },
+            0
+        );
+        protected(&parent, true).unwrap();
+        let path = parent.join("key");
+        let file = create_private_file(&path).unwrap();
+        let descriptor = descriptor(file.as_raw_handle()).unwrap();
+        let (mut control, mut revision) = (0, 0);
+        assert_ne!(
+            unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) },
+            0
+        );
+        assert_ne!(control & SE_DACL_PROTECTED, 0);
+        let (mut present, mut defaulted, mut acl) = (0, 0, null_mut());
+        assert_ne!(
+            unsafe {
+                GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut acl, &mut defaulted)
+            },
+            0
+        );
+        assert_ne!(present, 0);
+        assert!(!acl.is_null());
+        for index in 0..unsafe { (*acl).AceCount } {
+            let mut ace = null_mut();
+            assert_ne!(unsafe { GetAce(acl, index as u32, &mut ace) }, 0);
+            let ace = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+            assert_eq!(ace.Header.AceType, ACCESS_ALLOWED_ACE_TYPE as u8);
+            assert!(
+                trusted_sid(&sid(std::ptr::addr_of!(ace.SidStart).cast_mut().cast()).unwrap())
+                    .unwrap()
+            );
+        }
+        drop(file);
+        assert!(create_private_file(&path).is_err());
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(parent).unwrap();
+    }
 }

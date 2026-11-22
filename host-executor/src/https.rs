@@ -8,7 +8,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use serde::{Deserialize, Serialize};
 use std::{
     cell::Cell,
-    fs::{File, OpenOptions},
+    fs::File,
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
@@ -216,14 +216,19 @@ pub(crate) fn serve(
 }
 
 pub(crate) fn private_file(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path).map_err(unavailable)?;
+    #[cfg(windows)]
+    let mut file = crate::windows::security::create_private_file(path)?;
+    #[cfg(not(windows))]
+    let mut file = {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(path).map_err(unavailable)?
+    };
     file.write_all(bytes).map_err(unavailable)?;
     file.sync_all().map_err(unavailable)
 }
