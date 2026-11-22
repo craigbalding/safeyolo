@@ -162,6 +162,7 @@ fn usage(
     operation: &str,
 ) -> Result<Usage, Refusal> {
     let request = auth.request();
+    let operation = auth.usage_operation(operation);
     let admitted = transaction
         .query_row(
             "SELECT count(*) FROM jobs WHERE issuer=?1 AND grant_id=?2 AND grant_revision=?3 AND operation=?4",
@@ -474,7 +475,7 @@ impl Ledger {
                             req.issuer_id,
                             req.grant_id,
                             auth.grant_revision(),
-                            invocation.operation_id,
+                            auth.usage_operation(&invocation.operation_id),
                             bytes,
                             capacity as i64,
                             receipt.prepared.limits.output_bytes as i64,

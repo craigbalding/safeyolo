@@ -28,6 +28,8 @@ pub struct Configuration {
     pub native: NativeRuntime,
     pub connections: u16,
     pub connection_timeout_seconds: u64,
+    #[serde(default)]
+    pub catalogue: Option<CatalogueAdoption>,
 }
 
 fn unavailable(error: impl std::fmt::Display) -> Refusal {
@@ -83,7 +85,7 @@ pub fn load(config: &Path, state: &Path) -> Result<Configuration, Refusal> {
     let input = crate::windows::security::read_file(&config)?;
     // This is protected operator input, not an agent request. Do not introduce
     // an arbitrary catalogue-size policy while parsing the adopted definition.
-    let settings: Configuration =
+    let mut settings: Configuration =
         serde_json::from_reader(BufReader::new(input)).map_err(unavailable)?;
     settings.ledger.validate(&settings.target.target_id)?;
     require(
@@ -99,9 +101,47 @@ pub fn load(config: &Path, state: &Path) -> Result<Configuration, Refusal> {
         RefusalCode::Budget,
         "Windows control pipe requires fewer than 253 workers to retain a finite instance count",
     )?;
-    settings
-        .native
-        .validate(&settings.target, &[config, state])?;
+    let protected = [config, state];
+    if let Some(adoption) = &settings.catalogue {
+        require(
+            revision(&settings.target.package) == revision(&adoption.active.catalogue.package),
+            RefusalCode::Stale,
+            "configured target and retained adopted catalogue differ",
+        )?;
+        let mut plan = adoption.plan(now())?;
+        let mut target = settings.target.clone();
+        target.package = plan.package.clone();
+        match settings.native.validate(&target, &protected) {
+            Ok(()) => {
+                // The entire target has qualified before it becomes visible.
+                settings
+                    .catalogue
+                    .as_mut()
+                    .expect("configured adoption")
+                    .advance(&plan);
+                target.catalogue = Some(plan.status);
+                settings.target = target;
+            }
+            Err(error) => {
+                plan.status.state = "refused".into();
+                plan.status.reason = format!("candidate platform qualification failed: {error}");
+                plan.status.qualified = None;
+                plan.status.active = revision(&settings.target.package);
+                settings.target.catalogue = Some(plan.status.clone());
+                settings
+                    .native
+                    .validate(&settings.target, &protected)
+                    .map_err(|e| {
+                        unavailable(format!(
+                            "no usable active catalogue: {e}; status={}",
+                            serde_json::to_string(&plan.status).unwrap_or_default()
+                        ))
+                    })?;
+            }
+        }
+    } else {
+        settings.native.validate(&settings.target, &protected)?;
+    }
     Ok(settings)
 }
 
@@ -146,6 +186,21 @@ pub fn command(args: Vec<String>) -> Result<(), Refusal> {
             "target {}: complete catalogue validated; no command launched",
             settings.target.target_id
         );
+        if let Some(status) = &settings.target.catalogue {
+            let saved: Configuration =
+                serde_json::from_slice(&std::fs::read(&config).map_err(unavailable)?)
+                    .map_err(unavailable)?;
+            let mut status = status.clone();
+            status.active = revision(&saved.target.package);
+            if status.qualified.is_some() {
+                status.state = "qualified".into();
+            }
+            status.reason = format!(
+                "Validation only; no configuration saved or running activation observed. {}",
+                status.reason
+            );
+            println!("{}", serde_json::to_string(&status).map_err(unavailable)?);
+        }
         return Ok(());
     }
     serve(config, state, settings)
@@ -154,6 +209,7 @@ pub fn command(args: Vec<String>) -> Result<(), Refusal> {
 #[cfg(unix)]
 pub fn serve(config: PathBuf, state: PathBuf, settings: Configuration) -> Result<(), Refusal> {
     let mut ledger = Ledger::open(&state, &settings.target.target_id, settings.ledger.clone())?;
+    let settings = reconcile_configuration(&config, &state)?;
     settings.native.reconcile(&mut ledger)?;
     let socket = state.join("control.sock");
     if let Ok(meta) = fs::symlink_metadata(&socket) {
@@ -311,7 +367,7 @@ fn load_selected(
     state: &Path,
     original: &Configuration,
 ) -> Result<Configuration, Refusal> {
-    let settings = load(config, state)?;
+    let settings = reconcile_configuration(config, state)?;
     require(
         settings.target.target_id == original.target.target_id
             && revision(&(
@@ -328,6 +384,91 @@ fn load_selected(
         RefusalCode::Stale,
         "runtime, limits or target identity changed; restart this selected executor",
     )?;
+    Ok(settings)
+}
+
+// The executor's existing configuration retains its last qualified catalogue.
+// Serialize worker reloads; the existing ledger excludes another live executor
+// for this state. An external owner edit observed before replacement refuses
+// the update. No candidate program runs while configuring or qualifying it.
+pub(crate) fn reconcile_configuration(
+    config: &Path,
+    state: &Path,
+) -> Result<Configuration, Refusal> {
+    static RELOAD: Mutex<()> = Mutex::new(());
+    let _guard = RELOAD.lock().map_err(unavailable)?;
+    protected(config, false)?;
+    let before = std::fs::read(config).map_err(unavailable)?;
+    let previous: Configuration = serde_json::from_slice(&before).map_err(unavailable)?;
+    let settings = load(config, state)?;
+    let changed = previous
+        .catalogue
+        .as_ref()
+        .map(|a| revision(&a.active.catalogue))
+        != settings
+            .catalogue
+            .as_ref()
+            .map(|a| revision(&a.active.catalogue));
+    if !changed {
+        return Ok(settings);
+    }
+    let mut random = [0; 16];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut random)
+        .map_err(|_| unavailable("cannot create catalogue save identity"))?;
+    let temporary = config.with_file_name(format!(
+        ".host-catalogue-{}",
+        random
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    ));
+    struct Remove(std::path::PathBuf);
+    impl Drop for Remove {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _remove = Remove(temporary.clone());
+    #[cfg(unix)]
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)
+        .map_err(unavailable)?;
+    #[cfg(windows)]
+    let mut file = crate::windows::security::private_file(&temporary)?;
+    file.write_all(&serde_json::to_vec(&settings).map_err(unavailable)?)
+        .map_err(unavailable)?;
+    #[cfg(unix)]
+    file.set_permissions(
+        std::fs::metadata(config)
+            .map_err(unavailable)?
+            .permissions(),
+    )
+    .map_err(unavailable)?;
+    file.sync_all().map_err(unavailable)?;
+    drop(file);
+    require(
+        std::fs::read(config).map_err(unavailable)? == before,
+        RefusalCode::Stale,
+        "target configuration changed during catalogue qualification; read current adoption before another attempt",
+    )?;
+    std::fs::rename(&temporary, config).map_err(unavailable)?;
+    #[cfg(unix)]
+    std::fs::File::open(
+        config
+            .parent()
+            .ok_or_else(|| unavailable("configuration has no parent"))?,
+    )
+    .and_then(|f| f.sync_all())
+    .map_err(unavailable)?;
+    if let Some(status) = &settings.target.catalogue {
+        eprintln!(
+            "host catalogue adoption: active={} observed={} policy={} state={}",
+            status.active, status.observed, status.policy_sha256, status.state
+        );
+    }
     Ok(settings)
 }
 
@@ -484,7 +625,10 @@ mod tests {
             Ledger::open(&root, "fixture", limits.clone()).unwrap(),
         ));
         let original = Configuration {
+            catalogue: None,
             target: Target {
+                families: Vec::new(),
+                catalogue: None,
                 target_id: "fixture".into(),
                 ceiling_revision: "1".into(),
                 allowed_verbs: Default::default(),

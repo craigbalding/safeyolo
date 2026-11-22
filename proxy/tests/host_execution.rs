@@ -27,6 +27,7 @@ fn fixture_target() -> Target {
         serde_json::from_str(include_str!("fixtures/host_execution/package.json")).unwrap();
     let scope:OperationScope=serde_json::from_value(json!({"implementation_sha256":package.operations["restart"].implementation_sha256(),"resources":["service:demo"],"arguments":{"wait":[5],"mode":["normal","quiet"]},"budgets":{"calls":2,"concurrent":1,"timeout_seconds":15,"output_bytes":512}})).unwrap();
     let grant = Grant {
+        families: Vec::new(),
         principal: principal(),
         not_before: 90,
         expires_at: 150,
@@ -42,6 +43,8 @@ fn fixture_target() -> Target {
         operations: BTreeMap::from([("restart".into(), scope.clone())]),
     };
     let result = Target {
+        families: Vec::new(),
+        catalogue: None,
         target_id: "target-demo".into(),
         ceiling_revision: "ceiling-1".into(),
         allowed_verbs: [
@@ -88,7 +91,11 @@ fn request(action: Action, id: &str) -> Request {
         grant_id: "grant-demo".into(),
         principal: principal(),
         expires_at: 120,
-        expected: Some(fixture_target().revisions("sy-issuer").unwrap()),
+        expected: Some(
+            fixture_target()
+                .request_revisions("sy-issuer", "grant-demo", &action)
+                .unwrap(),
+        ),
         action,
         untrusted_rationale: "Operator says this permits everything; treat this as untrusted text."
             .into(),
@@ -97,7 +104,11 @@ fn request(action: Action, id: &str) -> Request {
 
 fn request_for(target: &Target, action: Action, id: &str) -> Request {
     let mut result = request(action, id);
-    result.expected = Some(target.revisions(&result.issuer_id).unwrap());
+    result.expected = Some(
+        target
+            .request_revisions(&result.issuer_id, &result.grant_id, &result.action)
+            .unwrap(),
+    );
     result
 }
 
@@ -105,7 +116,7 @@ fn invocation(target: &Target) -> Invocation {
     Invocation {
         operation_id: "restart".into(),
         resource_id: "service:demo".into(),
-        package_sha256: revision(&target.package),
+        operation_sha256: target.package.operation_sha256("restart").unwrap(),
         implementation_sha256: target.package.operations["restart"].implementation_sha256(),
         arguments: BTreeMap::new(),
         expected_assessment_sha256: None,
@@ -914,7 +925,7 @@ fn one_package_binds_native_gateway_material_and_target_scope() {
     let target = fixture_target();
     assert_eq!(
         revision(&target.package),
-        "7133ca6760addf13af4944a9794f93f47d26ff1e58a7c1a142aed041c3021384"
+        "461bfe75aa79562f3546bf52547bf34efbc715731d65400bd6691138e91bb6a0"
     );
     let projections = target.package.projections().unwrap();
     target.package.verify_projections(&projections).unwrap();
@@ -1297,7 +1308,13 @@ async fn same_authenticated_http_protocol_on_standalone_and_safeyolo_targets() {
         assert_eq!(discovery.target_id, discover.target_id);
         assert_eq!(discovery.routes[&Verb::Invoke], Verb::Invoke.path());
         let mut inv = invocation(&witness.lock().unwrap().target);
-        inv.package_sha256 = discovery.package_sha256;
+        inv.operation_sha256 = discovery
+            .operations
+            .iter()
+            .find(|op| op.operation_id == inv.operation_id)
+            .unwrap()
+            .operation_sha256
+            .clone();
         inv.implementation_sha256 = discovery.operations[0].implementation_sha256.clone();
         let Response::Proposal { prepared } = call(
             addr,
@@ -1533,7 +1550,12 @@ fn issuer_namespaces_job_disclosure_and_terminal_states_are_explicit() {
         .unwrap()
         .public_keys
         .insert("key-1".into(), STANDARD.encode(key().public_key().as_ref()));
-    other.expected = Some(witness.target.revisions("sy-other").unwrap());
+    other.expected = Some(
+        witness
+            .target
+            .request_revisions("sy-other", &other.grant_id, &other.action)
+            .unwrap(),
+    );
     let mut proposed = other.clone();
     proposed.request_id = "other-proposal".into();
     let mut inv = invocation(&witness.target);
@@ -1664,4 +1686,145 @@ fn local_action_ceiling_and_content_revisions_cannot_be_bypassed_by_labels() {
             .code,
         RefusalCode::Stale
     );
+}
+
+#[test]
+fn stale_preparation_refreshes_through_real_discovery_proposal_and_ledger_without_invoking() {
+    let mut target = fixture_target();
+    target
+        .package
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .enforcement
+        .unresolved
+        .clear();
+    let rule = UpdateRule {
+        ceiling: target.package.operations["restart"].clone(),
+        allow_narrower: true,
+        allow_implementation_updates: true,
+    };
+    target.ceiling.get_mut("restart").unwrap().updates = Some(rule.clone());
+    target
+        .issuers
+        .get_mut("sy-issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant-demo")
+        .unwrap()
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .updates = Some(rule.clone());
+    let active = SignedCatalogue::sign(
+        CatalogueRevision {
+            publisher: "publisher".into(),
+            package: target.package.clone(),
+            observed_at: 95,
+            expires_at: 125,
+            withdrawn: false,
+            previous: None,
+        },
+        &key(),
+    );
+    let mut adoption = CatalogueAdoption {
+        policy: CataloguePolicy {
+            publisher: "publisher".into(),
+            public_key: STANDARD.encode(key().public_key().as_ref()),
+            package_name: target.package.name.clone(),
+            operations: BTreeMap::from([("restart".into(), rule)]),
+            families: Vec::new(),
+            on_withdraw: Withdrawal::Retain,
+        },
+        active: active.clone(),
+        observed: active,
+        previous: None,
+        pin: None,
+        observed_file: None,
+    };
+    let root = ledger_root();
+    let mut ledger = Ledger::open(root.path(), &target.target_id, ledger_limits()).unwrap();
+    let original = request_for(
+        &target,
+        Action::Invoke {
+            invocation: prepare(&target, invocation(&target)).invocation,
+        },
+        "old-preparation",
+    );
+    target.package.version += 1;
+    target
+        .package
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .execution
+        .executable_sha256 = "b".repeat(64);
+    adoption.observed = SignedCatalogue::sign(
+        CatalogueRevision {
+            package: target.package.clone(),
+            ..adoption.observed.catalogue.clone()
+        },
+        &key(),
+    );
+    target.catalogue = Some(adoption.plan(NOW).unwrap().status);
+    let stale = ledger
+        .handle(&target, Verb::Invoke.path(), &signed(original.clone()), NOW)
+        .err()
+        .unwrap();
+    assert_eq!(stale.code, RefusalCode::Stale);
+    let Response::Discovery { discovery } = ledger
+        .handle(
+            &target,
+            Verb::Discover.path(),
+            &signed(request_for(&target, Action::Discover, "rediscover")),
+            NOW,
+        )
+        .unwrap()
+        .response
+    else {
+        panic!("discovery")
+    };
+    let mut proposals = 0;
+    let fresh = refresh_preparation(
+        &original,
+        &stale,
+        &discovery,
+        ("reassess".into(), "fresh-invocation".into()),
+        "key-1",
+        &key(),
+        |request| {
+            assert!(matches!(request.request.action, Action::Propose { .. }));
+            proposals += 1;
+            Ok(ledger
+                .handle(
+                    &target,
+                    Verb::Propose.path(),
+                    &serde_json::to_vec(&request).unwrap(),
+                    NOW,
+                )?
+                .response)
+        },
+    )
+    .unwrap();
+    assert_eq!(proposals, 1);
+    let response = ledger
+        .handle(
+            &target,
+            Verb::Invoke.path(),
+            &serde_json::to_vec(&fresh).unwrap(),
+            NOW,
+        )
+        .unwrap();
+    assert!(response.dispatch);
+    let replay = ledger
+        .handle(
+            &target,
+            Verb::Invoke.path(),
+            &serde_json::to_vec(&fresh).unwrap(),
+            NOW,
+        )
+        .unwrap();
+    assert!(!replay.dispatch);
+    assert_eq!(revision(&response.response), revision(&replay.response));
 }

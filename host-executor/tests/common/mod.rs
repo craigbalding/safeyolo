@@ -28,6 +28,8 @@ pub fn target(
                     implementation_sha256: op.implementation_sha256(),
                     resources: op.resources.clone(),
                     arguments: BTreeMap::new(),
+                    updates: None,
+                    checks: Default::default(),
                     budgets: Budgets {
                         calls: 32,
                         concurrent: 1,
@@ -48,6 +50,8 @@ pub fn target(
     ]
     .into();
     Target {
+        families: Vec::new(),
+        catalogue: None,
         target_id: name,
         ceiling_revision: "1".into(),
         allowed_verbs: verbs,
@@ -68,6 +72,7 @@ pub fn target(
                     grants: BTreeMap::from([(
                         "grant".into(),
                         Grant {
+                            families: Vec::new(),
                             principal: Principal {
                                 run: AgentRun {
                                     agent: "fixture".into(),

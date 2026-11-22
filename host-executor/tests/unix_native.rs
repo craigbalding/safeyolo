@@ -73,7 +73,11 @@ impl Fixture {
                 .principal
                 .clone(),
             expires_at: self.target.issuers["issuer"].authority.valid_until,
-            expected: Some(self.target.revisions("issuer").unwrap()),
+            expected: Some(
+                self.target
+                    .request_revisions("issuer", "grant", &action)
+                    .unwrap(),
+            ),
             action,
             untrusted_rationale: "fixture".into(),
         };
@@ -89,7 +93,7 @@ impl Fixture {
         Invocation {
             operation_id: mode.into(),
             resource_id: "fixture".into(),
-            package_sha256: revision(&self.target.package),
+            operation_sha256: self.target.package.operation_sha256(mode).unwrap(),
             implementation_sha256: operation.implementation_sha256(),
             arguments: BTreeMap::new(),
             expected_assessment_sha256: None,
@@ -271,9 +275,11 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
         .collect();
         read.push(root.join("allowed").to_str().unwrap().into());
         let operation = Operation {
+            required_checks: Default::default(),
             resources: ["fixture".into()].into(),
             arguments: BTreeMap::new(),
             execution: Execution {
+                dependencies: Default::default(),
                 broader: if cfg!(target_os = "macos") {
                     [BroaderBound::Memory, BroaderBound::ExecutorRestart].into()
                 } else {
@@ -394,6 +400,7 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
         std::env::var_os("SAFEYOLO_HOST_EXECUTOR_BWRAP").unwrap_or_else(|| "/usr/bin/bwrap".into()),
     );
     let settings = Configuration {
+        catalogue: None,
         target: target.clone(),
         #[cfg(target_os = "linux")]
         native: NativeRuntime::Linux(LinuxRuntime {
@@ -432,6 +439,163 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
         key,
         counter: 0,
     }
+}
+
+#[test]
+#[ignore = "requires the existing native Unix fixture and prepared probe or C compiler"]
+fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use ring::signature::KeyPair;
+    let mut f = fixture(16, 64 * 1024);
+    let path = f.root.join("target.json");
+    let mut config: Configuration = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let rule = UpdateRule {
+        ceiling: config.target.package.operations["observe"].clone(),
+        allow_narrower: true,
+        allow_implementation_updates: true,
+    };
+    config.target.ceiling.get_mut("observe").unwrap().updates = Some(rule.clone());
+    config
+        .target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant")
+        .unwrap()
+        .operations
+        .get_mut("observe")
+        .unwrap()
+        .updates = Some(rule.clone());
+    let sign = |package: &Package| {
+        SignedCatalogue::sign(
+            CatalogueRevision {
+                publisher: "publisher".into(),
+                package: package.clone(),
+                observed_at: now() - 1,
+                expires_at: now() + 600,
+                withdrawn: false,
+                previous: None,
+            },
+            &f.key,
+        )
+    };
+    let active = sign(&config.target.package);
+    let observed = f.root.join("observed.json");
+    fs::write(&observed, serde_json::to_vec(&active).unwrap()).unwrap();
+    config.catalogue = Some(CatalogueAdoption {
+        policy: CataloguePolicy {
+            publisher: "publisher".into(),
+            public_key: STANDARD.encode(f.key.public_key().as_ref()),
+            package_name: config.target.package.name.clone(),
+            operations: BTreeMap::from([("observe".into(), rule)]),
+            families: Vec::new(),
+            on_withdraw: Withdrawal::Retain,
+        },
+        active: active.clone(),
+        observed: active,
+        previous: None,
+        pin: None,
+        observed_file: Some(ObservedCatalogueFile {
+            path: observed.clone(),
+            max_bytes: 1024 * 1024,
+        }),
+    });
+    fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    f.target = config.target.clone();
+    let Response::Proposal { prepared } = f.call(Action::Propose {
+        invocation: f.invocation("observe"),
+    }) else {
+        panic!("original preparation")
+    };
+    let pending = f.signed(Action::Invoke {
+        invocation: prepared.invocation,
+    });
+    let mut package = config.target.package.clone();
+    package.version += 1;
+    package
+        .operations
+        .get_mut("observe")
+        .unwrap()
+        .execution
+        .resources
+        .timeout_seconds = 4;
+    let signed = SignedCatalogue::sign(
+        CatalogueRevision {
+            publisher: "publisher".into(),
+            package: package.clone(),
+            observed_at: now() - 1,
+            expires_at: now() + 600,
+            withdrawn: false,
+            previous: None,
+        },
+        &f.key,
+    );
+    fs::write(&observed, serde_json::to_vec(&signed).unwrap()).unwrap();
+    assert!(matches!(
+        f.call_bytes(Verb::Invoke, &pending),
+        Response::Refused {
+            refusal: Refusal {
+                code: RefusalCode::Stale,
+                ..
+            }
+        }
+    ));
+    let saved: Configuration = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        revision(&saved.catalogue.as_ref().unwrap().active.catalogue.package),
+        revision(&package)
+    );
+    assert_eq!(
+        revision(
+            &saved
+                .catalogue
+                .as_ref()
+                .unwrap()
+                .previous
+                .as_ref()
+                .unwrap()
+                .catalogue
+                .package
+        ),
+        revision(&config.target.package)
+    );
+    f.target = saved.target;
+    let (receipt, _) = f.invoke("observe");
+    assert_eq!(f.terminal(&receipt.job_id).state, JobState::Completed);
+    let mut unsupported = package.clone();
+    unsupported
+        .operations
+        .get_mut("observe")
+        .unwrap()
+        .execution
+        .identity
+        .principal = "unapproved".into();
+    let signed = SignedCatalogue::sign(
+        CatalogueRevision {
+            publisher: "publisher".into(),
+            package: unsupported,
+            observed_at: now() - 1,
+            expires_at: now() + 600,
+            withdrawn: false,
+            previous: None,
+        },
+        &f.key,
+    );
+    fs::write(&observed, serde_json::to_vec(&signed).unwrap()).unwrap();
+    let Response::Discovery { discovery } = f.call(Action::Discover) else {
+        panic!("discovery")
+    };
+    let status = discovery.catalogue.unwrap();
+    assert_eq!(status.state, "awaiting_review");
+    assert_eq!(status.active, revision(&package));
+    f.restart();
+    let Response::Discovery { discovery } = f.call(Action::Discover) else {
+        panic!("restart discovery")
+    };
+    assert_eq!(discovery.catalogue.unwrap().active, revision(&package));
+    assert_eq!(f.job(&receipt.job_id).state, JobState::Completed);
 }
 
 #[test]

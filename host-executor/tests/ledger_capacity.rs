@@ -62,7 +62,11 @@ impl Fixture {
                     .principal
                     .clone(),
                 expires_at: now() + 300,
-                expected: Some(self.target.revisions("issuer").unwrap()),
+                expected: Some(
+                    self.target
+                        .request_revisions("issuer", "grant", &action)
+                        .unwrap(),
+                ),
                 action,
                 untrusted_rationale: "a".repeat(rationale),
             },
@@ -77,7 +81,7 @@ impl Fixture {
                 invocation: Invocation {
                     operation_id: "restart".into(),
                     resource_id: "service:demo".into(),
-                    package_sha256: revision(&self.target.package),
+                    operation_sha256: self.target.package.operation_sha256("restart").unwrap(),
                     implementation_sha256: self.target.package.operations["restart"]
                         .implementation_sha256(),
                     arguments: BTreeMap::new(),

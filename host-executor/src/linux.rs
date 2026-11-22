@@ -56,6 +56,10 @@ fn hash(bytes: &[u8]) -> String {
 /// Hold a bounded, sealed snapshot of the verified executable. Replacing or
 /// modifying its original inode cannot change the bytes subsequently launched.
 fn executable(path: &Path, expected: &str, max: u64) -> Result<File, Refusal> {
+    snapshot(path, expected, max, true)
+}
+
+fn snapshot(path: &Path, expected: &str, max: u64, executable: bool) -> Result<File, Refusal> {
     require(
         absolute(path) && max > 0 && max <= isize::MAX as u64,
         RefusalCode::Unavailable,
@@ -68,7 +72,9 @@ fn executable(path: &Path, expected: &str, max: u64) -> Result<File, Refusal> {
         .map_err(unavailable)?;
     let metadata = source.metadata().map_err(unavailable)?;
     require(
-        metadata.is_file() && metadata.mode() & 0o111 != 0 && metadata.len() <= max,
+        metadata.is_file()
+            && (!executable || metadata.mode() & 0o111 != 0)
+            && metadata.len() <= max,
         RefusalCode::Unavailable,
         "executable must be an executable regular file within the snapshot ceiling",
     )?;
@@ -80,7 +86,7 @@ fn executable(path: &Path, expected: &str, max: u64) -> Result<File, Refusal> {
     require(
         bytes.len() as u64 <= max && hash(&bytes) == expected,
         RefusalCode::Stale,
-        "executable content differs from adoption",
+        "executable or dependency content differs from adoption",
     )?;
     // SAFETY: the NUL-terminated constant lives through the call. The returned
     // descriptor has one File owner and is closed on all error paths.
@@ -108,6 +114,28 @@ fn executable(path: &Path, expected: &str, max: u64) -> Result<File, Refusal> {
         return Err(unavailable(std::io::Error::last_os_error()));
     }
     Ok(snapshot)
+}
+
+fn dependency_snapshot(
+    operation: &Operation,
+    path: &str,
+    dependency: &Dependency,
+) -> Result<File, Refusal> {
+    let path = Path::new(path);
+    require(
+        absolute(path)
+            && path.canonicalize().map_err(unavailable)? == path
+            && path != Path::new(&operation.execution.executable)
+            && operation
+                .execution
+                .filesystem
+                .read
+                .iter()
+                .any(|read| path.starts_with(read)),
+        RefusalCode::Unavailable,
+        "dependency paths must be canonical absolute paths inside adopted reads and distinct from the executable; alias closure is not a pinned dependency guarantee",
+    )?;
+    snapshot(path, &dependency.sha256, dependency.bytes, false)
 }
 
 impl LinuxRuntime {
@@ -302,6 +330,9 @@ impl LinuxRuntime {
             &execution.executable_sha256,
             self.executable_bytes,
         )?;
+        for (path, dependency) in &execution.dependencies {
+            dependency_snapshot(operation, path, dependency)?;
+        }
         Ok(())
     }
 
@@ -408,6 +439,17 @@ impl LinuxRuntime {
         for path in &operation.execution.filesystem.read {
             let file = File::open(path).map_err(unavailable)?;
             native.args(["--ro-bind-fd", &file.as_raw_fd().to_string(), path]);
+            reads.push(file);
+        }
+        for (path, dependency) in &operation.execution.dependencies {
+            let file = dependency_snapshot(operation, path, dependency)?;
+            native.args([
+                "--perms",
+                "0444",
+                "--ro-bind-data",
+                &file.as_raw_fd().to_string(),
+                path,
+            ]);
             reads.push(file);
         }
         for endpoint in &operation.execution.network.ipc {
@@ -999,6 +1041,56 @@ mod tests {
         });
         let _ = fs::remove_file(path);
         result.unwrap();
+    }
+
+    #[test]
+    fn dependency_snapshot_detects_same_size_mtime_updates_and_holds_launch_bytes() {
+        let root = std::env::temp_dir().join(format!("dependency-snapshot-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("config");
+        fs::write(&path, b"original").unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let mut op: Operation = serde_json::from_value(
+            serde_json::from_str::<Value>(include_str!(
+                "../../proxy/tests/fixtures/host_execution/package.json"
+            ))
+            .unwrap()["operations"]["restart"]
+                .clone(),
+        )
+        .unwrap();
+        op.execution.filesystem.read = vec![root.to_string_lossy().into_owned()];
+        let dependency = Dependency {
+            sha256: hash(b"original"),
+            bytes: 8,
+        };
+        let mut held = dependency_snapshot(&op, path.to_str().unwrap(), &dependency).unwrap();
+        fs::write(&path, b"replaced").unwrap();
+        File::open(&path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), 8);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+        assert_eq!(
+            dependency_snapshot(&op, path.to_str().unwrap(), &dependency)
+                .err()
+                .unwrap()
+                .code,
+            RefusalCode::Stale
+        );
+        let mut retained = Vec::new();
+        held.read_to_end(&mut retained).unwrap();
+        assert_eq!(retained, b"original");
+        assert!(held.write_all(b"mutated!").is_err());
+        std::os::unix::fs::symlink(&path, root.join("alias")).unwrap();
+        assert_eq!(
+            dependency_snapshot(&op, root.join("alias").to_str().unwrap(), &dependency)
+                .err()
+                .unwrap()
+                .code,
+            RefusalCode::Unavailable
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
