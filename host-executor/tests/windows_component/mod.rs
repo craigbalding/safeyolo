@@ -698,6 +698,19 @@ fn starter_result(fixture: &mut Fixture, name: &str) -> bool {
 }
 
 fn starters(root: PathBuf, service: bool, selected: Option<&str>) {
+    let service_operations = [
+        "service-status",
+        "service-start",
+        "service-status",
+        "service-restart",
+        "service-stop",
+        "service-status",
+    ];
+    assert!(
+        selected
+            .is_none_or(|name| STARTER_READS.contains(&name) || service_operations.contains(&name)),
+        "unknown starter operation; no case executed"
+    );
     let mut fixture = Fixture::new(root, service);
     // Distinct phase IDs retain foreground/service results and make an explicit
     // one-operation continuation possible after inspecting an earlier failure.
@@ -705,18 +718,16 @@ fn starters(root: PathBuf, service: bool, selected: Option<&str>) {
     let receiver = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 19477)).unwrap();
     receiver.set_nonblocking(true).unwrap();
     let mut failed = Vec::new();
-    let operations = [
-        "service-status",
-        "service-start",
-        "service-status",
-        "service-restart",
-        "service-stop",
-        "service-status",
-    ]
-    .into_iter()
-    .chain(STARTER_READS.iter().copied());
+    let operations: Vec<_> = if let Some(name) = selected {
+        vec![name]
+    } else {
+        service_operations
+            .into_iter()
+            .chain(STARTER_READS.iter().copied())
+            .collect()
+    };
     let mut started = None;
-    for name in operations.filter(|name| selected.is_none_or(|selected| *name == selected)) {
+    for name in operations {
         if !starter_result(&mut fixture, name) {
             failed.push(name);
         }

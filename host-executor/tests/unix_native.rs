@@ -1660,6 +1660,131 @@ fn installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch() {
 
 #[test]
 #[ignore = "requires the prepared native Unix fixture"]
+fn installed_dependency_swaps_preserve_metadata_but_cannot_launch() {
+    let mut f = fixture(8, 64 * 1024);
+    let path = f.root.join("target.json");
+    let original_config = fs::read(&path).unwrap();
+    let mut config: Configuration = serde_json::from_slice(&original_config).unwrap();
+    let dependency = f.root.join("allowed");
+    let original = fs::read(&dependency).unwrap();
+    let modified = fs::metadata(&dependency).unwrap().modified().unwrap();
+    let op = config.target.package.operations.get_mut("observe").unwrap();
+    op.execution.dependencies.insert(
+        dependency.to_str().unwrap().into(),
+        Dependency {
+            sha256: hash(&dependency),
+            bytes: original.len() as u64,
+        },
+    );
+    let implementation = op.implementation_sha256();
+    config
+        .target
+        .ceiling
+        .get_mut("observe")
+        .unwrap()
+        .implementation_sha256 = implementation.clone();
+    config
+        .target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant")
+        .unwrap()
+        .operations
+        .get_mut("observe")
+        .unwrap()
+        .implementation_sha256 = implementation;
+    fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    f.target = config.target;
+    if cfg!(target_os = "linux") {
+        let mut changed = original.clone();
+        *changed.last_mut().unwrap() ^= 1;
+        for alias in [false, true] {
+            let Response::Proposal { prepared } = f.call(Action::Propose {
+                invocation: f.invocation("observe"),
+            }) else {
+                panic!("valid pinned dependency proposal")
+            };
+            let pending = f.signed(Action::Invoke {
+                invocation: prepared.invocation,
+            });
+            if alias {
+                let replacement = f.root.join("changed-dependency");
+                fs::write(&replacement, &changed).unwrap();
+                fs::remove_file(&dependency).unwrap();
+                std::os::unix::fs::symlink(&replacement, &dependency).unwrap();
+            } else {
+                fs::write(&dependency, &changed).unwrap();
+            }
+            fs::File::open(&dependency)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(modified))
+                .unwrap();
+            assert_eq!(
+                fs::metadata(&dependency).unwrap().len(),
+                original.len() as u64
+            );
+            assert_eq!(
+                fs::metadata(&dependency).unwrap().modified().unwrap(),
+                modified
+            );
+            let response = f.call_bytes(Verb::Invoke, &pending);
+            let expected = if alias {
+                RefusalCode::Unavailable
+            } else {
+                RefusalCode::Stale
+            };
+            assert!(
+                matches!(&response, Response::Refused { refusal } if refusal.code == expected),
+                "{response:?}"
+            );
+            assert_eq!(
+                retained_job_count(&f),
+                0,
+                "changed dependency must not admit a job"
+            );
+            if alias {
+                fs::remove_file(&dependency).unwrap();
+            }
+            fs::write(&dependency, &original).unwrap();
+            f.assert_no_side_effects();
+            eprintln!(
+                "independent dependency observer: alias={alias}, same size/mtime, actual changed bytes refused as {expected:?}; zero jobs"
+            );
+        }
+    } else {
+        let response = f.call(Action::Propose {
+            invocation: f.invocation("observe"),
+        });
+        assert!(
+            matches!(&response, Response::Refused { refusal } if refusal.code == RefusalCode::Unavailable
+            && refusal.message.contains("supported only by the Linux backend")),
+            "{response:?}"
+        );
+        assert_eq!(retained_job_count(&f), 0);
+        fs::write(&path, &original_config).unwrap();
+        f.target = serde_json::from_slice::<Configuration>(&original_config)
+            .unwrap()
+            .target;
+        eprintln!(
+            "installed required pinned dependency unavailable on this backend; zero jobs, no silent downgrade"
+        );
+    }
+    let (admitted, _) = f.invoke("observe");
+    let result = f.terminal(&admitted.job_id);
+    assert_eq!(result.state, JobState::Completed, "{result:?}");
+    assert!(result.native.as_ref().unwrap().processes_stopped);
+    assert_eq!(retained_job_count(&f), 1);
+    f.assert_no_side_effects();
+    eprintln!(
+        "independent ledger: one legitimate read after restoring the adopted dependency/contract; no rejected dispatch was replayed"
+    );
+}
+
+#[test]
+#[ignore = "requires the prepared native Unix fixture"]
 fn installed_api_authentication_and_cross_principal_reads_cannot_change_authority() {
     use ring::signature::KeyPair;
     let mut f = fixture(8, 64 * 1024);

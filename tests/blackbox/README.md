@@ -42,7 +42,7 @@ required account/containment launcher when invoking this command.
 bash tests/blackbox/run-controls.sh native-authority --suite host-execution --test-executable /owned/unix_native --executor /owned/safeyolo-host-executor --output /owned/host-operation-results
 ```
 
-Success requires all ten selected cases to execute and pass. `result.json`
+Success requires all eleven selected cases to execute and pass. `result.json`
 retains the host, controller, installed executable/version, fixture/probe
 digests, exact cases and exits. Each case retains its log and the existing
 procedure receipt. Missing inputs, an ignored/missing case, a failure or a
@@ -65,6 +65,9 @@ defaults, aliases, resource selectors and unavailable enforcement must await
 review without changing the active bytes, grants or job count. Restart must
 retain earlier receipts without replay. These are executor catalogue
 observations; gateway approval counts remain a separate workflow witness.
+The dependency case also checks actual byte and alias changes after proposal
+with unchanged size/mtime. Linux must block dispatch; macOS must report its
+unavailable pinned-dependency guarantee before a job is created.
 
 These are installed Unix component witnesses. They do not complete
 [#1677](https://github.com/craigbalding/safeyolo/issues/1677)'s eight witness
@@ -87,6 +90,35 @@ bash tests/blackbox/run-controls.sh host-execution
 `host-execution.json` must report every named case as `ok`. These controlled
 upstream/checker results complement the installed selection; they do not prove
 native containment or repeat the separate finite model measurement.
+
+The existing prebuilt Windows fixture also drives the packaged starter recipes.
+Use a disposable Windows target with the separate ordinary workload account,
+executor-owned credential and protected paths from the
+[Windows setup](../../docs/host-operations.md#windows-foreground-and-windows-service).
+Prepare a new private fixture root with `control` and `control\state`
+subdirectories. Its workload needs read/execute access to the fixture programs
+and synthetic evidence; it must have no access to `control`. Supply the owned
+`SafeYolo1671Fixture` service with start/stop/query/restart permissions and an
+unused local TCP port 19477. Keep the existing fixture and service owners.
+Set `SAFEYOLO_HOST_EXECUTOR_BIN` to the separately installed executor.
+Replace `C:\Owned\qualification` and `host-workload` below with that root and
+the existing credential name. These commands create synthetic evidence, a
+target configuration and finite test authority signed by a public fixture key;
+use them only in the disposable test environment.
+
+```powershell
+.\windows_native.exe --starter-prepare C:\Owned\qualification host-workload
+.\windows_native.exe --starters C:\Owned\qualification
+```
+
+The fixture records canonical receipts, complete output, native enforcement,
+service-manager state/PIDs and a live TCP receiver. It exercises the read and
+fixed-service categories plus wrong channel, hive, key, view, service and path
+refusals. Inspect actual absent/denied results and retained effects after a
+failure. To resume one unexecuted operation, use `--starter ROOT OPERATION`.
+Append `--service` only after the same target configuration is running under
+the selected Windows Service account. This fixture does not install that
+service, configure ACLs or renew a credential.
 
 ## Test retained nightly inputs
 
