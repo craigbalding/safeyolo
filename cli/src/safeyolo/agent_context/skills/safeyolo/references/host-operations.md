@@ -61,7 +61,7 @@ operator must inspect retained state. Neither revocation nor expiry undoes an
 admitted effect. The helper never automatically retries a failed call.
 
 For missing capability, prepare an untrusted operation/scope proposal and use
-the existing policy-capability discovery and private assessment tools. Reuse the
+the existing [policy-capability discovery and private assessment sequence](../../policy-authoring/references/capabilities.md). Reuse the
 adopted effects, narrower alternatives and explicit unresolved dependencies.
 An absent operation cannot execute just because a proposal names it. Target
 ceiling, package adoption, issuer policy and credential changes belong to their

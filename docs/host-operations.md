@@ -336,7 +336,7 @@ disabling or removing the service.
 | Scheduled tasks | No general scheduler authority in this starter | Enumerate/filter tasks; selected definitions/principal/actions/recent status. No execution, registration or modification. |
 | Fixed installed executable | The content-pinned executor's inspection commands; typed limits and exact environment | `fixed-executable` runs pinned `whoami.exe`; typed allowed argument, exact account/environment, native deadline/output/status. |
 
-Windows query results use `{operation,status,observedAtUtc,timeZone,count,
+PowerShell query results use `{operation,status,observedAtUtc,timeZone,count,
 limitReached,data}`. A reached count limit reports `partial`; access errors
 report `access_denied` or `unavailable` and exit 2. A registry observation can
 report `absent` in its data. File content explicitly reports a bounded prefix.
