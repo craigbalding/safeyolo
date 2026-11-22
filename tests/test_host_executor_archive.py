@@ -30,7 +30,11 @@ def test_standalone_archive_ships_the_exact_workflow_inputs(tmp_path, monkeypatc
     monkeypatch.setattr(sys, "argv", ["build_host_executor.py", "--output", str(archive)])
     builder.main()
     with zipfile.ZipFile(archive) as result:
-        assert result.read("HOST-OPERATIONS.md") == (REPO / "docs/host-operations.md").read_bytes()
+        guide = result.read("HOST-OPERATIONS.md").decode()
+        prefix = f"https://github.com/craigbalding/safeyolo/blob/{revision}/docs/"
+        assert f"]({prefix}host-execution-contract.md#standalone-binary-and-build-dependencies)" in guide
+        assert f"]({prefix}service-authoring.md#author-host-operation-packages)" in guide
+        assert guide.replace(prefix, "") == (REPO / "docs/host-operations.md").read_text()
         assert result.read("examples/windows-starter.json") == (REPO / "host-executor/examples/windows-starter.json").read_bytes()
         assert result.read("agent/host-operation.py") == (REPO / "cli/src/safeyolo/agent_context/skills/safeyolo/scripts/host-operation.py").read_bytes()
         metadata = json.loads(result.read("host-executor.json"))

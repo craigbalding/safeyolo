@@ -6,12 +6,20 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from urllib.parse import urljoin
 
 from build_host_packages import ROOT, commit, output, sha256
+
+
+def operator_guide(revision: str) -> str:
+    source = ROOT / "docs/host-operations.md"
+    base = f"https://github.com/craigbalding/safeyolo/blob/{revision}/docs/host-operations.md"
+    return re.sub(r"(?<=\]\()[^)]+(?=\))", lambda link: urljoin(base, link.group()), source.read_text())
 
 
 def build_executor(revision: str, target: str) -> Path:
@@ -80,7 +88,7 @@ def main() -> None:
     with zipfile.ZipFile(args.output, "x", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(binary, binary.name)
         archive.write(ROOT / "LICENSE", "LICENSE")
-        archive.write(ROOT / "docs/host-operations.md", "HOST-OPERATIONS.md")
+        archive.writestr("HOST-OPERATIONS.md", operator_guide(revision))
         archive.write(ROOT / "host-executor/examples/windows-starter.json", "examples/windows-starter.json")
         archive.write(ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo/scripts/host-operation.py", "agent/host-operation.py")
         archive.writestr("host-executor.json", json.dumps(metadata, indent=2) + "\n")
