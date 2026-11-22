@@ -435,6 +435,87 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
 }
 
 #[test]
+#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]
+fn installed_check_serve_and_reload_share_ledger_validation() {
+    let mut f = fixture(16, 1024 * 1024);
+    let config = f.root.join("target.json");
+    let original = fs::read(&config).unwrap();
+    let run = |mode: &str| {
+        Command::new(executor())
+            .args([mode, "--config"])
+            .arg(&config)
+            .arg("--state")
+            .arg(f.root.join("state"))
+            .output()
+            .unwrap()
+    };
+    assert!(run("check").status.success());
+    // fixture() has already observed native readiness for these valid limits.
+    for (field, value) in [
+        ("jobs", 0),
+        ("mutation_records", 15),
+        ("output_bytes", 0),
+        ("output_bytes", i64::MAX as u64 + 1),
+        ("database_bytes", 4096),
+        ("database_bytes", i64::MAX as u64 + 1),
+        ("request_bytes", 0),
+    ] {
+        let mut changed: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        changed["ledger"][field] = value.into();
+        fs::write(&config, serde_json::to_vec(&changed).unwrap()).unwrap();
+        let check = run("check");
+        let serve = run("serve");
+        assert_eq!(
+            check.status.code(),
+            Some(1),
+            "check accepted {field}={value}"
+        );
+        assert_eq!(
+            serve.status.code(),
+            Some(1),
+            "serve accepted {field}={value}"
+        );
+        assert_eq!(check.stderr, serve.stderr);
+        assert!(String::from_utf8(check.stderr).unwrap().contains("Budget"));
+        let limits: LedgerLimits = serde_json::from_value(changed["ledger"].clone()).unwrap();
+        assert_eq!(
+            Ledger::open(&f.root.join("state"), &f.target.target_id, limits)
+                .err()
+                .unwrap()
+                .code,
+            RefusalCode::Budget
+        );
+        // Every request reloads the complete configuration before admission.
+        for verb in [
+            Verb::Discover,
+            Verb::Propose,
+            Verb::Invoke,
+            Verb::Job,
+            Verb::Output,
+            Verb::Cancel,
+        ] {
+            assert!(
+                matches!(
+                    f.call_bytes(verb, b"{}"),
+                    Response::Refused {
+                        refusal: Refusal {
+                            code: RefusalCode::Budget,
+                            ..
+                        }
+                    }
+                ),
+                "{verb:?} accepted {field}={value}"
+            );
+        }
+    }
+    fs::write(&config, original).unwrap();
+    assert!(matches!(
+        f.call(Action::Discover),
+        Response::Discovery { .. }
+    ));
+}
+
+#[test]
 #[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]
 fn installed_unix_bounds_lifecycle_reload_and_lost_reply() {
     let mut f = fixture(16, 1024 * 1024);

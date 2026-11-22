@@ -85,10 +85,10 @@ pub fn load(config: &Path, state: &Path) -> Result<Configuration, Refusal> {
     // an arbitrary catalogue-size policy while parsing the adopted definition.
     let settings: Configuration =
         serde_json::from_reader(BufReader::new(input)).map_err(unavailable)?;
+    settings.ledger.validate(&settings.target.target_id)?;
     require(
         settings.connections > 0
             && settings.connection_timeout_seconds > 0
-            && settings.ledger.request_bytes > 0
             && settings.ledger.request_bytes <= isize::MAX as u64,
         RefusalCode::Budget,
         "connection count, read deadline and request ceiling must be finite and positive",

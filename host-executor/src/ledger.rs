@@ -25,6 +25,23 @@ pub struct LedgerLimits {
     pub request_bytes: u64,
 }
 
+impl LedgerLimits {
+    pub(crate) fn validate(&self, target_id: &str) -> Result<(), Refusal> {
+        require(
+            selector(target_id)
+                && self.jobs > 0
+                && self.mutation_records >= self.jobs
+                && self.output_bytes > 0
+                && self.output_bytes <= i64::MAX as u64
+                && self.request_bytes > 0
+                && self.database_bytes >= 128 * 1024
+                && self.database_bytes <= i64::MAX as u64,
+            RefusalCode::Budget,
+            "ledger needs literal target identity and positive bounded storage, output and record limits",
+        )
+    }
+}
+
 pub struct Ledger {
     connection: Connection,
     limits: LedgerLimits,
@@ -172,18 +189,7 @@ impl Ledger {
     /// must deny this directory and all aliases to it before any native launch.
     /// A second executor cannot open the same ledger while its owner is live.
     pub fn open(root: &Path, target_id: &str, limits: LedgerLimits) -> Result<Self, Refusal> {
-        require(
-            selector(target_id)
-                && limits.jobs > 0
-                && limits.mutation_records >= limits.jobs
-                && limits.output_bytes > 0
-                && limits.output_bytes <= i64::MAX as u64
-                && limits.request_bytes > 0
-                && limits.database_bytes >= 128 * 1024
-                && limits.database_bytes <= i64::MAX as u64,
-            RefusalCode::Budget,
-            "ledger needs literal target identity and positive bounded storage, output and record limits",
-        )?;
+        limits.validate(target_id)?;
         #[cfg(unix)]
         let metadata = std::fs::symlink_metadata(root).map_err(unavailable)?;
         // SAFETY: geteuid has no pointer arguments and reads this process's UID.
