@@ -11,6 +11,9 @@ use std::{
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
+#[path = "task_action_tests.rs"]
+mod configured_task_action;
+
 struct Fixture {
     root: tempfile::TempDir,
     proxy: Proxy,
