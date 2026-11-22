@@ -384,6 +384,17 @@ fn add_inspection(
         .map_err(failure)?
         .canonicalize()
         .map_err(failure)?;
+    let disclosure = package
+        .operations
+        .values()
+        .find_map(|operation| operation.effects.get("disclosure"))
+        .cloned()
+        .unwrap_or_else(|| NamedEffect {
+            description:
+                "Disclose selected target observations into the agent sandbox for analysis.".into(),
+            persists_after_access: true,
+            evidence: vec!["package".into()],
+        });
     for (name, directory, mode) in [
         ("bundle-metadata", "relocated", "directory"),
         ("application-log", "logs/application.jsonl", "content"),
@@ -430,7 +441,7 @@ fn add_inspection(
                 environment: BTreeMap::new(), working_directory: settings.root.to_string_lossy().into_owned(), identity: identity.clone(),
                 filesystem: Filesystem { read, write: Vec::new() }, network: Network { destinations: Vec::new(), ipc: Vec::new() },
                 resources: ExecutionLimits { timeout_seconds: 10, output_bytes: 65536, memory_bytes: 268435456, processes: 1 }, delegated_services: Vec::new() },
-            effects: BTreeMap::from([("disclosure".into(), NamedEffect { description: "Disclose selected target file metadata or content into the agent sandbox for analysis.".into(), persists_after_access: true, evidence: vec!["package".into()] })]),
+            effects: BTreeMap::from([("disclosure".into(), disclosure.clone())]),
             enforcement: Enforcement { enforced: vec!["Typed inputs, exact executable identity, finite native resource and output bounds.".into()],
                 adopted: vec!["Operator-selected root, workload account, platform dependencies and explicitly broader permissions.".into()],
                 unresolved: vec!["Absent historical evidence remains a gap. A current observation or reinstall does not establish an earlier cause.".into()] },
@@ -740,6 +751,27 @@ pub(crate) fn command(args: &[String]) -> Result<bool, Refusal> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_starter_includes_native_inspection_without_conflicting_effects() {
+        let settings = Starter {
+            root: std::env::current_dir().unwrap().canonicalize().unwrap(),
+            service: "CaseService".into(),
+            credential: None,
+        };
+        let mut package = windows_starter_package(&settings).unwrap();
+        let identity = package.operations["service-status"]
+            .execution
+            .identity
+            .clone();
+        let disclosure = revision(&package.operations["service-status"].effects["disclosure"]);
+        add_inspection(&mut package, &settings, identity).unwrap();
+        package.validate().unwrap();
+        assert_eq!(
+            revision(&package.operations["bundle-metadata"].effects["disclosure"]),
+            disclosure
+        );
+    }
 
     #[test]
     fn windows_starter_paths_follow_the_selected_root_as_data() {
