@@ -456,6 +456,7 @@ fn project(
                         ]))
                     );
                     let permission = Permission {
+                        native_arguments: BTreeMap::new(),
                         id,
                         operation: name.clone(),
                         enforcement: enforced.and(enforcement.clone()),
@@ -815,6 +816,7 @@ fn alternatives(
                 .and_then(|path| cells(modeled, &[], Some(path)).0.into_iter().next())
                 .map_or_else(BTreeMap::new, |(_, arguments)| arguments);
             let permission = Permission {
+                native_arguments: BTreeMap::new(),
                 id: format!("alternative:{id}:{index}"),
                 operation: step.operation.clone(),
                 enforcement: ready.then(|| step.enforcement.clone()),
@@ -884,6 +886,23 @@ fn alternatives(
             "prerequisites":alternative.prerequisites,"unverified_prerequisites":alternative.unverified_prerequisites,
             "goal_suitability":"Unverified. Permission availability does not establish that this recipe meets the operator's goal.",
             "limitations":alternative.limitations,"evidence":alternative.evidence}));
+    }
+    // Generated native alternatives are reviewed recipes, not flat gateway
+    // permission claims. Challenge and operator/private review consume the
+    // same prepared arguments and limitations from the adopted definition.
+    if let Some(recipes) = service.raw["host_operation_guidance"]["alternatives"].as_object() {
+        for (id, recipe) in recipes {
+            let mut recipe = Value::Object(
+                recipe
+                    .as_object()
+                    .ok_or("Adopted host alternative must be an object")?
+                    .clone(),
+            );
+            recipe["id"] = json!(id);
+            recipe["access"] = json!("unverified_native_authority");
+            recipe["scope_limit"] = service.raw["host_operation_guidance"]["scope"].clone();
+            output.push(recipe);
+        }
     }
     Ok(json!(output))
 }

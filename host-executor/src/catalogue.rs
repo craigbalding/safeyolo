@@ -97,6 +97,10 @@ fn subset(actual: &Value, ceiling: &Value) -> bool {
 /// Code trust can allow new bytes; it never proves arbitrary code equivalence.
 pub fn within_operation(op: &Operation, ceiling: &Operation, allow_code: bool) -> bool {
     let (mut a, mut b) = (canonical_operation(op), canonical_operation(ceiling));
+    // Descriptions remain recorded changes, without changing execution or
+    // authority. Consequence annotations still participate in this comparison.
+    a.as_object_mut().unwrap().remove("description");
+    b.as_object_mut().unwrap().remove("description");
     for path in [
         "/resources",
         "/execution/filesystem/read",
@@ -187,7 +191,12 @@ pub fn within_operation(op: &Operation, ceiling: &Operation, allow_code: bool) -
 
 pub fn compare_operations(before: &Operation, after: &Operation) -> OperationChange {
     let (a, b) = (canonical_operation(before), canonical_operation(after));
-    let comparison = if a == b {
+    let without_description = |value: &Value| {
+        let mut value = value.clone();
+        value.as_object_mut().unwrap().remove("description");
+        value
+    };
+    let comparison = if without_description(&a) == without_description(&b) {
         Comparison::Equivalent
     } else if within_operation(after, before, false) {
         Comparison::Narrower
@@ -250,7 +259,7 @@ impl UpdateRule {
         op.enforcement.unresolved.is_empty()
             && within_operation(op, &self.ceiling, self.allow_implementation_updates)
             && (self.allow_narrower
-                || canonical_operation(op) == canonical_operation(&self.ceiling)
+                || compare_operations(&self.ceiling, op).comparison == Comparison::Equivalent
                 || self.allow_implementation_updates && within_operation(&self.ceiling, op, true))
     }
 }
@@ -572,7 +581,18 @@ impl CatalogueAdoption {
         let mut allowed = true;
         for (id, op) in &proposed.operations {
             let old = active.operations.get(id);
-            let change = old.map(|old| compare_operations(old, op));
+            let change = old.map(|old| {
+                let mut change = compare_operations(old, op);
+                change.assessment = proposed.operation_revisions(id).unwrap().understanding;
+                if revision(&active.semantics) != revision(&proposed.semantics) {
+                    change.differences.push(Difference {
+                        path: "/semantics".into(),
+                        before: json!(active.semantics),
+                        after: json!(proposed.semantics),
+                    });
+                }
+                change
+            });
             let equivalent = change
                 .as_ref()
                 .is_some_and(|c| c.comparison == Comparison::Equivalent);
@@ -603,7 +623,7 @@ impl CatalogueAdoption {
                         }],
                         implementation: op.implementation_sha256(),
                         authority: op.authority_sha256(),
-                        assessment: op.assessment_sha256(),
+                        assessment: proposed.operation_revisions(id).unwrap().understanding,
                     },
                 );
             }

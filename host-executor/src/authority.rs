@@ -167,6 +167,113 @@ impl Authorized<'_> {
 }
 
 impl Target {
+    /// Project represented current authority for read-only assessment. Use the
+    /// same exact/family selection and update trust as execution. Ledger usage
+    /// and fresh admission remain execution-time inputs.
+    pub fn effective_operations(&self, grant: &Grant) -> BTreeMap<String, OperationScope> {
+        if !grant.verbs.contains(&Verb::Invoke) || !self.allowed_verbs.contains(&Verb::Invoke) {
+            return BTreeMap::new();
+        }
+        self.package
+            .operations
+            .iter()
+            .filter_map(|(id, op)| {
+                let delegated = self.scope(id, op, &grant.operations, &grant.families)?;
+                let ceiling = self.scope(id, op, &self.ceiling, &self.families)?;
+                if !self.scope_is_current(id, op, delegated.scope, &grant.families)
+                    || !self.scope_is_current(id, op, ceiling.scope, &self.families)
+                    || !op.required_checks.is_subset(&delegated.scope.checks)
+                    || !op.required_checks.is_subset(&ceiling.scope.checks)
+                {
+                    return None;
+                }
+                let budgets = delegated
+                    .scope
+                    .budgets
+                    .intersect(&ceiling.scope.budgets, &op.execution.resources);
+                if budgets.calls == 0
+                    || budgets.concurrent == 0
+                    || budgets.timeout_seconds == 0
+                    || budgets.output_bytes == 0
+                {
+                    return None;
+                }
+                let resources: BTreeSet<_> = delegated
+                    .scope
+                    .resources
+                    .intersection(&ceiling.scope.resources)
+                    .filter(|r| op.resources.contains(*r))
+                    .cloned()
+                    .collect();
+                if resources.is_empty() {
+                    return None;
+                }
+                let arguments: BTreeMap<_, _> = op
+                    .arguments
+                    .iter()
+                    .map(|(name, arg)| {
+                        let choices = delegated
+                            .scope
+                            .arguments
+                            .get(name)
+                            .into_iter()
+                            .flatten()
+                            .filter(|v| {
+                                arg.accepts(v)
+                                    && ceiling
+                                        .scope
+                                        .arguments
+                                        .get(name)
+                                        .is_some_and(|allowed| allowed.contains(*v))
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        (name.clone(), choices)
+                    })
+                    .collect();
+                if op.arguments.iter().any(|(name, arg)| {
+                    (arg.required || arg.default.is_some()) && arguments[name].is_empty()
+                }) {
+                    return None;
+                }
+                Some((
+                    id.clone(),
+                    OperationScope {
+                        implementation_sha256: op.implementation_sha256(),
+                        resources,
+                        arguments,
+                        budgets,
+                        updates: None,
+                        checks: delegated
+                            .scope
+                            .checks
+                            .intersection(&ceiling.scope.checks)
+                            .cloned()
+                            .collect(),
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    fn scope_is_current(
+        &self,
+        id: &str,
+        op: &Operation,
+        scope: &OperationScope,
+        families: &[OperationFamily],
+    ) -> bool {
+        scope.implementation_sha256 == op.implementation_sha256()
+            || self
+                .catalogue
+                .as_ref()
+                .is_some_and(|s| s.active == revision(&self.package))
+                && (scope.updates.as_ref().is_some_and(|rule| rule.allows(op))
+                    || families
+                        .iter()
+                        .any(|f| std::ptr::eq(&f.scope, scope) && f.contains(id, op)))
+    }
+
     /// Bind only the selected operation and grant. The full-source identity is
     /// still disclosed separately; unrelated edits cannot invalidate this call.
     pub fn request_revisions(
@@ -203,9 +310,8 @@ impl Target {
             result.assessment = revision(&(
                 &trust.authority.assessment_revision,
                 self.package
-                    .operations
-                    .get(op)
-                    .map(Operation::assessment_sha256),
+                    .operation_revisions(op)
+                    .map(|r| r.understanding),
             ));
         }
         Ok(result)
@@ -253,6 +359,7 @@ impl Target {
                 &self.allowed_verbs,
                 self.max_authority_age_seconds,
                 &self.ceiling,
+                &self.families,
             )),
             assessment: trust.authority.assessment_revision.clone(),
         })
@@ -466,12 +573,16 @@ impl Target {
                 .map(|(id, op)| OperationDiscovery {
                     operation_id: id.clone(),
                     implementation_sha256: op.implementation_sha256(),
+                    semantic_revisions: self
+                        .package
+                        .operation_revisions(id)
+                        .expect("adopted operation"),
                     operation_sha256: self
                         .package
                         .operation_sha256(id)
                         .expect("adopted operation"),
                     authority_sha256: op.authority_sha256(),
-                    assessment_sha256: op.assessment_sha256(),
+                    assessment_sha256: self.package.operation_revisions(id).unwrap().understanding,
                     revisions: self
                         .request_revisions(
                             &authorized.request.issuer_id,
@@ -546,28 +657,17 @@ impl Target {
         let (delegated, ceiling) = (delegated.scope, ceiling.scope);
         let arguments = op.arguments(&invocation.arguments)?;
         op.command(&arguments)?;
-        for (scope, used) in [(delegated, usage.issuer), (ceiling, usage.target)] {
+        for (scope, used, families) in [
+            (delegated, usage.issuer, &authorized.grant.families),
+            (ceiling, usage.target, &self.families),
+        ] {
             require(
                 used.admitted < scope.budgets.calls && used.active < scope.budgets.concurrent,
                 RefusalCode::Budget,
                 "selected issuer or target admission budget is exhausted",
             )?;
             require(
-                scope.implementation_sha256 == op.implementation_sha256()
-                    || self
-                        .catalogue
-                        .as_ref()
-                        .is_some_and(|s| s.active == revision(&self.package))
-                        && (scope.updates.as_ref().is_some_and(|rule| rule.allows(op))
-                            || authorized
-                                .grant
-                                .families
-                                .iter()
-                                .chain(&self.families)
-                                .any(|f| {
-                                    std::ptr::eq(&f.scope, scope)
-                                        && f.contains(&invocation.operation_id, op)
-                                })),
+                self.scope_is_current(&invocation.operation_id, op, scope, families),
                 RefusalCode::Stale,
                 "authority is bound to another implementation",
             )?;

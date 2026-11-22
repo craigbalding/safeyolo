@@ -14,11 +14,18 @@ pub struct Package {
     pub version: u64,
     pub source: Source,
     pub operations: BTreeMap<String, Operation>,
+    /// Absent means uncharacterised host semantics, not absence of effects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantics: Option<HostSemantics>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Operation {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantics: Option<HostOperationSemantics>,
     pub resources: BTreeSet<String>,
     pub arguments: BTreeMap<String, Argument>,
     pub execution: Execution,
@@ -59,7 +66,7 @@ pub enum ArgumentType {
 }
 
 impl Argument {
-    fn accepts(&self, value: &Value) -> bool {
+    pub fn accepts(&self, value: &Value) -> bool {
         match self.kind {
             ArgumentType::String => value.is_string(),
             ArgumentType::Integer => value.as_i64().is_some() || value.as_u64().is_some(),
@@ -202,7 +209,9 @@ impl Operation {
 
     pub fn authority_sha256(&self) -> String {
         let mut operation = crate::catalogue::canonical_operation(self);
-        operation.as_object_mut().unwrap().remove("effects");
+        for field in ["effects", "description", "semantics"] {
+            operation.as_object_mut().unwrap().remove(field);
+        }
         operation["execution"]["executable_sha256"] = Value::Null;
         for dependency in operation["execution"]["dependencies"]
             .as_object_mut()
@@ -220,6 +229,7 @@ impl Operation {
             &operation["effects"],
             &operation["enforcement"],
             &self.required_checks,
+            &self.semantics,
         ))
     }
 
@@ -336,6 +346,7 @@ impl Package {
             &self.name,
             id,
             crate::catalogue::canonical_operation(op),
+            &self.semantics,
         )))
     }
 
@@ -408,6 +419,7 @@ impl Package {
                 }
             }
         }
+        self.validate_semantics()?;
         Ok(())
     }
 }

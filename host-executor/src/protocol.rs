@@ -183,6 +183,7 @@ impl std::error::Error for Refusal {}
 pub struct OperationDiscovery {
     pub operation_id: String,
     pub implementation_sha256: String,
+    pub semantic_revisions: HostOperationRevisions,
     pub operation_sha256: String,
     pub authority_sha256: String,
     pub assessment_sha256: String,

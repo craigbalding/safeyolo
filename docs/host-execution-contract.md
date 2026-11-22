@@ -138,9 +138,12 @@ absent. A default is normalized before scope comparison.
 
 One `Package` holds the stable operations/resources, typed arguments and
 defaults, execution specifications, native effect declarations and enforcement
-disclosures. `Package::projections()` derives the target material and native
-gateway service/effect material. Both carry the common package version and
-digest. `verify_projections()` checks them against regeneration. The target and
+disclosures. Optional `semantics` carries reviewed resource identity,
+conditional effects, composition rules, alternatives, evidence and limitations.
+Missing identity and consequence annotations remain explicit assessment gaps.
+`Package::projections()` derives the target material, native gateway definitions
+and shared effect-assessment definition. They carry the common package version
+and digest. `verify_projections()` checks them against regeneration. The target and
 gateway adoption owners must verify those projections against the approved
 package; a caller-supplied digest alone is not adoption authority.
 
@@ -148,10 +151,36 @@ The current native effect model identifies operations by method/path. The
 generator therefore emits one service projection per package operation, each
 with the same stable invocation route and its own selector/argument contract.
 These are ordinary native service definitions, not another route matcher.
-The existing effect analyser cannot prove identity through the nested signed
-body. Projections retain an unresolved resource identity and no unsupported
-effect-enforcement mapping. They do not claim that route access authorizes the
-payload. The target's independent checks remain mandatory.
+The existing route analyser cannot prove identity through the nested signed
+body. Route projections retain unresolved native identities and no unsupported
+effect-enforcement mapping. They reuse the adopted explanations and narrower
+alternatives in private assessment, challenge and operator review. They do not
+claim that route access authorizes the payload. The target's independent checks
+remain mandatory.
+
+The [host authoring workflow](service-authoring.md#author-host-operation-packages)
+also assesses complete native operation scopes through the existing effect
+evaluator. Target-owned grants and ceiling values supply target/resource
+identity, typed argument choices, execution principal and validity. The
+assessment composes current/proposed authority with supplied retained-effect
+observations. Expiry does not remove earlier writes, disclosures or persistence.
+Unobserved historical state and ambient dependency/alias relationships remain
+explicit limitations. This read-only assessment does not replace issuer policy,
+target admission or the agent/task gateway adapter.
+
+Discovery includes separate semantic revisions for implementation, enforceable
+authority, adopted understanding and description. The existing
+`implementation_sha256` remains the exact complete-operation admission pin.
+Its change alone is not a claim that executable bytes changed. A description
+edit leaves the semantic implementation revision unchanged. A changed recipe
+or executable hash changes that revision even when the description is unchanged.
+A shared model correction changes understanding, the operation pin and prepared
+assessment inputs. A stale prepared invocation is refused even when executable
+bytes remain identical. Catalogue review records that model change separately
+from the enforceable authority comparison. Catalogue review records
+description-only changes as equivalent. Existing exact grant pins and standing
+update rules still apply.
+
 Discovery discloses the full adopted definitions, including literal environment
 values, to a grant with the discovery action. Adoption must account for that
 disclosure. Host-held service credentials remain with their existing owners;

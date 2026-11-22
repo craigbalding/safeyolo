@@ -275,6 +275,8 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
         .collect();
         read.push(root.join("allowed").to_str().unwrap().into());
         let operation = Operation {
+            description: String::new(),
+            semantics: None,
             required_checks: Default::default(),
             resources: ["fixture".into()].into(),
             arguments: BTreeMap::new(),

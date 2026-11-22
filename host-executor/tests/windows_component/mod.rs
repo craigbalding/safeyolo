@@ -121,6 +121,8 @@ fn operation(
     root: &Path,
 ) -> Operation {
     Operation {
+        description: String::new(),
+        semantics: None,
         required_checks: Default::default(),
         resources: ["fixture".into()].into(), arguments: BTreeMap::new(),
         execution: Execution {
