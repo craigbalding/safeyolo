@@ -16,6 +16,9 @@ fn fixture() -> (Target, Ed25519KeyPair, CatalogueAdoption) {
     op.arguments.clear();
     op.execution.argv.truncate(1);
     op.enforcement.unresolved.clear();
+    op.enforcement
+        .enforced
+        .push("second represented boundary".into());
     let mut target = common::target("catalogue-fixture".into(), package.operations, &key);
     target.package.name = "catalogue-fixture".into();
     let rule = UpdateRule {
@@ -193,6 +196,13 @@ fn cosmetic_narrower_and_trusted_code_changes_are_quiet_and_separate_identities(
     let mut candidate = target.package.clone();
     candidate.version += 1;
     candidate.source.version = "publisher metadata update".into();
+    candidate
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .enforcement
+        .enforced
+        .reverse();
     let old = candidate.operations["restart"].clone();
     candidate
         .operations
@@ -265,6 +275,14 @@ fn expansions_defaults_identity_effects_and_missing_enforcement_cannot_inherit_a
             serde_json::json!("untrusted replacement explanation"),
         ),
         ("/enforcement/enforced", serde_json::json!([])),
+        ("/enforcement/enforced", {
+            let mut claims = base["enforcement"]["enforced"].clone();
+            claims
+                .as_array_mut()
+                .unwrap()
+                .push("unproved new guarantee".into());
+            claims
+        }),
         (
             "/enforcement/unresolved",
             serde_json::json!(["cannot enforce filesystem"]),

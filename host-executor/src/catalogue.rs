@@ -104,8 +104,6 @@ pub fn within_operation(op: &Operation, ceiling: &Operation, allow_code: bool) -
         "/execution/network/destinations",
         "/execution/network/ipc",
         "/execution/broader",
-        "/enforcement/adopted",
-        "/enforcement/unresolved",
     ] {
         if !subset(a.pointer(path).unwrap(), b.pointer(path).unwrap()) {
             return false;
@@ -113,13 +111,13 @@ pub fn within_operation(op: &Operation, ceiling: &Operation, allow_code: bool) -
         *a.pointer_mut(path).unwrap() = Value::Null;
         *b.pointer_mut(path).unwrap() = Value::Null;
     }
-    for path in ["/required_checks", "/enforcement/enforced"] {
-        if !subset(b.pointer(path).unwrap(), a.pointer(path).unwrap()) {
-            return false;
-        }
-        *a.pointer_mut(path).unwrap() = Value::Null;
-        *b.pointer_mut(path).unwrap() = Value::Null;
+    // Free-text enforcement disclosures are assessment inputs, not a proof
+    // that a claimed new guarantee is implemented by the selected backend.
+    if !subset(&b["required_checks"], &a["required_checks"]) {
+        return false;
     }
+    a["required_checks"] = Value::Null;
+    b["required_checks"] = Value::Null;
     for field in [
         "timeout_seconds",
         "output_bytes",
