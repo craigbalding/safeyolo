@@ -661,7 +661,9 @@ def test_installed_lab_stages_skills_without_the_optional_python_checker(tmp_pat
         assert result.returncode != 0
         staged = instance.root / "agents/lab-staging/config-share/skills"
         assert (staged / "safeyolo/SKILL.md").read_bytes() == instructions
-        assert not list(staged.rglob("*.py"))
+        host_client = Path("safeyolo/scripts/host-operation.py")
+        assert {path.relative_to(staged) for path in staged.rglob("*.py")} == {host_client}
+        assert (staged / host_client).read_bytes() == (skill / "scripts/host-operation.py").read_bytes()
         assert not (staged / "safeyolo/references/github-checks.md").exists()
         assert (staged / "safeyolo-lab-controller/scripts/safeyolo-lab").is_file()
         assert (home / ".agents/skills/safeyolo").readlink() == Path("/safeyolo/skills/safeyolo")
