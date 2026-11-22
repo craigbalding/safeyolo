@@ -38,7 +38,7 @@ fi
 
 sudo -n apt-get update -qq
 sudo -n apt-get install -y -qq --no-install-recommends \
-    openssh-server uidmap acl util-linux iproute2 tmux curl gnupg ca-certificates
+    openssh-server uidmap acl util-linux iproute2 tmux curl gnupg ca-certificates xvfb x11-utils
 getsubids "$USER"
 getsubids -g "$USER"
 # Use the same signed gVisor repository as the nightly source lane.
@@ -48,7 +48,7 @@ printf 'deb [arch=%s signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] h
     "$(dpkg --print-architecture)" | sudo -n tee /etc/apt/sources.list.d/gvisor.list
 sudo -n apt-get update -qq
 sudo -n apt-get install -y -qq --no-install-recommends runsc
-for command in runsc newuidmap newgidmap setfacl unshare tmux; do
+for command in runsc newuidmap newgidmap setfacl unshare tmux Xvfb xdpyinfo; do
     command -v "$command"
 done
 runsc --version
