@@ -92,6 +92,8 @@ upstream/checker results complement the installed selection; they do not prove
 native containment or repeat the separate finite model measurement.
 
 The existing prebuilt Windows fixture also drives the packaged starter recipes.
+Its starter runtime qualification remains incomplete; a build or parser check
+does not establish successful native operations or service-mode execution.
 Use a disposable Windows target with the separate ordinary workload account,
 executor-owned credential and protected paths from the
 [Windows setup](../../docs/host-operations.md#windows-foreground-and-windows-service).
