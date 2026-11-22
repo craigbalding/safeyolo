@@ -1682,13 +1682,9 @@ fn application_operations(f: &mut Fixture) {
     f.target.package.semantics = Some(serde_json::from_value(json!({
         "sources":{"fixture":{"location":"host-executor/tests/native_fixture.c and independent host file reads","version":"1"}},
         "resources":{"application":{"description":"Owned synthetic application configuration","identity":["target","id"]}},
-        "rules":{"changed_configuration_execution":{
-            "when":{"kind":"all_effects_same_scope","resource":"application","effects":["write_config","execute"]},
-            "prerequisites":[],"consequence":"Execute with the changed synthetic configuration.",
-            "explanation":"A retained write combines with execution on the same target and application.",
-            "evidence":["fixture"],"gaps":["Ambient dependencies and unobserved historical writes remain unknown."]
-        }},"alternatives":{},"gaps":[]
+        "rules":{},"alternatives":{},"gaps":[]
     })).unwrap());
+    f.target.validate().unwrap();
     let path = f.root.join("target.json");
     let mut configuration: Configuration =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -1763,6 +1759,12 @@ fn application_assessment(
         .package
         .operations
         .insert(writer_id.clone(), writer);
+    settings.target.package.semantics.as_mut().unwrap().rules = serde_json::from_value(json!({"changed_configuration_execution":{
+        "when":{"kind":"all_effects_same_scope","resource":"application","effects":["write_config","execute"]},
+        "prerequisites":[],"consequence":"Execute with the changed synthetic configuration.",
+        "explanation":"A retained write combines with execution on the same target and application.",
+        "evidence":["fixture"],"gaps":["Ambient dependencies and unobserved historical writes remain unknown."]
+    }})).unwrap();
     let grants = &mut settings
         .target
         .issuers
@@ -1780,6 +1782,7 @@ fn application_assessment(
             !id.starts_with("execute-config-") || only_execute.is_none_or(|selected| id == selected)
         });
     }
+    settings.target.validate().unwrap();
     let config = f.root.join(format!("assessment-{label}.json"));
     let effects = f.root.join(format!("history-{label}.json"));
     fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
@@ -1851,6 +1854,15 @@ fn installed_adaptive_investigation_and_retained_configuration_effects() {
     let mut second = fixture(16, 128 * 1024);
     application_operations(&mut first);
     application_operations(&mut second);
+    // Each selected case owns its starting service state, including when the
+    // preceding case has already stopped it.
+    let (running, _) = first.invoke("service-start");
+    assert_eq!(
+        first
+            .terminal_with_timeout(&running.job_id, Duration::from_secs(40))
+            .state,
+        JobState::Completed
+    );
     let (preparation, _) = first.invoke("service-stop");
     assert_eq!(
         first.terminal(&preparation.job_id).state,
