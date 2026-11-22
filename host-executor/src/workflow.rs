@@ -440,7 +440,9 @@ fn add_inspection(
                     Word::Literal { value: "--kind".into() }, Word::Literal { value: mode.into() }, Word::Literal { value: "--limit".into() }, Word::Argument { name: "limit".into() }],
                 environment: BTreeMap::new(), working_directory: settings.root.to_string_lossy().into_owned(), identity: identity.clone(),
                 filesystem: Filesystem { read, write: Vec::new() }, network: Network { destinations: Vec::new(), ipc: Vec::new() },
-                resources: ExecutionLimits { timeout_seconds: 10, output_bytes: 65536, memory_bytes: 268435456, processes: 1 }, delegated_services: Vec::new() },
+                // Linux counts bubblewrap's monitor and PID-namespace init
+                // alongside the inspected program in the job cgroup.
+                resources: ExecutionLimits { timeout_seconds: 10, output_bytes: 65536, memory_bytes: 268435456, processes: if cfg!(target_os = "linux") { 3 } else { 1 } }, delegated_services: Vec::new() },
             effects: BTreeMap::from([("disclosure".into(), disclosure.clone())]),
             enforcement: Enforcement { enforced: vec!["Typed inputs, exact executable identity, finite native resource and output bounds.".into()],
                 adopted: vec!["Operator-selected root, workload account, platform dependencies and explicitly broader permissions.".into()],

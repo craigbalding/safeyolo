@@ -769,6 +769,26 @@ fn installed_check_serve_and_reload_share_ledger_validation() {
 
 #[test]
 #[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]
+fn installed_unix_read_paths_resolve_without_sibling_contents() {
+    let mut f = fixture(16, 1024 * 1024);
+    let (admitted, _) = f.invoke("observe");
+    let result = f.terminal(&admitted.job_id);
+    assert_eq!(result.state, JobState::Completed, "{result:?}");
+    assert!(result.native.as_ref().unwrap().processes_stopped);
+    let Response::Output { data_base64, .. } = f.call(Action::Output {
+        job_id: result.job_id,
+        offset: 0,
+        max_bytes: 4096,
+    }) else {
+        panic!("native output unavailable");
+    };
+    let output = String::from_utf8(STANDARD.decode(data_base64).unwrap()).unwrap();
+    assert!(output.contains("canonical=1"), "{output}");
+    assert!(output.contains("allowed=1 forbidden=0 write=0"), "{output}");
+}
+
+#[test]
+#[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]
 fn installed_unix_bounds_lifecycle_reload_and_lost_reply() {
     let mut f = fixture(16, 1024 * 1024);
     for mode in [

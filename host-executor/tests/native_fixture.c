@@ -21,6 +21,9 @@ int main(int argc, char **argv) {
         printf("uid=%u gid=%u groups=", getuid(), getgid());
         for (int i = 0; i < count; ++i) printf("%s%u", i ? "," : "", groups[i]);
         puts("");
+        char resolved[PATH_MAX];
+        int canonical = realpath(argv[2], resolved) != NULL;
+        printf("canonical=%d\n", canonical);
         FILE *allowed = fopen(argv[2], "r");
         FILE *forbidden = fopen(argv[3], "r");
         char destination[PATH_MAX];
@@ -48,7 +51,7 @@ int main(int argc, char **argv) {
                allowed != NULL, forbidden != NULL, write != NULL, net, ipc,
                getenv("FIXTURE") ? getenv("FIXTURE") : "absent",
                getenv("HOME") ? getenv("HOME") : "absent");
-        return allowed && !forbidden && !write && net == -1 && ipc == -1 && huge_refused
+        return canonical && allowed && !forbidden && !write && net == -1 && ipc == -1 && huge_refused
             && getenv("FIXTURE") && !strcmp(getenv("FIXTURE"), "native")
             && !getenv("HOME") ? 0 : 3;
     }

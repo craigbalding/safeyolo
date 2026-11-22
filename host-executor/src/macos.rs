@@ -276,6 +276,18 @@ impl MacRuntime {
         }
         for path in &op.execution.filesystem.read {
             let real = Path::new(path).canonicalize().map_err(unavailable)?;
+            // realpath resolves each parent before opening the adopted path.
+            // Parent metadata grants no sibling content or directory listing.
+            for parent in real.ancestors().skip(1) {
+                profile.push_str(&format!(
+                    "(allow file-read-metadata (literal {}))",
+                    quoted(
+                        parent
+                            .to_str()
+                            .ok_or_else(|| unavailable("read parent is not UTF-8"))?
+                    )
+                ));
+            }
             profile.push_str(&format!(
                 "(allow file-read* (subpath {}))",
                 quoted(
@@ -371,9 +383,9 @@ impl MacRuntime {
             fs::remove_file(snapshot).map_err(unavailable)?;
             child.reaped = true;
         }
-        let mut result = NativeObservation { backend: "macos-seatbelt-no-fork".into(), enforcement: vec!["Seatbelt read paths, no file writes, no direct socket connections or Mach lookups, no process fork, pinned private executable snapshot and exact environment".into(), "single process; observed waitpid termination; bounded retained output and wall deadline while the executor remains live".into()], dependencies: vec!["EXPLICIT BROADER MEMORY: resident memory is polled; transient allocations and kernel pressure are not hard-capped".into(), "EXPLICIT BROADER EXECUTOR RESTART: a controller crash may leave the process running beyond its deadline; restart retains unknown cleanup and concurrency until the recorded process birth is absent. macOS Seatbelt, baseline sysctl reads and host-owned libraries are required".into()], exit_code: status.and_then(|s| std::process::ExitStatus::from_raw(s).code()), signal: status.and_then(|s| std::process::ExitStatus::from_raw(s).signal()), processes_stopped: stopped, output_truncated: truncated, termination_reason: reason.into() };
+        let mut result = NativeObservation { backend: "macos-seatbelt-no-fork".into(), enforcement: vec!["Seatbelt adopted read paths and ancestor directory metadata, no file writes, no direct socket connections or Mach lookups, no process fork, pinned private executable snapshot and exact environment".into(), "single process; observed waitpid termination; bounded retained output and wall deadline while the executor remains live".into()], dependencies: vec!["EXPLICIT BROADER MEMORY: resident memory is polled; transient allocations and kernel pressure are not hard-capped".into(), "EXPLICIT BROADER EXECUTOR RESTART: a controller crash may leave the process running beyond its deadline; restart retains unknown cleanup and concurrency until the recorded process birth is absent. macOS Seatbelt, baseline sysctl reads and host-owned libraries are required".into()], exit_code: status.and_then(|s| std::process::ExitStatus::from_raw(s).code()), signal: status.and_then(|s| std::process::ExitStatus::from_raw(s).signal()), processes_stopped: stopped, output_truncated: truncated, termination_reason: reason.into() };
         if service {
-            result.enforcement[0] = "Seatbelt read paths, no file writes, no direct sockets or fork; the pinned trusted launchctl client receives Mach lookup and, for stop/restart, native signal permission, with fixed adopted action/resource and exact environment".into();
+            result.enforcement[0] = "Seatbelt adopted read paths and ancestor directory metadata, no file writes, no direct sockets or fork; the pinned trusted launchctl client receives Mach lookup and, for stop/restart, native signal permission, with fixed adopted action/resource and exact environment".into();
             result.dependencies.push("EXPLICIT BROADER NETWORK/IPC: Mach lookup scope is not per-service isolation; the OS client and its system libraries are trusted executor code".into());
             result.dependencies.push(crate::unix_services::disclosure());
         }

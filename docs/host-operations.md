@@ -12,6 +12,12 @@ signing credentials, private assessment and approvals. Installation grants no
 agent access. An operation proposal cannot adopt code, change the ceiling or
 enrol an issuer.
 
+On Linux, the operation's process limit includes bubblewrap's monitor and
+namespace init; the Unix starter reserves three processes for its native
+inspection program. On macOS, resolving an adopted read path also permits
+metadata reads of its ancestor directories. It grants no sibling file contents
+or ancestor directory listing.
+
 ## Acquire and prepare the target
 
 Download the standalone ZIP for the required OS/architecture and selected source
@@ -261,11 +267,22 @@ For a Unix target on the same host it is:
 ```
 
 `host_bindings.NAME` is the JSON-encoded binding string in the existing TOML
-policy. Add explicit `gateway:request` permission for the selected service's
-native paths using the existing policy owner. Check and privately assess the
-complete candidate policy before `safeyolo policy apply FILE`. Do not replace
-unrelated policy with a binding fragment. The gateway rechecks the active task,
-current run, grant, vault and route/check policy before every dispatch.
+policy. Give the activated operator task explicit `gateway:request` permission
+for the selected service's native paths. For a binding with service `case-host`
+and agent `investigator`, the task's IAM `permissions` array includes:
+
+```json
+{"action":"gateway:request","resource":"case-host:/v1/host-execution/*","effect":"allow","condition":{"agent":"investigator"}}
+```
+
+Use the existing operator task registration/activation controls and calculate
+`task_revision` from that complete task document. A host policy with a `hosts`
+table compiles host rules; appending an IAM `permissions` array there does not
+add these gateway permissions. A policy using the IAM form without `hosts` can
+carry them directly. Check and privately assess the complete candidate policy
+before `safeyolo policy apply FILE`. Do not replace unrelated policy with a
+binding fragment. The gateway rechecks the active task, current run, grant,
+vault and route/check policy before every dispatch.
 
 Remote transport validates the adopted certificate chain and endpoint name
 before sending any signed request. There are no redirects or automatic retries.
