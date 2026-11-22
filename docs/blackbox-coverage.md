@@ -1259,7 +1259,7 @@ Selection: manual `native-authority --suite host-execution` (prepared installed 
 - [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_user_service_profiles_and_channel_refusals -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1153) — `#![cfg(unix)]`; `#[ignore = "requires SAFEYOLO_HOST_EXECUTOR_SERVICE naming an operator-prepared owned user service"]`
 - [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1322) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
 - [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_api_authentication_and_cross_principal_reads_cannot_change_authority -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1386) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_adaptive_investigation_and_retained_configuration_effects -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1848) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture, installed assessor CLI and owned user service"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_adaptive_investigation_and_retained_configuration_effects -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1853) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture, installed assessor CLI and owned user service"]`
 
 <a id="witness-proxy-tests-host-execution-rs"></a>
 ### [`proxy/tests/host_execution.rs`](../proxy/tests/host_execution.rs)
@@ -2596,8 +2596,8 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 - [`tests/test_blackbox_catalogue.py::test_unresolved_shared_phase_operand_cannot_pass_generation`](../tests/test_blackbox_catalogue.py#L203)
 - [`tests/test_blackbox_catalogue.py::test_cargo_identity_requires_its_real_module_and_keeps_ignore_selection`](../tests/test_blackbox_catalogue.py#L215)
 - [`tests/test_blackbox_catalogue.py::test_native_host_selection_retains_partial_observations`](../tests/test_blackbox_catalogue.py#L242)
-- [`tests/test_blackbox_catalogue.py::test_native_host_missing_service_is_incomplete_without_dispatch`](../tests/test_blackbox_catalogue.py#L300)
-- [`tests/test_blackbox_catalogue.py::test_native_case_requires_one_executed_test_instead_of_target_pass_text`](../tests/test_blackbox_catalogue.py#L315)
+- [`tests/test_blackbox_catalogue.py::test_native_host_missing_input_is_incomplete_without_dispatch`](../tests/test_blackbox_catalogue.py#L304)
+- [`tests/test_blackbox_catalogue.py::test_native_case_requires_one_executed_test_instead_of_target_pass_text`](../tests/test_blackbox_catalogue.py#L321)
 
 <a id="witness-tests-proxy-contracts-test-shared-authority-assurance-py"></a>
 ### [`tests/proxy_contracts/test_shared_authority_assurance.py`](../tests/proxy_contracts/test_shared_authority_assurance.py)

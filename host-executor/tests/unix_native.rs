@@ -1779,7 +1779,12 @@ fn application_assessment(
     grants.insert("expired-writer".into(), expired);
     for grant in grants.values_mut() {
         grant.operations.retain(|id, _| {
-            !id.starts_with("execute-config-") || only_execute.is_none_or(|selected| id == selected)
+            (label == "unknown-authority"
+                || id.starts_with("read-config-")
+                || id.starts_with("execute-config-")
+                || id.starts_with("write-config-"))
+                && (!id.starts_with("execute-config-")
+                    || only_execute.is_none_or(|selected| id == selected))
         });
     }
     settings.target.validate().unwrap();
@@ -1885,6 +1890,14 @@ fn installed_adaptive_investigation_and_retained_configuration_effects() {
         "scopes":{"application":{"target":{"kind":"known","value":first.target.target_id},"id":{"kind":"known","value":format!("application:{resource}")}}},
         "effects":["write_config"],"evidence":[{"location":format!("host setup edit after diagnostic job {}; independently read retained file",read.job_id),"version":hash(&first.root.join(format!("config-{resource}")))}]
     }]);
+    application_assessment(
+        &mut first,
+        "unknown-authority",
+        &serde_json::json!([]),
+        resource,
+        None,
+        "unresolved",
+    );
     application_assessment(
         &mut first,
         "without-history",

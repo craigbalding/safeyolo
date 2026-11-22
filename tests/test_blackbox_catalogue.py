@@ -297,15 +297,21 @@ def test_native_host_selection_retains_partial_observations(tmp_path, monkeypatc
         assert "unverified" in rows[1]["cleanup"]
 
 
-def test_native_host_missing_service_is_incomplete_without_dispatch(tmp_path, monkeypatch):
+@pytest.mark.parametrize("missing,error,message", [
+    ("SAFEYOLO_HOST_EXECUTOR_SERVICE", ValueError, "prepared owned service"),
+    ("SAFEYOLO_HOST_ASSESSOR_BIN", KeyError, "SAFEYOLO_HOST_ASSESSOR_BIN"),
+])
+def test_native_host_missing_input_is_incomplete_without_dispatch(tmp_path, monkeypatch, missing, error, message):
     from tests.blackbox import native_authority
 
     executable = tmp_path / "fixture"
     executable.touch()
     monkeypatch.setenv("SAFEYOLO_HOST_EXECUTOR_PROBE", str(executable))
-    monkeypatch.delenv("SAFEYOLO_HOST_EXECUTOR_SERVICE", raising=False)
+    monkeypatch.setenv("SAFEYOLO_HOST_EXECUTOR_SERVICE", "owned-test.service")
+    monkeypatch.setenv("SAFEYOLO_HOST_ASSESSOR_BIN", str(executable))
+    monkeypatch.delenv(missing, raising=False)
     output = tmp_path / "results"
-    with pytest.raises(ValueError, match="prepared owned service"):
+    with pytest.raises(error, match=message):
         native_authority.run(executable, output, suite="host-execution", executor=executable)
     report = json.loads((output / "result.json").read_text())
     assert report["complete"] is False
