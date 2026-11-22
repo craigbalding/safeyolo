@@ -231,6 +231,8 @@ def selection(witness: dict, reference: str, node: dict, commands: list[dict], p
                 selected.append(f"phase `{phase}` ({PYTEST_PHASES[phase][0]})")
         matches = [command for command in commands if pytest_selected(command, node["node"])]
     elif witness["kind"] == "cargo":
+        if node["node"] in witness.get("helpers", {}):
+            return ["child helper: " + witness["helpers"][node["node"]]]
         matches = [command for command in commands if cargo_selected(witness, node, command)]
         for phase, groups in NATIVE_PHASES.items():
             if any(witness["target"] == target and (not prefix or node["node"].startswith(prefix + "::"))

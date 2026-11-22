@@ -133,6 +133,8 @@ def test_current_catalogue_resolves_all_controls_and_external_families():
 def test_host_protocol_selection_includes_nested_configured_checks_once():
     groups = execution_receipt.native_cases("host-execution", ROOT)
     assert len(groups) == 2
+    assert "durable_crash_child" not in groups[0][2]
+    assert "durable_process_failure_after_committed_admission" in groups[0][2]
     cases = groups[1][2]
     assert len(cases) == len(set(cases))
     assert any(name.startswith("host_execution::gateway::tests::configured_task_action::") for name in cases)
@@ -256,7 +258,10 @@ def test_native_host_selection_retains_partial_observations(tmp_path, monkeypatc
         if failure == "timeout" and case == "second":
             raise subprocess.TimeoutExpired(argv, 300)
         result = "ignored" if failure == "ignored" and case == "second" else "ok"
-        kwargs["stdout"].write(f"test {case} ... {result}\n")
+        kwargs["stdout"].write(f"test {case} ... independent observation\n{result}\n")
+        kwargs["stdout"].write("test result: ok. " +
+                               ("0 passed; 0 failed; 1 ignored;\n" if result == "ignored"
+                                else "1 passed; 0 failed; 0 ignored;\n"))
         return subprocess.CompletedProcess(argv, 1 if failure == "failure" and case == "second" else 0)
 
     monkeypatch.setattr(native_authority.subprocess, "run", command)
@@ -292,3 +297,11 @@ def test_native_host_missing_service_is_incomplete_without_dispatch(tmp_path, mo
     report = json.loads((output / "result.json").read_text())
     assert report["complete"] is False
     assert all(not control["executed"] for control in report["controls"].values())
+
+
+def test_native_case_requires_one_executed_test_instead_of_target_pass_text():
+    from tests.blackbox.native_authority import rust_case_passed
+
+    assert not rust_case_passed(0, "target says PASS\n")
+    assert not rust_case_passed(0, "test result: ok. 0 passed; 0 failed; 0 ignored;\n")
+    assert not rust_case_passed(0, "test result: ok. 0 passed; 0 failed; 1 ignored;\n")

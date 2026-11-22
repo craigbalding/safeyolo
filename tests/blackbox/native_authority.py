@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import re
 import subprocess
 import uuid
 from pathlib import Path
@@ -28,6 +29,12 @@ from pathlib import Path
 from tests.blackbox.execution_receipt import ProcedureReceipt, controller_identity, save
 from tests.blackbox.installed_host_smoke import _sha256
 from tests.blackbox.selections import HOST_EXECUTION_AUTHORITY, NATIVE_AUTHORITY
+
+
+def rust_case_passed(status: int, output: str) -> bool:
+    """Recognise one executed libtest case even with interleaved observations."""
+    return status == 0 and bool(re.search(
+        r"^test result: ok\. 1 passed; 0 failed; 0 ignored;", output, re.MULTILINE))
 
 
 def run(executable: Path, output: Path, *, suite="coord", executor: Path | None = None) -> None:
@@ -111,7 +118,7 @@ def run(executable: Path, output: Path, *, suite="coord", executor: Path | None 
                     result = subprocess.run(command,
                                             stdout=diagnostics, stderr=subprocess.STDOUT, env=env, timeout=300)
                 row.update(exit=result.returncode,
-                           passed=result.returncode == 0 and f"test {case} ... ok" in log.read_text())
+                           passed=rust_case_passed(result.returncode, log.read_text()))
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 row["error"] = type(error).__name__ + ": " + str(error)
                 if execution_started and isinstance(error, subprocess.TimeoutExpired):

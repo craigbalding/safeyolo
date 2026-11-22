@@ -37,7 +37,7 @@ required account/containment launcher when invoking this command.
 bash tests/blackbox/run-controls.sh native-authority --suite host-execution --test-executable /owned/unix_native --executor /owned/safeyolo-host-executor --output /owned/host-operation-results
 ```
 
-Success requires all six selected cases to execute and pass. `result.json`
+Success requires all eight selected cases to execute and pass. `result.json`
 retains the host, controller, installed executable/version, fixture/probe
 digests, exact cases and exits. Each case retains its log and the existing
 procedure receipt. Missing inputs, an ignored/missing case, a failure or a

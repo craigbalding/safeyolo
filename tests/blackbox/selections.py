@@ -157,6 +157,8 @@ HOST_EXECUTION_AUTHORITY = {
         "installed_unix_bounds_lifecycle_reload_and_lost_reply",
         "installed_storage_exhaustion_preserves_output_replay_and_restart",
         "installed_user_service_profiles_and_channel_refusals",
+        "installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch",
+        "installed_api_authentication_and_cross_principal_reads_cannot_change_authority",
     ),
 }
 

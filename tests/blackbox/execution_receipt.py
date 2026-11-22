@@ -405,7 +405,8 @@ def native_cases(phase: str, root: Path) -> list[tuple[str, str, list[str]]]:
                     and (witness["module"] == module
                          or module and witness["module"].startswith(module + "::"))):
                 for reference in witness["paths"]:
-                    names += [node["node"] for node in resolve(witness, reference, root)]
+                    names += [node["node"] for node in resolve(witness, reference, root)
+                              if node["node"] not in witness.get("helpers", {})]
         if not names or len(names) != len(set(names)):
             raise ValueError(f"missing or duplicate native identities: {target}/{module}")
         groups.append((target, module, sorted(names)))

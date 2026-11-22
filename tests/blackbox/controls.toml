@@ -476,6 +476,7 @@ kind = "cargo"
 target = "host_execution"
 module = ""
 owner = "proxy/tests/host_execution.rs"
+helpers = { durable_crash_child = "Executed by durable_process_failure_after_committed_admission with its private child environment; no separate phase obligation." }
 scope = "Controlled authenticated protocol, signatures, ledger and HTTP fixtures"
 adapter = "Protocol/component evidence; simulated dispatch does not establish native containment"
 
