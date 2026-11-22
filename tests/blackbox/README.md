@@ -5,6 +5,65 @@ agent workloads, access approvals and lifecycle. Rust proxy process and
 protocol contracts live in [`tests/proxy_contracts`](../proxy_contracts/).
 A hosted process or package result does not prove KVM or Apple VZ isolation.
 
+## Qualify installed host operations
+
+The existing native authority runner has a `host-execution` selection for
+BB-38. Run it on the owned Linux or macOS target as its executor account, from
+a clean pinned controller checkout with the frozen development environment.
+It drives a separately installed executor through signed local HTTP requests.
+It creates disposable state, controls an explicitly selected test service,
+and observes files and live TCP/Unix socket receivers from the host.
+
+Prepare `unix_native` from `host-executor/tests/unix_native.rs` and the C probe
+from `host-executor/tests/native_fixture.c` at the same controller revision.
+The target consumes those prebuilt test tools; executor operation needs no
+compiler or Python. Prepare an owned user service that may be started, stopped
+and restarted. Use its systemd unit name on Linux or its loaded launchd selector
+on macOS. Linux also needs the delegated cgroup v2 subtree, pinned bubblewrap
+and native account setup described in the
+[host-operation guide](../../docs/host-operations.md#acquire-and-prepare-the-target).
+This runner does not provision or broaden those host capabilities.
+
+Before running, set `SAFEYOLO_HOST_EXECUTOR_PROBE` to the prebuilt probe and
+`SAFEYOLO_HOST_EXECUTOR_SERVICE` to that service selector. On Linux, also set
+`SAFEYOLO_HOST_EXECUTOR_CGROUP` to the delegated subtree. Replace the three
+`/owned/` paths below with the exact fixture executable, installed executor and
+a new private disk-backed output directory. Preserve the existing host's
+required account/containment launcher when invoking this command.
+
+```sh
+bash tests/blackbox/run-controls.sh native-authority --suite host-execution --test-executable /owned/unix_native --executor /owned/safeyolo-host-executor --output /owned/host-operation-results
+```
+
+Success requires all six selected cases to execute and pass. `result.json`
+retains the host, controller, installed executable/version, fixture/probe
+digests, exact cases and exits. Each case retains its log and the existing
+procedure receipt. Missing inputs, an ignored/missing case, a failure or a
+timeout leaves the report incomplete. After a timeout or lost reply, inspect
+the retained fixture/process state before another execution.
+
+These are installed Unix component witnesses. They do not complete
+[#1677](https://github.com/craigbalding/safeyolo/issues/1677)'s eight witness
+groups or real Windows requirement. The generated
+[control catalogue](../../docs/blackbox-coverage.md#bb-38--host-operation-authority-and-native-execution)
+keeps that remaining integrated qualification explicit. Reuse applicable
+authenticated Linux/macOS investigation, fixed-service and quiet-update
+receipts at their original revisions; do not replay them for report formatting.
+
+For the separate controlled protocol/gateway selection, use the same controller
+checkout on Linux with its trusted Rust toolchain, warm Cargo target and current
+native test prerequisites. Set `SAFEYOLO_BLACKBOX_ARTIFACTS_DIR` to a new private
+disk-backed directory. The following command builds and runs the named protocol,
+gateway and configured checker cases through the existing receipt owner:
+
+```sh
+bash tests/blackbox/run-controls.sh host-execution
+```
+
+`host-execution.json` must report every named case as `ok`. These controlled
+upstream/checker results complement the installed selection; they do not prove
+native containment or repeat the separate finite model measurement.
+
 ## Test retained nightly inputs
 
 The [nightly workflow](../../.github/workflows/blackbox.yml) runs at 03:17 UTC.

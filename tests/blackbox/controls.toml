@@ -446,6 +446,59 @@ owner = "#889"
 decisions = []
 
 
+[[controls]]
+id = "BB-38"
+control = "Host-operation authority and native execution"
+source = "https://github.com/craigbalding/safeyolo/issues/1677"
+what = "Authenticated host operations retain exact scope and revision checks; native execution has observable bounds and cleanup."
+existing = "Native protocol and installed Unix component fixtures; explicit manual selection."
+conformance = "Incomplete integrated qualification: preserve useful Linux/macOS workflow receipts, then prove the complete eight witness groups and real Windows foreground/service workflows."
+effort = "L"
+comments = "The Unix native selection uses a separately installed executor and independent host observers. It does not establish gateway, model, remote-target or Windows acceptance. Required missing facilities fail the selected run."
+owner = "#1677"
+decisions = ["authorization", "other_sinks_and_launch"]
+
+[[witnesses]]
+paths = ["host-executor/tests/unix_native.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+manifest = "host-executor/Cargo.toml"
+target = "unix_native"
+module = ""
+owner = "host-executor/tests/unix_native.rs"
+scope = "Real Unix installed executor; local authenticated HTTP; explicit native prerequisites"
+adapter = "Independent file and socket observations plus canonical job/output and owned cgroup/service checks; ignored unless explicitly selected; no Windows or whole-workflow acceptance"
+
+[[witnesses]]
+paths = ["proxy/tests/host_execution.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+target = "host_execution"
+module = ""
+owner = "proxy/tests/host_execution.rs"
+scope = "Controlled authenticated protocol, signatures, ledger and HTTP fixtures"
+adapter = "Protocol/component evidence; simulated dispatch does not establish native containment"
+
+[[witnesses]]
+paths = ["proxy/src/host_execution/gateway/tests.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+target = "lib"
+module = "host_execution::gateway::tests"
+owner = "proxy/src/host_execution/gateway.rs"
+scope = "Controlled gateway authentication, scope, dispatch and reply-loss fixtures"
+adapter = "Real gateway request parsing and controlled upstream; not a deployed target or native boundary"
+
+[[witnesses]]
+paths = ["proxy/src/host_execution/gateway/task_action_tests.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+target = "lib"
+module = "host_execution::gateway::tests::configured_task_action"
+owner = "proxy/src/host_execution/gateway/tests.rs"
+scope = "Configured task/action admission and bounded checker fixtures"
+adapter = "Controlled check results and upstream dispatch counts; model measurements remain separate supplementary evidence"
+
 [[witnesses]]
 paths = ["tests/proxy_contracts/test_local_api_authorization.py", "tests/proxy_contracts/test_agent_api_contract.py", "tests/proxy_contracts/test_agent_egress_scope.py", "tests/proxy_contracts/test_agent_api_test_context.py"]
 controls = ["BB-04", "BB-05"]
@@ -753,10 +806,10 @@ adapter = "The actual deterministic controller, typed decisions and independentl
 
 [[witnesses]]
 paths = ["tests/blackbox/native_authority.py::main"]
-controls = ["BB-24", "BB-25"]
+controls = ["BB-24", "BB-25", "BB-38"]
 kind = "procedure"
-scope = "Curated native Coord cases on Linux with real NATS and isolated instance roots"
-adapter = "Per-control procedure receipts and exact executed cases; process evidence, without a real guest or live tailnet"
+scope = "Curated Coord cases on Linux or explicitly selected installed host-executor cases on Unix"
+adapter = "Per-control procedure receipts and exact executed cases with separate test/product/probe identities; process evidence without whole-workflow or Windows acceptance"
 
 [[witnesses]]
 paths = ["tests/blackbox/installed_federation.py::main"]

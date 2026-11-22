@@ -12,7 +12,7 @@
 
 /* Prepared by the developer test, never by target discovery/qualification. */
 int main(int argc, char **argv) {
-    if (argc != 4) return 2;
+    if (argc != 5) return 2;
     setbuf(stdout, NULL);
     if (!strcmp(argv[1], "observe")) {
         gid_t groups[128];
@@ -31,14 +31,20 @@ int main(int argc, char **argv) {
         FILE *write = fopen(destination, "w");
         int net = socket(AF_INET, SOCK_STREAM, 0);
         int ipc = socket(AF_UNIX, SOCK_STREAM, 0);
+        /* The parent owns live receivers and checks their accept queues before
+         * and after this workload. A missing listener is not a denial oracle. */
+        struct sockaddr_in address = { .sin_family=AF_INET, .sin_port=htons((unsigned short)strtoul(argv[4],NULL,10)), .sin_addr.s_addr=htonl(INADDR_LOOPBACK) };
 #ifdef __APPLE__
-        // Seatbelt mediates connect rather than creation of a socket. EPERM
-        // distinguishes policy denial from a missing loopback listener/path.
-        struct sockaddr_in address = { .sin_len=sizeof(address), .sin_family=AF_INET, .sin_port=htons(1), .sin_addr.s_addr=htonl(INADDR_LOOPBACK) };
-        if (net >= 0) { int fd=net; int r=connect(fd,(struct sockaddr *)&address,sizeof(address)); net=(r < 0 && errno==EPERM) ? -1 : 0; close(fd); }
-        struct sockaddr_un unix_address = { .sun_len=sizeof(unix_address), .sun_family=AF_UNIX };
+        address.sin_len=sizeof(address);
+#endif
+        if (net >= 0) { int fd=net; net=connect(fd,(struct sockaddr *)&address,sizeof(address)); close(fd); }
+        struct sockaddr_un unix_address = { .sun_family=AF_UNIX };
+#ifdef __APPLE__
+        unix_address.sun_len=sizeof(unix_address);
+#endif
         if (snprintf(unix_address.sun_path,sizeof(unix_address.sun_path),"%s.socket",argv[3]) >= (int)sizeof(unix_address.sun_path)) return 11;
-        if (ipc >= 0) { int fd=ipc; int r=connect(fd,(struct sockaddr *)&unix_address,sizeof(unix_address)); ipc=(r < 0 && errno==EPERM) ? -1 : 0; close(fd); }
+        if (ipc >= 0) { int fd=ipc; ipc=connect(fd,(struct sockaddr *)&unix_address,sizeof(unix_address)); close(fd); }
+#ifdef __APPLE__
         int huge_refused=1; // Linux-only control below; no macOS HugeTLB claim.
 #else
         void *huge = mmap(NULL, 2*1024*1024, PROT_READ|PROT_WRITE,

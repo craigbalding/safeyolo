@@ -43,7 +43,7 @@ def catalogue_root(tmp_path, monkeypatch):
         (tmp_path / path).mkdir(parents=True)
     shutil.copyfile(ROOT / "docs/assurance-map.toml", tmp_path / "docs/assurance-map.toml")
     metadata = ""
-    for number in range(1, 38):
+    for number in range(1, 39):
         metadata += "[[controls]]\n"
         for field in ("id", "control", "source", "what", "existing", "conformance", "effort", "comments", "owner"):
             value = f"BB-{number:02}" if field == "id" else "#1558" if field == "owner" else "fixture"
@@ -94,7 +94,7 @@ def test_catalogue_rejects_structural_drift(catalogue_root, defect, expected):
     if defect == "duplicate":
         path.write_text(text.replace('id = "BB-37"', 'id = "BB-01"'))
     elif defect == "missing-id":
-        path.write_text(text.replace('id = "BB-37"', 'id = "BB-38"'))
+        path.write_text(text.replace('id = "BB-38"', 'id = "BB-39"'))
     elif defect == "incomplete":
         path.write_text(text.replace('what = "fixture"', 'what = ""', 1))
     elif defect in {"renamed", "deleted"}:
@@ -119,15 +119,23 @@ def test_catalogue_rejects_structural_drift(catalogue_root, defect, expected):
             catalogue.load(root)
     else:
         controls, witnesses, _outside = catalogue.load(root)
-        assert len(controls) == 37 and witnesses[0]["resolved"][0][1][0]["node"].endswith("::test_required")
+        assert len(controls) == 38 and witnesses[0]["resolved"][0][1][0]["node"].endswith("::test_required")
         assert not any("BB-37" in witness["controls"] for witness in witnesses)
 
 
 def test_current_catalogue_resolves_all_controls_and_external_families():
     controls, witnesses, _outside = catalogue.load(ROOT)
-    assert len(controls) == 37
+    assert len(controls) == 38
     assert {witness["kind"] for witness in witnesses} == {"pytest", "cargo", "procedure"}
     assert any("tests/test_guest_acquisition.py" in witness["paths"] for witness in witnesses)
+
+
+def test_host_protocol_selection_includes_nested_configured_checks_once():
+    groups = execution_receipt.native_cases("host-execution", ROOT)
+    assert len(groups) == 2
+    cases = groups[1][2]
+    assert len(cases) == len(set(cases))
+    assert any(name.startswith("host_execution::gateway::tests::configured_task_action::") for name in cases)
 
 
 @pytest.mark.parametrize("tokens,selected", [
@@ -214,3 +222,72 @@ def test_cargo_identity_requires_its_real_module_and_keeps_ignore_selection(cata
         assert not catalogue.cargo_selected(witness, node, command)
         command["tokens"] += ["--", "--include-ignored"]
         assert catalogue.cargo_selected(witness, node, command)
+
+
+@pytest.mark.parametrize("failure", ["missing", "ignored", "failure", "timeout", None])
+def test_native_host_selection_retains_partial_observations(tmp_path, monkeypatch, failure):
+    """Missing/ignored/failed cases cannot become a complete installed receipt."""
+    from tests.blackbox import native_authority
+
+    executable = tmp_path / "fixture"
+    executable.write_bytes(b"fixture identity")
+    executor = tmp_path / "installed-executor"
+    executor.write_bytes(b"independently installed identity")
+    probe = tmp_path / "probe"
+    probe.write_bytes(b"probe identity")
+    monkeypatch.setenv("SAFEYOLO_HOST_EXECUTOR_PROBE", str(probe))
+    monkeypatch.setenv("SAFEYOLO_HOST_EXECUTOR_SERVICE", "owned-test.service")
+    monkeypatch.setenv("SAFEYOLO_HOST_EXECUTOR_CGROUP", str(tmp_path / "delegation"))
+    monkeypatch.setattr(native_authority, "HOST_EXECUTION_AUTHORITY", {"BB-38": ("first", "second")})
+    monkeypatch.setattr(native_authority, "controller_identity", lambda: {"controller_revision": "fixture", "controller_dirty": False})
+    monkeypatch.setattr(native_authority.platform, "platform", lambda: "fixture OS")
+    monkeypatch.setattr(native_authority.platform, "machine", lambda: "fixture architecture")
+    calls = []
+
+    def command(argv, **kwargs):
+        calls.append(argv)
+        if "--version" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="installed version", stderr="")
+        case = argv[1]
+        if "--list" in argv:
+            text = "" if failure == "missing" and case == "second" else case + ": test\n"
+            return subprocess.CompletedProcess(argv, 0, stdout=text, stderr="")
+        if failure == "timeout" and case == "second":
+            raise subprocess.TimeoutExpired(argv, 300)
+        result = "ignored" if failure == "ignored" and case == "second" else "ok"
+        kwargs["stdout"].write(f"test {case} ... {result}\n")
+        return subprocess.CompletedProcess(argv, 1 if failure == "failure" and case == "second" else 0)
+
+    monkeypatch.setattr(native_authority.subprocess, "run", command)
+    output = tmp_path / "results"
+    if failure:
+        with pytest.raises((AssertionError, RuntimeError)):
+            native_authority.run(executable, output, suite="host-execution", executor=executor)
+    else:
+        native_authority.run(executable, output, suite="host-execution", executor=executor)
+    report = json.loads((output / "result.json").read_text())
+    rows = report["controls"]["BB-38"]["executed"]
+    assert rows[0]["passed"] is True
+    assert rows[1]["passed"] is (failure is None)
+    assert report["complete"] is (failure is None)
+    assert report["inputs"]["executor"]["path"] == str(executor)
+    assert report["inputs"]["test_executable"]["sha256"] != report["inputs"]["executor"]["sha256"]
+    if failure == "missing":
+        assert not any(call[1] == "second" and "--list" not in call for call in calls)
+    if failure == "timeout":
+        assert "unverified" in rows[1]["cleanup"]
+
+
+def test_native_host_missing_service_is_incomplete_without_dispatch(tmp_path, monkeypatch):
+    from tests.blackbox import native_authority
+
+    executable = tmp_path / "fixture"
+    executable.touch()
+    monkeypatch.setenv("SAFEYOLO_HOST_EXECUTOR_PROBE", str(executable))
+    monkeypatch.delenv("SAFEYOLO_HOST_EXECUTOR_SERVICE", raising=False)
+    output = tmp_path / "results"
+    with pytest.raises(ValueError, match="prepared owned service"):
+        native_authority.run(executable, output, suite="host-execution", executor=executable)
+    report = json.loads((output / "result.json").read_text())
+    assert report["complete"] is False
+    assert all(not control["executed"] for control in report["controls"].values())

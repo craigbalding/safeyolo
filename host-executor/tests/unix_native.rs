@@ -17,6 +17,7 @@ use std::{
     collections::BTreeMap,
     fs,
     io::{Read, Write},
+    net::{TcpListener, TcpStream},
     os::unix::{fs::PermissionsExt, net::UnixStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -36,12 +37,44 @@ struct Fixture {
     #[cfg(target_os = "linux")]
     cgroup: PathBuf,
     server: Child,
-    _ipc_listener: std::os::unix::net::UnixListener,
+    ipc_listener: std::os::unix::net::UnixListener,
+    network_listener: TcpListener,
     target: Target,
     key: Ed25519KeyPair,
     counter: u64,
 }
 impl Fixture {
+    fn assert_no_side_effects(&self) {
+        assert_eq!(
+            fs::read(self.root.join("allowed")).unwrap(),
+            b"read permitted"
+        );
+        assert_eq!(
+            fs::read(self.root.join("forbidden")).unwrap(),
+            b"read refused"
+        );
+        assert!(!self.root.join("forbidden.written").exists());
+        // Check the receiver queues independently of the workload's output.
+        // Then prove both receivers still work from the host. Each fixture
+        // checks and drains these positive controls before any workload runs.
+        self.network_listener.set_nonblocking(true).unwrap();
+        self.ipc_listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            self.network_listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(
+            self.ipc_listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        let _tcp = TcpStream::connect(self.network_listener.local_addr().unwrap()).unwrap();
+        self.network_listener.accept().unwrap();
+        let _ipc = UnixStream::connect(self.root.join("forbidden.socket")).unwrap();
+        self.ipc_listener.accept().unwrap();
+        eprintln!(
+            "independent host observer: files unchanged, forbidden write absent, TCP/IPC queues empty, both live positive controls received"
+        );
+    }
     fn call_bytes(&self, verb: Verb, body: &[u8]) -> Response {
         let mut stream = UnixStream::connect(self.root.join("state/control.sock")).unwrap();
         stream
@@ -242,6 +275,7 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
     fs::write(root.join("forbidden"), b"read refused").unwrap();
     let ipc_listener =
         std::os::unix::net::UnixListener::bind(root.join("forbidden.socket")).unwrap();
+    let network_listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     let identity = unsafe {
         let count = libc::getgroups(0, std::ptr::null_mut());
         assert!(count >= 0);
@@ -296,6 +330,7 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
                     if mode == "deadline" { "wait" } else { mode }.to_string(),
                     root.join("allowed").to_str().unwrap().into(),
                     root.join("forbidden").to_str().unwrap().into(),
+                    network_listener.local_addr().unwrap().port().to_string(),
                 ]
                 .into_iter()
                 .map(|value| Word::Literal { value })
@@ -459,16 +494,19 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
     )
     .unwrap();
     fs::set_permissions(root.join("target.json"), fs::Permissions::from_mode(0o600)).unwrap();
-    Fixture {
+    let fixture = Fixture {
         server: start(&root),
-        _ipc_listener: ipc_listener,
+        ipc_listener,
+        network_listener,
         root,
         #[cfg(target_os = "linux")]
         cgroup,
         target,
         key,
         counter: 0,
-    }
+    };
+    fixture.assert_no_side_effects();
+    fixture
 }
 
 #[test]
@@ -785,6 +823,7 @@ fn installed_unix_read_paths_resolve_without_sibling_contents() {
     let output = String::from_utf8(STANDARD.decode(data_base64).unwrap()).unwrap();
     assert!(output.contains("canonical=1"), "{output}");
     assert!(output.contains("allowed=1 forbidden=0 write=0"), "{output}");
+    f.assert_no_side_effects();
 }
 
 #[test]
@@ -874,6 +913,7 @@ fn installed_unix_bounds_lifecycle_reload_and_lost_reply() {
             Response::Job { .. }
         ));
         assert_eq!(f.job(&result.job_id).revision, result.revision);
+        f.assert_no_side_effects();
     }
     let (admitted, _) = f.invoke("wait");
     let deadline = Instant::now() + Duration::from_secs(5);
