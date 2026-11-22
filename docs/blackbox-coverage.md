@@ -1255,7 +1255,7 @@ Selection: manual `native-authority --suite host-execution` (prepared installed 
 - [`cargo test --manifest-path proxy/Cargo.toml --test unix_native installed_storage_exhaustion_preserves_output_replay_and_restart -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1046) — `#![cfg(unix)]`; `#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]`
 - [`cargo test --manifest-path proxy/Cargo.toml --test unix_native installed_user_service_profiles_and_channel_refusals -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1118) — `#![cfg(unix)]`; `#[ignore = "requires SAFEYOLO_HOST_EXECUTOR_SERVICE naming an operator-prepared owned user service"]`
 - [`cargo test --manifest-path proxy/Cargo.toml --test unix_native installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1287) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test unix_native installed_api_authentication_and_cross_principal_reads_cannot_change_authority -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1350) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test unix_native installed_api_authentication_and_cross_principal_reads_cannot_change_authority -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1351) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
 
 <a id="witness-proxy-tests-host-execution-rs"></a>
 ### [`proxy/tests/host_execution.rs`](../proxy/tests/host_execution.rs)

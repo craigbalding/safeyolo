@@ -1319,15 +1319,16 @@ fn installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch() {
             .unwrap();
         assert_eq!(fs::metadata(&probe).unwrap().len(), original.len() as u64);
         assert_eq!(fs::metadata(&probe).unwrap().modified().unwrap(), modified);
-        assert!(matches!(
-            f.call_bytes(Verb::Invoke, &pending),
-            Response::Refused {
-                refusal: Refusal {
-                    code: RefusalCode::Unavailable,
-                    ..
-                }
-            }
-        ));
+        let response = f.call_bytes(Verb::Invoke, &pending);
+        let expected = if alias && cfg!(target_os = "linux") {
+            RefusalCode::Unavailable // Linux's executable open refuses symlinks.
+        } else {
+            RefusalCode::Stale // Changed bytes cannot satisfy the adopted digest.
+        };
+        assert!(
+            matches!(&response, Response::Refused { refusal } if refusal.code == expected),
+            "{response:?}"
+        );
         assert_eq!(
             retained_job_count(&f),
             0,
