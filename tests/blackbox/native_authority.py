@@ -55,6 +55,9 @@ def run(executable: Path, output: Path, *, suite="coord", executor: Path | None 
                 raise ValueError("set SAFEYOLO_HOST_EXECUTOR_SERVICE to the prepared owned service")
             if os.uname().sysname == "Linux" and not os.environ.get("SAFEYOLO_HOST_EXECUTOR_CGROUP"):
                 raise ValueError("set SAFEYOLO_HOST_EXECUTOR_CGROUP to the delegated cgroup subtree")
+            if os.uname().sysname == "Linux":
+                bubblewrap = Path(os.environ.get("SAFEYOLO_HOST_EXECUTOR_BWRAP", "/usr/bin/bwrap")).resolve(strict=True)
+                inputs["bubblewrap"] = {"path": str(bubblewrap), "sha256": _sha256(bubblewrap)}
             version = subprocess.run([str(executor), "--version"], capture_output=True, text=True,
                                      check=True, timeout=10).stdout.strip()
             inputs.update(executor={"path": str(executor), "sha256": _sha256(executor), "version": version},
@@ -102,7 +105,10 @@ def run(executable: Path, output: Path, *, suite="coord", executor: Path | None 
                 log = directory / (case.replace("::", "-") + ".log")
                 execution_started = True
                 with log.open("w") as diagnostics:
-                    result = subprocess.run([str(executable), case, "--exact", "--ignored", "--test-threads=1"],
+                    command = [str(executable), case, "--exact", "--ignored", "--test-threads=1"]
+                    if suite == "host-execution":
+                        command.append("--nocapture")
+                    result = subprocess.run(command,
                                             stdout=diagnostics, stderr=subprocess.STDOUT, env=env, timeout=300)
                 row.update(exit=result.returncode,
                            passed=result.returncode == 0 and f"test {case} ... ok" in log.read_text())

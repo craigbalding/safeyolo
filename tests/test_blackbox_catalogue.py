@@ -238,6 +238,7 @@ def test_native_host_selection_retains_partial_observations(tmp_path, monkeypatc
     monkeypatch.setenv("SAFEYOLO_HOST_EXECUTOR_PROBE", str(probe))
     monkeypatch.setenv("SAFEYOLO_HOST_EXECUTOR_SERVICE", "owned-test.service")
     monkeypatch.setenv("SAFEYOLO_HOST_EXECUTOR_CGROUP", str(tmp_path / "delegation"))
+    monkeypatch.setenv("SAFEYOLO_HOST_EXECUTOR_BWRAP", str(executable))
     monkeypatch.setattr(native_authority, "HOST_EXECUTION_AUTHORITY", {"BB-38": ("first", "second")})
     monkeypatch.setattr(native_authority, "controller_identity", lambda: {"controller_revision": "fixture", "controller_dirty": False})
     monkeypatch.setattr(native_authority.platform, "platform", lambda: "fixture OS")

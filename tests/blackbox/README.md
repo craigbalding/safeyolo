@@ -26,9 +26,11 @@ This runner does not provision or broaden those host capabilities.
 
 Before running, set `SAFEYOLO_HOST_EXECUTOR_PROBE` to the prebuilt probe and
 `SAFEYOLO_HOST_EXECUTOR_SERVICE` to that service selector. On Linux, also set
-`SAFEYOLO_HOST_EXECUTOR_CGROUP` to the delegated subtree. Replace the three
-`/owned/` paths below with the exact fixture executable, installed executor and
-a new private disk-backed output directory. Preserve the existing host's
+`SAFEYOLO_HOST_EXECUTOR_CGROUP` to the delegated subtree.
+Use `SAFEYOLO_HOST_EXECUTOR_BWRAP` when the pinned Linux bubblewrap executable
+is outside `/usr/bin/bwrap`.
+Replace the three `/owned/` paths below with the exact fixture executable,
+installed executor and a new private disk-backed output directory. Preserve the existing host's
 required account/containment launcher when invoking this command.
 
 ```sh
