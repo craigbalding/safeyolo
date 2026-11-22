@@ -47,7 +47,7 @@ def test_host_assessment_cli_reports_full_proposal_current_ceiling_and_unavailab
         scopes[name] = {
             "implementation_sha256": projections["gateway"][name]["host_execution_source"]["implementation_sha256"],
             "resources": operation["resources"],
-            "arguments": {argument: contract["options"] or [contract["default"] or "fixture content"]
+            "arguments": {argument: contract["options"] or [contract["default"] if contract["default"] is not None else "fixture content"]
                           for argument, contract in operation["arguments"].items()},
             "budgets": {"calls": 10, "concurrent": 1, "timeout_seconds": 30, "output_bytes": 65536},
         }
@@ -60,7 +60,8 @@ def test_host_assessment_cli_reports_full_proposal_current_ceiling_and_unavailab
     }
     target = {
         "target_id": "windows-a", "ceiling_revision": "1", "allowed_verbs": grant["verbs"],
-        "max_authority_age_seconds": 120, "ceiling": {name: value for name, value in scopes.items()
+        "max_authority_age_seconds": 120, "ceiling": {name: {**value, "budgets": {**value["budgets"], "calls": 1}}
+                                                       for name, value in scopes.items()
                                                        if name != "write-service-config"},
         "package": package, "issuers": {"issuer": {"revision": "1", "public_keys": {"key": "A" * 43 + "="},
             "authority": {"revision": "1", "assessment_revision": "1", "observed_at": now,
@@ -76,6 +77,8 @@ def test_host_assessment_cli_reports_full_proposal_current_ceiling_and_unavailab
     assessment = json.loads(result.stdout)
     assert assessment["target_id"] == "windows-a"
     assert assessment["principal"] == grant["principal"]
+    assert assessment["effective_grants"][0]["operations"]["service-restart"]["budgets"]["calls"] == 1
+    assert assessment["proposed_grant"]["operations"]["service-restart"]["budgets"]["calls"] == 10
     assert assessment["full_proposed_authority"]["model"]["rules"]["changed_service_execution"]["status"] == "match"
     assert assessment["effective_authority"]["model"]["rules"]["changed_service_execution"]["status"] == "non_match"
     assert assessment["effective_authority"]["alternatives"]["service-status-before-control"]["steps"][0]["available_from"]

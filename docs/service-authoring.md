@@ -123,7 +123,9 @@ safeyolo services assess-host target.json issuer grant --proposed-grant proposed
 ```
 
 The result identifies the target, issuer, run/task principal, current grant
-lifetimes and authority revisions. It separates the full proposed scope from
+lifetimes and authority revisions. Effective grant records include the intersected
+argument/resource bounds, budget ceilings and qualification checks.
+The output separates the full proposed scope from
 the intersection with the current target ceiling. Assessment covers every
 permitted argument value, including authorized defaults; an example invocation
 cannot narrow the grant. Missing or stale authority is reported as unavailable.

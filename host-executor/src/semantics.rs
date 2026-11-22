@@ -148,12 +148,10 @@ impl Package {
                             );
                         }
                     }
-                    if let HostIdentity::Resource { aliases } = source {
-                        if alias_chain(aliases) {
-                            return Err(
-                                "host aliases must map directly to canonical identities".into()
-                            );
-                        }
+                    if let HostIdentity::Resource { aliases } = source
+                        && alias_chain(aliases)
+                    {
+                        return Err("host aliases must map directly to canonical identities".into());
                     }
                 }
             }
@@ -166,10 +164,9 @@ impl Package {
                 }
                 if let Condition::Present { argument } | Condition::Equals { argument, .. } =
                     &effect.when
+                    && !op.arguments.contains_key(argument)
                 {
-                    if !op.arguments.contains_key(argument) {
-                        return Err("host effect condition refers to an unknown argument".into());
-                    }
+                    return Err("host effect condition refers to an unknown argument".into());
                 }
             }
             if op

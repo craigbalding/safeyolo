@@ -177,8 +177,9 @@ or executable hash changes that revision even when the description is unchanged.
 A shared model correction changes understanding, the operation pin and prepared
 assessment inputs. A stale prepared invocation is refused even when executable
 bytes remain identical. Catalogue review records that model change separately
-from the enforceable authority comparison. Description-only changes remain
-recorded without requiring executable replacement authority.
+from the enforceable authority comparison. Catalogue review records
+description-only changes as equivalent. Existing exact grant pins and standing
+update rules still apply.
 
 Discovery discloses the full adopted definitions, including literal environment
 values, to a grant with the discovery action. Adoption must account for that
