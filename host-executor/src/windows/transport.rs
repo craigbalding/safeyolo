@@ -21,6 +21,9 @@ use windows_sys::Win32::{
 };
 
 static EXECUTING: AtomicUsize = AtomicUsize::new(0);
+pub(crate) fn executing() -> bool {
+    EXECUTING.load(Ordering::SeqCst) != 0
+}
 pub(crate) struct Execution;
 impl Execution {
     pub(crate) fn new() -> Self {

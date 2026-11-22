@@ -71,8 +71,10 @@ references and rules. The native package owner checks argument, evidence,
 identity and alternative references. Correspondence checking regenerates the
 entire output from the common source.
 
-Before target adoption, replace the example executable hashes and workload
-identity with the selected target's actual inputs. Use the executor's
+For deployed use, the [standalone workflow](host-operations.md) runs `starter`
+on the target to bind this example to actual executable hashes, workload
+identity, selected paths and fixed service. Before any manual target adoption,
+bind those same actual inputs. Use the executor's
 `identity --credential NAME` command to obtain its Windows workload SID and
 groups. Bind the selected PowerShell and `whoami.exe` content hashes, local
 paths, service names and operating-system access. Review the inbox modules,

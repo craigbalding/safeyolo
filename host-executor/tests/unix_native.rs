@@ -331,7 +331,7 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
         operations.insert(mode.into(), operation);
     }
     if let Ok(resource) = std::env::var("SAFEYOLO_HOST_EXECUTOR_SERVICE") {
-        for action in ["restart", "status"] {
+        for action in ["start", "stop", "restart", "status"] {
             let mut op = operations["observe"].clone();
             let e = &mut op.execution;
             e.executable = if cfg!(target_os = "linux") {
@@ -365,17 +365,18 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
                 if action == "status" {
                     argv.extend(["show", "--property=ActiveState", "--property=MainPID"]);
                 } else {
-                    argv.push("restart");
+                    argv.push(action);
                 }
                 argv.extend(["--", &resource]);
                 argv
             } else {
                 e.broader
                     .extend([BroaderBound::NetworkIpc, BroaderBound::DelegatedServices]);
-                if action == "restart" {
-                    vec!["kickstart", "-k", &resource]
-                } else {
-                    vec!["print", &resource]
+                match action {
+                    "start" => vec!["kickstart", &resource],
+                    "stop" => vec!["kill", "SIGTERM", &resource],
+                    "restart" => vec!["kickstart", "-k", &resource],
+                    _ => vec!["print", &resource],
                 }
             }
             .into_iter()
@@ -402,6 +403,7 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
         std::env::var_os("SAFEYOLO_HOST_EXECUTOR_BWRAP").unwrap_or_else(|| "/usr/bin/bwrap".into()),
     );
     let settings = Configuration {
+        https: None,
         catalogue: None,
         target: target.clone(),
         #[cfg(target_os = "linux")]
@@ -1035,7 +1037,13 @@ fn installed_user_service_profiles_and_channel_refusals() {
     std::env::var("SAFEYOLO_HOST_EXECUTOR_SERVICE").expect("prepare an owned native user service");
     let mut f = fixture(8, 1024 * 1024);
     let mut previous_pid = None;
-    let actions: &[&str] = &["service-status", "service-restart", "service-status"];
+    let actions: &[&str] = &[
+        "service-status",
+        "service-stop",
+        "service-start",
+        "service-restart",
+        "service-status",
+    ];
     for &action in actions {
         let (admitted, _) = f.invoke(action);
         let result = f.terminal(&admitted.job_id);

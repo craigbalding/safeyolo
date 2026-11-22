@@ -13,8 +13,9 @@ Loading types does not enrol an issuer or grant invocation permission. The
 standalone executor enforces adopted native operations. Catalogue adoption
 uses the target configuration and the issuer's existing native policy owner.
 The local Service Gateway adapter binds these operations to an authenticated
-agent run and an activated operator task. Packaging, remote transport adoption
-and integrated platform qualification remain separate parts of
+agent run and an activated operator task. The
+[deployment guide](host-operations.md) covers standalone preparation, remote
+HTTPS and starter workflows. Integrated platform qualification remains part of
 [#1669](https://github.com/craigbalding/safeyolo/issues/1669).
 
 ## Ownership and trust
@@ -103,8 +104,10 @@ On a running Unix SafeYolo host, the operator uses the existing policy owner to
 adopt a `host_bindings` table. Each value is an encoded JSON binding document.
 Installed capability discovery exposes `host_execution_binding` and its actual
 validator. A binding selects the target's adopted `Target`, issuer, native
-grant, key ID, vault credential reference, service name, canonical absolute
-Unix socket, executor UID and finite request/response/deadline limits. The
+grant, key ID, vault credential reference, service name, an authenticated
+endpoint and finite request/response/deadline limits. A `unix` endpoint selects a canonical absolute socket and executor UID.
+An `https` endpoint selects a host, port and adopted certificate PEM. Endpoint
+name and certificate validation precede signed-request dispatch. The
 credential value is base64 Ed25519 PKCS#8 in the existing encrypted store.
 Neither the value nor a signed request is returned to the agent.
 
@@ -159,13 +162,15 @@ grants, target ceilings and future-family bounds through the existing host
 effect assessor. The result distinguishes represented effects from unknown
 behavior. A favorable assessment creates no permission.
 
-The gateway checks socket peer UID and protected path ownership, and rechecks
-current policy, task, run and vault selection before sending. The target then
+The gateway checks Unix socket peer UID and protected path ownership, or
+verifies the configured HTTPS certificate and endpoint name. It rechecks current
+policy, task, run and vault selection before sending. The target then
 independently authenticates and admits the signed request. Target input changes
-can therefore refuse a request after issuer admission. The current adapter uses
-the executor's protected Unix socket. It does not provide remote HTTPS or
-Windows named-pipe transport, synchronize target configuration, or claim that
-saved inputs establish running-target readiness.
+can therefore refuse a request after issuer admission. The adapter supports the
+executor's protected Unix socket and authenticated HTTPS on all target platforms. Windows named pipes remain a protected local
+transport. Target configuration is not implicitly synchronized, and saved
+inputs do not establish running-target readiness. The deployment guide shows
+configuration, rotation and current-revision inspection.
 
 The gateway sends each request once. A missing or mismatched target reply
 returns an uncertain outcome with the original request ID and derived possible
@@ -444,7 +449,10 @@ python3 scripts/build_host_executor.py --output /release/executor.zip
 ```
 
 The command builds a production executable for the build host and writes a ZIP
-archive with the binary, licence and `host-executor.json`.
+archive with the binary, licence, `host-executor.json`, deployment guide,
+authoring source and agent helper. The target bundles rustls TLS and rcgen
+certificate preparation; the helper uses the agent sandbox's Python 3, not a
+target-side interpreter.
 It prints the archive and binary SHA-256 digests. The metadata records the
 source, target, compiler, selected build flags and a link to this contract at
 the built source revision. `--target` selects an

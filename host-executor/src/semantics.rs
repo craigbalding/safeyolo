@@ -250,7 +250,7 @@ mod tests {
         let package: Package =
             serde_json::from_str(include_str!("../examples/windows-starter.json")).unwrap();
         package.validate().unwrap();
-        assert_eq!(package.operations.len(), 20);
+        assert_eq!(package.operations.len(), 24);
         for (name, op) in &package.operations {
             let arguments = op
                 .arguments

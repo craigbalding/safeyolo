@@ -20,12 +20,55 @@ pub(crate) struct Binding {
     /// Reference in the existing encrypted credential store. Never key bytes.
     pub credential: String,
     pub service: String,
-    pub socket: PathBuf,
-    pub executor_uid: u32,
+    pub endpoint: Endpoint,
     pub task_revision: String,
     pub timeout_ms: u64,
     pub request_bytes: usize,
     pub response_bytes: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "transport", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum Endpoint {
+    Unix {
+        socket: PathBuf,
+        executor_uid: u32,
+    },
+    Https {
+        host: String,
+        port: u16,
+        certificate_pem: String,
+    },
+}
+
+impl Endpoint {
+    fn validate(&self) -> Result<(), Error> {
+        match self {
+            Self::Unix { socket, .. } => {
+                if !socket.is_absolute()
+                    || socket
+                        .components()
+                        .any(|p| matches!(p, std::path::Component::ParentDir))
+                {
+                    return Err(
+                        "host socket must be an absolute path without parent traversal".into(),
+                    );
+                }
+            }
+            Self::Https {
+                host,
+                port,
+                certificate_pem,
+            } => {
+                rustls::pki_types::ServerName::try_from(host.clone())?;
+                if *port == 0 {
+                    return Err("host HTTPS needs a nonzero port".into());
+                }
+                transport::tls_configuration(certificate_pem)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn bindings(document: &Value) -> Result<BTreeMap<String, Binding>, Error> {
@@ -86,17 +129,13 @@ impl Binding {
 
     pub(crate) fn validate(&self) -> Result<(), Error> {
         self.target.validate()?;
+        self.endpoint.validate()?;
         let grant = self.grant()?;
         if !literal(&self.issuer_id)
             || !literal(&self.grant_id)
             || !literal(&self.key_id)
             || self.credential.is_empty()
             || self.service.is_empty()
-            || !self.socket.is_absolute()
-            || self
-                .socket
-                .components()
-                .any(|p| matches!(p, std::path::Component::ParentDir))
             || grant
                 .principal
                 .task_id
@@ -110,7 +149,7 @@ impl Binding {
                 .public_keys
                 .contains_key(&self.key_id)
         {
-            return Err("host binding needs a target issuer/grant/key, vault reference, service, absolute socket, approved task revision and positive transport limits".into());
+            return Err("host binding needs a target issuer/grant/key, vault reference, service, authenticated endpoint, approved task revision and positive transport limits".into());
         }
         Ok(())
     }

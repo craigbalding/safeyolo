@@ -277,6 +277,7 @@ fn prepare(root: &Path, credential: &str) {
         .unwrap()
         .operations = target.ceiling.clone();
     let configuration = Configuration {
+        https: None,
         catalogue: None,
         target,
         ledger: LedgerLimits {

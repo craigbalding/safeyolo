@@ -311,6 +311,23 @@ pub(crate) fn store_credential(args: &[String]) -> Result<(), Refusal> {
     Ok(())
 }
 
+pub(crate) fn remove_credential(args: &[String]) -> Result<(), Refusal> {
+    require(
+        args.len() == 2 && args[0] == "--name",
+        RefusalCode::Arguments,
+        "credential-remove --name NAME",
+    )?;
+    let name = wide(&args[1])?;
+    // SAFETY: name is a live NUL-terminated buffer; this deletes only the
+    // current executor account's selected generic credential entry.
+    check(
+        unsafe { CredDeleteW(name.as_ptr(), CRED_TYPE_GENERIC, 0) },
+        "remove selected workload credential",
+    )?;
+    println!("credential removed for this executor account; admitted jobs are not undone");
+    Ok(())
+}
+
 pub(crate) fn absolute_local(path: &Path) -> Result<(), Refusal> {
     require(path.is_absolute() && path.components().all(|c| !matches!(c, Component::ParentDir | Component::CurDir))
         && path.components().all(|c| match c { Component::Normal(s) => !s.to_string_lossy().contains(':') && !s.to_string_lossy().ends_with([' ', '.']), _ => true })
@@ -584,6 +601,20 @@ pub(crate) fn deny_workload_write(path: &Path, token: &Handle) -> Result<(), Ref
         )?;
     }
     Ok(())
+}
+
+pub(crate) fn deny_workload_read(path: &Path, token: &Handle) -> Result<(), Refusal> {
+    let file = open_path(
+        path,
+        READ_CONTROL,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        OPEN_EXISTING,
+    )?;
+    require(
+        granted(&file, token)? & FILE_READ_DATA == 0,
+        RefusalCode::Unavailable,
+        "workload account can read the target TLS private key",
+    )
 }
 
 /// Keep the executable and every ancestor open without FILE_SHARE_DELETE.

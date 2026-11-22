@@ -80,6 +80,9 @@ def main() -> None:
     with zipfile.ZipFile(args.output, "x", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(binary, binary.name)
         archive.write(ROOT / "LICENSE", "LICENSE")
+        archive.write(ROOT / "docs/host-operations.md", "HOST-OPERATIONS.md")
+        archive.write(ROOT / "host-executor/examples/windows-starter.json", "examples/windows-starter.json")
+        archive.write(ROOT / "cli/src/safeyolo/agent_context/skills/safeyolo/scripts/host-operation.py", "agent/host-operation.py")
         archive.writestr("host-executor.json", json.dumps(metadata, indent=2) + "\n")
     print(json.dumps({"archive": str(args.output), "archive_sha256": sha256(args.output), **metadata}))
 

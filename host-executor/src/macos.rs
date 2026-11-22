@@ -264,7 +264,10 @@ impl MacRuntime {
         );
         if service {
             profile.push_str("(allow mach-lookup)");
-            if op.execution.delegated_services[0].capability == "restart" {
+            if matches!(
+                op.execution.delegated_services[0].capability.as_str(),
+                "stop" | "restart"
+            ) {
                 // launchd checks the client's signal permission before replacing
                 // this fixed service process. Only the pinned OS client receives
                 // this permission; arbitrary adopted programs remain denied.
@@ -370,7 +373,7 @@ impl MacRuntime {
         }
         let mut result = NativeObservation { backend: "macos-seatbelt-no-fork".into(), enforcement: vec!["Seatbelt read paths, no file writes, no direct socket connections or Mach lookups, no process fork, pinned private executable snapshot and exact environment".into(), "single process; observed waitpid termination; bounded retained output and wall deadline while the executor remains live".into()], dependencies: vec!["EXPLICIT BROADER MEMORY: resident memory is polled; transient allocations and kernel pressure are not hard-capped".into(), "EXPLICIT BROADER EXECUTOR RESTART: a controller crash may leave the process running beyond its deadline; restart retains unknown cleanup and concurrency until the recorded process birth is absent. macOS Seatbelt, baseline sysctl reads and host-owned libraries are required".into()], exit_code: status.and_then(|s| std::process::ExitStatus::from_raw(s).code()), signal: status.and_then(|s| std::process::ExitStatus::from_raw(s).signal()), processes_stopped: stopped, output_truncated: truncated, termination_reason: reason.into() };
         if service {
-            result.enforcement[0] = "Seatbelt read paths, no file writes, no direct sockets or fork; the pinned trusted launchctl client receives Mach lookup and, for restart, native signal permission, with fixed adopted action/resource and exact environment".into();
+            result.enforcement[0] = "Seatbelt read paths, no file writes, no direct sockets or fork; the pinned trusted launchctl client receives Mach lookup and, for stop/restart, native signal permission, with fixed adopted action/resource and exact environment".into();
             result.dependencies.push("EXPLICIT BROADER NETWORK/IPC: Mach lookup scope is not per-service isolation; the OS client and its system libraries are trusted executor code".into());
             result.dependencies.push(crate::unix_services::disclosure());
         }

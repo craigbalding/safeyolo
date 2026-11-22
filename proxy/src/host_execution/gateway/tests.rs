@@ -170,8 +170,10 @@ impl Fixture {
             key_id: "key".into(),
             credential: "host-key".into(),
             service: "local-host".into(),
-            socket: socket.clone(),
-            executor_uid: unsafe { libc::geteuid() },
+            endpoint: Endpoint::Unix {
+                socket: socket.clone(),
+                executor_uid: unsafe { libc::geteuid() },
+            },
             task_revision: revision(&task),
             timeout_ms: 1000,
             request_bytes: 131072,
@@ -981,5 +983,82 @@ steps=[{{kind='task_action',check='independent',on_concern={{kind='question',fie
     assert_eq!(refused.status, 403, "{}", refused.value);
     assert_eq!(refused.value["error"], "HOST_OPERATION_REFUSED");
     assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    f.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn https_target_identity_precedes_signed_dispatch_and_keeps_native_receipts() {
+    let mut f = Fixture::new("").await;
+    let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![certificate.cert.der().clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let socket = f.root.path().join("executor.sock");
+    let relay = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let acceptor = acceptor.clone();
+            let socket = socket.clone();
+            tokio::spawn(async move {
+                if let Ok(mut remote) = acceptor.accept(stream).await {
+                    let mut local = tokio::net::UnixStream::connect(socket).await.unwrap();
+                    let _ = tokio::io::copy_bidirectional(&mut remote, &mut local).await;
+                }
+            });
+        }
+    });
+    fn install_endpoint(f: &mut Fixture, endpoint: Endpoint) {
+        let original = serde_json::to_string(&serde_json::to_string(&f.binding).unwrap()).unwrap();
+        let mut binding = f.binding.clone();
+        binding.endpoint = endpoint;
+        let replacement = serde_json::to_string(&serde_json::to_string(&binding).unwrap()).unwrap();
+        let source = f.source.replacen(&original, &replacement, 1);
+        assert_ne!(source, f.source);
+        f.binding = binding;
+        f.install(source);
+    }
+    let other = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+    install_endpoint(
+        &mut f,
+        Endpoint::Https {
+            host: "127.0.0.1".into(),
+            port,
+            certificate_pem: other.cert.pem(),
+        },
+    );
+    let refused = f.call(f.input("wrong-target", Action::Discover)).await;
+    assert_eq!(refused.status, 503, "{}", refused.value);
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    install_endpoint(
+        &mut f,
+        Endpoint::Https {
+            host: "127.0.0.1".into(),
+            port,
+            certificate_pem: certificate.cert.pem(),
+        },
+    );
+    let discovery = f.call(f.input("remote-discovery", Action::Discover)).await;
+    assert_eq!(discovery.status, 200, "{}", discovery.value);
+    let invoke = f.prepared("remote-invoke", None).await;
+    let admitted = f.call(invoke.clone()).await;
+    assert_eq!(admitted.status, 200, "{}", admitted.value);
+    let replay = f.call(invoke).await;
+    assert_eq!(
+        replay.value["receipt"]["job_id"],
+        admitted.value["receipt"]["job_id"]
+    );
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 1);
+    relay.abort();
     f.stop().await;
 }

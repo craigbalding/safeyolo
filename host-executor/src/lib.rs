@@ -4,6 +4,7 @@
 mod authority;
 mod catalogue;
 pub mod effects;
+pub mod https;
 mod ledger;
 #[cfg(target_os = "linux")]
 pub mod linux;
@@ -18,6 +19,7 @@ pub mod server;
 mod unix_services;
 #[cfg(windows)]
 pub mod windows;
+mod workflow;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
