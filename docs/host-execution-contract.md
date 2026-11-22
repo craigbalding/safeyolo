@@ -405,8 +405,8 @@ and first cancellation reply inside the admission transaction. It updates those
 allocations in place. Reaching `ledger.database_bytes` therefore refuses new
 work before dispatch without spending an admission or disabling an existing
 job's cancellation, output or recovery writes. The limit covers SQLite database
-pages. The target operator must separately reserve disk for the rollback journal
-(up to the database size), filesystem overhead and executable snapshots. Host
+pages. The target operator must separately reserve disk for the rollback journal,
+including its page checksums and headers, filesystem overhead and executable snapshots. Host
 storage loss or an input/output error can still prevent persistence.
 
 Native enforcement and lifecycle facts retain their reserved fields. Free-text
