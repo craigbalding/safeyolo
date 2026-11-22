@@ -306,14 +306,14 @@ fn serve_local(config: PathBuf, state: PathBuf, settings: Configuration) -> Resu
 }
 
 pub(crate) trait DeadlineStream: Read + Write {
-    fn set_read_timeout(&self, value: Option<Duration>) -> std::io::Result<()>;
-    fn set_write_timeout(&self, value: Option<Duration>) -> std::io::Result<()>;
+    fn set_read_timeout(&mut self, value: Option<Duration>) -> std::io::Result<()>;
+    fn set_write_timeout(&mut self, value: Option<Duration>) -> std::io::Result<()>;
 }
 impl DeadlineStream for UnixStream {
-    fn set_read_timeout(&self, value: Option<Duration>) -> std::io::Result<()> {
+    fn set_read_timeout(&mut self, value: Option<Duration>) -> std::io::Result<()> {
         UnixStream::set_read_timeout(self, value)
     }
-    fn set_write_timeout(&self, value: Option<Duration>) -> std::io::Result<()> {
+    fn set_write_timeout(&mut self, value: Option<Duration>) -> std::io::Result<()> {
         UnixStream::set_write_timeout(self, value)
     }
 }

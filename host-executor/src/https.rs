@@ -111,11 +111,11 @@ impl Write for DeadlineTcp {
     }
 }
 impl DeadlineStream for rustls::StreamOwned<rustls::ServerConnection, DeadlineTcp> {
-    fn set_read_timeout(&self, value: Option<Duration>) -> std::io::Result<()> {
+    fn set_read_timeout(&mut self, value: Option<Duration>) -> std::io::Result<()> {
         self.sock.read_until.set(until(value)?);
         Ok(())
     }
-    fn set_write_timeout(&self, value: Option<Duration>) -> std::io::Result<()> {
+    fn set_write_timeout(&mut self, value: Option<Duration>) -> std::io::Result<()> {
         self.sock.write_until.set(until(value)?);
         Ok(())
     }
