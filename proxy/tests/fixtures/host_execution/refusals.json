@@ -15,7 +15,7 @@
   {"name":"resource pattern", "pointer":"/action/invocation/resource_id", "value":"service:*", "code":"selector"},
   {"name":"unadopted operation", "pointer":"/action/invocation/operation_id", "value":"replace", "code":"selector"},
   {"name":"ungranted resource", "pointer":"/action/invocation/resource_id", "value":"service:other", "code":"authority"},
-  {"name":"stale package", "pointer":"/action/invocation/package_sha256", "value":"old", "code":"stale"},
+  {"name":"stale operation", "pointer":"/action/invocation/operation_sha256", "value":"old", "code":"stale"},
   {"name":"stale implementation", "pointer":"/action/invocation/implementation_sha256", "value":"old", "code":"stale"},
   {"name":"wrong argument type", "pointer":"/action/invocation/arguments/wait", "value":"5", "code":"arguments"},
   {"name":"argument outside authority", "pointer":"/action/invocation/arguments/wait", "value":6, "code":"authority"},

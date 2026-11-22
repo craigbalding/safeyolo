@@ -2438,6 +2438,7 @@ impl Proxy {
     /// Reload a changed baseline against the accepted service registry. Keep
     /// file observation and publication separate from catalog change detection.
     pub async fn reload_policy_if_changed(&mut self) -> Result<bool, Error> {
+        let catalogue_activated = host_execution::reconcile_catalogues(&self.runtime)?;
         let root = self.runtime.read().ok().and_then(|runtime| {
             runtime
                 .config
@@ -2511,7 +2512,7 @@ impl Proxy {
         {
             eprintln!("Worker lifecycle: {error}");
         }
-        result
+        result.map(|changed| changed || catalogue_activated)
     }
 
     fn publish_policy(&self, previous: &Runtime, policy: policy::Policy) -> Result<(), Error> {

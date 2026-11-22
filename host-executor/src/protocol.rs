@@ -52,7 +52,7 @@ pub struct AuthorityRevisions {
 pub struct Invocation {
     pub operation_id: String,
     pub resource_id: String,
-    pub package_sha256: String,
+    pub operation_sha256: String,
     pub implementation_sha256: String,
     pub arguments: BTreeMap<String, Value>,
     pub expected_assessment_sha256: Option<String>,
@@ -183,6 +183,10 @@ impl std::error::Error for Refusal {}
 pub struct OperationDiscovery {
     pub operation_id: String,
     pub implementation_sha256: String,
+    pub operation_sha256: String,
+    pub authority_sha256: String,
+    pub assessment_sha256: String,
+    pub revisions: AuthorityRevisions,
     pub definition: Operation,
     /// Membership is not authority. Concrete arguments/resources still need proposal.
     pub has_invocation_scope: bool,
@@ -200,6 +204,7 @@ pub struct Discovery {
     pub revisions: AuthorityRevisions,
     pub authority_valid_until: u64,
     pub operations: Vec<OperationDiscovery>,
+    pub catalogue: Option<CatalogueStatus>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -425,10 +430,10 @@ impl Receipt {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Response {
     Discovery {
-        discovery: Discovery,
+        discovery: Box<Discovery>,
     },
     Proposal {
-        prepared: Prepared,
+        prepared: Box<Prepared>,
     },
     Job {
         receipt: Box<Receipt>,

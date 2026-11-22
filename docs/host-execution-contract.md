@@ -9,10 +9,11 @@ owns the service projections. `schemas()` derives the JSON schemas from the
 shared types. The shared fixtures and authenticated HTTP witness
 are in [`host_execution.rs`](../proxy/tests/host_execution.rs).
 
-Loading the contract does not install an executor, enrol an issuer, change
-policy, or add a gateway route to a running instance. Native execution,
-adoption, effect authoring and gateway consumers belong to the children of
-[#1669](https://github.com/craigbalding/safeyolo/issues/1669).
+Loading types does not enrol an issuer or grant invocation permission. The
+standalone executor enforces adopted native operations. Catalogue adoption
+uses the target configuration and the issuer's existing native policy owner.
+Effect authoring and complete agent/task gateway integration remain separate
+children of [#1669](https://github.com/craigbalding/safeyolo/issues/1669).
 
 ## Ownership and trust
 
@@ -48,7 +49,10 @@ and delivery of fresh authority are required consumer dependencies. The witness
 uses fixed trusted inputs and does not implement their production adapters.
 `Target::revisions()` also hashes the actual trusted key set, grants and ceiling
 with their owner revision references. Reusing a label cannot conceal changed
-inputs from a client that supplied expected revisions.
+inputs from a client that supplied expected revisions. Proposals and invocations
+use `request_revisions()` to bind the selected operation and grant. Discovery
+returns those revisions per operation. Changes to another operation do not
+invalidate an unchanged prepared invocation.
 
 ## Client and target journey
 
@@ -58,7 +62,7 @@ For an already enrolled issuer and adopted target, the client uses these steps:
    An operation can be present without an invocation scope. Discovery is an
    authenticated disclosure, not permission to execute.
 2. Select a literal operation/resource ID and typed arguments. Carry the
-   discovered package, implementation and authority revisions into a proposal.
+   discovered operation, implementation and authority revisions into a proposal.
 3. Inspect the proposal's normalized arguments, effective budgets, expiry and
    assessment digest. A proposal reserves no budget and grants no approval.
 4. Invoke using that exact assessment digest and the same validity inputs.
@@ -116,7 +120,7 @@ Invocation requires all of these conditions:
   `allowed_verbs` ceiling must also permit that protocol action.
 - Both the delegated operation scope and the target's local ceiling permit the
   implementation, resource and every supplied or defaulted argument.
-- Expected trust, authority, ceiling, assessment, package and implementation
+- Expected trust, authority, ceiling, assessment, operation and implementation
   revisions still match. The proposal digest binds normalized arguments,
   revisions, intersected budgets and validity; changing an allowed argument
   still requires reassessment.
@@ -152,6 +156,116 @@ Discovery discloses the full adopted definitions, including literal environment
 values, to a grant with the discovery action. Adoption must account for that
 disclosure. Host-held service credentials remain with their existing owners;
 the package's delegated service references do not contain those credential values.
+
+## Catalogue adoption and revision changes
+
+`CatalogueAdoption` records publisher trust, an active signed catalogue, its
+previous signed revision, observed candidate input and standing update bounds.
+The target's `Configuration.catalogue` owns target adoption. A native issuer
+stores the same type as a JSON string under
+`[host_catalogues] PACKAGE_NAME = 'ADOPTION_JSON'` in `policy.toml`. Use the
+existing policy adoption/apply interface to adopt that initial authority. The
+derived `catalogue_adoption` schema describes every field. These records do
+not add an approval queue, endpoint grant or agent/task permission.
+
+`observed_file = { path, max_bytes }` can name an absolute local discovery file.
+An authorised publisher or the existing artifact/signal consumer supplies its
+`SignedCatalogue`. The configured byte ceiling bounds decoding. The target reads
+actual candidate bytes before invocation and dispatch. The issuer's existing
+policy watcher reads actual bytes on its ordinary control pass. Size and
+modification time do not establish identity. A signature authenticates the
+publisher and full source; it does not permit execution or qualification code.
+The signed `announcement_revision` is a positive increasing publisher revision,
+separate from the package's implementation version. The existing adoption
+records retain the last verified announcement, including withdrawal and pending
+revisions. Older announcements and different content reusing a revision refuse
+adoption. Duplicate announcements are idempotent; reconnect cannot undo a
+recorded withdrawal or select an older update.
+
+An `UpdateRule` carries the complete operation ceiling, declared effects,
+required checks and enforcement assumptions. `allow_narrower` permits a
+conservative inclusion proof against that standing ceiling.
+`allow_implementation_updates` separately permits trusted executable or pinned
+dependency byte updates within the ceiling. This can cover changes between
+adjacent revisions that are not tightening, provided both remain within the
+original assessed ceiling. It does not establish general program equivalence.
+Recipes, argument/default semantics, environment, identity, service-manager
+authority, persistence declarations and required enforcement remain represented.
+Unknown comparisons and unresolved enforcement remain visible.
+
+Comparison reports contain deterministic `equivalent`, `narrower`, `broader`,
+`incompatible` or `unknown` results and field differences. Only fields with set
+semantics are sorted; argument lists, defaults, native command words and adopted
+effect explanations retain their meaning. Canonical-equivalent edits preserve
+source provenance without replacing adopted explanations with publisher prose.
+New selectors stay discoverable while awaiting authority. A family explicitly
+names a literal prefix ending in `:`, exclusions, a complete operation ceiling
+and invocation scope. The issuer and target each authorise membership through
+their selected exact-operation or family scope. Their family prefixes need not
+match. An exact operation grant never gains future membership implicitly. The
+whole potential family authority and its compositions must be assessed at
+initial adoption. Each selected scope's call and concurrency budgets aggregate
+its members independently. Target ceilings apply across issuers and grants.
+Call usage belongs to the current grant or selected target-scope revision;
+active reservations, including uncertain jobs, survive revision changes.
+
+An operation's implementation, represented authority, effect/assessment and
+complete operation identities are distinct. The implementation digest retains
+the complete operation definition; executable and dependency digests identify
+file bytes. Discovery also retains the full
+package digest and source. `Invocation.operation_sha256` binds the full selected
+operation and package identity, independently of unrelated operations or package
+metadata. A changed operation still needs fresh assessment. Required check names
+must be present in both current trusted scopes; the issuer must derive this
+evidence from its existing check owners, never from caller-supplied names.
+
+The native policy transaction activates generated gateway definitions with their
+adoption record. It retains the last qualified revision and restores the saved
+source and runtime if activation fails. The target validates the entire selected
+native catalogue before saving its adopted revision in the existing protected
+configuration. The executor must be able to replace that configuration. An
+external edit detected during qualification refuses the save. Target and issuer
+can update separately: mismatched changed operations refuse invocation; unchanged
+operation identities remain usable. Neither side claims that the other is live.
+
+Discovery, target checking and `policy show` expose observed, proposed, qualified
+and active identities with the automatic, refused or awaiting-review reason.
+Quiet updates use ordinary retained configuration and policy/executor audit
+output. No routine approval request is generated inside standing authority.
+The configuration keeps the previous signed revision for inspection and rollback.
+
+Pending proposals, findings and approvals retain their exact inputs. An admitted
+job revalidates its original request before entering `running`. A changed input
+prevents that launch. A running job retains its original implementation and
+limits; updates do not relaunch it or reverse its effects. Exact replay returns
+the retained admission without dispatching again. The ordinary job/output and
+cancellation routes retain their current ownership and revocation checks.
+
+For a known stale preparation, a trusted issuer can use `refresh_preparation()`
+with authenticated discovery and the real proposal route. It revalidates current
+scope and normalized arguments and returns freshly signed invocation authority.
+It never sends an invocation. Reconcile the original request/job after an
+uncertain reply before selecting another effect; a stale reply alone cannot
+establish that an earlier request never executed.
+
+Withdrawal either retains the active revision or selects the identified retained
+previous revision under `on_withdraw`. An explicit `pin` selects retained bytes.
+An older announcement alone cannot select rollback. Duplicate observations and
+reconnects preserve the selected identities. Announcement expiry prevents a new
+adoption from stale discovery; it does not revoke an already adopted package.
+Current publisher trust, invocation grants, issuer freshness and target ceilings
+still apply. Rollback never recreates a removed grant or erases job history.
+
+`execution.dependencies` can pin canonical input files by content digest and
+finite byte ceiling. Linux validates and mounts sealed snapshots of these files
+at their declared paths before launch. It detects changed bytes even when size
+and modification time remain equal, and subsequent replacement cannot change the
+held snapshots. Native executable snapshots retain the same protection. macOS
+and Windows explicitly refuse declared dependency snapshots because those
+backends cannot yet supply this guarantee. Ambient runtime dependencies and
+alternate access paths remain outside the declared pin set; no closure over
+arbitrary program dependencies or aliases is claimed. Existing broader native
+profiles and their disclosure remain unchanged.
 
 ## Standalone binary and build dependencies
 

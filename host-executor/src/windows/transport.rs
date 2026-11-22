@@ -233,6 +233,7 @@ pub(crate) fn serve(
         "Windows control pipe needs fewer than 253 workers to retain a finite instance count below the OS unlimited sentinel",
     )?;
     let mut ledger = Ledger::open(&state, &settings.target.target_id, settings.ledger.clone())?;
+    let settings = crate::server::reconcile_configuration(&config, &state)?;
     settings.native.reconcile(&mut ledger)?;
     let name = wide(&format!(
         "\\\\.\\pipe\\safeyolo-host-{}",
