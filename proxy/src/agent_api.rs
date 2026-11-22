@@ -33,6 +33,7 @@ mod declarations;
 mod explain;
 mod flows;
 mod gateway;
+mod host_execution;
 mod lifecycle;
 mod memory;
 mod operator_actions;
@@ -96,6 +97,8 @@ const ENDPOINTS: &[&str] = &[
     "/support/operations/{operation_id}",
     "/circuits",
     "/gateway/services",
+    "/gateway/host (GET)",
+    "/gateway/host/{binding} (POST)",
     "/api/flows/search",
     "/api/test-context/current",
     "/api/flows/search",

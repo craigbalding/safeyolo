@@ -84,7 +84,7 @@ where
     if let Some(input) = &input {
         let record = match pending::lookup(&runtime.audit, id) {
             Ok(Some(record))
-                if route_challenge::is_exception(&record)
+                if route_challenge::is_challenge(&record)
                     && record.authority.action["run"] == json!(run) =>
             {
                 record
@@ -101,9 +101,14 @@ where
                 .current_status(policy)
                 .is_ok_and(|status| status == "challenged")
         }) {
-            let result =
-                crate::policy::checks::challenges::assess(&record, &input.answers, &runtime, state)
-                    .await;
+            let result = crate::policy::checks::challenges::assess(
+                &record.authority_digest,
+                &record.authority.action,
+                &input.answers,
+                &runtime,
+                state,
+            )
+            .await;
             match result {
                 Ok(result) if result.ready => assessment = Some(result),
                 Ok(result) => {
@@ -131,7 +136,7 @@ where
                 .as_ref()
                 .ok_or_else(|| crate::approvals::invalid("policy unavailable"))?;
             let Some(record) = pending::lookup(&runtime.audit, &id)?.filter(|record| {
-                route_challenge::is_exception(record)
+                route_challenge::is_challenge(record)
                     && record.authority.action["run"] == json!(run)
             }) else {
                 return Ok(None);
@@ -197,7 +202,7 @@ where
                 event.host = record.authority.action["host"].as_str().map(str::to_owned);
                 event.request_id = Some(request.request_id.into());
                 event.decision = Some(Decision::RequireApproval);
-                event.approval = Some(Approval {required:true,approval_type:ApprovalType::GatewayRoute,key:record.approval_id.clone(),target:record.authority.action["service"].as_str().unwrap_or("").into(),scope_hint:json!({"method":record.authority.method,"path":record.authority.action["path"]}).into()});
+                event.approval = Some(Approval {required:true,approval_type:ApprovalType::GatewayRoute,key:record.approval_id.clone(),target:record.authority.action["service"].as_str().unwrap_or("").into(),scope_hint:json!({"method":record.authority.method,"path":record.authority.action["path"],"host_binding":record.authority.action["host_binding"]}).into()});
                 event.details = json!({"approval_id":record.approval_id,"authority_digest":record.authority_digest,"transitioned":transitioned}).into();
                 if runtime.audit.emit_confirmed(event).await.is_err() {
                     return Ok(response(
