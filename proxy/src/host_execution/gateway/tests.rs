@@ -670,13 +670,20 @@ async fn private_reconsideration_and_explicit_exact_escalation_reuse_the_approva
     let pending = f.api(&escalation, "POST", answers).await;
     assert_eq!(pending.status, 202, "{}", pending.value);
     let runtime = f.proxy.runtime.read().unwrap().clone();
-    let approved = pending::resolve(
-        &f.proxy.runtime,
-        &runtime.audit,
-        &id,
-        crate::approvals::network_action::Decision::Approve,
-        Some("exact"),
-    )
+    let state = f.proxy.runtime.clone();
+    let audit = runtime.audit.clone();
+    let approval_id = id.clone();
+    let approved = tokio::task::spawn_blocking(move || {
+        pending::resolve(
+            &state,
+            &audit,
+            &approval_id,
+            crate::approvals::network_action::Decision::Approve,
+            Some("exact"),
+        )
+    })
+    .await
+    .unwrap()
     .unwrap()
     .unwrap();
     assert_eq!(approved.1["status"], "approved", "{}", approved.1);
@@ -704,6 +711,24 @@ async fn private_reconsideration_and_explicit_exact_escalation_reuse_the_approva
         "superseded"
     );
     assert_eq!(f.mutations.load(Ordering::SeqCst), 1);
+    let next = f.prepared("changed-credential", None).await;
+    let challenge = f.call(next.clone()).await;
+    let id = challenge.value["challenge_id"].as_str().unwrap();
+    let record = pending::lookup(&runtime.audit, id).unwrap().unwrap();
+    let vault = crate::credentials::open(&f.root.path().join("data")).unwrap();
+    assert!(vault.remove("host-key").unwrap());
+    let current = f.proxy.runtime.read().unwrap().clone();
+    let view = pending::current_view(
+        &runtime.audit,
+        current.policy.as_ref().unwrap(),
+        &record,
+        Some(&f.proxy.runtime),
+    )
+    .unwrap();
+    assert_eq!(view["status"], "superseded");
+    assert_eq!(view["admission_active"], false);
+    assert_eq!(f.call(next).await.status, 503);
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 1);
     f.stop().await;
 }
 
@@ -717,6 +742,21 @@ async fn revocation_task_switch_and_target_revision_changes_preserve_retained_jo
         .as_str()
         .unwrap()
         .to_owned();
+    let stale = f.prepared("changed-catalogue", Some(6)).await;
+    f.target
+        .write()
+        .unwrap()
+        .package
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .arguments
+        .get_mut("mode")
+        .unwrap()
+        .default = Some(json!("quiet"));
+    assert_eq!(f.call(stale).await.status, 409);
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 1);
+    *f.target.write().unwrap() = f.binding.target.clone();
     let future = f.prepared("after-revoke", Some(6)).await;
     f.target
         .write()
@@ -752,6 +792,55 @@ async fn revocation_task_switch_and_target_revision_changes_preserve_retained_jo
         )
         .await
         .is_err()
+    );
+    f.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_allowed_host_route_still_requires_its_adopted_check_evidence() {
+    let f = Fixture::new(
+        r#"
+[checks.native]
+source_id='task-assessor'
+meaning='A positive finding identifies an unsafe task action'
+subject='value'
+result_type='finding'
+influences=['advisory']
+implementation_version='1'
+configuration_version='1'
+max_age_seconds=60
+source={kind='service',operation={gate_id='native',service='assessor',capability='read',endpoint='http://127.0.0.1:9',method='POST',path='/assess',effects='active',mapping='typed'},limits={timeout_ms=100,max_input_bytes=65536,max_output_bytes=1024,max_concurrent=1,max_pending=1,max_cached=1}}
+[route_challenges.host]
+agents=['alice']
+service='local-host'
+capability='restart'
+methods=['POST']
+path='/v1/host-execution/invoke'
+revision='1'
+steps=[{kind='check',check='native',on_positive={kind='deny'}}]
+"#,
+    )
+    .await;
+    // The assessor has no adopted dependency/grant. Missing evidence must
+    // stop the actual gateway consumer before any target invocation.
+    let input = f.prepared("required-check", None).await;
+    let reply = f.call(input).await;
+    assert_eq!(reply.status, 428, "{}", reply.value);
+    assert_eq!(reply.value["assessment"]["ready_for_escalation"], false);
+    assert_eq!(reply.value["assessment"]["steps"][0]["check"], "native");
+    assert!(reply.value["assessment"]["steps"][0]["evidence"]["unavailable"].is_string());
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    assert!(
+        f.proxy
+            .runtime
+            .read()
+            .unwrap()
+            .audit
+            .approvals()
+            .list()
+            .unwrap()
+            .iter()
+            .all(|record| record.status == "challenged")
     );
     f.stop().await;
 }
