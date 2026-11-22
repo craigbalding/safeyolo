@@ -175,6 +175,12 @@ actual candidate bytes before invocation and dispatch. The issuer's existing
 policy watcher reads actual bytes on its ordinary control pass. Size and
 modification time do not establish identity. A signature authenticates the
 publisher and full source; it does not permit execution or qualification code.
+The signed `announcement_revision` is a positive increasing publisher revision,
+separate from the package's implementation version. The existing adoption
+records retain the last verified announcement, including withdrawal and pending
+revisions. Older announcements and different content reusing a revision refuse
+adoption. Duplicate announcements are idempotent; reconnect cannot undo a
+recorded withdrawal or select an older update.
 
 An `UpdateRule` carries the complete operation ceiling, declared effects,
 required checks and enforcement assumptions. `allow_narrower` permits a

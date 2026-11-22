@@ -66,6 +66,7 @@ fn signed_catalogue(
     SignedCatalogue::sign(
         CatalogueRevision {
             publisher: "publisher".into(),
+            announcement_revision: package.version * 2 + u64::from(withdrawn),
             package: package.clone(),
             observed_at: now() - 1,
             expires_at: now() + 600,
@@ -802,4 +803,53 @@ fn dependency_byte_ceilings_compare_as_bounds_without_granting_update_trust() {
         Comparison::Broader
     );
     assert!(!rule.allows(&after));
+}
+
+#[test]
+fn retained_withdrawal_survives_reconnect_and_replayed_signed_updates() {
+    let (target, key, mut adoption) = fixture();
+    let store = Store::new(&target);
+    let path = store.root.join("observed.json");
+    adoption.observed_file = Some(ObservedCatalogueFile {
+        path: path.clone(),
+        max_bytes: 131072,
+    });
+    let mut package = target.package.clone();
+    package.version += 1;
+    package
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .execution
+        .executable_sha256 = "b".repeat(64);
+    let update = signed_catalogue(&package, &key, false, None);
+    fs::write(&path, serde_json::to_vec(&update).unwrap()).unwrap();
+    let plan = adoption.plan(now()).unwrap();
+    assert!(adoption.advance(&plan));
+    assert_eq!(
+        revision(&adoption.active.catalogue.package),
+        revision(&package)
+    );
+    adoption.policy.on_withdraw = Withdrawal::Previous;
+    let withdrawal = signed_catalogue(&package, &key, true, Some(revision(&target.package)));
+    fs::write(&path, serde_json::to_vec(&withdrawal).unwrap()).unwrap();
+    let plan = adoption.plan(now()).unwrap();
+    assert_eq!(plan.status.state, "rolled_back");
+    assert!(adoption.advance(&plan));
+    let mut reconnected: CatalogueAdoption =
+        serde_json::from_slice(&serde_json::to_vec(&adoption).unwrap()).unwrap();
+    fs::write(&path, serde_json::to_vec(&update).unwrap()).unwrap();
+    let refused = reconnected.plan(now()).unwrap();
+    assert_eq!(refused.status.state, "refused");
+    assert_eq!(refused.status.active, revision(&target.package));
+    assert!(!reconnected.advance(&refused));
+    assert!(reconnected.observed.catalogue.withdrawn);
+    let mut conflicting = withdrawal.catalogue.clone();
+    conflicting.withdrawn = false;
+    fs::write(
+        &path,
+        serde_json::to_vec(&SignedCatalogue::sign(conflicting, &key)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(reconnected.plan(now()).unwrap().status.state, "refused");
 }

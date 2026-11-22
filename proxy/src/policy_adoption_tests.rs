@@ -47,6 +47,7 @@ async fn catalogue_discovery_uses_actual_bytes_and_activates_coherent_gateway_de
         SignedCatalogue::sign(
             CatalogueRevision {
                 publisher: "publisher".into(),
+                announcement_revision: package.version * 2,
                 package: package.clone(),
                 observed_at: now() - 1,
                 expires_at: now() + 600,
@@ -146,6 +147,7 @@ async fn catalogue_discovery_uses_actual_bytes_and_activates_coherent_gateway_de
         revision(&package)
     );
     let mut broadened = package.clone();
+    broadened.version += 1;
     broadened
         .operations
         .get_mut("restart")

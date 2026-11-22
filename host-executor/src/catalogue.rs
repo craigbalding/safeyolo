@@ -278,6 +278,7 @@ impl OperationFamily {
 #[serde(deny_unknown_fields)]
 pub struct CatalogueRevision {
     pub publisher: String,
+    pub announcement_revision: u64,
     pub package: Package,
     pub observed_at: u64,
     pub expires_at: u64,
@@ -310,6 +311,11 @@ impl SignedCatalogue {
         self.verify_retained(policy)
     }
     fn verify_retained(&self, policy: &CataloguePolicy) -> Result<(), Refusal> {
+        require(
+            self.catalogue.announcement_revision > 0,
+            RefusalCode::Protocol,
+            "catalogue announcement revision must be positive",
+        )?;
         require(
             self.catalogue.publisher == policy.publisher
                 && self.catalogue.package.name == policy.package_name,
@@ -437,6 +443,7 @@ pub struct CataloguePlan {
     pub package: Package,
     pub status: CatalogueStatus,
     pub selected: SignedCatalogue,
+    pub verified_observation: Option<SignedCatalogue>,
 }
 
 impl CatalogueAdoption {
@@ -448,7 +455,18 @@ impl CatalogueAdoption {
         {
             let mut adopted = self.clone();
             adopted.observed_file = None;
-            match source.read() {
+            let observed = source.read();
+            let observed_sha = observed.as_ref().ok().map(|c| revision(&c.catalogue));
+            let observation=observed.and_then(|candidate|{
+                candidate.verify(&self.policy,now)?;
+                require(candidate.catalogue.announcement_revision >= self.observed.catalogue.announcement_revision,
+                    RefusalCode::Stale,"older catalogue announcement refused; retained withdrawal/update observation remains authoritative")?;
+                require(candidate.catalogue.announcement_revision != self.observed.catalogue.announcement_revision
+                    || revision(&candidate.catalogue)==revision(&self.observed.catalogue),
+                    RefusalCode::Conflict,"catalogue announcement revision identifies conflicting content")?;
+                Ok(candidate)
+            });
+            match observation {
                 Ok(candidate) => {
                     adopted.observed = candidate;
                     return adopted.plan(now);
@@ -457,17 +475,32 @@ impl CatalogueAdoption {
                     adopted.observed = self.active.clone();
                     adopted.pin = None;
                     let mut plan = adopted.plan(now)?;
-                    plan.status.state = "unavailable".into();
+                    plan.status.state =
+                        if matches!(error.code, RefusalCode::Unavailable | RefusalCode::Budget) {
+                            "unavailable"
+                        } else {
+                            "refused"
+                        }
+                        .into();
                     plan.status.reason = format!(
                         "current catalogue discovery failed; retained active provenance is shown: {error}"
                     );
+                    if let Some(sha) = observed_sha {
+                        plan.status.observed = sha;
+                    }
                     plan.status.qualified = None;
+                    plan.verified_observation = None;
                     return Ok(plan);
                 }
             }
         }
         self.active.verify_retained(&self.policy)?;
         let active = &self.active.catalogue.package;
+        let verified_observation = self
+            .observed
+            .verify(&self.policy, now)
+            .is_ok()
+            .then(|| self.observed.clone());
         let mut status = CatalogueStatus {
             observed: revision(&self.observed.catalogue), proposed: revision(&self.observed.catalogue.package),
             qualified: None, active: revision(active), state: "awaiting_review".into(), reason: String::new(),
@@ -481,6 +514,7 @@ impl CatalogueAdoption {
                 package: active.clone(),
                 status,
                 selected: self.active.clone(),
+                verified_observation: verified_observation.clone(),
             }
         };
         if let Err(error) = self.observed.verify(&self.policy, now)
@@ -609,17 +643,25 @@ impl CatalogueAdoption {
             package: proposed.clone(),
             status,
             selected: candidate.clone(),
+            verified_observation,
         })
     }
 
     /// Advance only after this exact plan passed the owning runtime's complete
     /// qualification. The owner saves this with its existing configuration.
     pub fn advance(&mut self, plan: &CataloguePlan) -> bool {
+        let mut changed = false;
+        if let Some(observed) = &plan.verified_observation
+            && revision(&observed.catalogue) != revision(&self.observed.catalogue)
+        {
+            self.observed = observed.clone();
+            changed = true;
+        }
         if plan.status.qualified.as_deref() != Some(plan.status.active.as_str())
             || revision(&plan.selected.catalogue.package) != plan.status.active
             || revision(&self.active.catalogue.package) == plan.status.active
         {
-            return false;
+            return changed;
         }
         self.previous = Some(self.active.clone());
         self.active = plan.selected.clone();

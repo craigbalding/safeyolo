@@ -244,15 +244,22 @@ pub(crate) fn catalogues_changed(
 /// Automatic updates use the same save/runtime/rollback transaction as policy
 /// adoption. Failed or partial activation leaves the prior source and registry.
 pub(crate) fn reconcile_catalogues(state: &crate::RuntimeState) -> Result<bool, Error> {
-    let source = {
+    let (source, path) = {
         let runtime = state
             .read()
             .map_err(|_| "host catalogue runtime unavailable")?;
         let Some(source) = runtime.policy.as_ref().and_then(|p| p.native_source_text()) else {
             return Ok(false);
         };
-        source.to_owned()
+        (source.to_owned(), runtime.config.policy_file.clone())
     };
+    // Let the normal watcher consume an operator edit before automatic
+    // adoption uses the old snapshot. The transaction still rechecks this race.
+    if let Some(path) = path
+        && std::fs::read_to_string(path)? != source
+    {
+        return Ok(false);
+    }
     let parsed = crate::policy::parse_toml_document(&source)?;
     let mut pending = false;
     for mut adoption in catalogue_adoptions(&parsed)?.into_values() {

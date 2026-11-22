@@ -472,6 +472,7 @@ fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
         SignedCatalogue::sign(
             CatalogueRevision {
                 publisher: "publisher".into(),
+                announcement_revision: package.version * 2,
                 package: package.clone(),
                 observed_at: now() - 1,
                 expires_at: now() + 600,
@@ -524,6 +525,7 @@ fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
     let signed = SignedCatalogue::sign(
         CatalogueRevision {
             publisher: "publisher".into(),
+            announcement_revision: package.version * 2,
             package: package.clone(),
             observed_at: now() - 1,
             expires_at: now() + 600,
@@ -575,6 +577,7 @@ fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
     let signed = SignedCatalogue::sign(
         CatalogueRevision {
             publisher: "publisher".into(),
+            announcement_revision: package.version * 2 + 1,
             package: unsupported,
             observed_at: now() - 1,
             expires_at: now() + 600,

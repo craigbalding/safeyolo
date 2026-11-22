@@ -401,14 +401,7 @@ pub(crate) fn reconcile_configuration(
     let before = std::fs::read(config).map_err(unavailable)?;
     let previous: Configuration = serde_json::from_slice(&before).map_err(unavailable)?;
     let settings = load(config, state)?;
-    let changed = previous
-        .catalogue
-        .as_ref()
-        .map(|a| revision(&a.active.catalogue))
-        != settings
-            .catalogue
-            .as_ref()
-            .map(|a| revision(&a.active.catalogue));
+    let changed = revision(&previous.catalogue) != revision(&settings.catalogue);
     if !changed {
         return Ok(settings);
     }

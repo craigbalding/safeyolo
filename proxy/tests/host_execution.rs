@@ -1720,6 +1720,7 @@ fn stale_preparation_refreshes_through_real_discovery_proposal_and_ledger_withou
     let active = SignedCatalogue::sign(
         CatalogueRevision {
             publisher: "publisher".into(),
+            announcement_revision: target.package.version * 2,
             package: target.package.clone(),
             observed_at: 95,
             expires_at: 125,
@@ -1762,6 +1763,7 @@ fn stale_preparation_refreshes_through_real_discovery_proposal_and_ledger_withou
         .executable_sha256 = "b".repeat(64);
     adoption.observed = SignedCatalogue::sign(
         CatalogueRevision {
+            announcement_revision: target.package.version * 2,
             package: target.package.clone(),
             ..adoption.observed.catalogue.clone()
         },
