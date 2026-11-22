@@ -50,6 +50,7 @@ async fn complete_large_evidence_is_chunked_and_off_scope_calls_are_denied() {
         let header = String::from_utf8(header).unwrap().to_ascii_lowercase();
         assert!(header.contains("authorization: bearer synthetic-job-provider-secret"));
         assert!(!header.contains("sgw_"));
+        assert!(header.contains("anthropic-version: 2023-06-01"));
         stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: \"capture-1\"\r\nConnection: close\r\n\r\n", bytes.len()).as_bytes()).await.unwrap();
         stream.write_all(&bytes).await.unwrap();
         assert!(
@@ -78,7 +79,9 @@ async fn complete_large_evidence_is_chunked_and_off_scope_calls_are_denied() {
     .unwrap();
     let serving = tokio::spawn(bridge.serve());
     let call = |path: &str| json!({"kind":"service","service":"simple","method":"GET","url":format!("http://127.0.0.1:{port}{path}")});
-    let reply = rpc(&socket, call("/value")).await;
+    let mut versioned = call("/value");
+    versioned["headers"] = json!({"anthropic-version":"2023-06-01"});
+    let reply = rpc(&socket, versioned).await;
     assert_eq!(reply["ok"], true, "{reply}");
     let handle = reply["value"]["id"].as_str().unwrap();
     let mut captured = Vec::new();
@@ -105,6 +108,21 @@ async fn complete_large_evidence_is_chunked_and_off_scope_calls_are_denied() {
         call("/write"),
         json!({"kind":"service","service":"simple","method":"POST","url":format!("http://127.0.0.1:{port}/value")}),
         json!({"kind":"service","service":"simple","method":"GET","url":"http://denied.example/value"}),
+        {
+            let mut request = call("/value");
+            request["headers"] = json!({"Authorization":"Bearer substituted"});
+            request
+        },
+        {
+            let mut request = call("/value");
+            request["headers"] = json!({"X-SafeYolo-Agent-ID":"peer"});
+            request
+        },
+        {
+            let mut request = call("/value");
+            request["headers"] = json!({"Host":"unadopted.invalid"});
+            request
+        },
     ] {
         assert_eq!(rpc(&socket, value).await["ok"], false);
     }
@@ -114,6 +132,10 @@ async fn complete_large_evidence_is_chunked_and_off_scope_calls_are_denied() {
     client.close().await.unwrap();
     provider.await.unwrap();
     let records = captures.finish().unwrap();
+    assert_eq!(
+        records[0].request_headers["anthropic-version"],
+        "2023-06-01"
+    );
     assert_eq!(records[0].source_revision.as_deref(), Some("\"capture-1\""));
     assert_eq!(
         STANDARD
@@ -297,7 +319,13 @@ async fn oversized_provider_evidence_is_unavailable_and_never_truncated() {
     let url = format!("http://127.0.0.1:{port}/value");
     assert!(
         bridge
-            .service("simple".into(), "GET".into(), url.clone(), String::new())
+            .service(
+                "simple".into(),
+                "GET".into(),
+                url.clone(),
+                String::new(),
+                BTreeMap::new()
+            )
             .await
             .unwrap_err()
             .to_string()
@@ -305,7 +333,13 @@ async fn oversized_provider_evidence_is_unavailable_and_never_truncated() {
     );
     assert!(
         bridge
-            .service("simple".into(), "GET".into(), url, String::new())
+            .service(
+                "simple".into(),
+                "GET".into(),
+                url,
+                String::new(),
+                BTreeMap::new()
+            )
             .await
             .unwrap_err()
             .to_string()
@@ -359,6 +393,7 @@ async fn interrupted_effect_retains_uncertainty_separately_from_findings() {
         "POST".into(),
         format!("http://127.0.0.1:{port}/value"),
         STANDARD.encode(b"{}"),
+        BTreeMap::new(),
     ));
     let held = async {
         let (mut stream, _) = origin.accept().await.unwrap();

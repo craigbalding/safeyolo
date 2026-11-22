@@ -132,7 +132,7 @@ def test_bundle_pins_both_service_checkers_without_changing_offline_examples(tmp
     spec = importlib.util.spec_from_file_location("builder", REPO / "scripts/build_hyperlight_jobs.py")
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
-    for name in ("core.elf", "checker.py", "service_checker.py", "artifact_checker.py", "runtime.json"):
+    for name in ("core.elf", "checker.py", "service_checker.py", "artifact_checker.py", "task_action_checker.py", "runtime.json"):
         (tmp_path / name).write_text(name)
     builder.write_job_definitions(tmp_path)
     for kind in ("hyperlight", "hyperlight-unikraft"):
@@ -166,6 +166,15 @@ def test_bundle_pins_both_service_checkers_without_changing_offline_examples(tmp
             assert artifact["engine"]["function"] == "ArtifactCheck"
         else:
             assert artifact["engine"]["checker"]["sha256"] == hashlib.sha256((tmp_path / "artifact_checker.py").read_bytes()).hexdigest()
+    task = json.loads((tmp_path / "task-action-check.json").read_text())
+    assert task["engine"]["kind"] == "hyperlight-unikraft"
+    assert task["engine"]["checker"] == {
+        "path": "task_action_checker.py",
+        "sha256": hashlib.sha256((tmp_path / "task_action_checker.py").read_bytes()).hexdigest(),
+    }
+    assert task["network"] is False
+    assert task["mediated_services"]["services"] == ["claude"]
+    assert task["mediated_services"]["max_calls"] == 1
 
 
 @pytest.mark.parametrize("case", json.loads((REPO / "proxy/tests/fixtures/hyperlight-author-cases.json").read_bytes()), ids=lambda case: case["name"])
