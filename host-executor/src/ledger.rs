@@ -52,10 +52,72 @@ fn json<T: Serialize>(value: &T) -> Result<String, Refusal> {
     serde_json::to_string(value).map_err(unavailable)
 }
 
+// The native backends emit fixed enforcement/dependency descriptions, plus the
+// adopted Linux identity. Reserve those facts, numeric lifecycle fields and a
+// bounded diagnostic before admission. Request/rationale bytes have no new cap.
+const RECEIPT_GROWTH_BYTES: usize = 32 * 1024;
+const DIAGNOSTIC_BYTES: usize = 4096;
+
+fn diagnostic(mut value: String) -> String {
+    if value.len() > DIAGNOSTIC_BYTES {
+        let mut end = DIAGNOSTIC_BYTES;
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        value.truncate(end);
+        value.push_str(" [diagnostic truncated]");
+    }
+    value
+}
+
+fn job_row(transaction: &Transaction<'_>, job_id: &str) -> Result<i64, Refusal> {
+    transaction
+        .query_row("SELECT rowid FROM jobs WHERE job_id=?1", [job_id], |row| {
+            row.get(0)
+        })
+        .map_err(unavailable)
+}
+
+/// Incremental writes cannot change a cell's size or allocate database pages.
+/// Their rollback journal still needs the separately documented host reserve.
+fn write_blob(
+    transaction: &Transaction<'_>,
+    row: i64,
+    column: &str,
+    bytes: &[u8],
+    offset: usize,
+) -> Result<(), Refusal> {
+    let mut blob = transaction
+        .blob_open("main", "jobs", column, row, false)
+        .map_err(unavailable)?;
+    blob.write_at(bytes, offset).map_err(unavailable)?;
+    blob.close().map_err(unavailable)
+}
+
+fn write_json(
+    transaction: &Transaction<'_>,
+    row: i64,
+    column: &str,
+    value: &impl Serialize,
+) -> Result<(), Refusal> {
+    let mut blob = transaction
+        .blob_open("main", "jobs", column, row, false)
+        .map_err(unavailable)?;
+    let mut bytes = json(value)?.into_bytes();
+    require(
+        bytes.len() <= blob.len(),
+        RefusalCode::Budget,
+        "receipt exceeds its admitted storage reservation",
+    )?;
+    bytes.resize(blob.len(), b' ');
+    blob.write_at(&bytes, 0).map_err(unavailable)?;
+    blob.close().map_err(unavailable)
+}
+
 fn receipt(transaction: &Transaction<'_>, job_id: &str) -> Result<Receipt, Refusal> {
     let value: Option<String> = transaction
         .query_row(
-            "SELECT receipt FROM jobs WHERE job_id=?1",
+            "SELECT CAST(receipt AS TEXT) FROM jobs WHERE job_id=?1",
             [job_id],
             |row| row.get(0),
         )
@@ -69,13 +131,12 @@ fn receipt(transaction: &Transaction<'_>, job_id: &str) -> Result<Receipt, Refus
 }
 
 fn save_receipt(transaction: &Transaction<'_>, receipt: &Receipt) -> Result<(), Refusal> {
-    transaction
-        .execute(
-            "UPDATE jobs SET receipt=?1 WHERE job_id=?2",
-            params![json(receipt)?, receipt.job_id],
-        )
-        .map_err(unavailable)?;
-    Ok(())
+    write_json(
+        transaction,
+        job_row(transaction, &receipt.job_id)?,
+        "receipt",
+        receipt,
+    )
 }
 
 fn usage(
@@ -95,7 +156,7 @@ fn usage(
     // not establish that an orphaned native process stopped.
     let active = transaction
         .query_row(
-            "SELECT count(*) FROM jobs WHERE issuer=?1 AND grant_id=?2 AND operation=?3 AND active=1",
+            "SELECT count(*) FROM jobs WHERE issuer=?1 AND grant_id=?2 AND operation=?3 AND active=x'01'",
             params![request.issuer_id, request.grant_id, operation],
             |row| row.get::<_, i64>(0),
         )
@@ -163,6 +224,17 @@ impl Ledger {
         lock.try_lock().map_err(unavailable)?;
         let database = file("jobs.sqlite")?;
         let connection = Connection::open(root.join("jobs.sqlite")).map_err(unavailable)?;
+        let schema: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(unavailable)?;
+        let pages: i64 = connection
+            .query_row("PRAGMA page_count", [], |row| row.get(0))
+            .map_err(unavailable)?;
+        require(
+            schema == 1 || pages == 0,
+            RefusalCode::Unavailable,
+            "retained ledger format differs from this executor; retained database was not changed",
+        )?;
         // DELETE avoids an independently growing WAL. Each immediate
         // transaction has at most one rollback journal of the bounded database.
         connection
@@ -186,15 +258,19 @@ impl Ledger {
         )?;
         connection
             .execute_batch(
-                "CREATE TABLE IF NOT EXISTS target (singleton INTEGER PRIMARY KEY CHECK(singleton=1), id TEXT NOT NULL);
+                "BEGIN IMMEDIATE;
+             CREATE TABLE IF NOT EXISTS target (singleton INTEGER PRIMARY KEY CHECK(singleton=1), id TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS jobs (
                job_id TEXT PRIMARY KEY, issuer TEXT NOT NULL, grant_id TEXT NOT NULL,
                grant_revision TEXT NOT NULL, operation TEXT NOT NULL, request BLOB NOT NULL,
-               receipt TEXT NOT NULL, output BLOB NOT NULL, reserved_output INTEGER NOT NULL CHECK(reserved_output>0),
-               active INTEGER NOT NULL CHECK(active IN (0,1)));
+               receipt BLOB NOT NULL, output BLOB NOT NULL, reserved_output INTEGER NOT NULL CHECK(reserved_output>0),
+               active BLOB NOT NULL CHECK(active IN (x'00',x'01')),
+               cancellation_key BLOB NOT NULL, cancellation_digest BLOB NOT NULL, cancellation_response BLOB NOT NULL);
              CREATE TABLE IF NOT EXISTS mutations (
                issuer TEXT NOT NULL, request_id TEXT NOT NULL, digest TEXT NOT NULL,
-               response TEXT NOT NULL, PRIMARY KEY(issuer,request_id));",
+               response TEXT NOT NULL, PRIMARY KEY(issuer,request_id));
+             PRAGMA user_version=1;
+             COMMIT;",
             )
             .map_err(unavailable)?;
         connection
@@ -283,6 +359,14 @@ impl Ledger {
             )
             .optional()
             .map_err(unavailable)?;
+        let cancellation_key = revision(&(&req.issuer_id, &req.request_id));
+        let replay = match replay {
+            Some(value) => Some(value),
+            None => transaction.query_row(
+                "SELECT CAST(cancellation_digest AS TEXT),CAST(cancellation_response AS TEXT) FROM jobs WHERE cancellation_key=?1",
+                [cancellation_key.as_bytes()], |row| Ok((row.get(0)?, row.get(1)?))
+            ).optional().map_err(unavailable)?,
+        };
         if let Some((digest, response)) = replay {
             require(
                 digest == revision(req),
@@ -297,7 +381,7 @@ impl Ledger {
         let mutation = matches!(req.action, Action::Invoke { .. } | Action::Cancel { .. });
         if mutation {
             let count: i64 = transaction
-                .query_row("SELECT count(*) FROM mutations", [], |row| row.get(0))
+                .query_row("SELECT (SELECT count(*) FROM mutations)+(SELECT count(*) FROM jobs WHERE cancellation_key!=zeroblob(64))", [], |row| row.get(0))
                 .map_err(unavailable)?;
             require(
                 (count as u64) < self.limits.mutation_records,
@@ -305,7 +389,7 @@ impl Ledger {
                 "retained mutation record ceiling reached",
             )?;
             let uncancelled: i64 = transaction.query_row(
-                "SELECT count(*) FROM jobs WHERE active=1 AND json_extract(receipt,'$.cancellation_requested')=0",
+                "SELECT count(*) FROM jobs WHERE active=x'01' AND json_extract(CAST(receipt AS TEXT),'$.cancellation_requested')=0",
                 [], |row| row.get(0)
             ).map_err(unavailable)?;
             let releases_reserve = if let Action::Cancel { job_id, .. } = &req.action {
@@ -326,6 +410,7 @@ impl Ledger {
             )?;
         }
         let mut dispatch = false;
+        let mut reserved_cancellation = None;
         let response = match &req.action {
             Action::Discover => Response::Discovery {
                 discovery: target.discover(&auth)?,
@@ -367,9 +452,17 @@ impl Ledger {
                     RefusalCode::Budget,
                     "target job or retained-output ceiling reached",
                 )?;
+                let capacity = json(&receipt)?.len()
+                    + 2 * json(
+                        &target.package.operations[&invocation.operation_id]
+                            .execution
+                            .identity,
+                    )?
+                    .len()
+                    + RECEIPT_GROWTH_BYTES;
                 transaction
                     .execute(
-                        "INSERT INTO jobs VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1)",
+                        "INSERT INTO jobs VALUES(?1,?2,?3,?4,?5,?6,zeroblob(?7),zeroblob(?8),?8,x'01',zeroblob(64),zeroblob(64),zeroblob(?9))",
                         params![
                             receipt.job_id,
                             req.issuer_id,
@@ -377,12 +470,13 @@ impl Ledger {
                             auth.grant_revision(),
                             invocation.operation_id,
                             bytes,
-                            json(&receipt)?,
-                            &[] as &[u8],
-                            receipt.prepared.limits.output_bytes as i64
+                            capacity as i64,
+                            receipt.prepared.limits.output_bytes as i64,
+                            (capacity + 64) as i64,
                         ],
                     )
                     .map_err(unavailable)?;
+                save_receipt(&transaction, &receipt)?;
                 dispatch = true;
                 Response::Job {
                     receipt: Box::new(receipt),
@@ -397,6 +491,9 @@ impl Ledger {
                     Action::Cancel {
                         expected_revision, ..
                     } => {
+                        if !retained.cancellation_requested {
+                            reserved_cancellation = Some(job_row(&transaction, job_id)?);
+                        }
                         retained.request_cancellation(expected_revision, now)?;
                         save_receipt(&transaction, &retained)?;
                         Response::Job {
@@ -407,9 +504,11 @@ impl Ledger {
                         offset, max_bytes, ..
                     } => {
                         let data: Vec<u8> = transaction
-                            .query_row("SELECT output FROM jobs WHERE job_id=?1", [job_id], |row| {
-                                row.get(0)
-                            })
+                            .query_row(
+                                "SELECT substr(output,1,?2) FROM jobs WHERE job_id=?1",
+                                params![job_id, retained.output_bytes as i64],
+                                |row| row.get(0),
+                            )
                             .map_err(unavailable)?;
                         require(
                             offset <= data.len() as u64
@@ -435,7 +534,23 @@ impl Ledger {
                 }
             }
         };
-        if mutation {
+        if let Some(row) = reserved_cancellation {
+            write_json(&transaction, row, "cancellation_response", &response)?;
+            write_blob(
+                &transaction,
+                row,
+                "cancellation_key",
+                cancellation_key.as_bytes(),
+                0,
+            )?;
+            write_blob(
+                &transaction,
+                row,
+                "cancellation_digest",
+                revision(req).as_bytes(),
+                0,
+            )?;
+        } else if mutation {
             transaction
                 .execute(
                     "INSERT INTO mutations VALUES(?1,?2,?3,?4)",
@@ -518,9 +633,11 @@ impl Ledger {
             .map_err(unavailable)?;
         let mut retained = receipt(&transaction, job_id)?;
         let mut data: Vec<u8> = transaction
-            .query_row("SELECT output FROM jobs WHERE job_id=?1", [job_id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT substr(output,1,?2) FROM jobs WHERE job_id=?1",
+                params![job_id, retained.output_bytes as i64],
+                |row| row.get(0),
+            )
             .map_err(unavailable)?;
         let available = retained
             .prepared
@@ -530,12 +647,13 @@ impl Ledger {
         let take = (bytes.len() as u64).min(available) as usize;
         data.extend_from_slice(&bytes[..take]);
         retained.record_output(retained.revision, &data, now)?;
-        transaction
-            .execute(
-                "UPDATE jobs SET output=?1 WHERE job_id=?2",
-                params![data, job_id],
-            )
-            .map_err(unavailable)?;
+        write_blob(
+            &transaction,
+            job_row(&transaction, job_id)?,
+            "output",
+            &bytes[..take],
+            data.len() - take,
+        )?;
         save_receipt(&transaction, &retained)?;
         transaction.commit().map_err(unavailable)?;
         Ok(take)
@@ -556,7 +674,7 @@ impl Ledger {
         let value: String = self
             .connection
             .query_row(
-                "SELECT receipt FROM jobs WHERE job_id=?1",
+                "SELECT CAST(receipt AS TEXT) FROM jobs WHERE job_id=?1",
                 [job_id],
                 |row| row.get(0),
             )
@@ -622,14 +740,15 @@ impl Ledger {
             "native cleanup observation differs from reservation release",
         )?;
         retained.native = native;
-        retained.transition(retained.revision, next, now, detail)?;
+        retained.transition(retained.revision, next, now, diagnostic(detail))?;
         save_receipt(&transaction, &retained)?;
-        transaction
-            .execute(
-                "UPDATE jobs SET active=?1 WHERE job_id=?2",
-                params![!quiescent, job_id],
-            )
-            .map_err(unavailable)?;
+        write_blob(
+            &transaction,
+            job_row(&transaction, job_id)?,
+            "active",
+            &[u8::from(!quiescent)],
+            0,
+        )?;
         transaction.commit().map_err(unavailable)?;
         Ok(retained)
     }
@@ -643,7 +762,7 @@ impl Ledger {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(unavailable)?;
         let values: Vec<String> = transaction
-            .prepare("SELECT receipt FROM jobs WHERE active=1")
+            .prepare("SELECT CAST(receipt AS TEXT) FROM jobs WHERE active=x'01'")
             .map_err(unavailable)?
             .query_map([], |row| row.get(0))
             .map_err(unavailable)?
@@ -686,12 +805,17 @@ impl Ledger {
         )?;
         retained.updated_at = now;
         retained.revision += 1;
-        retained.detail =
-            format!("prior outcome remains uncertain; observed quiescence: {observation}");
+        retained.detail = diagnostic(format!(
+            "prior outcome remains uncertain; observed quiescence: {observation}"
+        ));
         save_receipt(&transaction, &retained)?;
-        transaction
-            .execute("UPDATE jobs SET active=0 WHERE job_id=?1", [job_id])
-            .map_err(unavailable)?;
+        write_blob(
+            &transaction,
+            job_row(&transaction, job_id)?,
+            "active",
+            &[0],
+            0,
+        )?;
         transaction.commit().map_err(unavailable)?;
         Ok(retained)
     }

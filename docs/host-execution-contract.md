@@ -400,6 +400,20 @@ state. `completed` reports the operation result, not proof of all containment
 guarantees. A timeout needs native termination/observation; it is not itself
 proof that effects stopped.
 
+The standalone executor allocates the admitted output buffer, lifecycle receipt
+and first cancellation reply inside the admission transaction. It updates those
+allocations in place. Reaching `ledger.database_bytes` therefore refuses new
+work before dispatch without spending an admission or disabling an existing
+job's cancellation, output or recovery writes. The limit covers SQLite database
+pages. The target operator must separately reserve disk for the rollback journal
+(up to the database size), filesystem overhead and executable snapshots. Host
+storage loss or an input/output error can still prevent persistence.
+
+Native enforcement and lifecycle facts retain their reserved fields. Free-text
+receipt diagnostics retain at most 4096 UTF-8 bytes plus an explicit
+`[diagnostic truncated]` marker. This diagnostic bound does not truncate the
+operation's retained output stream or impose a rationale limit.
+
 A cancellation request sets `cancellation_requested` and advances the receipt
 revision. It leaves the state active. Only confirmed termination can produce
 `cancelled`; an unobservable outcome is `uncertain`. Cancellation cannot undo
