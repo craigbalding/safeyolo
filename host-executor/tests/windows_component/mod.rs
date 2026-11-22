@@ -276,6 +276,14 @@ fn prepare(root: &Path, credential: &str) {
         .get_mut("grant")
         .unwrap()
         .operations = target.ceiling.clone();
+    save_target(root, credential, target);
+    println!(
+        "prepared complete Windows native catalogue; identity {}",
+        identity.principal
+    );
+}
+
+fn save_target(root: &Path, credential: &str, target: Target) {
     let configuration = Configuration {
         https: None,
         catalogue: None,
@@ -299,10 +307,6 @@ fn prepare(root: &Path, credential: &str) {
         serde_json::to_vec_pretty(&configuration).unwrap(),
     )
     .unwrap();
-    println!(
-        "prepared complete Windows native catalogue; identity {}",
-        identity.principal
-    );
 }
 
 struct Fixture {
@@ -444,13 +448,21 @@ impl Fixture {
         self.bytes(verb, &body)
     }
     fn invoke(&mut self, name: &str) -> (Receipt, Vec<u8>) {
+        self.invoke_arguments(name, "fixture", BTreeMap::new())
+    }
+    fn invoke_arguments(
+        &mut self,
+        name: &str,
+        resource: &str,
+        arguments: BTreeMap<String, serde_json::Value>,
+    ) -> (Receipt, Vec<u8>) {
         let operation = &self.target.package.operations[name];
         let invocation = Invocation {
             operation_id: name.into(),
-            resource_id: "fixture".into(),
+            resource_id: resource.into(),
             operation_sha256: self.target.package.operation_sha256(name).unwrap(),
             implementation_sha256: operation.implementation_sha256(),
-            arguments: BTreeMap::new(),
+            arguments,
             expected_assessment_sha256: None,
         };
         let Response::Proposal { prepared } = self.call(Action::Propose { invocation }) else {
@@ -503,6 +515,298 @@ impl Drop for Fixture {
             let _ = child.wait();
         }
     }
+}
+
+const STARTER_READS: &[&str] = &[
+    "service-enumerate",
+    "event-log-query",
+    "registry-query-machine",
+    "registry-query-user",
+    "process-inspect",
+    "system-inventory",
+    "software-inventory",
+    "update-inventory",
+    "file-inspect",
+    "network-diagnostics",
+    "scheduled-task-inspect",
+    "fixed-executable",
+    "file-hash",
+    "directory-list",
+    "network-inspect",
+    "scheduled-task-enumerate",
+    "bundle-metadata",
+    "application-log",
+    "system-log",
+    "snapshot-list",
+];
+
+fn prepare_starters(root: &Path, credential: &str) {
+    let case = root.join("case with spaces ünicode");
+    let package_path = root.join("control/starter.json");
+    for args in [
+        vec!["demo", "--directory", case.to_str().unwrap()],
+        vec![
+            "starter",
+            "--root",
+            case.to_str().unwrap(),
+            "--service",
+            "SafeYolo1671Fixture",
+            "--output",
+            package_path.to_str().unwrap(),
+            "--credential",
+            credential,
+        ],
+    ] {
+        let output = Process::new(executor()).args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        println!("{}", String::from_utf8_lossy(&output.stdout));
+    }
+    let mut package: Package = serde_json::from_slice(&fs::read(&package_path).unwrap()).unwrap();
+    // Select a real receiver inside this owned, network-disabled Sandbox. The
+    // packaged typed recipe is unchanged; these are its explicit target inputs.
+    let diagnostic = package.operations.get_mut("network-diagnostics").unwrap();
+    for (name, value) in [
+        ("destination", serde_json::json!("127.0.0.1")),
+        ("port", serde_json::json!(19477)),
+    ] {
+        let argument = diagnostic.arguments.get_mut(name).unwrap();
+        argument.options = vec![value.clone()];
+        argument.default = Some(value);
+    }
+    fs::write(&package_path, serde_json::to_vec_pretty(&package).unwrap()).unwrap();
+    let key = Ed25519KeyPair::from_seed_unchecked(&[58; 32]).unwrap();
+    let mut target = super::common::target(
+        "windows-starters1677".into(),
+        package.operations.clone(),
+        &key,
+    );
+    target.package = package;
+    target.ceiling.retain(|name, _| {
+        STARTER_READS.contains(&name.as_str())
+            || [
+                "service-status",
+                "service-start",
+                "service-restart",
+                "service-stop",
+            ]
+            .contains(&name.as_str())
+    });
+    for (name, scope) in &mut target.ceiling {
+        let operation = &target.package.operations[name];
+        scope.budgets.calls = 64;
+        scope.budgets.timeout_seconds = operation.execution.resources.timeout_seconds;
+        scope.budgets.output_bytes = operation.execution.resources.output_bytes;
+        scope.arguments = operation
+            .arguments
+            .iter()
+            .map(|(name, argument)| {
+                let mut values = argument.options.clone();
+                if let Some(default) = &argument.default
+                    && !values.contains(default)
+                {
+                    values.push(default.clone());
+                }
+                (name.clone(), values)
+            })
+            .collect();
+    }
+    target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant")
+        .unwrap()
+        .operations = target.ceiling.clone();
+    println!(
+        "{}",
+        serde_json::json!({"package_sha256":revision(&target.package),
+        "target":target.target_id,"selected":target.ceiling.keys().collect::<Vec<_>>(),
+        "credential":credential,"identity":target.package.operations["fixed-executable"].execution.identity})
+    );
+    save_target(root, credential, target);
+}
+
+fn observed_service() -> (u32, u32) {
+    unsafe {
+        let manager = OpenSCManagerW(null(), null(), SC_MANAGER_CONNECT);
+        assert!(!manager.is_null());
+        let service = OpenServiceW(
+            manager,
+            wide("SafeYolo1671Fixture").as_ptr(),
+            SERVICE_QUERY_STATUS,
+        );
+        if service.is_null() {
+            CloseServiceHandle(manager);
+            panic!("owned service unavailable");
+        }
+        let mut status: SERVICE_STATUS_PROCESS = std::mem::zeroed();
+        let mut bytes = 0;
+        let result = QueryServiceStatusEx(
+            service,
+            SC_STATUS_PROCESS_INFO,
+            (&mut status as *mut SERVICE_STATUS_PROCESS).cast(),
+            std::mem::size_of::<SERVICE_STATUS_PROCESS>() as u32,
+            &mut bytes,
+        );
+        CloseServiceHandle(service);
+        CloseServiceHandle(manager);
+        assert_ne!(result, 0);
+        (status.dwCurrentState, status.dwProcessId)
+    }
+}
+
+fn starter_result(fixture: &mut Fixture, name: &str) -> bool {
+    let resource = fixture.target.package.operations[name]
+        .resources
+        .iter()
+        .next()
+        .unwrap()
+        .clone();
+    let (receipt, _) = fixture.invoke_arguments(name, &resource, BTreeMap::new());
+    let result = fixture.terminal(&receipt.job_id);
+    let Response::Output {
+        data_base64, eof, ..
+    } = fixture.call(Action::Output {
+        job_id: receipt.job_id,
+        offset: 0,
+        max_bytes: fixture.target.package.operations[name]
+            .execution
+            .resources
+            .output_bytes,
+    })
+    else {
+        panic!("starter output unavailable")
+    };
+    assert!(eof, "starter output is incomplete");
+    let bytes = STANDARD.decode(data_base64).unwrap();
+    assert_eq!(bytes.len() as u64, result.output_bytes);
+    let text = String::from_utf8(bytes).unwrap();
+    let observation = serde_json::from_str::<serde_json::Value>(&text).ok();
+    println!(
+        "{}",
+        serde_json::json!({"case":name,"receipt":result,"output":text,"observation":observation})
+    );
+    assert!(result.native.as_ref().unwrap().processes_stopped);
+    assert!(!result.native.as_ref().unwrap().output_truncated);
+    result.state == JobState::Completed
+}
+
+fn starters(root: PathBuf, service: bool, selected: Option<&str>) {
+    let mut fixture = Fixture::new(root, service);
+    // Distinct phase IDs retain foreground/service results and make an explicit
+    // one-operation continuation possible after inspecting an earlier failure.
+    fixture.phase = format!("starters-{}-{}", fixture.phase, selected.unwrap_or("all"));
+    let receiver = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 19477)).unwrap();
+    receiver.set_nonblocking(true).unwrap();
+    let mut failed = Vec::new();
+    let operations = [
+        "service-status",
+        "service-start",
+        "service-status",
+        "service-restart",
+        "service-stop",
+        "service-status",
+    ]
+    .into_iter()
+    .chain(STARTER_READS.iter().copied());
+    let mut started = None;
+    for name in operations.filter(|name| selected.is_none_or(|selected| *name == selected)) {
+        if !starter_result(&mut fixture, name) {
+            failed.push(name);
+        }
+        if ["service-start", "service-restart", "service-stop"].contains(&name) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let state = loop {
+                let observed = observed_service();
+                if observed.0
+                    == if name == "service-stop" {
+                        SERVICE_STOPPED
+                    } else {
+                        SERVICE_RUNNING
+                    }
+                {
+                    break observed;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "owned service did not settle: {observed:?}"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            if name == "service-start" {
+                started = Some(state.1);
+            }
+            if name == "service-restart"
+                && let Some(previous) = started
+            {
+                assert_ne!(state.1, previous);
+            }
+            println!(
+                "{}",
+                serde_json::json!({"host_service_observer":name,"state":state.0,"pid":state.1})
+            );
+        }
+        if name == "network-diagnostics" {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                match receiver.accept() {
+                    Ok((_, peer)) => {
+                        println!("host TCP observer received {peer}");
+                        break;
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10))
+                    }
+                    Err(error) => {
+                        panic!("legitimate diagnostic did not reach owned receiver: {error}")
+                    }
+                }
+            }
+        }
+    }
+    if selected.is_none() {
+        for (name, field, value) in [
+            ("service-status", "service", "WinDefend"),
+            ("event-log-query", "channel", "Security"),
+            ("registry-query-machine", "hive", "HKCU"),
+            ("registry-query-user", "hive", "HKLM"),
+            ("registry-query-machine", "key", "SOFTWARE\\Other"),
+            ("registry-query-machine", "view", "128"),
+            ("file-inspect", "path", "C:\\Windows\\win.ini"),
+        ] {
+            let operation = &fixture.target.package.operations[name];
+            let invocation = Invocation {
+                operation_id: name.into(),
+                resource_id: operation.resources.iter().next().unwrap().clone(),
+                operation_sha256: fixture.target.package.operation_sha256(name).unwrap(),
+                implementation_sha256: operation.implementation_sha256(),
+                arguments: BTreeMap::from([(field.into(), serde_json::json!(value))]),
+                expected_assessment_sha256: None,
+            };
+            let response = fixture.call(Action::Propose { invocation });
+            assert!(
+                matches!(&response, Response::Refused { refusal } if matches!(refusal.code, RefusalCode::Arguments | RefusalCode::Scope)),
+                "{name}/{field}: {response:?}"
+            );
+            println!(
+                "{}",
+                serde_json::json!({"negative":name,"field":field,"value":value,"response":response})
+            );
+        }
+    }
+    assert!(
+        failed.is_empty(),
+        "starter jobs failed; inspect retained receipts/output before any continuation: {failed:?}"
+    );
 }
 
 fn native(root: PathBuf, service: bool) {
@@ -907,6 +1211,19 @@ pub fn main() {
     match args.first().map(String::as_str) {
         Some("--probe") => probe(&args[1..]),
         Some("--prepare") if args.len() == 3 => prepare(Path::new(&args[1]), &args[2]),
+        Some("--starter-prepare") if args.len() == 3 => {
+            prepare_starters(Path::new(&args[1]), &args[2])
+        }
+        Some("--starters") if args.len() == 2 || args.len() == 3 => starters(
+            PathBuf::from(&args[1]),
+            args.get(2).is_some_and(|s| s == "--service"),
+            None,
+        ),
+        Some("--starter") if args.len() == 3 || args.len() == 4 => starters(
+            PathBuf::from(&args[1]),
+            args.get(3).is_some_and(|s| s == "--service"),
+            Some(&args[2]),
+        ),
         Some("--native") if args.len() == 2 || args.len() == 3 => native(
             PathBuf::from(&args[1]),
             args.get(2).is_some_and(|s| s == "--service"),
