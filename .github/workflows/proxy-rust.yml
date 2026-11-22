@@ -213,7 +213,7 @@ jobs:
             BASE=HEAD~1
           fi
           git diff --name-only "$BASE" HEAD > "$RUNNER_TEMP/changed-paths"
-          if grep -Eq '^(proxy/|jobs/|scripts/build_hyperlight_jobs\.py$|tests/proxy_contracts/test_(native_policy_cli|first_agent_launch)\.py$|tests/test_proxy_rust_coord_fixture\.py$|scripts/(cargo_with_space|rust_cache_command)\.sh$|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$)' "$RUNNER_TEMP/changed-paths"; then
+          if grep -Eq '^(proxy/|host-executor/|jobs/|scripts/build_hyperlight_jobs\.py$|tests/proxy_contracts/test_(native_policy_cli|first_agent_launch)\.py$|tests/test_proxy_rust_coord_fixture\.py$|scripts/(cargo_with_space|rust_cache_command)\.sh$|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$)' "$RUNNER_TEMP/changed-paths"; then
             echo 'rust=true' >> "$GITHUB_OUTPUT"
           elif [ "$?" -ne 1 ]; then
             echo 'ERROR: changed-path matcher failed' >&2
@@ -231,7 +231,7 @@ jobs:
             echo 'ERROR: changed-path matcher failed' >&2
             exit 2
           fi
-          if grep -Eq '^(jobs/|scripts/rust_cache_command\.sh$|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$|vm/|proxy/src/(jobs|host_platform|desktop_|provider_stream)|tests/reference/safeyolo/(vm|runtime_identity|platform/(darwin|__init__))|cli/tests/test_vm_(control|diagnostics))' "$RUNNER_TEMP/changed-paths"; then
+          if grep -Eq '^(host-executor/|jobs/|scripts/rust_cache_command\.sh$|\.github/workflows/(proxy-rust|guest-test-inputs|ci)\.yml$|vm/|proxy/src/(jobs|host_platform|desktop_|provider_stream)|tests/reference/safeyolo/(vm|runtime_identity|platform/(darwin|__init__))|cli/tests/test_vm_(control|diagnostics))' "$RUNNER_TEMP/changed-paths"; then
             echo 'macos=true' >> "$GITHUB_OUTPUT"
           elif [ "$?" -ne 1 ]; then
             echo 'ERROR: changed-path matcher failed' >&2
