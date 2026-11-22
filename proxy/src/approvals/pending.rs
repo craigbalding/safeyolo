@@ -395,7 +395,8 @@ impl Store {
     }
 
     /// Reserve a model attempt in the existing approval transaction before
-    /// sending data. A new request ID cannot reset the same task/action budget.
+    /// sending data. A new request ID cannot reset an unresolved episode;
+    /// a completed check ends that episode without erasing its history.
     pub(crate) fn reserve_task_action_attempt(
         &self,
         authority: &str,
@@ -410,18 +411,23 @@ impl Store {
         let mut used = 0u64;
         {
             let mut statement = transaction
-                .prepare("SELECT record FROM approvals")
+                .prepare("SELECT record FROM approvals ORDER BY rowid DESC")
                 .map_err(unavailable)?;
             let rows = statement
                 .query_map([], |row| row.get::<_, String>(0))
                 .map_err(unavailable)?;
             for row in rows {
                 let record = decode_record(&row.map_err(unavailable)?)?;
-                used = used.saturating_add(
-                    record.result["task_action_attempts"][key]
-                        .as_u64()
-                        .unwrap_or(0),
-                );
+                let count = record.result["task_action_attempts"][key]
+                    .as_u64()
+                    .unwrap_or(0);
+                // Only a successful record for this exact budget ends the
+                // episode. Older challenged records cannot reopen it.
+                if count > 0 && record.status == "completed" {
+                    // DOC: docs/policy-checks.md
+                    break;
+                }
+                used = used.saturating_add(count);
                 if record.authority_digest == authority && record.status == "challenged" {
                     selected = Some(record);
                 }

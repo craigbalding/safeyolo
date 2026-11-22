@@ -880,9 +880,9 @@ fn agent_input_cannot_substitute_authority_or_enrol_issuers_and_definitions() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn task_action_check_binds_canonical_task_and_bounds_unavailable_reconsideration() {
-    let mut f = Fixture::new(&format!(r#"
+fn task_action_policy() -> String {
+    format!(
+        r#"
 [checks.independent]
 source_id='task-action'
 meaning='Independent relevance and proportionality signal'
@@ -902,7 +902,92 @@ methods=['POST']
 path='/v1/host-execution/invoke'
 revision='synthetic-1'
 steps=[{{kind='task_action',check='independent',on_concern={{kind='question',field='narrower',question='Explain the need or choose a narrower action'}},on_unavailable={{kind='question',field='availability',question='Supply current model evidence'}},max_attempts=2,disclose_rationale=false}}]
-"#, "a".repeat(64))).await;
+"#,
+        "a".repeat(64)
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completed_task_action_checks_allow_new_operations_and_retain_refusals() {
+    let f = Fixture::new(&task_action_policy()).await;
+    let runtime = f.proxy.runtime.read().unwrap().clone();
+    let first = f.call(f.prepared("prior-refusal", None).await).await;
+    let refused_id = first.value["challenge_id"].as_str().unwrap();
+    runtime
+        .audit
+        .approvals()
+        .decide(refused_id, |record| {
+            record.status = "rejected".into();
+            Ok(())
+        })
+        .unwrap();
+    let refused = pending::lookup(&runtime.audit, refused_id)
+        .unwrap()
+        .unwrap();
+
+    // Seed successful completion through the real approval owner. The
+    // absent model keeps this a budget regression, not model-accuracy proof.
+    for index in 0..4 {
+        let reply = f
+            .call(f.prepared(&format!("completed-{index}"), None).await)
+            .await;
+        assert_eq!(reply.status, 428, "{}", reply.value);
+        assert!(
+            !reply.value["assessment"]["steps"][0]["unavailable"]
+                .as_str()
+                .unwrap()
+                .contains("attempt limit"),
+            "{}",
+            reply.value
+        );
+        let id = reply.value["challenge_id"].as_str().unwrap();
+        runtime
+            .audit
+            .approvals()
+            .decide(id, |record| {
+                assert_eq!(
+                    record.result["task_action_attempts"]
+                        .as_object()
+                        .unwrap()
+                        .values()
+                        .next()
+                        .unwrap(),
+                    1
+                );
+                record.status = "completed".into();
+                Ok(())
+            })
+            .unwrap();
+    }
+    let retained = pending::lookup(&runtime.audit, refused_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.status, "rejected");
+    assert_eq!(retained.result, refused.result);
+
+    // New unresolved requests still share one bounded episode after success.
+    for index in 0..3 {
+        let reply = f
+            .call(f.prepared(&format!("unresolved-{index}"), None).await)
+            .await;
+        assert_eq!(reply.status, 428, "{}", reply.value);
+        assert_eq!(
+            reply.value["assessment"]["steps"][0]["unavailable"]
+                .as_str()
+                .unwrap()
+                .contains("attempt limit"),
+            index == 2,
+            "{}",
+            reply.value
+        );
+    }
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    f.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_action_check_binds_canonical_task_and_bounds_unavailable_reconsideration() {
+    let mut f = Fixture::new(&task_action_policy()).await;
     let input = f.prepared("task-action-required", None).await;
     let first = f.call(input.clone()).await;
     assert_eq!(first.status, 428, "{}", first.value);
