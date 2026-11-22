@@ -195,7 +195,9 @@ pub struct ExecutionLimits {
 impl Operation {
     pub fn implementation_sha256(&self) -> String {
         let operation = crate::catalogue::canonical_operation(self);
-        revision(&operation["execution"])
+        // Retain the exact definition pin: the same executable recipe cannot
+        // inherit permission after defaults or understood effects change.
+        revision(&operation)
     }
 
     pub fn authority_sha256(&self) -> String {

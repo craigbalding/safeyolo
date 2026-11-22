@@ -1128,7 +1128,7 @@ impl Witness {
                 discovery: Box::new(self.target.discover(&auth)?),
             },
             Action::Propose { .. } => Response::Proposal {
-                prepared: self.target.prepare(&auth, Usage::default())?,
+                prepared: Box::new(self.target.prepare(&auth, Usage::default())?),
             },
             Action::Invoke { invocation } => {
                 let key = (

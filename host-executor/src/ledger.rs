@@ -431,7 +431,9 @@ impl Ledger {
                             .command(&prepared.invocation.arguments)?,
                     )?;
                 }
-                Response::Proposal { prepared }
+                Response::Proposal {
+                    prepared: Box::new(prepared),
+                }
             }
             Action::Invoke { invocation } => {
                 let (jobs, output): (i64, i64) = transaction

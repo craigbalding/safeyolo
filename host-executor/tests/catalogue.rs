@@ -181,7 +181,7 @@ impl Store {
         ) else {
             panic!("proposal");
         };
-        prepared
+        *prepared
     }
 }
 impl Drop for Store {
@@ -666,7 +666,7 @@ fn standing_ceiling_covers_non_adjacent_expansion_but_invocation_permission_stay
             .err()
             .unwrap()
             .code,
-        RefusalCode::Authority
+        RefusalCode::Stale
     );
 }
 
@@ -852,4 +852,50 @@ fn retained_withdrawal_survives_reconnect_and_replayed_signed_updates() {
     )
     .unwrap();
     assert_eq!(reconnected.plan(now()).unwrap().status.state, "refused");
+}
+
+#[test]
+fn exact_issuer_scope_does_not_inherit_new_effect_understanding_for_the_same_executable() {
+    let (mut target, key, _) = fixture();
+    target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant")
+        .unwrap()
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .updates = None;
+    target
+        .package
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .effects
+        .get_mut("restart")
+        .unwrap()
+        .description = "corrected understanding of persistent host effects".into();
+    let mut store = Store::new(&target);
+    let request = bytes(
+        &target,
+        Action::Propose {
+            invocation: invocation(&target, "restart"),
+        },
+        "changed-effects",
+        &key,
+    );
+    assert_eq!(
+        store
+            .ledger
+            .as_mut()
+            .unwrap()
+            .handle(&target, Verb::Propose.path(), &request, now())
+            .err()
+            .unwrap()
+            .code,
+        RefusalCode::Stale
+    );
 }

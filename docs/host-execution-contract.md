@@ -206,7 +206,9 @@ family authority and its compositions must be assessed at initial adoption.
 Issuer family call and concurrency budgets aggregate all members of that family.
 
 An operation's implementation, represented authority, effect/assessment and
-complete operation identities are distinct. Discovery also retains the full
+complete operation identities are distinct. The implementation digest retains
+the complete operation definition; executable and dependency digests identify
+file bytes. Discovery also retains the full
 package digest and source. `Invocation.operation_sha256` binds the full selected
 operation and package identity, independently of unrelated operations or package
 metadata. A changed operation still needs fresh assessment. Required check names

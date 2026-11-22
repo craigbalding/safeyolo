@@ -433,7 +433,7 @@ pub enum Response {
         discovery: Box<Discovery>,
     },
     Proposal {
-        prepared: Prepared,
+        prepared: Box<Prepared>,
     },
     Job {
         receipt: Box<Receipt>,

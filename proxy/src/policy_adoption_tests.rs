@@ -118,6 +118,9 @@ async fn catalogue_discovery_uses_actual_bytes_and_activates_coherent_gateway_de
         .unwrap()
         .set_times(std::fs::FileTimes::new().set_modified(changed))
         .unwrap();
+    // A saved operator edit takes precedence over a pending automatic update.
+    std::fs::write(&path, format!("{adopted}\n# operator source refresh\n")).unwrap();
+    assert!(proxy.reload_policy_if_changed().await.unwrap());
     assert!(proxy.reload_policy_if_changed().await.unwrap());
     assert!(!proxy.reload_policy_if_changed().await.unwrap());
     let runtime = proxy.runtime.read().unwrap().clone();
