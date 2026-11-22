@@ -892,7 +892,12 @@ fn alternatives(
     // same prepared arguments and limitations from the adopted definition.
     if let Some(recipes) = service.raw["host_operation_guidance"]["alternatives"].as_object() {
         for (id, recipe) in recipes {
-            let mut recipe = recipe.clone();
+            let mut recipe = Value::Object(
+                recipe
+                    .as_object()
+                    .ok_or("Adopted host alternative must be an object")?
+                    .clone(),
+            );
             recipe["id"] = json!(id);
             recipe["access"] = json!("unverified_native_authority");
             recipe["scope_limit"] = service.raw["host_operation_guidance"]["scope"].clone();

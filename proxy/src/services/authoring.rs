@@ -1,5 +1,5 @@
-//! Offline generation from a maintained, flat OpenAPI document and reviewed
-//! `x-safeyolo` annotations. No network or inference occurs here.
+//! Offline generation and assessment from maintained OpenAPI annotations or
+//! host-operation packages. No network or inference occurs here.
 
 use serde_json::{Map, Value, json};
 
@@ -38,6 +38,45 @@ pub fn check(source: &str, generated: Option<&str>) -> Result<String, Error> {
         "Service definition is valid: {}. Validation does not establish exhaustive semantic correctness or grant access.",
         definition.name
     ))
+}
+
+/// Read-only host preview through the current target/grant and effect owners.
+/// The selected configuration is operator-held; no request-supplied authority
+/// or rationale is used and this function performs no adoption or invocation.
+pub fn assess_host(
+    configuration: &str,
+    issuer: &str,
+    grant_id: &str,
+    proposed: Option<&str>,
+    history: Option<&str>,
+    now: u64,
+) -> Result<Value, Error> {
+    use crate::host_execution::{
+        Grant, Target,
+        semantics::{self, PersistentEffect},
+    };
+    let configuration: Value = serde_json::from_str(configuration)?;
+    let target: Target = serde_json::from_value(
+        configuration
+            .get("target")
+            .ok_or("host executor configuration needs target")?
+            .clone(),
+    )?;
+    let principal = &target
+        .issuers
+        .get(issuer)
+        .ok_or("selected issuer is not enrolled")?
+        .authority
+        .grants
+        .get(grant_id)
+        .ok_or("selected issuer grant is unavailable")?
+        .principal;
+    let proposed: Option<Grant> = proposed.map(serde_json::from_str).transpose()?;
+    let history: Vec<PersistentEffect> = history
+        .map(serde_json::from_str)
+        .transpose()?
+        .unwrap_or_default();
+    semantics::assess_target(&target, issuer, principal, proposed.as_ref(), &history, now)
 }
 
 pub fn generate(source: &str) -> Result<Value, Error> {

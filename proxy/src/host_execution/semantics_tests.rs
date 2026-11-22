@@ -1,7 +1,5 @@
 //! Native loading and authority assessment; no Windows host operation executes.
-use base64::{Engine, engine::general_purpose::STANDARD};
-use ring::signature::{Ed25519KeyPair, KeyPair};
-use safeyolo_proxy::{
+use crate::{
     host_execution::{
         semantics::{self, Authority, PersistentEffect},
         *,
@@ -10,13 +8,15 @@ use safeyolo_proxy::{
     services::{
         Registry, ServiceDefinition,
         authoring::{check, generate},
-        effects::{Scope, assessment::ResourceScopes},
+        effects::assessment::ResourceScopes,
     },
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
+use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
-const SOURCE: &str = include_str!("../../host-executor/examples/windows-starter.json");
+const SOURCE: &str = include_str!("../../../host-executor/examples/windows-starter.json");
 
 fn package() -> Package {
     serde_json::from_str(SOURCE).unwrap()
@@ -235,7 +235,7 @@ fn composition_covers_both_orders_target_identity_aliases_and_unknowns() {
         assess(&package, &grants)["model"]["rules"]["changed_service_execution"]["status"],
         "non_match"
     );
-    let mut package = crate::package();
+    let mut package = self::package();
     if let HostIdentity::Resource { aliases } = package
         .operations
         .get_mut("write-service-config")
@@ -316,13 +316,69 @@ fn registry_aliases_defaults_actual_user_and_views_preserve_identity() {
     }
 }
 
+#[test]
+fn registry_composition_uses_the_full_view_set_and_actual_user_namespace() {
+    for operation in ["registry-query-machine", "registry-query-user"] {
+        let mut package = package();
+        let mut other = package.operations[operation].clone();
+        let effect = NamedEffect {
+            description: "Read the same selected registry value for a second query".into(),
+            persists_after_access: false,
+            evidence: vec!["package".into()],
+        };
+        other.effects = BTreeMap::from([("registry_confirmation".into(), effect)]);
+        other.semantics.as_mut().unwrap().effects[0].effect = "registry_confirmation".into();
+        package.operations.insert("registry-confirm".into(), other);
+        package.semantics.as_mut().unwrap().rules.insert("registry_same_scope".into(),serde_json::from_value(json!({"when":{"kind":"all_effects_same_scope","resource":"registry","effects":["disclosure","registry_confirmation"]},"prerequisites":["Selected key view and aliases have been reviewed"],"consequence":"Both permissions can query the same selected registry value.","explanation":"Compare complete view choices, target and actual user namespace.","evidence":["package"],"gaps":[]})).unwrap());
+        let mut first = permission(&package, "first", "windows-a", operation);
+        let mut second = permission(&package, "second", "windows-a", "registry-confirm");
+        scope_from(&mut second, "registry-confirm")
+            .arguments
+            .insert("view".into(), vec![json!("64")]);
+        assert_eq!(
+            assess(&package, &[first.clone(), second.clone()])["model"]["rules"]["registry_same_scope"]
+                ["status"],
+            "match"
+        );
+        scope_from(&mut first, operation)
+            .arguments
+            .insert("view".into(), vec![json!("32")]);
+        assert_eq!(
+            assess(&package, &[first.clone(), second.clone()])["model"]["rules"]["registry_same_scope"]
+                ["status"],
+            if operation.ends_with("machine") {
+                "non_match"
+            } else {
+                "match"
+            }
+        );
+        let other = package.operations.get_mut("registry-confirm").unwrap();
+        other.execution.identity.principal = "S-1-5-21-100-200-300-1002".into();
+        second = permission(&package, "second", "windows-a", "registry-confirm");
+        assert_eq!(
+            assess(
+                &package,
+                &[
+                    permission(&package, "first", "windows-a", operation),
+                    second
+                ]
+            )["model"]["rules"]["registry_same_scope"]["status"],
+            if operation.ends_with("user") {
+                "non_match"
+            } else {
+                "match"
+            }
+        );
+    }
+}
+
 fn scope_from<'a>(grant: &'a mut Authority, operation: &str) -> &'a mut OperationScope {
     grant.operations.get_mut(operation).unwrap()
 }
 
 #[test]
 fn the_full_argument_envelope_and_default_authority_drive_conditional_effects() {
-    use safeyolo_proxy::services::effects::{Condition, EffectUse};
+    use crate::services::effects::{Condition, EffectUse};
     let mut package = package();
     let op = package.operations.get_mut("file-inspect").unwrap();
     op.effects.insert(
@@ -397,7 +453,7 @@ fn retained_writes_compose_after_expiry_without_recreating_current_write_permiss
             version: "1".into(),
         }],
     };
-    let retained = semantics::assess(&package, &[runner], &[observation]).unwrap();
+    let retained = semantics::assess(&package, &[runner], &[observation.clone()]).unwrap();
     assert_eq!(
         retained["model"]["rules"]["changed_service_execution"]["status"],
         "match"
@@ -408,6 +464,33 @@ fn retained_writes_compose_after_expiry_without_recreating_current_write_permiss
             .unwrap()
             .iter()
             .any(|row| row["permission"]["id"] == "retained:write-before-expiry")
+    );
+    let mut target = target();
+    let grants = &mut target.issuers.get_mut("issuer").unwrap().authority.grants;
+    let mut expired = grants["current"].clone();
+    expired.expires_at = 99;
+    expired
+        .operations
+        .retain(|id, _| id == "write-service-config");
+    grants
+        .get_mut("current")
+        .unwrap()
+        .operations
+        .remove("write-service-config");
+    grants.insert("expired-writer".into(), expired);
+    let target_assessment =
+        semantics::assess_target(&target, "issuer", &principal(), None, &[observation], 100)
+            .unwrap();
+    assert_eq!(
+        target_assessment["effective_authority"]["model"]["rules"]["changed_service_execution"]["status"],
+        "match"
+    );
+    assert!(
+        target_assessment["current_grants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|grant| grant["grant_id"] != "expired-writer")
     );
     assert!(
         retained["limitations"]
@@ -489,7 +572,7 @@ fn principal() -> Principal {
     Principal {
         run: AgentRun {
             agent: "alice".into(),
-            agent_id: "ag-alice".into(),
+            agent_id: "ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             run_id: "11111111111111111111111111111111".into(),
         },
         task_id: Some("investigation".into()),
@@ -667,6 +750,30 @@ fn target_owned_full_grants_and_ceiling_are_assessed_without_changing_admission_
     );
     assert_ne!(assessment["input_revision"], narrower["input_revision"]);
     assert!(semantics::assess_target(&target, "issuer", &principal(), None, &[], 126).is_err());
+    let mut unavailable = target.clone();
+    unavailable
+        .ceiling
+        .get_mut("service-restart")
+        .unwrap()
+        .budgets
+        .timeout_seconds = 0;
+    let unavailable =
+        semantics::assess_target(&unavailable, "issuer", &principal(), None, &[], 100).unwrap();
+    assert!(
+        unavailable["effective_authority"]["model"]["direct"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["permission"]["operation"] != "service-restart")
+    );
+    let mut proposal = permission(&target.package, "proposal", "windows-a", "service-status");
+    proposal.proposed = true;
+    let proposal = assess(&target.package, &[proposal]);
+    assert_eq!(
+        proposal["alternatives"]["service-status-before-control"]["steps"][0]["available_from"],
+        json!([])
+    );
+    assert_eq!(proposal["alternatives"]["service-status-before-control"]["steps"][0]["within_proposed_authority"].as_array().unwrap().len(),1);
     let enables = vec!["changed_service_execution".into()];
     for (decision, expected) in [
         ("allow", Effect::Allow),
@@ -674,7 +781,7 @@ fn target_owned_full_grants_and_ceiling_are_assessed_without_changing_admission_
         ("require_approval", Effect::Prompt),
     ] {
         let source = format!(
-            "budget=100\n[[risk]]\nenables=['changed_service_execution']\ndecision='{decision}'\n"
+            "budget=100\n[hosts]\n[[risk]]\nenables=['changed_service_execution']\ndecision='{decision}'\n"
         );
         let policy = Policy::parse(&source, Format::Toml).unwrap();
         assert_eq!(
@@ -713,7 +820,7 @@ fn target_owned_full_grants_and_ceiling_are_assessed_without_changing_admission_
             .unwrap();
     assert_eq!(
         policy
-            .evaluate_gateway_request(safeyolo_proxy::policy::GatewayRequest {
+            .evaluate_gateway_request(crate::policy::GatewayRequest {
                 agent: "alice",
                 service: "windows-starter:service-restart",
                 capability: "invoke",
@@ -762,5 +869,66 @@ fn model_errors_and_stale_or_invalid_native_scope_remain_explicit() {
         gateway["host_operation_guidance"]["alternatives"]["service-status-before-control"]["steps"]
             [0]["available_from"],
         json!([])
+    );
+}
+
+#[test]
+fn current_private_policy_assessment_uses_the_adopted_host_explanations_and_alternatives() {
+    use crate::{
+        policy::capabilities,
+        services::effects::policy::{self, Candidate},
+    };
+    let package = package();
+    let mut definition = package.projections().unwrap().gateway["service-restart"].clone();
+    definition["default_host"] = json!("windows.example.invalid");
+    let registry = Arc::new(
+        Registry::from_sources(&[("host.yaml".into(), definition.to_string())], &[]).unwrap(),
+    );
+    let source = "budget=100\n[hosts.'windows.example.invalid']\nservice='windows-starter:service-restart'\negress='allow'\n[agents.alice]\nagent_id='ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\n[agents.alice.services.'windows-starter:service-restart']\ncapability='invoke'\ntoken='ref'\n";
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("policy.toml");
+    std::fs::write(&path, source).unwrap();
+    let adopted = Policy::from_native_path(&path).unwrap();
+    let snapshot = adopted
+        .full_snapshot(
+            source,
+            &path,
+            "sy-11111111111111111111111111111111",
+            &principal().run,
+        )
+        .unwrap();
+    let candidate:Candidate=serde_json::from_value(json!({"snapshot_request_id":"req-fixture","source":source,"definition_version":capabilities::discover()["definition_version"]})).unwrap();
+    let report = policy::assess(&snapshot, &candidate, Some(registry), &[]).unwrap();
+    assert_eq!(report["valid"], true, "{report}");
+    let services = report["services"]["after"].as_array().unwrap();
+    let host = services
+        .iter()
+        .find(|entry| entry["service"] == "windows-starter:service-restart")
+        .unwrap();
+    assert_eq!(
+        host["model"]["effect_definitions"]["execute"],
+        definition["effect_model"]["effects"]["execute"]
+    );
+    let recipe = host["alternatives"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == "service-status-before-control")
+        .unwrap();
+    assert_eq!(
+        recipe["steps"][0]["required_arguments"],
+        json!({"service":"Demo"})
+    );
+    assert_eq!(recipe["access"], "unverified_native_authority");
+    definition["host_operation_guidance"]["alternatives"]["service-status-before-control"] =
+        json!(false);
+    let malformed = Arc::new(
+        Registry::from_sources(&[("host.yaml".into(), definition.to_string())], &[]).unwrap(),
+    );
+    assert!(
+        policy::assess(&snapshot, &candidate, Some(malformed), &[])
+            .unwrap_err()
+            .to_string()
+            .contains("host alternative")
     );
 }

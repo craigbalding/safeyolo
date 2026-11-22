@@ -1,6 +1,10 @@
 //! Prepared host understanding stays with the operation package. The service
 //! effect evaluator consumes this vocabulary; it does not authorize execution.
-use crate::{effects::*, *};
+use crate::{
+    Error, Operation, Package, Source,
+    effects::{Alternative, Condition, EffectUse, Resource, Rule, RuleExpression},
+    revision,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -100,6 +104,18 @@ impl Package {
         {
             return Err("host semantic source needs a location and version".into());
         }
+        if model.resources.values().any(|resource| {
+            resource.identity.is_empty()
+                || resource.identity.iter().any(String::is_empty)
+                || resource
+                    .identity
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != resource.identity.len()
+        }) {
+            return Err("host resource needs distinct nonempty identity keys".into());
+        }
         let mut named_effects = BTreeMap::new();
         for op in self.operations.values() {
             for (name, effect) in &op.effects {
@@ -125,8 +141,13 @@ impl Package {
                 }
                 for source in identity.values() {
                     if let HostIdentity::Argument { argument, aliases } = source {
-                        if !op.arguments.contains_key(argument) || alias_chain(aliases) {
+                        if !op.arguments.contains_key(argument) {
                             return Err("host identity refers to an unknown argument".into());
+                        }
+                        if alias_chain(aliases) {
+                            return Err(
+                                "host aliases must map directly to canonical identities".into()
+                            );
                         }
                     }
                     if let HostIdentity::Resource { aliases } = source {
@@ -163,6 +184,9 @@ impl Package {
         }
         for rule in model.rules.values() {
             evidence(&rule.evidence)?;
+            if rule.consequence.is_empty() || rule.explanation.is_empty() {
+                return Err("host composition rule needs a consequence and explanation".into());
+            }
             let RuleExpression::AllEffectsSameScope { resource, effects } = &rule.when;
             if !model.resources.contains_key(resource)
                 || effects.len() < 2

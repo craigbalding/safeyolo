@@ -496,6 +496,10 @@ pub fn assess_target(
                     || ceiling.budgets.calls == 0
                     || scope.budgets.concurrent == 0
                     || ceiling.budgets.concurrent == 0
+                    || scope.budgets.timeout_seconds == 0
+                    || ceiling.budgets.timeout_seconds == 0
+                    || scope.budgets.output_bytes == 0
+                    || ceiling.budgets.output_bytes == 0
                 {
                     return None;
                 }
