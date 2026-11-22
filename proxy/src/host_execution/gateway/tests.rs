@@ -828,7 +828,11 @@ steps=[{kind='check',check='native',on_positive={kind='deny'}}]
     assert_eq!(reply.status, 428, "{}", reply.value);
     assert_eq!(reply.value["assessment"]["ready_for_escalation"], false);
     assert_eq!(reply.value["assessment"]["steps"][0]["check"], "native");
-    assert!(reply.value["assessment"]["steps"][0]["evidence"]["unavailable"].is_string());
+    assert!(
+        reply.value["assessment"]["steps"][0]["unavailable"].is_string(),
+        "{}",
+        reply.value
+    );
     assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
     assert!(
         f.proxy

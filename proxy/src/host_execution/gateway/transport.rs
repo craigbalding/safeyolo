@@ -43,7 +43,7 @@ pub(super) async fn send(
         }
         let (mut sender, connection) =
             hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
-        let task = tokio::spawn(async move { connection.await });
+        let task = tokio::spawn(connection);
         // Abort the connection on a lost reply, cancellation or deadline. No
         // detached reader or automatic resend survives this exchange.
         struct Connection(tokio::task::JoinHandle<Result<(), hyper::Error>>);
