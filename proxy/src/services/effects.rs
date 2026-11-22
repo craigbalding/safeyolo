@@ -29,12 +29,7 @@ pub struct EffectModel {
     pub gaps: Vec<String>,
 }
 
-#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Source {
-    pub location: String,
-    pub version: String,
-}
+pub use safeyolo_host_executor::Source;
 
 #[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -43,13 +38,7 @@ pub struct Resource {
     pub identity: Vec<String>,
 }
 
-#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct NamedEffect {
-    pub description: String,
-    pub persists_after_access: bool,
-    pub evidence: Vec<String>,
-}
+pub use safeyolo_host_executor::NamedEffect;
 
 #[derive(schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

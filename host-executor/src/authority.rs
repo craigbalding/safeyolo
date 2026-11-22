@@ -231,7 +231,7 @@ impl Target {
         )?;
         let principal = &req.principal;
         require(
-            crate::agent_api::coord::valid_agent_id(&principal.run.agent_id)
+            valid_agent_id(&principal.run.agent_id)
                 && !principal.run.agent.is_empty()
                 && principal.run.run_id.len() == 32
                 && principal.run.run_id.bytes().all(|b| b.is_ascii_hexdigit())

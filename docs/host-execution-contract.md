@@ -3,14 +3,15 @@
 The `safeyolo.host-execution/v1` contract connects an issuing SafeYolo instance
 to a named execution target. The target can run independently or alongside
 SafeYolo. The maintained types and validators are in
-[`host_execution`](../proxy/src/host_execution.rs). `schemas()` derives the JSON
-schemas from those types. The shared fixtures and authenticated HTTP witness
+[`host-executor`](../host-executor/src/lib.rs). The proxy's
+[`host_execution`](../proxy/src/host_execution.rs) module reuses those types and
+owns the service projections. `schemas()` derives the JSON schemas from the
+shared types. The shared fixtures and authenticated HTTP witness
 are in [`host_execution.rs`](../proxy/tests/host_execution.rs).
 
-This increment supplies the protocol, package projections and contract witness.
-It does not install a native executor, enrol an issuer, change policy, or add a
-gateway route to a running instance. The platform executor, adoption, effect
-authoring and gateway consumers are the separate children of
+Loading the contract does not install an executor, enrol an issuer, change
+policy, or add a gateway route to a running instance. Native execution,
+adoption, effect authoring and gateway consumers belong to the children of
 [#1669](https://github.com/craigbalding/safeyolo/issues/1669).
 
 ## Ownership and trust
@@ -152,6 +153,78 @@ values, to a grant with the discovery action. Adoption must account for that
 disclosure. Host-held service credentials remain with their existing owners;
 the package's delegated service references do not contain those credential values.
 
+## Standalone binary and build dependencies
+
+The standalone executable is `safeyolo-host-executor` (`.exe` on Windows).
+It does not require Python, Rust, WSL, a container runtime or a full SafeYolo
+installation on the target. Its `--version` output identifies the source commit,
+build profile and Rust target. A local build without a supplied source revision
+reports `commit=unknown`; this is not a release identity.
+
+| Target | Required runtime components and current native profile |
+|---|---|
+| Linux x86-64 / ARM64 | Compatible C runtime; a pinned bubblewrap with the options used by the backend; kernel user namespaces, seccomp and delegated cgroup v2 memory/pids controls. The executor must run where it can migrate its own jobs into that delegation. Ordinary programs receive read paths with no writes, network or IPC. The fixed service profile below separately admits its trusted OS client. |
+| macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive no fork, writes, sockets or Mach access. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
+| Windows x86-64 | Native Windows security, Credential Manager, local named pipes, Job Objects, the Service Control Manager and the Universal C Runtime supplied by current Windows. The GNU package statically links its compiler runtime. Its remaining imports are Windows system DLLs. No MinGW installation is required on the target. |
+
+SQLite is bundled into the executable. Operation definitions separately declare
+their runtime libraries, tools, interpreters and service permissions. A server
+binary that loads does not establish that an adopted operation's dependencies
+or native guarantees are available. The required native starter operations
+must not hide a Python dependency.
+
+The native proxy workflow retains an executor archive for each target below,
+named `host-executor-TARGET-COMMIT`. Download the archive for the selected source
+from that workflow's artifacts. The separate `packages_only` dispatch continues
+to select full SafeYolo packages. The executor job runs during ordinary pull
+request, push, scheduled and manual contract runs. Windows binaries are built
+with the GNU cross compiler; compiling Windows tests does not run them.
+
+| Archive target | Native component evidence and deployment scope |
+|---|---|
+| `x86_64-unknown-linux-gnu` | Ubuntu 24.04, ordinary user, delegated cgroup v2 and pinned bubblewrap; observation, fixed user-service control and lifecycle fixtures. |
+| `aarch64-unknown-linux-gnu` | Linux ARM64 executable and contract checks. Native namespace/cgroup fixture results use x86-64; ARM64 enforcement remains unqualified. |
+| `aarch64-apple-darwin` | macOS ARM64; observation, fixed user-service control and lifecycle fixtures with the explicit broader bounds below. |
+| `x86_64-pc-windows-gnu` | Native Windows 11 foreground and Service component fixtures, with a separate ordinary workload account. Other Windows versions and Windows ARM64 remain unqualified. |
+
+The GNU Linux packages need a compatible glibc; the workflow builds them on
+Ubuntu 24.04. A package's executable identity and metadata identify its exact
+source and target. This component evidence does not establish integrated
+gateway or starter-catalogue release qualification; those consumers have their
+own acceptance.
+
+On Linux or macOS, extract the selected ZIP into an operator-owned directory,
+make `safeyolo-host-executor` executable if the extraction tool omitted its
+mode, then run `./safeyolo-host-executor --version`. On Windows, use
+`Expand-Archive` in an operator-owned directory and run
+`.\safeyolo-host-executor.exe --version`. Compare the binary's SHA-256 with
+`host-executor.json` and its reported commit with the selected workflow source.
+Extraction and a version result do not create configuration, accounts, service
+permissions or an isolation delegation. Then use `check` with the explicitly
+adopted configuration and private state directory before starting `serve`.
+
+For a release producer, run the following from a clean, committed source
+checkout with the repository's Rust toolchain, native linker/C build tools,
+Bash and Python 3.11 or later. The build uses the existing Cargo reserve guard and inherits
+its configured reserve, target directory and one-job settings. It can download
+locked build dependencies. Choose a new archive path outside the checkout;
+replace `/release/executor.zip` below with that path before running the command.
+
+```sh
+python3 scripts/build_host_executor.py --output /release/executor.zip
+```
+
+The command builds a production executable for the build host and writes a ZIP
+archive with the binary, licence and `host-executor.json`.
+It prints the archive and binary SHA-256 digests. The metadata records the
+source, target, compiler, selected build flags and a link to this contract at
+the built source revision. `--target` selects an
+installed Rust cross-compilation target and its linker; otherwise
+`CARGO_BUILD_TARGET`, when set, selects the target. Python and build tools are
+not included or needed when running the extracted binary. The archive does not
+install accounts, service-manager configuration, bubblewrap or cgroup delegation.
+Build completion does not establish native enforcement or release qualification.
+
 ## Execution scope and enforcement limits
 
 Each implementation digest covers its arguments, effects, enforcement
@@ -190,7 +263,134 @@ or configuration. An operation that declares broader executable or writable
 scope needs explicit adoption and matching authority; the word “restart” adds
 no restriction or guarantee by itself.
 
+The `execution.broader` set identifies explicitly adopted exceptions to required
+native guarantees. It is part of the implementation digest, issuer grant and
+target ceiling binding. An empty set requires every declared bound. The current
+`memory` exception permits the macOS backend to poll resident memory without
+claiming a hard kernel memory cap. The `executor_restart` exception permits a
+process to remain running beyond its deadline if the controller crashes. Restart
+retains uncertain cleanup and concurrency until the recorded process birth is
+absent; it does not signal a recovered PID. The macOS backend requires both
+exceptions. An enforcement label cannot select either exception. The Linux and
+macOS adapters refuse unsupported filesystem, network and IPC profiles.
+An ordinary adopted program cannot receive a service-manager channel: under
+the executor account that channel could launch code outside the sandbox and
+modify executor inputs. A service name or executable digest alone does not
+make an arbitrary program a trusted service client.
+
+The fixed service profile admits only the native, root-owned OS client and
+protected parents, pinned by content digest. It checks literal action/resource
+arguments and an exact native environment; callers cannot substitute a program,
+unit, loader variable or interpreter. This client and its system libraries are
+part of the trusted executor boundary. The selected unit definition, executable,
+dependencies and service-manager permissions remain adopted external trust
+dependencies. Linux supports `restart` and `status` for one existing user
+service. macOS supports `restart` and `status`. Neither profile creates or replaces units
+or their configuration.
+
+For Linux, the delegated service owner is `systemd-user`, with capability
+`restart` or `status` and one literal `.service` resource. The executable is
+`/usr/bin/systemctl`. Its literal arguments begin with `--user --no-pager
+--no-ask-password`, followed by `restart -- UNIT` or
+`show --property=ActiveState --property=MainPID -- UNIT`. Its exact environment is
+`XDG_RUNTIME_DIR=/run/user/UID` and `SYSTEMD_OFFLINE=0`; the latter prevents
+systemctl from skipping the requested operation inside the filesystem sandbox.
+The declared Unix socket is
+`/run/user/UID/systemd/private`. Only AF_UNIX sockets and that mounted manager
+channel are available. This profile requires `delegated_services` and
+`process_visibility` in `execution.broader`. The trusted client shares the
+host process namespace so systemd can verify peer credentials. It receives no
+host proc filesystem, and the seccomp filter denies signals, foreign-process
+limit changes, ptrace, cross-process memory access and file-descriptor copying. Cgroup limits
+and descendant cleanup still apply to the client job.
+
+For macOS, the owner is `launchd-user`, with one literal `gui/UID/LABEL` or
+`user/UID/LABEL` resource. The executable is `/bin/launchctl` with literal
+`print RESOURCE` or `kickstart -k RESOURCE` arguments and an empty environment.
+The trusted client receives Mach lookup permission. Restart also permits the
+signal permission that launchd checks before replacing the selected process.
+The profile requires `network_ipc` and
+`delegated_services` exceptions in addition to `memory` and `executor_restart`.
+For both profiles the working directory is `/`; UID is the executor's adopted
+numeric identity. The complete client specification remains bound by the
+operation digest and both authority ceilings.
+
+Service processes and persistent effects are outside helper-process memory,
+task, deadline and cleanup controls. A receipt's `processes_stopped` describes
+the helper, not the selected service. Restart can intentionally leave a service
+running. The native receipt discloses these limits; transport completion or
+helper cleanup does not establish a service's final state.
+
+The Windows adapter requires explicit `filesystem`, `registry`, `network_ipc`
+and `delegated_services` exceptions. Job Objects bound aggregate process memory,
+active processes and direct descendant lifetime. Job Objects do not confine
+files, disk writes, registry access, network destinations or service-manager
+effects. Those permissions come from the selected workload account's operating
+system (OS) access. Declared paths, destinations and services are assessments in
+that profile. Delegated service, Windows Management Instrumentation and task
+scheduler effects can continue outside the Job Object. A receipt's
+`processes_stopped` observation covers associated Job processes only.
+
+The Windows executor uses a separate, non-administrative workload account.
+The executor rejects workload privileges that can bypass protected ACLs or
+impersonate the executor. Configuration, state, executables and their ancestors
+must prevent workload replacement. The adapter checks native access control
+lists (ACLs), refuses reparse points and holds executable/ancestor handles
+against replacement. Local drive paths are supported; UNC/device paths,
+alternate data streams and trailing-dot/space aliases are refused. Host-owned
+DLLs and OS tool dependencies remain unpinned and must be assessed. The native
+launcher does not load the workload's user profile or current-user registry
+hive automatically. Event Log and registry commands need the corresponding OS
+read permission. Fixed service commands need an explicit service ACL; a signed
+request does not create one.
+
+`native.credential` selects a generic Windows Credential Manager entry owned by
+the executor account. `credential-store --name NAME --account DOMAIN\user`
+reads a UTF-8 password from private stdin. The password is not a configuration
+field or command argument. A PowerShell/.NET caller must write UTF-8 bytes
+without a byte-order mark to the child input pipe; a writer's preamble otherwise
+becomes part of the password. `identity --credential NAME` reports the workload SID
+and stable token groups. The changing logon-session SID is excluded from that
+stable list. Native launch requires `SeImpersonatePrivilege`, or the appropriate
+assign-primary-token and quota privileges. Windows Service installation selects
+the executor account explicitly; credential provisioning must use that same
+account. `service --name SCM_NAME --config ABSOLUTE_JSON --state ABSOLUTE_DIRECTORY`
+uses the same validation, admission and execution code as `serve`. Service stop
+requests native Job cleanup before reporting `SERVICE_STOPPED`.
+
+The local Windows transport is `\\.\pipe\safeyolo-host-TARGET_ID`. The server
+uses a private DACL, rejects remote clients and refuses a pre-existing pipe name
+at startup. A client must verify the pipe server's OS account before sending a
+signed request; a pipe name or target label alone does not authenticate the
+server. Clients should open with identification-level security quality of
+service to prevent server impersonation. The component fixture verifies the
+server process token against its selected executor account. Connections,
+pending instances and whole request/response deadlines are bounded. Native
+command lines use Windows CRT quoting with an explicit application path and
+exact case-insensitive environment names. Native command lines are limited to
+32767 UTF-16 units, including the terminating NUL. If the selected executor lacks
+assign-primary-token/quota privileges, the token-launch fallback has a shorter
+1024-unit limit. A longer command then fails before process creation and names
+the required executor privilege; no shell is implicit.
+
+The Windows launcher supplies the Job Object in the process-creation attribute
+list and verifies membership before resuming the suspended workload. This closes
+the controller-crash gap between creating a process and assigning it to its Job.
+The required creation-time Job attribute is available on Windows 10 and newer
+and Windows Server 2016 and newer. See Microsoft's
+[creation-time Job assignment explanation](https://devblogs.microsoft.com/oldnewthing/20230209-00/?p=107812/).
+
 ## Lifecycle, replay and revocation
+
+`Receipt.native` contains native observations when the executor has retained
+them. The observations identify the backend, enforced properties, dependencies,
+exit code or signal, process cleanup, output truncation and termination reason.
+A missing native observation or exit value stays unknown. A retained admission
+or successful transport reply does not establish native execution or cleanup.
+The executor records native completion facts and concurrency release in the
+same transaction. `Receipt.process`, when present, retains the process ID and
+start time used by native restart reconciliation. A PID alone does not prove
+that a current process is the recorded job.
 
 The target retains admission before dispatch and returns a revisioned `Receipt`.
 States are `admitted`, `running`, `completed`, `failed`, `cancelled` and
@@ -199,6 +399,20 @@ Terminal records cannot return to running. Only the executor records observed
 state. `completed` reports the operation result, not proof of all containment
 guarantees. A timeout needs native termination/observation; it is not itself
 proof that effects stopped.
+
+The standalone executor allocates the admitted output buffer, lifecycle receipt
+and first cancellation reply inside the admission transaction. It updates those
+allocations in place. Reaching `ledger.database_bytes` therefore refuses new
+work before dispatch without spending an admission or disabling an existing
+job's cancellation, output or recovery writes. The limit covers SQLite database
+pages. The target operator must separately reserve disk for the rollback journal,
+including its page checksums and headers, filesystem overhead and executable snapshots. Host
+storage loss or an input/output error can still prevent persistence.
+
+Native enforcement and lifecycle facts retain their reserved fields. Free-text
+receipt diagnostics retain at most 4096 UTF-8 bytes plus an explicit
+`[diagnostic truncated]` marker. This diagnostic bound does not truncate the
+operation's retained output stream or impose a rationale limit.
 
 A cancellation request sets `cancellation_requested` and advances the receipt
 revision. It leaves the state active. Only confirmed termination can produce

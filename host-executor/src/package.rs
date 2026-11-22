@@ -1,12 +1,8 @@
 use super::*;
-use crate::{
-    Error,
-    contracts::ContractTemplate,
-    services::{ServiceDefinition, effects},
-};
+use crate::{Error, NamedEffect, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -16,7 +12,7 @@ pub struct Package {
     pub format: String,
     pub name: String,
     pub version: u64,
-    pub source: effects::Source,
+    pub source: Source,
     pub operations: BTreeMap<String, Operation>,
 }
 
@@ -26,7 +22,7 @@ pub struct Operation {
     pub resources: BTreeSet<String>,
     pub arguments: BTreeMap<String, Argument>,
     pub execution: Execution,
-    pub effects: BTreeMap<String, effects::NamedEffect>,
+    pub effects: BTreeMap<String, NamedEffect>,
     /// Explicit adopted trust and remaining platform enforcement dependencies.
     pub enforcement: Enforcement,
 }
@@ -61,37 +57,16 @@ pub enum ArgumentType {
 }
 
 impl Argument {
-    fn binding(&self) -> Value {
-        json!({"type":self.kind,"options":self.options})
-    }
-
     fn accepts(&self, value: &Value) -> bool {
-        let contract = ContractTemplate {
-            bindings: Map::from_iter([("value".into(), self.binding())]),
-            ..Default::default()
-        };
-        contract.validate_bound_value("value", value)
-    }
-
-    fn constraint(&self, name: &str) -> Value {
-        let kind = match self.kind {
-            ArgumentType::String => "string",
-            ArgumentType::Integer => "integer",
-            ArgumentType::Boolean => "boolean",
-            ArgumentType::StringList => "array",
-            ArgumentType::Enum => "",
-        };
-        let mut constraint = json!({"type":kind,"required":self.required,"equals_var":name});
-        if let Some(default) = &self.default {
-            constraint["default"] = default.clone();
+        match self.kind {
+            ArgumentType::String => value.is_string(),
+            ArgumentType::Integer => value.as_i64().is_some() || value.as_u64().is_some(),
+            ArgumentType::Boolean => value.is_boolean(),
+            ArgumentType::StringList => value
+                .as_array()
+                .is_some_and(|items| items.iter().all(Value::is_string)),
+            ArgumentType::Enum => self.options.contains(value),
         }
-        if matches!(self.kind, ArgumentType::StringList) {
-            constraint["items"] = json!({"type":"string"});
-        }
-        if matches!(self.kind, ArgumentType::Enum) {
-            constraint["enum"] = json!(self.options);
-        }
-        constraint
     }
 }
 
@@ -105,6 +80,9 @@ pub enum Word {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Execution {
+    /// Required guarantees remain the default contract. Each explicitly broader
+    /// bound is part of the implementation digest and both authority ceilings.
+    pub broader: BTreeSet<BroaderBound>,
     pub executable: String,
     pub executable_sha256: String,
     pub argv: Vec<Word>,
@@ -116,6 +94,20 @@ pub struct Execution {
     pub network: Network,
     pub resources: ExecutionLimits,
     pub delegated_services: Vec<DelegatedService>,
+}
+
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BroaderBound {
+    Memory,
+    ExecutorRestart,
+    Filesystem,
+    Registry,
+    NetworkIpc,
+    DelegatedServices,
+    ProcessVisibility,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -185,15 +177,6 @@ pub struct ExecutionLimits {
     pub output_bytes: u64,
     pub memory_bytes: u64,
     pub processes: u32,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Projections {
-    pub package_sha256: String,
-    pub package_version: u64,
-    pub target: BTreeMap<String, Operation>,
-    pub gateway: BTreeMap<String, Value>,
 }
 
 impl Operation {
@@ -365,80 +348,7 @@ impl Package {
                     return Err("invalid typed argument or default".into());
                 }
             }
-            // Validate native effect references through their existing owner.
-            ServiceDefinition::from_value(self.gateway_projection(id, op))?;
         }
         Ok(())
-    }
-
-    pub fn projections(&self) -> Result<Projections, Error> {
-        self.validate()?;
-        Ok(Projections {
-            package_sha256: revision(self),
-            package_version: self.version,
-            target: self.operations.clone(),
-            gateway: self
-                .operations
-                .iter()
-                .map(|(id, op)| (id.clone(), self.gateway_projection(id, op)))
-                .collect(),
-        })
-    }
-
-    pub fn verify_projections(&self, projections: &Projections) -> Result<(), Error> {
-        if revision(&self.projections()?) != revision(projections) {
-            return Err(
-                "host-execution projections differ from their common source/version".into(),
-            );
-        }
-        Ok(())
-    }
-
-    fn gateway_projection(&self, id: &str, op: &Operation) -> Value {
-        let mut bindings = Map::new();
-        bindings.insert(
-            "resource_id".into(),
-            json!({"type":"enum","options":op.resources}),
-        );
-        let mut args = Map::new();
-        for (name, arg) in &op.arguments {
-            bindings.insert(format!("argument:{name}"), arg.binding());
-            args.insert(name.clone(), arg.constraint(&format!("argument:{name}")));
-        }
-        let string = json!({"type":"string","required":true});
-        let invocation = json!({"type":"object","required":true,"object":{"allow":{
-            "operation_id":{"type":"string","required":true,"enum":[id]},
-            "resource_id":{"type":"string","required":true,"equals_var":"resource_id"},
-            "package_sha256":{"type":"string","required":true,"enum":[revision(self)]},
-            "implementation_sha256":{"type":"string","required":true,"enum":[op.implementation_sha256()]},
-            "expected_assessment_sha256":{"type":"string","required":true},
-            "arguments":{"type":"object","required":true,"object":{"allow":args,"deny_unknown":true}}
-        },"deny_unknown":true}});
-        let action = json!({"type":"object","required":true,"object":{"allow":{"kind":{"required":true,"enum":["invoke"]},"invocation":invocation},"deny_unknown":true}});
-        let request = json!({"type":"object","required":true,"object":{"allow":{
-            "version":{"required":true,"enum":[VERSION]},"required_features":{"type":"array","required":true,"items":{"type":"string"}},
-            "request_id":string,"target_id":string,"issuer_id":string,"grant_id":string,
-            "principal":{"type":"object","required":true},"expires_at":{"type":"integer","required":true},
-            "expected":{"type":"object","required":true},"action":action,"untrusted_rationale":{"type":"string","required":true}
-        },"deny_unknown":true}});
-        let uses:Vec<_>=op.effects.keys().map(|effect|json!({"effect":effect,"resource":"target_resource","when":{"kind":"always"},"evidence":["package"]})).collect();
-        let mut named_effects = json!(op.effects);
-        for value in named_effects.as_object_mut().expect("effects").values_mut() {
-            value["evidence"] = json!(["package"]);
-        }
-        json!({"schema_version":1,"name":format!("{}:{id}",self.name),"default_host":"",
-        "host_execution_source":{"package_sha256":revision(self),"package_version":self.version,"operation_id":id,"implementation_sha256":op.implementation_sha256()},
-        "capabilities":{"invoke":{"routes":[{"methods":["POST"],"path":Verb::Invoke.path()}],"contract":{
-            "template":format!("host-execution:{}:{id}",revision(self)),"bindings":bindings,"enforcement":{"request_shape":"enforced"},
-            "operations":[{"name":"invoke","request":{"method":"POST","path":Verb::Invoke.path(),"query":{"deny_unknown":true},"body":{"allow":{"request":request,"key_id":string,"signature":string},"deny_unknown":true}}}]
-        }}},"effect_model":{
-            "sources":{"package":{"location":self.source.location,"version":format!("{}:{}:{}",self.source.version,self.version,revision(self))}},
-            "resources":{"target_resource":{"description":"Selected target operation resource","identity":["id"]}},
-            "effects":named_effects,"operations":{"invoke":{"method":"POST","path":Verb::Invoke.path(),"coverage":"modeled","arguments":{},
-                "resources":{"target_resource":{"id":{"kind":"unresolved","reason":"Nested signed resource selector is enforced by the target; the current gateway effect analyser does not prove its identity."}}},
-                "effects":uses,"execution_authority":"Authenticated issuer grant intersected with target adoption and local ceiling; native executor dependencies remain explicit.","evidence":["package"],"gaps":op.enforcement.unresolved}},
-            "enforcement":{},"rules":{},"alternatives":{},"regressions":[],
-            "gaps":["Gateway route membership grants no target invocation. Native effect analysis does not prove nested signed selectors or arbitrary executable behavior."]
-        }})
     }
 }
