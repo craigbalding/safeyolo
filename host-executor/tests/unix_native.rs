@@ -1174,6 +1174,14 @@ fn installed_user_service_profiles_and_channel_refusals() {
                 .iter()
                 .any(|s| s.contains("outside helper-process"))
         );
+        let host_pid = observe_service(action != "service-stop");
+        if action == "service-status" {
+            assert_eq!(
+                host_pid.map(|pid| pid.to_string()),
+                previous_pid,
+                "target status must match the independent host service manager"
+            );
+        }
     }
     let config = f.root.join("target.json");
     let original = fs::read(&config).unwrap();
@@ -1220,4 +1228,50 @@ fn installed_user_service_profiles_and_channel_refusals() {
         );
     }
     fs::write(config, original).unwrap();
+    let (admitted, _) = f.invoke("service-stop");
+    assert_eq!(f.terminal(&admitted.job_id).state, JobState::Completed);
+    assert_eq!(observe_service(false), None);
+}
+
+fn observe_service(running: bool) -> Option<u32> {
+    let service = std::env::var("SAFEYOLO_HOST_EXECUTOR_SERVICE").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let output = if cfg!(target_os = "linux") {
+            Command::new("/usr/bin/systemctl")
+                .args(["--user", "show", "--property=MainPID", "--", &service])
+                .output()
+                .unwrap()
+        } else {
+            Command::new("/bin/launchctl")
+                .args(["print", &service])
+                .output()
+                .unwrap()
+        };
+        assert!(
+            output.status.success(),
+            "host service observation failed: {:?}",
+            output
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let pid = stdout.lines().find_map(|line| {
+            line.trim()
+                .strip_prefix(if cfg!(target_os = "linux") {
+                    "MainPID="
+                } else {
+                    "pid = "
+                })
+                .and_then(|text| text.trim().parse::<u32>().ok())
+                .filter(|pid| *pid != 0)
+        });
+        if pid.is_some() == running {
+            eprintln!("independent host service observer: {service}, pid={pid:?}");
+            return pid;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "service state did not settle: {stdout}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
