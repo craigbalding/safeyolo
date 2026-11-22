@@ -130,6 +130,9 @@ unexecuted operation, use
 `--starter ROOT OPERATION`.
 Use `--starter-refusals ROOT` to run only the refused proposals after inspecting
 an interrupted run; that selection dispatches no job.
+For a further attempt after inspecting the result and changing its input, use
+`--starter-attempt ROOT OPERATION ATTEMPT` with a new short attempt name.
+The name selects new request IDs; it grants no permission or authority renewal.
 Append `--service` only after the same target configuration is running under
 the selected Windows Service account. This fixture does not install that
 service, configure ACLs or renew a credential.

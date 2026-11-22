@@ -708,7 +708,7 @@ fn starter_result(fixture: &mut Fixture, name: &str) -> bool {
     result.state == JobState::Completed
 }
 
-fn starters(root: PathBuf, service: bool, selected: Option<&str>) {
+fn starters(root: PathBuf, service: bool, selected: Option<&str>, attempt: Option<&str>) {
     let service_operations = [
         "service-status",
         "service-start",
@@ -726,6 +726,9 @@ fn starters(root: PathBuf, service: bool, selected: Option<&str>) {
     // Distinct phase IDs retain foreground/service results and make an explicit
     // one-operation continuation possible after inspecting an earlier failure.
     fixture.phase = format!("starters-{}-{}", fixture.phase, selected.unwrap_or("all"));
+    if let Some(attempt) = attempt {
+        fixture.phase.push_str(&format!("-{attempt}"));
+    }
     let receiver = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 19477)).unwrap();
     receiver.set_nonblocking(true).unwrap();
     let mut failed = Vec::new();
@@ -1244,11 +1247,19 @@ pub fn main() {
             PathBuf::from(&args[1]),
             args.get(2).is_some_and(|s| s == "--service"),
             None,
+            None,
         ),
         Some("--starter") if args.len() == 3 || args.len() == 4 => starters(
             PathBuf::from(&args[1]),
             args.get(3).is_some_and(|s| s == "--service"),
             Some(&args[2]),
+            None,
+        ),
+        Some("--starter-attempt") if args.len() == 4 || args.len() == 5 => starters(
+            PathBuf::from(&args[1]),
+            args.get(4).is_some_and(|s| s == "--service"),
+            Some(&args[2]),
+            Some(&args[3]),
         ),
         Some("--starter-refusals") if args.len() == 2 || args.len() == 3 => {
             let mut fixture = Fixture::new(
