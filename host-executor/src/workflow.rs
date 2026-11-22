@@ -246,6 +246,11 @@ fn starter(settings: &Starter, identity: ExecutionIdentity) -> Result<Package, R
         #[cfg(target_os = "macos")]
         {
             e.executable = "/bin/launchctl".into();
+            // launchd's restart throttle can outlast the inspection deadline.
+            // The issuer grant and local ceiling still select the actual bound.
+            if matches!(action, "start" | "restart") {
+                e.resources.timeout_seconds = 30;
+            }
             let command: Vec<&str> = match action {
                 "status" => vec!["print", &settings.service],
                 "start" => vec!["kickstart", &settings.service],

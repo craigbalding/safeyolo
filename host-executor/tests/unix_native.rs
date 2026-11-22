@@ -121,7 +121,10 @@ impl Fixture {
         *receipt
     }
     fn terminal(&mut self, id: &str) -> Receipt {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        self.terminal_with_timeout(id, Duration::from_secs(15))
+    }
+    fn terminal_with_timeout(&mut self, id: &str, timeout: Duration) -> Receipt {
+        let deadline = Instant::now() + timeout;
         loop {
             let receipt = self.job(id);
             if receipt.state.terminal() {
@@ -370,6 +373,9 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
                 argv.extend(["--", &resource]);
                 argv
             } else {
+                if matches!(action, "start" | "restart") {
+                    e.resources.timeout_seconds = 30;
+                }
                 e.broader
                     .extend([BroaderBound::NetworkIpc, BroaderBound::DelegatedServices]);
                 match action {
@@ -398,6 +404,26 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
         }
     }
     let target = common::target(name, operations, &key);
+    #[cfg(target_os = "macos")]
+    let target = {
+        let mut target = target;
+        for scopes in std::iter::once(&mut target.ceiling).chain(
+            target.issuers.values_mut().flat_map(|issuer| {
+                issuer
+                    .authority
+                    .grants
+                    .values_mut()
+                    .map(|grant| &mut grant.operations)
+            }),
+        ) {
+            for id in ["service-start", "service-restart"] {
+                if let Some(scope) = scopes.get_mut(id) {
+                    scope.budgets.timeout_seconds = 30;
+                }
+            }
+        }
+        target
+    };
     #[cfg(target_os = "linux")]
     let bubblewrap = PathBuf::from(
         std::env::var_os("SAFEYOLO_HOST_EXECUTOR_BWRAP").unwrap_or_else(|| "/usr/bin/bwrap".into()),
@@ -1046,7 +1072,7 @@ fn installed_user_service_profiles_and_channel_refusals() {
     ];
     for &action in actions {
         let (admitted, _) = f.invoke(action);
-        let result = f.terminal(&admitted.job_id);
+        let result = f.terminal_with_timeout(&admitted.job_id, Duration::from_secs(40));
         eprintln!("{action}: {}", serde_json::to_string(&result).unwrap());
         let Response::Output { data_base64, .. } = f.call(Action::Output {
             job_id: result.job_id.clone(),

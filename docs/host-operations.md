@@ -322,6 +322,12 @@ effects are outside the helper's lifecycle controls. On macOS, stopping sends
 SIGTERM; a configured KeepAlive service can restart. Do not describe that as
 disabling or removing the service.
 
+The macOS starter permits up to 30 seconds for start/restart because launchd can
+throttle rapid restarts. The selected grant and local ceiling still determine
+the actual deadline; a smaller task budget can time out the helper while the
+service manager continues its separately governed work. Inspect service status
+before another effect after a timeout.
+
 ## Starter index and adaptation
 
 | Task | Linux/macOS starter | Windows starter |
