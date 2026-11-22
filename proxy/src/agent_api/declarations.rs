@@ -143,6 +143,9 @@ where
     if route(request) == "/checks/invoke" {
         return checks::respond(request, state, body).await;
     }
+    if route(request) == "/gateway/host" || route(request).starts_with("/gateway/host/") {
+        return host_execution::respond(request, state, body).await;
+    }
     if route(request).starts_with("/support/") {
         return support::respond(request, state, controls.audit, body).await;
     }

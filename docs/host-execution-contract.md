@@ -12,8 +12,10 @@ are in [`host_execution.rs`](../proxy/tests/host_execution.rs).
 Loading types does not enrol an issuer or grant invocation permission. The
 standalone executor enforces adopted native operations. Catalogue adoption
 uses the target configuration and the issuer's existing native policy owner.
-Effect authoring and complete agent/task gateway integration remain separate
-children of [#1669](https://github.com/craigbalding/safeyolo/issues/1669).
+The local Service Gateway adapter binds these operations to an authenticated
+agent run and an activated operator task. Packaging, remote transport adoption
+and integrated platform qualification remain separate parts of
+[#1669](https://github.com/craigbalding/safeyolo/issues/1669).
 
 ## Ownership and trust
 
@@ -94,6 +96,89 @@ must authenticate the selected target; matching a target label in JSON is
 insufficient. Redirects must not disclose signed requests to another target.
 The witness uses owned loopback TCP connections and proves issuer signature
 validation; it does not qualify an HTTPS deployment.
+
+## Agent gateway entry point
+
+On a running Unix SafeYolo host, the operator uses the existing policy owner to
+adopt a `host_bindings` table. Each value is an encoded JSON binding document.
+Installed capability discovery exposes `host_execution_binding` and its actual
+validator. A binding selects the target's adopted `Target`, issuer, native
+grant, key ID, vault credential reference, service name, canonical absolute
+Unix socket, executor UID and finite request/response/deadline limits. The
+credential value is base64 Ed25519 PKCS#8 in the existing encrypted store.
+Neither the value nor a signed request is returned to the agent.
+
+The issuer ID must match the selected instance's durable identity. The native
+grant's principal selects the agent, run and task. The operator registers and
+activates that task through the existing task owner. `task_revision` is the
+shared canonical JSON digest of its registered document. A different task ID,
+changed active document, stopped run or changed durable agent identity cannot
+reuse the binding. The service must also have current `gateway:request` policy
+permission for each selected native protocol path. A binding does not override
+an existing gateway or task denial.
+
+The agent uses its ordinary Agent API bearer through
+`http://_safeyolo.proxy.internal`:
+
+1. Read `GET /gateway/host` to find bindings for its current run and task.
+2. Send a discovery action to `POST /gateway/host/{binding}`. The request below
+   uses a previously discovered binding name and an agent-retained request ID.
+3. Propose a literal invocation with the discovered operation revisions. Read
+   the normalized arguments, limits, validity and assessment digest. Supply
+   that preparation to the invocation action.
+4. Retain the invocation's request ID and job ID. Use the same binding for job,
+   output and cancellation actions. A changed payload needs a new proposal.
+
+```json
+{"request_id":"discover-1","expected":null,"action":{"kind":"discover"}}
+```
+
+Inputs contain only `request_id`, `expected`, `action`, optional
+`untrusted_rationale` and optional `challenge_id`. The gateway supplies target,
+issuer, grant, principal and expiry from the approved binding. Unknown fields,
+definition-management actions and issuer enrolment are refused. Discovery
+filters operations and catalogue changes to the selected grant. Proposals have
+no separate retained object or cross-agent readback route. The exposed API has
+no job-listing or definition-management route. Job, output and cancellation
+always require the target's exact issuer, principal and grant ownership.
+
+The existing `route_challenges` owner can select native invocations by agent,
+binding service, operation ID as `capability`, method `POST` and path
+`/v1/host-execution/invoke`. Its adopted checks run even when gateway policy
+already permits that route. An absent required finding or an unmet question
+prevents target dispatch. A positive deny finding remains a denial. A private
+challenge creates no operator attention. The agent can abandon or revise the
+operation, or explicitly use the existing eligible challenge escalation with
+task, source and alternative context. An operator's `exact` decision permits
+only that invocation and request ID; native grants and target checks still
+apply. It creates no new standing grant and never executes or retries a request.
+Routine permitted invocations with satisfied checks need no approval.
+
+Private policy assessment and operator policy review include complete native
+grants, target ceilings and future-family bounds through the existing host
+effect assessor. The result distinguishes represented effects from unknown
+behavior. A favorable assessment creates no permission.
+
+The gateway checks socket peer UID and protected path ownership, and rechecks
+current policy, task, run and vault selection before sending. The target then
+independently authenticates and admits the signed request. Target input changes
+can therefore refuse a request after issuer admission. The current adapter uses
+the executor's protected Unix socket. It does not provide remote HTTPS or
+Windows named-pipe transport, synchronize target configuration, or claim that
+saved inputs establish running-target readiness.
+
+The gateway sends each request once. A missing or mismatched target reply
+returns an uncertain outcome with the original request ID and derived possible
+job ID. Inspect that job under current read authority before retrying. An exact
+duplicate mutation uses the target's durable receipt; changed content with the
+same ID conflicts. After revocation removes read authority, the target operator
+must inspect the retained result. Gateway or credential revocation stops new
+admissions and reads; an admitted job retains its target execution deadline and
+limits. Revocation does not undo effects or prove process termination.
+`gateway.host_admission`, `gateway.host_result`, `gateway.host_refused` and
+`gateway.host_result_unavailable` distinguish reached issuer, target and
+uncertain outcomes in the existing audit. A missing audit event is not proof
+that no effect occurred.
 
 `SignedRequest` contains `request`, `key_id` and a base64 Ed25519 signature.
 The signing message is UTF-8: protocol version, newline, key ID, newline, then
@@ -181,9 +266,10 @@ from the enforceable authority comparison. Catalogue review records
 description-only changes as equivalent. Existing exact grant pins and standing
 update rules still apply.
 
-Discovery discloses the full adopted definitions, including literal environment
-values, to a grant with the discovery action. Adoption must account for that
-disclosure. Host-held service credentials remain with their existing owners;
+Direct target discovery discloses the full adopted definitions, including
+literal environment values, to a grant with the discovery action. The agent
+gateway filters that catalogue to the selected grant. Adoption must account for
+the relevant disclosure. Host-held service credentials remain with their existing owners;
 the package's delegated service references do not contain those credential values.
 
 ## Catalogue adoption and revision changes

@@ -213,7 +213,8 @@ pub(crate) struct Assessment {
 /// Execute in authored order. Questions and findings remain untrusted context
 /// and never create permission; normal approval/current-policy checks follow.
 pub(crate) async fn assess(
-    record: &pending::Record,
+    authority_digest: &str,
+    action: &Value,
     answers: &BTreeMap<String, String>,
     runtime: &Runtime,
     state: &RuntimeState,
@@ -222,14 +223,14 @@ pub(crate) async fn assess(
         .policy
         .as_ref()
         .ok_or("challenge policy unavailable")?;
-    if !current(policy, &record.authority.action) {
+    if !current(policy, action) {
         return Err("challenge requirements changed; obtain a new challenge".into());
     }
     let mut evidence = BTreeMap::new();
     let mut outcomes = Vec::new();
     let mut ready = true;
     'challenge: for (name, challenge) in &policy.named_checks().route_challenges {
-        if !challenge.applies(&record.authority.action) {
+        if !challenge.applies(action) {
             continue;
         }
         for step in &challenge.steps {
@@ -240,7 +241,7 @@ pub(crate) async fn assess(
                     // owner. Only the explicitly labelled answers are agent data.
                     let subject = Subject::Value {
                         value: serde_json::to_string(&json!({
-                            "authority_digest":record.authority_digest,"action":record.authority.action,
+                            "authority_digest":authority_digest,"action":action,
                             "challenge":name,"revision":challenge.revision,"untrusted_answers":answers
                         }))?,
                     };
@@ -298,7 +299,7 @@ pub(crate) async fn assess(
     }
     Ok(Assessment {
         ready,
-        view: json!({"ready_for_escalation":ready,"steps":outcomes,"binding":record.authority.action["control_update"]}),
+        view: json!({"ready_for_escalation":ready,"steps":outcomes,"binding":action["control_update"]}),
         evidence,
     })
 }

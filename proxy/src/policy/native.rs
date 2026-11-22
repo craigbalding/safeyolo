@@ -470,6 +470,7 @@ impl Policy {
         fields.shift_remove("approval_delegations");
         fields.shift_remove("support_grants");
         fields.shift_remove("host_catalogues");
+        fields.shift_remove("host_bindings");
         // Approval receipts belong to the saved host permission. They are not
         // evaluator fields; keep the authoritative authored copy for outcome
         // reconciliation while compiling only existing egress/rate inputs.
@@ -795,6 +796,16 @@ impl Policy {
         Some(json!({"effective":effective, "sources":sources, "permission_count":self.rules.len()}))
     }
 
+    pub(crate) fn host_bindings(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, crate::host_execution::gateway::Binding>> {
+        match &self.native {
+            Some(native) => crate::host_execution::gateway::bindings(&native.authored)
+                .map_err(|error| invalid(format!("host bindings: {error}"))),
+            None => Ok(Default::default()),
+        }
+    }
+
     pub(crate) fn native_sensor_config(
         &self,
     ) -> Option<std::result::Result<Value, super::BaselineSerializationError>> {
@@ -862,6 +873,8 @@ impl Policy {
 }
 
 fn validate_authoring(document: &Value) -> Result<()> {
+    crate::host_execution::gateway::bindings(document)
+        .map_err(|error| invalid(format!("host bindings: {error}")))?;
     super::authority::validate(document)?;
     super::support::parse(document)?;
     super::delegation::parse(document)?;

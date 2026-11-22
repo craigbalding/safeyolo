@@ -601,11 +601,13 @@ impl Runtime {
             // its selected task only after the new baseline has compiled;
             // failure rejects the candidate and retains the prior snapshot.
             if let Some(policy) = policy.as_mut()
-                && let Some((_, task)) = tasks.active().map_err(|error| Box::new(error) as Error)?
+                && let Some((task_id, task)) =
+                    tasks.active().map_err(|error| Box::new(error) as Error)?
             {
-                let candidate = policy
+                let mut candidate = policy
                     .with_task_document(task.document())
                     .map_err(|error| Box::new(error) as Error)?;
+                candidate.bind_registered_task(&task_id);
                 *policy = candidate;
             }
             if let Some(timing) = startup.as_mut() {
@@ -1384,9 +1386,10 @@ pub(crate) fn activate_registered_task(
         .policy
         .as_ref()
         .ok_or(TaskPolicyActivationError::Unavailable)?;
-    let candidate = policy
+    let mut candidate = policy
         .with_task_document(task.document())
         .map_err(|_| TaskPolicyActivationError::Invalid)?;
+    candidate.bind_registered_task(task_id);
     let previous_guard = current
         .credential_guard
         .as_ref()
