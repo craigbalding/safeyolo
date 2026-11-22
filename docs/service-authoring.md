@@ -127,9 +127,12 @@ lifetimes and authority revisions. It separates the full proposed scope from
 the intersection with the current target ceiling. Assessment covers every
 permitted argument value, including authorized defaults; an example invocation
 cannot narrow the grant. Missing or stale authority is reported as unavailable.
-Exact-operation authority grants no future catalogue membership. To assess an
-adopted future-operation class, the adoption owner must supply its complete
-ceiling and retain uncharacterised future behavior as uncertainty.
+Exact-operation authority grants no future catalogue membership. The assessment
+reads future-operation families from the retained native grants. It composes
+their complete adopted ceilings even when no current catalogue member matches.
+The output separates that represented potential from current target availability.
+Uncharacterised future behavior remains explicit uncertainty. Remaining budget
+usage and fresh admission checks still belong to the executor.
 
 The native projection uses the existing service effect evaluator. It composes
 write plus execution/restart on the same target/resource, data access plus

@@ -62,12 +62,10 @@ pub struct HostOperationRevisions {
 
 impl Operation {
     pub fn semantic_revisions(&self) -> HostOperationRevisions {
-        let mut envelope = self.execution.clone();
-        envelope.executable_sha256.clear();
         HostOperationRevisions {
-            implementation: revision(&self.execution),
-            authority: revision(&(&self.resources, &self.arguments, &envelope)),
-            understanding: revision(&(&self.effects, &self.semantics, &self.enforcement)),
+            implementation: revision(&crate::catalogue::canonical_operation(self)["execution"]),
+            authority: self.authority_sha256(),
+            understanding: self.assessment_sha256(),
             description: revision(&self.description),
         }
     }
@@ -293,5 +291,89 @@ mod tests {
             ("HKCU".into(), "user".into()),
             ("user".into(), "another-user".into())
         ])));
+    }
+
+    #[test]
+    fn catalogue_revisions_separate_wording_code_and_shared_consequences() {
+        let original: Package =
+            serde_json::from_str(include_str!("../examples/windows-starter.json")).unwrap();
+        let before = &original.operations["service-restart"];
+        let mut wording = before.clone();
+        wording.description.push_str(" Reviewed wording.");
+        assert_eq!(
+            crate::compare_operations(before, &wording).comparison,
+            crate::Comparison::Equivalent
+        );
+        assert!(
+            !crate::compare_operations(before, &wording)
+                .differences
+                .is_empty()
+        );
+        assert_eq!(before.authority_sha256(), wording.authority_sha256());
+        assert_eq!(before.assessment_sha256(), wording.assessment_sha256());
+        let mut adopted = before.clone();
+        adopted.enforcement.unresolved.clear();
+        let rule = crate::UpdateRule {
+            ceiling: adopted.clone(),
+            allow_narrower: false,
+            allow_implementation_updates: false,
+        };
+        adopted.description.push_str(" Reviewed wording.");
+        assert!(rule.allows(&adopted));
+        let mut executable = before.clone();
+        executable.execution.executable_sha256 = "b".repeat(64);
+        assert_eq!(executable.description, before.description);
+        assert_ne!(
+            executable.semantic_revisions().implementation,
+            before.semantic_revisions().implementation
+        );
+        assert_ne!(
+            crate::compare_operations(before, &executable).comparison,
+            crate::Comparison::Equivalent
+        );
+        let mut model = original.clone();
+        model
+            .semantics
+            .as_mut()
+            .unwrap()
+            .rules
+            .get_mut("changed_service_execution")
+            .unwrap()
+            .explanation
+            .push_str(" Corrected consequence.");
+        assert_eq!(
+            model
+                .operation_revisions("service-restart")
+                .unwrap()
+                .implementation,
+            original
+                .operation_revisions("service-restart")
+                .unwrap()
+                .implementation
+        );
+        assert_eq!(
+            model
+                .operation_revisions("service-restart")
+                .unwrap()
+                .authority,
+            original
+                .operation_revisions("service-restart")
+                .unwrap()
+                .authority
+        );
+        assert_ne!(
+            model
+                .operation_revisions("service-restart")
+                .unwrap()
+                .understanding,
+            original
+                .operation_revisions("service-restart")
+                .unwrap()
+                .understanding
+        );
+        assert_ne!(
+            model.operation_sha256("service-restart").unwrap(),
+            original.operation_sha256("service-restart").unwrap()
+        );
     }
 }

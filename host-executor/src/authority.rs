@@ -39,6 +39,11 @@ pub struct OperationScope {
     /// choice is one complete native JSON value, including a complete list.
     pub arguments: BTreeMap<String, Vec<Value>>,
     pub budgets: Budgets,
+    /// Exact grants gain update authority only by explicit owner adoption.
+    #[serde(default)]
+    pub updates: Option<UpdateRule>,
+    #[serde(default)]
+    pub checks: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -49,6 +54,8 @@ pub struct Grant {
     pub expires_at: u64,
     pub verbs: BTreeSet<Verb>,
     pub operations: BTreeMap<String, OperationScope>,
+    #[serde(default)]
+    pub families: Vec<OperationFamily>,
 }
 
 /// A verified, fresh projection from the issuer's existing policy owners.
@@ -84,14 +91,30 @@ pub struct Target {
     pub issuers: BTreeMap<String, IssuerTrust>,
     pub ceiling: BTreeMap<String, OperationScope>,
     pub package: Package,
+    #[serde(default)]
+    pub families: Vec<OperationFamily>,
+    #[serde(default)]
+    pub catalogue: Option<CatalogueStatus>,
 }
 
-/// Consumption belongs to an atomic durable target ledger, keyed by issuer,
-/// grant revision and operation. The witness supplies its small reference ledger.
+/// Consumption of one selected exact-operation or family scope.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Usage {
+pub struct ScopeUsage {
     pub admitted: u64,
     pub active: u64,
+}
+
+/// The durable ledger reserves both scopes atomically. Issuer usage belongs to
+/// the selected grant; target usage is shared across issuers and grants.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Usage {
+    pub issuer: ScopeUsage,
+    pub target: ScopeUsage,
+}
+
+pub(crate) struct SelectedScope<'a> {
+    pub operation: String,
+    pub scope: &'a OperationScope,
 }
 
 pub struct Authorized<'a> {
@@ -111,9 +134,216 @@ impl Authorized<'_> {
     pub fn grant_revision(&self) -> String {
         revision(self.grant)
     }
+
+    pub(crate) fn scopes(
+        &self,
+        id: &str,
+    ) -> Result<(SelectedScope<'_>, SelectedScope<'_>), Refusal> {
+        let op = self
+            .target
+            .package
+            .operations
+            .get(id)
+            .ok_or_else(|| Refusal {
+                code: RefusalCode::Selector,
+                message: "operation is not adopted".into(),
+            })?;
+        let delegated = self
+            .target
+            .scope(id, op, &self.grant.operations, &self.grant.families)
+            .ok_or_else(|| Refusal {
+                code: RefusalCode::Authority,
+                message: "operation membership grants no invocation authority".into(),
+            })?;
+        let ceiling = self
+            .target
+            .scope(id, op, &self.target.ceiling, &self.target.families)
+            .ok_or_else(|| Refusal {
+                code: RefusalCode::Authority,
+                message: "operation exceeds the target local ceiling".into(),
+            })?;
+        Ok((delegated, ceiling))
+    }
 }
 
 impl Target {
+    /// Project represented current authority for read-only assessment. Use the
+    /// same exact/family selection and update trust as execution. Ledger usage
+    /// and fresh admission remain execution-time inputs.
+    pub fn effective_operations(&self, grant: &Grant) -> BTreeMap<String, OperationScope> {
+        if !grant.verbs.contains(&Verb::Invoke) || !self.allowed_verbs.contains(&Verb::Invoke) {
+            return BTreeMap::new();
+        }
+        self.package
+            .operations
+            .iter()
+            .filter_map(|(id, op)| {
+                let delegated = self.scope(id, op, &grant.operations, &grant.families)?;
+                let ceiling = self.scope(id, op, &self.ceiling, &self.families)?;
+                if !self.scope_is_current(id, op, delegated.scope, &grant.families)
+                    || !self.scope_is_current(id, op, ceiling.scope, &self.families)
+                    || !op.required_checks.is_subset(&delegated.scope.checks)
+                    || !op.required_checks.is_subset(&ceiling.scope.checks)
+                {
+                    return None;
+                }
+                let budgets = delegated
+                    .scope
+                    .budgets
+                    .intersect(&ceiling.scope.budgets, &op.execution.resources);
+                if budgets.calls == 0
+                    || budgets.concurrent == 0
+                    || budgets.timeout_seconds == 0
+                    || budgets.output_bytes == 0
+                {
+                    return None;
+                }
+                let resources: BTreeSet<_> = delegated
+                    .scope
+                    .resources
+                    .intersection(&ceiling.scope.resources)
+                    .filter(|r| op.resources.contains(*r))
+                    .cloned()
+                    .collect();
+                if resources.is_empty() {
+                    return None;
+                }
+                let arguments: BTreeMap<_, _> = op
+                    .arguments
+                    .iter()
+                    .map(|(name, arg)| {
+                        let choices = delegated
+                            .scope
+                            .arguments
+                            .get(name)
+                            .into_iter()
+                            .flatten()
+                            .filter(|v| {
+                                arg.accepts(v)
+                                    && ceiling
+                                        .scope
+                                        .arguments
+                                        .get(name)
+                                        .is_some_and(|allowed| allowed.contains(*v))
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        (name.clone(), choices)
+                    })
+                    .collect();
+                if op.arguments.iter().any(|(name, arg)| {
+                    (arg.required || arg.default.is_some()) && arguments[name].is_empty()
+                }) {
+                    return None;
+                }
+                Some((
+                    id.clone(),
+                    OperationScope {
+                        implementation_sha256: op.implementation_sha256(),
+                        resources,
+                        arguments,
+                        budgets,
+                        updates: None,
+                        checks: delegated
+                            .scope
+                            .checks
+                            .intersection(&ceiling.scope.checks)
+                            .cloned()
+                            .collect(),
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    fn scope_is_current(
+        &self,
+        id: &str,
+        op: &Operation,
+        scope: &OperationScope,
+        families: &[OperationFamily],
+    ) -> bool {
+        scope.implementation_sha256 == op.implementation_sha256()
+            || self
+                .catalogue
+                .as_ref()
+                .is_some_and(|s| s.active == revision(&self.package))
+                && (scope.updates.as_ref().is_some_and(|rule| rule.allows(op))
+                    || families
+                        .iter()
+                        .any(|f| std::ptr::eq(&f.scope, scope) && f.contains(id, op)))
+    }
+
+    /// Bind only the selected operation and grant. The full-source identity is
+    /// still disclosed separately; unrelated edits cannot invalidate this call.
+    pub fn request_revisions(
+        &self,
+        issuer: &str,
+        grant_id: &str,
+        action: &Action,
+    ) -> Result<AuthorityRevisions, Refusal> {
+        let mut result = self.revisions(issuer)?;
+        if let Action::Propose { invocation } | Action::Invoke { invocation } = action {
+            let trust = &self.issuers[issuer];
+            let grant = trust.authority.grants.get(grant_id);
+            let op = &invocation.operation_id;
+            result.authority = revision(&(
+                grant.map(|g| {
+                    (
+                        &g.principal,
+                        g.not_before,
+                        g.expires_at,
+                        &g.verbs,
+                        g.operations.get(op),
+                        &g.families,
+                    )
+                }),
+                op,
+            ));
+            result.ceiling = revision(&(
+                &self.allowed_verbs,
+                self.max_authority_age_seconds,
+                self.ceiling.get(op),
+                &self.families,
+                op,
+            ));
+            result.assessment = revision(&(
+                &trust.authority.assessment_revision,
+                self.package
+                    .operation_revisions(op)
+                    .map(|r| r.understanding),
+            ));
+        }
+        Ok(result)
+    }
+
+    fn scope<'a>(
+        &'a self,
+        id: &str,
+        op: &Operation,
+        exact: &'a BTreeMap<String, OperationScope>,
+        families: &'a [OperationFamily],
+    ) -> Option<SelectedScope<'a>> {
+        exact
+            .get(id)
+            .map(|scope| SelectedScope {
+                operation: id.into(),
+                scope,
+            })
+            .or_else(|| {
+                self.catalogue
+                    .as_ref()
+                    .filter(|s| s.active == revision(&self.package))?;
+                families
+                    .iter()
+                    .find(|f| f.contains(id, op))
+                    .map(|f| SelectedScope {
+                        operation: format!("@family:{}", f.prefix),
+                        scope: &f.scope,
+                    })
+            })
+    }
+
     /// Bind owner revision references together with the actual trusted inputs.
     /// Labels alone must not conceal a changed key set, grant or local ceiling.
     pub fn revisions(&self, issuer_id: &str) -> Result<AuthorityRevisions, Refusal> {
@@ -129,6 +359,7 @@ impl Target {
                 &self.allowed_verbs,
                 self.max_authority_age_seconds,
                 &self.ceiling,
+                &self.families,
             )),
             assessment: trust.authority.assessment_revision.clone(),
         })
@@ -267,7 +498,19 @@ impl Target {
             RefusalCode::Authority,
             "grant or target ceiling does not permit this protocol operation",
         )?;
-        let revisions = self.revisions(&req.issuer_id)?;
+        let revisions = self.request_revisions(&req.issuer_id, &req.grant_id, &req.action)?;
+        if let Action::Propose { invocation } | Action::Invoke { invocation } = &req.action {
+            require(
+                selector(&invocation.operation_id)
+                    && selector(&invocation.resource_id)
+                    && self
+                        .package
+                        .operations
+                        .contains_key(&invocation.operation_id),
+                RefusalCode::Selector,
+                "operation/resource must be literal adopted selectors",
+            )?;
+        }
         if req.action.verb() != Verb::Discover {
             require(
                 req.expected.as_ref() == Some(&revisions),
@@ -334,12 +577,42 @@ impl Target {
                         .package
                         .operation_revisions(id)
                         .expect("adopted operation"),
+                    operation_sha256: self
+                        .package
+                        .operation_sha256(id)
+                        .expect("adopted operation"),
+                    authority_sha256: op.authority_sha256(),
+                    assessment_sha256: self.package.operation_revisions(id).unwrap().understanding,
+                    revisions: self
+                        .request_revisions(
+                            &authorized.request.issuer_id,
+                            &authorized.request.grant_id,
+                            &Action::Propose {
+                                invocation: Invocation {
+                                    operation_id: id.clone(),
+                                    resource_id: String::new(),
+                                    operation_sha256: String::new(),
+                                    implementation_sha256: String::new(),
+                                    arguments: BTreeMap::new(),
+                                    expected_assessment_sha256: None,
+                                },
+                            },
+                        )
+                        .expect("authenticated issuer"),
                     definition: op.clone(),
                     has_invocation_scope: authorized.grant.verbs.contains(&Verb::Invoke)
-                        && authorized.grant.operations.contains_key(id)
-                        && self.ceiling.contains_key(id),
+                        && self
+                            .scope(
+                                id,
+                                op,
+                                &authorized.grant.operations,
+                                &authorized.grant.families,
+                            )
+                            .is_some()
+                        && self.scope(id, op, &self.ceiling, &self.families).is_some(),
                 })
                 .collect(),
+            catalogue: self.catalogue.clone(),
         })
     }
 
@@ -374,33 +647,34 @@ impl Target {
                 message: "operation is not adopted".into(),
             })?;
         require(
-            invocation.package_sha256 == revision(&self.package)
+            invocation.operation_sha256
+                == self.package.operation_sha256(&invocation.operation_id)?
                 && invocation.implementation_sha256 == op.implementation_sha256(),
             RefusalCode::Stale,
-            "adopted package or implementation changed",
+            "adopted operation or implementation changed",
         )?;
-        let delegated = authorized
-            .grant
-            .operations
-            .get(&invocation.operation_id)
-            .ok_or_else(|| Refusal {
-                code: RefusalCode::Authority,
-                message: "operation membership grants no invocation authority".into(),
-            })?;
-        let ceiling = self
-            .ceiling
-            .get(&invocation.operation_id)
-            .ok_or_else(|| Refusal {
-                code: RefusalCode::Authority,
-                message: "operation exceeds the target local ceiling".into(),
-            })?;
+        let (delegated, ceiling) = authorized.scopes(&invocation.operation_id)?;
+        let (delegated, ceiling) = (delegated.scope, ceiling.scope);
         let arguments = op.arguments(&invocation.arguments)?;
         op.command(&arguments)?;
-        for scope in [delegated, ceiling] {
+        for (scope, used, families) in [
+            (delegated, usage.issuer, &authorized.grant.families),
+            (ceiling, usage.target, &self.families),
+        ] {
             require(
-                scope.implementation_sha256 == op.implementation_sha256(),
+                used.admitted < scope.budgets.calls && used.active < scope.budgets.concurrent,
+                RefusalCode::Budget,
+                "selected issuer or target admission budget is exhausted",
+            )?;
+            require(
+                self.scope_is_current(&invocation.operation_id, op, scope, families),
                 RefusalCode::Stale,
                 "authority is bound to another implementation",
+            )?;
+            require(
+                op.required_checks.is_subset(&scope.checks),
+                RefusalCode::Authority,
+                "required qualification/check evidence is absent from current authority",
             )?;
             require(
                 op.resources.contains(&invocation.resource_id)
@@ -423,10 +697,7 @@ impl Target {
             .budgets
             .intersect(&ceiling.budgets, &op.execution.resources);
         require(
-            usage.admitted < limits.calls
-                && usage.active < limits.concurrent
-                && limits.timeout_seconds > 0
-                && limits.output_bytes > 0,
+            limits.timeout_seconds > 0 && limits.output_bytes > 0,
             RefusalCode::Budget,
             "effective admission or execution budget is exhausted",
         )?;

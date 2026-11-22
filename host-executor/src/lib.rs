@@ -2,6 +2,7 @@
 //! containment remain with their owners; validation alone never executes code.
 
 mod authority;
+mod catalogue;
 pub mod effects;
 mod ledger;
 #[cfg(target_os = "linux")]
@@ -53,6 +54,7 @@ pub fn valid_agent_id(value: &str) -> bool {
     })
 }
 pub use authority::*;
+pub use catalogue::*;
 pub use ledger::*;
 pub use native::{NativeRuntime, now};
 pub use package::*;
@@ -72,6 +74,7 @@ pub fn schemas() -> Value {
         "package": schemars::schema_for!(Package),
         "request": schemars::schema_for!(SignedRequest),
         "response": schemars::schema_for!(Response),
+        "catalogue_adoption": schemars::schema_for!(CatalogueAdoption),
     })
 }
 

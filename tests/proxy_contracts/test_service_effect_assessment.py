@@ -33,6 +33,62 @@ EXECUTION = "/projects/demo/jobs/alpha/run"
 MODEL = REPO / "proxy/tests/fixtures/service-authoring/job.generated.yaml"
 
 
+def test_host_assessment_cli_reports_full_proposal_current_ceiling_and_unavailable_authority(tmp_path):
+    binary = native_inputs()[0] / "safeyolo"
+    package = json.loads((REPO / "host-executor/examples/windows-starter.json").read_text())
+    generated = subprocess.run(
+        [str(binary), "services", "generate", str(REPO / "host-executor/examples/windows-starter.json")],
+        check=True, capture_output=True, text=True, timeout=30,
+    )
+    projections = json.loads(generated.stdout)
+    scopes = {}
+    for name in ("service-status", "service-restart", "write-service-config"):
+        operation = package["operations"][name]
+        scopes[name] = {
+            "implementation_sha256": projections["gateway"][name]["host_execution_source"]["implementation_sha256"],
+            "resources": operation["resources"],
+            "arguments": {argument: contract["options"] or [contract["default"] or "fixture content"]
+                          for argument, contract in operation["arguments"].items()},
+            "budgets": {"calls": 10, "concurrent": 1, "timeout_seconds": 30, "output_bytes": 65536},
+        }
+    now = int(time.time())
+    grant = {
+        "principal": {"run": {"agent": "alice", "agent_id": "ag-" + "a" * 32, "run_id": "1" * 32},
+                      "task_id": "investigation"},
+        "not_before": now - 10, "expires_at": now + 120,
+        "verbs": ["discover", "propose", "invoke"], "operations": scopes,
+    }
+    target = {
+        "target_id": "windows-a", "ceiling_revision": "1", "allowed_verbs": grant["verbs"],
+        "max_authority_age_seconds": 120, "ceiling": {name: value for name, value in scopes.items()
+                                                       if name != "write-service-config"},
+        "package": package, "issuers": {"issuer": {"revision": "1", "public_keys": {"key": "A" * 43 + "="},
+            "authority": {"revision": "1", "assessment_revision": "1", "observed_at": now,
+                          "valid_until": now + 120, "grants": {"current": grant}}}},
+    }
+    configuration = tmp_path / "target.json"
+    configuration.write_text(json.dumps({"target": target}))
+    proposed = tmp_path / "proposed.json"
+    proposed.write_text(json.dumps(grant))
+    command = [str(binary), "services", "assess-host", str(configuration), "issuer", "current"]
+    result = subprocess.run([*command, "--proposed-grant", str(proposed)],
+                            check=True, capture_output=True, text=True, timeout=30)
+    assessment = json.loads(result.stdout)
+    assert assessment["target_id"] == "windows-a"
+    assert assessment["principal"] == grant["principal"]
+    assert assessment["full_proposed_authority"]["model"]["rules"]["changed_service_execution"]["status"] == "match"
+    assert assessment["effective_authority"]["model"]["rules"]["changed_service_execution"]["status"] == "non_match"
+    assert assessment["effective_authority"]["alternatives"]["service-status-before-control"]["steps"][0]["available_from"]
+    assert configuration.read_text() == json.dumps({"target": target})
+    missing = subprocess.run([*command[:-1], "missing"], capture_output=True, text=True, timeout=30)
+    assert missing.returncode != 0 and "unavailable" in missing.stderr
+    target["issuers"]["issuer"]["authority"]["valid_until"] = now - 1
+    target["issuers"]["issuer"]["authority"]["observed_at"] = now - 10
+    configuration.write_text(json.dumps({"target": target}))
+    stale = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    assert stale.returncode != 0 and "stale or unavailable" in stale.stderr
+
+
 def test_host_package_guidance_is_shared_by_challenge_private_and_operator_review(tmp_path):
     binary = native_inputs()[0] / "safeyolo"
     generated = subprocess.run(

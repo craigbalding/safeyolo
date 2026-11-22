@@ -305,6 +305,41 @@ pub struct Registry {
     order: Vec<String>,
 }
 impl Registry {
+    pub(crate) fn replace_host_catalogues(
+        &self,
+        catalogues: &[(String, Vec<Value>)],
+    ) -> Result<Self, Error> {
+        let mut next = self.clone();
+        let owned: Vec<_> = next
+            .source_by_service
+            .iter()
+            .filter(|(_, source)| source.starts_with("host-catalogue:"))
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in owned {
+            next.services.remove(&name);
+            next.source_by_service.remove(&name);
+            next.order.retain(|n| *n != name);
+        }
+        for (catalogue, definitions) in catalogues {
+            for definition in definitions {
+                let service = ServiceDefinition::from_value(definition.clone())?;
+                if next.services.contains_key(&service.name) {
+                    return Err(format!(
+                        "host catalogue would replace independently owned service {}",
+                        service.name
+                    )
+                    .into());
+                }
+                next.order.push(service.name.clone());
+                next.source_by_service
+                    .insert(service.name.clone(), format!("host-catalogue:{catalogue}"));
+                next.services.insert(service.name.clone(), service);
+            }
+        }
+        Ok(next)
+    }
+
     /// Construct one strict catalog candidate. Only top-level `*.yaml`
     /// entries participate; user definitions replace builtin definitions.
     pub fn from_directories(builtin: &Path, user: &Path) -> Result<Self, Error> {

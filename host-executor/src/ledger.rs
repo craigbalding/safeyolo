@@ -160,27 +160,45 @@ fn usage(
     transaction: &Transaction<'_>,
     auth: &Authorized<'_>,
     operation: &str,
+    excluded_job: Option<&str>,
 ) -> Result<Usage, Refusal> {
     let request = auth.request();
-    let admitted = transaction
+    let (issuer, target) = auth.scopes(operation)?;
+    let issuer: (i64, i64) = transaction
         .query_row(
-            "SELECT count(*) FROM jobs WHERE issuer=?1 AND grant_id=?2 AND grant_revision=?3 AND operation=?4",
-            params![request.issuer_id, request.grant_id, auth.grant_revision(), operation],
-            |row| row.get::<_, i64>(0),
+            "SELECT coalesce(sum(grant_revision=?3),0),coalesce(sum(active=x'01'),0)
+             FROM jobs WHERE issuer=?1 AND grant_id=?2 AND issuer_operation=?4
+             AND (?5 IS NULL OR job_id<>?5)",
+            params![
+                request.issuer_id,
+                request.grant_id,
+                auth.grant_revision(),
+                issuer.operation,
+                excluded_job
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(unavailable)?;
     // Uncertain jobs retain a live reservation. A terminal protocol state does
-    // not establish that an orphaned native process stopped.
-    let active = transaction
+    // not establish that an orphaned native process stopped. The target ceiling
+    // applies across issuers/grants; neither revision can release active usage.
+    let target: (i64, i64) = transaction
         .query_row(
-            "SELECT count(*) FROM jobs WHERE issuer=?1 AND grant_id=?2 AND operation=?3 AND active=x'01'",
-            params![request.issuer_id, request.grant_id, operation],
-            |row| row.get::<_, i64>(0),
+            "SELECT coalesce(sum(target_revision=?1),0),coalesce(sum(active=x'01'),0)
+             FROM jobs WHERE target_operation=?2 AND (?3 IS NULL OR job_id<>?3)",
+            params![revision(target.scope), target.operation, excluded_job],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(unavailable)?;
     Ok(Usage {
-        admitted: admitted.try_into().map_err(unavailable)?,
-        active: active.try_into().map_err(unavailable)?,
+        issuer: ScopeUsage {
+            admitted: issuer.0.try_into().map_err(unavailable)?,
+            active: issuer.1.try_into().map_err(unavailable)?,
+        },
+        target: ScopeUsage {
+            admitted: target.0.try_into().map_err(unavailable)?,
+            active: target.1.try_into().map_err(unavailable)?,
+        },
     })
 }
 
@@ -237,7 +255,7 @@ impl Ledger {
             .query_row("PRAGMA page_count", [], |row| row.get(0))
             .map_err(unavailable)?;
         require(
-            schema == 1 || pages == 0,
+            schema == 2 || pages == 0,
             RefusalCode::Unavailable,
             "retained ledger format differs from this executor; retained database was not changed",
         )?;
@@ -268,14 +286,15 @@ impl Ledger {
              CREATE TABLE IF NOT EXISTS target (singleton INTEGER PRIMARY KEY CHECK(singleton=1), id TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS jobs (
                job_id TEXT PRIMARY KEY, issuer TEXT NOT NULL, grant_id TEXT NOT NULL,
-               grant_revision TEXT NOT NULL, operation TEXT NOT NULL, request BLOB NOT NULL,
+               grant_revision TEXT NOT NULL, issuer_operation TEXT NOT NULL,
+               target_revision TEXT NOT NULL, target_operation TEXT NOT NULL, request BLOB NOT NULL,
                receipt BLOB NOT NULL, output BLOB NOT NULL, reserved_output INTEGER NOT NULL CHECK(reserved_output>0),
                active BLOB NOT NULL CHECK(active IN (x'00',x'01')),
                cancellation_key BLOB NOT NULL, cancellation_digest BLOB NOT NULL, cancellation_response BLOB NOT NULL);
              CREATE TABLE IF NOT EXISTS mutations (
                issuer TEXT NOT NULL, request_id TEXT NOT NULL, digest TEXT NOT NULL,
                response TEXT NOT NULL, PRIMARY KEY(issuer,request_id));
-             PRAGMA user_version=1;
+             PRAGMA user_version=2;
              COMMIT;",
             )
             .map_err(unavailable)?;
@@ -419,18 +438,22 @@ impl Ledger {
         let mut reserved_cancellation = None;
         let response = match &req.action {
             Action::Discover => Response::Discovery {
-                discovery: target.discover(&auth)?,
+                discovery: Box::new(target.discover(&auth)?),
             },
             Action::Propose { invocation } => {
-                let prepared =
-                    target.prepare(&auth, usage(&transaction, &auth, &invocation.operation_id)?)?;
+                let prepared = target.prepare(
+                    &auth,
+                    usage(&transaction, &auth, &invocation.operation_id, None)?,
+                )?;
                 if let Some(runtime) = runtime {
                     runtime.validate_command(
                         &target.package.operations[&invocation.operation_id]
                             .command(&prepared.invocation.arguments)?,
                     )?;
                 }
-                Response::Proposal { prepared }
+                Response::Proposal {
+                    prepared: Box::new(prepared),
+                }
             }
             Action::Invoke { invocation } => {
                 let (jobs, output): (i64, i64) = transaction
@@ -442,7 +465,7 @@ impl Ledger {
                     .map_err(unavailable)?;
                 let receipt = target.admit(
                     &auth,
-                    usage(&transaction, &auth, &invocation.operation_id)?,
+                    usage(&transaction, &auth, &invocation.operation_id, None)?,
                     now,
                 )?;
                 if let Some(runtime) = runtime {
@@ -466,15 +489,18 @@ impl Ledger {
                     )?
                     .len()
                     + RECEIPT_GROWTH_BYTES;
+                let (issuer, ceiling) = auth.scopes(&invocation.operation_id)?;
                 transaction
                     .execute(
-                        "INSERT INTO jobs VALUES(?1,?2,?3,?4,?5,?6,zeroblob(?7),zeroblob(?8),?8,x'01',zeroblob(64),zeroblob(64),zeroblob(?9))",
+                        "INSERT INTO jobs VALUES(?1,?2,?3,?4,?5,?6,?7,?8,zeroblob(?9),zeroblob(?10),?10,x'01',zeroblob(64),zeroblob(64),zeroblob(?11))",
                         params![
                             receipt.job_id,
                             req.issuer_id,
                             req.grant_id,
                             auth.grant_revision(),
-                            invocation.operation_id,
+                            issuer.operation,
+                            revision(ceiling.scope),
+                            ceiling.operation,
                             bytes,
                             capacity as i64,
                             receipt.prepared.limits.output_bytes as i64,
@@ -600,13 +626,12 @@ impl Ledger {
             )
             .map_err(unavailable)?;
         let auth = target.authenticate("POST", Verb::Invoke.path(), &bytes, now)?;
-        let mut used = usage(
+        let used = usage(
             &transaction,
             &auth,
             &retained.prepared.invocation.operation_id,
+            Some(job_id),
         )?;
-        used.admitted = used.admitted.saturating_sub(1);
-        used.active = used.active.saturating_sub(1);
         let prepared = target.prepare(&auth, used)?;
         require(
             revision(&prepared) == revision(&retained.prepared),

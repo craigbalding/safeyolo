@@ -45,6 +45,8 @@ fn scope(package: &Package, id: &str) -> OperationScope {
             timeout_seconds: 30,
             output_bytes: 65536,
         },
+        updates: None,
+        checks: Default::default(),
     }
 }
 
@@ -588,6 +590,7 @@ fn target() -> Target {
         .map(|id| (id.into(), scope(&package, id)))
         .collect();
     let grant = Grant {
+        families: Vec::new(),
         principal: principal(),
         not_before: 90,
         expires_at: 130,
@@ -595,6 +598,8 @@ fn target() -> Target {
         operations: operations.clone(),
     };
     Target {
+        families: Vec::new(),
+        catalogue: None,
         target_id: "windows-a".into(),
         ceiling_revision: "1".into(),
         allowed_verbs: grant.verbs.clone(),
@@ -634,7 +639,11 @@ fn native_discovery_and_proposal_bind_understanding_even_without_executable_chan
         grant_id: "current".into(),
         principal: principal(),
         expires_at: 120,
-        expected: Some(target.revisions("issuer").unwrap()),
+        expected: Some(
+            target
+                .request_revisions("issuer", "current", &action)
+                .unwrap(),
+        ),
         action,
         untrusted_rationale: "Untrusted rationale cannot change the assessment.".into(),
     };
@@ -658,7 +667,7 @@ fn native_discovery_and_proposal_bind_understanding_even_without_executable_chan
     let mut invocation = Invocation {
         operation_id: "service-restart".into(),
         resource_id: "service:demo".into(),
-        package_sha256: revision(&target.package),
+        operation_sha256: target.package.operation_sha256("service-restart").unwrap(),
         implementation_sha256: target.package.operations["service-restart"].implementation_sha256(),
         arguments: BTreeMap::new(),
         expected_assessment_sha256: None,
@@ -709,7 +718,7 @@ fn native_discovery_and_proposal_bind_understanding_even_without_executable_chan
             .code,
         RefusalCode::Stale
     );
-    invocation.package_sha256 = revision(&target.package);
+    invocation.operation_sha256 = target.package.operation_sha256("service-restart").unwrap();
     let bytes = signed(request(&target, Action::Propose { invocation }));
     let authenticated = target
         .authenticate("POST", Verb::Propose.path(), &bytes, 100)
@@ -829,6 +838,110 @@ fn target_owned_full_grants_and_ceiling_are_assessed_without_changing_admission_
             })
             .effect,
         Effect::Deny
+    );
+}
+
+#[test]
+fn family_assessment_includes_the_future_ceiling_and_preserves_current_target_checks() {
+    let mut target = target();
+    target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("current")
+        .unwrap()
+        .operations
+        .remove("write-service-config");
+    let mut proposed = target.issuers["issuer"].authority.grants["current"].clone();
+    let mut writer = target.package.operations["write-service-config"].clone();
+    writer.enforcement.unresolved.clear();
+    target
+        .package
+        .operations
+        .insert("future:write".into(), writer.clone());
+    proposed.families.push(OperationFamily {
+        prefix: "future:".into(),
+        excluded: Default::default(),
+        rule: UpdateRule {
+            ceiling: writer,
+            allow_narrower: true,
+            allow_implementation_updates: true,
+        },
+        scope: scope(&target.package, "future:write"),
+    });
+    let assessment =
+        semantics::assess_target(&target, "issuer", &principal(), Some(&proposed), &[], 100)
+            .unwrap();
+    assert_eq!(assessment["future_family_ceilings"][0]["prefix"], "future:");
+    assert_eq!(
+        assessment["full_proposed_authority"]["model"]["rules"]["changed_service_execution"]["status"],
+        "match"
+    );
+    assert_eq!(
+        assessment["effective_authority"]["model"]["rules"]["changed_service_execution"]["status"],
+        "non_match"
+    );
+    // No currently published family member is needed to expose that ceiling.
+    target.package.operations.remove("future:write");
+    let assessment =
+        semantics::assess_target(&target, "issuer", &principal(), Some(&proposed), &[], 100)
+            .unwrap();
+    assert_eq!(
+        assessment["full_proposed_authority"]["model"]["rules"]["changed_service_execution"]["status"],
+        "match"
+    );
+    // A model cannot supply absent native qualification evidence.
+    target
+        .package
+        .operations
+        .get_mut("service-restart")
+        .unwrap()
+        .required_checks
+        .insert("qualified".into());
+    let pinned = scope(&target.package, "service-restart");
+    target
+        .ceiling
+        .insert("service-restart".into(), pinned.clone());
+    target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("current")
+        .unwrap()
+        .operations
+        .insert("service-restart".into(), pinned);
+    assert!(
+        !target
+            .effective_operations(&target.issuers["issuer"].authority.grants["current"])
+            .contains_key("service-restart")
+    );
+    target
+        .ceiling
+        .get_mut("service-restart")
+        .unwrap()
+        .checks
+        .insert("qualified".into());
+    target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("current")
+        .unwrap()
+        .operations
+        .get_mut("service-restart")
+        .unwrap()
+        .checks
+        .insert("qualified".into());
+    assert!(
+        target
+            .effective_operations(&target.issuers["issuer"].authority.grants["current"])
+            .contains_key("service-restart")
     );
 }
 

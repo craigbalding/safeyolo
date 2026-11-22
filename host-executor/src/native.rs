@@ -37,6 +37,16 @@ impl NativeRuntime {
         }
     }
     pub fn validate(&self, target: &Target, protected: &[PathBuf]) -> Result<(), Refusal> {
+        #[cfg(not(target_os = "linux"))]
+        require(
+            target
+                .package
+                .operations
+                .values()
+                .all(|op| op.execution.dependencies.is_empty()),
+            RefusalCode::Unavailable,
+            "content-pinned dependency snapshots are currently supported only by the Linux backend; mutable macOS/Windows dependencies remain explicitly unsupported",
+        )?;
         match self {
             #[cfg(target_os = "linux")]
             Self::Linux(runtime) => runtime.validate(target, protected),

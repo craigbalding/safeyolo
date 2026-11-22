@@ -456,6 +456,45 @@ fn alternatives(
     Ok(Value::Object(result))
 }
 
+// A future class is represented by its adopted operation ceiling, never by
+// today's catalogue members alone. Synthetic IDs exist only in this read-only
+// assessment; they are not generated gateway routes or target operations.
+fn family_ceilings(
+    package: &mut Package,
+    grant: &Grant,
+    grant_id: &str,
+    target_id: &str,
+    proposed: bool,
+    authority: &mut Vec<Authority>,
+) -> Vec<Value> {
+    if !grant.verbs.contains(&Verb::Invoke) {
+        return Vec::new();
+    }
+    grant.families.iter().enumerate().map(|(index, family)| {
+        let operation_id = format!("assessment:{}", revision(&(grant_id, index, family)));
+        let op = &family.rule.ceiling;
+        let mut scope = family.scope.clone();
+        scope.implementation_sha256 = op.implementation_sha256();
+        scope.resources.retain(|r| op.resources.contains(r));
+        scope.arguments.retain(|name, values| {
+            let Some(arg) = op.arguments.get(name) else { return false };
+            values.retain(|value| arg.accepts(value));
+            true
+        });
+        let executable_choice = !scope.resources.is_empty() && op.arguments.iter().all(|(name, arg)| {
+            !(arg.required || arg.default.is_some()) || scope.arguments.get(name).is_some_and(|values| !values.is_empty())
+        });
+        if executable_choice {
+            package.operations.insert(operation_id.clone(), op.clone());
+            authority.push(Authority {
+                id: format!("{grant_id}:family:{index}"), target_id: target_id.into(),
+                operations: BTreeMap::from([(operation_id.clone(), scope)]), proposed,
+            });
+        }
+        json!({"grant_id":grant_id,"proposed":proposed,"prefix":family.prefix,"excluded":family.excluded,"ceiling":family.rule.ceiling,"scope":family.scope,"assessment_operation":executable_choice.then_some(operation_id),"limitation":"This is the represented potential of the entire adopted class, not proof that any future member is available or that arbitrary executable behavior is known."})
+    }).collect()
+}
+
 /// Project current target-owned grants and the local ceiling for one issuer
 /// principal. This is assessment only; the existing target admission and issuer
 /// risk policy remain authoritative. A proposal is assessed in full, separately
@@ -480,75 +519,6 @@ pub fn assess_target(
     {
         return Err("current target authority snapshot is stale or unavailable".into());
     }
-    let effective = |grant: &Grant| -> BTreeMap<String, OperationScope> {
-        if !grant.verbs.contains(&Verb::Invoke) || !target.allowed_verbs.contains(&Verb::Invoke) {
-            return BTreeMap::new();
-        }
-        grant
-            .operations
-            .iter()
-            .filter_map(|(id, scope)| {
-                let op = target.package.operations.get(id)?;
-                let ceiling = target.ceiling.get(id)?;
-                if scope.implementation_sha256 != op.implementation_sha256()
-                    || ceiling.implementation_sha256 != op.implementation_sha256()
-                    || scope.budgets.calls == 0
-                    || ceiling.budgets.calls == 0
-                    || scope.budgets.concurrent == 0
-                    || ceiling.budgets.concurrent == 0
-                    || scope.budgets.timeout_seconds == 0
-                    || ceiling.budgets.timeout_seconds == 0
-                    || scope.budgets.output_bytes == 0
-                    || ceiling.budgets.output_bytes == 0
-                {
-                    return None;
-                }
-                let resources = scope
-                    .resources
-                    .intersection(&ceiling.resources)
-                    .filter(|r| op.resources.contains(*r))
-                    .cloned()
-                    .collect::<BTreeSet<_>>();
-                if resources.is_empty() {
-                    return None;
-                }
-                let arguments: BTreeMap<_, _> = op
-                    .arguments
-                    .iter()
-                    .map(|(name, _)| {
-                        let choices = scope
-                            .arguments
-                            .get(name)
-                            .into_iter()
-                            .flatten()
-                            .filter(|v| {
-                                ceiling
-                                    .arguments
-                                    .get(name)
-                                    .is_some_and(|allowed| allowed.contains(*v))
-                            })
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        (name.clone(), choices)
-                    })
-                    .collect();
-                if op.arguments.iter().any(|(name, arg)| {
-                    (arg.required || arg.default.is_some()) && arguments[name].is_empty()
-                }) {
-                    return None;
-                }
-                Some((
-                    id.clone(),
-                    OperationScope {
-                        implementation_sha256: op.implementation_sha256(),
-                        resources,
-                        arguments,
-                        budgets: scope.budgets.clone(),
-                    },
-                ))
-            })
-            .collect()
-    };
     let mut current: Vec<_> = snapshot
         .grants
         .iter()
@@ -558,35 +528,70 @@ pub fn assess_target(
         .map(|(id, grant)| Authority {
             id: format!("{issuer}:{id}"),
             target_id: target.target_id.clone(),
-            operations: effective(grant),
+            operations: target.effective_operations(grant),
             proposed: false,
         })
         .collect();
+    let mut potential_package = target.package.clone();
+    let mut potential = current.clone();
+    let mut future_family_ceilings = Vec::new();
+    for (id, grant) in &snapshot.grants {
+        if grant.principal == *principal && grant.not_before <= now && now < grant.expires_at {
+            future_family_ceilings.extend(family_ceilings(
+                &mut potential_package,
+                grant,
+                &format!("{issuer}:{id}"),
+                &target.target_id,
+                false,
+                &mut potential,
+            ));
+        }
+    }
     let requested = if let Some(grant) = proposed {
         if grant.principal != *principal {
             return Err("proposed grant selects another principal".into());
         }
-        let mut requested = current.clone();
-        requested.push(Authority {
+        potential.push(Authority {
             id: "proposed".into(),
             target_id: target.target_id.clone(),
-            operations: grant.operations.clone(),
+            operations: if grant.verbs.contains(&Verb::Invoke) {
+                grant.operations.clone()
+            } else {
+                BTreeMap::new()
+            },
             proposed: true,
         });
+        future_family_ceilings.extend(family_ceilings(
+            &mut potential_package,
+            grant,
+            "proposed",
+            &target.target_id,
+            true,
+            &mut potential,
+        ));
         current.push(Authority {
             id: "proposed".into(),
             target_id: target.target_id.clone(),
-            operations: effective(grant),
+            operations: if grant.not_before <= now && now < grant.expires_at {
+                target.effective_operations(grant)
+            } else {
+                BTreeMap::new()
+            },
             proposed: true,
         });
-        Some(assess(&target.package, &requested, history)?)
+        Some(assess(&potential_package, &potential, history)?)
     } else {
         None
     };
     let effective = assess(&target.package, &current, history)?;
+    let standing_potential = if proposed.is_none() && !future_family_ceilings.is_empty() {
+        Some(assess(&potential_package, &potential, history)?)
+    } else {
+        None
+    };
     let current_lifetimes:Vec<_>=snapshot.grants.iter().filter(|(_,grant)|grant.principal==*principal && grant.not_before<=now && now<grant.expires_at).map(|(id,grant)|json!({"grant_id":id,"not_before":grant.not_before,"expires_at":grant.expires_at,"verbs":grant.verbs})).collect();
     Ok(
-        json!({"target_id":target.target_id,"issuer_id":issuer,"principal":principal,"current_revisions":target.revisions(issuer)?,"authority_valid_until":snapshot.valid_until,"current_grants":current_lifetimes,"proposed_grant":proposed,"full_proposed_authority":requested,"effective_authority":effective,"input_revision":revision(&(target.revisions(issuer)?,revision(&target.package),&current,proposed,history)),"limitations":["Other issuer identities are not assumed to be this principal. No future operation membership is inferred from an exact-operation grant; the adoption owner must supply the entire approved class ceiling when assessing a future class."]}),
+        json!({"target_id":target.target_id,"issuer_id":issuer,"principal":principal,"current_revisions":target.revisions(issuer)?,"authority_valid_until":snapshot.valid_until,"current_grants":current_lifetimes,"proposed_grant":proposed,"full_proposed_authority":requested,"standing_potential_authority":standing_potential,"future_family_ceilings":future_family_ceilings,"effective_authority":effective,"input_revision":revision(&(target.revisions(issuer)?,revision(&target.package),&current,proposed,history)),"limitations":["Other issuer identities are not assumed to be this principal. Exact-operation grants acquire no future membership. Family ceilings show represented potential; uncharacterised future behavior remains unknown.","Budget ceilings are assessed without current ledger usage. Invocation still checks remaining budgets, required evidence and fresh adopted revisions."]}),
     )
 }
 

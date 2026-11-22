@@ -32,6 +32,8 @@ pub struct Operation {
     pub effects: BTreeMap<String, NamedEffect>,
     /// Explicit adopted trust and remaining platform enforcement dependencies.
     pub enforcement: Enforcement,
+    #[serde(default)]
+    pub required_checks: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -92,6 +94,10 @@ pub struct Execution {
     pub broader: BTreeSet<BroaderBound>,
     pub executable: String,
     pub executable_sha256: String,
+    /// Content-pinned configuration, libraries and other runtime inputs. An
+    /// empty map makes no claim about ambient host-owned dependencies.
+    #[serde(default)]
+    pub dependencies: BTreeMap<String, Dependency>,
     pub argv: Vec<Word>,
     /// Exact environment. Native executors must not inherit an ambient environment.
     pub environment: BTreeMap<String, Word>,
@@ -101,6 +107,13 @@ pub struct Execution {
     pub network: Network,
     pub resources: ExecutionLimits,
     pub delegated_services: Vec<DelegatedService>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Dependency {
+    pub sha256: String,
+    pub bytes: u64,
 }
 
 #[derive(
@@ -188,7 +201,36 @@ pub struct ExecutionLimits {
 
 impl Operation {
     pub fn implementation_sha256(&self) -> String {
-        revision(self)
+        let operation = crate::catalogue::canonical_operation(self);
+        // Retain the exact definition pin: the same executable recipe cannot
+        // inherit permission after defaults or understood effects change.
+        revision(&operation)
+    }
+
+    pub fn authority_sha256(&self) -> String {
+        let mut operation = crate::catalogue::canonical_operation(self);
+        for field in ["effects", "description", "semantics"] {
+            operation.as_object_mut().unwrap().remove(field);
+        }
+        operation["execution"]["executable_sha256"] = Value::Null;
+        for dependency in operation["execution"]["dependencies"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+        {
+            dependency["sha256"] = Value::Null;
+        }
+        revision(&operation)
+    }
+
+    pub fn assessment_sha256(&self) -> String {
+        let operation = crate::catalogue::canonical_operation(self);
+        revision(&(
+            &operation["effects"],
+            &operation["enforcement"],
+            &self.required_checks,
+            &self.semantics,
+        ))
     }
 
     pub fn arguments(
@@ -294,6 +336,20 @@ impl Operation {
 }
 
 impl Package {
+    pub fn operation_sha256(&self, id: &str) -> Result<String, Refusal> {
+        let op = self.operations.get(id).ok_or_else(|| Refusal {
+            code: RefusalCode::Selector,
+            message: "operation is not adopted".into(),
+        })?;
+        Ok(revision(&(
+            &self.format,
+            &self.name,
+            id,
+            crate::catalogue::canonical_operation(op),
+            &self.semantics,
+        )))
+    }
+
     pub fn validate(&self) -> Result<(), Error> {
         if self.format != VERSION
             || !selector(&self.name)
@@ -323,6 +379,13 @@ impl Package {
                     && op.enforcement.unresolved.is_empty()
             {
                 return Err("execution requires a pinned executable, explicit scope, positive limits and enforcement disclosure".into());
+            }
+            if e.dependencies
+                .values()
+                .any(|d| !digest(&d.sha256) || d.bytes == 0)
+                || op.required_checks.iter().any(|c| !selector(c))
+            {
+                return Err("dependencies need content digests and finite positive byte ceilings; required checks need literal names".into());
             }
             if e.network
                 .destinations

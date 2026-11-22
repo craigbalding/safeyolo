@@ -123,8 +123,10 @@ fn operation(
     Operation {
         description: String::new(),
         semantics: None,
+        required_checks: Default::default(),
         resources: ["fixture".into()].into(), arguments: BTreeMap::new(),
         execution: Execution {
+                dependencies: Default::default(),
             broader: [BroaderBound::Filesystem, BroaderBound::Registry, BroaderBound::NetworkIpc, BroaderBound::DelegatedServices].into(),
             executable_sha256: hash(&program), executable: program.to_str().unwrap().into(),
             argv: argv.into_iter().map(|value| Word::Literal { value }).collect(),
@@ -275,6 +277,7 @@ fn prepare(root: &Path, credential: &str) {
         .unwrap()
         .operations = target.ceiling.clone();
     let configuration = Configuration {
+        catalogue: None,
         target,
         ledger: LedgerLimits {
             jobs: 128,
@@ -373,7 +376,11 @@ impl Fixture {
                 .principal
                 .clone(),
             expires_at: self.target.issuers["issuer"].authority.valid_until,
-            expected: Some(self.target.revisions("issuer").unwrap()),
+            expected: Some(
+                self.target
+                    .request_revisions("issuer", "grant", &action)
+                    .unwrap(),
+            ),
             action,
             untrusted_rationale: "Windows component fixture".into(),
         };
@@ -440,7 +447,7 @@ impl Fixture {
         let invocation = Invocation {
             operation_id: name.into(),
             resource_id: "fixture".into(),
-            package_sha256: revision(&self.target.package),
+            operation_sha256: self.target.package.operation_sha256(name).unwrap(),
             implementation_sha256: operation.implementation_sha256(),
             arguments: BTreeMap::new(),
             expected_assessment_sha256: None,
@@ -726,7 +733,7 @@ fn storage_exhaustion(fixture: &mut Fixture) {
         let invocation = Invocation {
             operation_id: "observe".into(),
             resource_id: "fixture".into(),
-            package_sha256: revision(&fixture.target.package),
+            operation_sha256: fixture.target.package.operation_sha256("observe").unwrap(),
             implementation_sha256: operation.implementation_sha256(),
             arguments: BTreeMap::new(),
             expected_assessment_sha256: None,
