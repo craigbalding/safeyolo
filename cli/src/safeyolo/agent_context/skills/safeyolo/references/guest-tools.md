@@ -115,7 +115,19 @@ See [scheduling recipes](scheduling.md) before submitting work. The scheduler
 log is `/var/log/safeyolo-scheduling.log`.
 
 `/home/agent` and `/workspace` persist across ordinary stop/run cycles. mise
-installs therefore persist. OS-package persistence is platform-dependent:
+installs therefore persist. Keep task-authored code and retained data in the
+assigned workspace folder; for engagements, use the engagement folder for scripts,
+flows, fixtures, downloads, private configuration, analysis, evidence and working
+files. A persistent home directory is not a substitute for keeping engagement work
+together. Tool installations and runtime caches can remain in persistent home.
+
+`/tmp` is ephemeral and may be a RAM-backed filesystem. Do not rely on its contents
+surviving a sandbox restart or recovery. Use a workspace-local `scratch/` directory
+for task working files and direct retained outputs there explicitly. If recovering
+misplaced files, copy and verify them before updating references; avoid moving live
+browser/runtime state or repeating actions with uncertain external effects.
+
+OS-package persistence is platform-dependent:
 
 - Hardware microVMs normally retain package changes in their per-agent overlay.
 - Linux gVisor discards rootfs package changes on stop in both overlay modes.
