@@ -54,11 +54,22 @@ impl Fixture {
         .unwrap();
         std::fs::write(root.path().join("agents/alice/runtime.json"),json!({"name":"alice","agent_id":run.agent_id,"run_id":run.run_id,"state":"running","backend_pid":pid,
             "backend_token":crate::host_lifecycle::process_token(i64::from(pid)).unwrap()}).to_string()).unwrap();
+        let share = root.path().join("agents/bob/config-share");
+        std::fs::create_dir_all(&share).unwrap();
+        let bob_id = format!("ag-{}", "b".repeat(32));
+        std::fs::write(
+            share.join("host-launch-context.json"),
+            json!({"agent_id":bob_id,"generation":run.run_id}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(root.path().join("agents/bob/runtime.json"),json!({"name":"bob","agent_id":bob_id,"run_id":run.run_id,"state":"running","backend_pid":pid,
+            "backend_token":crate::host_lifecycle::process_token(i64::from(pid)).unwrap()}).to_string()).unwrap();
         let key_bytes = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
         let key = Ed25519KeyPair::from_pkcs8(key_bytes.as_ref()).unwrap();
         let data = root.path().join("data");
         let vault = crate::credentials::open(&data).unwrap();
         std::fs::write(data.join("instance_id"), "issuer").unwrap();
+        std::fs::write(data.join("agent_token"), "host-fixture").unwrap();
         vault
             .store(crate::credentials::Credential::new(
                 "host-key",
@@ -175,7 +186,7 @@ impl Fixture {
         );
         std::fs::write(root.path().join("policy.toml"), &source).unwrap();
         let mut config:Config=serde_json::from_value(json!({"native_product":true,"policy_file":root.path().join("policy.toml"),"data_dir":data,
-            "listeners":[{"agent_id":"alice","socket_path":root.path().join("alice.sock")}],"admin_port":0,"readiness_file":root.path().join("ready"),
+            "listeners":[{"agent_id":"alice","socket_path":root.path().join("alice.sock")},{"agent_id":"bob","socket_path":root.path().join("bob.sock")}],"admin_port":0,"readiness_file":root.path().join("ready"),
             "audit_log_path":root.path().join("audit.jsonl"),"flow_store_enabled":false,"circuit_breaker_enabled":false})).unwrap();
         config.native_config_dir = Some(root.path().into());
         let proxy = Proxy::start(config).await.unwrap();
@@ -282,9 +293,7 @@ impl Fixture {
     }
 
     async fn call(&self, input: Input) -> Reply {
-        execute(&self.proxy.runtime, &self.run, "local", input)
-            .await
-            .unwrap()
+        self.api("/gateway/host/local", "POST", json!(input)).await
     }
     fn input(&self, id: &str, action: Action) -> Input {
         Input {
@@ -345,52 +354,39 @@ impl Fixture {
     }
 
     async fn api(&self, path: &str, method: &str, value: Value) -> Reply {
-        use crate::agent_api::*;
-        use http_body_util::Full;
-        let token = self.root.path().join("api-token");
-        std::fs::write(&token, "host-fixture").unwrap();
-        let runtime = self.proxy.runtime.read().unwrap().clone();
-        let mut body = Full::new(bytes::Bytes::from(serde_json::to_vec(&value).unwrap()));
-        let request = crate::agent_api::Request {
-            method,
-            path_and_query: path,
-            authorization: Some(b"Bearer host-fixture"),
-            identity: crate::network_guard::Identity::Current(&self.run),
-            client_ip: None,
-            request_id: "fixture-api-call",
-        };
-        let controls = Controls {
-            gateway: None,
-            memory: None,
-            traces: None,
-            agents: None,
-            audit: Some(&runtime.audit),
-            flows: None,
-            circuits: None,
-            declarations: None,
-            coord: None,
-        };
-        let outcome = respond_with_body_and_audit_id_with_state(
-            request,
-            &token,
-            PolicyState::Ready(runtime.policy.as_ref().unwrap()),
-            &runtime.tasks,
-            0.0,
-            controls,
-            RequestBody {
-                body: &mut body,
-                content_encoding: b"",
-                content_length: None,
-                observation: None,
-            },
-            None,
-            Some(&self.proxy.runtime),
-        )
-        .await
-        .unwrap();
+        self.api_for("alice", path, method, value).await
+    }
+
+    async fn api_for(&self, agent: &str, path: &str, method: &str, value: Value) -> Reply {
+        use http_body_util::{BodyExt, Full};
+        use hyper_util::rt::TokioIo;
+        let stream =
+            tokio::net::UnixStream::connect(self.root.path().join(format!("{agent}.sock")))
+                .await
+                .unwrap();
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .unwrap();
+        let connection = tokio::spawn(connection);
+        let request = hyper::Request::builder()
+            .method(method)
+            .uri(format!("http://_safeyolo.proxy.internal{path}"))
+            .header("host", "_safeyolo.proxy.internal")
+            .header("authorization", "Bearer host-fixture")
+            .header("content-type", "application/json")
+            .body(Full::new(bytes::Bytes::from(if method == "GET" {
+                Vec::new()
+            } else {
+                serde_json::to_vec(&value).unwrap()
+            })))
+            .unwrap();
+        let response = sender.send_request(request).await.unwrap();
+        let status = response.status().as_u16();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        connection.abort();
         Reply {
-            status: outcome.response.status,
-            value: serde_json::from_slice(&outcome.response.body_bytes()).unwrap(),
+            status,
+            value: serde_json::from_slice(&bytes).unwrap(),
         }
     }
 
@@ -476,6 +472,23 @@ async fn adaptive_operations_and_lost_reply_use_real_target_receipts_without_dup
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_scopes_defaults_current_policy_and_cross_agent_objects_are_enforced() {
     let mut f = Fixture::new("").await;
+    assert_eq!(
+        f.api_for(
+            "bob",
+            "/gateway/host/local",
+            "POST",
+            json!({"request_id":"unbound-ingress","expected":null,"action":{"kind":"discover"}})
+        )
+        .await
+        .status,
+        403
+    );
+    assert_eq!(
+        f.api_for("bob", "/gateway/host", "GET", Value::Null)
+            .await
+            .value["host_bindings"],
+        json!([])
+    );
     let mut outsider = f.run.clone();
     outsider.agent = "bob".into();
     outsider.agent_id = format!("ag-{}", "b".repeat(32));

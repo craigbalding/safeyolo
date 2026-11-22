@@ -26,11 +26,12 @@ pub(super) async fn send(
         if canonical != binding.socket {
             return Err("host socket must use its canonical path".into());
         }
+        // SAFETY: geteuid has no pointer arguments and only reads this
+        // process's effective UID; it does not change credentials.
+        let operator_uid = unsafe { libc::geteuid() };
         for path in canonical.ancestors().skip(1) {
             let meta = std::fs::symlink_metadata(path)?;
-            if (meta.uid() != 0
-                && meta.uid() != binding.executor_uid
-                && meta.uid() != unsafe { libc::geteuid() })
+            if (meta.uid() != 0 && meta.uid() != binding.executor_uid && meta.uid() != operator_uid)
                 || meta.mode() & 0o022 != 0 && meta.mode() & 0o1000 == 0
             {
                 return Err("host socket parents permit replacement".into());
