@@ -279,8 +279,11 @@ The canonical subject and existing evidence owner bind the task, action,
 history, policy/challenge/check, model/input revisions and freshness. Changing
 these bindings invalidates prior evidence. Attempts and findings remain in the
 existing private approval record. `max_attempts` bounds model reconsideration
-for the same run/task/action and check configuration, including under a new
-request ID. A narrower action has its own budget and retains prior refusal
+for the same unresolved run/task/action episode and check configuration,
+including under a new request ID. A successful check ends that episode;
+later operations receive a new budget while prior attempts and refusals remain
+in retained history. An older challenge cannot reopen a completed episode.
+A narrower action has its own budget and retains prior refusal
 metadata. Retained history describes the current validated audit tail and
 approval records; unavailable or omitted history is explicit. It does not claim
 complete lifetime history or disclose target output as trusted instructions.
