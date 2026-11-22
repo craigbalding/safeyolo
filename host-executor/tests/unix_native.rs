@@ -68,9 +68,10 @@ impl Fixture {
             std::io::ErrorKind::WouldBlock
         );
         let _tcp = TcpStream::connect(self.network_listener.local_addr().unwrap()).unwrap();
-        self.network_listener.accept().unwrap();
+        let (_, peer) = accept_positive_connection(|| self.network_listener.accept());
+        assert_eq!(peer, _tcp.local_addr().unwrap());
         let _ipc = UnixStream::connect(self.root.join("forbidden.socket")).unwrap();
-        self.ipc_listener.accept().unwrap();
+        accept_positive_connection(|| self.ipc_listener.accept());
         eprintln!(
             "independent host observer: files unchanged, forbidden write absent, TCP/IPC queues empty, both live positive controls received"
         );
@@ -172,6 +173,40 @@ impl Fixture {
         self.server.wait().unwrap();
         self.server = start(&self.root);
     }
+}
+
+fn accept_positive_connection<T>(mut accept: impl FnMut() -> std::io::Result<T>) -> T {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match accept() {
+            Ok(connection) => return connection,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => panic!("host positive connection unavailable: {error}"),
+        }
+    }
+}
+
+#[test]
+fn host_receiver_positive_control_waits_for_readiness() {
+    let receiver = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    receiver.set_nonblocking(true).unwrap();
+    assert_eq!(
+        receiver.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    let address = receiver.local_addr().unwrap();
+    std::thread::scope(|scope| {
+        let sender = scope.spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            TcpStream::connect_timeout(&address, Duration::from_secs(2)).unwrap()
+        });
+        let (_, peer) = accept_positive_connection(|| receiver.accept());
+        assert_eq!(peer, sender.join().unwrap().local_addr().unwrap());
+    });
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
