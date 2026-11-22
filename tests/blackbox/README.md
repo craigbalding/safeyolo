@@ -121,7 +121,13 @@ The fixture records canonical receipts, complete output, native enforcement,
 service-manager state/PIDs and a live TCP receiver. It exercises the read and
 fixed-service categories plus wrong channel, hive, key, view, service and path
 refusals. Inspect actual absent/denied results and retained effects after a
-failure. To resume one unexecuted operation, use `--starter ROOT OPERATION`.
+failure. A service recipe can change state before a later PowerShell method
+fails in `ConstrainedLanguage`; its failure does not prove no effect occurred.
+The native API carries binary output. The fixture retains base64 output when
+UTF-8 decoding fails and continues the other categories. A completed job with
+undecoded output does not establish correct Unicode handling. To resume one
+unexecuted operation, use
+`--starter ROOT OPERATION`.
 Append `--service` only after the same target configuration is running under
 the selected Windows Service account. This fixture does not install that
 service, configure ACLs or renew a credential.
