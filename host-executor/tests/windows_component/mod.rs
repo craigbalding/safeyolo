@@ -691,15 +691,21 @@ fn starter_result(fixture: &mut Fixture, name: &str) -> bool {
     assert!(eof, "starter output is incomplete");
     let bytes = STANDARD.decode(data_base64).unwrap();
     assert_eq!(bytes.len() as u64, result.output_bytes);
-    let text = String::from_utf8(bytes).unwrap();
-    let observation = serde_json::from_str::<serde_json::Value>(&text).ok();
+    // Keep the original bytes even when a native Windows command emits its
+    // console code page instead of UTF-8. That is a failed structured starter
+    // observation, but must not discard its receipt or stop unrelated cases.
+    let text = String::from_utf8(bytes.clone()).ok();
+    let observation = text
+        .as_deref()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
     println!(
         "{}",
-        serde_json::json!({"case":name,"receipt":result,"output":text,"observation":observation})
+        serde_json::json!({"case":name,"receipt":result,"output":text,
+            "output_base64":STANDARD.encode(&bytes),"observation":observation})
     );
     assert!(result.native.as_ref().unwrap().processes_stopped);
     assert!(!result.native.as_ref().unwrap().output_truncated);
-    result.state == JobState::Completed
+    result.state == JobState::Completed && text.is_some()
 }
 
 fn starters(root: PathBuf, service: bool, selected: Option<&str>) {
