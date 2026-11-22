@@ -1125,7 +1125,7 @@ impl Witness {
         }
         let response = match &req.action {
             Action::Discover => Response::Discovery {
-                discovery: self.target.discover(&auth)?,
+                discovery: Box::new(self.target.discover(&auth)?),
             },
             Action::Propose { .. } => Response::Proposal {
                 prepared: self.target.prepare(&auth, Usage::default())?,

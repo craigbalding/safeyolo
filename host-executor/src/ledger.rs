@@ -420,7 +420,7 @@ impl Ledger {
         let mut reserved_cancellation = None;
         let response = match &req.action {
             Action::Discover => Response::Discovery {
-                discovery: target.discover(&auth)?,
+                discovery: Box::new(target.discover(&auth)?),
             },
             Action::Propose { invocation } => {
                 let prepared =
