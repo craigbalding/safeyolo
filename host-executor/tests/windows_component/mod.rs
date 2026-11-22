@@ -565,6 +565,11 @@ fn prepare_starters(root: &Path, credential: &str) {
         );
         println!("{}", String::from_utf8_lossy(&output.stdout));
     }
+    fs::write(
+        case.join("config.json"),
+        b"{\"mode\":\"owned-native-fixture\"}\n",
+    )
+    .unwrap();
     let mut package: Package = serde_json::from_slice(&fs::read(&package_path).unwrap()).unwrap();
     // Select a real receiver inside this owned, network-disabled Sandbox. The
     // packaged typed recipe is unchanged; these are its explicit target inputs.

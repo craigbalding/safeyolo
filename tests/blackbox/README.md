@@ -104,12 +104,16 @@ and synthetic evidence; it must have no access to `control`. Supply the owned
 unused local TCP port 19477. Keep the existing fixture and service owners.
 Set `SAFEYOLO_HOST_EXECUTOR_BIN` to the separately installed executor.
 Replace `C:\Owned\qualification` and `host-workload` below with that root and
-the existing credential name. These commands create synthetic evidence, a
+the existing credential name. Replace `HOST\workload` with the selected ordinary
+workload account. These commands create synthetic evidence, a
 target configuration and finite test authority signed by a public fixture key;
 use them only in the disposable test environment.
+The ACL command grants read/execute access only to the new synthetic evidence.
+It follows preparation because the native `demo` command creates private files.
 
 ```powershell
 .\windows_native.exe --starter-prepare C:\Owned\qualification host-workload
+icacls "C:\Owned\qualification\case with spaces ünicode" /grant "HOST\workload:(RX)" /T
 .\windows_native.exe --starters C:\Owned\qualification
 ```
 
