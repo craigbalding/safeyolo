@@ -159,6 +159,7 @@ HOST_EXECUTION_AUTHORITY = {
         "installed_user_service_profiles_and_channel_refusals",
         "installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch",
         "installed_api_authentication_and_cross_principal_reads_cannot_change_authority",
+        "installed_adaptive_investigation_and_retained_configuration_effects",
     ),
 }
 

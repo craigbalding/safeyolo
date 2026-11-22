@@ -12,6 +12,7 @@ and a separately installed --executor. Set SAFEYOLO_HOST_EXECUTOR_PROBE to the
 probe built from host-executor/tests/native_fixture.c and
 SAFEYOLO_HOST_EXECUTOR_SERVICE to an owned prepared user service. Linux also
 needs SAFEYOLO_HOST_EXECUTOR_CGROUP and the existing native runtime prerequisites.
+SAFEYOLO_HOST_ASSESSOR_BIN selects the installed CLI for read-only assessment.
 The fixture creates disposable state and controls that service. Missing inputs
 fail the attempt. This selection does not establish Windows or gateway workflows.
 """
@@ -60,6 +61,7 @@ def run(executable: Path, output: Path, *, suite="coord", executor: Path | None 
             probe = Path(os.environ["SAFEYOLO_HOST_EXECUTOR_PROBE"]).resolve(strict=True)
             if not os.environ.get("SAFEYOLO_HOST_EXECUTOR_SERVICE"):
                 raise ValueError("set SAFEYOLO_HOST_EXECUTOR_SERVICE to the prepared owned service")
+            assessor = Path(os.environ["SAFEYOLO_HOST_ASSESSOR_BIN"]).resolve(strict=True)
             if os.uname().sysname == "Linux" and not os.environ.get("SAFEYOLO_HOST_EXECUTOR_CGROUP"):
                 raise ValueError("set SAFEYOLO_HOST_EXECUTOR_CGROUP to the delegated cgroup subtree")
             if os.uname().sysname == "Linux":
@@ -68,6 +70,9 @@ def run(executable: Path, output: Path, *, suite="coord", executor: Path | None 
             version = subprocess.run([str(executor), "--version"], capture_output=True, text=True,
                                      check=True, timeout=10).stdout.strip()
             inputs.update(executor={"path": str(executor), "sha256": _sha256(executor), "version": version},
+                          assessor={"path": str(assessor), "sha256": _sha256(assessor),
+                                    "version": subprocess.run([str(assessor), "--version"], capture_output=True,
+                                                              text=True, check=True, timeout=10).stdout.strip()},
                           probe={"path": str(probe), "sha256": _sha256(probe)},
                           service=os.environ["SAFEYOLO_HOST_EXECUTOR_SERVICE"],
                           cgroup=os.environ.get("SAFEYOLO_HOST_EXECUTOR_CGROUP"))

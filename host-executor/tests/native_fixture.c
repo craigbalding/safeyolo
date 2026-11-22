@@ -14,6 +14,22 @@
 int main(int argc, char **argv) {
     if (argc != 5) return 2;
     setbuf(stdout, NULL);
+    if (!strcmp(argv[1], "read-config") || !strcmp(argv[1], "execute-config")) {
+        FILE *input = fopen(argv[2], "r");
+        if (!input) return 20;
+        char data[128];
+        size_t count = fread(data, 1, sizeof(data), input);
+        int failed = ferror(input);
+        fclose(input);
+        if (failed || count == sizeof(data)) return 21;
+        return fwrite(data, 1, count, stdout) == count ? 0 : 24;
+    }
+    if (!strcmp(argv[1], "write-config")) {
+        FILE *output = fopen(argv[2], "w");
+        if (!output) return 25;
+        int written = fputs("enabled\n", output) >= 0;
+        return fclose(output) || !written ? 26 : 0;
+    }
     if (!strcmp(argv[1], "observe")) {
         gid_t groups[128];
         int count = getgroups(128, groups);

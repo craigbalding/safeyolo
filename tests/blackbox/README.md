@@ -25,7 +25,10 @@ and native account setup described in the
 This runner does not provision or broaden those host capabilities.
 
 Before running, set `SAFEYOLO_HOST_EXECUTOR_PROBE` to the prebuilt probe and
-`SAFEYOLO_HOST_EXECUTOR_SERVICE` to that service selector. On Linux, also set
+`SAFEYOLO_HOST_EXECUTOR_SERVICE` to that service selector. Set
+`SAFEYOLO_HOST_ASSESSOR_BIN` to the installed `safeyolo` CLI with the
+`services assess-host` command. Assessment reads the fixture's authority and
+observed persistent effects; it grants and executes nothing. On Linux, also set
 `SAFEYOLO_HOST_EXECUTOR_CGROUP` to the delegated subtree.
 Use `SAFEYOLO_HOST_EXECUTOR_BWRAP` when the pinned Linux bubblewrap executable
 is outside `/usr/bin/bwrap`.
@@ -37,12 +40,21 @@ required account/containment launcher when invoking this command.
 bash tests/blackbox/run-controls.sh native-authority --suite host-execution --test-executable /owned/unix_native --executor /owned/safeyolo-host-executor --output /owned/host-operation-results
 ```
 
-Success requires all eight selected cases to execute and pass. `result.json`
+Success requires all nine selected cases to execute and pass. `result.json`
 retains the host, controller, installed executable/version, fixture/probe
 digests, exact cases and exits. Each case retains its log and the existing
 procedure receipt. Missing inputs, an ignored/missing case, a failure or a
 timeout leaves the report incomplete. After a timeout or lost reply, inspect
 the retained fixture/process state before another execution.
+
+The application case selects its next diagnostic read from prior output and
+checks configuration consumption on the same versus different target/resource.
+Host setup supplies and independently observes the earlier configuration edit.
+The installed assessment must distinguish those identities and retain the
+observed write after its permission expires. Both Unix backends must still
+refuse a writable native profile. Fixed-service start/stop is checked against
+the host service manager. The case does not prove native agent writes, run a
+model or renew a grant.
 
 These are installed Unix component witnesses. They do not complete
 [#1677](https://github.com/craigbalding/safeyolo/issues/1677)'s eight witness
