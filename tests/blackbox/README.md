@@ -128,6 +128,8 @@ UTF-8 decoding fails and continues the other categories. A completed job with
 undecoded output does not establish correct Unicode handling. To resume one
 unexecuted operation, use
 `--starter ROOT OPERATION`.
+Use `--starter-refusals ROOT` to run only the refused proposals after inspecting
+an interrupted run; that selection dispatches no job.
 Append `--service` only after the same target configuration is running under
 the selected Windows Service account. This fixture does not install that
 service, configure ACLs or renew a credential.
