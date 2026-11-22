@@ -1248,17 +1248,17 @@ Python identities name pytest functions/methods; a phase receipt expands paramet
 
 Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test unix_native host_receiver_positive_control_waits_for_readiness -- --exact`](../host-executor/tests/unix_native.rs#L191) — `#![cfg(unix)]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native host_receiver_positive_control_waits_for_readiness -- --exact`](../host-executor/tests/unix_native.rs#L191) — `#![cfg(unix)]`
 Selection: manual `native-authority --suite host-execution` (prepared installed executor, probe and owned service); ignored by default.
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test unix_native installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L545) — `#![cfg(unix)]`; `#[ignore = "requires the existing native Unix fixture and prepared probe or C compiler"]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test unix_native installed_check_serve_and_reload_share_ledger_validation -- --exact --ignored`](../host-executor/tests/unix_native.rs#L760) — `#![cfg(unix)]`; `#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test unix_native installed_unix_read_paths_resolve_without_sibling_contents -- --exact --ignored`](../host-executor/tests/unix_native.rs#L841) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test unix_native installed_unix_bounds_lifecycle_reload_and_lost_reply -- --exact --ignored`](../host-executor/tests/unix_native.rs#L862) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test unix_native installed_storage_exhaustion_preserves_output_replay_and_restart -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1081) — `#![cfg(unix)]`; `#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test unix_native installed_user_service_profiles_and_channel_refusals -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1153) — `#![cfg(unix)]`; `#[ignore = "requires SAFEYOLO_HOST_EXECUTOR_SERVICE naming an operator-prepared owned user service"]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test unix_native installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1322) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test unix_native installed_api_authentication_and_cross_principal_reads_cannot_change_authority -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1386) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L545) — `#![cfg(unix)]`; `#[ignore = "requires the existing native Unix fixture and prepared probe or C compiler"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_check_serve_and_reload_share_ledger_validation -- --exact --ignored`](../host-executor/tests/unix_native.rs#L760) — `#![cfg(unix)]`; `#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_unix_read_paths_resolve_without_sibling_contents -- --exact --ignored`](../host-executor/tests/unix_native.rs#L841) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_unix_bounds_lifecycle_reload_and_lost_reply -- --exact --ignored`](../host-executor/tests/unix_native.rs#L862) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_storage_exhaustion_preserves_output_replay_and_restart -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1081) — `#![cfg(unix)]`; `#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_user_service_profiles_and_channel_refusals -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1153) — `#![cfg(unix)]`; `#[ignore = "requires SAFEYOLO_HOST_EXECUTOR_SERVICE naming an operator-prepared owned user service"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1322) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_api_authentication_and_cross_principal_reads_cannot_change_authority -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1386) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
 
 <a id="witness-proxy-tests-host-execution-rs"></a>
 ### [`proxy/tests/host_execution.rs`](../proxy/tests/host_execution.rs)
@@ -2588,14 +2588,15 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 - [`tests/test_blackbox_catalogue.py::test_inline_rust_modules_keep_distinct_executable_identities`](../tests/test_blackbox_catalogue.py#L21)
 - [`tests/test_blackbox_catalogue.py::test_catalogue_rejects_structural_drift`](../tests/test_blackbox_catalogue.py#L90)
 - [`tests/test_blackbox_catalogue.py::test_current_catalogue_resolves_all_controls_and_external_families`](../tests/test_blackbox_catalogue.py#L126)
-- [`tests/test_blackbox_catalogue.py::test_host_protocol_selection_includes_nested_configured_checks_once`](../tests/test_blackbox_catalogue.py#L133)
-- [`tests/test_blackbox_catalogue.py::test_procedure_workflow_selection_preserves_repository_and_module_paths`](../tests/test_blackbox_catalogue.py#L148)
-- [`tests/test_blackbox_catalogue.py::test_workflow_selection_agrees_with_real_pytest_exclusions`](../tests/test_blackbox_catalogue.py#L164)
-- [`tests/test_blackbox_catalogue.py::test_unresolved_shared_phase_operand_cannot_pass_generation`](../tests/test_blackbox_catalogue.py#L191)
-- [`tests/test_blackbox_catalogue.py::test_cargo_identity_requires_its_real_module_and_keeps_ignore_selection`](../tests/test_blackbox_catalogue.py#L203)
-- [`tests/test_blackbox_catalogue.py::test_native_host_selection_retains_partial_observations`](../tests/test_blackbox_catalogue.py#L230)
-- [`tests/test_blackbox_catalogue.py::test_native_host_missing_service_is_incomplete_without_dispatch`](../tests/test_blackbox_catalogue.py#L287)
-- [`tests/test_blackbox_catalogue.py::test_native_case_requires_one_executed_test_instead_of_target_pass_text`](../tests/test_blackbox_catalogue.py#L302)
+- [`tests/test_blackbox_catalogue.py::test_cargo_commands_use_the_witness_manifest_and_proxy_default`](../tests/test_blackbox_catalogue.py#L133)
+- [`tests/test_blackbox_catalogue.py::test_host_protocol_selection_includes_nested_configured_checks_once`](../tests/test_blackbox_catalogue.py#L145)
+- [`tests/test_blackbox_catalogue.py::test_procedure_workflow_selection_preserves_repository_and_module_paths`](../tests/test_blackbox_catalogue.py#L160)
+- [`tests/test_blackbox_catalogue.py::test_workflow_selection_agrees_with_real_pytest_exclusions`](../tests/test_blackbox_catalogue.py#L176)
+- [`tests/test_blackbox_catalogue.py::test_unresolved_shared_phase_operand_cannot_pass_generation`](../tests/test_blackbox_catalogue.py#L203)
+- [`tests/test_blackbox_catalogue.py::test_cargo_identity_requires_its_real_module_and_keeps_ignore_selection`](../tests/test_blackbox_catalogue.py#L215)
+- [`tests/test_blackbox_catalogue.py::test_native_host_selection_retains_partial_observations`](../tests/test_blackbox_catalogue.py#L242)
+- [`tests/test_blackbox_catalogue.py::test_native_host_missing_service_is_incomplete_without_dispatch`](../tests/test_blackbox_catalogue.py#L299)
+- [`tests/test_blackbox_catalogue.py::test_native_case_requires_one_executed_test_instead_of_target_pass_text`](../tests/test_blackbox_catalogue.py#L314)
 
 <a id="witness-tests-proxy-contracts-test-shared-authority-assurance-py"></a>
 ### [`tests/proxy_contracts/test_shared_authority_assurance.py`](../tests/proxy_contracts/test_shared_authority_assurance.py)

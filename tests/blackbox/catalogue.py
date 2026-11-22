@@ -449,7 +449,8 @@ def render_witness_identities(witnesses: list[dict], commands: list[dict], phase
                 identity = node["node"]
                 if witness["kind"] == "cargo":
                     target = "--lib" if witness["target"] == "lib" else "--test " + witness["target"]
-                    identity = f"cargo test --manifest-path proxy/Cargo.toml {target} {identity} -- --exact" + (" --ignored" if node["ignored"] else "")
+                    manifest = witness.get("manifest", "proxy/Cargo.toml")
+                    identity = f"cargo test --manifest-path {manifest} {target} {identity} -- --exact" + (" --ignored" if node["ignored"] else "")
                 lines += [f"- [`{identity}`]({link(reference.split('::', 1)[0], node['line'])})"]
                 if witness["kind"] == "cargo":
                     constraints = re.findall(r"#!?\[(?:ignore|cfg)[^\]]*\]", node["cfg"])

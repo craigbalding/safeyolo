@@ -130,6 +130,18 @@ def test_current_catalogue_resolves_all_controls_and_external_families():
     assert any("tests/test_guest_acquisition.py" in witness["paths"] for witness in witnesses)
 
 
+def test_cargo_commands_use_the_witness_manifest_and_proxy_default():
+    rendered = catalogue.render(ROOT)
+    assert (
+        "cargo test --manifest-path host-executor/Cargo.toml --test unix_native "
+        "installed_api_authentication_and_cross_principal_reads_cannot_change_authority -- --exact --ignored"
+    ) in rendered
+    assert (
+        "cargo test --manifest-path proxy/Cargo.toml --test host_execution "
+        "same_authenticated_http_protocol_on_standalone_and_safeyolo_targets -- --exact"
+    ) in rendered
+
+
 def test_host_protocol_selection_includes_nested_configured_checks_once():
     groups = execution_receipt.native_cases("host-execution", ROOT)
     assert len(groups) == 2
