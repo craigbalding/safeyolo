@@ -75,7 +75,7 @@ pub(super) async fn send(
                 bytes.extend_from_slice(&data);
             }
         }
-        Ok(serde_json::from_slice(&bytes)?)
+        Ok::<Response, Error>(serde_json::from_slice(&bytes)?)
     };
     let result = tokio::time::timeout(Duration::from_millis(binding.timeout_ms), exchange).await;
     match result {

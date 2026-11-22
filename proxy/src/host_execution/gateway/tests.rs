@@ -197,7 +197,7 @@ impl Fixture {
             .tasks
             .upsert("approved-task", task)
             .unwrap();
-        crate::activate_registered_task(&proxy.runtime, "approved-task").unwrap();
+        assert!(crate::activate_registered_task(&proxy.runtime, "approved-task").is_ok());
         assert!(run.current(proxy.runtime.read().unwrap().policy.as_ref().unwrap()));
         let ledger_dir = root.path().join("target-ledger");
         std::fs::create_dir(&ledger_dir).unwrap();
@@ -742,7 +742,7 @@ async fn revocation_task_switch_and_target_revision_changes_preserve_retained_jo
         .tasks
         .upsert("other-task", json!({"permissions":[]}))
         .unwrap();
-    crate::activate_registered_task(&f.proxy.runtime, "other-task").unwrap();
+    assert!(crate::activate_registered_task(&f.proxy.runtime, "other-task").is_ok());
     assert!(
         execute(
             &f.proxy.runtime,
