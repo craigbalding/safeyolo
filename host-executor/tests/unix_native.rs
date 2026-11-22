@@ -605,7 +605,15 @@ fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
             .announcement_revision,
         signed.catalogue.announcement_revision
     );
-    fs::write(&observed, serde_json::to_vec(&sign(&package)).unwrap()).unwrap();
+    let earlier = SignedCatalogue::sign(
+        CatalogueRevision {
+            announcement_revision: package.version * 2,
+            package: package.clone(),
+            ..signed.catalogue.clone()
+        },
+        &f.key,
+    );
+    fs::write(&observed, serde_json::to_vec(&earlier).unwrap()).unwrap();
     let Response::Discovery { discovery } = f.call(Action::Discover) else {
         panic!("older discovery after failed qualification")
     };
