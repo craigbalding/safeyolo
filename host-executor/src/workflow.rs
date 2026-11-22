@@ -683,10 +683,7 @@ mod tests {
 
     #[test]
     fn windows_starter_paths_follow_the_selected_root_as_data() {
-        for root in [
-            r"C:\SafeYolo\Case",
-            r"D:\Cases\O'Brien $(whoami); café",
-        ] {
+        for root in [r"C:\SafeYolo\Case", r"D:\Cases\O'Brien $(whoami); café"] {
             let package = windows_starter_package(&Starter {
                 root: root.into(),
                 service: "CaseService".into(),
