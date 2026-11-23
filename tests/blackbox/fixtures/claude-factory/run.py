@@ -7,6 +7,8 @@ Before the run phase, provision each stopped role's own client and supported
 login/provider through the existing host interfaces. No credentials are copied.
 Use readback --direction-sequence N to inspect an accepted direction without
 repeating preparation, sending, native Work or a model turn.
+Use pending-work only on the retained stopped witness to interrupt one new
+claimed Work and resume it. Inspect any failed attempt before running it again.
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path, help="separately owned installed host root")
     parser.add_argument("fixture", choices=("one-role", "mixed"))
-    parser.add_argument("phase", choices=("prepare", "run", "readback"))
+    parser.add_argument("phase", choices=("prepare", "run", "readback", "pending-work"))
     parser.add_argument("--direction-sequence", type=int,
                         help="recover this accepted direction without setup, sending or model execution")
     arguments = parser.parse_args()
@@ -82,8 +84,9 @@ def main():
                        SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE=str(source),
                        SAFEYOLO_FACTORY_ACCEPTANCE_NAME=contract["name"],
                        SAFEYOLO_FACTORY_ACCEPTANCE_WORKSPACES=json.dumps(workspaces))
-    test = ("test_factory_setup_interruption_preserves_prepared_roles" if arguments.phase == "prepare"
-            else "test_factory_run_executes_staged_worker_commands")
+    test = {"prepare": "test_factory_setup_interruption_preserves_prepared_roles",
+            "run": "test_factory_run_executes_staged_worker_commands",
+            "pending-work": "test_factory_pending_claude_work_survives_restart"}[arguments.phase]
     subprocess.run([sys.executable, "-m", "pytest", "-q", "-s",
                     f"tests/proxy_contracts/test_native_factory_cli.py::{test}"],
                    cwd=repository, env=environment, check=True)

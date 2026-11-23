@@ -874,7 +874,8 @@ def installed_claude_work(root, source, command, role_checks):
     installed_claude_direction(root, agent, identity)
     title = (f"Write /workspace/{artifact.name} containing exactly {marker} and a newline. "
              "Retain it, compute SHA256 and publish_work_output with the file URI plus #sha256=<digest>, "
-             "execution_outcome succeeded, then explicitly complete_work. Use native tools, current versions and operation IDs.")
+             "omit artifact_base64, execution_outcome succeeded, then explicitly complete_work. "
+             "Use native tools, current versions and operation IDs.")
     created = invoke("coord", "work", "create", contract["room"], title,
                      "--assignee", json.dumps({"kind": "agent", "id": identity}),
                      "--factory", json.dumps({"name": contract["name"], "snapshot_id": snapshot}),
@@ -948,6 +949,152 @@ def installed_claude_work(root, source, command, role_checks):
         "target_generation": original_generation, "artifact": str(artifact), "sha256": digest,
         "restarted_without_duplicate_output": True,
     }, indent=2) + "\n")
+
+
+def installed_claude_pending_work(root, source):
+    """Pause one new native Work at a file gate, then restart its existing role."""
+    contract = tomllib.loads(source.read_text())
+    role = next(role for role in contract["roles"].values() if role.get("harness") == "claude")
+    agent = role["agent"]
+    policy = tomllib.loads((root / "policy.toml").read_text())["agents"][agent]
+    identity = policy["agent_id"]
+    snapshot = (root / "factories" / contract["name"] / "approved").read_text().strip()
+    workspace = Path(policy["folder"])
+    marker = "claude-pending-" + snapshot
+    artifact, started, release = (workspace / (marker + suffix) for suffix in (".txt", ".started", ".release"))
+    assert not any(path.exists() for path in (artifact, started, release)), "inspect the retained pending attempt before retrying"
+    host = [str(root / "bin/safeyolo"), "--root", str(root)]
+    command = [*host, "factory"]
+
+    def invoke(*args):
+        result = subprocess.run([*host, *args], capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, (args, result.stdout, result.stderr)
+        return json.loads(result.stdout)
+
+    def permissions():
+        with sqlite3.connect(root / "data/coord/v0.db") as db:
+            return db.execute("SELECT room_id, permissions FROM memberships "
+                              "WHERE principal_id=? AND revoked_at IS NULL ORDER BY room_id", (identity,)).fetchall()
+
+    title = (f"Pending-Work restart qualification. Claim this Work once. Write /workspace/{started.name} "
+             f"containing exactly {marker} and a newline. Then use a foreground shell loop to wait until "
+             f"/workspace/{release.name} exists. The operator will stop and restart this role during that wait. "
+             "On redelivery, read this original Work and reuse its claim and existing files. Do not create other Work. "
+             f"Once the release file exists, write /workspace/{artifact.name} containing exactly {marker} and a newline. "
+             "Retain it, compute SHA256 and publish_work_output with its file URI plus #sha256=<digest>, "
+             "omit artifact_base64, execution_outcome succeeded, then explicitly complete_work. "
+             "Use native tools, current versions and operation IDs. Read existing output before any repeated publication.")
+    created = invoke("coord", "work", "create", contract["room"], title,
+                     "--assignee", json.dumps({"kind": "agent", "id": identity}),
+                     "--factory", json.dumps({"name": contract["name"], "snapshot_id": snapshot}),
+                     "--operation-id", marker)
+    work_id = created["work"]["work_id"]
+    work = invoke("coord", "work", "show", contract["room"], work_id)
+    assert work["state"] == "open" and work["claim_generation"] == 0, "inspect the original attempt; do not replay it"
+    result_path = root / "claude-pending-work-result.json"
+    evidence = {"work_id": work_id, "agent_id": identity, "snapshot": snapshot, "created": work}
+    result_path.write_text(json.dumps(evidence, indent=2) + "\n")
+    home = root / "agents" / agent / "home"
+    checkpoint = home / ".safeyolo/coord-supervisor-state.json"
+    retained = home / marker
+    with retained.open("x") as output:
+        output.write(marker + "\n")
+    authority = permissions()
+    assert authority, "the selected role must have current room authority"
+    try:
+        resumed = subprocess.run([*command, "setup", str(source)], capture_output=True, text=True, timeout=600)
+        assert resumed.returncode == 0, (resumed.stdout, resumed.stderr)
+        assert json.loads(resumed.stdout)["status"] == "running"
+        deadline = time.monotonic() + 180
+        while True:
+            work = invoke("coord", "work", "show", contract["room"], work_id)
+            if started.exists() and work["state"] == "claimed":
+                break
+            assert time.monotonic() < deadline, work
+            time.sleep(0.5)
+        assert started.read_text() == marker + "\n" and not artifact.exists()
+        assert work["claim_agent_id"] == identity and work["claim_generation"] == 1
+        assert work["output"] is None and work["target_generation"] == 0
+        running = json.loads(checkpoint.read_text())
+        assert running["phase"] == "running" and running["owned_process"] is not None
+        stopped = subprocess.run([*command, "stop", contract["name"]], capture_output=True, text=True, timeout=180)
+        assert stopped.returncode == 0, stopped.stderr
+        saved = json.loads(checkpoint.read_text())
+        assert saved["thread_id"] and any(item["action"]["work_id"] == work_id for item in saved["native_in_flight"])
+        pending = invoke("coord", "work", "show", contract["room"], work_id)
+        assert pending == work, "stopping the role must not settle or change its claimed Work"
+        # Preserve the reached interruption before attempting its resume.
+        evidence.update(checkpoint_before_stop=running, pending_after_stop=pending, checkpoint_after_stop=saved)
+        result_path.write_text(json.dumps(evidence, indent=2) + "\n")
+        release.write_text("resume the original pending Work\n")
+        resumed = subprocess.run([*command, "setup", str(source)], capture_output=True, text=True, timeout=600)
+        assert resumed.returncode == 0, (resumed.stdout, resumed.stderr)
+        assert json.loads(resumed.stdout)["status"] == "running"
+        deadline = time.monotonic() + 180
+        while True:
+            completed = invoke("coord", "work", "show", contract["room"], work_id)
+            if completed["state"] == "done" and completed["output"] is not None:
+                break
+            assert time.monotonic() < deadline, completed
+            time.sleep(0.5)
+        assert completed["claim_agent_id"] == identity and completed["claim_generation"] == 1
+        assert completed["target_generation"] == 1
+        assert completed["output"]["producer"] == {"kind": "agent", "id": identity}
+        assert completed["output"]["execution_outcome"] == "succeeded"
+        assert artifact.read_text() == marker + "\n"
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        assert completed["target_ref"] == "file:///workspace/" + artifact.name + "#sha256=" + digest
+        deadline = time.monotonic() + 60
+        while True:
+            current = json.loads(checkpoint.read_text())
+            if not any(item["action"]["work_id"] == work_id for item in current.get("native_in_flight", [])):
+                break
+            assert time.monotonic() < deadline, current
+            time.sleep(0.5)
+        assert current["thread_id"] == saved["thread_id"] and current["safe_cursor"] >= saved["safe_cursor"]
+        assert tomllib.loads((root / "policy.toml").read_text())["agents"][agent] == policy
+        assert permissions() == authority and retained.read_text() == marker + "\n"
+        assert (root / "factories" / contract["name"] / "approved").read_text().strip() == snapshot
+        staged = json.loads((home / ".safeyolo/coord-supervisor.json").read_text())
+        assert staged["factory"]["snapshot_id"] == snapshot and staged["harness"] == "claude"
+        assert invoke("coord", "work", "show", contract["room"], work_id)["output"] == completed["output"]
+        evidence.update(completed=completed, checkpoint_after_resume=current, home_and_authority_retained=True, sha256=digest)
+        result_path.write_text(json.dumps(evidence, indent=2) + "\n")
+    finally:
+        stopped = subprocess.run([*command, "stop", contract["name"]], capture_output=True, text=True, timeout=180)
+        assert stopped.returncode == 0, stopped.stderr
+
+
+@pytest.mark.parametrize("state", ["claimed", "done"])
+def test_pending_claude_caller_refuses_replaying_started_work(tmp_path, monkeypatch, state):
+    source = Path(__file__).parents[1] / "blackbox/fixtures/claude-factory/one-role.toml"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    approved = tmp_path / "factories/claude-one/approved"
+    approved.parent.mkdir(parents=True)
+    approved.write_text("a" * 64 + "\n")
+    (tmp_path / "policy.toml").write_text(f'[agents.proof-claude]\nagent_id="ag-proof"\nfolder={json.dumps(str(workspace))}\n')
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command[3:6])
+        assert command[3:6] in (["coord", "work", "create"], ["coord", "work", "show"])
+        response = {"work": {"work_id": "work-retained"}} if command[5] == "create" else {"state": state, "claim_generation": 1}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(response), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(AssertionError, match="inspect the original attempt"):
+        installed_claude_pending_work(tmp_path, source)
+    assert calls == [["coord", "work", "create"], ["coord", "work", "show"]]
+    assert not list(workspace.iterdir())
+
+
+def test_factory_pending_claude_work_survives_restart():
+    """Interrupt one new claimed Work in the existing installed witness."""
+    supplied = os.environ.get("SAFEYOLO_FACTORY_ACCEPTANCE_ROOT")
+    if not supplied:
+        pytest.skip("requires the separately owned, prepared installed Factory witness")
+    installed_claude_pending_work(Path(supplied).resolve(), Path(os.environ["SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE"]))
 
 
 def test_factory_run_executes_staged_worker_commands():

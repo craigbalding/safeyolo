@@ -340,7 +340,7 @@ def test_unavailable_telemetry_cannot_settle_native_work_on_completion(binary, f
     assert len(list(capture.glob("prompt-*"))) == 1
 
 
-@pytest.mark.parametrize("harness_name", ["codex", "pi"])
+@pytest.mark.parametrize("harness_name", ["codex", "pi", "claude"])
 @pytest.mark.parametrize("factory", [False, True])
 def test_missing_checkpoint_refuses_before_coord_model_or_save_on_every_retry(binary, fixture, harness_name, factory):
     coord, _env, config, state, harness, capture = fixture
@@ -388,10 +388,15 @@ def test_confirmed_first_start_uses_cursor_zero_and_existing_state_needs_no_conf
     assert coord.sends == 1
 
 
+@pytest.mark.parametrize("harness_name", ["codex", "claude"])
 @pytest.mark.parametrize("confirmed", [False, True])
-def test_invalid_checkpoint_is_not_reinitialized_by_confirmation(binary, fixture, confirmed):
-    coord, _env, _config, state, harness, capture = fixture
+def test_invalid_checkpoint_is_not_reinitialized_by_confirmation(binary, fixture, confirmed, harness_name):
+    coord, _env, config, state, harness, capture = fixture
+    settings = json.loads(config.read_text())
+    settings["harness"] = harness_name
+    config.write_text(json.dumps(settings))
     invalid = json.loads(subprocess.check_output([str(binary), "read-state", str(state)]))
+    invalid["harness"] = harness_name
     invalid["schema"] = "unsupported"
     state.write_text(json.dumps(invalid))
     saved = state.read_bytes()
@@ -1569,6 +1574,40 @@ def test_claude_crashed_turn_resumes_same_session_without_accepting_narration(bi
     args = [json.loads(path.read_text()) for path in capture.glob("argv-*")]
     assert any("--resume" in row and row[row.index("--resume")+1] == session for row in args)
     assert json.loads(state.read_text())["in_flight"] == saved["in_flight"]
+
+
+def test_claude_crashed_native_work_resumes_original_action_until_canonical_completion(binary, fixture):
+    coord, _, config, state, _, capture = fixture
+    settings = json.loads(config.read_text())
+    settings.update(agent_room="forge-agent", native_work=True)
+    config.write_text(json.dumps(settings))
+    work_id = "work-" + "c" * 32
+    action = {"key": "action-" + "d" * 64, "kind": "execute_work", "work_id": work_id,
+              "work_version": 3, "claim_generation": 1, "target_generation": 0, "requires_action": True}
+    coord.native_actions[work_id] = [action]
+    edge = {**EDGE, "kind": "work_changed", "object_id": work_id, "revision_or_sequence": 3}
+    coord.objects = {ATTENTION: {"edge": edge, "object": {"work_id": work_id, "room_id": "rm-backlog", "version": 3}}}
+    coord.page = {"edges": [edge], "next_cursor": 7}
+    claude_harness(fixture, binary, mode="crash", terminal=False)
+    result = run(binary, fixture)
+    assert result.returncode != 0
+    saved = json.loads(state.read_text())
+    assert saved["phase"] == "uncertain" and saved["owned_process"] is None
+    assert saved["native_in_flight"][0]["action"] == action
+    coord.page = {"edges": [], "next_cursor": 7}
+    claude_harness(fixture, binary, terminal=False)
+    resumed = run(binary, fixture, confirm_fresh_identity=False)
+    assert resumed.returncode != 0 and "incomplete or uncertain Coord work" in resumed.stderr
+    current = json.loads(state.read_text())
+    assert current["native_in_flight"] == saved["native_in_flight"], "a successful Claude turn cannot settle native Work"
+    argv = [json.loads(path.read_text()) for path in capture.glob("argv-*")]
+    assert any("--resume" in row and row[row.index("--resume") + 1] == saved["thread_id"] for row in argv)
+    assert coord.received_actions == {action["key"]}
+    assert ("POST", "/api/coord/rooms/backlog/send") not in coord.requests
+    coord.native_actions[work_id] = []
+    assert run(binary, fixture, confirm_fresh_identity=False).returncode == 0
+    assert json.loads(state.read_text()).get("native_in_flight", []) == []
+    assert len(list(capture.glob("prompt-*"))) == 2
 
 
 @pytest.mark.parametrize("mode", ["malformed", "truncated", "foreign", "nested", "error", "mcp_failed", "late_malformed", "late_crash"])
