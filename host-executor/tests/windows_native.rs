@@ -7,6 +7,8 @@
 //! --bounds ROOT ATTEMPT [--service] uses that same native catalogue for identity,
 //! memory/process/output/deadline/cancellation checks, with canonical output and
 //! independent Job limits/process handles. It does not run service mutations.
+//! --registry ROOT ATTEMPT [--service] queries both allowed machine registry views
+//! from the prepared starter catalogue; the controller owns its expected data.
 #[cfg(windows)]
 mod common;
 #[cfg(windows)]

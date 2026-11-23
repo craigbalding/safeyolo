@@ -388,9 +388,11 @@ before another effect after a timeout.
 | Scheduled tasks | No general scheduler authority in this starter | Enumerate/filter tasks; selected definitions/principal/actions/recent status. No execution, registration or modification. |
 | Fixed installed executable | The content-pinned executor's inspection commands; typed limits and exact environment | `fixed-executable` runs pinned `whoami.exe`; typed allowed argument, exact account/environment, native deadline/output/status. |
 
-PowerShell query results use `{operation,status,observedAtUtc,timeZone,count,
-limitReached,data}`. A reached count limit reports `partial`; access errors
-report `access_denied` or `unavailable` and exit 2. A registry observation can
+PowerShell query results use UTF-8 JSON with `{operation,status,observedAtUtc,
+timeZone,count,limitReached,data}`. A reached count limit reports `partial`.
+Permission errors, including registry `SecurityException` results, report
+`access_denied` and exit 2. Other failed queries report `unavailable` and exit 2.
+A registry observation can
 report `absent` in its data. File content explicitly reports a bounded prefix.
 Task run-time fields remain `null` when the OS supplies no value.
 Software rows identify their uninstall `registryKey`; `Name` and `Version`

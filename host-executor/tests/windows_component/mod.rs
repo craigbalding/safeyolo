@@ -684,13 +684,21 @@ fn observed_service() -> (u32, u32) {
 }
 
 fn starter_result(fixture: &mut Fixture, name: &str) -> bool {
+    starter_result_arguments(fixture, name, BTreeMap::new())
+}
+
+fn starter_result_arguments(
+    fixture: &mut Fixture,
+    name: &str,
+    arguments: BTreeMap<String, serde_json::Value>,
+) -> bool {
     let resource = fixture.target.package.operations[name]
         .resources
         .iter()
         .next()
         .unwrap()
         .clone();
-    let (receipt, _) = fixture.invoke_arguments(name, &resource, BTreeMap::new());
+    let (receipt, _) = fixture.invoke_arguments(name, &resource, arguments);
     let result = fixture.terminal(&receipt.job_id);
     let Response::Output {
         data_base64, eof, ..
@@ -722,6 +730,18 @@ fn starter_result(fixture: &mut Fixture, name: &str) -> bool {
     );
     assert!(result.native.as_ref().unwrap().processes_stopped);
     assert!(!result.native.as_ref().unwrap().output_truncated);
+    if result.state == JobState::Completed
+        && fixture.target.package.operations[name]
+            .execution
+            .executable
+            .to_ascii_lowercase()
+            .ends_with("powershell.exe")
+    {
+        assert!(
+            observation.is_some(),
+            "completed PowerShell recipe did not return UTF-8 JSON"
+        );
+    }
     if name == "software-inventory" && result.state == JobState::Completed {
         let observation = observation.as_ref().expect("software inventory JSON");
         let data = observation["data"]
@@ -1379,6 +1399,20 @@ pub fn main() {
             );
             fixture.phase = format!("bounds-{}-{}", fixture.phase, args[2]);
             bounds(&mut fixture);
+        }
+        Some("--registry") if args.len() == 3 || args.len() == 4 => {
+            let mut fixture = Fixture::new(
+                PathBuf::from(&args[1]),
+                args.get(3).is_some_and(|s| s == "--service"),
+            );
+            fixture.phase = format!("registry-{}-{}", fixture.phase, args[2]);
+            for view in ["32", "64"] {
+                assert!(starter_result_arguments(
+                    &mut fixture,
+                    "registry-query-machine",
+                    BTreeMap::from([("view".into(), serde_json::json!(view))])
+                ));
+            }
         }
         Some(mode @ ("--recover" | "--storage")) if args.len() == 3 => {
             let mut fixture = Fixture::new(PathBuf::from(&args[1]), false);
