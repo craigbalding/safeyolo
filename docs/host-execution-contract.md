@@ -343,8 +343,12 @@ must be present in both current trusted scopes; the issuer must derive this
 evidence from its existing check owners, never from caller-supplied names.
 
 The native policy transaction activates generated gateway definitions with their
-adoption record. It retains the last qualified revision and restores the saved
-source and runtime if activation fails. The target validates the entire selected
+adoption record. The same transaction advances the package and catalogue status
+in gateway bindings that match the previous active package snapshot. It preserves
+each binding's target identity, grants, ceilings, endpoint, signing credential
+reference and task binding. Bindings with other package snapshots keep their
+definitions. The transaction retains the last qualified revision and restores
+the saved source and runtime if activation fails. The target validates the entire selected
 native catalogue before saving its adopted revision in the existing protected
 configuration. The executor must be able to replace that configuration. An
 external edit detected during qualification refuses the save. Target and issuer
