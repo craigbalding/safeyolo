@@ -75,6 +75,18 @@ struct DeadlineTcp {
     read_until: Cell<Instant>,
     write_until: Cell<Instant>,
 }
+impl DeadlineTcp {
+    fn new(socket: TcpStream, deadline: Instant) -> std::io::Result<Self> {
+        // Windows accepts inherit the listener's nonblocking mode. TLS workers
+        // use blocking I/O with the remaining absolute deadline on each call.
+        socket.set_nonblocking(false)?;
+        Ok(Self {
+            socket,
+            read_until: Cell::new(deadline),
+            write_until: Cell::new(deadline),
+        })
+    }
+}
 fn remaining(until: Instant) -> std::io::Result<Duration> {
     until
         .checked_duration_since(Instant::now())
@@ -162,11 +174,7 @@ pub(crate) fn serve(
                         .ok_or_else(|| unavailable("deadline exceeds clock range"))?;
                     let stream = rustls::StreamOwned::new(
                         rustls::ServerConnection::new(tls.clone()).map_err(unavailable)?,
-                        DeadlineTcp {
-                            socket,
-                            read_until: Cell::new(deadline),
-                            write_until: Cell::new(deadline),
-                        },
+                        DeadlineTcp::new(socket, deadline).map_err(unavailable)?,
                     );
                     server::connection(stream, &config, &state, &original, &ledger)
                 })();
@@ -309,14 +317,12 @@ mod tests {
             let address = listener.local_addr().unwrap();
             let worker = std::thread::spawn(move || {
                 let socket = listener.accept().unwrap().0;
+                // Reproduce Windows' inherited mode on every test platform.
+                socket.set_nonblocking(true).unwrap();
                 let deadline = Instant::now() + Duration::from_secs(2);
                 let mut stream = rustls::StreamOwned::new(
                     rustls::ServerConnection::new(server).unwrap(),
-                    DeadlineTcp {
-                        socket,
-                        read_until: Cell::new(deadline),
-                        write_until: Cell::new(deadline),
-                    },
+                    DeadlineTcp::new(socket, deadline).unwrap(),
                 );
                 let mut request = [0; 4];
                 if stream.read_exact(&mut request).is_err() {
@@ -332,6 +338,9 @@ mod tests {
             socket
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
+            // The server must wait for handshake/application bytes, rather
+            // than close the accepted socket with WouldBlock.
+            std::thread::sleep(Duration::from_millis(25));
             let mut stream = rustls::StreamOwned::new(
                 rustls::ClientConnection::new(client, ServerName::try_from(name).unwrap()).unwrap(),
                 socket,
@@ -358,11 +367,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_millis(40);
         let mut stream = rustls::StreamOwned::new(
             rustls::ServerConnection::new(server).unwrap(),
-            DeadlineTcp {
-                socket,
-                read_until: Cell::new(deadline),
-                write_until: Cell::new(deadline),
-            },
+            DeadlineTcp::new(socket, deadline).unwrap(),
         );
         let error = stream.read(&mut [0]).unwrap_err();
         assert!(matches!(
