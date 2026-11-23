@@ -2244,6 +2244,23 @@ unsafe extern "system" fn dummy_service(_: u32, _: *mut *mut u16) {
         )
     };
     assert!(!handle.is_null());
+    let configuration: Vec<_> = std::env::args_os().skip(2).collect();
+    if !configuration.is_empty() {
+        assert_eq!(
+            configuration.len(),
+            2,
+            "configuration and observation paths"
+        );
+        let path = Path::new(&configuration[0]);
+        let bytes = fs::read(path).unwrap();
+        let observed = serde_json::json!({
+            "service_pid": std::process::id(),
+            "observed_at": now(),
+            "configuration_sha256": hash(path),
+            "configuration_base64": STANDARD.encode(bytes),
+        });
+        fs::write(&configuration[1], serde_json::to_vec(&observed).unwrap()).unwrap();
+    }
     let mut status = SERVICE_STATUS {
         dwServiceType: SERVICE_WIN32_OWN_PROCESS,
         dwCurrentState: SERVICE_RUNNING,

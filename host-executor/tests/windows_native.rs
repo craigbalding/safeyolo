@@ -27,6 +27,8 @@
 //! executable/ancestor replacement refusal during an actual running Job.
 //! --guards ROOT ATTEMPT resumes only that running-Job observation after a
 //! retained swap result, without repeating its completed invocation.
+//! --dummy-service [CONFIG OBSERVATION] optionally consumes the owned application
+//! configuration at startup and records its bytes/hash and actual service PID.
 #[cfg(windows)]
 mod common;
 #[cfg(windows)]
