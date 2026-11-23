@@ -399,8 +399,8 @@ def assurance_jobs(jobs: dict, *, guard: bool) -> dict:
 def catalogue_scope(base: Revision) -> dict[str, set[str]]:
     metadata = tomllib.loads(base.read(CATALOGUE))
     controls = {row["id"]: row for row in metadata["controls"]}
-    if set(controls) != {f"BB-{number:02}" for number in range(1, 38)}:
-        raise ValueError("trusted catalogue must identify BB-01 through BB-37")
+    if set(controls) != {f"BB-{number:02}" for number in range(1, 39)}:
+        raise ValueError("trusted catalogue must identify BB-01 through BB-38")
     scope: dict[str, set[str]] = {}
     for witness in metadata["witnesses"]:
         for reference in [*witness["paths"], *([witness["owner"]] if "owner" in witness else [])]:

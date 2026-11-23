@@ -15,10 +15,12 @@ pub enum Definition {
     EvidenceReads,
     ServiceEffects,
     ServiceDefinition,
+    HostExecutionPackage,
+    HostExecutionBinding,
 }
 
 impl Definition {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 10] = [
         Self::Controls,
         Self::SupportGrant,
         Self::Delegation,
@@ -27,6 +29,8 @@ impl Definition {
         Self::EvidenceReads,
         Self::ServiceEffects,
         Self::ServiceDefinition,
+        Self::HostExecutionPackage,
+        Self::HostExecutionBinding,
     ];
 
     fn schema(self) -> Value {
@@ -53,6 +57,10 @@ impl Definition {
             Self::ServiceEffects => json!(schema_for!(crate::services::effects::EffectModel)),
             // This owner parses a dynamic document. Do not invent a second schema.
             Self::ServiceDefinition => crate::services::ServiceDefinition::capability_schema(),
+            Self::HostExecutionPackage => json!(schema_for!(crate::host_execution::Package)),
+            Self::HostExecutionBinding => {
+                json!(schema_for!(crate::host_execution::gateway::Binding))
+            }
         }
     }
 
@@ -66,6 +74,8 @@ impl Definition {
             Self::EvidenceReads => "policy::evidence::validate_reads",
             Self::ServiceEffects => "services::effects::EffectModel",
             Self::ServiceDefinition => "services::ServiceDefinition::from_value",
+            Self::HostExecutionPackage => "host_execution::Package::validate",
+            Self::HostExecutionBinding => "host_execution::gateway::Binding::validate",
         }
     }
 
@@ -129,6 +139,13 @@ pub fn validate(input: Candidate) -> Result<Value, Error> {
         }
         Definition::ServiceDefinition => {
             crate::services::ServiceDefinition::from_value(input.value)?;
+        }
+        Definition::HostExecutionPackage => {
+            serde_json::from_value::<crate::host_execution::Package>(input.value)?.validate()?;
+        }
+        Definition::HostExecutionBinding => {
+            serde_json::from_value::<crate::host_execution::gateway::Binding>(input.value)?
+                .validate()?;
         }
     }
     Ok(

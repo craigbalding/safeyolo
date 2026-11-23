@@ -1,5 +1,5 @@
-//! Offline generation from a maintained, flat OpenAPI document and reviewed
-//! `x-safeyolo` annotations. No network or inference occurs here.
+//! Offline generation and assessment from maintained OpenAPI annotations or
+//! host-operation packages. No network or inference occurs here.
 
 use serde_json::{Map, Value, json};
 
@@ -10,8 +10,82 @@ const METHODS: &[&str] = &[
     "get", "post", "put", "patch", "delete", "head", "options", "trace",
 ];
 
+pub fn check(source: &str, generated: Option<&str>) -> Result<String, Error> {
+    use crate::host_execution::{Package, PackageGateway, Projections, VERSION};
+    let value = crate::policy::parse_yaml(source)?;
+    if value["format"] == VERSION {
+        let package: Package = serde_json::from_value(value)?;
+        if let Some(generated) = generated {
+            let projections: Projections = serde_json::from_str(generated)?;
+            package.verify_projections(&projections)?;
+            return Ok(format!(
+                "Host projections match package {}. No adoption or access changed.",
+                package.name
+            ));
+        }
+        package.projections()?;
+        return Ok(format!(
+            "Host package is valid: {} ({} operations). Validation grants no access and does not verify executable behavior.",
+            package.name,
+            package.operations.len()
+        ));
+    }
+    if generated.is_some() {
+        return Err("Projection correspondence needs a host package source".into());
+    }
+    let definition = ServiceDefinition::from_value(value)?;
+    Ok(format!(
+        "Service definition is valid: {}. Validation does not establish exhaustive semantic correctness or grant access.",
+        definition.name
+    ))
+}
+
+/// Read-only host preview through the current target/grant and effect owners.
+/// The selected configuration is operator-held; no request-supplied authority
+/// or rationale is used and this function performs no adoption or invocation.
+pub fn assess_host(
+    configuration: &str,
+    issuer: &str,
+    grant_id: &str,
+    proposed: Option<&str>,
+    history: Option<&str>,
+    now: u64,
+) -> Result<Value, Error> {
+    use crate::host_execution::{
+        Grant, Target,
+        semantics::{self, PersistentEffect},
+    };
+    let configuration: Value = serde_json::from_str(configuration)?;
+    let target: Target = serde_json::from_value(
+        configuration
+            .get("target")
+            .ok_or("host executor configuration needs target")?
+            .clone(),
+    )?;
+    let principal = &target
+        .issuers
+        .get(issuer)
+        .ok_or("selected issuer is not enrolled")?
+        .authority
+        .grants
+        .get(grant_id)
+        .ok_or("selected issuer grant is unavailable")?
+        .principal;
+    let proposed: Option<Grant> = proposed.map(serde_json::from_str).transpose()?;
+    let history: Vec<PersistentEffect> = history
+        .map(serde_json::from_str)
+        .transpose()?
+        .unwrap_or_default();
+    semantics::assess_target(&target, issuer, principal, proposed.as_ref(), &history, now)
+}
+
 pub fn generate(source: &str) -> Result<Value, Error> {
     let spec = crate::policy::parse_yaml(source)?;
+    if spec["format"] == crate::host_execution::VERSION {
+        use crate::host_execution::PackageGateway;
+        let package: crate::host_execution::Package = serde_json::from_value(spec)?;
+        return Ok(serde_json::to_value(package.projections()?)?);
+    }
     if !spec["openapi"]
         .as_str()
         .is_some_and(|version| version.starts_with("3.0.") || version.starts_with("3.1."))

@@ -20,6 +20,7 @@ if __package__:
     from .selections import (
         BOUNDARY_SECTIONS,
         HOST_EXCLUSIONS,
+        HOST_EXECUTION_AUTHORITY,
         NATIVE_AUTHORITY,
         NATIVE_PHASES,
         OPTIONAL_CASES,
@@ -33,6 +34,7 @@ else:
     from selections import (
         BOUNDARY_SECTIONS,
         HOST_EXCLUSIONS,
+        HOST_EXECUTION_AUTHORITY,
         NATIVE_AUTHORITY,
         NATIVE_PHASES,
         OPTIONAL_CASES,
@@ -162,7 +164,7 @@ def resolve(witness: dict, reference: str, root: Path) -> list[dict]:
                     end = start + closing.start()
         constraint_sources = [source, (root / witness["owner"]).read_text()]
         if witness["target"] != "lib":
-            target = root / "proxy/tests" / (witness["target"] + ".rs")
+            target = root / Path(witness.get("manifest", "proxy/Cargo.toml")).parent / "tests" / (witness["target"] + ".rs")
             constraint_sources.append(target.read_text())
         file_constraints = "\n".join(dict.fromkeys(
             constraint for content in constraint_sources for constraint in re.findall(r"#!\[cfg[^\]]*\]", content)))
@@ -179,6 +181,9 @@ def resolve(witness: dict, reference: str, root: Path) -> list[dict]:
 
 def cargo_selected(witness: dict, node: dict, command: dict) -> bool:
     if any(token.endswith("tests.blackbox.native_authority") for token in command["tokens"]):
+        if "host-execution" in command["tokens"]:
+            return witness.get("manifest") == "host-executor/Cargo.toml" and node["node"] in {
+                case for cases in HOST_EXECUTION_AUTHORITY.values() for case in cases}
         return witness["target"] == "native_coord" and node["node"] in {
             case for cases in NATIVE_AUTHORITY.values() for case in cases}
     tokens = command["tokens"]
@@ -186,7 +191,7 @@ def cargo_selected(witness: dict, node: dict, command: dict) -> bool:
         return False
     if not any(token.endswith("cargo_with_space.sh") for token in tokens):
         return False
-    if "--manifest-path" in tokens and tokens[tokens.index("--manifest-path") + 1] != "proxy/Cargo.toml":
+    if "--manifest-path" in tokens and tokens[tokens.index("--manifest-path") + 1] != witness.get("manifest", "proxy/Cargo.toml"):
         return False
     if "--lib" in tokens and witness["target"] != "lib":
         return False
@@ -226,11 +231,16 @@ def selection(witness: dict, reference: str, node: dict, commands: list[dict], p
                 selected.append(f"phase `{phase}` ({PYTEST_PHASES[phase][0]})")
         matches = [command for command in commands if pytest_selected(command, node["node"])]
     elif witness["kind"] == "cargo":
+        if node["node"] in witness.get("helpers", {}):
+            return ["child helper: " + witness["helpers"][node["node"]]]
         matches = [command for command in commands if cargo_selected(witness, node, command)]
         for phase, groups in NATIVE_PHASES.items():
             if any(witness["target"] == target and (not prefix or node["node"].startswith(prefix + "::"))
                    for target, prefix in groups):
                 selected.append(f"manual native phase `{phase}` (named execution receipt; ignored cases remain incomplete)")
+        if witness.get("manifest") == "host-executor/Cargo.toml" and node["node"] in {
+                case for cases in HOST_EXECUTION_AUTHORITY.values() for case in cases}:
+            selected.append("manual `native-authority --suite host-execution` (prepared installed executor, probe and owned service)")
         if node["ignored"]:
             selected.append("ignored by default")
     else:
@@ -315,9 +325,9 @@ def selector_problems(root: Path = ROOT) -> list[str]:
 
 def validate_controls(controls: list[dict], root: Path) -> set[str]:
     ids = [control["id"] for control in controls]
-    expected = [f"BB-{number:02}" for number in range(1, 38)]
+    expected = [f"BB-{number:02}" for number in range(1, 39)]
     if sorted(ids) != expected:
-        raise ValueError("control IDs must contain BB-01–BB-37 exactly once")
+        raise ValueError("control IDs must contain BB-01–BB-38 exactly once")
     fields = {"id", "control", "source", "what", "existing", "conformance", "effort", "comments", "owner", "decisions"}
     decisions = {item["id"] for item in tomllib.loads((root / "docs/assurance-map.toml").read_text())["decisions"]}
     for control in controls:
@@ -330,16 +340,18 @@ def validate_controls(controls: list[dict], root: Path) -> set[str]:
 
 def validate_cargo_source(witness: dict, root: Path) -> None:
     owner = root / witness["owner"]
+    crate = root / Path(witness.get("manifest", "proxy/Cargo.toml")).parent
     if not witness["module"] and witness["target"] != "lib":
-        expected = root / "proxy/tests" / (witness["target"] + ".rs")
+        expected = crate / "tests" / (witness["target"] + ".rs")
         if owner != expected or any(root / path != expected for path in witness["paths"]):
             raise ValueError(f"unwired Cargo root target: {witness['paths']}")
         return
     leaf = witness["module"].split("::")[-1]
+    crate_root = owner == crate / "src/lib.rs"
     if witness["target"] == "lib":
-        prefix = owner.relative_to(root / "proxy/src").with_suffix("").parts
+        prefix = () if crate_root else owner.relative_to(crate / "src").with_suffix("").parts
     else:
-        owner_parts = owner.relative_to(root / "proxy/tests").with_suffix("").parts
+        owner_parts = owner.relative_to(crate / "tests").with_suffix("").parts
         if owner_parts[0] != witness["target"]:
             raise ValueError(f"unresolved Cargo target: {witness['target']}")
         prefix = owner_parts[1:]
@@ -353,7 +365,8 @@ def validate_cargo_source(witness: dict, root: Path) -> None:
         resolved = owner
     else:
         explicit = re.search(r'#\[path\s*=\s*"([^\"]+)"\]\s*mod\s+' + re.escape(leaf) + r"\s*;", source)
-        resolved = owner.parent / (explicit[1] if explicit else owner.stem + "/" + leaf + ".rs")
+        directory = owner.parent if crate_root else owner.parent / owner.stem
+        resolved = owner.parent / explicit[1] if explicit else directory / (leaf + ".rs")
     if any(resolved.resolve() != (root / path).resolve() for path in witness["paths"]):
         raise ValueError(f"unwired Cargo source: {witness['paths']}")
 
@@ -438,7 +451,8 @@ def render_witness_identities(witnesses: list[dict], commands: list[dict], phase
                 identity = node["node"]
                 if witness["kind"] == "cargo":
                     target = "--lib" if witness["target"] == "lib" else "--test " + witness["target"]
-                    identity = f"cargo test --manifest-path proxy/Cargo.toml {target} {identity} -- --exact" + (" --ignored" if node["ignored"] else "")
+                    manifest = witness.get("manifest", "proxy/Cargo.toml")
+                    identity = f"cargo test --manifest-path {manifest} {target} {identity} -- --exact" + (" --ignored" if node["ignored"] else "")
                 lines += [f"- [`{identity}`]({link(reference.split('::', 1)[0], node['line'])})"]
                 if witness["kind"] == "cargo":
                     constraints = re.findall(r"#!?\[(?:ignore|cfg)[^\]]*\]", node["cfg"])

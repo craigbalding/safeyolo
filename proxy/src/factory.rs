@@ -716,7 +716,10 @@ async fn doctor(root: &Path, snapshot: &Snapshot) -> Result<Value, Error> {
             }
             if runtime["runtime_state"] != "running" || runtime["agent_state"] != "running" || runtime["proxy_attachment"]["state"] != "ready" { return Err(format!("role runtime is not ready: {runtime}").into()); }
             let state = home(root, role).join(".safeyolo/coord-supervisor-state.json");
-            coord_supervisor::inspect(&state)?;
+            let checkpoint = coord_supervisor::inspect(&state)?;
+            if role.harness == "claude" && checkpoint["phase"] == "uncertain" {
+                return Err("Claude's last turn is uncertain; inspect agent watch and retained native Work before retrying".into());
+            }
             guest_preflight(role, role.args.as_deref().unwrap_or(&agent.user_default_args)).await?;
             Ok::<_, Error>(json!({"agent_id":agent.id,"runtime":runtime,"checkpoint":coord_supervisor::inspect(&state)?}))
         }.await;
@@ -841,6 +844,8 @@ async fn login(snapshot: &Snapshot, name: &str) -> Result<(), Error> {
     let result = async {
         let command = if role.harness == "codex" {
             "/home/agent/.safeyolo-interactive-command login --device-auth && /home/agent/.safeyolo/safeyolo-coord codex-state adopt".into()
+        } else if role.harness == "claude" {
+            "/home/agent/.safeyolo-interactive-command auth login".into()
         } else {
             println!("Use Pi /login for the selected provider, then exit. Only this role's home is used.");
             format!("/home/agent/.safeyolo-interactive-command {}", role.args.as_deref().unwrap_or(&agent.user_default_args).iter().map(|arg| shell_quote(arg)).collect::<Vec<_>>().join(" "))

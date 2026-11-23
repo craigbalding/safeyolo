@@ -1,6 +1,6 @@
 //! Hyperlight callbacks use the existing delegated proxy, never a host dialer.
 use super::{digest, network, now};
-use crate::{Error, credentials::Secret};
+use crate::Error;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -19,6 +19,44 @@ use tokio::{
 
 const MESSAGE_BYTES: usize = 48 * 1024;
 const CHUNK_BYTES: usize = 16 * 1024;
+
+/// Service metadata may select an API version, never a credential, identity,
+/// destination, framing or alternate proxy path. The encoded call is bounded.
+fn request_headers(
+    values: BTreeMap<String, String>,
+    authentication_header: &str,
+) -> Result<Vec<(hyper::header::HeaderName, hyper::header::HeaderValue)>, Error> {
+    values
+        .into_iter()
+        .map(|(name, value)| {
+            let name: hyper::header::HeaderName = name.parse()?;
+            if matches!(
+                name.as_str(),
+                "authorization"
+                    | "proxy-authorization"
+                    | "host"
+                    | "connection"
+                    | "upgrade"
+                    | "transfer-encoding"
+                    | "content-length"
+                    | "trailer"
+                    | "te"
+                    | "cookie"
+                    | "x-api-key"
+                    | "content-type"
+                    | "user-agent"
+            ) || name.as_str().starts_with("x-safeyolo-")
+                || name.as_str().eq_ignore_ascii_case(authentication_header)
+            {
+                return Err(
+                    "mediated request headers cannot replace host-owned authority or framing"
+                        .into(),
+                );
+            }
+            Ok((name, value.parse()?))
+        })
+        .collect()
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -59,6 +97,7 @@ pub struct ServiceEvidence {
     pub request_sha256: String,
     pub request_bytes: usize,
     pub request_body_base64: String,
+    pub request_headers: BTreeMap<String, String>,
     pub started_at_ms: u128,
     pub ended_at_ms: Option<u128>,
     pub request_started: bool,
@@ -106,6 +145,8 @@ enum Call {
         url: String,
         #[serde(default)]
         body_base64: String,
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
     },
     Read {
         id: String,
@@ -117,7 +158,7 @@ enum Call {
 pub(super) struct Bridge {
     listener: UnixListener,
     proxy: PathBuf,
-    tokens: BTreeMap<String, Secret>,
+    service_headers: network::ServiceHeaders,
     limits: ServiceLimits,
     policy_hash: String,
     configuration_sha256: String,
@@ -130,12 +171,12 @@ impl Bridge {
         limits: ServiceLimits,
         captures: Captures,
     ) -> Result<Self, Error> {
-        let (proxy, mut tokens) = client.service_access()?;
-        tokens.retain(|name, _| limits.services.contains(name));
+        let (proxy, mut service_headers) = client.service_access()?;
+        service_headers.retain(|name, _| limits.services.contains(name));
         Ok(Self {
             listener,
             proxy,
-            tokens,
+            service_headers,
             limits,
             policy_hash: client.policy_hash.clone(),
             configuration_sha256: client.configuration_sha256.clone(),
@@ -162,7 +203,11 @@ impl Bridge {
                         method,
                         url,
                         body_base64,
-                    } => self.service(service, method, url, body_base64).await,
+                        headers,
+                    } => {
+                        self.service(service, method, url, body_base64, headers)
+                            .await
+                    }
                 }
             }
             .await;
@@ -213,6 +258,7 @@ impl Bridge {
         method: String,
         url: String,
         body_base64: String,
+        headers: BTreeMap<String, String>,
     ) -> Result<Value, Error> {
         let uri: hyper::Uri = url.parse()?;
         if !matches!(uri.scheme_str(), Some("http" | "https"))
@@ -228,10 +274,11 @@ impl Bridge {
         if method == hyper::Method::CONNECT {
             return Err("guest tunnels are unavailable".into());
         }
-        let token = self
-            .tokens
+        let (authentication_header, authorization) = self
+            .service_headers
             .get(&service)
             .ok_or("service is not selected or has no standing grant")?;
+        let headers = request_headers(headers, authentication_header)?;
         let body = STANDARD.decode(body_base64)?;
         if body.len() > self.limits.max_request_bytes {
             return Err("service input limit exceeded".into());
@@ -258,6 +305,12 @@ impl Bridge {
                     request_sha256: digest(&body),
                     request_bytes: body.len(),
                     request_body_base64: STANDARD.encode(&body),
+                    request_headers: headers
+                        .iter()
+                        .map(|(name, value)| {
+                            (name.to_string(), value.to_str().unwrap_or("").to_owned())
+                        })
+                        .collect(),
                     started_at_ms: now()?,
                     ended_at_ms: None,
                     request_started: false,
@@ -289,14 +342,17 @@ impl Bridge {
             let (mut client, connection) =
                 hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
             let _driver = Connection(tokio::spawn(connection));
-            let request = hyper::Request::builder()
+            let mut request = hyper::Request::builder()
                 .method(method.clone())
                 .uri(uri.clone())
                 .header("host", uri.authority().unwrap().as_str())
-                .header("authorization", format!("Bearer {}", token.expose_secret()))
+                .header(authentication_header, authorization.expose_secret())
                 .header("user-agent", "SafeYolo-mediated-job")
-                .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(body)))?;
+                .header("content-type", "application/json");
+            for (name, value) in headers {
+                request = request.header(name, value);
+            }
+            let request = request.body(Full::new(Bytes::from(body)))?;
             self.update(index, |record| {
                 record.request_started = true;
                 if record.effect_outcome != "read_only" {

@@ -9,6 +9,7 @@ use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
+    collections::BTreeMap,
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -44,9 +45,12 @@ struct Delegation {
 #[derive(Serialize, Deserialize)]
 struct Session {
     tokens: serde_json::Value,
+    service_auth: BTreeMap<String, crate::services::AuthConfig>,
     policy_hash: String,
     configuration_sha256: String,
 }
+
+pub(super) type ServiceHeaders = BTreeMap<String, (String, Secret)>;
 
 fn same_policy(state: &RuntimeState, runtime: &crate::Runtime) -> bool {
     state
@@ -149,14 +153,29 @@ pub(crate) async fn serve(
     let prepared = (|| -> Result<_, Error> {
         let delegation: Delegation = serde_json::from_slice(&body)?;
         let authority = delegation.authority()?;
-        let tokens = runtime
+        let gateway = runtime
             .policy
             .as_ref()
             .and_then(|policy| policy.gateway())
-            .ok_or("gateway policy is unavailable")?
-            .agent_environment_json(&authority.principal)?;
+            .ok_or("gateway policy is unavailable")?;
+        let tokens = gateway.agent_environment_json(&authority.principal)?;
+        let tokens: serde_json::Value = serde_json::from_str(tokens.expose_secret())?;
+        let service_auth = gateway.registry().map_or_else(BTreeMap::new, |registry| {
+            registry
+                .services
+                .iter()
+                .filter(|(name, _)| tokens.get(*name).is_some())
+                .filter_map(|(name, service)| {
+                    service
+                        .auth
+                        .as_ref()
+                        .map(|auth| (name.clone(), auth.clone()))
+                })
+                .collect()
+        });
         let session = Zeroizing::new(serde_json::to_vec(&Session {
-            tokens: serde_json::from_str(tokens.expose_secret())?,
+            tokens,
+            service_auth,
             policy_hash: runtime
                 .policy
                 .as_ref()
@@ -271,6 +290,7 @@ pub(crate) fn local(
 pub(super) struct Client {
     stream: TokioIo<hyper::upgrade::Upgraded>,
     tokens: Secret,
+    service_auth: BTreeMap<String, crate::services::AuthConfig>,
     socket_path: PathBuf,
     pub(super) policy_hash: String,
     pub(super) configuration_sha256: String,
@@ -380,6 +400,7 @@ impl Client {
             Ok::<_, Error>(Self {
                 stream,
                 tokens: Secret::new(serde_json::to_string(&session.tokens)?),
+                service_auth: session.service_auth,
                 socket_path: delegation.socket_path.clone(),
                 policy_hash: session.policy_hash,
                 configuration_sha256: session.configuration_sha256,
@@ -413,16 +434,17 @@ impl Client {
         .await
     }
 
-    pub(super) fn service_access(
-        &self,
-    ) -> Result<(PathBuf, std::collections::BTreeMap<String, Secret>), Error> {
-        let tokens: std::collections::BTreeMap<String, String> =
-            serde_json::from_str(self.tokens.expose_secret())?;
+    pub(super) fn service_access(&self) -> Result<(PathBuf, ServiceHeaders), Error> {
+        let tokens: BTreeMap<String, String> = serde_json::from_str(self.tokens.expose_secret())?;
         Ok((
             self.socket_path.clone(),
             tokens
                 .into_iter()
-                .map(|(name, token)| (name, Secret::new(token)))
+                .map(|(name, token)| {
+                    let header =
+                        crate::services::gateway_token_header(self.service_auth.get(&name), &token);
+                    (name, header)
+                })
                 .collect(),
         ))
     }

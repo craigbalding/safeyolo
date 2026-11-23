@@ -9,15 +9,18 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
 import socket
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,11 +29,12 @@ import pytest
 import tomlkit
 
 from tests.proxy_contracts.test_gateway_provider import _provider_run
+from tests.proxy_contracts.test_native_coord_operator import POLICY as COORD_POLICY
 from tests.proxy_contracts.test_native_coord_operator import terminal
 from tests.proxy_contracts.test_native_policy_cli import native_instance
 
 
-def contract(directory, *, mixed=True):
+def contract(directory, *, mixed=True, claude=False):
     directory.mkdir()
     (directory / "role.md").write_text("Follow the assigned role and use canonical Coord handoffs.\n")
     source = directory / "factory.toml"
@@ -47,6 +51,7 @@ args = ["--model", "selected-model"]
 [roles.owner]
 agent = "fixture-forge"
 contract = "role.md"
+''' + ('harness = "claude"\nargs = ["--model", "sonnet"]\n' if claude else '') + '''
 [roles.reviewer]
 agent = "fixture-lens"
 contract = "role.md"
@@ -72,19 +77,19 @@ fields = ["target"]
 
 def cli(instance, *arguments):
     result = instance.cli(*arguments)
-    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
     return result
 
 
 @contextmanager
-def prepared(directory, nats_binary, *, source_fixture=False):
+def prepared(directory, nats_binary, *, source_fixture=False, claude=False):
     with native_instance(directory, source=None, agent_api=True, source_fixture=source_fixture) as instance:
         # Ordinary shell utilities are production prerequisites. No Python,
         # package import path or source-checkout helper is in the command PATH.
         tools = directory / "tools"
         tools.mkdir()
         for name in ("bash", "env", "cp", "chmod", "mkdir", "install", "stat", "id",
-                     "dirname", "cat", "tail", "grep", "sed", "awk", "readlink",
+                     "dirname", "basename", "cat", "tail", "grep", "sed", "awk", "readlink",
                      "ln", "mv", "rm", "mktemp", "git", "openssl"):
             executable = shutil.which(name)
             assert executable is not None, name
@@ -93,9 +98,10 @@ def prepared(directory, nats_binary, *, source_fixture=False):
         instance.environment["SAFEYOLO_NATS_TEST_INSTANCE"] = "1"
         for name in ("SAFEYOLO_COORD_EXECUTABLE", "SAFEYOLO_COORD_GUEST_BINARY",
                      "SAFEYOLO_FACTORY_SNAPSHOT", "SAFEYOLO_FACTORY_ROLE",
-                     "SAFEYOLO_CODEX_COORD_SUPERVISOR", "SAFEYOLO_PI_COORD_SUPERVISOR"):
+                     "SAFEYOLO_CODEX_COORD_SUPERVISOR", "SAFEYOLO_PI_COORD_SUPERVISOR",
+                     "SAFEYOLO_CLAUDE_COORD_SUPERVISOR"):
             instance.environment.pop(name, None)
-        source = contract(directory / "contract")
+        source = contract(directory / "contract", claude=claude)
         cli(instance, "factory", "check", str(source))
         cli(instance, "factory", "approve", str(source), "--yes")
         cli(instance, "coord", "start", "--binary", str(nats_binary))
@@ -165,8 +171,9 @@ def test_setup_preview_keeps_exact_contract_and_approval_separate(tmp_path, _bin
         assert_no_role_launch(instance)
 
 
-def test_setup_resumes_prepared_roles_without_reapplying_or_initializing_checkpoints(tmp_path, _binary_cache):
-    with prepared(tmp_path, _binary_cache) as (instance, workspaces):
+@pytest.mark.parametrize("claude", [False, True])
+def test_setup_resumes_prepared_roles_without_reapplying_or_initializing_checkpoints(tmp_path, _binary_cache, claude):
+    with prepared(tmp_path, _binary_cache, claude=claude) as (instance, workspaces):
         source = tmp_path / "contract/factory.toml"
         before = roles(instance)
         entries = list(instance.root.glob("agents/*/home/.safeyolo-command"))
@@ -184,25 +191,36 @@ def test_setup_resumes_prepared_roles_without_reapplying_or_initializing_checkpo
             assert_no_role_launch(instance)
 
 
-def test_setup_keeps_valid_checkpoint_and_diagnoses_corrupt_checkpoint(tmp_path, _binary_cache):
-    with prepared(tmp_path, _binary_cache) as (instance, _):
+@pytest.mark.parametrize("claude", [False, True])
+def test_setup_keeps_valid_checkpoint_and_diagnoses_corrupt_checkpoint(tmp_path, _binary_cache, claude):
+    with prepared(tmp_path, _binary_cache, claude=claude) as (instance, _):
         source = tmp_path / "contract/factory.toml"
-        state = instance.root / "agents/fixture-relay/home/.safeyolo/coord-supervisor-state.json"
         executable = instance.root / "bin/safeyolo-coord"
+        if claude:
+            coordinator = instance.root / "agents/fixture-relay/home/.safeyolo/coord-supervisor-state.json"
+            initial = subprocess.check_output([str(executable), "read-state", str(coordinator)])
+            subprocess.run([str(executable), "write-state", str(coordinator)], input=initial, check=True)
+        agent = "fixture-forge" if claude else "fixture-relay"
+        state = instance.root / f"agents/{agent}/home/.safeyolo/coord-supervisor-state.json"
         checkpoint = json.loads(subprocess.check_output([str(executable), "read-state", str(state)]))
+        if claude:
+            checkpoint["harness"] = "claude"
         checkpoint["safe_cursor"] = 91
         checkpoint["recent_attention_ids"] = ["attn-" + "c" * 32]
         subprocess.run([str(executable), "write-state", str(state)], input=json.dumps(checkpoint), text=True, check=True)
         before = state.read_bytes()
         result = instance.cli("factory", "setup", str(source))
-        assert result.returncode != 0 and "role owner:" in result.stderr
+        missing_role = "reviewer" if claude else "owner"
+        assert result.returncode != 0 and f"role {missing_role}:" in result.stderr
         assert state.read_bytes() == before
         state.write_text("{broken checkpoint")
         result = instance.cli("factory", "setup", str(source), "--confirm-fresh-identity")
-        assert result.returncode != 0 and "role coordinator:" in result.stderr
+        corrupt_role = "owner" if claude else "coordinator"
+        assert result.returncode != 0 and f"role {corrupt_role}:" in result.stderr
         assert "diagnostics" in result.stderr
         assert state.read_text() == "{broken checkpoint"
-        assert not (state.parents[3] / "fixture-forge/home/.safeyolo/coord-supervisor-state.json").exists()
+        missing_agent = "fixture-lens" if claude else "fixture-forge"
+        assert not (state.parents[3] / f"{missing_agent}/home/.safeyolo/coord-supervisor-state.json").exists()
 
 
 def test_setup_approval_and_workspace_requirements_do_not_launch_roles(tmp_path):
@@ -254,8 +272,9 @@ def test_setup_repairs_stopped_staging_and_explicitly_changed_workspace(tmp_path
         assert_no_role_launch(instance)
 
 
-def test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants(tmp_path, _binary_cache):
-    with prepared(tmp_path, _binary_cache) as (instance, workspaces):
+@pytest.mark.parametrize("claude", [False, True])
+def test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants(tmp_path, _binary_cache, claude):
+    with prepared(tmp_path, _binary_cache, claude=claude) as (instance, workspaces):
         # The shared native bundle retains non-Factory inputs. Factory homes
         # stage native commands and link only their workflow skills.
         assert not list((instance.root / "agents").rglob("*.py"))
@@ -280,12 +299,18 @@ def test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants(tmp
             runtime = home / ".safeyolo/safeyolo-coord"
             with runtime.open("rb") as handle:
                 assert hashlib.file_digest(handle, "sha256").hexdigest() == (instance.root / "assets/guest/safeyolo-coord.sha256").read_text().strip()
-            assert 'safeyolo-coord" repo-map "$@"' in (home / ".safeyolo/repo-map").read_text()
+            if not claude or role != "owner":
+                assert 'safeyolo-coord" repo-map "$@"' in (home / ".safeyolo/repo-map").read_text()
             assert not (home / ".agents/skills/safeyolo-lab-controller").is_symlink()
         pi = instance.root / "agents/fixture-lens/home"
         assert (pi / ".pi/agent/extensions/safeyolo-coord.ts").read_bytes() == (instance.root / "assets/contrib/pi-coord-extension.ts").read_bytes()
         assert (pi / ".pi/agent/skills/safeyolo").readlink() == Path("/safeyolo/skills/safeyolo")
         codex_home = instance.root / "agents/fixture-relay/home/.codex"
+        if claude:
+            claude_home = instance.root / "agents/fixture-forge/home"
+            assert json.loads((claude_home / ".claude.json").read_text())["mcpServers"]["safeyolo-coord"]["command"] == "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher"
+            assert not (claude_home / ".claude/.credentials.json").exists()
+            assert json.loads((claude_home / ".safeyolo/coord-supervisor.json").read_text())["harness"] == "claude"
         assert not (codex_home / "auth.json").exists()
         assert tomllib.loads((codex_home / "config.toml").read_text())["mcp_servers"]["safeyolo-coord"]["command"] == "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher"
         codex = shutil.which("codex")
@@ -370,8 +395,9 @@ def test_installed_repo_map_reads_working_tree_and_reports_guidance(tmp_path, _b
         assert source.read_bytes() == before
 
 
-def test_installed_doctor_checks_actual_direct_and_wrapped_role_commands(tmp_path, _binary_cache):
-    with prepared(tmp_path, _binary_cache) as (instance, _):
+@pytest.mark.parametrize("claude", [False, True])
+def test_installed_doctor_checks_actual_direct_and_wrapped_role_commands(tmp_path, _binary_cache, claude):
+    with prepared(tmp_path, _binary_cache, claude=claude) as (instance, _):
         homes = {role: instance.root / f"agents/{agent}/home"
                  for role, agent in (("owner", "fixture-forge"), ("reviewer", "fixture-lens"))}
         originals = {role: (home / ".safeyolo-command").read_bytes() for role, home in homes.items()}
@@ -444,8 +470,10 @@ def test_installed_doctor_checks_actual_direct_and_wrapped_role_commands(tmp_pat
 
 
 @pytest.mark.skipif(os.uname().sysname != "Linux", reason="Guest supervision uses Linux process state")
-def test_doctor_rejects_the_paused_exact_command_with_a_healthy_supervisor(tmp_path, _binary_cache, monkeypatch):
-    with prepared(tmp_path, _binary_cache, source_fixture=True) as (instance, _):
+@pytest.mark.parametrize("claude", [False, True])
+@pytest.mark.parametrize("command_failure", [False, True], ids=["paused", "failed"])
+def test_doctor_rejects_failed_or_paused_command_with_a_healthy_runtime(tmp_path, _binary_cache, monkeypatch, claude, command_failure):
+    with prepared(tmp_path, _binary_cache, source_fixture=True, claude=claude) as (instance, _):
         agent = "fixture-forge"
         home = instance.root / "agents" / agent / "home"
         state_path = home / ".safeyolo-command-supervisor.json"
@@ -465,15 +493,16 @@ def test_doctor_rejects_the_paused_exact_command_with_a_healthy_supervisor(tmp_p
         with _provider_run(instance.root, monkeypatch, name=agent):
             instance.environment.update({key: os.environ[key] for key in ("FAKE_RUN_ID", "SAFEYOLO_RUNSC_ROOT")})
             generation = json.loads(context.read_text())["generation"]
+            command = "echo fixture-runtime-failed >&2; exit 77" if command_failure else "exec sleep 60"
             state_path.write_text(json.dumps({
                 "schema_version": 1, "name": agent, "generation": generation,
                 "supervision_id": "paused-command", "runtime_owner": "guest-pid1",
-                "state": "starting", "started_at": 1, "command": "exec sleep 60",
+                "state": "starting", "started_at": 1, "command": command,
                 "restart_count": 0, "consecutive_failures": 0,
             }))
             (home.parent / "current-launch.json").write_text(json.dumps({
                 "agent_id": roles(instance)[agent]["agent_id"], "name": agent,
-                "launch_id": "paused-command", "command": "exec sleep 60",
+                "launch_id": "paused-command", "command": command,
                 "launcher": {"kind": "supervisor"}, "state": "managed",
             }))
             runsc = instance.root / "bin/runsc"
@@ -518,6 +547,17 @@ esac
                             assert value["status"] == "not-ready"
                             return next(check for check in value["checks"] if check.get("role") == "owner")
 
+                        if command_failure:
+                            failed = wait_state(lambda state: state["state"] == "failed")
+                            assert supervisor.wait(timeout=5) == 1
+                            assert failed["last_exit_code"] == 77
+                            assert "fixture-runtime-failed" in failed["last_stderr"]
+                            rejected = diagnose()
+                            assert rejected["status"] == "FAIL", rejected
+                            assert rejected["runtime"]["runtime_state"] == "running"
+                            assert rejected["runtime"]["agent_state"] != "running"
+                            assert "fixture-runtime-failed" in rejected["runtime"]["error"]
+                            return
                         running = wait_state(lambda state: state["state"] == "running")
                         assert diagnose()["status"] == "PASS"
                         pid = running["command_pid"]
@@ -580,8 +620,9 @@ def test_native_release_preserves_other_work_and_requires_canonical_audit(tmp_pa
         assert [message["body"].split(".")[0] for message in history["messages"]] == ["Factory work release requested", "Factory work release completed"]
 
 
-def test_doctor_names_missing_role_executable_and_room_permission(tmp_path, _binary_cache):
-    with prepared(tmp_path, _binary_cache) as (instance, _):
+@pytest.mark.parametrize("claude", [False, True])
+def test_doctor_names_missing_role_executable_and_room_permission(tmp_path, _binary_cache, claude):
+    with prepared(tmp_path, _binary_cache, claude=claude) as (instance, _):
         executable = instance.root / "agents/fixture-forge/home/.safeyolo/safeyolo-coord"
         saved = executable.with_suffix(".held")
         executable.rename(saved)
@@ -740,8 +781,590 @@ def test_factory_setup_interruption_preserves_prepared_roles():
     assert (root / "factories" / name / "approved").read_bytes() == snapshot
 
 
+CLAUDE_FACTORY_DIRECTION = (
+    "This is the installed Claude Factory proof. "
+    "Use native Work mutations for assigned work; model text alone cannot complete it. "
+    "Do not run a second waiter or change authority."
+)
+
+
+def installed_claude_direction(root, agent, identity, sequence=None):
+    """Read the authenticated direction; a retained sequence never sends again."""
+    host = [str(root / "bin/safeyolo"), "--root", str(root)]
+    room = f"{agent}-agent"
+    if sequence is None:
+        sent = subprocess.run([*host, "coord", "send", room, CLAUDE_FACTORY_DIRECTION, "--to", agent],
+                              capture_output=True, text=True, timeout=60)
+        assert sent.returncode == 0, (sent.stdout, sent.stderr)
+        acknowledgment = re.fullmatch(
+            r"message accepted; sequence=([0-9]+); attention=\S+; delivery=\S+", sent.stdout.strip())
+        assert acknowledgment, ("inspect retained history before another send", sent.stdout)
+        sequence = int(acknowledgment[1])
+    assert sequence > 0, "use the retained positive direction sequence"
+    history = subprocess.run([*host, "coord", "history", room, "--since", str(sequence - 1)],
+                             capture_output=True, text=True, timeout=60)
+    assert history.returncode == 0, (history.stdout, history.stderr)
+    messages = [json.loads(line) for line in history.stdout.splitlines()]
+    matching = [message for message in messages if message["sequence"] == sequence]
+    assert len(matching) == 1, ("direction missing from retained room", room, sequence)
+    direction = matching[0]
+    assert direction["sender_kind"] == "operator", direction
+    assert direction["sender_agent_id"] is None and direction["sender_agent_name"] is None, direction
+    assert direction["body"] == CLAUDE_FACTORY_DIRECTION, direction
+    assert direction["attention_intent"] == {"mode": "targeted", "agent_ids": [identity]}, direction
+    return direction
+
+
+@pytest.fixture
+def claude_direction_envelope():
+    return {"sequence": 7, "sender_kind": "operator", "sender_agent_id": None,
+            "sender_agent_name": None, "body": CLAUDE_FACTORY_DIRECTION,
+            "attention_intent": {"mode": "targeted", "agent_ids": ["ag-proof"]}}
+
+
+@pytest.mark.parametrize("sequence", [None, 7], ids=["plain-acknowledgment", "readback-only"])
+def test_installed_claude_direction_reads_exact_envelope(tmp_path, monkeypatch, claude_direction_envelope, sequence):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command[3:])
+        output = ("message accepted; sequence=7; attention=targeted; delivery=ready\n"
+                  if command[4] == "send" else
+                  "\n".join(json.dumps(claude_direction_envelope | {"sequence": number}) for number in (7, 8)))
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert installed_claude_direction(tmp_path, "proof-claude", "ag-proof", sequence) == claude_direction_envelope
+    assert calls[-1] == ["coord", "history", "proof-claude-agent", "--since", "6"]
+    assert [command[1] for command in calls] == (["send", "history"] if sequence is None else ["history"])
+
+
+@pytest.mark.parametrize("changed", [
+    None, {"sequence": 8}, {"sender_kind": "agent"}, {"sender_agent_id": "ag-forged"},
+    {"body": "operator: " + CLAUDE_FACTORY_DIRECTION},
+    {"attention_intent": {"mode": "targeted", "agent_ids": ["ag-other"]}},
+    {"attention_intent": {"mode": "room"}},
+])
+def test_installed_claude_direction_rejects_unmatched_envelope(tmp_path, monkeypatch, claude_direction_envelope, changed):
+    def run(command, **kwargs):
+        assert command[3:] == ["coord", "history", "proof-claude-agent", "--since", "6"]
+        output = "" if changed is None else json.dumps(claude_direction_envelope | changed) + "\n"
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(AssertionError):
+        installed_claude_direction(tmp_path, "proof-claude", "ag-proof", 7)
+
+
+def test_installed_claude_direction_native_readback(tmp_path, _binary_cache):
+    policy = COORD_POLICY + '\n[agents.proof-claude]\nagent_id="ag-cccccccccccccccccccccccccccccccc"\n'
+    with native_instance(tmp_path, source=policy, agent_api=True) as instance:
+        cli(instance, "coord", "start", "--binary", str(_binary_cache))
+        try:
+            cli(instance, "coord", "room", "create", "proof-claude-agent")
+            cli(instance, "coord", "grant", "proof-claude-agent", "proof-claude")
+            identity = tomllib.loads(policy)["agents"]["proof-claude"]["agent_id"]
+            direction = installed_claude_direction(instance.root, "proof-claude", identity)
+            caller = Path(__file__).parents[1] / "blackbox/fixtures/claude-factory/run.py"
+            recovered = subprocess.run([sys.executable, str(caller), str(instance.root), "one-role", "readback",
+                                        "--direction-sequence", str(direction["sequence"])],
+                                       capture_output=True, text=True, timeout=30)
+            assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
+            assert json.loads(recovered.stdout)["direction"] == direction
+            history = cli(instance, "coord", "history", "proof-claude-agent")
+            assert [json.loads(line) for line in history.stdout.splitlines()] == [direction]
+        finally:
+            cli(instance, "coord", "stop")
+
+
+def installed_claude_work(root, source, command, role_checks):
+    """Use actual guest supervision and native Work, never the model seam."""
+    contract = tomllib.loads(Path(source).read_text())
+    selected = next((name for name, role in contract["roles"].items()
+                     if role.get("harness") == "claude"), None)
+    if selected is None:
+        return
+    assert "work" in contract, "the Claude installed witness needs its native Work policy"
+    role = contract["roles"][selected]
+    agent = role["agent"]
+    identity = next(item["observation"]["agent_id"] for item in role_checks if item["role"] == selected)
+    snapshot = (root / "factories" / contract["name"] / "approved").read_text().strip()
+    workspace = Path(tomllib.loads((root / "policy.toml").read_text())["agents"][agent]["folder"])
+    marker = "claude-factory-" + uuid.uuid4().hex
+    artifact = workspace / (marker + ".txt")
+    host = [str(root / "bin/safeyolo"), "--root", str(root)]
+
+    def invoke(*args):
+        result = subprocess.run([*host, *args], capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, (args, result.stdout, result.stderr)
+        return json.loads(result.stdout)
+
+    installed_claude_direction(root, agent, identity)
+    title = (f"Write /workspace/{artifact.name} containing exactly {marker} and a newline. "
+             "Retain it, compute SHA256 and publish_work_output with the file URI plus #sha256=<digest>, "
+             "omit artifact_base64, execution_outcome succeeded, then explicitly complete_work. "
+             "Use native tools, current versions and operation IDs.")
+    created = invoke("coord", "work", "create", contract["room"], title,
+                     "--assignee", json.dumps({"kind": "agent", "id": identity}),
+                     "--factory", json.dumps({"name": contract["name"], "snapshot_id": snapshot}),
+                     "--operation-id", marker)
+    work_id = created["work"]["work_id"]
+    deadline = time.monotonic() + 180
+    while True:
+        work = invoke("coord", "work", "show", contract["room"], work_id)
+        if work["state"] == "done" and work["output"] is not None:
+            break
+        assert time.monotonic() < deadline, work
+        time.sleep(0.5)
+    assert work["claim_agent_id"] == identity
+    assert work["output"]["producer"] == {"kind": "agent", "id": identity}
+    assert work["output"]["execution_outcome"] == "succeeded"
+    assert artifact.read_text() == marker + "\n"
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    assert work["target_ref"].endswith("#sha256=" + digest)
+    original_output = work["output"]
+    original_generation = work["target_generation"]
+    assert work["acceptance_status"]["state"] != "accepted", "producer execution is not independent acceptance"
+    refusal = {"room_name": contract["room"], "work_id": work_id,
+               "expected_version": work["version"], "expected_generation": work["claim_generation"],
+               "expected_target_generation": work["target_generation"],
+               "expected_requirements_version": work["acceptance_requirements"]["version"],
+               "verdict": "approve", "summary": "Producer cannot independently accept itself",
+               "operation_id": marker + "-refuse"}
+    guest = "printf %s " + shlex.quote(json.dumps(refusal)) + " | /home/agent/.safeyolo/safeyolo-coord call decide_work_acceptance"
+    denied = subprocess.run([*host, "agent", "shell", agent, "-c", guest], capture_output=True, text=True, timeout=30)
+    assert denied.returncode != 0
+    assert "selected acceptance decider" in denied.stderr or "output producer cannot decide" in denied.stderr
+    # The operator independently read the exact retained output. A one-role
+    # fixture selects that operator as decider through the ordinary API.
+    requirements = work["acceptance_requirements"]
+    assert not requirements["checks"] and not requirements["challenges"], "use the finite operator-reviewed fixture"
+    invoke("coord", "work", "set-requirements", contract["room"], work_id,
+           "--expected-version", str(work["version"]), "--expected-generation", str(work["claim_generation"]),
+           "--expected-requirements-version", str(requirements["version"]),
+           "--authorities", '[{"kind":"operator","id":"operator"}]',
+           "--deciders", '[{"kind":"operator","id":"operator"}]', "--independent", "true",
+           "--reason", "The disposable one-role or mixed witness uses independent operator inspection",
+           "--operation-id", marker + "-requirements")
+    work = invoke("coord", "work", "show", contract["room"], work_id)
+    invoke("coord", "work", "decide-acceptance", contract["room"], work_id,
+                      "--expected-version", str(work["version"]),
+                      "--expected-generation", str(work["claim_generation"]),
+                      "--expected-target-generation", str(work["target_generation"]),
+                      "--expected-requirements-version", str(work["acceptance_requirements"]["version"]),
+                      "--verdict", "approve", "--summary", "Read the retained exact marker and verified its digest",
+                      "--operation-id", marker + "-accept")
+    accepted = invoke("coord", "work", "show", contract["room"], work_id)
+    assert accepted["acceptance_status"]["state"] == "accepted"
+    watched = subprocess.run([*host, "agent", "watch", agent, "--once", "--plain", "--history", "100"],
+                             capture_output=True, text=True, timeout=30)
+    assert watched.returncode == 0, watched.stderr
+    assert "harness=claude" in watched.stdout
+    assert "session" in watched.stdout.lower() or "turn" in watched.stdout.lower()
+    stopped = subprocess.run([*command, "stop", contract["name"]], capture_output=True, text=True, timeout=180)
+    assert stopped.returncode == 0, stopped.stderr
+    checkpoint = root / "agents" / agent / "home/.safeyolo/coord-supervisor-state.json"
+    saved = json.loads(checkpoint.read_text())
+    resumed = subprocess.run([*command, "setup", str(source)], capture_output=True, text=True, timeout=600)
+    assert resumed.returncode == 0, (resumed.stdout, resumed.stderr)
+    assert tomllib.loads((root / "policy.toml").read_text())["agents"][agent]["agent_id"] == identity
+    assert json.loads(checkpoint.read_text())["safe_cursor"] >= saved["safe_cursor"]
+    current = invoke("coord", "work", "show", contract["room"], work_id)
+    assert current["output"] == original_output and current["target_generation"] == original_generation
+    assert current["state"] == "done" and current["acceptance_status"]["state"] == "accepted"
+    (root / "claude-factory-result.json").write_text(json.dumps({
+        "work_id": work_id, "agent_id": identity, "snapshot": snapshot, "output": original_output,
+        "target_generation": original_generation, "artifact": str(artifact), "sha256": digest,
+        "restarted_without_duplicate_output": True,
+    }, indent=2) + "\n")
+
+
+def factory_setup_result(stdout):
+    """Read setup's prepared and running JSON results in emission order."""
+    decoder = json.JSONDecoder()
+    remaining = stdout.lstrip()
+    results = []
+    while remaining:
+        value, end = decoder.raw_decode(remaining)
+        results.append(value)
+        remaining = remaining[end:].lstrip()
+    assert results and results[-1]["status"] == "running", results
+    return results
+
+
+def assert_restarted_claude_policy(before, after, agent, run_id):
+    """Permit the same approved credential only within the replacement run."""
+    before, after = dict(before), dict(after)
+    old_grants = before.pop("credential_grants", {})
+    new_grants = after.pop("credential_grants", {})
+    assert after == before, "required agent bindings changed"
+    assert all(new_grants.get(key) == value for key, value in old_grants.items()), "prior credential grants changed"
+    binding = {"agent": agent, "agent_id": before["agent_id"], "run_id": run_id}
+    for key, grant in new_grants.items():
+        if key not in old_grants:
+            assert any(grant == {**prior, "approval_id": key, "beneficiary": binding,
+                                 "action": {**prior["action"], "run": binding}}
+                       for prior in old_grants.values() if prior["option"] == "run"), "unexpected credential grant"
+
+
+def installed_claude_pending_work(root, source, *, session_recovery=False):
+    """Pause one new native Work at a file gate, then restart its existing role."""
+    contract = tomllib.loads(source.read_text())
+    role = next(role for role in contract["roles"].values() if role.get("harness") == "claude")
+    agent = role["agent"]
+    policy = tomllib.loads((root / "policy.toml").read_text())["agents"][agent]
+    identity = policy["agent_id"]
+    snapshot = (root / "factories" / contract["name"] / "approved").read_text().strip()
+    workspace = Path(policy["folder"])
+    marker = ("claude-session-recovery-" if session_recovery else "claude-pending-") + snapshot
+    artifact, started, release = (workspace / (marker + suffix) for suffix in (".txt", ".started", ".release"))
+    argument_report = workspace / (marker + ".argument.json")
+    paths = (artifact, started, release, argument_report) if session_recovery else (artifact, started, release)
+    assert not any(path.exists() for path in paths), "inspect the retained pending attempt before retrying"
+    host = [str(root / "bin/safeyolo"), "--root", str(root)]
+    command = [*host, "factory"]
+
+    def invoke(*args):
+        result = subprocess.run([*host, *args], capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, (args, result.stdout, result.stderr)
+        return json.loads(result.stdout)
+
+    def permissions():
+        with sqlite3.connect(root / "data/coord/v0.db") as db:
+            return db.execute("SELECT room_id, permissions FROM memberships "
+                              "WHERE principal_id=? AND revoked_at IS NULL ORDER BY room_id", (identity,)).fetchall()
+
+    purpose = "C3 saved-session recovery" if session_recovery else "Pending-Work restart"
+    start_instruction = (f"Write /workspace/{started.name} containing exactly {marker} and a newline. ")
+    result_instruction = f"write /workspace/{artifact.name} containing exactly {marker} and a newline. "
+    if session_recovery:
+        start_instruction = (
+            "First exercise the remaining native argument-failure case: run the installed claude --version and "
+            "claude --safeyolo-c3-unknown-argument once, without a model prompt. "
+            f"Retain /workspace/{argument_report.name} as JSON with cli_version, argument, exit_code and diagnostic "
+            "from the actual commands; keep only the unknown-option diagnostic, no credentials. "
+            "Require a nonzero exit and an unknown-argument diagnostic naming that flag; report a failure honestly. "
+            "On redelivery reuse this report instead of repeating the command. " + start_instruction)
+        result_instruction = f"copy the complete argument report unchanged to /workspace/{artifact.name}. "
+    title = (f"{purpose} qualification. Claim this Work once. {start_instruction}"
+             f"Then use a foreground shell loop to wait until "
+             f"/workspace/{release.name} exists. The operator will stop and restart this role during that wait. "
+             "On redelivery, read this original Work and reuse its claim and existing files. Do not create other Work. "
+             f"Once the release file exists, {result_instruction}"
+             "Retain it, compute SHA256 and publish_work_output with its file URI plus #sha256=<digest>, "
+             "omit artifact_base64, execution_outcome succeeded, then explicitly complete_work. "
+             "Use native tools, current versions and operation IDs. Read existing output before any repeated publication.")
+    created = invoke("coord", "work", "create", contract["room"], title,
+                     "--assignee", json.dumps({"kind": "agent", "id": identity}),
+                     "--factory", json.dumps({"name": contract["name"], "snapshot_id": snapshot}),
+                     "--operation-id", marker)
+    work_id = created["work"]["work_id"]
+    work = invoke("coord", "work", "show", contract["room"], work_id)
+    assert work["state"] == "open" and work["claim_generation"] == 0, "inspect the original attempt; do not replay it"
+    result_path = root / ("claude-session-recovery-result.json" if session_recovery else "claude-pending-work-result.json")
+    evidence = {"work_id": work_id, "agent_id": identity, "snapshot": snapshot, "created": work}
+    result_path.write_text(json.dumps(evidence, indent=2) + "\n")
+    home = root / "agents" / agent / "home"
+    checkpoint = home / ".safeyolo/coord-supervisor-state.json"
+    retained = home / marker
+    with retained.open("x") as output:
+        output.write(marker + "\n")
+    authority = permissions()
+    assert authority, "the selected role must have current room authority"
+
+    def setup():
+        result = subprocess.run([*command, "setup", str(source)], capture_output=True, text=True, timeout=600)
+        evidence.setdefault("setup_results", []).append({"returncode": result.returncode,
+                                                        "stdout": result.stdout, "stderr": result.stderr})
+        result_path.write_text(json.dumps(evidence, indent=2) + "\n")
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        factory_setup_result(result.stdout)
+
+    try:
+        setup()
+        deadline = time.monotonic() + 180
+        while True:
+            work = invoke("coord", "work", "show", contract["room"], work_id)
+            if started.exists() and work["state"] == "claimed":
+                break
+            assert time.monotonic() < deadline, work
+            time.sleep(0.5)
+        assert started.read_text() == marker + "\n" and not artifact.exists()
+        assert work["claim_agent_id"] == identity and work["claim_generation"] == 1
+        assert work["output"] is None and work["target_generation"] == 0
+        running = json.loads(checkpoint.read_text())
+        assert running["phase"] == "running" and running["owned_process"] is not None
+        stopped = subprocess.run([*command, "stop", contract["name"]], capture_output=True, text=True, timeout=180)
+        assert stopped.returncode == 0, stopped.stderr
+        saved = json.loads(checkpoint.read_text())
+        pending = invoke("coord", "work", "show", contract["room"], work_id)
+        # Preserve the reached interruption before attempting its resume.
+        evidence.update(checkpoint_before_stop=running, pending_after_stop=pending, checkpoint_after_stop=saved)
+        result_path.write_text(json.dumps(evidence, indent=2) + "\n")
+        assert saved["thread_id"] and any(item["action"]["work_id"] == work_id for item in saved["native_in_flight"])
+        assert pending == work, "stopping the role must not settle or change its claimed Work"
+        setup()
+        deadline = time.monotonic() + 180
+        while True:
+            resumed = json.loads(checkpoint.read_text())
+            if (resumed["phase"] == "running" and resumed["owned_process"] is not None
+                    and resumed["owned_process"]["token"] != running["owned_process"]["token"]):
+                break
+            assert time.monotonic() < deadline, resumed
+            time.sleep(0.5)
+        evidence["checkpoint_resumed_pending"] = resumed
+        result_path.write_text(json.dumps(evidence, indent=2) + "\n")
+        assert resumed["thread_id"] == saved["thread_id"], "interrupted Claude session was replaced"
+        assert any(item["action"]["work_id"] == work_id for item in resumed["native_in_flight"])
+        release.write_text("resume the original pending Work\n")
+        deadline = time.monotonic() + 180
+        while True:
+            completed = invoke("coord", "work", "show", contract["room"], work_id)
+            if completed["state"] == "done" and completed["output"] is not None:
+                break
+            assert time.monotonic() < deadline, completed
+            time.sleep(0.5)
+        evidence["completed"] = completed
+        result_path.write_text(json.dumps(evidence, indent=2) + "\n")
+        assert completed["claim_agent_id"] == identity and completed["claim_generation"] == 1
+        assert completed["target_generation"] == 1
+        assert completed["output"]["producer"] == {"kind": "agent", "id": identity}
+        assert completed["output"]["execution_outcome"] == "succeeded"
+        if session_recovery:
+            failure = json.loads(artifact.read_text())
+            evidence["native_argument_failure"] = failure
+            result_path.write_text(json.dumps(evidence, indent=2) + "\n")
+            assert (failure["cli_version"] and isinstance(failure["exit_code"], int) and failure["exit_code"] != 0
+                    and failure["argument"] == "--safeyolo-c3-unknown-argument"
+                    and failure["argument"] in failure["diagnostic"]
+                    and "unknown" in failure["diagnostic"].lower()), "native Claude unknown argument was not rejected"
+            assert artifact.read_bytes() == argument_report.read_bytes(), "native argument report changed"
+        else:
+            assert artifact.read_text() == marker + "\n"
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        assert completed["target_ref"] == "file:///workspace/" + artifact.name + "#sha256=" + digest
+        deadline = time.monotonic() + 60
+        while True:
+            current = json.loads(checkpoint.read_text())
+            if not any(item["action"]["work_id"] == work_id for item in current.get("native_in_flight", [])):
+                break
+            assert time.monotonic() < deadline, current
+            time.sleep(0.5)
+        current_policy = tomllib.loads((root / "policy.toml").read_text())["agents"][agent]
+        report = invoke("factory", "doctor", contract["name"])
+        runtime = next(item["observation"]["runtime"] for item in report["checks"]
+                       if item["component"] == "role" and item["observation"]["agent_id"] == identity)
+        evidence.update(completed=completed, checkpoint_after_resume=current, sha256=digest,
+                        policy_before=policy, policy_after=current_policy, runtime_after_resume=runtime)
+        result_path.write_text(json.dumps(evidence, indent=2) + "\n")
+        assert current["safe_cursor"] >= saved["safe_cursor"]
+        assert_restarted_claude_policy(policy, current_policy, agent, runtime["run_id"])
+        assert permissions() == authority and retained.read_text() == marker + "\n"
+        assert (root / "factories" / contract["name"] / "approved").read_text().strip() == snapshot
+        staged = json.loads((home / ".safeyolo/coord-supervisor.json").read_text())
+        assert staged["factory"]["snapshot_id"] == snapshot and staged["harness"] == "claude"
+        assert invoke("coord", "work", "show", contract["room"], work_id)["output"] == completed["output"]
+        evidence.update(completed=completed, checkpoint_after_resume=current, home_and_authority_retained=True, sha256=digest)
+        result_path.write_text(json.dumps(evidence, indent=2) + "\n")
+    finally:
+        stopped = subprocess.run([*command, "stop", contract["name"]], capture_output=True, text=True, timeout=180)
+        assert stopped.returncode == 0, stopped.stderr
+
+
+@pytest.mark.parametrize("state", ["claimed", "done"])
+@pytest.mark.parametrize("session_recovery", [False, True])
+def test_pending_claude_caller_refuses_replaying_started_work(tmp_path, monkeypatch, state, session_recovery):
+    source = Path(__file__).parents[1] / "blackbox/fixtures/claude-factory/one-role.toml"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    approved = tmp_path / "factories/claude-one/approved"
+    approved.parent.mkdir(parents=True)
+    approved.write_text("a" * 64 + "\n")
+    (tmp_path / "policy.toml").write_text(f'[agents.proof-claude]\nagent_id="ag-proof"\nfolder={json.dumps(str(workspace))}\n')
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command[3:6])
+        assert command[3:6] in (["coord", "work", "create"], ["coord", "work", "show"])
+        response = {"work": {"work_id": "work-retained"}} if command[5] == "create" else {"state": state, "claim_generation": 1}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(response), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(AssertionError, match="inspect the original attempt"):
+        installed_claude_pending_work(tmp_path, source, session_recovery=session_recovery)
+    assert calls == [["coord", "work", "create"], ["coord", "work", "show"]]
+    assert not list(workspace.iterdir())
+
+
+@pytest.mark.parametrize(("session_recovery", "defect"), [
+    (session, defect) for session in (False, True)
+    for defect in (None, "setup-json", "session", "policy", "credential", "grant-scope", "prior-grant")
+] + [(True, "native-argument")])
+def test_pending_claude_caller_observes_setup_recovery_and_scoped_grants(tmp_path, monkeypatch, defect, session_recovery):
+    """Exercise the caller with setup's JSON sequence and completed idle state."""
+    source = Path(__file__).parents[1] / "blackbox/fixtures/claude-factory/one-role.toml"
+    agent, identity, snapshot = "proof-claude", "ag-proof", "a" * 64
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home = tmp_path / "agents" / agent / "home"
+    (home / ".safeyolo").mkdir(parents=True)
+    checkpoint = home / ".safeyolo/coord-supervisor-state.json"
+    (home / ".safeyolo/coord-supervisor.json").write_text(json.dumps({
+        "harness": "claude", "factory": {"snapshot_id": snapshot}}))
+    approved = tmp_path / "factories/claude-one/approved"
+    approved.parent.mkdir(parents=True)
+    approved.write_text(snapshot + "\n")
+    binding = {"agent": agent, "agent_id": identity, "run_id": "old-run"}
+    grant = {"approval_id": "apr-old", "beneficiary": binding, "option": "run",
+             "action": {"kind": "credential_allow", "agent": agent, "agent_id": identity,
+                        "run": binding, "host": "api.anthropic.com", "credentials": ["hmac:fixture"]}}
+    policy = {"agents": {agent: {"agent_id": identity, "folder": str(workspace),
+                                 "services": {"claude": ["inference"]}, "network_slot": 2,
+                                 "credential_grants": {"apr-old": grant}}}}
+    policy_path = tmp_path / "policy.toml"
+    policy_path.write_text(tomlkit.dumps(policy))
+    database = tmp_path / "data/coord/v0.db"
+    database.parent.mkdir(parents=True)
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE memberships (room_id TEXT, permissions TEXT, principal_id TEXT, revoked_at INTEGER)")
+        db.execute("INSERT INTO memberships VALUES ('rm-proof', 'send,receive', ?, NULL)", (identity,))
+    marker = ("claude-session-recovery-" if session_recovery else "claude-pending-") + snapshot
+    accepted = []
+    if session_recovery:
+        accepted = [workspace / ("claude-pending-" + snapshot + suffix) for suffix in (".txt", ".started", ".release")]
+        accepted += [home / ("claude-pending-" + snapshot), tmp_path / "claude-pending-work-result.json"]
+        for path in accepted:
+            path.write_text("accepted pending-work proof\n")
+    action = {"action": {"work_id": "work-pending"}}
+    work = {"work_id": "work-pending", "state": "open", "claim_generation": 0, "output": None, "target_generation": 0}
+    setup_count, stop_count = 0, 0
+
+    def run(command, **kwargs):
+        nonlocal setup_count, stop_count, work
+        args = command[3:]
+        if args[:3] == ["coord", "work", "create"]:
+            assert args[-1] == marker
+            assert ("C3 saved-session recovery" in args[4]) == session_recovery
+            value = {"work": {"work_id": work["work_id"]}}
+        elif args[:3] == ["coord", "work", "show"]:
+            if setup_count == 2 and (workspace / (marker + ".release")).exists():
+                artifact = workspace / (marker + ".txt")
+                artifact.write_text((workspace / (marker + ".argument.json")).read_text()
+                                    if session_recovery else marker + "\n")
+                digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                work = {**work, "state": "done", "target_generation": 1,
+                        "target_ref": "file:///workspace/" + artifact.name + "#sha256=" + digest,
+                        "output": {"producer": {"kind": "agent", "id": identity}, "execution_outcome": "succeeded"}}
+                checkpoint.write_text(json.dumps({"phase": "idle", "thread_id": None, "safe_cursor": 14,
+                                                  "owned_process": None, "native_in_flight": []}))
+            value = work
+        elif args[:2] == ["factory", "setup"]:
+            setup_count += 1
+            work = {**work, "state": "claimed", "claim_agent_id": identity, "claim_generation": 1}
+            if session_recovery and setup_count == 1:
+                (workspace / (marker + ".argument.json")).write_text(json.dumps({
+                    "cli_version": "2.1.317", "argument": "--safeyolo-c3-unknown-argument",
+                    "exit_code": 0 if defect == "native-argument" else 1,
+                    "diagnostic": "error: unknown option '--safeyolo-c3-unknown-argument'"}))
+            (workspace / (marker + ".started")).write_text(marker + "\n")
+            checkpoint.write_text(json.dumps({"phase": "running", "thread_id": "other" if defect == "session" and setup_count == 2 else "original",
+                                              "safe_cursor": 11, "owned_process": {"pid": setup_count, "token": f"birth-{setup_count}"},
+                                              "native_in_flight": [action]}))
+            if setup_count == 2:
+                current = json.loads(json.dumps(policy))
+                new_binding = {**binding, "run_id": "new-run"}
+                current["agents"][agent]["credential_grants"]["apr-new"] = {
+                    **grant, "approval_id": "apr-new", "beneficiary": new_binding,
+                    "action": {**grant["action"], "run": new_binding}}
+                if defect == "policy":
+                    current["agents"][agent]["network_slot"] = 3
+                if defect == "credential":
+                    current["agents"][agent]["credential_grants"]["apr-new"]["action"]["host"] = "other.example"
+                if defect == "grant-scope":
+                    new_binding["run_id"] = "other-run"
+                if defect == "prior-grant":
+                    del current["agents"][agent]["credential_grants"]["apr-old"]
+                policy_path.write_text(tomlkit.dumps(current))
+            return SimpleNamespace(returncode=0, stdout='{"status":"prepared"}\n' +
+                                   ('truncated {' if defect == "setup-json" else '{"status":"running"}\n'), stderr="")
+        elif args[:2] == ["factory", "doctor"]:
+            value = {"checks": [{"component": "role", "observation": {"agent_id": identity, "runtime": {"run_id": "new-run"}}}]}
+        else:
+            assert args[:2] == ["factory", "stop"], args
+            stop_count += 1
+            value = {}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(value), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    if defect == "setup-json":
+        with pytest.raises(json.JSONDecodeError):
+            installed_claude_pending_work(tmp_path, source, session_recovery=session_recovery)
+    elif defect:
+        message = {"session": "interrupted Claude session was replaced", "policy": "required agent bindings changed",
+                   "credential": "unexpected credential grant", "grant-scope": "unexpected credential grant",
+                   "prior-grant": "prior credential grants changed",
+                   "native-argument": "native Claude unknown argument was not rejected"}[defect]
+        with pytest.raises(AssertionError, match=message):
+            installed_claude_pending_work(tmp_path, source, session_recovery=session_recovery)
+    else:
+        installed_claude_pending_work(tmp_path, source, session_recovery=session_recovery)
+    result = "claude-session-recovery-result.json" if session_recovery else "claude-pending-work-result.json"
+    evidence = json.loads((tmp_path / result).read_text())
+    assert all(path.read_text() == "accepted pending-work proof\n" for path in accepted)
+    assert evidence["work_id"] == "work-pending" and evidence["setup_results"]
+    assert stop_count == (1 if defect == "setup-json" else 2)
+    if defect == "session":
+        assert evidence["checkpoint_resumed_pending"]["thread_id"] == "other"
+        assert not (workspace / (marker + ".release")).exists()
+    elif defect not in ("setup-json", "native-argument"):
+        assert evidence["checkpoint_after_resume"]["thread_id"] is None
+        expected_run = "other-run" if defect == "grant-scope" else "new-run"
+        assert evidence["policy_after"]["credential_grants"]["apr-new"]["beneficiary"]["run_id"] == expected_run
+        assert evidence.get("home_and_authority_retained", False) == (defect is None)
+
+
+def test_factory_pending_claude_work_survives_restart():
+    """Interrupt one new claimed Work in the existing installed witness."""
+    supplied = os.environ.get("SAFEYOLO_FACTORY_ACCEPTANCE_ROOT")
+    source = os.environ.get("SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE")
+    if not supplied or not source:
+        pytest.skip("requires a prepared installed Factory witness and its Claude contract source")
+    source = Path(source)
+    selected = tomllib.loads(source.read_text())
+    if not any(role.get("harness") == "claude" for role in selected["roles"].values()):
+        pytest.skip("requires a Claude role in the selected Factory contract")
+    if os.environ.get("SAFEYOLO_FACTORY_SESSION_RECOVERY") == "1":
+        installed_claude_pending_work(Path(supplied).resolve(), source, session_recovery=True)
+    else:
+        installed_claude_pending_work(Path(supplied).resolve(), source)
+
+
+@pytest.mark.parametrize("source_selection", ["named", "codex-pi", "claude", "claude-session"])
+def test_pending_claude_case_preserves_other_factory_selections(tmp_path, monkeypatch, source_selection):
+    """Only dispatch pending recovery when the selected witness has its inputs."""
+    root = tmp_path / "installed"
+    monkeypatch.setenv("SAFEYOLO_FACTORY_ACCEPTANCE_ROOT", str(root))
+    monkeypatch.setenv("SAFEYOLO_FACTORY_ACCEPTANCE_NAME", "fixture")
+    monkeypatch.setenv("SAFEYOLO_FACTORY_SESSION_RECOVERY", "1" if source_selection == "claude-session" else "0")
+    monkeypatch.delenv("SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE", raising=False)
+    source = None
+    if source_selection != "named":
+        source = contract(tmp_path / "contract", claude=source_selection in ("claude", "claude-session"))
+        monkeypatch.setenv("SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE", str(source))
+    calls = []
+    monkeypatch.setitem(globals(), "installed_claude_pending_work", lambda *args, **kwargs: calls.append((args, kwargs)))
+    if source_selection in ("claude", "claude-session"):
+        test_factory_pending_claude_work_survives_restart()
+        assert calls == [((root.resolve(), source), {"session_recovery": True} if source_selection == "claude-session" else {})]
+    else:
+        with pytest.raises(pytest.skip.Exception, match="requires"):
+            test_factory_pending_claude_work_survives_restart()
+        assert calls == []
+    assert not root.exists()
+
+
 def test_factory_run_executes_staged_worker_commands():
-    """Run only on the explicit disposable installed Ubuntu acceptance root."""
+    """Run only on the explicit disposable installed Linux or macOS host."""
     supplied = os.environ.get("SAFEYOLO_FACTORY_ACCEPTANCE_ROOT")
     if not supplied:
         pytest.skip("requires the separately owned, prepared installed Factory witness")
@@ -781,6 +1404,7 @@ def test_factory_run_executes_staged_worker_commands():
             assert identities == {item["role"]: (item["observation"]["agent_id"], item["observation"]["runtime"]["run_id"],
                                                  item["observation"]["runtime"]["launch_id"])
                                   for item in current["checks"] if item["component"] == "role"}
+            installed_claude_work(root, source, command, role_checks)
             original = (root / "factories" / name / "approved").read_bytes()
             changed = tomlkit.parse(Path(source).read_text())
             changed["room"] += "-unapproved"

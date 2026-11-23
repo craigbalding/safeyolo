@@ -1,0 +1,18 @@
+schema = "safeyolo.factory/v1"
+name = "claude-one"
+room = "claude-one"
+
+[operator_input]
+to = "worker"
+types = ["DIRECTION"]
+
+[roles.worker]
+agent = "proof-claude"
+harness = "claude"
+args = ["--model", "haiku"]
+contract = "role.md"
+
+[work]
+authorities = ["worker"]
+deciders = ["worker"]
+independent = true

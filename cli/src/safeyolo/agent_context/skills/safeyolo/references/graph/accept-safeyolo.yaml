@@ -268,11 +268,11 @@ nodes:
         - path: tests/blackbox/host/job_network.py
           sha256: 007ab1317bc355bdaf2bffecb0fccf04055ee78ae4ec826c9e6c1bd7b341fbb3
         - path: proxy/Cargo.toml
-          sha256: 58fbeffb2a4513b0b3bdef0258c3cee460c216b8156e318f9aa379f0d7004071
+          sha256: 9b652cdef7c58dc2778a3f1d682ff26fcbbba3c829fd216e6da5a8be4a89be92
         - path: proxy/Cargo.lock
-          sha256: e7daf48a665a98c900f1c08293cc551fdc5cec801b77de406cc0dc1fca9d8c4b
+          sha256: 161a008b059ccd38ea9087ce85388e75f2f19a735491af4dda6fe95ac75cd9cd
         - path: proxy/src/lib.rs
-          sha256: 74cfa8d3dc52a90734ba53f7b8b6bd9ec0afd128f7b81bbec7c0831559b31d29
+          sha256: b29736f2b3c430116d067bacf40a3f240d7edf53d7cc31e76f8d2b875c610dbc
         - path: proxy/src/bin/safeyolo.rs
           sha256: a9af55a9bcf76719d03d5754108683e8d45eaed36767e33375be933944da6740
         - path: scripts/run_claude_blackbox.py
@@ -292,9 +292,9 @@ nodes:
         - path: tests/blackbox/installed_boundaries.py
           sha256: 1e2e2796d59d8b433e53258d87c09d56b6b9d94bb0efac6ab1d00d3c6cdd605c
         - path: tests/blackbox/execution_receipt.py
-          sha256: d08d4addfb6a6364497d88e6b749dacd0b77001d5634a4a40d8ea388b3747c45
+          sha256: c6795a6c8abdb9f46f4373daf42b010cf820b8ebac9d862a5de55730920adde9
         - path: tests/blackbox/selections.py
-          sha256: a6769acdff71df79e4f80a52e261dda51103e6d409ade5a849db674b53e4f666
+          sha256: d36d4bff84ff2a4a0b6b3ea844510cc43bfd0bacb1a725a37997db01ff384611
         - path: tests/blackbox/installed_docker_preflight.py
           sha256: 4f7f2eae9ec99a2a8d33815ebe606f7c4dfdfcf1c1d99fa2f12d67cdd78bfc66
         - path: tests/blackbox/installed_provider.py
@@ -367,11 +367,11 @@ nodes:
         - path: tests/blackbox/host/job_network.py
           sha256: 007ab1317bc355bdaf2bffecb0fccf04055ee78ae4ec826c9e6c1bd7b341fbb3
         - path: proxy/Cargo.toml
-          sha256: 58fbeffb2a4513b0b3bdef0258c3cee460c216b8156e318f9aa379f0d7004071
+          sha256: 9b652cdef7c58dc2778a3f1d682ff26fcbbba3c829fd216e6da5a8be4a89be92
         - path: proxy/Cargo.lock
-          sha256: e7daf48a665a98c900f1c08293cc551fdc5cec801b77de406cc0dc1fca9d8c4b
+          sha256: 161a008b059ccd38ea9087ce85388e75f2f19a735491af4dda6fe95ac75cd9cd
         - path: proxy/src/lib.rs
-          sha256: 74cfa8d3dc52a90734ba53f7b8b6bd9ec0afd128f7b81bbec7c0831559b31d29
+          sha256: b29736f2b3c430116d067bacf40a3f240d7edf53d7cc31e76f8d2b875c610dbc
         - path: proxy/src/bin/safeyolo.rs
           sha256: a9af55a9bcf76719d03d5754108683e8d45eaed36767e33375be933944da6740
         - path: proxy/src/jobs/vz-guest-init.sh
@@ -383,9 +383,9 @@ nodes:
         - path: tests/blackbox/installed_boundaries.py
           sha256: 1e2e2796d59d8b433e53258d87c09d56b6b9d94bb0efac6ab1d00d3c6cdd605c
         - path: tests/blackbox/execution_receipt.py
-          sha256: d08d4addfb6a6364497d88e6b749dacd0b77001d5634a4a40d8ea388b3747c45
+          sha256: c6795a6c8abdb9f46f4373daf42b010cf820b8ebac9d862a5de55730920adde9
         - path: tests/blackbox/selections.py
-          sha256: a6769acdff71df79e4f80a52e261dda51103e6d409ade5a849db674b53e4f666
+          sha256: d36d4bff84ff2a4a0b6b3ea844510cc43bfd0bacb1a725a37997db01ff384611
         - path: tests/nested-linux/live_mount_backend_proof.py
           sha256: 62c2250117183cc02b109cbe76b8ac3e737077240b71285f870f08ddcaca91a8
         - path: tests/fixtures/live-mount-holder.c
@@ -699,7 +699,7 @@ nodes:
         - path: proxy/tests/native_coord/federation.rs
           sha256: 7bfc83e871c120479782f1e0d027a6346de321b819e823d7f985a4d4509edcb7
         - path: proxy/src/agent_api/coord.rs
-          sha256: 80b1923d22ccba905e356ecef75613f74a6e87a45aa732ee6416e6f14188df6e
+          sha256: 288bd7872c898b3fea19a8d4b18d524fecbca1ce5698ba3d809f48e9faee5ba1
         - path: proxy/src/agent_api/coord/federation.rs
           sha256: 699b6103139e178606c5280d0e8ecd887de4629f13894edd69eb479e49991aef
         - path: proxy/src/agent_api/coord/federation/tests.rs
@@ -757,9 +757,9 @@ nodes:
         - path: proxy/tests/native_coord/supervision.rs
           sha256: c5ab9187ce88810f8bc8bdc067cfbe6f0e95e63b64d66a1f8cd2c3b908dfeb82
         - path: proxy/src/coord_supervisor/process.rs
-          sha256: 82bf10e990a4db4af7a624b41995bf8c9c9992eb3cfb9e9d112bd30cb643d155
+          sha256: eeade982d7dd1d3ae3f1e149624f40e041a11c6403bc0aeb4d5024572551924a
         - path: proxy/src/coord_supervisor.rs
-          sha256: f905424be0214224885658f50588e13bf94f9485f5415777e2209d35c5d74726
+          sha256: d7e6839d9e1d439092e0549aff35f77a7da4045072794b3f4571fdf26bcd8a89
         - path: proxy/src/coord_supervisor/native.rs
           sha256: 1d6b90a6ffbf14bac8d45f666c3dd087f030b4a8a3f4549e180a135e6f73fd84
         - path: proxy/src/coord_rooms/work/action_tests.rs
@@ -769,9 +769,9 @@ nodes:
         - path: proxy/src/coord_rooms/work/tests.rs
           sha256: a59cba9bbc8312da868bd18b55b28435885cdec0f113d0c03a29ebb6c26a6154
         - path: proxy/src/coord_rooms/work/outputs.rs
-          sha256: 77d4eaf4c84c4c2e904c599d5251ace8065f798c0481390e7d00b1efcacaf274
+          sha256: eb110ef75b44fa8c16252264418268924a7ae3b8f60ea59667463dac177104a9
         - path: proxy/src/coord_rooms/work/output_tests.rs
-          sha256: d2bc2ade638a7b0b23c08cd7f4384b196f1d76369686fdff161f853d10e8efe8
+          sha256: 05b31c7513227ab2451cedee276fa9fd3f75f135eba8df74c3d11340497ced96
         - path: proxy/tests/native_coord/outputs.rs
           sha256: a119e527d1af7d8772f22deba4b9aee28f46d5551b1a8f959b84f593059e1e22
         - path: proxy/src/coord_work_upgrade_6.sql
@@ -825,7 +825,7 @@ nodes:
         - path: proxy/src/coord_operator/signals.rs
           sha256: 90fa9648af1c4c243f776a179142dd267e2a00cc96df9c0b03a2638ec9ec8fee
         - path: proxy/src/coord_tools.rs
-          sha256: 14e7718ddcd9018906e763d59a5a3ef4bacecf3df7e842fd81da8f4e2200c6fc
+          sha256: e61af91a7c38db5b4e0b4805ccf069be30cbe5facd2af9dcc1dcc43e0db9a574
         - path: proxy/src/coord_rooms/room_status.rs
           sha256: 9fcd506d9a465dd2dc3f737727e3232f88f7df43b11b552cf139890fd59d2431
         - path: proxy/src/coord_rooms/room_status/tests.rs
@@ -833,13 +833,13 @@ nodes:
         - path: proxy/tests/native_coord/room_status.rs
           sha256: d36543f0abc7ba6bd5a4a24ffc160d72d9153cd8bb343f44969e6ee3c0ba0000
         - path: proxy/src/coord_operator.rs
-          sha256: 0ef703a81eda9019b86ceca58616ccaa62e932f66c4b62bf61da7fbb393834ec
+          sha256: c7d85bd08b42753f98ec6773ea3ee144162d6e537f91b78df5950916d860cacd
         - path: proxy/src/coord_operator/catch_up.rs
           sha256: aa83d743d015fe4cf0cb8c33f893e45daed5566e70b4360b73f10305345d3024
         - path: proxy/src/coord_operator/catch_up/tests.rs
           sha256: b36cec3e532f69faad69fcb314a6273659101b6d530e8ebdf1ff10a605cc8078
         - path: proxy/src/coord_timeline.rs
-          sha256: 6887b92d9648eecaacf9171cad742afbce86a0e284578631dc80bf8327bc072d
+          sha256: 2f838483b2c398197007c600d297bb6149b354c7e2814807ea9822c1ec9e5972
         - path: proxy/tests/native_coord/catch_up.rs
           sha256: 7126f4374e070d659d5f4df0be455f8c5881f3dd0a47277689d74de6593c9146
       setup: "Use the pinned Rust toolchain with curl/tar and an approved NATS acquisition route or the configured verified NATS executable. Tests allocate their own roots and endpoints; never use the operator's live Coord data."
@@ -860,11 +860,11 @@ nodes:
       obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: cli/tests/test_codex_coord_supervisor.py
-          sha256: 28036a74e6af310d6f990da5ec38e1eb660dd5905214d388e721111a1110b994
+          sha256: ad2c326f0ed2bac7d234ddf707d61f949678798eaba9b4f52cb003ca2785cad4
         - path: cli/tests/test_agent_command_supervisor.py
           sha256: 28d366827ecc041bac7f87f419e1728329beeb8ee93ed9f27d262f8f2bd2d9f2
         - path: tests/proxy_contracts/test_native_factory_cli.py
-          sha256: ddd2a87ecd98ae0d2cba19cef89275e71222ba8530f64c3f42fba8be18a99448
+          sha256: f084962f0e2fad76a69cffcba86b6b0fe735e0df6751196d58884dfe4bb992b4
       setup: "Use the trusted base's locked Python test environment and warm native production artifacts. Set SAFEYOLO_GUEST_ARTIFACTS to the verified guest artifact directory. Source fixtures start no guest or model; the optional launch case requires a separately owned installed Ubuntu host."
       verify: "sha256sum cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py tests/proxy_contracts/test_native_factory_cli.py"
       run: "uv run pytest -q cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py tests/proxy_contracts/test_native_factory_cli.py"

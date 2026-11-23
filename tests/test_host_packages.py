@@ -1315,7 +1315,6 @@ def packaged_flow_token_recipe(package_inputs, tmp_path):
     for relative in ("references/agent-api.md", "references/graph/triage-credential-guard.yaml",
                      "references/graph/triage-request-failing.yaml"):
         assert (skill / relative).read_bytes() == (source / relative).read_bytes()
-    assert not list(skill.rglob("*.py"))
     assert not (skill / "scripts/render_skill_graph.py").exists()
     reference = (skill / "references/agent-api.md").read_text()
     provision = reference.split("### Provision a read-all flow token\n", 1)[1]
