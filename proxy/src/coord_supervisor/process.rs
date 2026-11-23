@@ -260,11 +260,17 @@ pub(super) async fn recover(state: &mut State, path: &Path, grace: u64) -> Resul
         result?;
         state.owned_process = None;
         state.phase = "uncertain".into();
-        state.thread_id = None;
+        // Claude persists its selected session before dispatch. Resume that
+        // session with the uncertain checkpoint after owned cleanup succeeds.
+        if state.harness != "claude" {
+            state.thread_id = None;
+        }
         state.save(path)?;
     } else if state.phase == "running" {
         state.phase = "uncertain".into();
-        state.thread_id = None;
+        if state.harness != "claude" {
+            state.thread_id = None;
+        }
         state.save(path)?;
     }
     Ok(())
@@ -933,6 +939,41 @@ mod tests {
     fn finish(child: &mut std::process::Child) {
         drop(child.stdin.take());
         child.wait().unwrap();
+    }
+
+    #[tokio::test]
+    async fn interrupted_recovery_keeps_claude_session_after_owned_cleanup() {
+        let mut child = waiting_child();
+        let owned = Owned {
+            pid: child.id() as i32,
+            token: token(child.id() as i32).unwrap(),
+            descendants: BTreeMap::new(),
+        };
+        finish(&mut child);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("checkpoint.json");
+        let session = "db6b6137-37d1-40d3-b1e8-caaf898afdc0";
+        for harness in ["claude", "codex", "pi"] {
+            for process in [None, Some(owned.clone())] {
+                let mut state = State {
+                    harness: harness.into(),
+                    thread_id: Some(session.into()),
+                    owned_process: process,
+                    phase: "running".into(),
+                    safe_cursor: 11,
+                    ..State::default()
+                };
+                recover(&mut state, &path, 1).await.unwrap();
+                assert_eq!(state.phase, "uncertain");
+                assert!(state.owned_process.is_none());
+                assert_eq!(state.safe_cursor, 11);
+                assert_eq!(
+                    state.thread_id.as_deref(),
+                    (harness == "claude").then_some(session)
+                );
+                assert_eq!(State::load(&path).unwrap().thread_id, state.thread_id);
+            }
+        }
     }
 
     #[test]

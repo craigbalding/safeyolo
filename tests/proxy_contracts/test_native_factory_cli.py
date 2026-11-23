@@ -951,6 +951,34 @@ def installed_claude_work(root, source, command, role_checks):
     }, indent=2) + "\n")
 
 
+def factory_setup_result(stdout):
+    """Read setup's prepared and running JSON results in emission order."""
+    decoder = json.JSONDecoder()
+    remaining = stdout.lstrip()
+    results = []
+    while remaining:
+        value, end = decoder.raw_decode(remaining)
+        results.append(value)
+        remaining = remaining[end:].lstrip()
+    assert results and results[-1]["status"] == "running", results
+    return results
+
+
+def assert_restarted_claude_policy(before, after, agent, run_id):
+    """Permit the same approved credential only within the replacement run."""
+    before, after = dict(before), dict(after)
+    old_grants = before.pop("credential_grants", {})
+    new_grants = after.pop("credential_grants", {})
+    assert after == before, "required agent bindings changed"
+    assert all(new_grants.get(key) == value for key, value in old_grants.items()), "prior credential grants changed"
+    binding = {"agent": agent, "agent_id": before["agent_id"], "run_id": run_id}
+    for key, grant in new_grants.items():
+        if key not in old_grants:
+            assert any(grant == {**prior, "approval_id": key, "beneficiary": binding,
+                                 "action": {**prior["action"], "run": binding}}
+                       for prior in old_grants.values() if prior["option"] == "run"), "unexpected credential grant"
+
+
 def installed_claude_pending_work(root, source):
     """Pause one new native Work at a file gate, then restart its existing role."""
     contract = tomllib.loads(source.read_text())
@@ -1001,10 +1029,17 @@ def installed_claude_pending_work(root, source):
         output.write(marker + "\n")
     authority = permissions()
     assert authority, "the selected role must have current room authority"
+
+    def setup():
+        result = subprocess.run([*command, "setup", str(source)], capture_output=True, text=True, timeout=600)
+        evidence.setdefault("setup_results", []).append({"returncode": result.returncode,
+                                                        "stdout": result.stdout, "stderr": result.stderr})
+        result_path.write_text(json.dumps(evidence, indent=2) + "\n")
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        factory_setup_result(result.stdout)
+
     try:
-        resumed = subprocess.run([*command, "setup", str(source)], capture_output=True, text=True, timeout=600)
-        assert resumed.returncode == 0, (resumed.stdout, resumed.stderr)
-        assert json.loads(resumed.stdout)["status"] == "running"
+        setup()
         deadline = time.monotonic() + 180
         while True:
             work = invoke("coord", "work", "show", contract["room"], work_id)
@@ -1020,16 +1055,26 @@ def installed_claude_pending_work(root, source):
         stopped = subprocess.run([*command, "stop", contract["name"]], capture_output=True, text=True, timeout=180)
         assert stopped.returncode == 0, stopped.stderr
         saved = json.loads(checkpoint.read_text())
-        assert saved["thread_id"] and any(item["action"]["work_id"] == work_id for item in saved["native_in_flight"])
         pending = invoke("coord", "work", "show", contract["room"], work_id)
-        assert pending == work, "stopping the role must not settle or change its claimed Work"
         # Preserve the reached interruption before attempting its resume.
         evidence.update(checkpoint_before_stop=running, pending_after_stop=pending, checkpoint_after_stop=saved)
         result_path.write_text(json.dumps(evidence, indent=2) + "\n")
+        assert saved["thread_id"] and any(item["action"]["work_id"] == work_id for item in saved["native_in_flight"])
+        assert pending == work, "stopping the role must not settle or change its claimed Work"
+        setup()
+        deadline = time.monotonic() + 180
+        while True:
+            resumed = json.loads(checkpoint.read_text())
+            if (resumed["phase"] == "running" and resumed["owned_process"] is not None
+                    and resumed["owned_process"]["token"] != running["owned_process"]["token"]):
+                break
+            assert time.monotonic() < deadline, resumed
+            time.sleep(0.5)
+        evidence["checkpoint_resumed_pending"] = resumed
+        result_path.write_text(json.dumps(evidence, indent=2) + "\n")
+        assert resumed["thread_id"] == saved["thread_id"], "interrupted Claude session was replaced"
+        assert any(item["action"]["work_id"] == work_id for item in resumed["native_in_flight"])
         release.write_text("resume the original pending Work\n")
-        resumed = subprocess.run([*command, "setup", str(source)], capture_output=True, text=True, timeout=600)
-        assert resumed.returncode == 0, (resumed.stdout, resumed.stderr)
-        assert json.loads(resumed.stdout)["status"] == "running"
         deadline = time.monotonic() + 180
         while True:
             completed = invoke("coord", "work", "show", contract["room"], work_id)
@@ -1037,6 +1082,8 @@ def installed_claude_pending_work(root, source):
                 break
             assert time.monotonic() < deadline, completed
             time.sleep(0.5)
+        evidence["completed"] = completed
+        result_path.write_text(json.dumps(evidence, indent=2) + "\n")
         assert completed["claim_agent_id"] == identity and completed["claim_generation"] == 1
         assert completed["target_generation"] == 1
         assert completed["output"]["producer"] == {"kind": "agent", "id": identity}
@@ -1051,8 +1098,15 @@ def installed_claude_pending_work(root, source):
                 break
             assert time.monotonic() < deadline, current
             time.sleep(0.5)
-        assert current["thread_id"] == saved["thread_id"] and current["safe_cursor"] >= saved["safe_cursor"]
-        assert tomllib.loads((root / "policy.toml").read_text())["agents"][agent] == policy
+        current_policy = tomllib.loads((root / "policy.toml").read_text())["agents"][agent]
+        report = invoke("factory", "doctor", contract["name"])
+        runtime = next(item["observation"]["runtime"] for item in report["checks"]
+                       if item["component"] == "role" and item["observation"]["agent_id"] == identity)
+        evidence.update(completed=completed, checkpoint_after_resume=current, sha256=digest,
+                        policy_before=policy, policy_after=current_policy, runtime_after_resume=runtime)
+        result_path.write_text(json.dumps(evidence, indent=2) + "\n")
+        assert current["safe_cursor"] >= saved["safe_cursor"]
+        assert_restarted_claude_policy(policy, current_policy, agent, runtime["run_id"])
         assert permissions() == authority and retained.read_text() == marker + "\n"
         assert (root / "factories" / contract["name"] / "approved").read_text().strip() == snapshot
         staged = json.loads((home / ".safeyolo/coord-supervisor.json").read_text())
@@ -1087,6 +1141,113 @@ def test_pending_claude_caller_refuses_replaying_started_work(tmp_path, monkeypa
         installed_claude_pending_work(tmp_path, source)
     assert calls == [["coord", "work", "create"], ["coord", "work", "show"]]
     assert not list(workspace.iterdir())
+
+
+@pytest.mark.parametrize("defect", [None, "setup-json", "session", "policy", "credential", "grant-scope", "prior-grant"])
+def test_pending_claude_caller_observes_setup_recovery_and_scoped_grants(tmp_path, monkeypatch, defect):
+    """Exercise the caller with setup's JSON sequence and completed idle state."""
+    source = Path(__file__).parents[1] / "blackbox/fixtures/claude-factory/one-role.toml"
+    agent, identity, snapshot = "proof-claude", "ag-proof", "a" * 64
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home = tmp_path / "agents" / agent / "home"
+    (home / ".safeyolo").mkdir(parents=True)
+    checkpoint = home / ".safeyolo/coord-supervisor-state.json"
+    (home / ".safeyolo/coord-supervisor.json").write_text(json.dumps({
+        "harness": "claude", "factory": {"snapshot_id": snapshot}}))
+    approved = tmp_path / "factories/claude-one/approved"
+    approved.parent.mkdir(parents=True)
+    approved.write_text(snapshot + "\n")
+    binding = {"agent": agent, "agent_id": identity, "run_id": "old-run"}
+    grant = {"approval_id": "apr-old", "beneficiary": binding, "option": "run",
+             "action": {"kind": "credential_allow", "agent": agent, "agent_id": identity,
+                        "run": binding, "host": "api.anthropic.com", "credentials": ["hmac:fixture"]}}
+    policy = {"agents": {agent: {"agent_id": identity, "folder": str(workspace),
+                                 "services": {"claude": ["inference"]}, "network_slot": 2,
+                                 "credential_grants": {"apr-old": grant}}}}
+    policy_path = tmp_path / "policy.toml"
+    policy_path.write_text(tomlkit.dumps(policy))
+    database = tmp_path / "data/coord/v0.db"
+    database.parent.mkdir(parents=True)
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE memberships (room_id TEXT, permissions TEXT, principal_id TEXT, revoked_at INTEGER)")
+        db.execute("INSERT INTO memberships VALUES ('rm-proof', 'send,receive', ?, NULL)", (identity,))
+    marker = "claude-pending-" + snapshot
+    action = {"action": {"work_id": "work-pending"}}
+    work = {"work_id": "work-pending", "state": "open", "claim_generation": 0, "output": None, "target_generation": 0}
+    setup_count, stop_count = 0, 0
+
+    def run(command, **kwargs):
+        nonlocal setup_count, stop_count, work
+        args = command[3:]
+        if args[:3] == ["coord", "work", "create"]:
+            value = {"work": {"work_id": work["work_id"]}}
+        elif args[:3] == ["coord", "work", "show"]:
+            if setup_count == 2 and (workspace / (marker + ".release")).exists():
+                artifact = workspace / (marker + ".txt")
+                artifact.write_text(marker + "\n")
+                digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                work = {**work, "state": "done", "target_generation": 1,
+                        "target_ref": "file:///workspace/" + artifact.name + "#sha256=" + digest,
+                        "output": {"producer": {"kind": "agent", "id": identity}, "execution_outcome": "succeeded"}}
+                checkpoint.write_text(json.dumps({"phase": "idle", "thread_id": None, "safe_cursor": 14,
+                                                  "owned_process": None, "native_in_flight": []}))
+            value = work
+        elif args[:2] == ["factory", "setup"]:
+            setup_count += 1
+            work = {**work, "state": "claimed", "claim_agent_id": identity, "claim_generation": 1}
+            (workspace / (marker + ".started")).write_text(marker + "\n")
+            checkpoint.write_text(json.dumps({"phase": "running", "thread_id": "other" if defect == "session" and setup_count == 2 else "original",
+                                              "safe_cursor": 11, "owned_process": {"pid": setup_count, "token": f"birth-{setup_count}"},
+                                              "native_in_flight": [action]}))
+            if setup_count == 2:
+                current = json.loads(json.dumps(policy))
+                new_binding = {**binding, "run_id": "new-run"}
+                current["agents"][agent]["credential_grants"]["apr-new"] = {
+                    **grant, "approval_id": "apr-new", "beneficiary": new_binding,
+                    "action": {**grant["action"], "run": new_binding}}
+                if defect == "policy":
+                    current["agents"][agent]["network_slot"] = 3
+                if defect == "credential":
+                    current["agents"][agent]["credential_grants"]["apr-new"]["action"]["host"] = "other.example"
+                if defect == "grant-scope":
+                    new_binding["run_id"] = "other-run"
+                if defect == "prior-grant":
+                    del current["agents"][agent]["credential_grants"]["apr-old"]
+                policy_path.write_text(tomlkit.dumps(current))
+            return SimpleNamespace(returncode=0, stdout='{"status":"prepared"}\n' +
+                                   ('truncated {' if defect == "setup-json" else '{"status":"running"}\n'), stderr="")
+        elif args[:2] == ["factory", "doctor"]:
+            value = {"checks": [{"component": "role", "observation": {"agent_id": identity, "runtime": {"run_id": "new-run"}}}]}
+        else:
+            assert args[:2] == ["factory", "stop"], args
+            stop_count += 1
+            value = {}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(value), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    if defect == "setup-json":
+        with pytest.raises(json.JSONDecodeError):
+            installed_claude_pending_work(tmp_path, source)
+    elif defect:
+        message = {"session": "interrupted Claude session was replaced", "policy": "required agent bindings changed",
+                   "credential": "unexpected credential grant", "grant-scope": "unexpected credential grant",
+                   "prior-grant": "prior credential grants changed"}[defect]
+        with pytest.raises(AssertionError, match=message):
+            installed_claude_pending_work(tmp_path, source)
+    else:
+        installed_claude_pending_work(tmp_path, source)
+    evidence = json.loads((tmp_path / "claude-pending-work-result.json").read_text())
+    assert evidence["work_id"] == "work-pending" and evidence["setup_results"]
+    assert stop_count == (1 if defect == "setup-json" else 2)
+    if defect == "session":
+        assert evidence["checkpoint_resumed_pending"]["thread_id"] == "other"
+        assert not (workspace / (marker + ".release")).exists()
+    elif defect != "setup-json":
+        assert evidence["checkpoint_after_resume"]["thread_id"] is None
+        expected_run = "other-run" if defect == "grant-scope" else "new-run"
+        assert evidence["policy_after"]["credential_grants"]["apr-new"]["beneficiary"]["run_id"] == expected_run
+        assert evidence.get("home_and_authority_retained", False) == (defect is None)
 
 
 def test_factory_pending_claude_work_survives_restart():
