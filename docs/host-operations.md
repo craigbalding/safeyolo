@@ -223,6 +223,29 @@ The command adds no recurring prompt. `identity --credential host-workload`
 returns the observed workload SID and stable groups used by `starter`. The
 server and credential command also accept the noninteractive native path.
 
+The Windows starter declares `TEMP` and `TMP` as `Temp` beneath the selected
+`--root`. Before running its PowerShell operations, create that directory and
+give the workload account Modify access. PowerShell startup uses writable
+temporary storage for policy probes; an absent or unwritable location can
+leave the workload in ConstrainedLanguage even when the executor account's
+PowerShell session uses FullLanguage. The executor passes only the declared
+environment.
+
+As the **target directory owner**, use the same root and stored credential
+selected for `starter`. This example uses `C:\SafeYolo\Demo` and grants access
+only to its temporary directory; private target configuration and state must
+remain protected from the workload.
+
+```powershell
+$identity = .\safeyolo-host-executor.exe identity --credential host-workload | ConvertFrom-Json
+New-Item -ItemType Directory -Path 'C:\SafeYolo\Demo\Temp' | Out-Null
+icacls.exe 'C:\SafeYolo\Demo\Temp' /grant ('*' + $identity.principal + ':(OI)(CI)(M)')
+```
+
+For an existing directory, verify its workload access before reuse. When
+adapting an already adopted package, regenerate and explicitly select the
+operation scopes for the changed environment through the existing owners.
+
 For service installation, run an elevated operator terminal. The selected
 service account must own that same workload credential and have **Log on as a
 service** plus its documented native launch privileges. The native installer

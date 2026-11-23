@@ -571,6 +571,21 @@ fn prepare_starters(root: &Path, credential: &str) {
     )
     .unwrap();
     let mut package: Package = serde_json::from_slice(&fs::read(&package_path).unwrap()).unwrap();
+    let temp = case.join("Temp");
+    fs::create_dir(&temp).unwrap();
+    let output = Process::new(r"C:\Windows\System32\icacls.exe")
+        .arg(&temp)
+        .arg("/grant")
+        .arg(format!(
+            "*{}:(OI)(CI)(M)",
+            package.operations["fixed-executable"]
+                .execution
+                .identity
+                .principal
+        ))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "temporary storage ACL: {output:?}");
     // Select a real receiver inside this owned, network-disabled Sandbox. The
     // packaged typed recipe is unchanged; these are its explicit target inputs.
     let diagnostic = package.operations.get_mut("network-diagnostics").unwrap();

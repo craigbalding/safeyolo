@@ -785,6 +785,16 @@ mod tests {
             })
             .unwrap();
             package.validate().unwrap();
+            for operation in package.operations.values() {
+                if operation.execution.executable.ends_with("powershell.exe") {
+                    for variable in ["TEMP", "TMP"] {
+                        assert!(matches!(
+                            &operation.execution.environment[variable],
+                            Word::Literal { value } if value == &format!(r"{root}\Temp")
+                        ));
+                    }
+                }
+            }
             let config = format!(r"{root}\config.json");
             for name in ["file-inspect", "file-hash"] {
                 let operation = &package.operations[name];

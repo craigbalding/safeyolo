@@ -73,6 +73,14 @@
           "SY_LIMIT": {
             "kind": "argument",
             "name": "limit"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -214,6 +222,14 @@
           "SY_SERVICE": {
             "kind": "argument",
             "name": "service"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -378,6 +394,14 @@
           "SY_SERVICE": {
             "kind": "argument",
             "name": "service"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -542,6 +566,14 @@
           "SY_SERVICE": {
             "kind": "argument",
             "name": "service"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -687,6 +719,14 @@
           "SY_SERVICE": {
             "kind": "argument",
             "name": "service"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -916,6 +956,14 @@
           "SY_UNTIL": {
             "kind": "argument",
             "name": "until"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -1102,6 +1150,14 @@
           "SY_VIEW": {
             "kind": "argument",
             "name": "view"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -1314,6 +1370,14 @@
           "SY_VIEW": {
             "kind": "argument",
             "name": "view"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -1497,6 +1561,14 @@
           "SY_FILTER": {
             "kind": "argument",
             "name": "filter"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -1623,6 +1695,14 @@
           "SystemRoot": {
             "kind": "literal",
             "value": "C:\\Windows"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -1777,6 +1857,14 @@
           "SY_LIMIT": {
             "kind": "argument",
             "name": "limit"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -1918,6 +2006,14 @@
           "SY_LIMIT": {
             "kind": "argument",
             "name": "limit"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -2085,6 +2181,14 @@
           "SY_LINES": {
             "kind": "argument",
             "name": "lines"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -2248,6 +2352,14 @@
           "SY_PORT": {
             "kind": "argument",
             "name": "port"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -2406,6 +2518,14 @@
           "SY_FOLDER": {
             "kind": "argument",
             "name": "folder"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -2683,6 +2803,14 @@
           "SY_CONTENT": {
             "kind": "argument",
             "name": "content"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -2816,6 +2944,14 @@
           "SystemRoot": {
             "kind": "literal",
             "value": "C:\\Windows"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -2942,6 +3078,14 @@
           "SystemRoot": {
             "kind": "literal",
             "value": "C:\\Windows"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -3068,6 +3212,14 @@
           "SystemRoot": {
             "kind": "literal",
             "value": "C:\\Windows"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -3208,6 +3360,14 @@
           "SY_PATH": {
             "kind": "argument",
             "name": "path"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -3369,6 +3529,14 @@
           "SY_LIMIT": {
             "kind": "argument",
             "name": "limit"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -3522,6 +3690,14 @@
           "SY_LIMIT": {
             "kind": "argument",
             "name": "limit"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
@@ -3673,6 +3849,14 @@
           "SY_FILTER": {
             "kind": "argument",
             "name": "filter"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
           }
         },
         "working_directory": "C:\\Windows\\Temp",
