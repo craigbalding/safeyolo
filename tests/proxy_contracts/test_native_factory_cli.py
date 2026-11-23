@@ -171,8 +171,9 @@ def test_setup_preview_keeps_exact_contract_and_approval_separate(tmp_path, _bin
         assert_no_role_launch(instance)
 
 
-def test_setup_resumes_prepared_roles_without_reapplying_or_initializing_checkpoints(tmp_path, _binary_cache):
-    with prepared(tmp_path, _binary_cache) as (instance, workspaces):
+@pytest.mark.parametrize("claude", [False, True])
+def test_setup_resumes_prepared_roles_without_reapplying_or_initializing_checkpoints(tmp_path, _binary_cache, claude):
+    with prepared(tmp_path, _binary_cache, claude=claude) as (instance, workspaces):
         source = tmp_path / "contract/factory.toml"
         before = roles(instance)
         entries = list(instance.root.glob("agents/*/home/.safeyolo-command"))
@@ -190,25 +191,36 @@ def test_setup_resumes_prepared_roles_without_reapplying_or_initializing_checkpo
             assert_no_role_launch(instance)
 
 
-def test_setup_keeps_valid_checkpoint_and_diagnoses_corrupt_checkpoint(tmp_path, _binary_cache):
-    with prepared(tmp_path, _binary_cache) as (instance, _):
+@pytest.mark.parametrize("claude", [False, True])
+def test_setup_keeps_valid_checkpoint_and_diagnoses_corrupt_checkpoint(tmp_path, _binary_cache, claude):
+    with prepared(tmp_path, _binary_cache, claude=claude) as (instance, _):
         source = tmp_path / "contract/factory.toml"
-        state = instance.root / "agents/fixture-relay/home/.safeyolo/coord-supervisor-state.json"
         executable = instance.root / "bin/safeyolo-coord"
+        if claude:
+            coordinator = instance.root / "agents/fixture-relay/home/.safeyolo/coord-supervisor-state.json"
+            initial = subprocess.check_output([str(executable), "read-state", str(coordinator)])
+            subprocess.run([str(executable), "write-state", str(coordinator)], input=initial, check=True)
+        agent = "fixture-forge" if claude else "fixture-relay"
+        state = instance.root / f"agents/{agent}/home/.safeyolo/coord-supervisor-state.json"
         checkpoint = json.loads(subprocess.check_output([str(executable), "read-state", str(state)]))
+        if claude:
+            checkpoint["harness"] = "claude"
         checkpoint["safe_cursor"] = 91
         checkpoint["recent_attention_ids"] = ["attn-" + "c" * 32]
         subprocess.run([str(executable), "write-state", str(state)], input=json.dumps(checkpoint), text=True, check=True)
         before = state.read_bytes()
         result = instance.cli("factory", "setup", str(source))
-        assert result.returncode != 0 and "role owner:" in result.stderr
+        missing_role = "reviewer" if claude else "owner"
+        assert result.returncode != 0 and f"role {missing_role}:" in result.stderr
         assert state.read_bytes() == before
         state.write_text("{broken checkpoint")
         result = instance.cli("factory", "setup", str(source), "--confirm-fresh-identity")
-        assert result.returncode != 0 and "role coordinator:" in result.stderr
+        corrupt_role = "owner" if claude else "coordinator"
+        assert result.returncode != 0 and f"role {corrupt_role}:" in result.stderr
         assert "diagnostics" in result.stderr
         assert state.read_text() == "{broken checkpoint"
-        assert not (state.parents[3] / "fixture-forge/home/.safeyolo/coord-supervisor-state.json").exists()
+        missing_agent = "fixture-lens" if claude else "fixture-forge"
+        assert not (state.parents[3] / f"{missing_agent}/home/.safeyolo/coord-supervisor-state.json").exists()
 
 
 def test_setup_approval_and_workspace_requirements_do_not_launch_roles(tmp_path):
