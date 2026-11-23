@@ -528,15 +528,15 @@ arguments and an exact native environment; callers cannot substitute a program,
 unit, loader variable or interpreter. This client and its system libraries are
 part of the trusted executor boundary. The selected unit definition, executable,
 dependencies and service-manager permissions remain adopted external trust
-dependencies. Linux supports `restart` and `status` for one existing user
-service. macOS supports `restart` and `status`. Neither profile creates or replaces units
-or their configuration.
+dependencies. Linux and macOS support `start`, `stop`, `restart` and `status`
+for one existing user service. Neither profile creates or replaces units or
+their configuration.
 
 For Linux, the delegated service owner is `systemd-user`, with capability
-`restart` or `status` and one literal `.service` resource. The executable is
+`start`, `stop`, `restart` or `status` and one literal `.service` resource. The executable is
 `/usr/bin/systemctl`. Its literal arguments begin with `--user --no-pager
---no-ask-password`, followed by `restart -- UNIT` or
-`show --property=ActiveState --property=MainPID -- UNIT`. Its exact environment is
+--no-ask-password`, followed by `start -- UNIT`, `stop -- UNIT`,
+`restart -- UNIT` or `show --property=ActiveState --property=MainPID -- UNIT`. Its exact environment is
 `XDG_RUNTIME_DIR=/run/user/UID` and `SYSTEMD_OFFLINE=0`; the latter prevents
 systemctl from skipping the requested operation inside the filesystem sandbox.
 The declared Unix socket is
@@ -550,9 +550,12 @@ and descendant cleanup still apply to the client job.
 
 For macOS, the owner is `launchd-user`, with one literal `gui/UID/LABEL` or
 `user/UID/LABEL` resource. The executable is `/bin/launchctl` with literal
-`print RESOURCE` or `kickstart -k RESOURCE` arguments and an empty environment.
-The trusted client receives Mach lookup permission. Restart also permits the
-signal permission that launchd checks before replacing the selected process.
+`print RESOURCE` for status, `kickstart RESOURCE` for start,
+`kill SIGTERM RESOURCE` for stop or `kickstart -k RESOURCE` for restart, with
+an empty environment. The trusted client receives Mach lookup permission.
+Stop and restart also permit the signal permission that launchd checks for
+those actions. A stop sends SIGTERM; it does not disable the adopted service
+or prevent launchd from starting it again under its existing definition.
 The profile requires `network_ipc` and
 `delegated_services` exceptions in addition to `memory` and `executor_restart`.
 For both profiles the working directory is `/`; UID is the executor's adopted
