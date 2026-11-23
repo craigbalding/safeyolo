@@ -1,7 +1,10 @@
 //! Exercise the actual SQLite page ceiling rather than only record counters.
 #![cfg(unix)]
 mod common;
-use ring::signature::Ed25519KeyPair;
+use ring::{
+    rand::{SecureRandom, SystemRandom},
+    signature::Ed25519KeyPair,
+};
 use safeyolo_host_executor::*;
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::PathBuf};
 
@@ -13,13 +16,11 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        let mut random = [0u8; 16];
+        SystemRandom::new().fill(&mut random).unwrap();
         let root = std::env::temp_dir().join(format!(
-            "ledger-capacity-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "ledger-capacity-{:032x}",
+            u128::from_le_bytes(random)
         ));
         fs::create_dir(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();

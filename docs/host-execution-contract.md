@@ -13,8 +13,9 @@ Loading types does not enrol an issuer or grant invocation permission. The
 standalone executor enforces adopted native operations. Catalogue adoption
 uses the target configuration and the issuer's existing native policy owner.
 The local Service Gateway adapter binds these operations to an authenticated
-agent run and an activated operator task. Packaging, remote transport adoption
-and integrated platform qualification remain separate parts of
+agent run and an activated operator task. The
+[deployment guide](host-operations.md) covers standalone preparation, remote
+HTTPS and starter workflows. Integrated platform qualification remains part of
 [#1669](https://github.com/craigbalding/safeyolo/issues/1669).
 
 ## Ownership and trust
@@ -103,8 +104,10 @@ On a running Unix SafeYolo host, the operator uses the existing policy owner to
 adopt a `host_bindings` table. Each value is an encoded JSON binding document.
 Installed capability discovery exposes `host_execution_binding` and its actual
 validator. A binding selects the target's adopted `Target`, issuer, native
-grant, key ID, vault credential reference, service name, canonical absolute
-Unix socket, executor UID and finite request/response/deadline limits. The
+grant, key ID, vault credential reference, service name, an authenticated
+endpoint and finite request/response/deadline limits. A `unix` endpoint selects a canonical absolute socket and executor UID.
+An `https` endpoint selects a host, port and adopted certificate PEM. Endpoint
+name and certificate validation precede signed-request dispatch. The
 credential value is base64 Ed25519 PKCS#8 in the existing encrypted store.
 Neither the value nor a signed request is returned to the agent.
 
@@ -159,17 +162,22 @@ grants, target ceilings and future-family bounds through the existing host
 effect assessor. The result distinguishes represented effects from unknown
 behavior. A favorable assessment creates no permission.
 
-The gateway checks socket peer UID and protected path ownership, and rechecks
-current policy, task, run and vault selection before sending. The target then
+The gateway checks Unix socket peer UID and protected path ownership, or
+verifies the configured HTTPS certificate and endpoint name. It rechecks current
+policy, task, run and vault selection before sending. The target then
 independently authenticates and admits the signed request. Target input changes
-can therefore refuse a request after issuer admission. The current adapter uses
-the executor's protected Unix socket. It does not provide remote HTTPS or
-Windows named-pipe transport, synchronize target configuration, or claim that
-saved inputs establish running-target readiness.
+can therefore refuse a request after issuer admission. The adapter supports the
+executor's protected Unix socket and authenticated HTTPS on all target platforms. Windows named pipes remain a protected local
+transport. Target configuration is not implicitly synchronized, and saved
+inputs do not establish running-target readiness. The deployment guide shows
+configuration, rotation and current-revision inspection.
 
-The gateway sends each request once. A missing or mismatched target reply
-returns an uncertain outcome with the original request ID and derived possible
-job ID. Inspect that job under current read authority before retrying. An exact
+The gateway sends each request once. A missing or mismatched invocation or
+cancellation reply returns an uncertain outcome with the original request ID
+and possible job ID. Cancellation retains the selected job's ID. An unavailable
+read or proposal reports `execution_outcome: unavailable`; it sent no invocation.
+Mismatched discovery also reports the expected and observed package digests.
+Inspect an uncertain job under current read authority before retrying. An exact
 duplicate mutation uses the target's durable receipt; changed content with the
 same ID conflicts. After revocation removes read authority, the target operator
 must inspect the retained result. Gateway or credential revocation stops new
@@ -335,8 +343,12 @@ must be present in both current trusted scopes; the issuer must derive this
 evidence from its existing check owners, never from caller-supplied names.
 
 The native policy transaction activates generated gateway definitions with their
-adoption record. It retains the last qualified revision and restores the saved
-source and runtime if activation fails. The target validates the entire selected
+adoption record. The same transaction advances the package and catalogue status
+in gateway bindings that match the previous active package snapshot. It preserves
+each binding's target identity, grants, ceilings, endpoint, signing credential
+reference and task binding. Bindings with other package snapshots keep their
+definitions. The transaction retains the last qualified revision and restores
+the saved source and runtime if activation fails. The target validates the entire selected
 native catalogue before saving its adopted revision in the existing protected
 configuration. The executor must be able to replace that configuration. An
 external edit detected during qualification refuses the save. Target and issuer
@@ -444,7 +456,10 @@ python3 scripts/build_host_executor.py --output /release/executor.zip
 ```
 
 The command builds a production executable for the build host and writes a ZIP
-archive with the binary, licence and `host-executor.json`.
+archive with the binary, licence, `host-executor.json`, deployment guide,
+authoring source and agent helper. The target bundles rustls TLS and rcgen
+certificate preparation; the helper uses the agent sandbox's Python 3, not a
+target-side interpreter.
 It prints the archive and binary SHA-256 digests. The metadata records the
 source, target, compiler, selected build flags and a link to this contract at
 the built source revision. `--target` selects an
@@ -513,15 +528,15 @@ arguments and an exact native environment; callers cannot substitute a program,
 unit, loader variable or interpreter. This client and its system libraries are
 part of the trusted executor boundary. The selected unit definition, executable,
 dependencies and service-manager permissions remain adopted external trust
-dependencies. Linux supports `restart` and `status` for one existing user
-service. macOS supports `restart` and `status`. Neither profile creates or replaces units
-or their configuration.
+dependencies. Linux and macOS support `start`, `stop`, `restart` and `status`
+for one existing user service. Neither profile creates or replaces units or
+their configuration.
 
 For Linux, the delegated service owner is `systemd-user`, with capability
-`restart` or `status` and one literal `.service` resource. The executable is
+`start`, `stop`, `restart` or `status` and one literal `.service` resource. The executable is
 `/usr/bin/systemctl`. Its literal arguments begin with `--user --no-pager
---no-ask-password`, followed by `restart -- UNIT` or
-`show --property=ActiveState --property=MainPID -- UNIT`. Its exact environment is
+--no-ask-password`, followed by `start -- UNIT`, `stop -- UNIT`,
+`restart -- UNIT` or `show --property=ActiveState --property=MainPID -- UNIT`. Its exact environment is
 `XDG_RUNTIME_DIR=/run/user/UID` and `SYSTEMD_OFFLINE=0`; the latter prevents
 systemctl from skipping the requested operation inside the filesystem sandbox.
 The declared Unix socket is
@@ -535,9 +550,12 @@ and descendant cleanup still apply to the client job.
 
 For macOS, the owner is `launchd-user`, with one literal `gui/UID/LABEL` or
 `user/UID/LABEL` resource. The executable is `/bin/launchctl` with literal
-`print RESOURCE` or `kickstart -k RESOURCE` arguments and an empty environment.
-The trusted client receives Mach lookup permission. Restart also permits the
-signal permission that launchd checks before replacing the selected process.
+`print RESOURCE` for status, `kickstart RESOURCE` for start,
+`kill SIGTERM RESOURCE` for stop or `kickstart -k RESOURCE` for restart, with
+an empty environment. The trusted client receives Mach lookup permission.
+Stop and restart also permit the signal permission that launchd checks for
+those actions. A stop sends SIGTERM; it does not disable the adopted service
+or prevent launchd from starting it again under its existing definition.
 The profile requires `network_ipc` and
 `delegated_services` exceptions in addition to `memory` and `executor_restart`.
 For both profiles the working directory is `/`; UID is the executor's adopted

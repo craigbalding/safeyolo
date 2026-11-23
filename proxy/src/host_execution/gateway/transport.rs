@@ -1,9 +1,76 @@
-//! One bounded request over the executor's adopted local HTTP transport.
+//! One bounded request over the executor's adopted socket or HTTPS transport.
 use super::*;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper_util::rt::TokioIo;
 use std::{os::unix::fs::MetadataExt, time::Duration};
+use tokio::io::{AsyncRead, AsyncWrite};
+
+pub(super) fn tls_configuration(pem: &str) -> Result<Arc<rustls::ClientConfig>, Error> {
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
+    let mut roots = rustls::RootCertStore::empty();
+    for certificate in CertificateDer::pem_slice_iter(pem.as_bytes()) {
+        roots.add(certificate?)?;
+    }
+    if roots.is_empty() {
+        return Err("host HTTPS trust file contains no certificates".into());
+    }
+    Ok(Arc::new(
+        rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()?
+        .with_root_certificates(roots)
+        .with_no_client_auth(),
+    ))
+}
+
+async fn connect(binding: &Binding) -> Result<Box<dyn HostStream>, Error> {
+    match &binding.endpoint {
+        Endpoint::Https {
+            host,
+            port,
+            certificate_pem,
+        } => {
+            let config = tls_configuration(certificate_pem)?;
+            let stream = tokio::net::TcpStream::connect((host.as_str(), *port)).await?;
+            let stream = tokio_rustls::TlsConnector::from(config)
+                .connect(
+                    rustls::pki_types::ServerName::try_from(host.clone())?,
+                    stream,
+                )
+                .await?;
+            Ok(Box::new(stream))
+        }
+        Endpoint::Unix {
+            socket,
+            executor_uid,
+        } => {
+            let canonical = socket.canonicalize()?;
+            if canonical != *socket {
+                return Err("host socket must use its canonical path".into());
+            }
+            // SAFETY: geteuid has no pointer arguments and reads current identity.
+            let operator_uid = unsafe { libc::geteuid() };
+            for path in canonical.ancestors().skip(1) {
+                let meta = std::fs::symlink_metadata(path)?;
+                if (meta.uid() != 0 && meta.uid() != *executor_uid && meta.uid() != operator_uid)
+                    || meta.mode() & 0o022 != 0 && meta.mode() & 0o1000 == 0
+                {
+                    return Err("host socket parents permit replacement".into());
+                }
+            }
+            let stream = tokio::net::UnixStream::connect(&canonical).await?;
+            if stream.peer_cred()?.uid() != *executor_uid {
+                return Err("host executor identity differs".into());
+            }
+            Ok(Box::new(stream))
+        }
+    }
+}
+
+trait HostStream: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> HostStream for T {}
 
 pub(super) async fn send(
     binding: &Binding,
@@ -20,27 +87,8 @@ pub(super) async fn send(
     }
     let mut dispatched = false;
     let exchange = async {
-        // The endpoint is host policy, never a workload callback. Protect the
-        // selected path against another local account replacing the executor.
-        let canonical = binding.socket.canonicalize()?;
-        if canonical != binding.socket {
-            return Err("host socket must use its canonical path".into());
-        }
-        // SAFETY: geteuid has no pointer arguments and only reads this
-        // process's effective UID; it does not change credentials.
-        let operator_uid = unsafe { libc::geteuid() };
-        for path in canonical.ancestors().skip(1) {
-            let meta = std::fs::symlink_metadata(path)?;
-            if (meta.uid() != 0 && meta.uid() != binding.executor_uid && meta.uid() != operator_uid)
-                || meta.mode() & 0o022 != 0 && meta.mode() & 0o1000 == 0
-            {
-                return Err("host socket parents permit replacement".into());
-            }
-        }
-        let stream = tokio::net::UnixStream::connect(&canonical).await?;
-        if stream.peer_cred()?.uid() != binding.executor_uid {
-            return Err("host executor identity differs".into());
-        }
+        // Authenticate the adopted target before admission or writing signed bytes.
+        let stream = connect(binding).await?;
         let (mut sender, connection) =
             hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
         let task = tokio::spawn(connection);

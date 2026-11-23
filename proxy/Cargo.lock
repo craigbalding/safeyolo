@@ -2667,8 +2667,10 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "libc",
+ "rcgen",
  "ring",
  "rusqlite",
+ "rustls",
  "schemars",
  "serde",
  "serde_json",

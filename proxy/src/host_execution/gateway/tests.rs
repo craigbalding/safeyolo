@@ -173,8 +173,10 @@ impl Fixture {
             key_id: "key".into(),
             credential: "host-key".into(),
             service: "local-host".into(),
-            socket: socket.clone(),
-            executor_uid: unsafe { libc::geteuid() },
+            endpoint: Endpoint::Unix {
+                socket: socket.clone(),
+                executor_uid: unsafe { libc::geteuid() },
+            },
             task_revision: revision(&task),
             timeout_ms: 1000,
             request_bytes: 131072,
@@ -401,6 +403,58 @@ impl Fixture {
 
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn package_mismatch_discovery_reports_revisions_without_a_possible_job() {
+    let mut f = Fixture::new("").await;
+    let original = serde_json::to_string(&serde_json::to_string(&f.binding).unwrap()).unwrap();
+    let mut stale = f.binding.clone();
+    stale.target.package.version += 1;
+    let replacement = serde_json::to_string(&serde_json::to_string(&stale).unwrap()).unwrap();
+    f.install(f.source.replace(&original, &replacement));
+    let reply = f.call(f.input("stale-discovery", Action::Discover)).await;
+    assert_eq!(reply.status, 503, "{}", reply.value);
+    assert_eq!(reply.value["error"], "HOST_RESPONSE_MISMATCH");
+    assert_eq!(reply.value["execution_outcome"], "unavailable");
+    assert!(reply.value.get("possible_job_id").is_none());
+    assert_eq!(
+        reply.value["expected_package_sha256"],
+        revision(&stale.target.package)
+    );
+    assert_eq!(
+        reply.value["observed_package_sha256"],
+        revision(&f.binding.target.package)
+    );
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    f.stop().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lost_cancel_reply_retains_the_original_job_for_inspection() {
+    let f = Fixture::new("").await;
+    let admitted = f.call(f.prepared("cancel-subject", None).await).await;
+    let job = admitted.value["receipt"]["job_id"].as_str().unwrap();
+    f.lose_reply.store(true, Ordering::SeqCst);
+    let lost = f
+        .call(f.input(
+            "lost-cancel",
+            Action::Cancel {
+                job_id: job.into(),
+                expected_revision: admitted.value["receipt"]["revision"].as_u64().unwrap(),
+            },
+        ))
+        .await;
+    assert_eq!(lost.value["execution_outcome"], "uncertain");
+    assert_eq!(lost.value["possible_job_id"], job);
+    let inspected = f
+        .call(f.input("inspect-cancel", Action::Job { job_id: job.into() }))
+        .await;
+    assert_eq!(inspected.value["receipt"]["cancellation_requested"], true);
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 1);
+    f.stop().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn adaptive_operations_and_lost_reply_use_real_target_receipts_without_duplicate_dispatch() {
     let f = Fixture::new("").await;
     let discovery = f.call(f.input("discover", Action::Discover)).await;
@@ -416,11 +470,17 @@ async fn adaptive_operations_and_lost_reply_use_real_target_receipts_without_dup
         discovery.value["discovery"]["operations"][0]["operation_id"],
         "restart"
     );
-    let first = f.prepared("first", None).await;
+    let first = f.prepared("original-id", None).await;
     f.lose_reply.store(true, Ordering::SeqCst);
     let lost = f.call(first.clone()).await;
     assert_eq!(lost.value["execution_outcome"], "uncertain");
     let job = lost.value["possible_job_id"].as_str().unwrap().to_string();
+    // The installed helper can locate this exact job even when the complete
+    // invocation reply was lost, using its retained request and binding IDs.
+    assert_eq!(
+        job,
+        "job-32a58fdae1911df72559aebfe25b6b88cfe2f3fd049473eca697be20c6b18796"
+    );
     let inspected = f
         .call(f.input(
             "inspect-first",
@@ -429,7 +489,7 @@ async fn adaptive_operations_and_lost_reply_use_real_target_receipts_without_dup
             },
         ))
         .await;
-    assert_eq!(inspected.value["receipt"]["request_id"], "first");
+    assert_eq!(inspected.value["receipt"]["request_id"], "original-id");
     let replay = f.call(first).await;
     assert_eq!(replay.status, 200);
     assert_eq!(f.mutations.load(Ordering::SeqCst), 1);
@@ -519,6 +579,7 @@ async fn native_scopes_defaults_current_policy_and_cross_agent_objects_are_enfor
         400
     );
     let visible = f.api("/gateway/host", "GET", Value::Null).await;
+    assert_eq!(visible.value["host_bindings"][0]["issuer_id"], "issuer");
     assert_eq!(
         visible.value["host_bindings"][0]["principal"]["task_id"],
         "approved-task"
@@ -1069,5 +1130,82 @@ async fn task_action_check_binds_canonical_task_and_bounds_unavailable_reconside
     assert_eq!(refused.status, 403, "{}", refused.value);
     assert_eq!(refused.value["error"], "HOST_OPERATION_REFUSED");
     assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    f.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn https_target_identity_precedes_signed_dispatch_and_keeps_native_receipts() {
+    let mut f = Fixture::new("").await;
+    let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![certificate.cert.der().clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let socket = f.root.path().join("executor.sock");
+    let relay = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let acceptor = acceptor.clone();
+            let socket = socket.clone();
+            tokio::spawn(async move {
+                if let Ok(mut remote) = acceptor.accept(stream).await {
+                    let mut local = tokio::net::UnixStream::connect(socket).await.unwrap();
+                    let _ = tokio::io::copy_bidirectional(&mut remote, &mut local).await;
+                }
+            });
+        }
+    });
+    fn install_endpoint(f: &mut Fixture, endpoint: Endpoint) {
+        let original = serde_json::to_string(&serde_json::to_string(&f.binding).unwrap()).unwrap();
+        let mut binding = f.binding.clone();
+        binding.endpoint = endpoint;
+        let replacement = serde_json::to_string(&serde_json::to_string(&binding).unwrap()).unwrap();
+        let source = f.source.replacen(&original, &replacement, 1);
+        assert_ne!(source, f.source);
+        f.binding = binding;
+        f.install(source);
+    }
+    let other = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+    install_endpoint(
+        &mut f,
+        Endpoint::Https {
+            host: "127.0.0.1".into(),
+            port,
+            certificate_pem: other.cert.pem(),
+        },
+    );
+    let refused = f.call(f.input("wrong-target", Action::Discover)).await;
+    assert_eq!(refused.status, 503, "{}", refused.value);
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    install_endpoint(
+        &mut f,
+        Endpoint::Https {
+            host: "127.0.0.1".into(),
+            port,
+            certificate_pem: certificate.cert.pem(),
+        },
+    );
+    let discovery = f.call(f.input("remote-discovery", Action::Discover)).await;
+    assert_eq!(discovery.status, 200, "{}", discovery.value);
+    let invoke = f.prepared("remote-invoke", None).await;
+    let admitted = f.call(invoke.clone()).await;
+    assert_eq!(admitted.status, 200, "{}", admitted.value);
+    let replay = f.call(invoke).await;
+    assert_eq!(
+        replay.value["receipt"]["job_id"],
+        admitted.value["receipt"]["job_id"]
+    );
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 1);
+    relay.abort();
     f.stop().await;
 }

@@ -20,12 +20,55 @@ pub(crate) struct Binding {
     /// Reference in the existing encrypted credential store. Never key bytes.
     pub credential: String,
     pub service: String,
-    pub socket: PathBuf,
-    pub executor_uid: u32,
+    pub endpoint: Endpoint,
     pub task_revision: String,
     pub timeout_ms: u64,
     pub request_bytes: usize,
     pub response_bytes: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "transport", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum Endpoint {
+    Unix {
+        socket: PathBuf,
+        executor_uid: u32,
+    },
+    Https {
+        host: String,
+        port: u16,
+        certificate_pem: String,
+    },
+}
+
+impl Endpoint {
+    fn validate(&self) -> Result<(), Error> {
+        match self {
+            Self::Unix { socket, .. } => {
+                if !socket.is_absolute()
+                    || socket
+                        .components()
+                        .any(|p| matches!(p, std::path::Component::ParentDir))
+                {
+                    return Err(
+                        "host socket must be an absolute path without parent traversal".into(),
+                    );
+                }
+            }
+            Self::Https {
+                host,
+                port,
+                certificate_pem,
+            } => {
+                rustls::pki_types::ServerName::try_from(host.clone())?;
+                if *port == 0 {
+                    return Err("host HTTPS needs a nonzero port".into());
+                }
+                transport::tls_configuration(certificate_pem)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn bindings(document: &Value) -> Result<BTreeMap<String, Binding>, Error> {
@@ -86,17 +129,13 @@ impl Binding {
 
     pub(crate) fn validate(&self) -> Result<(), Error> {
         self.target.validate()?;
+        self.endpoint.validate()?;
         let grant = self.grant()?;
         if !literal(&self.issuer_id)
             || !literal(&self.grant_id)
             || !literal(&self.key_id)
             || self.credential.is_empty()
             || self.service.is_empty()
-            || !self.socket.is_absolute()
-            || self
-                .socket
-                .components()
-                .any(|p| matches!(p, std::path::Component::ParentDir))
             || grant
                 .principal
                 .task_id
@@ -110,7 +149,7 @@ impl Binding {
                 .public_keys
                 .contains_key(&self.key_id)
         {
-            return Err("host binding needs a target issuer/grant/key, vault reference, service, absolute socket, approved task revision and positive transport limits".into());
+            return Err("host binding needs a target issuer/grant/key, vault reference, service, authenticated endpoint, approved task revision and positive transport limits".into());
         }
         Ok(())
     }
@@ -503,18 +542,20 @@ async fn dispatch(
         Ok(())
     })
     .await;
-    let job_id = format!(
-        "job-{}",
-        revision(&(
-            &binding.target.target_id,
-            &binding.issuer_id,
-            &input.request_id
-        ))
-    );
+    let job_id = input.action.job_id().map(str::to_owned).unwrap_or_else(|| {
+        format!(
+            "job-{}",
+            revision(&(
+                &binding.target.target_id,
+                &binding.issuer_id,
+                &input.request_id
+            ))
+        )
+    });
     match response {
         Ok(mut response) => {
             if validate_response(&binding, &request, &response).is_err() {
-                return Ok(unavailable_result(
+                let mut reply = unavailable_result(
                     &runtime,
                     name,
                     &binding,
@@ -522,7 +563,13 @@ async fn dispatch(
                     &job_id,
                     "HOST_RESPONSE_MISMATCH",
                 )
-                .await);
+                .await;
+                if let Response::Discovery { discovery } = &response {
+                    reply.value["expected_package_sha256"] =
+                        json!(revision(&binding.target.package));
+                    reply.value["observed_package_sha256"] = json!(discovery.package_sha256);
+                }
+                return Ok(reply);
             }
             if let Response::Discovery { discovery } = &mut response {
                 let grant = binding.grant()?;
@@ -587,11 +634,31 @@ async fn unavailable_result(
     job_id: &str,
     code: &str,
 ) -> Reply {
+    let uncertain = matches!(input.action, Action::Invoke { .. } | Action::Cancel { .. });
+    let outcome = if uncertain {
+        "uncertain"
+    } else {
+        "unavailable"
+    };
+    let next_action = if uncertain {
+        "Inspect the original job through this binding before retrying. Do not change the operation ID or replay a mutation whose effect is unknown."
+    } else if code == "HOST_RESPONSE_MISMATCH" && matches!(input.action, Action::Discover) {
+        "Compare expected_package_sha256 and observed_package_sha256 with the target and gateway owners; adopt a compatible package snapshot, then rediscover. No invocation was retried."
+    } else {
+        "Inspect the selected target connection and active revisions, then repeat this read or proposal when ready. No invocation was sent by this request."
+    };
+    let mut value = json!({"error":code,"execution_outcome":outcome,"request_id":input.request_id,
+        "host_binding":name,"target_id":binding.target.target_id,"next_action":next_action});
+    if uncertain {
+        value["possible_job_id"] = json!(job_id);
+    } else if let Some(job_id) = input.action.job_id() {
+        value["job_id"] = json!(job_id);
+    }
     let mut event = crate::audit::Event::new(
         "gateway.host_result_unavailable",
         crate::audit::Kind::Gateway,
         crate::audit::Severity::High,
-        "Host target reply unavailable or mismatched; execution outcome is uncertain",
+        "Host target reply unavailable or mismatched",
     );
     event.agent = Some(
         binding
@@ -603,14 +670,11 @@ async fn unavailable_result(
             .clone(),
     );
     event.request_id = Some(input.request_id.clone());
-    event.details=json!({"host_binding":name,"target_id":binding.target.target_id,"possible_job_id":job_id,"reason":code,"execution_outcome":"uncertain"}).into();
+    event.details = json!({"host_binding":name,"target_id":binding.target.target_id,
+        "possible_job_id":uncertain.then_some(job_id),"reason":code,"execution_outcome":outcome})
+    .into();
     let _ = runtime.audit.emit_confirmed(event).await;
-    Reply {
-        status: 503,
-        value: json!({"error":code,"execution_outcome":"uncertain","request_id":input.request_id,"host_binding":name,
-        "target_id":binding.target.target_id,"possible_job_id":job_id,
-        "next_action":"Inspect the original job through this binding before retrying. Do not change the operation ID or replay a mutation whose effect is unknown."}),
-    }
+    Reply { status: 503, value }
 }
 
 /// Full operator-adopted authority, rather than an example payload. The

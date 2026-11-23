@@ -10,7 +10,7 @@ use std::{
 
 mod process;
 pub(crate) mod security;
-mod service;
+pub(crate) mod service;
 pub(crate) mod transport;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -123,6 +123,9 @@ pub fn command(args: Vec<String>) -> Option<Result<(), Refusal>> {
             Ok(())
         })()),
         Some("service") => Some(service::dispatch(args[1..].to_vec())),
+        Some("service-install") => Some(service::install(&args[1..])),
+        Some("service-remove") => Some(service::remove(&args[1..])),
+        Some("credential-remove") => Some(security::remove_credential(&args[1..])),
         _ => None,
     }
 }

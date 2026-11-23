@@ -270,7 +270,7 @@ nodes:
         - path: proxy/Cargo.toml
           sha256: 9b652cdef7c58dc2778a3f1d682ff26fcbbba3c829fd216e6da5a8be4a89be92
         - path: proxy/Cargo.lock
-          sha256: c101fc58243f6d393040c3b3517e8f845837ebbe8c4f7e47e67091db3402f962
+          sha256: 161a008b059ccd38ea9087ce85388e75f2f19a735491af4dda6fe95ac75cd9cd
         - path: proxy/src/lib.rs
           sha256: b29736f2b3c430116d067bacf40a3f240d7edf53d7cc31e76f8d2b875c610dbc
         - path: proxy/src/bin/safeyolo.rs
@@ -292,9 +292,9 @@ nodes:
         - path: tests/blackbox/installed_boundaries.py
           sha256: 1e2e2796d59d8b433e53258d87c09d56b6b9d94bb0efac6ab1d00d3c6cdd605c
         - path: tests/blackbox/execution_receipt.py
-          sha256: d08d4addfb6a6364497d88e6b749dacd0b77001d5634a4a40d8ea388b3747c45
+          sha256: c6795a6c8abdb9f46f4373daf42b010cf820b8ebac9d862a5de55730920adde9
         - path: tests/blackbox/selections.py
-          sha256: a6769acdff71df79e4f80a52e261dda51103e6d409ade5a849db674b53e4f666
+          sha256: e34a88543081def0f413ced8d126759a7fc914893b939f1652fa39f3a2d0cf7d
         - path: tests/blackbox/installed_docker_preflight.py
           sha256: 4f7f2eae9ec99a2a8d33815ebe606f7c4dfdfcf1c1d99fa2f12d67cdd78bfc66
         - path: tests/blackbox/installed_provider.py
@@ -369,7 +369,7 @@ nodes:
         - path: proxy/Cargo.toml
           sha256: 9b652cdef7c58dc2778a3f1d682ff26fcbbba3c829fd216e6da5a8be4a89be92
         - path: proxy/Cargo.lock
-          sha256: c101fc58243f6d393040c3b3517e8f845837ebbe8c4f7e47e67091db3402f962
+          sha256: 161a008b059ccd38ea9087ce85388e75f2f19a735491af4dda6fe95ac75cd9cd
         - path: proxy/src/lib.rs
           sha256: b29736f2b3c430116d067bacf40a3f240d7edf53d7cc31e76f8d2b875c610dbc
         - path: proxy/src/bin/safeyolo.rs
@@ -383,9 +383,9 @@ nodes:
         - path: tests/blackbox/installed_boundaries.py
           sha256: 1e2e2796d59d8b433e53258d87c09d56b6b9d94bb0efac6ab1d00d3c6cdd605c
         - path: tests/blackbox/execution_receipt.py
-          sha256: d08d4addfb6a6364497d88e6b749dacd0b77001d5634a4a40d8ea388b3747c45
+          sha256: c6795a6c8abdb9f46f4373daf42b010cf820b8ebac9d862a5de55730920adde9
         - path: tests/blackbox/selections.py
-          sha256: a6769acdff71df79e4f80a52e261dda51103e6d409ade5a849db674b53e4f666
+          sha256: e34a88543081def0f413ced8d126759a7fc914893b939f1652fa39f3a2d0cf7d
         - path: tests/nested-linux/live_mount_backend_proof.py
           sha256: 62c2250117183cc02b109cbe76b8ac3e737077240b71285f870f08ddcaca91a8
         - path: tests/fixtures/live-mount-holder.c

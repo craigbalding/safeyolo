@@ -30,6 +30,8 @@ pub struct Configuration {
     pub connection_timeout_seconds: u64,
     #[serde(default)]
     pub catalogue: Option<CatalogueAdoption>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub https: Option<crate::https::Listener>,
 }
 
 fn unavailable(error: impl std::fmt::Display) -> Refusal {
@@ -42,7 +44,7 @@ fn unavailable(error: impl std::fmt::Display) -> Refusal {
 /// Protect the path and its parents. A workload cannot replace target inputs by
 /// renaming a file in a writable parent, following a symlink or adding an alias.
 #[cfg(unix)]
-fn protected(path: &Path, directory: bool) -> Result<PathBuf, Refusal> {
+pub(crate) fn protected(path: &Path, directory: bool) -> Result<PathBuf, Refusal> {
     let canonical = path.canonicalize().map_err(unavailable)?;
     require(
         path.is_absolute() && canonical == path,
@@ -97,11 +99,24 @@ pub fn load(config: &Path, state: &Path) -> Result<Configuration, Refusal> {
     )?;
     #[cfg(windows)]
     require(
-        settings.connections < 253,
+        settings.https.is_some() || settings.connections < 253,
         RefusalCode::Budget,
         "Windows control pipe requires fewer than 253 workers to retain a finite instance count",
     )?;
-    let protected = [config, state];
+    let mut protected = vec![config, state];
+    if let Some(https) = &settings.https {
+        https.configuration()?;
+        #[cfg(windows)]
+        {
+            let NativeRuntime::Windows(runtime) = &settings.native;
+            crate::windows::security::deny_workload_read(
+                &https.private_key,
+                &crate::windows::security::workload(&runtime.credential)?,
+            )?;
+        }
+        protected.push(https.certificate.clone());
+        protected.push(https.private_key.clone());
+    }
     if let Some(adoption) = &settings.catalogue {
         require(
             revision(&settings.target.package) == revision(&adoption.active.catalogue.package),
@@ -151,6 +166,12 @@ pub fn load(config: &Path, state: &Path) -> Result<Configuration, Refusal> {
 }
 
 pub fn command(args: Vec<String>) -> Result<(), Refusal> {
+    if crate::workflow::command(&args)? {
+        return Ok(());
+    }
+    if crate::https::command(&args)? {
+        return Ok(());
+    }
     if args.as_slice() == ["--version"] {
         println!(
             "safeyolo-host-executor {} commit={} profile={} target={}",
@@ -163,7 +184,7 @@ pub fn command(args: Vec<String>) -> Result<(), Refusal> {
     }
     if args.as_slice() == ["--help"] || args.is_empty() {
         println!(
-            "Usage: safeyolo-host-executor <check|serve> --config ABSOLUTE_JSON --state ABSOLUTE_DIRECTORY\n\ncheck validates the complete adopted target without running its programs.\nThe selected state directory must exist, be private and owned by this account.\nRequired enforcement that the selected backend cannot apply is refused."
+            "Usage: safeyolo-host-executor <check|serve|status> --config ABSOLUTE_JSON --state ABSOLUTE_DIRECTORY\nsafeyolo-host-executor tls-create --name DNS_NAME --directory PRIVATE_DIRECTORY\nsafeyolo-host-executor key-create --directory PRIVATE_DIRECTORY\nsafeyolo-host-executor starter --root ABSOLUTE_DIRECTORY --service FIXED_SERVICE --output NEW_PACKAGE_JSON [--credential WINDOWS_WORKLOAD_CREDENTIAL]\nsafeyolo-host-executor scopes --package JSON --selection JSON --output NEW_SCOPES_JSON\nsafeyolo-host-executor prepare-issuer --settings JSON --output NEW_ISSUERS_JSON\nsafeyolo-host-executor prepare --settings JSON --output NEW_CONFIG_JSON\nsafeyolo-host-executor demo --directory NEW_SYNTHETIC_DIRECTORY\nsafeyolo-host-executor inspect --root ABSOLUTE_PATH --kind directory|content --limit COUNT_OR_BYTES\n\ncheck validates the complete adopted target without running its programs.\nThe selected state directory must exist, be private and owned by this account.\nRequired enforcement that the selected backend cannot apply is refused.\nAn adopted https listener serves the same signed protocol on Linux, macOS and Windows. tls-create writes target.pem and target-key.pem without granting any issuer access.\nstarter binds shipped examples to actual executable hashes, account and selected paths. prepare combines that package with explicit target settings; absent issuers and ceilings grant no access. Neither executes a package program."
         );
         #[cfg(unix)]
         println!(
@@ -171,7 +192,7 @@ pub fn command(args: Vec<String>) -> Result<(), Refusal> {
         );
         #[cfg(windows)]
         println!(
-            "serve uses the local pipe \\\\.\\pipe\\safeyolo-host-TARGET_ID.\nservice --name SCM_NAME --config ABSOLUTE_JSON --state ABSOLUTE_DIRECTORY runs the selected configuration under the installed Windows Service account.\ncredential-store --name NAME --account DOMAIN\\user reads the workload password as UTF-8 from stdin and stores it in this executor account's Windows Credential Manager.\nidentity --credential NAME prints the selected workload SID and stable groups.\nWindows requires a separate ordinary workload account and explicit broader filesystem, registry, network_ipc and delegated_services authority. Job Objects enforce process/resource lifetime, not those permissions.\nThe executor account needs SeImpersonatePrivilege or the assign-primary-token/quota privileges for native launch. Service installation and privileges remain explicit operator choices."
+            "serve uses the local pipe \\\\.\\pipe\\safeyolo-host-TARGET_ID.\nservice-install --name SCM_NAME --config ABSOLUTE_JSON --state ABSOLUTE_DIRECTORY --account DOMAIN\\user reads the service account password from stdin and creates a demand-start service. service-remove --name SCM_NAME marks only that service for deletion.\nservice --name SCM_NAME --config ABSOLUTE_JSON --state ABSOLUTE_DIRECTORY runs the selected configuration under the installed Windows Service account.\ncredential-store --name NAME --account DOMAIN\\user reads the workload password as UTF-8 from stdin and stores it in this executor account's Windows Credential Manager. credential-remove --name NAME removes it for this executor account.\nidentity --credential NAME prints the selected workload SID and stable groups.\nWindows requires a separate ordinary workload account and explicit broader filesystem, registry, network_ipc and delegated_services authority. Job Objects enforce process/resource lifetime, not those permissions.\nThe executor account needs SeImpersonatePrivilege or the assign-primary-token/quota privileges for native launch. Service installation and privileges remain explicit operator choices."
         );
         return Ok(());
     }
@@ -211,8 +232,16 @@ pub fn command(args: Vec<String>) -> Result<(), Refusal> {
     serve(config, state, settings)
 }
 
-#[cfg(unix)]
 pub fn serve(config: PathBuf, state: PathBuf, settings: Configuration) -> Result<(), Refusal> {
+    if settings.https.is_some() {
+        crate::https::serve(config, state, settings)
+    } else {
+        serve_local(config, state, settings)
+    }
+}
+
+#[cfg(unix)]
+fn serve_local(config: PathBuf, state: PathBuf, settings: Configuration) -> Result<(), Refusal> {
     let mut ledger = Ledger::open(&state, &settings.target.target_id, settings.ledger.clone())?;
     let settings = reconcile_configuration(&config, &state)?;
     settings.native.reconcile(&mut ledger)?;
@@ -272,12 +301,25 @@ pub fn serve(config: PathBuf, state: PathBuf, settings: Configuration) -> Result
 }
 
 #[cfg(windows)]
-pub fn serve(config: PathBuf, state: PathBuf, settings: Configuration) -> Result<(), Refusal> {
+fn serve_local(config: PathBuf, state: PathBuf, settings: Configuration) -> Result<(), Refusal> {
     crate::windows::transport::serve(config, state, settings)
 }
 
+pub(crate) trait DeadlineStream: Read + Write {
+    fn set_read_timeout(&mut self, value: Option<Duration>) -> std::io::Result<()>;
+    fn set_write_timeout(&mut self, value: Option<Duration>) -> std::io::Result<()>;
+}
+impl DeadlineStream for UnixStream {
+    fn set_read_timeout(&mut self, value: Option<Duration>) -> std::io::Result<()> {
+        UnixStream::set_read_timeout(self, value)
+    }
+    fn set_write_timeout(&mut self, value: Option<Duration>) -> std::io::Result<()> {
+        UnixStream::set_write_timeout(self, value)
+    }
+}
+
 pub(crate) fn connection(
-    mut stream: UnixStream,
+    mut stream: impl DeadlineStream,
     config: &Path,
     state: &Path,
     original: &Configuration,
@@ -364,7 +406,8 @@ pub(crate) fn connection(
             .ok_or_else(|| unavailable("response deadline exceeds clock range"))?,
     };
     write!(output, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).map_err(unavailable)?;
-    output.write_all(&body).map_err(unavailable)
+    output.write_all(&body).map_err(unavailable)?;
+    output.flush().map_err(unavailable)
 }
 
 fn load_selected(
@@ -380,11 +423,13 @@ fn load_selected(
                 &settings.ledger,
                 settings.connections,
                 settings.connection_timeout_seconds,
+                &settings.https,
             )) == revision(&(
                 &original.native,
                 &original.ledger,
                 original.connections,
                 original.connection_timeout_seconds,
+                &original.https,
             )),
         RefusalCode::Stale,
         "runtime, limits or target identity changed; restart this selected executor",
@@ -470,11 +515,11 @@ pub(crate) fn reconcile_configuration(
     Ok(settings)
 }
 
-struct DeadlineRead<'a> {
-    stream: &'a mut UnixStream,
+struct DeadlineRead<'a, T: DeadlineStream> {
+    stream: &'a mut T,
     expires: std::time::Instant,
 }
-impl Read for DeadlineRead<'_> {
+impl<T: DeadlineStream> Read for DeadlineRead<'_, T> {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
         let remaining = self
             .expires
@@ -490,11 +535,11 @@ impl Read for DeadlineRead<'_> {
     }
 }
 
-struct DeadlineWrite<'a> {
-    stream: &'a mut UnixStream,
+struct DeadlineWrite<'a, T: DeadlineStream> {
+    stream: &'a mut T,
     expires: std::time::Instant,
 }
-impl Write for DeadlineWrite<'_> {
+impl<T: DeadlineStream> Write for DeadlineWrite<'_, T> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let remaining = self
             .expires
@@ -623,6 +668,7 @@ mod tests {
             Ledger::open(&root, "fixture", limits.clone()).unwrap(),
         ));
         let original = Configuration {
+            https: None,
             catalogue: None,
             target: Target {
                 families: Vec::new(),

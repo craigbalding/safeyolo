@@ -1,7 +1,7 @@
 //! Controlled job outputs exercise configured admission, not VM isolation or
 //! model accuracy. The installed checker/model measurements cover those owners.
 use super::*;
-use crate::policy::checks::{challenges, content_digest};
+use crate::policy::checks::{challenges, content_digest, task_action};
 
 async fn configured_fixture() -> Fixture {
     let mut f = Fixture::new("").await;
@@ -86,6 +86,148 @@ fn record(f: &Fixture, request: &str) -> pending::Record {
         .into_iter()
         .find(|r| r.authority.action["request"]["request_id"] == request)
         .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_action_history_filters_before_selecting_the_bounded_tail() {
+    let f = Fixture::new("").await;
+    let runtime = f.proxy.runtime.read().unwrap().clone();
+    for index in 0..128 {
+        let mut event = crate::audit::Event::new(
+            "gateway.host_result",
+            crate::audit::Kind::Gateway,
+            crate::audit::Severity::Low,
+            "Prior host operation completed",
+        );
+        event.agent = Some(f.run.agent.clone());
+        event.request_id = Some(format!("prior-{index}"));
+        event.details = json!({"run":f.run,"result":{"receipt":{"state":"completed"}}}).into();
+        runtime.audit.emit_confirmed(event).await.unwrap();
+    }
+    let before = task_action::history(&runtime, &f.run, "current").unwrap();
+    assert_eq!(before["operations"]["rows"].as_array().unwrap().len(), 128);
+    for index in 0..130 {
+        let mut event = crate::audit::Event::new(
+            if index == 0 {
+                "gateway.host_admission"
+            } else {
+                "ops.policy_check_executed"
+            },
+            if index == 0 {
+                crate::audit::Kind::Gateway
+            } else {
+                crate::audit::Kind::Ops
+            },
+            crate::audit::Severity::Low,
+            "Current action checker activity",
+        );
+        event.agent = Some(f.run.agent.clone());
+        event.request_id = Some("current".into());
+        event.details = json!({"run":f.run}).into();
+        runtime.audit.emit_confirmed(event).await.unwrap();
+    }
+    assert_eq!(
+        task_action::history(&runtime, &f.run, "current").unwrap(),
+        before
+    );
+    let mut event = crate::audit::Event::new(
+        "gateway.host_refused",
+        crate::audit::Kind::Gateway,
+        crate::audit::Severity::Low,
+        "Different host operation refused",
+    );
+    event.agent = Some(f.run.agent.clone());
+    event.request_id = Some("concurrent-action".into());
+    event.details = json!({"run":f.run,"refusal":{"code":"policy"}}).into();
+    runtime.audit.emit_confirmed(event).await.unwrap();
+    let after = task_action::history(&runtime, &f.run, "current").unwrap();
+    assert_ne!(
+        after, before,
+        "A different action must invalidate the history"
+    );
+    assert_eq!(after["operations"]["rows"].as_array().unwrap().len(), 128);
+    // A malformed unselected record still fails the whole audit view closed.
+    use std::io::Write;
+    let (path, _) = runtime.audit.log_source();
+    writeln!(
+        std::fs::OpenOptions::new().append(true).open(path).unwrap(),
+        "invalid"
+    )
+    .unwrap();
+    assert_eq!(
+        task_action::history(&runtime, &f.run, "current").unwrap()["operations"]["status"],
+        "unavailable"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn large_task_action_history_respects_the_adopted_input_limit() {
+    let mut f = configured_fixture().await;
+    let base = f
+        .source
+        .split("\n[checks.independent]")
+        .next()
+        .unwrap()
+        .to_owned();
+    let path = f.root.path().join("check.json");
+    let mut spec: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let action = json!({"task_action":{
+        "task":{"objective":"Diagnose the selected service"},"requester":{},
+        "action":{"invocation":{"arguments":{"wait":5}}},"prepared":{},"constraints":{},
+        "history":{"refusals":[{"reason":"x".repeat(32768)}]}}});
+    for limit in [131072, 32768] {
+        spec["max_input_bytes"] = json!(limit);
+        let bytes = serde_json::to_vec(&spec).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let policy = task_action_policy()
+            .replace("/absent-task-action-spec.json", path.to_str().unwrap())
+            .replace(&"a".repeat(64), &content_digest(&bytes))
+            .replace("timeout_ms=100", "timeout_ms=5000")
+            .replace("max_input_bytes=32768", &format!("max_input_bytes={limit}"));
+        f.install(base.clone() + &policy);
+        let runtime = f.proxy.runtime.read().unwrap().clone();
+        let checks = runtime.policy.as_ref().unwrap().named_checks();
+        let subject = task_action::subject(
+            &action,
+            "authority",
+            &checks.checks["independent"],
+            "host",
+            "revision",
+            &BTreeMap::new(),
+            false,
+        )
+        .unwrap();
+        let subject =
+            task_action::reconsideration(subject, &json!({"attempt":1,"prior_findings":[]}))
+                .unwrap();
+        let result = checks
+            .invoke_challenge("independent", subject, &runtime, &f.proxy.runtime)
+            .await;
+        if limit == 131072 {
+            assert!(result.unwrap().unavailable.is_none());
+        } else {
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "check input limit exceeded"
+            );
+        }
+        let observed = calls(&f);
+        assert_eq!(
+            observed.len(),
+            1,
+            "An over-budget input must start no checker"
+        );
+        assert_eq!(
+            observed[0]["subject"]["trusted"]["history"]["refusals"],
+            action["task_action"]["history"]["refusals"]
+        );
+        let input_bytes = serde_json::to_vec(&observed[0]["request"]).unwrap().len();
+        assert!(
+            input_bytes > 32768 && input_bytes <= 131072,
+            "{input_bytes}"
+        );
+        assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

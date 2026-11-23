@@ -39,9 +39,12 @@ pub(crate) fn validate(operation: &Operation) -> Result<bool, Refusal> {
             "Linux native service control selects a literal systemd user .service unit",
         )?;
         require(
-            matches!(service.capability.as_str(), "restart" | "status"),
+            matches!(
+                service.capability.as_str(),
+                "start" | "stop" | "restart" | "status"
+            ),
             RefusalCode::Unavailable,
-            "systemd user service control currently supports restart and status",
+            "systemd user service control supports start, stop, restart and status",
         )?;
         let environment = std::collections::BTreeMap::from([
             (
@@ -54,7 +57,7 @@ pub(crate) fn validate(operation: &Operation) -> Result<bool, Refusal> {
         if service.capability == "status" {
             argv.extend(["show", "--property=ActiveState", "--property=MainPID"]);
         } else {
-            argv.push("restart");
+            argv.push(service.capability.as_str());
         }
         argv.extend(["--", resource.as_str()]);
         (
@@ -87,10 +90,12 @@ pub(crate) fn validate(operation: &Operation) -> Result<bool, Refusal> {
         )?;
         let argv = match service.capability.as_str() {
             "status" => vec!["print", resource.as_str()],
+            "start" => vec!["kickstart", resource.as_str()],
+            "stop" => vec!["kill", "SIGTERM", resource.as_str()],
             "restart" => vec!["kickstart", "-k", resource.as_str()],
             _ => {
                 return Err(unavailable(
-                    "the confined launchd client supports restart and status",
+                    "the confined launchd client supports start, stop, restart and status",
                 ));
             }
         };
