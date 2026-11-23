@@ -769,9 +769,9 @@ nodes:
         - path: proxy/src/coord_rooms/work/tests.rs
           sha256: a59cba9bbc8312da868bd18b55b28435885cdec0f113d0c03a29ebb6c26a6154
         - path: proxy/src/coord_rooms/work/outputs.rs
-          sha256: 77d4eaf4c84c4c2e904c599d5251ace8065f798c0481390e7d00b1efcacaf274
+          sha256: eb110ef75b44fa8c16252264418268924a7ae3b8f60ea59667463dac177104a9
         - path: proxy/src/coord_rooms/work/output_tests.rs
-          sha256: d2bc2ade638a7b0b23c08cd7f4384b196f1d76369686fdff161f853d10e8efe8
+          sha256: 05b31c7513227ab2451cedee276fa9fd3f75f135eba8df74c3d11340497ced96
         - path: proxy/tests/native_coord/outputs.rs
           sha256: a119e527d1af7d8772f22deba4b9aee28f46d5551b1a8f959b84f593059e1e22
         - path: proxy/src/coord_work_upgrade_6.sql
@@ -825,7 +825,7 @@ nodes:
         - path: proxy/src/coord_operator/signals.rs
           sha256: 90fa9648af1c4c243f776a179142dd267e2a00cc96df9c0b03a2638ec9ec8fee
         - path: proxy/src/coord_tools.rs
-          sha256: 14e7718ddcd9018906e763d59a5a3ef4bacecf3df7e842fd81da8f4e2200c6fc
+          sha256: e61af91a7c38db5b4e0b4805ccf069be30cbe5facd2af9dcc1dcc43e0db9a574
         - path: proxy/src/coord_rooms/room_status.rs
           sha256: 9fcd506d9a465dd2dc3f737727e3232f88f7df43b11b552cf139890fd59d2431
         - path: proxy/src/coord_rooms/room_status/tests.rs
