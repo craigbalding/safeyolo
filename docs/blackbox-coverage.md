@@ -1326,9 +1326,10 @@ Selection: manual native phase `host-execution` (named execution receipt; ignore
 
 Selection: manual native phase `host-execution` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::configured_task_action::retained_history_uses_the_adopted_complete_input_limit -- --exact`](../proxy/src/host_execution/gateway/task_action_tests.rs#L89)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::configured_task_action::configured_task_action_dispatches_adaptive_operations_and_retains_refusals -- --exact`](../proxy/src/host_execution/gateway/task_action_tests.rs#L145)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::configured_task_action::configured_task_action_rejects_prior_findings_and_required_check_bypass -- --exact`](../proxy/src/host_execution/gateway/task_action_tests.rs#L224)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::configured_task_action::task_action_history_filters_before_selecting_the_bounded_tail -- --exact`](../proxy/src/host_execution/gateway/task_action_tests.rs#L89)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::configured_task_action::large_task_action_history_respects_the_adopted_input_limit -- --exact`](../proxy/src/host_execution/gateway/task_action_tests.rs#L161)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::configured_task_action::configured_task_action_dispatches_adaptive_operations_and_retains_refusals -- --exact`](../proxy/src/host_execution/gateway/task_action_tests.rs#L231)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::configured_task_action::configured_task_action_rejects_prior_findings_and_required_check_bypass -- --exact`](../proxy/src/host_execution/gateway/task_action_tests.rs#L310)
 
 <a id="witness-tests-proxy-contracts-test-local-api-authorization-py"></a>
 ### [`tests/proxy_contracts/test_local_api_authorization.py`](../tests/proxy_contracts/test_local_api_authorization.py)
