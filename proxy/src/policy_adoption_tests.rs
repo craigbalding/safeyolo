@@ -198,6 +198,7 @@ async fn catalogue_discovery_uses_actual_bytes_and_activates_coherent_gateway_de
         revision(&updated_bindings["other"]),
         revision(&other_binding)
     );
+    let active_binding = revision(&updated_bindings["local"]);
     let mut broadened = package.clone();
     broadened.version += 1;
     broadened
@@ -220,6 +221,11 @@ async fn catalogue_discovery_uses_actual_bytes_and_activates_coherent_gateway_de
         .unwrap();
     // Coherent retained input, with the exact unresolved update visible. The
     // target's invocation check refuses a mismatched package operation.
+    assert_eq!(
+        revision(&runtime.policy.as_ref().unwrap().host_bindings().unwrap()["local"]),
+        active_binding,
+        "an unadopted announcement must not invalidate the active binding"
+    );
     assert_eq!(
         registry.services[&name].raw["host_catalogue_status"]["state"],
         "awaiting_review"

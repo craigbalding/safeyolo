@@ -323,13 +323,15 @@ pub(crate) fn reconcile_catalogues(state: &crate::RuntimeState) -> Result<bool, 
                     .plan(now())
                     .map_err(|e| crate::approvals::invalid(e.to_string()))?;
                 let previous_package = revision(&adoption.active.catalogue.package);
+                let package_changed = previous_package != revision(&plan.package);
                 if adoption.advance(&plan) {
                     // A binding retains its target's grants, ceiling, endpoint
                     // and signing identity. Advance only the exact catalogue
                     // snapshot it already uses; another target may use the
                     // same package name with different definitions.
                     for (binding_name, binding) in &bindings {
-                        if revision(&binding.target.package) == previous_package {
+                        if package_changed && revision(&binding.target.package) == previous_package
+                        {
                             let mut binding = binding.clone();
                             binding.target.package = plan.package.clone();
                             binding.target.catalogue = Some(plan.status.clone());
