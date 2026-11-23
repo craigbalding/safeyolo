@@ -347,8 +347,9 @@ def validate_cargo_source(witness: dict, root: Path) -> None:
             raise ValueError(f"unwired Cargo root target: {witness['paths']}")
         return
     leaf = witness["module"].split("::")[-1]
+    crate_root = owner == crate / "src/lib.rs"
     if witness["target"] == "lib":
-        prefix = owner.relative_to(crate / "src").with_suffix("").parts
+        prefix = () if crate_root else owner.relative_to(crate / "src").with_suffix("").parts
     else:
         owner_parts = owner.relative_to(crate / "tests").with_suffix("").parts
         if owner_parts[0] != witness["target"]:
@@ -364,7 +365,8 @@ def validate_cargo_source(witness: dict, root: Path) -> None:
         resolved = owner
     else:
         explicit = re.search(r'#\[path\s*=\s*"([^\"]+)"\]\s*mod\s+' + re.escape(leaf) + r"\s*;", source)
-        resolved = owner.parent / (explicit[1] if explicit else owner.stem + "/" + leaf + ".rs")
+        directory = owner.parent if crate_root else owner.parent / owner.stem
+        resolved = owner.parent / explicit[1] if explicit else directory / (leaf + ".rs")
     if any(resolved.resolve() != (root / path).resolve() for path in witness["paths"]):
         raise ValueError(f"unwired Cargo source: {witness['paths']}")
 

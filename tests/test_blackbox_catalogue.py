@@ -238,6 +238,33 @@ def test_cargo_identity_requires_its_real_module_and_keeps_ignore_selection(cata
         assert catalogue.cargo_selected(witness, node, command)
 
 
+@pytest.mark.parametrize("module,filename,expected", [
+    ("policy_adoption_tests", "policy_adoption_tests.rs", None),
+    ("lib::policy_adoption_tests", "policy_adoption_tests.rs", "module identity"),
+    ("policy_adoption_tests", "renamed.rs", "unwired Cargo source"),
+])
+def test_cargo_library_root_uses_its_real_module(catalogue_root, module, filename, expected):
+    root = catalogue_root
+    directory = root / "proxy/src"
+    directory.mkdir(parents=True)
+    (directory / "lib.rs").write_text("#[cfg(test)]\nmod policy_adoption_tests;\n")
+    (directory / filename).write_text("#[tokio::test]\nasync fn adopted_binding() {}\n")
+    witness = {"paths": ["proxy/src/" + filename], "controls": ["BB-38"], "kind": "cargo",
+               "scope": "fixture native policy", "adapter": "controlled adoption", "target": "lib",
+               "module": module, "owner": "proxy/src/lib.rs"}
+    with (root / catalogue.METADATA).open("a") as output:
+        output.write("\n[[witnesses]]\n" + "\n".join(key + " = " + json.dumps(value) for key, value in witness.items()))
+    if expected:
+        with pytest.raises(ValueError, match=expected):
+            catalogue.load(root)
+    else:
+        _controls, witnesses, _outside = catalogue.load(root)
+        node = witnesses[-1]["resolved"][0][1][0]
+        assert node["node"] == "policy_adoption_tests::adopted_binding"
+        command = {"tokens": ["scripts/cargo_with_space.sh", "test", "--lib", "policy_adoption_tests"]}
+        assert catalogue.cargo_selected(witness, node, command)
+
+
 @pytest.mark.parametrize("failure", ["missing", "ignored", "failure", "timeout", None])
 def test_native_host_selection_retains_partial_observations(tmp_path, monkeypatch, failure):
     """Missing/ignored/failed cases cannot become a complete installed receipt."""

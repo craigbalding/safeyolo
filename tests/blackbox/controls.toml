@@ -481,6 +481,16 @@ scope = "Controlled authenticated protocol, signatures, ledger and HTTP fixtures
 adapter = "Protocol/component evidence; simulated dispatch does not establish native containment"
 
 [[witnesses]]
+paths = ["proxy/src/policy_adoption_tests.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+target = "lib"
+module = "policy_adoption_tests"
+owner = "proxy/src/lib.rs"
+scope = "Controlled saved/runtime catalogue and gateway binding adoption"
+adapter = "Exact binding snapshots, rejected announcement stability and policy transaction rollback; no native execution claim"
+
+[[witnesses]]
 paths = ["proxy/src/host_execution/gateway/tests.rs"]
 controls = ["BB-38"]
 kind = "cargo"

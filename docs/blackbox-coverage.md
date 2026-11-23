@@ -1230,6 +1230,8 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-host-executor-tests-unix-native-rs).
 - [proxy/tests/host_execution.rs](../proxy/tests/host_execution.rs#L174) — Controlled authenticated protocol, signatures, ledger and HTTP fixtures. Evidence: Protocol/component evidence; simulated dispatch does not establish native containment.
   Exact identities: [source inventory](#witness-proxy-tests-host-execution-rs).
+- [proxy/src/policy_adoption_tests.rs](../proxy/src/policy_adoption_tests.rs#L20) — Controlled saved/runtime catalogue and gateway binding adoption. Evidence: Exact binding snapshots, rejected announcement stability and policy transaction rollback; no native execution claim.
+  Exact identities: [source inventory](#witness-proxy-src-policy-adoption-tests-rs).
 - [proxy/src/host_execution/gateway/tests.rs](../proxy/src/host_execution/gateway/tests.rs#L402) — Controlled gateway authentication, scope, dispatch and reply-loss fixtures. Evidence: Real gateway request parsing and controlled upstream; not a deployed target or native boundary.
   Exact identities: [source inventory](#witness-proxy-src-host-execution-gateway-tests-rs).
 - [proxy/src/host_execution/gateway/task_action_tests.rs](../proxy/src/host_execution/gateway/task_action_tests.rs#L89) — Configured task/action admission and bounded checker fixtures. Evidence: Controlled check results and upstream dispatch counts; model measurements remain separate supplementary evidence.
@@ -1292,6 +1294,15 @@ Selection: manual native phase `host-execution` (named execution receipt; ignore
 - [`cargo test --manifest-path proxy/Cargo.toml --test host_execution command_words_preserve_fixed_implementation_and_never_evaluate_shell_text -- --exact`](../proxy/tests/host_execution.rs#L1632)
 - [`cargo test --manifest-path proxy/Cargo.toml --test host_execution local_action_ceiling_and_content_revisions_cannot_be_bypassed_by_labels -- --exact`](../proxy/tests/host_execution.rs#L1676)
 - [`cargo test --manifest-path proxy/Cargo.toml --test host_execution stale_preparation_refreshes_through_real_discovery_proposal_and_ledger_without_invoking -- --exact`](../proxy/tests/host_execution.rs#L1728)
+
+<a id="witness-proxy-src-policy-adoption-tests-rs"></a>
+### [`proxy/src/policy_adoption_tests.rs`](../proxy/src/policy_adoption_tests.rs)
+
+Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy_adoption_tests::catalogue_discovery_uses_actual_bytes_and_activates_coherent_gateway_definitions -- --exact`](../proxy/src/policy_adoption_tests.rs#L20)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy_adoption_tests::adoption_save_failure_preserves_saved_and_active_policy -- --exact`](../proxy/src/policy_adoption_tests.rs#L284)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy_adoption_tests::adoption_receipt_failure_rolls_back_actual_saved_and_active_policy -- --exact`](../proxy/src/policy_adoption_tests.rs#L332)
 
 <a id="witness-proxy-src-host-execution-gateway-tests-rs"></a>
 ### [`proxy/src/host_execution/gateway/tests.rs`](../proxy/src/host_execution/gateway/tests.rs)
@@ -2597,9 +2608,10 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 - [`tests/test_blackbox_catalogue.py::test_workflow_selection_agrees_with_real_pytest_exclusions`](../tests/test_blackbox_catalogue.py#L176)
 - [`tests/test_blackbox_catalogue.py::test_unresolved_shared_phase_operand_cannot_pass_generation`](../tests/test_blackbox_catalogue.py#L203)
 - [`tests/test_blackbox_catalogue.py::test_cargo_identity_requires_its_real_module_and_keeps_ignore_selection`](../tests/test_blackbox_catalogue.py#L215)
-- [`tests/test_blackbox_catalogue.py::test_native_host_selection_retains_partial_observations`](../tests/test_blackbox_catalogue.py#L242)
-- [`tests/test_blackbox_catalogue.py::test_native_host_missing_input_is_incomplete_without_dispatch`](../tests/test_blackbox_catalogue.py#L304)
-- [`tests/test_blackbox_catalogue.py::test_native_case_requires_one_executed_test_instead_of_target_pass_text`](../tests/test_blackbox_catalogue.py#L321)
+- [`tests/test_blackbox_catalogue.py::test_cargo_library_root_uses_its_real_module`](../tests/test_blackbox_catalogue.py#L246)
+- [`tests/test_blackbox_catalogue.py::test_native_host_selection_retains_partial_observations`](../tests/test_blackbox_catalogue.py#L269)
+- [`tests/test_blackbox_catalogue.py::test_native_host_missing_input_is_incomplete_without_dispatch`](../tests/test_blackbox_catalogue.py#L331)
+- [`tests/test_blackbox_catalogue.py::test_native_case_requires_one_executed_test_instead_of_target_pass_text`](../tests/test_blackbox_catalogue.py#L348)
 
 <a id="witness-tests-proxy-contracts-test-shared-authority-assurance-py"></a>
 ### [`tests/proxy_contracts/test_shared_authority_assurance.py`](../tests/proxy_contracts/test_shared_authority_assurance.py)
