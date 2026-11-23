@@ -285,6 +285,7 @@ struct Events {
     canonical: bool,
     consumed_information: bool,
     unresolved_send: bool,
+    claude_session_unavailable: bool,
     pi_args: BTreeMap<String, Value>,
     claude_calls: BTreeMap<String, Value>,
 }
@@ -399,6 +400,20 @@ impl Events {
             {
                 self.failed = true;
                 return Ok(());
+            }
+            if kind == "result"
+                && !self.started
+                && event["subtype"] == "error_during_execution"
+                && event["is_error"] == true
+                && let Some(id) = supervisor.state.thread_id.as_deref()
+                && event["errors"].as_array().is_some_and(|errors| {
+                    errors.iter().any(|error| {
+                        error.as_str()
+                            == Some(format!("No conversation found with session ID: {id}").as_str())
+                    })
+                })
+            {
+                self.claude_session_unavailable = true;
             }
             if let Some(blocks) = event["message"]["content"].as_array() {
                 for block in blocks {
@@ -698,7 +713,7 @@ pub(super) async fn invoke(
     if claude {
         preflight::claude_arguments(&args)?;
         // Select the session before dispatch so even an interrupted first turn
-        // has a known native recovery operand. Startup failure clears it below.
+        // has a known native recovery operand.
         let id = supervisor
             .state
             .thread_id
@@ -856,7 +871,11 @@ pub(super) async fn invoke(
         Ok(events) => events,
         Err(error) => {
             supervisor.state.phase = "uncertain".into();
-            supervisor.state.thread_id = None;
+            // An invocation error does not establish that Claude's saved
+            // conversation is unavailable. Keep its recovery operand.
+            if !claude {
+                supervisor.state.thread_id = None;
+            }
             supervisor.state.save(&supervisor.state_path)?;
             return Err(error);
         }
@@ -909,7 +928,10 @@ pub(super) async fn invoke(
         supervisor.state.phase = "accepted".into();
     } else {
         supervisor.state.phase = "uncertain".into();
-        if resuming || !events.started {
+        if (claude && events.claude_session_unavailable)
+            || (!claude && resuming)
+            || (!resuming && !events.started)
+        {
             supervisor.state.thread_id = None;
         }
     }

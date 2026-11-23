@@ -1508,13 +1508,27 @@ if "auth" in sys.argv:
         print("error: unknown option '--unknown-claude-option'",file=sys.stderr);sys.exit(1)
     print(json.dumps({{"loggedIn": mode != "invalid_auth"}}));sys.exit(0)
 root=Path({str(capture)!r})
+if mode=="stdin_error":
+    os.close(0)
+    time.sleep(0.2)
+    sys.exit(1)
 (root/("prompt-"+str(os.getpid()))).write_text(sys.stdin.read())
 (root/("argv-"+str(os.getpid()))).write_text(json.dumps(sys.argv[1:]))
 session=sys.argv[sys.argv.index("--resume" if "--resume" in sys.argv else "--session-id")+1]
 def event(kind,**fields):
     print(json.dumps({{"type":kind,"session_id":session,"parent_tool_use_id":None,**fields}}),flush=True)
+if mode in ("unavailable", "foreign_unavailable"):
+    missing=session if mode=="unavailable" else "00000000-0000-4000-8000-000000000000"
+    event("result",subtype="error_during_execution",is_error=True,num_turns=0,
+          errors=["No conversation found with session ID: "+missing])
+    sys.exit(1)
 event("system",subtype="init",mcp_servers=[{{"name":"safeyolo-coord","status":"failed" if mode=="mcp_failed" else "connected"}}])
 if mode=="crash": sys.exit(1)
+if mode=="api_denied":
+    event("assistant",is_api_error_message=True,api_error_status=428)
+    event("result",subtype="success",is_error=True,num_turns=1,api_error_status=428,
+          stop_reason="stop_sequence",terminal_reason="api_error")
+    sys.exit(1)
 if mode=="timeout":
     child=subprocess.Popen(["sleep","90"],start_new_session=True)
     (root/"descendant").write_text(str(child.pid))
@@ -1576,7 +1590,26 @@ def test_claude_crashed_turn_resumes_same_session_without_accepting_narration(bi
     assert json.loads(state.read_text())["in_flight"] == saved["in_flight"]
 
 
-def test_claude_crashed_native_work_resumes_original_action_until_canonical_completion(binary, fixture):
+def test_claude_resumed_invocation_io_error_preserves_session_and_pending_input(binary, fixture):
+    coord, _env, _config, state, _harness, _capture = fixture
+    # Exceed the pipe capacity so the resumed child's closed stdin makes the
+    # actual invocation return Err, separately from a failed result event.
+    coord.objects[ATTENTION]["object"] = {**OBJECT, "body": TASK + "\n" * 60_000}
+    claude_harness(fixture, binary, mode="crash", terminal=False)
+    assert run(binary, fixture).returncode != 0
+    saved = json.loads(state.read_text())
+    assert saved["thread_id"]
+    claude_harness(fixture, binary, mode="stdin_error", terminal=False)
+    result = run(binary, fixture, confirm_fresh_identity=False)
+    assert result.returncode != 0 and "Broken pipe" in result.stderr
+    current = json.loads(state.read_text())
+    assert current["phase"] == "uncertain" and current["owned_process"] is None
+    assert current["thread_id"] == saved["thread_id"]
+    assert current["in_flight"] == saved["in_flight"]
+
+
+@pytest.mark.parametrize("resume_mode", ["success", "api_denied", "malformed", "unavailable", "foreign_unavailable"])
+def test_claude_crashed_native_work_resumes_original_action_until_canonical_completion(binary, fixture, resume_mode):
     coord, _, config, state, _, capture = fixture
     settings = json.loads(config.read_text())
     settings.update(agent_room="forge-agent", native_work=True)
@@ -1595,19 +1628,30 @@ def test_claude_crashed_native_work_resumes_original_action_until_canonical_comp
     assert saved["phase"] == "uncertain" and saved["owned_process"] is None
     assert saved["native_in_flight"][0]["action"] == action
     coord.page = {"edges": [], "next_cursor": 7}
-    claude_harness(fixture, binary, terminal=False)
+    claude_harness(fixture, binary, mode=resume_mode, terminal=False)
     resumed = run(binary, fixture, confirm_fresh_identity=False)
     assert resumed.returncode != 0 and "incomplete or uncertain Coord work" in resumed.stderr
     current = json.loads(state.read_text())
     assert current["native_in_flight"] == saved["native_in_flight"], "a successful Claude turn cannot settle native Work"
+    assert current["phase"] == "uncertain" and current["consecutive_failures"] > saved["consecutive_failures"]
+    assert current["thread_id"] == (None if resume_mode == "unavailable" else saved["thread_id"])
     argv = [json.loads(path.read_text()) for path in capture.glob("argv-*")]
     assert any("--resume" in row and row[row.index("--resume") + 1] == saved["thread_id"] for row in argv)
     assert coord.received_actions == {action["key"]}
     assert ("POST", "/api/coord/rooms/backlog/send") not in coord.requests
+    claude_harness(fixture, binary, terminal=False)
+    assert run(binary, fixture, confirm_fresh_identity=False).returncode != 0
+    argv = [json.loads(path.read_text()) for path in capture.glob("argv-*")]
+    if resume_mode == "unavailable":
+        current = json.loads(state.read_text())
+        assert current["thread_id"] != saved["thread_id"]
+        assert any("--session-id" in row and row[row.index("--session-id") + 1] == current["thread_id"] for row in argv)
+    else:
+        assert sum("--resume" in row and row[row.index("--resume") + 1] == saved["thread_id"] for row in argv) == 2
     coord.native_actions[work_id] = []
     assert run(binary, fixture, confirm_fresh_identity=False).returncode == 0
     assert json.loads(state.read_text()).get("native_in_flight", []) == []
-    assert len(list(capture.glob("prompt-*"))) == 2
+    assert len(list(capture.glob("prompt-*"))) == 3
 
 
 @pytest.mark.parametrize("mode", ["malformed", "truncated", "foreign", "nested", "error", "mcp_failed", "late_malformed", "late_crash"])
