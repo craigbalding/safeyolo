@@ -392,8 +392,11 @@ PowerShell query results use UTF-8 JSON with `{operation,status,observedAtUtc,
 timeZone,count,limitReached,data}`. A reached count limit reports `partial`.
 Permission errors, including registry `SecurityException` results, report
 `access_denied` and exit 2. Other failed queries report `unavailable` and exit 2.
-A registry observation can
-report `absent` in its data. File content explicitly reports a bounded prefix.
+A registry observation can report `absent` in its data. The user-registry
+recipe opens the actual workload SID under `HKEY_USERS`. If that hive is not
+loaded, the recipe reports `unavailable` and exits 2. It does not load a user
+profile or read the operator or SYSTEM default hive instead.
+File content explicitly reports a bounded prefix.
 Task run-time fields remain `null` when the OS supplies no value.
 Software rows identify their uninstall `registryKey`; `Name` and `Version`
 remain `null` when the corresponding registry values are absent.

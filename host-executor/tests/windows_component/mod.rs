@@ -153,7 +153,15 @@ fn prepare(root: &Path, credential: &str) {
     let identity: ExecutionIdentity = serde_json::from_slice(&output.stdout).unwrap();
     fs::copy(std::env::current_exe().unwrap(), probe_path(root)).unwrap();
     let mut operations = BTreeMap::new();
-    for mode in ["observe", "flood", "memory", "tasks", "background", "wait"] {
+    for mode in [
+        "observe",
+        "flood",
+        "memory",
+        "tasks",
+        "background",
+        "wait",
+        "handles",
+    ] {
         let mut argv = vec![
             "--probe".into(),
             mode.into(),
@@ -1053,6 +1061,258 @@ fn restart(fixture: &mut Fixture) {
     fixture.start();
 }
 
+fn path_boundaries(root: &Path) {
+    let original = load(root);
+    let program = probe_path(root);
+    let file_link = root.join("programs with spaces/probe-link.exe");
+    let directory_link = root.join("program-link");
+    std::os::windows::fs::symlink_file(&program, &file_link).unwrap();
+    std::os::windows::fs::symlink_dir(program.parent().unwrap(), &directory_link).unwrap();
+    let paths = [
+        ("absolute", program.to_str().unwrap().to_owned(), true),
+        (
+            "verbatim-local",
+            format!("\\\\?\\{}", program.display()),
+            true,
+        ),
+        ("trailing-dot", format!("{}.", program.display()), false),
+        ("trailing-space", format!("{} ", program.display()), false),
+        (
+            "alternate-stream",
+            format!("{}:stream", program.display()),
+            false,
+        ),
+        (
+            "parent-component",
+            format!(
+                "{}\\..\\programs with spaces\\probe.exe",
+                program.parent().unwrap().display()
+            ),
+            false,
+        ),
+        ("drive-relative", "C:probe.exe".into(), false),
+        (
+            "unc",
+            "\\\\localhost\\C$\\Windows\\System32\\whoami.exe".into(),
+            false,
+        ),
+        (
+            "device",
+            "\\\\.\\C:\\Windows\\System32\\whoami.exe".into(),
+            false,
+        ),
+        ("file-reparse", file_link.to_str().unwrap().into(), false),
+        (
+            "ancestor-reparse",
+            directory_link.join("probe.exe").to_str().unwrap().into(),
+            false,
+        ),
+    ];
+    for (name, path, allowed) in paths {
+        let mut candidate = original.clone();
+        candidate
+            .target
+            .package
+            .operations
+            .get_mut("observe")
+            .unwrap()
+            .execution
+            .executable = path;
+        let pin = candidate.target.package.operations["observe"].implementation_sha256();
+        candidate
+            .target
+            .ceiling
+            .get_mut("observe")
+            .unwrap()
+            .implementation_sha256 = pin.clone();
+        candidate
+            .target
+            .issuers
+            .get_mut("issuer")
+            .unwrap()
+            .authority
+            .grants
+            .get_mut("grant")
+            .unwrap()
+            .operations
+            .get_mut("observe")
+            .unwrap()
+            .implementation_sha256 = pin;
+        let config = root.join(format!("control/path-{name}.json"));
+        assert!(!config.exists());
+        fs::write(&config, serde_json::to_vec_pretty(&candidate).unwrap()).unwrap();
+        let output = Process::new(executor())
+            .arg("check")
+            .arg("--config")
+            .arg(&config)
+            .arg("--state")
+            .arg(root.join("control/state"))
+            .output()
+            .unwrap();
+        println!(
+            "{}",
+            serde_json::json!({"path_case":name,"allowed":allowed,
+            "exit":output.status.code(),"stdout":String::from_utf8_lossy(&output.stdout),
+            "stderr":String::from_utf8_lossy(&output.stderr)})
+        );
+        assert_eq!(output.status.success(), allowed, "path case {name}");
+        if !allowed {
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("Unavailable"),
+                "wrong refusal for {name}"
+            );
+        }
+        fs::remove_file(config).unwrap();
+    }
+    fs::remove_file(file_link).unwrap();
+    fs::remove_dir(directory_link).unwrap();
+}
+
+fn inherited_handles(fixture: &mut Fixture) {
+    let sentinel = fixture.root.join("control/handle-sentinel.txt");
+    assert!(!sentinel.exists());
+    fs::write(&sentinel, b"private handle sentinel").unwrap();
+    let file = OpenOptions::new().read(true).open(&sentinel).unwrap();
+    let handle = file.as_raw_handle();
+    assert_ne!(
+        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) },
+        0
+    );
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    assert_ne!(unsafe { GetFileInformationByHandle(handle, &mut info) }, 0);
+    let input = |value: HANDLE| {
+        serde_json::json!({"handle":value as usize,
+        "volume":info.dwVolumeSerialNumber,"high":info.nFileIndexHigh,"low":info.nFileIndexLow})
+    };
+    fs::write(
+        fixture.root.join("work/handle-control-input.json"),
+        input(handle).to_string(),
+    )
+    .unwrap();
+    // A positive control uses ordinary Win32 inheritance. This must expose the
+    // sentinel to the same sensor that checks the actual executor's child.
+    let mut command = wide(&format!(
+        "\"{}\" --probe handles-control \"{}\" unused",
+        probe_path(&fixture.root).display(),
+        fixture.root.display()
+    ));
+    let startup = STARTUPINFOW {
+        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+        ..unsafe { std::mem::zeroed() }
+    };
+    let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+    assert_ne!(
+        unsafe {
+            CreateProcessW(
+                wide(probe_path(&fixture.root).to_str().unwrap()).as_ptr(),
+                command.as_mut_ptr(),
+                null(),
+                null(),
+                1,
+                0,
+                null(),
+                null(),
+                &startup,
+                &mut process,
+            )
+        },
+        0
+    );
+    let child = Handle(process.hProcess);
+    let _thread = Handle(process.hThread);
+    let waited = unsafe { WaitForSingleObject(child.0, 10000) };
+    if waited != WAIT_OBJECT_0 {
+        unsafe {
+            TerminateProcess(child.0, 1);
+        }
+    }
+    assert_eq!(
+        waited, WAIT_OBJECT_0,
+        "inheritance sensor control did not exit"
+    );
+    let control: serde_json::Value = serde_json::from_slice(
+        &fs::read(fixture.root.join("work/handle-control-observation.json")).unwrap(),
+    )
+    .unwrap();
+    println!(
+        "{}",
+        serde_json::json!({"inherited_handle_control":control})
+    );
+    assert_eq!(control["sentinel_inherited"], true);
+    let pipe = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION)
+        .open(format!(
+            "\\\\.\\pipe\\safeyolo-host-{}",
+            fixture.target.target_id
+        ))
+        .unwrap();
+    server_identity(&pipe).unwrap();
+    let mut pid = 0;
+    assert_ne!(
+        unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut pid) },
+        0
+    );
+    drop(pipe);
+    let server = Handle(unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, pid) });
+    assert!(!server.0.is_null());
+    let mut remote = null_mut();
+    assert_ne!(
+        unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                handle,
+                server.0,
+                &mut remote,
+                0,
+                1,
+                DUPLICATE_SAME_ACCESS,
+            )
+        },
+        0
+    );
+    fs::write(
+        fixture.root.join("work/handle-input.json"),
+        input(remote).to_string(),
+    )
+    .unwrap();
+    let (receipt, _) = fixture.invoke("handles");
+    let result = fixture.terminal(&receipt.job_id);
+    let bytes = fixture.output(&receipt.job_id);
+    println!(
+        "{}",
+        serde_json::json!({"case":"inherited-handles","receipt":result,"output_base64":STANDARD.encode(&bytes),"executor_pid":pid,"inheritable_handle":remote as usize})
+    );
+    assert_eq!(result.state, JobState::Completed);
+    let observed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(observed["sentinel_inherited"], false);
+    let host: serde_json::Value = serde_json::from_slice(
+        &fs::read(fixture.root.join("work/handle-observation.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(host, observed);
+    assert_eq!(fs::read(&sentinel).unwrap(), b"private handle sentinel");
+    let mut closed = null_mut();
+    assert_ne!(
+        unsafe {
+            DuplicateHandle(
+                server.0,
+                remote,
+                GetCurrentProcess(),
+                &mut closed,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE,
+            )
+        },
+        0
+    );
+    drop(Handle(closed));
+    drop(file);
+    fs::remove_file(sentinel).unwrap();
+}
+
 fn recover_controller(fixture: &mut Fixture) {
     let (receipt, signed) = fixture.invoke("wait");
     println!("crash check admitted job {}", receipt.job_id);
@@ -1213,7 +1473,29 @@ fn storage_exhaustion(fixture: &mut Fixture) {
 fn probe(args: &[String]) {
     let mode = &args[0];
     let root = Path::new(&args[1]);
-    if mode == "observe" {
+    if mode == "handles" || mode == "handles-control" {
+        let prefix = if mode == "handles-control" {
+            "handle-control"
+        } else {
+            "handle"
+        };
+        let input: serde_json::Value = serde_json::from_slice(
+            &fs::read(root.join(format!("work/{prefix}-input.json"))).unwrap(),
+        )
+        .unwrap();
+        let handle = input["handle"].as_u64().unwrap() as usize as HANDLE;
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        let queried = unsafe { GetFileInformationByHandle(handle, &mut info) } != 0;
+        let observed = serde_json::json!({"handle":input["handle"],"handle_query_succeeded":queried,
+            "sentinel_inherited":queried && input["volume"] == info.dwVolumeSerialNumber
+                && input["high"] == info.nFileIndexHigh && input["low"] == info.nFileIndexLow});
+        fs::write(
+            root.join(format!("work/{prefix}-observation.json")),
+            observed.to_string(),
+        )
+        .unwrap();
+        println!("{observed}");
+    } else if mode == "observe" {
         assert_eq!(
             &args[3..],
             ["", "spaces and ünicode", "quote\"here", "C:\\trailing\\"]
@@ -1400,7 +1682,16 @@ pub fn main() {
             fixture.phase = format!("bounds-{}-{}", fixture.phase, args[2]);
             bounds(&mut fixture);
         }
-        Some("--registry") if args.len() == 3 || args.len() == 4 => {
+        Some("--paths") if args.len() == 2 => path_boundaries(Path::new(&args[1])),
+        Some("--handles") if args.len() == 3 || args.len() == 4 => {
+            let mut fixture = Fixture::new(
+                PathBuf::from(&args[1]),
+                args.get(3).is_some_and(|s| s == "--service"),
+            );
+            fixture.phase = format!("handles-{}-{}", fixture.phase, args[2]);
+            inherited_handles(&mut fixture);
+        }
+        Some(mode @ ("--registry" | "--registry-user")) if args.len() == 3 || args.len() == 4 => {
             let mut fixture = Fixture::new(
                 PathBuf::from(&args[1]),
                 args.get(3).is_some_and(|s| s == "--service"),
@@ -1409,7 +1700,11 @@ pub fn main() {
             for view in ["32", "64"] {
                 assert!(starter_result_arguments(
                     &mut fixture,
-                    "registry-query-machine",
+                    if mode == "--registry-user" {
+                        "registry-query-user"
+                    } else {
+                        "registry-query-machine"
+                    },
                     BTreeMap::from([("view".into(), serde_json::json!(view))])
                 ));
             }

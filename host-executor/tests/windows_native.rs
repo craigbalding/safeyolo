@@ -9,6 +9,12 @@
 //! independent Job limits/process handles. It does not run service mutations.
 //! --registry ROOT ATTEMPT [--service] queries both allowed machine registry views
 //! from the prepared starter catalogue; the controller owns its expected data.
+//! --registry-user selects the workload hive instead; its profile must be loaded
+//! explicitly by the test controller. An unloaded hive must report unavailable.
+//! --paths ROOT checks local aliases and executable/ancestor reparse points.
+//! --handles ROOT ATTEMPT [--service] requires a newly prepared native catalogue
+//! containing the handles probe. It compares inherited-file identity against a
+//! positive Win32 inheritance control, then checks an actual executor child.
 #[cfg(windows)]
 mod common;
 #[cfg(windows)]
