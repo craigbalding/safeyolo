@@ -383,8 +383,9 @@ def test_installed_repo_map_reads_working_tree_and_reports_guidance(tmp_path, _b
         assert source.read_bytes() == before
 
 
-def test_installed_doctor_checks_actual_direct_and_wrapped_role_commands(tmp_path, _binary_cache):
-    with prepared(tmp_path, _binary_cache) as (instance, _):
+@pytest.mark.parametrize("claude", [False, True])
+def test_installed_doctor_checks_actual_direct_and_wrapped_role_commands(tmp_path, _binary_cache, claude):
+    with prepared(tmp_path, _binary_cache, claude=claude) as (instance, _):
         homes = {role: instance.root / f"agents/{agent}/home"
                  for role, agent in (("owner", "fixture-forge"), ("reviewer", "fixture-lens"))}
         originals = {role: (home / ".safeyolo-command").read_bytes() for role, home in homes.items()}
@@ -593,8 +594,9 @@ def test_native_release_preserves_other_work_and_requires_canonical_audit(tmp_pa
         assert [message["body"].split(".")[0] for message in history["messages"]] == ["Factory work release requested", "Factory work release completed"]
 
 
-def test_doctor_names_missing_role_executable_and_room_permission(tmp_path, _binary_cache):
-    with prepared(tmp_path, _binary_cache) as (instance, _):
+@pytest.mark.parametrize("claude", [False, True])
+def test_doctor_names_missing_role_executable_and_room_permission(tmp_path, _binary_cache, claude):
+    with prepared(tmp_path, _binary_cache, claude=claude) as (instance, _):
         executable = instance.root / "agents/fixture-forge/home/.safeyolo/safeyolo-coord"
         saved = executable.with_suffix(".held")
         executable.rename(saved)
