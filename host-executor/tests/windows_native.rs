@@ -19,6 +19,8 @@
 //! grants, exercises signed API requests and restores the original configuration.
 //! --updates checks signed cosmetic/narrower/implementation announcements, refused
 //! expansions and explicit retain-on-withdrawal policy on the real target.
+//! --updates-resume starts at the unexecuted byte update after inspecting a
+//! retained narrower announcement; the controller supplies control/updates-original.json.
 //! --lifecycle checks revocation, expiry and unavailable configuration while
 //! independently observing that prior file effects and retained output remain.
 #[cfg(windows)]

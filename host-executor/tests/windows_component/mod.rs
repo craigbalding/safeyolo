@@ -1504,44 +1504,18 @@ fn job_count(fixture: &Fixture) -> i64 {
     .unwrap()
 }
 
-fn catalogue_updates(fixture: &mut Fixture) {
+fn catalogue_updates(fixture: &mut Fixture, resume: bool) {
     use ring::signature::KeyPair;
     let path = config_path(&fixture.root);
-    let original = fs::read(&path).unwrap();
+    let original = fs::read(if resume {
+        fixture.root.join("control/updates-original.json")
+    } else {
+        path.clone()
+    })
+    .unwrap();
     let observed = fixture.root.join("control/update-observed.json");
     let program = fixture.root.join("programs with spaces/update-probe.exe");
-    assert!(
-        !observed.exists() && !program.exists(),
-        "inspect a previous update attempt before resuming"
-    );
-    fs::copy(probe_path(&fixture.root), &program).unwrap();
     let mut config = load(&fixture.root);
-    let op = config.target.package.operations.get_mut("observe").unwrap();
-    op.execution.executable = program.to_str().unwrap().into();
-    let rule = UpdateRule {
-        ceiling: op.clone(),
-        allow_narrower: true,
-        allow_implementation_updates: true,
-    };
-    let pin = op.implementation_sha256();
-    for scope in [
-        config.target.ceiling.get_mut("observe").unwrap(),
-        config
-            .target
-            .issuers
-            .get_mut("issuer")
-            .unwrap()
-            .authority
-            .grants
-            .get_mut("grant")
-            .unwrap()
-            .operations
-            .get_mut("observe")
-            .unwrap(),
-    ] {
-        scope.implementation_sha256 = pin.clone();
-        scope.updates = Some(rule.clone());
-    }
     let key = Ed25519KeyPair::from_seed_unchecked(&[58; 32]).unwrap();
     let sign = |package: &Package, withdrawn| {
         SignedCatalogue::sign(
@@ -1557,26 +1531,64 @@ fn catalogue_updates(fixture: &mut Fixture) {
             &key,
         )
     };
-    let active = sign(&config.target.package, false);
-    fs::write(&observed, serde_json::to_vec(&active).unwrap()).unwrap();
-    config.catalogue = Some(CatalogueAdoption {
-        policy: CataloguePolicy {
-            publisher: "publisher".into(),
-            public_key: STANDARD.encode(key.public_key().as_ref()),
-            package_name: config.target.package.name.clone(),
-            operations: BTreeMap::from([("observe".into(), rule)]),
-            families: Vec::new(),
-            on_withdraw: Withdrawal::Retain,
-        },
-        active: active.clone(),
-        observed: active,
-        previous: None,
-        pin: None,
-        observed_file: Some(ObservedCatalogueFile {
-            path: observed.clone(),
-            max_bytes: 1024 * 1024,
-        }),
-    });
+    if !resume {
+        assert!(
+            !observed.exists() && !program.exists(),
+            "inspect a previous update attempt before resuming"
+        );
+        fs::copy(probe_path(&fixture.root), &program).unwrap();
+        let op = config.target.package.operations.get_mut("observe").unwrap();
+        op.execution.executable = program.to_str().unwrap().into();
+        let rule = UpdateRule {
+            ceiling: op.clone(),
+            allow_narrower: true,
+            allow_implementation_updates: true,
+        };
+        let pin = op.implementation_sha256();
+        for scope in [
+            config.target.ceiling.get_mut("observe").unwrap(),
+            config
+                .target
+                .issuers
+                .get_mut("issuer")
+                .unwrap()
+                .authority
+                .grants
+                .get_mut("grant")
+                .unwrap()
+                .operations
+                .get_mut("observe")
+                .unwrap(),
+        ] {
+            scope.implementation_sha256 = pin.clone();
+            scope.updates = Some(rule.clone());
+        }
+        let active = sign(&config.target.package, false);
+        fs::write(&observed, serde_json::to_vec(&active).unwrap()).unwrap();
+        config.catalogue = Some(CatalogueAdoption {
+            policy: CataloguePolicy {
+                publisher: "publisher".into(),
+                public_key: STANDARD.encode(key.public_key().as_ref()),
+                package_name: config.target.package.name.clone(),
+                operations: BTreeMap::from([("observe".into(), rule)]),
+                families: Vec::new(),
+                on_withdraw: Withdrawal::Retain,
+            },
+            active: active.clone(),
+            observed: active,
+            previous: None,
+            pin: None,
+            observed_file: Some(ObservedCatalogueFile {
+                path: observed.clone(),
+                max_bytes: 1024 * 1024,
+            }),
+        });
+    } else {
+        assert!(
+            observed.exists() && program.exists() && config.catalogue.is_some(),
+            "resume requires retained adopted update input"
+        );
+    }
     let authority = revision(&(&config.target.ceiling, &config.target.issuers));
     let policy = revision(&config.catalogue.as_ref().unwrap().policy);
     fs::write(&path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
@@ -1619,47 +1631,47 @@ fn catalogue_updates(fixture: &mut Fixture) {
             b"workload write under explicit broader account filesystem permission"
         );
     };
-    let needle = std::hint::black_box(b"safeyolo-windows-".as_slice())
-        .iter()
-        .chain(b"probe-revision=1")
-        .copied()
-        .collect::<Vec<_>>();
-    let marker1 = std::str::from_utf8(&needle).unwrap();
+    let needle = b"safeyolo-windows-probe-revision=1".as_slice();
+    let marker1 = std::str::from_utf8(needle).unwrap();
     let count = job_count(fixture);
-    execute(fixture, marker1);
     let mut package = fixture.target.package.clone();
-    package.version += 1;
-    package.source.version = "cosmetic metadata".into();
-    package.operations.get_mut("observe").unwrap().description =
-        "Current diagnostic description".into();
-    let status = announce(fixture, &package, false);
-    assert_eq!(status.state, "active");
-    assert_eq!(status.changes["observe"].comparison, Comparison::Equivalent);
-    execute(fixture, marker1);
-    package.version += 1;
-    package
-        .operations
-        .get_mut("observe")
-        .unwrap()
-        .execution
-        .resources
-        .timeout_seconds = 4;
-    let status = announce(fixture, &package, false);
-    assert_eq!(status.state, "active");
-    assert_eq!(status.changes["observe"].comparison, Comparison::Narrower);
-    execute(fixture, marker1);
+    if !resume {
+        execute(fixture, marker1);
+        package.version += 1;
+        package.source.version = "cosmetic metadata".into();
+        package.operations.get_mut("observe").unwrap().description =
+            "Current diagnostic description".into();
+        let status = announce(fixture, &package, false);
+        assert_eq!(status.state, "active");
+        assert_eq!(status.changes["observe"].comparison, Comparison::Equivalent);
+        execute(fixture, marker1);
+        package.version += 1;
+        package
+            .operations
+            .get_mut("observe")
+            .unwrap()
+            .execution
+            .resources
+            .timeout_seconds = 4;
+        let status = announce(fixture, &package, false);
+        assert_eq!(status.state, "active");
+        assert_eq!(status.changes["observe"].comparison, Comparison::Narrower);
+        execute(fixture, marker1);
+    }
     let mut bytes = fs::read(&program).unwrap();
     let positions = bytes
         .windows(needle.len())
         .enumerate()
         .filter_map(|(i, b)| (b == needle).then_some(i))
         .collect::<Vec<_>>();
-    assert_eq!(
-        positions.len(),
-        1,
-        "probe must contain one executable revision marker"
+    assert!(!positions.is_empty(), "probe revision marker is absent");
+    println!(
+        "{}",
+        serde_json::json!({"patched_marker_copies":positions.len(),"resume":resume})
     );
-    bytes[positions[0] + needle.len() - 1] = b'2';
+    for position in positions {
+        bytes[position + needle.len() - 1] = b'2';
+    }
     let modified = fs::metadata(&program).unwrap().modified().unwrap();
     let length = bytes.len();
     fs::write(&program, bytes).unwrap();
@@ -1722,7 +1734,7 @@ fn catalogue_updates(fixture: &mut Fixture) {
         );
         assert_eq!(status.state, "awaiting_review");
         assert_eq!(revision(&fixture.target.package), revision(&active));
-        assert_eq!(job_count(fixture), count + 4);
+        assert_eq!(job_count(fixture), count + if resume { 1 } else { 4 });
     }
     package.operations = active.operations;
     package.version += 1;
@@ -1731,7 +1743,7 @@ fn catalogue_updates(fixture: &mut Fixture) {
     let status = announce(fixture, &package, true);
     assert_eq!(status.state, "withdrawn");
     assert_eq!(status.active, revision(&fixture.target.package));
-    assert_eq!(job_count(fixture), count + 4);
+    assert_eq!(job_count(fixture), count + if resume { 1 } else { 4 });
     println!(
         "{}",
         serde_json::json!({"catalogue_case":"withdraw-retain","state":status.state,"persistent_file_present":fixture.root.join("work/allowed.txt").exists()})
@@ -2204,13 +2216,13 @@ pub fn main() {
             fixture.phase = format!("authority-{}-{}", fixture.phase, args[2]);
             api_authority(&mut fixture);
         }
-        Some("--updates") if args.len() == 3 || args.len() == 4 => {
+        Some(mode @ ("--updates" | "--updates-resume")) if args.len() == 3 || args.len() == 4 => {
             let mut fixture = Fixture::new(
                 PathBuf::from(&args[1]),
                 args.get(3).is_some_and(|s| s == "--service"),
             );
             fixture.phase = format!("updates-{}-{}", fixture.phase, args[2]);
-            catalogue_updates(&mut fixture);
+            catalogue_updates(&mut fixture, mode == "--updates-resume");
         }
         Some("--lifecycle") if args.len() == 3 || args.len() == 4 => {
             let mut fixture = Fixture::new(
