@@ -45,7 +45,7 @@ class Source:
 @pytest.fixture
 def sources():
     controls = "\n".join(f'[[controls]]\nid = "BB-{number:02}"\ndecisions = ["test"]\n'
-                         for number in range(1, 38))
+                         for number in range(1, 39))
     controls += f'[[witnesses]]\npaths = ["{TEST}"]\ncontrols = ["BB-01"]\nkind = "pytest"\n'
     controls += f'[[witnesses]]\npaths = ["{RUST}"]\ncontrols = ["BB-10"]\nkind = "cargo"\n'
     return {changes.CATALOGUE: controls, changes.MAP: '[[decisions]]\nid = "test"\ntests = []\n',
@@ -727,6 +727,40 @@ def analyze_cli(root, base, head, output):
     return json.loads(report.read_text())
 
 
+def test_current_catalogue_and_bb38_witness_reach_analyzer_cli(tmp_path, git_sources):
+    root, git = git_sources
+    witness = "proxy/tests/host_execution.rs"
+    for name in (changes.CATALOGUE, changes.MAP, witness):
+        (root / name).write_bytes((ROOT / name).read_bytes())
+    git("add", ".")
+    git("commit", "-qm", "current catalogue and BB-38 witness")
+    base = git("rev-parse", "HEAD")
+    unchanged = analyze_cli(root, base, base, tmp_path)
+    assert unchanged["status"] == "complete"
+    assert unchanged["changes"] == []
+    assert unchanged["delta_id"] is None
+
+    (root / "README.md").write_text("Documentation-only change.\n")
+    git("add", ".")
+    git("commit", "-qm", "documentation only")
+    quiet = analyze_cli(root, base, git("rev-parse", "HEAD"), tmp_path)
+    assert quiet["status"] == "complete"
+    assert quiet["delta_id"] is None
+    assert not any(row["status"] == "material" for row in quiet["changes"])
+
+    path = root / witness
+    original = path.read_text()
+    assert original.count("assert!(first.dispatch);") == 1
+    path.write_text(original.replace("assert!(first.dispatch);", "assert!(!first.dispatch);"))
+    git("add", ".")
+    git("commit", "-qm", "BB-38 oracle change")
+    material = analyze_cli(root, base, git("rev-parse", "HEAD"), tmp_path)
+    assert material["status"] == "complete"
+    assert material["delta_id"]
+    assert [(row["path"], row["controls"]) for row in material["changes"] if row["status"] == "material"] == [
+        (witness, ["BB-38"])]
+
+
 def test_trusted_workflow_bootstrap_runs_selected_interpreters(tmp_path, git_sources):
     root, git = git_sources
     workflow = yaml.load((ROOT / changes.WORKFLOW).read_text(), Loader=yaml.BaseLoader)
@@ -1102,7 +1136,7 @@ def test_yaml_alias_bomb_and_invalid_python_are_analysis_failures(sources):
     with pytest.raises(SyntaxError):
         compare(sources, {TEST: "def invalid syntax\n"})
     with pytest.raises(ValueError, match="catalogue"):
-        compare(sources | {changes.CATALOGUE: sources[changes.CATALOGUE].replace('id = "BB-37"', 'id = "BB-38"')}, {})
+        compare(sources | {changes.CATALOGUE: sources[changes.CATALOGUE].replace('id = "BB-38"', 'id = "BB-39"')}, {})
 
 
 def test_report_cannot_inject_another_mention(sources):
