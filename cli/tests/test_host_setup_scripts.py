@@ -225,9 +225,14 @@ def _assert_managed_context(agent_home: Path, consumer_dir: str | None) -> None:
     assert (agent_home / ".safeyolo/AGENTS.md").read_bytes() == BASELINE_SOURCE.read_bytes()
 
     if consumer_dir is not None:
-        expected_links = {"safeyolo": SKILL_LINK_TARGET}
+        expected_links = {
+            "safeyolo": SKILL_LINK_TARGET,
+            "safeyolo-commission": "/safeyolo/skills/safeyolo-commission",
+            "harness-authoring": "/safeyolo/skills/harness-authoring",
+        }
         if consumer_dir in {".agents", ".claude"}:
             expected_links["readme-usability"] = "/safeyolo/skills/readme-usability"
+            expected_links["operator-ux"] = "/safeyolo/skills/operator-ux"
             expected_links["job-authoring"] = "/safeyolo/skills/job-authoring"
             expected_links["safeyolo-lab-controller"] = LAB_CONTROLLER_LINK_TARGET
             expected_links["safeyolo-factory"] = FACTORY_SKILL_LINK_TARGET
@@ -877,6 +882,9 @@ def test_pi_setup_is_agent_local_and_launches_with_reviewed_flags(tmp_path: Path
     assert not (agent_home / ".pi/agent/auth.json").exists()
     assert not (agent_home / ".pi/agent/host-sentinel").exists()
     assert (agent_home / ".pi/agent/skills/safeyolo").is_symlink()
+    assert (agent_home / ".pi/agent/skills/safeyolo-commission").readlink() == Path(
+        "/safeyolo/skills/safeyolo-commission"
+    )
     repo_map = agent_home / ".safeyolo/repo-map"
     assert repo_map.read_text() == REPO_MAP_COMMAND
     assert repo_map.stat().st_mode & 0o111
@@ -1745,15 +1753,17 @@ def test_context_staging_migrates_legacy_managed_skill_link(
         ("claude-host-setup.sh", ".claude"),
     ],
 )
+@pytest.mark.parametrize("skill_name", ["safeyolo", "safeyolo-commission", "harness-authoring", "operator-ux"])
 def test_context_staging_refuses_user_owned_safeyolo_skill(
     tmp_path: Path,
     script_name: str,
     consumer_dir: str,
+    skill_name: str,
 ) -> None:
     operator_home = tmp_path / "operator"
     agent_home = tmp_path / "agent"
     operator_home.mkdir()
-    collision = agent_home / consumer_dir / "skills" / "safeyolo"
+    collision = agent_home / consumer_dir / "skills" / skill_name
     collision.mkdir(parents=True)
     marker = collision / "SKILL.md"
     marker.write_text("user-owned safeyolo skill\n")
@@ -2184,7 +2194,7 @@ def test_claude_setup_stages_personal_skills_but_reserves_managed_names(
     personal = operator_home / ".claude/skills/personal/SKILL.md"
     personal.parent.mkdir(parents=True)
     personal.write_text("operator personal skill\n")
-    reserved = ["safeyolo", "safeyolo-lab-controller", "safeyolo-factory", "job-authoring"]
+    reserved = ["safeyolo", "safeyolo-lab-controller", "safeyolo-factory", "job-authoring", "safeyolo-commission", "harness-authoring", "operator-ux"]
     for name in reserved:
         colliding = operator_home / ".claude/skills" / name / "SKILL.md"
         colliding.parent.mkdir(parents=True)
@@ -2207,7 +2217,7 @@ def test_claude_setup_stages_personal_skills_but_reserves_managed_names(
         assert os.readlink(agent_home / ".claude/skills" / name) == f"/safeyolo/skills/{name}"
 
 
-@pytest.mark.parametrize("skill_name", ["safeyolo", "safeyolo-lab-controller", "safeyolo-factory", "job-authoring"])
+@pytest.mark.parametrize("skill_name", ["safeyolo", "safeyolo-lab-controller", "safeyolo-factory", "job-authoring", "safeyolo-commission", "harness-authoring", "operator-ux"])
 @pytest.mark.parametrize("kind", ["directory", "file", "symlink", "parent-symlink"])
 def test_claude_managed_skill_conflicts_preserve_user_paths(tmp_path, skill_name, kind):
     operator, home = tmp_path / "operator", tmp_path / "agent"
@@ -2532,19 +2542,21 @@ def test_factory_skill_is_shared_and_self_contained() -> None:
 
 
 @pytest.mark.parametrize("consumer", ["codex", "claude"])
-def test_readme_skill_discovery_and_user_collision(tmp_path, consumer):
-    source = REPO_ROOT / "cli/src/safeyolo/agent_context/skills/readme-usability"
+@pytest.mark.parametrize("skill_name", ["readme-usability", "operator-ux"])
+def test_repository_skill_discovery_and_user_collision(tmp_path, consumer, skill_name):
+    source = REPO_ROOT / "cli/src/safeyolo/agent_context/skills" / skill_name
     harness_dir = ".agents" if consumer == "codex" else ".claude"
-    repo_link = REPO_ROOT / harness_dir / "skills/readme-usability"
+    repo_link = REPO_ROOT / harness_dir / "skills" / skill_name
     assert repo_link.is_symlink()
     assert repo_link.resolve() == source
     metadata = yaml.safe_load((repo_link / "SKILL.md").read_text().split("---", 2)[1])
     assert metadata["name"] == repo_link.name
-    assert (repo_link / "references/safeyolo.md").is_file()
+    if skill_name == "readme-usability":
+        assert (repo_link / "references/safeyolo.md").is_file()
     assert yaml.safe_load((source / "agents/openai.yaml").read_text())["policy"]["allow_implicit_invocation"]
 
     agent_home = tmp_path / "agent"
-    collision = agent_home / harness_dir / "skills/readme-usability"
+    collision = agent_home / harness_dir / "skills" / skill_name
     collision.mkdir(parents=True)
     (collision / "SKILL.md").write_text("operator-owned skill\n")
     result = subprocess.run(
@@ -2553,7 +2565,7 @@ def test_readme_skill_discovery_and_user_collision(tmp_path, consumer):
         capture_output=True, text=True,
     )
     assert result.returncode != 0
-    assert "readme-usability" in result.stderr
+    assert skill_name in result.stderr
     assert (collision / "SKILL.md").read_text() == "operator-owned skill\n"
     assert not (collision.parent / "safeyolo").is_symlink()
 

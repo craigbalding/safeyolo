@@ -5,13 +5,73 @@
 - [Model](#model)
 - [Calling the API](#calling-the-api)
 - [Diagnostics and policy](#diagnostics-and-policy)
+- [Approved diagnostic evidence](#approved-diagnostic-evidence)
 - [Delegated decisions](#delegated-decisions)
 - [Approval context](#approval-context)
+- [Feed-driven responses](#feed-driven-responses)
 - [Operator actions](#operator-actions)
 - [Delegated local peer support](#delegated-local-peer-support)
 - [Flow inspection](#flow-inspection)
 - [Service gateway](#service-gateway)
 - [Approved collaboration rooms](#approved-collaboration-rooms)
+
+## Feed-driven responses
+
+An operator can adopt native NATS Key Value sources and rules that assess
+service exposure, selected destinations or fresh effective package inventory.
+HTTP-maintained lists can distribute their accepted snapshots through NATS.
+The host keeps credentials and complete policy snapshots outside the guest.
+
+A targeted notification or assigned Work carries the selected source, finding
+revision, evidence time and affected agent. Read that exact input and the current
+native Work before acting. Receipt, authenticated publication and an advisory
+assertion grant no execution or policy-change authority. Use the existing
+effect owner and its current access. A Work request for repair is not proof of
+repair. Unknown or stale inventory does not establish safety.
+
+The operator's host commands are `safeyolo --root ROOT signals status` and
+`approvals show ID`. Status separates source freshness, local applicability,
+standing authority or pending approval, attempted effects and verified local
+policy capture. An operator decides scoped approval through the existing
+approval commands. For failures, retain the original operation receipt; do not
+repeat an uncertain effect. The installed host guide `assets/docs/signals.md`
+contains source configuration, response selection and troubleshooting.
+
+Versioned control updates use the same distribution path, with independent
+Ed25519 publisher trust and host-selected adoption/qualification authority.
+A route challenge exposes its immutable selected revision and active steps in
+guidance. Supply required `answers` with the existing escalation context.
+HTTP 422 means required evidence is incomplete; HTTP 409 or `superseded` means
+the original requirements changed. Read current guidance and obtain a new
+challenge through the original operation. No answer grants permission.
+The policy-authoring skill's [control-update reference](../../policy-authoring/references/control-updates.md)
+explains host status, reviewed/automatic adoption and recovery.
+
+## Policy capabilities
+
+`GET /policy/capabilities` returns generic definitions from the installed
+parsers, validators and tool schemas. No policy disclosure is required.
+`?observe=true` adds only existing caller-authorized support, service and
+operator-action observations. Undisclosed and failed reads remain unknown.
+The API accepts no agent, target, source, snapshot or remote-home override.
+
+`POST /policy/capabilities/validate` accepts `definition`, `value` and the exact
+`definition_version` returned by discovery. It checks a component form with
+its owning validator. It does not read or apply policy, authorize execution or
+perform a complete candidate assessment. Read the returned coverage limits.
+
+`POST /policy/capabilities/support` accepts `definition_version` and a typed
+support `request`. It observes current scope permission and runtime readiness
+without executing the operation. Grant and target selection come from the
+caller's existing support discovery; unknown targets do not disclose state.
+Granted access can coexist with unavailable runtime dependencies. Current
+execution still revalidates through the existing support owner.
+
+The installed tools are `discover_policy_capabilities`,
+`validate_policy_capability` and `observe_support_capability`. The policy-authoring
+skill's [complete guest sequence](../../policy-authoring/references/capabilities.md)
+shows discovery, composition, accepted-form validation, assessment limits,
+revision and submission through the existing policy owner.
 
 ## Operator actions
 
@@ -224,6 +284,8 @@ before retrying. Context remains stored separately from approval authority.
 | `GET` | `/health` | Agent API and PDP health |
 | `GET` | `/status` | PDP evaluation statistics and policy hash |
 | `GET` | `/policy` | Current baseline policy |
+| `POST` | `/policy/snapshots` | Request human approval for one full authored local policy snapshot; installed tool `request_policy_snapshot` |
+| `GET` | `/policy/snapshots/REQUEST_ID` | Read your canonical request and, after approval, its retained source; installed tool `read_policy_snapshot` |
 | `GET` | `/lookup?host=HOST` | Evaluate a host for the calling agent |
 | `GET` | `/budgets` | Domain budget and rate usage |
 | `GET` | `/config` | Current credential rules and scan configuration |
@@ -235,6 +297,51 @@ before retrying. Context remains stored separately from approval authority.
 
 Use `/lookup` before asking the operator to add a host. Use `/budgets` for 429
 responses and `/circuits` for circuit-breaker 503 responses.
+
+### Native tool failures
+
+The native Coordination (Coord) Model Context Protocol (MCP) adapter returns
+`isError: true`, readable text and `structuredContent` for a failed tool.
+Available response facts include `http_status`, `http_reason`, a validated
+response-header `request_id`, `correlation`, `blocked_by`, `retry_after` and
+`error_details`. `body_state` distinguishes `json`, `empty`, `malformed`,
+`incomplete` and `too_large`. `response_received: false` means no response
+facts were obtained. A body-supplied ID cannot select diagnostic evidence.
+Malformed or interrupted error bodies do not erase the available HTTP status.
+For an identified failure, `diagnostic_reference` names its own-request
+`/explain` URL, including failures outside the automatic 503 collection. The
+reference grants no additional authority and does not trigger a read.
+
+For a local Agent API 503, the guest client automatically reads the existing
+authenticated `/explain` endpoint for that original request. Generic Admin
+clients do not make these Agent API reads. The failure remains explicit even
+when collection fails. The `diagnostic` object contains:
+
+| Field | Meaning |
+|---|---|
+| `original_request_id`, `reference` | Original correlation and its actionable own-request `/explain` URL. No reference is manufactured when correlation is missing or invalid. |
+| `collection_state` | `collected`, `missing_correlation`, `denied`, `unavailable`, `timeout` or `invalid_response`. |
+| `reads` | Available status and request ID for each diagnostic read, separate from the original ID. |
+| `evidence` | The existing reader's response, retaining its `status`, scoped events and search limits. A mismatched response ID is rejected. |
+| `evidence_limited`, `limits` | Whether client limits omitted content, and the collection budgets. Reader completeness and client limits are separate. |
+
+Collection has a two-second total deadline, at most two reads and only one
+refresh for a pending writer. Each diagnostic response and original HTTP error
+body is limited to 64 KiB. Each protected body and the attached diagnostic
+object is limited to 32 KiB. Named credential fields, the caller's bearer echo
+and recognized secret patterns are redacted. Strings, nesting and event counts
+are bounded. The client does not recursively diagnose a diagnostic read. Missing or unretained
+events, denied access, timeouts and limits do not replace the original failure.
+
+Use the returned evidence to continue permitted read-only investigation. A
+recorded `agent.api_response` 503 with `blocked_by: agent-api` identifies a local
+refusal, not a network-policy cause. A complete retained search does not prove a
+root cause. Request only the missing scope through a supported approval or
+authorized support path; if none is available, report the exact unmet need.
+Diagnosis grants no recovery authority and never retries a write. An uncertain
+send still needs canonical readback before replay. A failed attention-object
+resolution preserves the caller's last safe cursor, including each source's
+position in a multi-source wait.
 
 `/explain` and `/trace` answer different questions.
 
@@ -455,10 +562,10 @@ Status precedence, highest first:
 
 | Literal | Meaning | Retry? |
 |---|---|---|
-| `error` | File read, parse or writer freshness check failed. Result is unreliable. | Investigate via `safeyolo logs` |
+| `error` | File read, parse or writer freshness check failed. Result is unreliable. | Continue permitted investigation; report the exact missing source if current access is insufficient. |
 | `pending` | Writer still has queued/mid-flush events after the bounded drain. | Yes, briefly |
 | `incomplete_search` | Retention bound was hit while scanning. Events outside the window may exist. | Only if you can bound the time window differently |
-| `complete` | Retained set fully scanned. `events` is authoritative. | No |
+| `complete` | The retained set was scanned within the reader's limits. Empty events can mean no accessible retained match. This does not establish root cause. | No |
 
 
 ## Flow inspection
@@ -792,6 +899,113 @@ metadata consume that space. The effective running broker ceiling can be lower;
 the refusal reports the actual bound. Ordinary rooms retain their 256 KiB body
 and existing stream bounds. Coord history, retention, attention loss and
 ambiguous-publication semantics remain in force. No automatic resend occurs.
+
+## Approved diagnostic evidence
+
+Use the native Model Context Protocol (MCP) tools in this order:
+
+1. `diagnostic_evidence()` reports the local instance, your current durable
+   identity, readable diagnostic grants, source choices and collection limits.
+   Existing own-request `/explain` and ordinary room receive rights remain usable.
+2. `request_diagnostic_access` records a canonical approval with an
+   `operation_id`, the discovered `instance_id`, explicit subject agent names,
+   a typed `scope`, `expires_at` and a short untrusted `reason`. The host resolves
+   names to durable identities. Requesting evidence grants no access.
+3. `read_approval` reads the returned `approval_id`. A pending or rejected
+   decision grants no newly requested evidence. After approval, use its grant ID
+   with `query_diagnostic_evidence`.
+
+For example, after discovery, select your own name and the two affected peers
+instead of the example names below. Replace the time with the desired cutoff.
+The request remains pending for an operator decision:
+
+```json
+{
+  "operation_id": "communication-investigation-1",
+  "instance_id": "THE_DISCOVERED_INSTANCE_ID",
+  "subjects": ["investigator", "sender", "recipient"],
+  "scope": {
+    "audit": true,
+    "runtime": true,
+    "rooms": [],
+    "system_categories": ["coord_health"],
+    "history": {"since": null, "until": "2026-11-18T12:00:00Z", "future": false},
+    "snapshot": true
+  },
+  "expires_at": null,
+  "reason": "Investigate why sender's communication did not reach recipient"
+}
+```
+
+History and access lifetime are separate. `since:null` selects all retained
+history. A fixed snapshot uses `snapshot:true`, `future:false` and an explicit
+`until` cutoff. Its first collection freezes selected sources across pages and
+retries. For temporary access, use `snapshot:false` and a selected RFC 3339
+`expires_at`. For until-revoked access, use `snapshot:false` and
+`expires_at:null`. Set `history.future:true` and `history.until:null` only when
+you want the operator to authorize future records. Access expiry does not
+silently expand historical reach. Standing grants survive ordinary requester
+restarts. A recreated same-name agent does not inherit records or authority.
+
+Select sources independently. `audit` returns complete authorized retained
+events, including their request/connection details. Only records whose retained
+instance and sandbox-run attribution establish the selected durable identity
+qualify. Name-only historical records are excluded with a limitation.
+`runtime` returns the existing host-observed control projection. Room selections
+use `{"room_id":"EXACT_ROOM_ID","history":true,"membership":true,"attention":true}`;
+each Boolean grants that source separately. Room history can contain messages
+from other participants. Attention exposes only selected recipients' references
+in selected rooms. It also projects the selected recipient's existing supervisor
+cursor when a matching current launch and checkpoint are available. This is
+recipient-writable, timestamped evidence across that recipient's feed. It does
+not prove current supervisor liveness or application consumption. Missing,
+replaced or older checkpoints remain unavailable. No checkpoint body, other
+room identifier, recipient impersonation or object-resolution right is disclosed.
+Current runtime, membership and component health are timestamped observations,
+not reconstructions of historical state. `runs` can map a selected subject ID to
+explicit sandbox run IDs. An absent or empty run list selects all provably
+attributed retained runs for that subject.
+
+Unattributed system categories are separate: `audit_health` projects retained
+audit-validation failures; `coord_health` projects current Coord component
+health. They do not follow nested references or expose arbitrary payloads,
+credentials or full policy. Guest files/logs and commands keep their separate
+support permissions. Diagnostic disclosure adds no room send right, guest
+administration, lifecycle action, policy mutation or Admin API access.
+
+`query_diagnostic_evidence` accepts `operation_id`, `grant`, optional `filter`,
+`limit` (1–200, default 100) and `page_token`. Filters include `sources`,
+`subject_ids`, `events`, `since`, `until`, `runtime_id`, `run_id`, `request_id`,
+`connection_id` and `failures_only`. Request/connection correlation requires its
+runtime namespace. It filters permitted evidence and never follows references
+into another subject's raw records. Unsupported filters fail explicitly.
+Preserve the operation ID, filters and limit on a page continuation. Use the
+returned token; tokens from another collection, caller or selection are refused.
+After a lost reply, repeat that exact page. Authorized continuations need no new
+operator approval.
+
+Read `applied_scope`, `sources`, source status/limitations, `collected_at`,
+`truncated`, `offset` and `next_page_token` before drawing a conclusion. An empty
+match within readable retained data differs from denied access, source loss or
+incomplete search. Source limits and pruning can leave missing evidence. The
+reader does not require FlowStore recording or prior knowledge of request IDs.
+
+Private support receipts retain at most 2000 rows and 4 MiB per collection for
+seven days. Expired diagnostic data is removed on later diagnostic use. A fixed
+snapshot's canonical approval retains a collection marker; lost or expired
+snapshot data is not recollected from a different window. Other grants freeze
+each operation's retained collection for pagination and retries within retention.
+Every page rechecks current requester, subjects, instance and host-held grant.
+Narrowing filters the retained authorized subset; expiry and revocation refuse
+new reads. Already disclosed bytes cannot be recalled. New disclosure or repair
+needs its own existing authority.
+
+The local API routes are `GET /support/diagnostics`,
+`POST /support/diagnostics/requests` and `POST /support/diagnostics/query`.
+They use the ordinary Agent API token. Approved audit reads and canonical
+decision readback work without Coord notifications when their own API, policy
+and evidence owners remain available. A failed notification creates no grant.
+This interface adds no remote disclosure or federation extension.
 
 ## Delegated local peer support
 

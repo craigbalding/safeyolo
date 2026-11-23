@@ -15,7 +15,15 @@ pub(crate) fn explain(
     state: Option<&crate::RuntimeState>,
     option: Option<&str>,
 ) -> Result<Value> {
-    let view = current_view(writer, policy, record, state)?;
+    let view = if record.authority.action["kind"] == "policy_change" {
+        super::policy_change::operator_view(
+            state.ok_or_else(|| invalid("policy review owner unavailable"))?,
+            writer,
+            &record.approval_id,
+        )?
+    } else {
+        current_view(writer, policy, record, state)?
+    };
     let action = &record.authority.action;
     let method = match record.authority.method.as_str() {
         method @ ("GET" | "HEAD" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "CONNECT"
@@ -24,6 +32,24 @@ pub(crate) fn explain(
     };
     let kind = action["kind"].as_str().unwrap_or("");
     let (stopped, mut non_grants, graph_node) = match kind {
+        "policy_change" => (
+            "The requester explicitly submitted an immutable complete local policy candidate for the human operator's decision.",
+            vec![
+                "Submission and assessment grant no authority. Only the human operator can decide this exact candidate.",
+                "The recorded base, current requester, definitions, adopted inputs and grants are checked inside the save/activation transaction.",
+                "A restore requires another exact reviewed candidate against its current base. It cannot undo disclosed data or external effects.",
+            ],
+            "sym.accept_policy_assurance",
+        ),
+        "policy_snapshot" => (
+            "The requester asked to read one identified complete authored policy snapshot from this local instance.",
+            vec![
+                "No policy application, enforcement change or access to a future source revision.",
+                "No config.toml, Admin credentials, credential-store values or arbitrary host files.",
+                "Only the original current requester/run can read the approved retained snapshot. Disclosure cannot be undone.",
+            ],
+            "sym.accept_policy_assurance",
+        ),
         "operator_action" => (
             "Presenting an agent desktop requires the operator's approval for this target, route, browser URL and preview lifetime.",
             vec![
@@ -48,6 +74,15 @@ pub(crate) fn explain(
                 "No page_operator right, delegated room creation, service access or broker credentials.",
             ],
             "ev.accept_coord_lane",
+        ),
+        "diagnostic_disclosure" => (
+            "The agent requested additional diagnostic evidence from this local instance.",
+            vec![
+                "Only explicitly selected sources, durable subjects and historical reach are disclosed for the selected lifetime.",
+                "No room send, guest administration, lifecycle, policy change or Admin credential is granted. Current authority is checked on every read and continuation.",
+                "Disclosed bytes cannot be recalled. Fixed collections are bounded, retained privately for seven days and never silently recollected after loss.",
+            ],
+            "ev.accept_proxy_lane",
         ),
         "network_allow" => (
             "The network policy required approval for this agent, destination and port.",
@@ -117,6 +152,9 @@ pub(crate) fn explain(
             | "operator_action"
             | "coord_access"
             | "coord_collaboration"
+            | "diagnostic_disclosure"
+            | "policy_snapshot"
+            | "policy_change"
     );
     if option.is_some() && record.authority.selected_option(option).is_none() {
         return Err(invalid("select one of this approval's fixed options"));
@@ -149,6 +187,30 @@ pub(crate) fn explain(
         "service":action["service"],"capability":action["capability"],
         "credential_reference":action["credential"],"account":action["account"],
         "request_method":method,"request_scheme":record.authority.scheme});
+    if kind == "diagnostic_disclosure" {
+        facts["requested_disclosure"] = action["grant"].clone();
+        facts["operator_selection"] = view["result"]["diagnostic_selection"].clone();
+        facts["authority_delta"] = json!(
+            "Read-only diagnostic disclosure through existing support grants. History and access lifetime are independent. Explicit room selections grant no room identity or send rights. Narrow a pending selection through this approval's diagnostic-selection route; after approval use support grant preview/apply/revoke."
+        );
+        unknowns.clear();
+    }
+    if kind == "policy_snapshot" {
+        facts["snapshot"] = action["snapshot"].clone();
+        facts["authority_delta"] = json!(
+            "Permit private reads of this retained snapshot by its original current requester/run. The saved and active revisions identify the approval basis. New policy bytes require a separate decision. Enforcement policy and apply authority remain unchanged."
+        );
+        unknowns.clear();
+    }
+    if kind == "policy_change" {
+        facts["base"] = action["base"].clone();
+        facts["candidate_revision"] = action["candidate_revision"].clone();
+        facts["materialized_revision"] = action["materialized_revision"].clone();
+        facts["assessment_id"] = action["assessment_id"].clone();
+        facts["restore_of"] = action["restore_of"].clone();
+        facts["review_content"] = view["review_content"].clone();
+        unknowns.clear();
+    }
     if kind == "operator_action" {
         facts["action_id"] = action["action_id"].clone();
         facts["presentation"] = action["presentation"].clone();
@@ -385,4 +447,40 @@ pub(crate) fn explain(
             message: "explanation audit unavailable; no permission was changed".into(),
         })?;
     Ok(result)
+}
+
+pub(crate) fn explain_policy_changes(changes: &[Value], effective: bool) -> Vec<Value> {
+    changes.iter().map(|change| {
+        let path = change["path"].as_array().expect("change path");
+        let root = path.first().and_then(Value::as_str).unwrap_or("");
+        let control = effective && root == "controls" && path.len() == 3;
+        let last = path.last().and_then(Value::as_str).unwrap_or("");
+        let meaning = if effective && matches!(root,"support_grants"|"approval_delegations") && last == "expires_at" {
+            "This changes the duration of the selected authority. A null expiry is standing authority until revoked. Shortening or expiry cannot undo disclosed data or effects of admitted operations."
+        } else if effective && root == "support_grants" {
+            "The named principal, durable subjects and explicit scope determine the selected authority. Diagnostic disclosure permits only the selected local evidence sources and history. Other support grants include inspection and their selected actions. Guest administration reaches target-accessible credentials, mounts and delegations; the authority paths and native warnings explain combinations."
+        } else if effective && root == "approval_delegations" {
+            "Each selected reviewer can decide eligible canonical requests within the complete typed scopes. Beneficiaries, grant duration and source dependencies still bound issuance. The native warnings explain combined and persistent effects; proposed rules cannot approve their own adoption."
+        } else if control && last == "enabled" && change["after"] == false {
+            "Enforcement is disabled for this control and its affected traffic. Other controls still use their own settings."
+        } else if control && last == "action" && change["after"] == "warn" {
+            "This control records a warning while allowing the operation to continue. It no longer blocks this condition."
+        } else if root == "agents" && path.len() == 3
+            && let Some(meaning) = crate::services::effects::agent_configuration::consequence(last) {
+            meaning
+        } else if root=="agents" && path.get(2).and_then(Value::as_str)==Some("lifecycle"){
+            crate::services::effects::agent_configuration::consequence("lifecycle").expect("lifecycle consequence")
+        } else if root == "authority_readers" || (root == "agents" && path.len() == 3 && last == "evidence_reads") {
+            "This changes diagnostic or authority disclosure to the selected identities and scope. Information already read cannot be retracted. Runtime records still require their native read authority."
+        } else if effective && root == "permissions" {
+            "These are compiled effective rules, including inherited rules and defaults. Matching, precedence, budgets and other control checks still apply; the full selectors cover every matching request."
+        } else if effective && root == "budgets" {
+            "Request-budget changes alter the policy revision used by run-scoped credential approvals. An existing grant bound to the previous revision may no longer authorize credential use, even for the same fingerprint, destination and run. A fresh canonical credential decision may be required. Review that request through ordinary approvals; do not infer renewed credential authority from this policy decision."
+        } else if matches!(root,"checks"|"check_rules"|"work_bindings") {
+            "This changes named evidence, admission or request decisions. Evidence was not acquired and actions were not executed. Its native owner must validate adopted dependencies at submission."
+        } else {
+            "The exact structural change is retained. Complete business effects for this field are not modelled; do not interpret missing warnings as safety."
+        };
+        json!({"path":path,"consequence":meaning})
+    }).collect()
 }

@@ -37,8 +37,10 @@ def test_forwarder_admission_and_slot_reuse(tmp_path, socket_dir, transport):
         f"#!{sys.executable}\n"
         "import os, sys\n"
         "args = [arg.replace(',su=agent', '') for arg in sys.argv[1:]]\n"
-        "if args[1].startswith('VSOCK-CONNECT:'):\n"
-        "    args[1] = 'UNIX-CONNECT:' + os.environ['SOCAT_TEST_UPSTREAM']\n"
+        "for index, arg in enumerate(args):\n"
+        "    if arg.startswith('VSOCK-CONNECT:'):\n"
+        "        _, separator, options = arg.partition(',')\n"
+        "        args[index] = 'UNIX-CONNECT:' + os.environ['SOCAT_TEST_UPSTREAM'] + separator + options\n"
         f"os.execv({shutil.which('socat')!r}, ['socat', *args])\n"
     )
     adapter.chmod(0o755)

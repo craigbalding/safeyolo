@@ -597,7 +597,10 @@ fn stage_claude_state(home: &Path, operator_home: Option<&Path>) -> Result<(), E
                     "safeyolo",
                     "safeyolo-lab-controller",
                     "safeyolo-factory",
+                    "operator-ux",
                     "job-authoring",
+                    "safeyolo-commission",
+                    "harness-authoring",
                 ]
                 .iter()
                 .any(|name| entry.file_name() == *name)

@@ -1,6 +1,7 @@
 //! Current audit envelopes and one lazy JSONL writer. The caller retains
 //! one writer across runtime snapshots; this module performs no global setup.
 
+pub(crate) mod disclosure;
 mod envelope;
 mod explain;
 mod nsm;
@@ -8,14 +9,14 @@ pub(crate) mod pivot;
 mod reader;
 mod writer;
 
-pub(crate) use envelope::wipe;
 pub use envelope::{
     Approval, ApprovalType, Attribution, AttributionStatus, Decision, Event, Initiator, Kind,
     Severity,
 };
+pub(crate) use envelope::{RequestScope, wipe};
 pub use explain::{ExplainError, ExplainErrorKind};
 pub use reader::parse_record;
-pub(crate) use reader::{local_tail, selected_tails};
+pub(crate) use reader::{local_tail, local_tail_matching, selected_tails};
 pub(crate) use writer::backup;
 pub use writer::{Settings, Submission, Writer};
 

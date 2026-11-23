@@ -17,6 +17,11 @@ read-only terminal inspector. The CLI reads and updates instance configuration,
 uses the authenticated Admin API, and displays JSON Lines (JSONL) audit events.
 The instance policy file is the source of truth for durable permissions.
 
+The [host execution contract](host-execution-contract.md) defines the shared
+issuer/target protocol, versioned operation package and executable contract
+witness. Native platform execution and gateway adoption remain separate from
+contract validation.
+
 ## Repository Structure
 
 - `proxy/src/` contains the Rust proxy and its policy, inspection, API, and
@@ -308,8 +313,11 @@ Overnight test compilation prepares the library test, then binary tests and
 host binaries selected by the version integration test. A separate step prepares
 the agent API and native integration tests. The final compilation step keeps
 the complete default target selection, including examples, and reuses those
-outputs. All steps use the unchanged release profile and flags. The dependency
-cache does not supply these workspace executables. Completed Cargo timing
+outputs. macOS contract-test compilation and execution select package
+optimization level 1 through the same command-specific Cargo override. Linux
+tests, dependencies and production builds keep their release settings.
+The post-test production build restores the normal optimized executables.
+The dependency cache does not supply these workspace executables. Completed Cargo timing
 reports are retained even when a later compilation step fails; an interrupted
 compiler can leave no report for its unfinished command. The verbose job log
 still identifies the targets started before interruption.
@@ -995,13 +1003,17 @@ $ curl https://httpbin.org/get
 # Should return 200 (allowed)
 ```
 
-## README skill discovery
+## Repository skill discovery
 
-The repository ships one [readme-usability skill](../cli/src/safeyolo/agent_context/skills/readme-usability/SKILL.md)
-with a conditional SafeYolo reference. Edit that source. The checked-in
-`.agents/skills/readme-usability` and `.claude/skills/readme-usability` directory
-symlinks expose it to Codex and Claude Code in this checkout. `AGENTS.md`, also
-imported by `CLAUDE.md`, routes README and onboarding work to it.
+The repository ships [readme-usability](../cli/src/safeyolo/agent_context/skills/readme-usability/SKILL.md)
+for README and onboarding work, and
+[operator-ux](../cli/src/safeyolo/agent_context/skills/operator-ux/SKILL.md)
+for operator journey implementation and review. Edit each canonical skill under
+`cli/src/safeyolo/agent_context/skills/`. The checked-in directory symlinks under
+`.agents/skills/` and `.claude/skills/` expose those sources to Codex and Claude
+Code. `AGENTS.md`, also imported by `CLAUDE.md`, requires the relevant skill.
+The operator-ux skill reads the authoritative interaction contract from the
+target checkout at the revision under review; it does not ship a second copy.
 
 The bundled Codex and Claude host setup scripts also stage discovery links in
 agent homes. SafeYolo copies the skill into the read-only `/safeyolo/skills/`
@@ -1015,8 +1027,9 @@ No skill-specific wiring is required. Unrelated
 user-owned skills at the same discovery path are preserved and reported as a
 setup conflict.
 
-Both harnesses can select the skill from its description. Explicit invocation
-is `$readme-usability` in Codex or `/readme-usability` in Claude Code. If a running
+Both harnesses can select skills from their descriptions. Explicit invocation
+uses `$readme-usability` or `$operator-ux` in Codex, and `/readme-usability` or
+`/operator-ux` in Claude Code. If a running
 harness does not show the newly added skill, restart that harness. Discovery
 makes a skill available; it does not prove a particular model used it.
 Custom launchers that do not run the bundled setup still get repository discovery

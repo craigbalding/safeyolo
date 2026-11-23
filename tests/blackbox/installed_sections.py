@@ -1,7 +1,8 @@
 """Prepare one installed product and run sections with separate writable state.
 
 Use a disposable host from a clean checkout. systrap runs isolation, workloads,
-access, lifecycle and host continuity, with optional two-agent ingress.
+access, peer support, approvals, providers, federation, lifecycle and host
+continuity, with optional two-agent ingress.
 KVM runs isolation, guest ingress and workloads. Physical Apple Silicon VZ runs isolation, access, lifecycle and
 host continuity. All three also select disposable jobs, job network authority
 and live mounts. Systrap additionally selects nested Docker/gateway controls.
@@ -24,10 +25,10 @@ import uuid
 from pathlib import Path
 
 if __package__:
-    from .execution_receipt import section_execution
+    from .execution_receipt import authority_controls, controller_identity, section_execution
     from .selections import BOUNDARY_SECTIONS, OPTIONAL_SECTIONS, SECTIONS
 else:
-    from execution_receipt import section_execution
+    from execution_receipt import authority_controls, controller_identity, section_execution
     from selections import BOUNDARY_SECTIONS, OPTIONAL_SECTIONS, SECTIONS
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -168,15 +169,19 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
     run_id = uuid.uuid4().hex
     env["SAFEYOLO_BLACKBOX_RUN_ID"] = run_id
     env["SAFEYOLO_BLACKBOX_LANE"] = lane
-    report = {"source_revision": revision, "lane": lane, "run_id": run_id, "preparation": {}, "sections": []}
+    report = {"source_revision": revision, "lane": lane, "run_id": run_id,
+              "selected_sections": list(sections), "preparation": {}, "sections": []}
+    report["controller"] = controller_identity()
     if listener_restart:
         report["isolation_selection"] = "listener-restart"
     artifacts.mkdir(parents=True, exist_ok=True)
     report_path = artifacts / "installed-sections.json"
 
     def save():
+        report["controls"] = authority_controls(report)
         report_path.write_text(json.dumps(report, indent=2) + "\n")
 
+    save()
     try:
         if prepared_config is None:
             prepared = subprocess.run(
@@ -249,6 +254,18 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                          "--https-port", "46374", "--oauth-port", "46375",
                          "--admin-port", "46371", "--nats-client-port", "46370",
                          "--nats-monitor-port", "46372"]
+        if section in {"peer-support", "shared-approvals"}:
+            args = [str(REPOSITORY / ".venv/bin/python"), "-m", "tests.blackbox.installed_authority",
+                    "--section", section, "--prepared-config", str(source), "--root", str(instance),
+                    "--revision", revision, "--output", str(section_artifacts)]
+        if section == "provider":
+            args = [str(REPOSITORY / ".venv/bin/python"), "-m", "tests.blackbox.installed_provider",
+                    "--prepared-config", str(source), "--root", str(instance), "--revision", revision,
+                    "--output", str(section_artifacts), "--admin-port", "0"]
+        if section == "federation":
+            args = [str(REPOSITORY / ".venv/bin/python"), "-m", "tests.blackbox.installed_federation",
+                    "--prepared-config", str(source), "--root", str(instance), "--revision", revision,
+                    "--output", str(section_artifacts)]
         if section == "claude":
             # The operator prepares the subscription in this dedicated host
             # instance. Never copy its encrypted store into another instance.

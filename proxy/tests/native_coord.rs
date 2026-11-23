@@ -23,6 +23,8 @@ mod attestations;
 mod catch_up;
 #[path = "native_coord/continuation.rs"]
 mod continuation;
+#[path = "native_coord/diagnostics.rs"]
+mod diagnostics;
 #[path = "native_coord/factory.rs"]
 mod factory;
 #[path = "native_coord/federation.rs"]
@@ -2258,7 +2260,10 @@ async fn fresh_rooms_restart_authorization_mcp_and_nats_failure() {
     }
     let denied=mcp(root,alice.socket.as_ref().unwrap(),"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"read_room\",\"arguments\":{\"room_name\":\"private\"}}}\n").await;
     assert_eq!(denied["result"]["isError"], true);
-    assert!(denied["result"]["structuredContent"].is_null());
+    let refusal = &denied["result"]["structuredContent"];
+    assert!(matches!(refusal["http_status"].as_u64(), Some(403 | 404)));
+    assert_eq!(refusal["correlation"], "validated_response_header");
+    assert!(refusal["diagnostic"].is_null());
     let malformed = mcp(root, alice.socket.as_ref().unwrap(), "{broken}\n").await;
     assert_eq!(malformed["error"]["code"], -32700);
     let (port, origin_task) = origin().await;

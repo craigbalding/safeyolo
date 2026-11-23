@@ -235,9 +235,10 @@ evidence merely because the author produced it.
 
 - Inspect the actual diff and enough surrounding code to understand its effects;
   do not review changed lines in isolation.
-- For changes to operator journeys, assess the applicable
-  [operator interaction contract](../operator-interaction-contract.md) clauses
-  and delivery evidence within the assigned scope.
+- For changes to SafeYolo operator journeys, use the
+  [operator-ux skill](../../cli/src/safeyolo/agent_context/skills/operator-ux/SKILL.md)
+  to assess the applicable [operator interaction contract](../operator-interaction-contract.md)
+  clauses and verify the journey within the assigned scope.
 - Review new and changed tests as production code. Look for weak assertions,
   tautologies, over-mocking, happy-path-only coverage, shared assumptions between
   tests and implementation, and tests that avoid the boundary they claim to

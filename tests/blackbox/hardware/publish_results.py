@@ -22,11 +22,11 @@ ROOT = Path(__file__).resolve().parents[3]
 if __name__ == "__main__":
     sys.path.insert(0, str(ROOT))
     from tests.blackbox.execution_receipt import MAX_REPORT_BYTES as MAX_REPORT_BYTES
-    from tests.blackbox.execution_receipt import read_json, section_execution
+    from tests.blackbox.execution_receipt import authority_controls, read_json, section_execution
     from tests.blackbox.selections import SECTIONS
 else:
     from ..execution_receipt import MAX_REPORT_BYTES as MAX_REPORT_BYTES
-    from ..execution_receipt import read_json, section_execution
+    from ..execution_receipt import authority_controls, read_json, section_execution
     from ..selections import SECTIONS
 
 REPOSITORY = "craigbalding/safeyolo"
@@ -168,7 +168,14 @@ def installed_result(reports: Path, lane: str, selection: dict) -> dict:
     complete = (bool(sections.get("run_id")) and all(row["complete"] for row in execution.values())
                 and run["exit"] == 0 and sections["preparation"]["exit"] == 0 and names == list(SECTIONS[lane])
                 and all(row == {"section": row["section"], "exit": 0, "result": "passed", "cleanup": "stopped"} for row in rows))
+    # Hardware jobs select all maintained lane sections. Recompute each control
+    # from the underlying reports; keep arbitrary observations private.
+    controls = authority_controls({"selected_sections": SECTIONS[lane], "sections": [
+        row | {"execution": execution[row["section"]]} for row in rows]})
     return {"complete": complete, "sections": rows,
+            "controls": {control: {key: value for key, value in row.items()
+                                   if key not in {"execution", "artifacts"}}
+                         for control, row in controls.items()},
             "unexecuted_sections": [name for name in SECTIONS[lane] if name not in names],
             "execution": {name: public_execution(result) for name, result in execution.items()},
             "installed_files_sha256": identities,

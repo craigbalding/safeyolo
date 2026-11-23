@@ -207,7 +207,15 @@ pub(super) async fn invoke(
         ));
     }
     invocation.record = result;
-    // Retain even a late success. It cannot authorize a changed policy or actor.
+    // Keep the captured execution even when its authority was invalidated.
+    // Hold current runtime authority during retention, after external execution.
+    let authority = prepared.current();
+    if matches!(invocation.record.state, State::Completed)
+        && (authority.is_err() || !source_current(&invocation.record))
+    {
+        invocation.record.state = State::Uncertain;
+        invocation.record.detail = "execution authority changed or became unavailable while the prerequisite was pending; inspect the retained invocation at the external authority before any further effect".into();
+    }
     append(&tx, &mut invocation)?;
     tx.commit()?;
     Ok(invocation.record)

@@ -695,7 +695,7 @@ async fn get_baseline(policy: Option<&Policy>, path: Option<&Path>) -> Outcome {
     }
 }
 
-fn json_toml_value(value: &Value) -> std::result::Result<toml_edit::Value, ()> {
+pub(crate) fn json_toml_value(value: &Value) -> std::result::Result<toml_edit::Value, ()> {
     Ok(match value {
         Value::String(value) => toml_edit::Value::from(value.clone()),
         Value::Bool(value) => toml_edit::Value::from(*value),
@@ -1866,6 +1866,74 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             });
         }
         return Ok(get_baseline(policy, policy_path).await);
+    }
+    if method == Method::POST && path == "/admin/policy/restore" {
+        let data = match read_json(request).await? {
+            ParsedBody::Value(data) => data.0.clone(),
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => Value::Null,
+        };
+        let Ok(input) =
+            serde_json::from_value::<crate::approvals::pending::policy_change::Restore>(data)
+        else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"supply approval_id and a new operation_id to prepare deliberate restore"}),
+            ));
+        };
+        let (Some(state), Some(writer), Some(owner)) = (task_state, audit, service_audit) else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"policy restore owner unavailable"}),
+            ));
+        };
+        let (state, writer) = (state.clone(), writer.clone());
+        return owner.mutation_owner.spawn_blocking(move || {
+            Ok(match crate::approvals::pending::policy_change::restore(&state,&writer,&input) {
+                Ok(value)=>response(StatusCode::OK,value),
+                Err(error)=>response(StatusCode::CONFLICT,json!({"error":error.to_string(),"next_action":"read the original operation_id; no restore decision is implied by preparation"})),
+            })
+        }).await?.await.map_err(|_|Error::ServiceMutation)?;
+    }
+    if method == Method::POST && path == "/admin/policy/assess" {
+        let data = match read_json(request).await? {
+            ParsedBody::Value(data) => data.0.clone(),
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => Value::Null,
+        };
+        let input: crate::services::effects::policy::Candidate = match serde_json::from_value(data)
+        {
+            Ok(input) => input,
+            Err(_) => {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"supply snapshot_request_id, complete TOML source and installed definition_version only"}),
+                ));
+            }
+        };
+        let (Some(state), Some(writer)) = (task_state, audit) else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"assessment owner unavailable"}),
+            ));
+        };
+        let (state, writer) = (state.clone(), writer.clone());
+        return Ok(
+            match tokio::task::spawn_blocking(move || {
+                crate::approvals::pending::policy_assessment::operator(&state, &writer, &input)
+            })
+            .await
+            {
+                Ok(Ok(value)) => response(StatusCode::OK, value),
+                Ok(Err(error)) => {
+                    response(StatusCode::BAD_REQUEST, json!({"error":error.to_string()}))
+                }
+                Err(_) => response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error":"assessment unavailable; no candidate was applied or submitted"}),
+                ),
+            },
+        );
     }
     if method == Method::POST && path == "/admin/policy/validate" {
         if policy.and_then(Policy::native_controls).is_some() {

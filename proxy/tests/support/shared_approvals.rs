@@ -72,7 +72,21 @@ impl Fixture {
     }
 
     pub(crate) async fn with_retention(max_flows: usize) -> Self {
+        Self::configured(max_flows, false).await
+    }
+
+    pub(crate) async fn configured(max_flows: usize, installed_settings: bool) -> Self {
+        Self::with_policy_path(max_flows, installed_settings, "policy.toml").await
+    }
+
+    pub(crate) async fn with_policy_path(
+        max_flows: usize,
+        installed_settings: bool,
+        policy_name: &str,
+    ) -> Self {
         let root = tempfile::tempdir().unwrap();
+        let policy_path = root.path().join(policy_name);
+        fs::create_dir_all(policy_path.parent().unwrap()).unwrap();
         let data = root.path().join("data");
         fs::create_dir(&data).unwrap();
         fs::write(
@@ -90,11 +104,11 @@ impl Fixture {
         fs::write(data.join("agent_token"), "synthetic-agent-token").unwrap();
         fs::write(root.path().join("admin_token"), "synthetic-operator-token").unwrap();
         let (origin, address) = test_owned_endpoint::bind().await;
-        fs::write(root.path().join("policy.toml"), format!(
+        fs::write(&policy_path, format!(
             "budget=40\n[hosts]\n'{address}'={{egress='prompt'}}\n[agents.worker]\nagent_id='{WORKER_ID}'\n[agents.helper]\nagent_id='{HELPER_ID}'\n[agents.peer]\nagent_id='ag-33333333333333333333333333333333'\n[controls.credentials]\nenabled=false\n"
         )).unwrap();
         let mut config: Config = serde_json::from_value(json!({
-            "native_product":true,"data_dir":data,"flow_pruner_max":max_flows,"policy_file":root.path().join("policy.toml"),
+            "native_product":true,"data_dir":data,"flow_pruner_max":max_flows,"policy_file":policy_path,
             "listeners":(["worker","helper","peer"].map(|name| json!({"agent_id":name,"socket_path":root.path().join(format!("{name}.sock"))}))),
             "admin_port":0,"admin_api_token_file":root.path().join("admin_token"),
             "readiness_file":root.path().join("ready.json"),"audit_log_path":root.path().join("audit.jsonl"),
@@ -103,6 +117,9 @@ impl Fixture {
             ,"gateway_builtin_services_dir":root.path().join("builtin-services"),"gateway_services_dir":root.path().join("services")
         })).unwrap();
         config.native_config_dir = Some(root.path().to_owned());
+        if installed_settings {
+            config.native_settings = Some(Default::default());
+        }
         let proxy = Proxy::start(config.clone()).await.unwrap();
         let ready: Value =
             serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();
@@ -122,7 +139,7 @@ impl Fixture {
     }
 
     pub(crate) fn source(&self) -> String {
-        fs::read_to_string(self.root.path().join("policy.toml")).unwrap()
+        fs::read_to_string(self.config.policy_file.as_ref().unwrap()).unwrap()
     }
 
     #[allow(

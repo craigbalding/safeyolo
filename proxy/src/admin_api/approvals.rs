@@ -32,6 +32,9 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
     state: Option<&crate::RuntimeState>,
     service_audit: Option<ServiceAudit<'_>>,
 ) -> Result<Outcome, Error> {
+    if let Some(path) = path.strip_suffix("/diagnostic-selection") {
+        return diagnostic_selection(request, path, audit, state, service_audit).await;
+    }
     if let Some(path) = path.strip_suffix("/context") {
         return context(request, path, policy, audit, state).await;
     }
@@ -175,6 +178,66 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
                 Err(_) => response(StatusCode::SERVICE_UNAVAILABLE, json!({"error":"resolution unavailable; read canonical outcome before retrying; direct policy controls remain available"})),
         })
     }).await?.await.map_err(|_| Error::ServiceMutation)?
+}
+
+async fn diagnostic_selection<B: Body<Data = Bytes>>(
+    request: Request<B>,
+    path: &str,
+    audit: Option<&Arc<crate::audit::Writer>>,
+    state: Option<&crate::RuntimeState>,
+    owner: Option<ServiceAudit<'_>>,
+) -> Result<Outcome, Error> {
+    let Some(id) = path
+        .strip_prefix("/admin/approvals/")
+        .filter(|id| pending::valid_id(id))
+    else {
+        return Ok(response(
+            StatusCode::NOT_FOUND,
+            json!({"error":"approval unavailable"}),
+        ));
+    };
+    if request.method() != Method::POST {
+        return Ok(unsupported(request.method()));
+    }
+    let data = match read_json(request).await? {
+        ParsedBody::Value(data) => data,
+        ParsedBody::Terminal(result) => return Ok(result),
+        ParsedBody::Absent => {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"select a narrowed diagnostic scope"}),
+            ));
+        }
+    };
+    let Ok(input) = serde_json::from_value::<pending::diagnostics::Selection>(data.0.clone())
+    else {
+        return Ok(response(
+            StatusCode::BAD_REQUEST,
+            json!({"error":"supply exact authority/selection revisions and a typed narrower diagnostic selection"}),
+        ));
+    };
+    let (Some(writer), Some(state), Some(owner)) = (audit, state, owner) else {
+        return Ok(response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"canonical approval owner unavailable"}),
+        ));
+    };
+    let (writer, state, id) = (writer.clone(), state.clone(), id.to_owned());
+    owner
+        .mutation_owner
+        .spawn_blocking(move || {
+            Ok(
+                match pending::diagnostics::narrow(&state, &writer, &id, input) {
+                    Ok(view) => response(StatusCode::OK, view),
+                    Err(error) => {
+                        response(StatusCode::CONFLICT, json!({"error":error.to_string()}))
+                    }
+                },
+            )
+        })
+        .await?
+        .await
+        .map_err(|_| Error::ServiceMutation)?
 }
 
 /// This endpoint claims only an interruption. It cannot decide an approval.

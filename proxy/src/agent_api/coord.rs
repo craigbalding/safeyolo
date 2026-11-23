@@ -39,6 +39,7 @@ const MAX_DECLARATION_TTL_SECONDS: i64 = 3600;
 const PROJECTION_PAGE: u64 = 200;
 const RECOVERY_INTERVAL: Duration = Duration::from_millis(250);
 mod approval_results;
+mod diagnostics;
 pub(crate) mod federation;
 pub(crate) mod inventory;
 mod operational;
@@ -1319,13 +1320,7 @@ fn valid_attention_id(value: &str) -> bool {
 }
 
 pub(crate) fn valid_agent_id(value: &str) -> bool {
-    let Some(suffix) = value.strip_prefix("ag-") else {
-        return false;
-    };
-    !suffix.is_empty()
-        && suffix
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    safeyolo_host_executor::valid_agent_id(value)
 }
 
 fn parse_attention_manifest(
@@ -3437,6 +3432,46 @@ impl OperatorCoord {
             prepare_send(&self.client, room, Sender::Operator, payload.as_bytes()).await,
         )?;
         Ok(serde_json::from_value(result["prepared"].clone())?)
+    }
+
+    /// Adopted host rules retain durable recipients. Resolve their current names
+    /// for the ordinary send API, then verify that preparation selected those IDs.
+    pub(crate) async fn prepare_for_agent_ids(
+        &self,
+        room: &str,
+        body: &str,
+        content_type: &str,
+        agent_ids: &[String],
+    ) -> Result<PreparedMessage, crate::Error> {
+        let names = self.client.display_names(agent_ids).await;
+        let names = agent_ids
+            .iter()
+            .map(|id| {
+                names
+                    .get(id)
+                    .cloned()
+                    .ok_or("notification recipient is unavailable")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let prepared = self.prepare(room, body, content_type, json!(names)).await?;
+        let manifest = parse_attention_manifest(
+            Some(&prepared.attention_manifest.to_string()),
+            prepared.envelope["msg_id"]
+                .as_str()
+                .ok_or("prepared message identity missing")?,
+        )
+        .map_err(|_| "invalid prepared notification recipients")?
+        .ok_or("prepared notification recipients missing")?;
+        let selected = manifest
+            .recipients
+            .iter()
+            .map(|r| r.agent_id.as_str())
+            .collect::<HashSet<_>>();
+        let requested = agent_ids.iter().map(String::as_str).collect::<HashSet<_>>();
+        if selected != requested {
+            return Err("notification recipient identity changed during preparation".into());
+        }
+        Ok(prepared)
     }
 
     pub(crate) async fn publish_prepared(

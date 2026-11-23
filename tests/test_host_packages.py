@@ -12,8 +12,10 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import ssl
 import stat
+import struct
 import subprocess
 import tarfile
 import threading
@@ -127,9 +129,10 @@ def test_runsc_acquisition_reuses_its_build_and_refuses_corrupt_cached_companion
     assert build_calls.read_text().splitlines() == ["build", "build"]
 
 
+@pytest.mark.parametrize("failure", ["http", "reset"])
 @pytest.mark.parametrize("outcome", ["transient", "exhausted", "checksum"])
-def test_bazel_acquisition_retries_http_failures_before_building(
-    tmp_path, runsc_build_inputs, outcome,
+def test_bazel_acquisition_retries_download_failures_before_building(
+    tmp_path, runsc_build_inputs, failure, outcome,
 ):
     from tests.proxy_contracts.test_http2_contract import origin_certificate
 
@@ -150,6 +153,18 @@ def test_bazel_acquisition_retries_http_failures_before_building(
 
         def do_GET(self):
             attempts.append(self.path)
+            if failure == "reset" and (outcome == "exhausted" or len(attempts) == 1):
+                self.send_response(200)
+                self.send_header("Content-Length", "65536")
+                self.end_headers()
+                self.wfile.write(b"partial download that must be discarded\n")
+                # Let curl consume partial bytes, then send a TCP reset instead
+                # of a TLS close notification. Real curl must report exit 56.
+                threading.Event().wait(0.05)
+                self.close_connection = True
+                self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                os.close(self.connection.detach())
+                return
             unavailable = outcome == "exhausted" or (outcome == "transient" and len(attempts) == 1)
             body = b"gateway unavailable" if unavailable else payload
             if outcome == "checksum":
@@ -193,6 +208,8 @@ def test_bazel_acquisition_retries_http_failures_before_building(
         assert int(args[args.index(option) + 1]) > 0
     architecture = "arm64" if os.uname().machine in ("aarch64", "arm64") else "x86_64"
     assert f"https://github.com/bazelbuild/bazel/releases/download/8.3.1/bazel-8.3.1-linux-{architecture}" in args
+    if failure == "reset":
+        assert "curl: (56)" in result.stderr, result.stderr
     if outcome == "transient":
         assert result.returncode == 0, result.stderr
         assert len(attempts) == 2 and destination.is_dir()
@@ -210,10 +227,124 @@ def test_bazel_acquisition_retries_http_failures_before_building(
         assert result.returncode != 0 and not destination.exists()
         assert not build_calls.exists() and not list(cache.glob("**/tools/bazel"))
         if outcome == "exhausted":
-            assert result.returncode == 22, result.stderr
+            assert result.returncode == (56 if failure == "reset" else 22), result.stderr
             assert len(attempts) == 1 + int(args[args.index("--retry") + 1])
         else:
-            assert "Bazel checksum differs" in result.stderr and len(attempts) == 1
+            assert "Bazel checksum differs" in result.stderr
+            assert len(attempts) == (2 if failure == "reset" else 1)
+
+
+@pytest.mark.parametrize("architecture,cross_compiler", [
+    ("aarch64", "crossbuild-essential-amd64"),
+    ("x86_64", "crossbuild-essential-arm64"),
+])
+@pytest.mark.parametrize("outcome", ["transient", "exhausted", "missing", "reserve"])
+def test_workflow_apt_acquisition_retries_before_runtime_preparation(
+    tmp_path, monkeypatch, architecture, cross_compiler, outcome,
+):
+    import yaml
+
+    if not shutil.which("apt-get"):
+        pytest.skip("the Ubuntu workflow acquisition check requires apt-get")
+    workflow = yaml.safe_load((REPO / ".github/workflows/guest-test-inputs.yml").read_text())
+    steps = workflow["jobs"]["build"]["steps"]
+    step = next(s for s in steps if s.get("name") == "Install patched runtime build dependencies")
+    preparation = next(s for s in steps if s.get("name") == "Prepare the complete patched gVisor runtime")
+    assert steps.index(step) < steps.index(preparation)
+    assert "shell" not in step and "defaults" not in workflow
+    assert "defaults" not in workflow["jobs"]["build"]
+    # An unspecified Linux Actions shell runs bash -e, without pipefail.
+
+    packages = ["tmux", cross_compiler, "clang", "libbpf-dev"]
+    payloads = {f"/{name}.deb": f"controlled archive for {name}\n".encode() for name in packages}
+    index = "".join(
+        f"Package: {name}\nVersion: 1\nArchitecture: all\nFilename: ./{name}.deb\n"
+        f"Size: {len(payloads[f'/{name}.deb'])}\n"
+        f"SHA256: {hashlib.sha256(payloads[f'/{name}.deb']).hexdigest()}\n"
+        f"Description: controlled acquisition input\n\n"
+        for name in packages if outcome != "missing" or name != "clang"
+    ).encode()
+    attempts = []
+
+    class AptDownload(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            path = self.path.removeprefix("/.")
+            attempts.append(path)
+            body = index if path == "/Packages" else payloads.get(path)
+            unavailable = path in ("/Packages", "/tmux.deb") and (
+                attempts.count(path) == 1 or (outcome == "exhausted" and path == "/tmux.deb")
+            )
+            status = 503 if unavailable else (200 if body is not None else 404)
+            body = b"temporarily unavailable" if unavailable else body or b""
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), AptDownload)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    # Keep apt and the workflow arguments real. Substitute sudo, disk capacity
+    # and uname; download-only acquisition cannot install on the host.
+    for name, contents in {
+        "sudo": '#!/bin/sh\n[ "$1" = -n ] || exit 2\nshift\nprintf "%s\\n" "$*" >> "$APT_TEST_ARGUMENTS"\nexec "$@"\n',
+        "uname": f"#!/bin/sh\necho {architecture}\n",
+        "df": '#!/bin/sh\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted\\nfixture 20000000 0 '
+              + ("10485759" if outcome == "reserve" else "10485760") + ' 0%% /\\n"\n',
+    }.items():
+        (tools / name).write_text(contents)
+        (tools / name).chmod(0o755)
+    for directory in ("etc", "state/lists/partial", "cache/archives/partial", "log"):
+        (tmp_path / directory).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "state/status").touch()
+    (tmp_path / "etc/sources.list").write_text(f"deb [trusted=yes] http://127.0.0.1:{server.server_port}/ ./\n")
+    config = tmp_path / "apt.conf"
+    config.write_text(
+        f'Dir::Etc "{tmp_path}/etc";\nDir::Etc::parts "-";\nDir::Etc::main "-";\n'
+        'Dir::Etc::sourceparts "-";\n'
+        f'Dir::State "{tmp_path}/state";\nDir::State::status "{tmp_path}/state/status";\n'
+        f'Dir::Cache "{tmp_path}/cache";\nDir::Log "{tmp_path}/log";\n'
+        # Require the workflow's explicit retry option regardless of apt's default.
+        'Acquire::Retries "0";\nAcquire::Languages "none";\nAPT::Get::Download-Only "true";\n',
+    )
+    monkeypatch.setenv("APT_CONFIG", str(config))
+    arguments = tmp_path / "apt-arguments"
+    monkeypatch.setenv("APT_TEST_ARGUMENTS", str(arguments))
+    monkeypatch.setenv("PATH", f"{tools}:{os.environ['PATH']}")
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    marker = tmp_path / "runtime-preparation-reached"
+    try:
+        # Use the selected step's default Actions shell. A subsequent command
+        # represents admission of the next step, not a runtime build.
+        result = run("bash", "-e", "-c", step["run"] + f"\ntouch {shlex.quote(str(marker))}\n")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert marker.exists() == (outcome == "transient"), result.stderr
+    if outcome == "reserve":
+        assert result.returncode != 0 and not attempts and not arguments.exists()
+        return
+    commands = [shlex.split(line) for line in arguments.read_text().splitlines()]
+    assert commands[0] == ["apt-get", "-o", "Acquire::Retries=3", "update", "-qq"]
+    assert commands[1] == ["apt-get", "-o", "Acquire::Retries=3", "install", "-y", "-qq",
+                           "--no-install-recommends", *packages]
+    assert attempts.count("/Packages") == 2, result.stderr
+    if outcome == "missing":
+        assert result.returncode == 100 and "Unable to locate package clang" in result.stderr
+    elif outcome == "exhausted":
+        assert result.returncode == 100 and attempts.count("/tmux.deb") == 4, result.stderr
+    else:
+        assert result.returncode == 0 and attempts.count("/tmux.deb") == 2, result.stderr
+        assert {path.name for path in (tmp_path / "cache/archives").glob("*.deb")} == {
+            f"{name}_1_all.deb" for name in packages
+        }
 
 
 @pytest.mark.parametrize("workflow_name,job,consumer", [
@@ -573,7 +704,7 @@ def package_inputs(tmp_path, request, monkeypatch):
         (assets / f"{name}.sh").write_text("#!/bin/sh\nexit 0\n")
     for name in ("launchers", "agent_context/skills/safeyolo", "services"):
         (assets / name).mkdir(parents=True)
-    for name in ("safeyolo-lab-controller", "safeyolo-factory", "job-authoring"):
+    for name in ("safeyolo-lab-controller", "safeyolo-factory", "job-authoring", "safeyolo-commission", "harness-authoring", "operator-ux"):
         shutil.copytree(
             REPO / "cli/src/safeyolo/agent_context/skills" / name,
             assets / "agent_context/skills" / name,
@@ -597,6 +728,7 @@ def package_inputs(tmp_path, request, monkeypatch):
     (source / "LICENSE").write_text("fixture project notice\n")
     (source / "docs").mkdir()
     (source / "docs/AGENTS.md").write_text("fixture baseline\n")
+    shutil.copy2(REPO / "docs/signals.md", source / "docs/signals.md")
     (source / "guest/rootfs").mkdir(parents=True)
     (source / "guest/rootfs/safeyolo-sudo").write_text("#!/bin/sh\nexit 0\n")
     shutil.copytree(REPO / "contrib", source / "contrib")
@@ -904,7 +1036,7 @@ def test_native_bundle_archives_checked_bytes_and_private_runtime(package_inputs
         skill_path, = [name for name in names if name.endswith("/assets/skills/safeyolo/SKILL.md")]
         assert stream.extractfile(skill_path).read() == b"fixture skill\n- Keep the next instruction.\n"
         assert not any(name.endswith("/repo_map.py") for name in names)
-        for relative in ("repo-map.toml", "docs/AGENTS.md", "contrib/codex-command.sh",
+        for relative in ("repo-map.toml", "docs/AGENTS.md", "docs/signals.md", "contrib/codex-command.sh",
                          "contrib/coord-mcp-bootstrap.sh", "contrib/safeyolo-coord-mcp-launcher.sh",
                          "contrib/codex-coord-host-setup.sh", "contrib/pi-host-setup.sh",
                          "contrib/pi-coord-host-setup.sh", "contrib/pi-coord-extension.ts"):
@@ -1183,7 +1315,6 @@ def packaged_flow_token_recipe(package_inputs, tmp_path):
     for relative in ("references/agent-api.md", "references/graph/triage-credential-guard.yaml",
                      "references/graph/triage-request-failing.yaml"):
         assert (skill / relative).read_bytes() == (source / relative).read_bytes()
-    assert not list(skill.rglob("*.py"))
     assert not (skill / "scripts/render_skill_graph.py").exists()
     reference = (skill / "references/agent-api.md").read_text()
     provision = reference.split("### Provision a read-all flow token\n", 1)[1]
@@ -1365,11 +1496,21 @@ def test_fresh_install_preserves_prepared_platform_inputs(package_inputs, tmp_pa
     skill_source = REPO / "cli/src/safeyolo/agent_context/skills"
     for name, relative in (
         ("safeyolo-lab-controller", "scripts/prepare-nested.sh"),
+        ("operator-ux", "SKILL.md"),
+        ("operator-ux", "agents/openai.yaml"),
+        ("operator-ux", "LICENSE"),
         ("safeyolo-factory", "SKILL.md"),
         ("job-authoring", "SKILL.md"),
         ("job-authoring", "references/walkthrough.md"),
         ("job-authoring", "references/engines.md"),
         ("job-authoring", "scripts/prepare.py"),
+        ("safeyolo-commission", "SKILL.md"),
+        ("safeyolo-commission", "references/discovery.md"),
+        ("safeyolo-commission", "references/movie-trial.md"),
+        ("harness-authoring", "SKILL.md"),
+        ("harness-authoring", "references/contract.md"),
+        ("harness-authoring", "references/qualification.md"),
+        ("harness-authoring", "scripts/qualify.py"),
     ):
         assert (root / "assets/skills" / name / relative).read_bytes() == (
             skill_source / name / relative

@@ -52,7 +52,7 @@ pub(crate) fn prepared(policy: &Policy, action: &Value, grants: &[Grant]) -> Res
         result["risk_policy"] = json!(risk_decision(policy, service, action, &[]));
         return Ok(result);
     };
-    let projected = project(policy, service, model, action, &active)?;
+    let projected = project(policy, service, model, action, &active, true)?;
     let assessed = model.assess(service, &projected.permissions)?;
     let enables = assessed.enables_for(&projected.candidate_permissions);
     result["risk_policy"] = json!(risk_decision(policy, service, action, &enables));
@@ -67,6 +67,74 @@ pub(crate) fn prepared(policy: &Policy, action: &Value, grants: &[Grant]) -> Res
         &projected.permissions
     )?);
     Ok(result)
+}
+
+/// Compare complete compiled authority, without injecting a proposed route.
+/// Uses the same path partition, contract semantics and composed effect rules
+/// as a canonical gateway approval.
+pub(crate) fn whole_policy(policy: &Policy, grants: &[Grant]) -> Result<Value, Error> {
+    let Some(snapshot) = policy.gateway() else {
+        return Ok(json!([]));
+    };
+    let Some(registry) = snapshot.registry() else {
+        return Ok(json!([]));
+    };
+    let pairs: BTreeSet<_> = snapshot
+        .tokens
+        .iter()
+        .filter_map(|token| {
+            Some((
+                token.agent.as_str()?.to_owned(),
+                token.service.as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    let mut result = Vec::new();
+    for (agent, name) in pairs {
+        let Some(service) = registry.services.get(&name) else {
+            result.push(json!({"agent":agent,"service":name,"coverage":"uncharacterised; adopted definition unavailable"}));
+            continue;
+        };
+        let action = json!({"agent":agent,"service":name});
+        let mut active: Vec<_> = grants
+            .iter()
+            .filter(|grant| {
+                grant.agent == agent
+                    && grant.service == name
+                    && !grant.is_expired(time::OffsetDateTime::now_utc())
+                    && grant.delegated.as_ref().is_none_or(|encoded| {
+                        serde_json::from_str::<crate::policy::delegation::IssuedAccess>(encoded)
+                            .is_ok_and(|issued| issued.source_applicable(policy))
+                    })
+            })
+            .cloned()
+            .collect();
+        active.sort_by(|a, b| a.grant_id.cmp(&b.grant_id));
+        let mut entry = json!({"agent":agent,"service":name,
+            "definition_revision":crate::approvals::pending::digest(&service.raw),
+            "temporary_grants":active,"coverage":"uncharacterised; no adopted effect model"});
+        if let Some(model) = &service.effect_model {
+            let projected = project(policy, service, model, &action, &active, false)?;
+            let assessed = model.assess(service, &projected.permissions)?;
+            let risk: Vec<_> = assessed.direct.iter().filter_map(|direct| {
+                let selected = projected.actions.get(&direct.permission.id)?;
+                Some(json!({"permission":direct.permission.id,"account":selected["account"],"decision":risk_decision(policy,service,selected,&assessed.enables_for(&BTreeSet::from([direct.permission.id.clone()]))) }))
+            }).collect();
+            entry["coverage"] = json!("adopted_partial_model");
+            entry["model"] = json!(assessed);
+            entry["risk_policy"] = json!(risk);
+            entry["alternatives"] = json!(alternatives(
+                policy,
+                service,
+                model,
+                &action,
+                &projected.permissions
+            )?);
+            entry["limitations"] = json!(projected.gaps);
+        }
+        result.push(entry);
+    }
+    Ok(json!(result))
 }
 
 pub(crate) fn risk_decision(
@@ -119,6 +187,7 @@ struct RoutePermissions {
     permissions: Vec<Permission>,
     gaps: Vec<String>,
     candidate_permissions: BTreeSet<String>,
+    actions: BTreeMap<String, Value>,
 }
 
 fn project(
@@ -127,6 +196,7 @@ fn project(
     model: &EffectModel,
     action: &Value,
     grants: &[Grant],
+    include_candidate: bool,
 ) -> Result<RoutePermissions, Error> {
     let snapshot = policy.gateway().ok_or("gateway unavailable")?;
     let agent = action["agent"].as_str().unwrap_or("");
@@ -134,6 +204,7 @@ fn project(
     let mut gaps = Vec::new();
     let mut candidate_modeled = false;
     let mut candidate_permissions = BTreeSet::new();
+    let mut actions = BTreeMap::new();
     let candidate_scopes = candidate_scopes(model, action);
     for token in snapshot
         .tokens
@@ -159,7 +230,13 @@ fn project(
                     && entry.get("delegated").is_none_or(|encoded| {
                         encoded.as_str().is_some_and(|encoded| {
                             serde_json::from_str::<crate::policy::delegation::IssuedAccess>(encoded)
-                                .is_ok_and(|issued| issued.active(policy))
+                                .is_ok_and(|issued| {
+                                    if include_candidate {
+                                        issued.active(policy)
+                                    } else {
+                                        issued.source_applicable(policy)
+                                    }
+                                })
                         })
                     })
             });
@@ -184,7 +261,11 @@ fn project(
                     binding.agent == agent
                         && binding.service == service.name
                         && binding.capability == capability.name
-                        && issued.active(policy)
+                        && (if include_candidate {
+                            issued.active(policy)
+                        } else {
+                            issued.source_applicable(policy)
+                        })
                 })
                 .map(|(binding, _)| Some(binding)),
         );
@@ -274,7 +355,7 @@ fn project(
                     .iter()
                     .filter(|grant| {
                         grant.method.eq_ignore_ascii_case(&operation.method)
-                            && grant.delegated.as_ref().is_some_and(|encoded| {
+                            && grant.delegated.as_ref().is_none_or(|encoded| {
                                 serde_json::from_str::<crate::policy::delegation::IssuedAccess>(
                                     encoded,
                                 )
@@ -283,17 +364,22 @@ fn project(
                                         && issued.action["capability"] == capability.name
                                         && issued.action["binding_id"].as_str()
                                             == binding.map(|binding| binding.binding_id.as_str())
-                                        && (issued.action["host"] == action["host"]
-                                            && issued.action["port"] == action["port"]
-                                            && issued.action["scheme"] == action["scheme"]
-                                            && issued.action["credential"] == token.vault_token
-                                            && issued.action["account"] == token.account)
+                                        && ((!include_candidate
+                                            && snapshot.canonical["host_map"]
+                                                .get(issued.action["host"].as_str().unwrap_or(""))
+                                                == Some(&json!(service.name)))
+                                            || issued.action["host"] == action["host"]
+                                                && issued.action["port"] == action["port"]
+                                                && issued.action["scheme"] == action["scheme"])
+                                        && issued.action["credential"] == token.vault_token
+                                        && issued.action["account"] == token.account
                                 })
                             })
                     })
                     .collect();
                 patterns.extend(relevant.iter().map(|grant| grant.path.clone()));
-                let candidate = capability.name == action["capability"]
+                let candidate = include_candidate
+                    && capability.name == action["capability"]
                     && operation.method == action["method"]
                     && binding.map(|binding| binding.binding_id.as_str())
                         == action["binding_id"].as_str();
@@ -302,6 +388,9 @@ fn project(
                 }
                 let (cells, unknown) = cells(operation, &patterns, bound_path.as_deref());
                 let unknown = unknown || unresolved_paths;
+                if unknown {
+                    gaps.push("The route partition has incomplete pattern coverage or reached its work budget; additional authority is unknown.".into());
+                }
                 for (path, path_arguments) in cells {
                     let original = policy.evaluate_gateway_request(GatewayRequest {
                         path: &path,
@@ -357,12 +446,17 @@ fn project(
                         temporary.map_or("unresolved", |grant| &grant.grant_id)
                     };
                     let id = format!(
-                        "{source}:{}/{}:{name}:{}",
+                        "{source}:{}/{}:{name}:{}:{}",
                         capability.name,
                         binding.map_or("", |binding| binding.binding_id.as_str()),
-                        crate::approvals::pending::digest(&json!(path_arguments))
+                        crate::approvals::pending::digest(&json!(path_arguments)),
+                        crate::approvals::pending::digest(&json!([
+                            token.account,
+                            token.vault_token
+                        ]))
                     );
                     let permission = Permission {
+                        native_arguments: BTreeMap::new(),
                         id,
                         operation: name.clone(),
                         enforcement: enforced.and(enforcement.clone()),
@@ -397,12 +491,13 @@ fn project(
                     if is_candidate {
                         candidate_permissions.insert(permission.id.clone());
                     }
+                    actions.insert(permission.id.clone(), permission_action);
                     permissions.push(permission);
                 }
             }
         }
     }
-    if !candidate_modeled {
+    if include_candidate && !candidate_modeled {
         gaps.push("The candidate route has no characterised operation in the adopted model or its effective binding. Missing coverage does not establish safety.".into());
     }
     permissions.sort_by(|a, b| a.id.cmp(&b.id));
@@ -411,6 +506,7 @@ fn project(
         permissions,
         gaps,
         candidate_permissions,
+        actions,
     })
 }
 
@@ -616,7 +712,12 @@ fn cells(operation: &Operation, patterns: &[String], bound: Option<&str>) -> (Ve
                     (path, args)
                 })
             })
+            .take(2049)
             .collect();
+        if rows.len() > 2048 {
+            rows.truncate(2048);
+            unknown = true;
+        }
     }
     (
         rows.into_iter()
@@ -715,6 +816,7 @@ fn alternatives(
                 .and_then(|path| cells(modeled, &[], Some(path)).0.into_iter().next())
                 .map_or_else(BTreeMap::new, |(_, arguments)| arguments);
             let permission = Permission {
+                native_arguments: BTreeMap::new(),
                 id: format!("alternative:{id}:{index}"),
                 operation: step.operation.clone(),
                 enforcement: ready.then(|| step.enforcement.clone()),
@@ -784,6 +886,23 @@ fn alternatives(
             "prerequisites":alternative.prerequisites,"unverified_prerequisites":alternative.unverified_prerequisites,
             "goal_suitability":"Unverified. Permission availability does not establish that this recipe meets the operator's goal.",
             "limitations":alternative.limitations,"evidence":alternative.evidence}));
+    }
+    // Generated native alternatives are reviewed recipes, not flat gateway
+    // permission claims. Challenge and operator/private review consume the
+    // same prepared arguments and limitations from the adopted definition.
+    if let Some(recipes) = service.raw["host_operation_guidance"]["alternatives"].as_object() {
+        for (id, recipe) in recipes {
+            let mut recipe = Value::Object(
+                recipe
+                    .as_object()
+                    .ok_or("Adopted host alternative must be an object")?
+                    .clone(),
+            );
+            recipe["id"] = json!(id);
+            recipe["access"] = json!("unverified_native_authority");
+            recipe["scope_limit"] = service.raw["host_operation_guidance"]["scope"].clone();
+            output.push(recipe);
+        }
     }
     Ok(json!(output))
 }
