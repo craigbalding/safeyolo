@@ -313,6 +313,8 @@ pub(crate) fn reconcile_catalogues(state: &crate::RuntimeState) -> Result<bool, 
                 .map_err(|e| crate::approvals::invalid(e.to_string()))?;
             let (mut document, context) = crate::policy::parse_toml_for_edit(saved)
                 .map_err(|e| crate::approvals::invalid(e.to_string()))?;
+            let bindings =
+                gateway::bindings(&parsed).map_err(|e| crate::approvals::invalid(e.to_string()))?;
             let mut expected = BTreeMap::new();
             for (name, mut adoption) in catalogue_adoptions(&parsed)
                 .map_err(|e| crate::approvals::invalid(e.to_string()))?
@@ -320,7 +322,25 @@ pub(crate) fn reconcile_catalogues(state: &crate::RuntimeState) -> Result<bool, 
                 let plan = adoption
                     .plan(now())
                     .map_err(|e| crate::approvals::invalid(e.to_string()))?;
+                let previous_package = revision(&adoption.active.catalogue.package);
+                let package_changed = previous_package != revision(&plan.package);
                 if adoption.advance(&plan) {
+                    // A binding retains its target's grants, ceiling, endpoint
+                    // and signing identity. Advance only the exact catalogue
+                    // snapshot it already uses; another target may use the
+                    // same package name with different definitions.
+                    for (binding_name, binding) in &bindings {
+                        if package_changed && revision(&binding.target.package) == previous_package
+                        {
+                            let mut binding = binding.clone();
+                            binding.target.package = plan.package.clone();
+                            binding.target.catalogue = Some(plan.status.clone());
+                            document["host_bindings"][binding_name] = toml_edit::value(
+                                serde_json::to_string(&binding)
+                                    .map_err(|e| crate::approvals::invalid(e.to_string()))?,
+                            );
+                        }
+                    }
                     document["host_catalogues"][&name] = toml_edit::value(
                         serde_json::to_string(&adoption)
                             .map_err(|e| crate::approvals::invalid(e.to_string()))?,

@@ -100,11 +100,65 @@ impl Fixture {
 }
 
 fn records(directory: &Path, name: &str) -> Vec<Value> {
-    std::fs::read_to_string(directory.join(name))
-        .unwrap_or_default()
-        .lines()
+    // A later connection event can append after a live reader drains the writer.
+    let _lock =
+        crate::host_platform::lock_host_state(&directory.join(format!("{name}.lock"))).unwrap();
+    let text = match std::fs::read_to_string(directory.join(name)) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => panic!("read {name}: {error}"),
+    };
+    text.lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+#[test]
+#[should_panic]
+fn records_reject_malformed_audit_rows() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("audit.jsonl"),
+        "{\"event\":\"complete\"}\n{\"event\":\"unfinished",
+    )
+    .unwrap();
+    records(directory.path(), "audit.jsonl");
+}
+
+#[test]
+fn records_wait_for_a_later_append_to_finish() {
+    use std::io::Write;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("audit.jsonl");
+    let lock =
+        crate::host_platform::lock_host_state(&directory.path().join("audit.jsonl.lock")).unwrap();
+    std::fs::write(&path, "{\"event\":\"complete\"}\n{\"event\":\"later").unwrap();
+    std::thread::scope(|scope| {
+        let (started, entered) = std::sync::mpsc::channel();
+        let (sent, received) = std::sync::mpsc::channel();
+        let root = directory.path();
+        scope.spawn(move || {
+            started.send(()).unwrap();
+            sent.send(records(root, "audit.jsonl")).unwrap();
+        });
+        entered.recv_timeout(LIMIT).unwrap();
+        assert!(matches!(
+            received.recv_timeout(Duration::from_millis(30)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"\"}\n")
+            .unwrap();
+        drop(lock);
+        let rows = received.recv_timeout(LIMIT).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["event"], "complete");
+        assert_eq!(rows[1]["event"], "later");
+    });
 }
 
 async fn exchange(directory: &Path, agent: &str, request: &str) -> Vec<u8> {

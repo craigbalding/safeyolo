@@ -241,10 +241,10 @@ meaning = "Typed relevance and proportionality signal for this exact task/action
 subject = "value"
 result_type = "task_action"
 influences = ["advisory"]
-implementation_version = "task-action-1"
+implementation_version = "task-action-2"
 configuration_version = "research-model-1"
 max_age_seconds = 60
-inputs = { service = "claude", endpoint = "https://api.anthropic.com/v1/messages", model = "claude-haiku-4-5-20251001", model_revision = "claude-haiku-4-5-20251001", input_revision = "task-action.v1", prompt_revision = "task-action-1" }
+inputs = { service = "claude", endpoint = "https://api.anthropic.com/v1/messages", model = "claude-haiku-4-5-20251001", model_revision = "claude-haiku-4-5-20251001", input_revision = "task-action.v1", prompt_revision = "task-action-2" }
 source = { kind = "job", spec = "task-action-check.json", spec_sha256 = "REVIEWED_JOB_SPEC_SHA256", effects = "retains_input", limits = { timeout_ms = 65000, max_input_bytes = 32768, max_output_bytes = 16384, max_concurrent = 1, max_pending = 2, max_cached = 0 } }
 
 [route_challenges.task_action]
@@ -274,6 +274,11 @@ The result contains typed `relevance` (`relevant`, `irrelevant`, `uncertain`),
 no probability scores. Invalid fields/references, incomplete provider responses,
 model substitution, timeouts and unavailable dependencies remain explicit.
 An uncertain finding supplies no favorable evidence.
+
+The adapter requests the selected provider's JSON-schema output format. Its
+schema permits only the typed fields and disclosed top-level evidence keys.
+The adapter still validates complete responses, exact references and size bounds.
+Fenced JSON, extra prose and dotted references remain invalid findings.
 
 The canonical subject and existing evidence owner bind the task, action,
 history, policy/challenge/check, model/input revisions and freshness. Changing

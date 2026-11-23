@@ -1550,6 +1550,15 @@ fn issuer_namespaces_job_disclosure_and_terminal_states_are_explicit() {
         let restored: Receipt = serde_json::from_value(json!(job)).unwrap();
         assert_eq!(restored.state, terminal);
     }
+    // The target's concurrency ceiling is shared across issuers. Complete the
+    // first reference job before testing a second issuer's legitimate admission.
+    let first = witness.jobs.get_mut(&receipt.job_id).unwrap();
+    first
+        .transition(1, JobState::Running, NOW, "fixture started".into())
+        .unwrap();
+    first
+        .transition(2, JobState::Completed, NOW, "fixture completed".into())
+        .unwrap();
     let mut trust = witness.target.issuers["sy-issuer"].clone();
     trust.public_keys.insert(
         "key-1".into(),
@@ -1598,9 +1607,9 @@ fn issuer_namespaces_job_disclosure_and_terminal_states_are_explicit() {
     other.action = Action::Invoke {
         invocation: prepared.invocation,
     };
-    let Response::Job { receipt: other_job } = witness.handle(Verb::Invoke.path(), &signed(other))
-    else {
-        panic!("second issuer admit")
+    let response = witness.handle(Verb::Invoke.path(), &signed(other));
+    let Response::Job { receipt: other_job } = response else {
+        panic!("second issuer admit: {response:?}")
     };
     assert_ne!(receipt.job_id, other_job.job_id);
     let mut read = request(

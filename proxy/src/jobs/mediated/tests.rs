@@ -149,6 +149,134 @@ async fn complete_large_evidence_is_chunked_and_off_scope_calls_are_denied() {
 }
 
 #[tokio::test]
+async fn adopted_authentication_reaches_the_gateway_without_guest_override_or_token_evidence() {
+    for (auth, header, expected) in [
+        (
+            "{type: api_key, header: x-api-key, allow_http: true}",
+            "x-api-key",
+            "x-api-key: synthetic-job-provider-secret".to_owned(),
+        ),
+        (
+            "{type: api_key, header: X-Adopted-Key, allow_http: true}",
+            "X-Adopted-Key",
+            "x-adopted-key: synthetic-job-provider-secret".to_owned(),
+        ),
+        (
+            "{type: bearer, allow_http: true}",
+            "Authorization",
+            "authorization: Bearer synthetic-job-provider-secret".to_owned(),
+        ),
+        (
+            "{type: basic, username: model-check, allow_http: true}",
+            "Authorization",
+            format!(
+                "authorization: Basic {}",
+                STANDARD.encode("model-check:synthetic-job-provider-secret")
+            ),
+        ),
+    ] {
+        let root = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let origin = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = origin.local_addr().unwrap().port();
+        let config = network::tests::config(root.path(), port);
+        let definition = root.path().join("services/simple.yaml");
+        let source = std::fs::read_to_string(&definition)
+            .unwrap()
+            .replace("{type: bearer, allow_http: true}", auth)
+            .replace("methods: [GET]", "methods: [POST]")
+            .replace("path: /value", "path: /v1/messages");
+        std::fs::write(definition, source).unwrap();
+        let proxy = crate::Proxy::start(crate::native_config::read(&config).unwrap())
+            .await
+            .unwrap();
+        let provider = tokio::spawn(async move {
+            let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), origin.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            let mut bytes = Vec::new();
+            while !bytes.ends_with(b"\r\n\r\n") {
+                bytes.push(stream.read_u8().await.unwrap());
+            }
+            let headers = String::from_utf8(bytes).unwrap();
+            assert!(headers.starts_with("POST /v1/messages HTTP/1.1\r\n"));
+            let (name, expected_value) = expected.split_once(": ").unwrap();
+            let received_value = headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.trim());
+            assert_eq!(received_value, Some(expected_value));
+            assert!(!headers.contains("sgw_"));
+            let mut body = [0; 2];
+            stream.read_exact(&mut body).await.unwrap();
+            assert_eq!(&body, b"{}");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .await
+                .unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), origin.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        let client = network::Client::connect_mediated(
+            &config,
+            root.path(),
+            &selected_spec(),
+            &"6".repeat(32),
+            &[],
+        )
+        .await
+        .unwrap();
+        let captures = Captures::default();
+        let socket = root.path().join("bridge.sock");
+        let mut selected = limits();
+        selected.max_calls = 1;
+        let bridge = Bridge::new(
+            UnixListener::bind(&socket).unwrap(),
+            &client,
+            selected,
+            captures.clone(),
+        )
+        .unwrap();
+        let serving = tokio::spawn(bridge.serve());
+        let call = json!({"kind":"service","service":"simple","method":"POST","url":format!("http://127.0.0.1:{port}/v1/messages"),"body_base64":STANDARD.encode(b"{}")});
+        for name in [
+            header.to_ascii_uppercase(),
+            "aUtHoRiZaTiOn".into(),
+            "X-API-Key".into(),
+            "X-SafeYolo-Agent".into(),
+            "Host".into(),
+            "Content-Length".into(),
+        ] {
+            let mut substituted = call.clone();
+            substituted["headers"] = json!({name:"substituted"});
+            let reply = rpc(&socket, substituted).await;
+            assert_eq!(reply["ok"], false, "{auth}: {reply}");
+            assert!(captures.finish().unwrap().is_empty());
+        }
+        let reply = rpc(&socket, call.clone()).await;
+        assert_eq!(reply["ok"], true, "{auth}: {reply}");
+        assert_eq!(rpc(&socket, call).await["ok"], false);
+        serving.abort();
+        assert!(serving.await.unwrap_err().is_cancelled());
+        client.close().await.unwrap();
+        provider.await.unwrap();
+        let records = captures.finish().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].status, Some(200));
+        assert_eq!(records[0].error, None);
+        assert!(records[0].request_headers.is_empty());
+        let evidence = serde_json::to_string(&records).unwrap();
+        assert!(!evidence.contains("sgw_"));
+        assert!(!evidence.contains("synthetic-job-provider-secret"));
+        proxy.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn policy_revocation_closes_a_held_response_and_discards_late_evidence() {
     held_response_cleanup(false).await;
 }

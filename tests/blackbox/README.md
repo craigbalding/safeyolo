@@ -5,6 +5,138 @@ agent workloads, access approvals and lifecycle. Rust proxy process and
 protocol contracts live in [`tests/proxy_contracts`](../proxy_contracts/).
 A hosted process or package result does not prove KVM or Apple VZ isolation.
 
+## Qualify installed host operations
+
+The existing native authority runner has a `host-execution` selection for
+BB-38. Run it on the owned Linux or macOS target as its executor account, from
+a clean pinned controller checkout with the frozen development environment.
+It drives a separately installed executor through signed local HTTP requests.
+It creates disposable state, controls an explicitly selected test service,
+and observes files and live TCP/Unix socket receivers from the host.
+
+Prepare `unix_native` from `host-executor/tests/unix_native.rs` and the C probe
+from `host-executor/tests/native_fixture.c` at the same controller revision.
+The target consumes those prebuilt test tools; executor operation needs no
+compiler or Python. Prepare an owned user service that may be started, stopped
+and restarted. Use its systemd unit name on Linux or its loaded launchd selector
+on macOS. Linux also needs the delegated cgroup v2 subtree, pinned bubblewrap
+and native account setup described in the
+[host-operation guide](../../docs/host-operations.md#acquire-and-prepare-the-target).
+This runner does not provision or broaden those host capabilities.
+The update case edits its own copied probe. On macOS it uses the system
+`codesign` tool to give the changed fixture a valid ad-hoc signature.
+
+Before running, set `SAFEYOLO_HOST_EXECUTOR_PROBE` to the prebuilt probe and
+`SAFEYOLO_HOST_EXECUTOR_SERVICE` to that service selector. Set
+`SAFEYOLO_HOST_ASSESSOR_BIN` to the installed `safeyolo` CLI with the
+`services assess-host` command. Assessment reads the fixture's authority and
+observed persistent effects; it grants and executes nothing. On Linux, also set
+`SAFEYOLO_HOST_EXECUTOR_CGROUP` to the delegated subtree.
+Use `SAFEYOLO_HOST_EXECUTOR_BWRAP` when the pinned Linux bubblewrap executable
+is outside `/usr/bin/bwrap`.
+Replace the three `/owned/` paths below with the exact fixture executable,
+installed executor and a new private disk-backed output directory. Preserve the existing host's
+required account/containment launcher when invoking this command.
+
+```sh
+bash tests/blackbox/run-controls.sh native-authority --suite host-execution --test-executable /owned/unix_native --executor /owned/safeyolo-host-executor --output /owned/host-operation-results
+```
+
+Success requires all eleven selected cases to execute and pass. `result.json`
+retains the host, controller, installed executable/version, fixture/probe
+digests, exact cases and exits. Each case retains its log and the existing
+procedure receipt. Missing inputs, an ignored/missing case, a failure or a
+timeout leaves the report incomplete. After a timeout or lost reply, inspect
+the retained fixture/process state before another execution.
+
+The application case selects its next diagnostic read from prior output and
+checks configuration consumption on the same versus different target/resource.
+Host setup supplies and independently observes the earlier configuration edit.
+The installed assessment must distinguish those identities and retain the
+observed write after its permission expires. Both Unix backends must still
+refuse a writable native profile. Fixed-service start/stop is checked against
+the host service manager. The case does not prove native agent writes, run a
+model or renew a grant.
+An assessment with additional uncharacterised authority must remain unresolved.
+
+The update case observes useful execution before and after equivalent,
+narrower and explicitly trusted implementation updates. Changed recipes,
+defaults, aliases, resource selectors and unavailable enforcement must await
+review without changing the active bytes, grants or job count. Restart must
+retain earlier receipts without replay. These are executor catalogue
+observations; gateway approval counts remain a separate workflow witness.
+The dependency case also checks actual byte and alias changes after proposal
+with unchanged size/mtime. Linux must block dispatch; macOS must report its
+unavailable pinned-dependency guarantee before a job is created.
+
+These are installed Unix component witnesses. They do not complete
+[#1677](https://github.com/craigbalding/safeyolo/issues/1677)'s eight witness
+groups or real Windows requirement. The generated
+[control catalogue](../../docs/blackbox-coverage.md#bb-38--host-operation-authority-and-native-execution)
+keeps that remaining integrated qualification explicit. Reuse applicable
+authenticated Linux/macOS investigation, fixed-service and quiet-update
+receipts at their original revisions; do not replay them for report formatting.
+
+For the separate controlled protocol/gateway selection, use the same controller
+checkout on Linux with its trusted Rust toolchain, warm Cargo target and current
+native test prerequisites. Set `SAFEYOLO_BLACKBOX_ARTIFACTS_DIR` to a new private
+disk-backed directory. The following command builds and runs the named protocol,
+gateway and configured checker cases through the existing receipt owner:
+
+```sh
+bash tests/blackbox/run-controls.sh host-execution
+```
+
+`host-execution.json` must report every named case as `ok`. These controlled
+upstream/checker results complement the installed selection; they do not prove
+native containment or repeat the separate finite model measurement.
+
+The existing prebuilt Windows fixture also drives the packaged starter recipes.
+Its starter runtime qualification remains incomplete; a build or parser check
+does not establish successful native operations or service-mode execution.
+Use a disposable Windows target with the separate ordinary workload account,
+executor-owned credential and protected paths from the
+[Windows setup](../../docs/host-operations.md#windows-foreground-and-windows-service).
+Prepare a new private fixture root with `control` and `control\state`
+subdirectories. Its workload needs read/execute access to the fixture programs
+and synthetic evidence; it must have no access to `control`. Supply the owned
+`SafeYolo1671Fixture` service with start/stop/query/restart permissions and an
+unused local TCP port 19477. Keep the existing fixture and service owners.
+Set `SAFEYOLO_HOST_EXECUTOR_BIN` to the separately installed executor.
+Replace `C:\Owned\qualification` and `host-workload` below with that root and
+the existing credential name. Replace `HOST\workload` with the selected ordinary
+workload account. These commands create synthetic evidence, a
+target configuration and finite test authority signed by a public fixture key;
+use them only in the disposable test environment.
+The ACL command grants read/execute access only to the new synthetic evidence.
+It follows preparation because the native `demo` command creates private files.
+
+```powershell
+.\windows_native.exe --starter-prepare C:\Owned\qualification host-workload
+icacls "C:\Owned\qualification\case with spaces ünicode" /grant "HOST\workload:(RX)" /T
+.\windows_native.exe --starters C:\Owned\qualification
+```
+
+The fixture records canonical receipts, complete output, native enforcement,
+service-manager state/PIDs and a live TCP receiver. It exercises the read and
+fixed-service categories plus wrong channel, hive, key, view, service and path
+refusals. Inspect actual absent/denied results and retained effects after a
+failure. A service recipe can change state before a later PowerShell method
+fails in `ConstrainedLanguage`; its failure does not prove no effect occurred.
+The native API carries binary output. The fixture retains base64 output when
+UTF-8 decoding fails and continues the other categories. A completed job with
+undecoded output does not establish correct Unicode handling. To resume one
+unexecuted operation, use
+`--starter ROOT OPERATION`.
+Use `--starter-refusals ROOT` to run only the refused proposals after inspecting
+an interrupted run; that selection dispatches no job.
+For a further attempt after inspecting the result and changing its input, use
+`--starter-attempt ROOT OPERATION ATTEMPT` with a new short attempt name.
+The name selects new request IDs; it grants no permission or authority renewal.
+Append `--service` only after the same target configuration is running under
+the selected Windows Service account. This fixture does not install that
+service, configure ACLs or renew a credential.
+
 ## Test retained nightly inputs
 
 The [nightly workflow](../../.github/workflows/blackbox.yml) runs at 03:17 UTC.

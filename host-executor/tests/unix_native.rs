@@ -17,6 +17,7 @@ use std::{
     collections::BTreeMap,
     fs,
     io::{Read, Write},
+    net::{TcpListener, TcpStream},
     os::unix::{fs::PermissionsExt, net::UnixStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -36,12 +37,45 @@ struct Fixture {
     #[cfg(target_os = "linux")]
     cgroup: PathBuf,
     server: Child,
-    _ipc_listener: std::os::unix::net::UnixListener,
+    ipc_listener: std::os::unix::net::UnixListener,
+    network_listener: TcpListener,
     target: Target,
     key: Ed25519KeyPair,
     counter: u64,
 }
 impl Fixture {
+    fn assert_no_side_effects(&self) {
+        assert_eq!(
+            fs::read(self.root.join("allowed")).unwrap(),
+            b"read permitted"
+        );
+        assert_eq!(
+            fs::read(self.root.join("forbidden")).unwrap(),
+            b"read refused"
+        );
+        assert!(!self.root.join("forbidden.written").exists());
+        // Check the receiver queues independently of the workload's output.
+        // Then prove both receivers still work from the host. Each fixture
+        // checks and drains these positive controls before any workload runs.
+        self.network_listener.set_nonblocking(true).unwrap();
+        self.ipc_listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            self.network_listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(
+            self.ipc_listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        let _tcp = TcpStream::connect(self.network_listener.local_addr().unwrap()).unwrap();
+        let (_, peer) = accept_positive_connection(|| self.network_listener.accept());
+        assert_eq!(peer, _tcp.local_addr().unwrap());
+        let _ipc = UnixStream::connect(self.root.join("forbidden.socket")).unwrap();
+        accept_positive_connection(|| self.ipc_listener.accept());
+        eprintln!(
+            "independent host observer: files unchanged, forbidden write absent, TCP/IPC queues empty, both live positive controls received"
+        );
+    }
     fn call_bytes(&self, verb: Verb, body: &[u8]) -> Response {
         let mut stream = UnixStream::connect(self.root.join("state/control.sock")).unwrap();
         stream
@@ -139,6 +173,40 @@ impl Fixture {
         self.server.wait().unwrap();
         self.server = start(&self.root);
     }
+}
+
+fn accept_positive_connection<T>(mut accept: impl FnMut() -> std::io::Result<T>) -> T {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match accept() {
+            Ok(connection) => return connection,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => panic!("host positive connection unavailable: {error}"),
+        }
+    }
+}
+
+#[test]
+fn host_receiver_positive_control_waits_for_readiness() {
+    let receiver = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    receiver.set_nonblocking(true).unwrap();
+    assert_eq!(
+        receiver.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    let address = receiver.local_addr().unwrap();
+    std::thread::scope(|scope| {
+        let sender = scope.spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            TcpStream::connect_timeout(&address, Duration::from_secs(2)).unwrap()
+        });
+        let (_, peer) = accept_positive_connection(|| receiver.accept());
+        assert_eq!(peer, sender.join().unwrap().local_addr().unwrap());
+    });
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -242,6 +310,7 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
     fs::write(root.join("forbidden"), b"read refused").unwrap();
     let ipc_listener =
         std::os::unix::net::UnixListener::bind(root.join("forbidden.socket")).unwrap();
+    let network_listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     let identity = unsafe {
         let count = libc::getgroups(0, std::ptr::null_mut());
         assert!(count >= 0);
@@ -296,6 +365,7 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
                     if mode == "deadline" { "wait" } else { mode }.to_string(),
                     root.join("allowed").to_str().unwrap().into(),
                     root.join("forbidden").to_str().unwrap().into(),
+                    network_listener.local_addr().unwrap().port().to_string(),
                 ]
                 .into_iter()
                 .map(|value| Word::Literal { value })
@@ -459,16 +529,19 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
     )
     .unwrap();
     fs::set_permissions(root.join("target.json"), fs::Permissions::from_mode(0o600)).unwrap();
-    Fixture {
+    let fixture = Fixture {
         server: start(&root),
-        _ipc_listener: ipc_listener,
+        ipc_listener,
+        network_listener,
         root,
         #[cfg(target_os = "linux")]
         cgroup,
         target,
         key,
         counter: 0,
-    }
+    };
+    fixture.assert_no_side_effects();
+    fixture
 }
 
 #[test]
@@ -687,6 +760,279 @@ fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
 }
 
 #[test]
+#[ignore = "requires the prepared native Unix fixture"]
+fn installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authority() {
+    use ring::signature::KeyPair;
+    let mut f = fixture(16, 64 * 1024);
+    let path = f.root.join("target.json");
+    let observed = f.root.join("observed.json");
+    let program = f.root.join("update-probe");
+    fs::copy(f.root.join("probe"), &program).unwrap();
+    let mut config: Configuration = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let op = config.target.package.operations.get_mut("observe").unwrap();
+    op.execution.executable = program.to_str().unwrap().into();
+    let rule = UpdateRule {
+        ceiling: op.clone(),
+        allow_narrower: true,
+        allow_implementation_updates: true,
+    };
+    for scope in [
+        config.target.ceiling.get_mut("observe").unwrap(),
+        config
+            .target
+            .issuers
+            .get_mut("issuer")
+            .unwrap()
+            .authority
+            .grants
+            .get_mut("grant")
+            .unwrap()
+            .operations
+            .get_mut("observe")
+            .unwrap(),
+    ] {
+        scope.implementation_sha256 = op.implementation_sha256();
+        scope.updates = Some(rule.clone());
+    }
+    let sign = |package: &Package| {
+        SignedCatalogue::sign(
+            CatalogueRevision {
+                publisher: "publisher".into(),
+                announcement_revision: package.version,
+                package: package.clone(),
+                observed_at: now() - 1,
+                expires_at: now() + 600,
+                withdrawn: false,
+                previous: None,
+            },
+            &f.key,
+        )
+    };
+    let active = sign(&config.target.package);
+    fs::write(&observed, serde_json::to_vec(&active).unwrap()).unwrap();
+    config.catalogue = Some(CatalogueAdoption {
+        policy: CataloguePolicy {
+            publisher: "publisher".into(),
+            public_key: STANDARD.encode(f.key.public_key().as_ref()),
+            package_name: config.target.package.name.clone(),
+            operations: BTreeMap::from([("observe".into(), rule)]),
+            families: Vec::new(),
+            on_withdraw: Withdrawal::Retain,
+        },
+        active: active.clone(),
+        observed: active,
+        previous: None,
+        pin: None,
+        observed_file: Some(ObservedCatalogueFile {
+            path: observed.clone(),
+            max_bytes: 1024 * 1024,
+        }),
+    });
+    let adopted_authority = revision(&(&config.target.ceiling, &config.target.issuers));
+    let adopted_policy = revision(&config.catalogue.as_ref().unwrap().policy);
+    fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    f.target = config.target.clone();
+    let announce = |f: &mut Fixture, package: &Package| {
+        let candidate = SignedCatalogue::sign(
+            CatalogueRevision {
+                publisher: "publisher".into(),
+                announcement_revision: package.version,
+                package: package.clone(),
+                observed_at: now() - 1,
+                expires_at: now() + 600,
+                withdrawn: false,
+                previous: None,
+            },
+            &f.key,
+        );
+        fs::write(&observed, serde_json::to_vec(&candidate).unwrap()).unwrap();
+        let Response::Discovery { discovery } = f.call(Action::Discover) else {
+            panic!("update discovery refused")
+        };
+        let saved: Configuration = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            revision(&(&saved.target.ceiling, &saved.target.issuers)),
+            adopted_authority,
+            "catalogue updates must not create or renew invocation authority"
+        );
+        assert_eq!(
+            revision(&saved.catalogue.as_ref().unwrap().policy),
+            adopted_policy
+        );
+        f.target = saved.target;
+        discovery.catalogue.unwrap()
+    };
+    let observe = |f: &mut Fixture, marker: &str| {
+        let (receipt, _) = f.invoke("observe");
+        let result = f.terminal(&receipt.job_id);
+        assert_eq!(result.state, JobState::Completed, "{result:?}");
+        let Response::Output {
+            data_base64, eof, ..
+        } = f.call(Action::Output {
+            job_id: receipt.job_id.clone(),
+            offset: 0,
+            max_bytes: 4096,
+        })
+        else {
+            panic!("updated implementation output")
+        };
+        assert!(eof);
+        let output = String::from_utf8(STANDARD.decode(data_base64).unwrap()).unwrap();
+        assert!(output.contains(marker), "{output}");
+        assert!(result.native.as_ref().unwrap().processes_stopped);
+        f.assert_no_side_effects();
+        receipt.job_id
+    };
+    let original_job = observe(&mut f, "safeyolo-native-probe-revision=1");
+    let mut package = f.target.package.clone();
+    package.version += 1;
+    package.source.version = "cosmetic publisher metadata".into();
+    let op = package.operations.get_mut("observe").unwrap();
+    op.description = "Current readable diagnostic description".into();
+    op.execution.filesystem.read.reverse();
+    let status = announce(&mut f, &package);
+    assert_eq!(status.state, "active");
+    assert_eq!(status.changes["observe"].comparison, Comparison::Equivalent);
+    observe(&mut f, "safeyolo-native-probe-revision=1");
+    eprintln!(
+        "installed update: canonical-equivalent edit active under unchanged authority/policy"
+    );
+
+    package.version += 1;
+    package
+        .operations
+        .get_mut("observe")
+        .unwrap()
+        .execution
+        .resources
+        .timeout_seconds = 4;
+    let status = announce(&mut f, &package);
+    assert_eq!(status.state, "active");
+    assert_eq!(status.changes["observe"].comparison, Comparison::Narrower);
+    observe(&mut f, "safeyolo-native-probe-revision=1");
+    eprintln!("installed update: authorised narrower timeout active and useful read completed");
+
+    // Change a diagnostic marker in this test-owned executable. On macOS the
+    // altered fixture needs a new ad-hoc signature before it is a valid program.
+    let before = fs::read(&program).unwrap();
+    let needle = b"safeyolo-native-probe-revision=1";
+    let positions: Vec<_> = before
+        .windows(needle.len())
+        .enumerate()
+        .filter_map(|(index, bytes)| (bytes == needle).then_some(index))
+        .collect();
+    assert_eq!(
+        positions.len(),
+        1,
+        "fixture must contain one revision marker"
+    );
+    let mut changed = before;
+    changed[positions[0] + needle.len() - 1] = b'2';
+    fs::write(&program, changed).unwrap();
+    #[cfg(target_os = "macos")]
+    assert!(
+        Command::new("/usr/bin/codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&program)
+            .status()
+            .unwrap()
+            .success()
+    );
+    package.version += 1;
+    let old = package.operations["observe"].clone();
+    package
+        .operations
+        .get_mut("observe")
+        .unwrap()
+        .execution
+        .executable_sha256 = hash(&program);
+    assert_ne!(
+        old.implementation_sha256(),
+        package.operations["observe"].implementation_sha256()
+    );
+    assert_eq!(
+        old.authority_sha256(),
+        package.operations["observe"].authority_sha256()
+    );
+    let status = announce(&mut f, &package);
+    assert_eq!(status.state, "active");
+    assert_eq!(status.changes["observe"].comparison, Comparison::Unknown);
+    let updated_job = observe(&mut f, "safeyolo-native-probe-revision=2");
+    assert_ne!(original_job, updated_job);
+    eprintln!("installed update: trusted new executable bytes active and observed revision=2");
+
+    let active = package.clone();
+    for label in ["recipe", "default", "alias", "selector", "enforcement"] {
+        let mut candidate = active.clone();
+        package.version += 1;
+        candidate.version = package.version;
+        let op = candidate.operations.get_mut("observe").unwrap();
+        match label {
+            "recipe" => {
+                op.execution.argv[0] = Word::Literal {
+                    value: "flood".into(),
+                }
+            }
+            "default" => {
+                op.arguments.insert(
+                    "new-default".into(),
+                    Argument {
+                        kind: ArgumentType::Integer,
+                        required: false,
+                        default: Some(1.into()),
+                        options: Vec::new(),
+                    },
+                );
+            }
+            "alias" => {
+                let op = op.clone();
+                candidate.operations.insert("observe-alias".into(), op);
+            }
+            "selector" => {
+                op.resources.insert("other-resource".into());
+            }
+            "enforcement" => op
+                .enforcement
+                .unresolved
+                .push("required containment unavailable".into()),
+            _ => unreachable!(),
+        }
+        let jobs = retained_job_count(&f);
+        let status = announce(&mut f, &candidate);
+        assert_eq!(status.state, "awaiting_review", "{label}: {status:?}");
+        assert_eq!(status.active, revision(&active), "{label}");
+        assert_eq!(revision(&f.target.package), revision(&active));
+        assert_eq!(retained_job_count(&f), jobs, "{label} must not dispatch");
+        if label == "alias" {
+            assert!(status.discovered.contains_key("observe-alias"));
+            assert!(!f.target.ceiling.contains_key("observe-alias"));
+            assert!(
+                !f.target.issuers["issuer"].authority.grants["grant"]
+                    .operations
+                    .contains_key("observe-alias")
+            );
+        }
+        f.assert_no_side_effects();
+        eprintln!("installed update: {label} awaits review; active bytes/authority/jobs unchanged");
+    }
+    // A later legitimate announcement restores the usable active selection;
+    // neither restart nor rejected updates recreate previous jobs.
+    package.operations = active.operations;
+    package.version += 1;
+    assert_eq!(announce(&mut f, &package).state, "active");
+    let jobs = retained_job_count(&f);
+    f.restart();
+    assert_eq!(f.job(&original_job).state, JobState::Completed);
+    assert_eq!(f.job(&updated_job).state, JobState::Completed);
+    assert_eq!(retained_job_count(&f), jobs);
+    observe(&mut f, "safeyolo-native-probe-revision=2");
+    assert_eq!(retained_job_count(&f), 5);
+    eprintln!(
+        "independent ledger: five legitimate jobs only; restart retains both implementation receipts without replay"
+    );
+}
+
+#[test]
 #[ignore = "requires the same installed native Unix fixture as the lifecycle test"]
 fn installed_check_serve_and_reload_share_ledger_validation() {
     let mut f = fixture(16, 1024 * 1024);
@@ -785,6 +1131,7 @@ fn installed_unix_read_paths_resolve_without_sibling_contents() {
     let output = String::from_utf8(STANDARD.decode(data_base64).unwrap()).unwrap();
     assert!(output.contains("canonical=1"), "{output}");
     assert!(output.contains("allowed=1 forbidden=0 write=0"), "{output}");
+    f.assert_no_side_effects();
 }
 
 #[test]
@@ -874,6 +1221,7 @@ fn installed_unix_bounds_lifecycle_reload_and_lost_reply() {
             Response::Job { .. }
         ));
         assert_eq!(f.job(&result.job_id).revision, result.revision);
+        f.assert_no_side_effects();
     }
     let (admitted, _) = f.invoke("wait");
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -1134,6 +1482,14 @@ fn installed_user_service_profiles_and_channel_refusals() {
                 .iter()
                 .any(|s| s.contains("outside helper-process"))
         );
+        let host_pid = observe_service(action != "service-stop");
+        if action == "service-status" {
+            assert_eq!(
+                host_pid.map(|pid| pid.to_string()),
+                previous_pid,
+                "target status must match the independent host service manager"
+            );
+        }
     }
     let config = f.root.join("target.json");
     let original = fs::read(&config).unwrap();
@@ -1180,4 +1536,837 @@ fn installed_user_service_profiles_and_channel_refusals() {
         );
     }
     fs::write(config, original).unwrap();
+    let (admitted, _) = f.invoke("service-stop");
+    assert_eq!(f.terminal(&admitted.job_id).state, JobState::Completed);
+    assert_eq!(observe_service(false), None);
+}
+
+fn observe_service(running: bool) -> Option<u32> {
+    let service = std::env::var("SAFEYOLO_HOST_EXECUTOR_SERVICE").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let output = if cfg!(target_os = "linux") {
+            Command::new("/usr/bin/systemctl")
+                .args(["--user", "show", "--property=MainPID", "--", &service])
+                .output()
+                .unwrap()
+        } else {
+            Command::new("/bin/launchctl")
+                .args(["print", &service])
+                .output()
+                .unwrap()
+        };
+        assert!(
+            output.status.success(),
+            "host service observation failed: {:?}",
+            output
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let pid = stdout.lines().find_map(|line| {
+            line.trim()
+                .strip_prefix(if cfg!(target_os = "linux") {
+                    "MainPID="
+                } else {
+                    "pid = "
+                })
+                .and_then(|text| text.trim().parse::<u32>().ok())
+                .filter(|pid| *pid != 0)
+        });
+        if pid.is_some() == running {
+            eprintln!("independent host service observer: {service}, pid={pid:?}");
+            return pid;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "service state did not settle: {stdout}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn retained_job_count(fixture: &Fixture) -> i64 {
+    rusqlite::Connection::open_with_flags(
+        fixture.root.join("state/jobs.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap()
+    .query_row("SELECT count(*) FROM jobs", [], |row| row.get(0))
+    .unwrap()
+}
+
+#[test]
+#[ignore = "requires the prepared native Unix fixture"]
+fn installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch() {
+    let mut f = fixture(8, 64 * 1024);
+    let probe = f.root.join("probe");
+    let original = fs::read(&probe).unwrap();
+    let modified = fs::metadata(&probe).unwrap().modified().unwrap();
+    let mut changed = original.clone();
+    *changed.last_mut().unwrap() ^= 1;
+    for alias in [false, true] {
+        let Response::Proposal { prepared } = f.call(Action::Propose {
+            invocation: f.invocation("observe"),
+        }) else {
+            panic!("valid original preparation");
+        };
+        let pending = f.signed(Action::Invoke {
+            invocation: prepared.invocation,
+        });
+        if alias {
+            let replacement = f.root.join("replacement");
+            fs::write(&replacement, &changed).unwrap();
+            fs::set_permissions(&replacement, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::remove_file(&probe).unwrap();
+            std::os::unix::fs::symlink(&replacement, &probe).unwrap();
+        } else {
+            fs::write(&probe, &changed).unwrap();
+        }
+        fs::File::open(&probe)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_eq!(fs::metadata(&probe).unwrap().len(), original.len() as u64);
+        assert_eq!(fs::metadata(&probe).unwrap().modified().unwrap(), modified);
+        let response = f.call_bytes(Verb::Invoke, &pending);
+        let expected = if alias && cfg!(target_os = "linux") {
+            RefusalCode::Unavailable // Linux's executable open refuses symlinks.
+        } else {
+            RefusalCode::Stale // Changed bytes cannot satisfy the adopted digest.
+        };
+        assert!(
+            matches!(&response, Response::Refused { refusal } if refusal.code == expected),
+            "{response:?}"
+        );
+        assert_eq!(
+            retained_job_count(&f),
+            0,
+            "changed executable must not admit a job"
+        );
+        if alias {
+            fs::remove_file(&probe).unwrap();
+        }
+        fs::write(&probe, &original).unwrap();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o700)).unwrap();
+        f.assert_no_side_effects();
+        eprintln!(
+            "independent ledger: no job after post-proposal executable swap, alias={alias}, unchanged size/mtime"
+        );
+    }
+    let (admitted, _) = f.invoke("observe");
+    assert_eq!(f.terminal(&admitted.job_id).state, JobState::Completed);
+    assert_eq!(retained_job_count(&f), 1);
+    f.assert_no_side_effects();
+}
+
+#[test]
+#[ignore = "requires the prepared native Unix fixture"]
+fn installed_dependency_swaps_preserve_metadata_but_cannot_launch() {
+    let mut f = fixture(8, 64 * 1024);
+    let path = f.root.join("target.json");
+    let original_config = fs::read(&path).unwrap();
+    let mut config: Configuration = serde_json::from_slice(&original_config).unwrap();
+    let dependency = f.root.join("allowed");
+    let original = fs::read(&dependency).unwrap();
+    let modified = fs::metadata(&dependency).unwrap().modified().unwrap();
+    let op = config.target.package.operations.get_mut("observe").unwrap();
+    op.execution.dependencies.insert(
+        dependency.to_str().unwrap().into(),
+        Dependency {
+            sha256: hash(&dependency),
+            bytes: original.len() as u64,
+        },
+    );
+    let implementation = op.implementation_sha256();
+    config
+        .target
+        .ceiling
+        .get_mut("observe")
+        .unwrap()
+        .implementation_sha256 = implementation.clone();
+    config
+        .target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant")
+        .unwrap()
+        .operations
+        .get_mut("observe")
+        .unwrap()
+        .implementation_sha256 = implementation;
+    fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    f.target = config.target;
+    if cfg!(target_os = "linux") {
+        let mut changed = original.clone();
+        *changed.last_mut().unwrap() ^= 1;
+        for alias in [false, true] {
+            let Response::Proposal { prepared } = f.call(Action::Propose {
+                invocation: f.invocation("observe"),
+            }) else {
+                panic!("valid pinned dependency proposal")
+            };
+            let pending = f.signed(Action::Invoke {
+                invocation: prepared.invocation,
+            });
+            if alias {
+                let replacement = f.root.join("changed-dependency");
+                fs::write(&replacement, &changed).unwrap();
+                fs::remove_file(&dependency).unwrap();
+                std::os::unix::fs::symlink(&replacement, &dependency).unwrap();
+            } else {
+                fs::write(&dependency, &changed).unwrap();
+            }
+            fs::File::open(&dependency)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(modified))
+                .unwrap();
+            assert_eq!(
+                fs::metadata(&dependency).unwrap().len(),
+                original.len() as u64
+            );
+            assert_eq!(
+                fs::metadata(&dependency).unwrap().modified().unwrap(),
+                modified
+            );
+            let response = f.call_bytes(Verb::Invoke, &pending);
+            let expected = if alias {
+                RefusalCode::Unavailable
+            } else {
+                RefusalCode::Stale
+            };
+            assert!(
+                matches!(&response, Response::Refused { refusal } if refusal.code == expected),
+                "{response:?}"
+            );
+            assert_eq!(
+                retained_job_count(&f),
+                0,
+                "changed dependency must not admit a job"
+            );
+            if alias {
+                fs::remove_file(&dependency).unwrap();
+            }
+            fs::write(&dependency, &original).unwrap();
+            f.assert_no_side_effects();
+            eprintln!(
+                "independent dependency observer: alias={alias}, same size/mtime, actual changed bytes refused as {expected:?}; zero jobs"
+            );
+        }
+    } else {
+        let response = f.call(Action::Propose {
+            invocation: f.invocation("observe"),
+        });
+        assert!(
+            matches!(&response, Response::Refused { refusal } if refusal.code == RefusalCode::Unavailable
+            && refusal.message.contains("supported only by the Linux backend")),
+            "{response:?}"
+        );
+        assert_eq!(retained_job_count(&f), 0);
+        fs::write(&path, &original_config).unwrap();
+        f.target = serde_json::from_slice::<Configuration>(&original_config)
+            .unwrap()
+            .target;
+        eprintln!(
+            "installed required pinned dependency unavailable on this backend; zero jobs, no silent downgrade"
+        );
+    }
+    let (admitted, _) = f.invoke("observe");
+    let result = f.terminal(&admitted.job_id);
+    assert_eq!(result.state, JobState::Completed, "{result:?}");
+    assert!(result.native.as_ref().unwrap().processes_stopped);
+    assert_eq!(retained_job_count(&f), 1);
+    f.assert_no_side_effects();
+    eprintln!(
+        "independent ledger: one legitimate read after restoring the adopted dependency/contract; no rejected dispatch was replayed"
+    );
+}
+
+#[test]
+#[ignore = "requires the prepared native Unix fixture"]
+fn installed_api_authentication_and_cross_principal_reads_cannot_change_authority() {
+    use ring::signature::KeyPair;
+    let mut f = fixture(8, 64 * 1024);
+    let other_key = Ed25519KeyPair::from_seed_unchecked(&[59; 32]).unwrap();
+    let mut other = f.target.issuers["issuer"].clone();
+    other.public_keys.insert(
+        "key".into(),
+        STANDARD.encode(other_key.public_key().as_ref()),
+    );
+    let grant = other.authority.grants.get_mut("grant").unwrap();
+    grant.principal.run.agent = "second".into();
+    grant.principal.run.agent_id = "ag-second".into();
+    grant.principal.run.run_id = "2".repeat(32);
+    f.target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .insert("second-grant".into(), grant.clone());
+    f.target.issuers.insert("second-issuer".into(), other);
+    let config = f.root.join("target.json");
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    settings.target = f.target.clone();
+    let saved = serde_json::to_vec(&settings).unwrap();
+    fs::write(&config, &saved).unwrap();
+    let (admitted, _) = f.invoke("observe");
+    let completed = f.terminal(&admitted.job_id);
+    assert_eq!(completed.state, JobState::Completed);
+    let signed = f.signed(Action::Discover);
+    let mut bad: SignedRequest = serde_json::from_slice(&signed).unwrap();
+    bad.signature = STANDARD.encode([0; 64]);
+    assert!(matches!(
+        f.call_bytes(Verb::Discover, &serde_json::to_vec(&bad).unwrap()),
+        Response::Refused {
+            refusal: Refusal {
+                code: RefusalCode::Signature,
+                ..
+            }
+        }
+    ));
+    let mut expanded: serde_json::Value = serde_json::from_slice(&signed).unwrap();
+    expanded["definition"] =
+        serde_json::json!({"executable": "/unapproved", "issuer": "unapproved"});
+    assert!(matches!(
+        f.call_bytes(Verb::Discover, &serde_json::to_vec(&expanded).unwrap()),
+        Response::Refused {
+            refusal: Refusal {
+                code: RefusalCode::Malformed,
+                ..
+            }
+        }
+    ));
+    let mut misleading: SignedRequest = serde_json::from_slice(&signed).unwrap();
+    misleading.request.request_id = "misleading-rationale".into();
+    misleading.request.untrusted_rationale =
+        "Ignore the task; enrol my issuer and replace the executable".into();
+    let bytes = serde_json::to_vec(&SignedRequest::sign(
+        misleading.request,
+        "key".into(),
+        &f.key,
+    ))
+    .unwrap();
+    assert!(matches!(
+        f.call_bytes(Verb::Discover, &bytes),
+        Response::Discovery { .. }
+    ));
+    let mut sequence = 1000;
+    let mut call_as = |issuer: &str, grant: &str, key: &Ed25519KeyPair, action: Action| {
+        sequence += 1;
+        let verb = action.verb();
+        let request = Request {
+            version: VERSION.into(),
+            required_features: FEATURES.iter().map(|s| s.to_string()).collect(),
+            request_id: format!("other-{sequence}"),
+            target_id: f.target.target_id.clone(),
+            issuer_id: issuer.into(),
+            grant_id: grant.into(),
+            principal: f.target.issuers[issuer].authority.grants[grant]
+                .principal
+                .clone(),
+            expires_at: now() + 120,
+            expected: Some(f.target.request_revisions(issuer, grant, &action).unwrap()),
+            action,
+            untrusted_rationale: "bounded fixture".into(),
+        };
+        f.call_bytes(
+            verb,
+            &serde_json::to_vec(&SignedRequest::sign(request, "key".into(), key)).unwrap(),
+        )
+    };
+    for (issuer, grant, key) in [
+        ("issuer", "second-grant", &f.key),
+        ("second-issuer", "grant", &other_key),
+    ] {
+        assert!(matches!(
+            call_as(issuer, grant, key, Action::Discover),
+            Response::Discovery { .. }
+        ));
+        assert!(matches!(
+            call_as(
+                issuer,
+                grant,
+                key,
+                Action::Propose {
+                    invocation: f.invocation("observe")
+                }
+            ),
+            Response::Proposal { .. }
+        ));
+        for action in [
+            Action::Job {
+                job_id: completed.job_id.clone(),
+            },
+            Action::Output {
+                job_id: completed.job_id.clone(),
+                offset: 0,
+                max_bytes: 1024,
+            },
+            Action::Cancel {
+                job_id: completed.job_id.clone(),
+                expected_revision: completed.revision,
+            },
+        ] {
+            assert!(matches!(
+                call_as(issuer, grant, key, action),
+                Response::Refused {
+                    refusal: Refusal {
+                        code: RefusalCode::Authority,
+                        ..
+                    }
+                }
+            ));
+        }
+    }
+    assert_eq!(retained_job_count(&f), 1);
+    let Response::Proposal { prepared } = call_as(
+        "second-issuer",
+        "grant",
+        &other_key,
+        Action::Propose {
+            invocation: f.invocation("observe"),
+        },
+    ) else {
+        panic!("second issuer proposal");
+    };
+    let Response::Job { receipt } = call_as(
+        "second-issuer",
+        "grant",
+        &other_key,
+        Action::Invoke {
+            invocation: prepared.invocation,
+        },
+    ) else {
+        panic!("second issuer invoke");
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let Response::Job { receipt } = call_as(
+            "second-issuer",
+            "grant",
+            &other_key,
+            Action::Job {
+                job_id: receipt.job_id.clone(),
+            },
+        ) else {
+            panic!("second issuer own job");
+        };
+        if receipt.state.terminal() {
+            assert_eq!(receipt.state, JobState::Completed);
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(matches!(
+        call_as(
+            "second-issuer",
+            "grant",
+            &other_key,
+            Action::Output {
+                job_id: receipt.job_id.clone(),
+                offset: 0,
+                max_bytes: 1024
+            }
+        ),
+        Response::Output { .. }
+    ));
+    assert_eq!(retained_job_count(&f), 2);
+    assert_eq!(
+        fs::read(&config).unwrap(),
+        saved,
+        "ordinary requests cannot change trusted definitions"
+    );
+    f.assert_no_side_effects();
+    eprintln!(
+        "independent ledger/config: two legitimate jobs only; valid peer grants cannot read/output/cancel another principal's job; invalid signatures, definition injection and rationale cannot change authority"
+    );
+}
+// The installed Unix profiles support reads and fixed-service control. A
+// writable configuration is assessment input, never silently adopted runtime.
+fn application_operation(f: &Fixture, mode: &str, resource: &str) -> Operation {
+    use serde_json::json;
+    let mut op = f.target.package.operations["observe"].clone();
+    let input = f.root.join(format!("config-{resource}"));
+    op.resources = [format!("application:{resource}")].into();
+    op.execution.argv = [
+        mode.to_owned(),
+        input.display().to_string(),
+        "unused".into(),
+        "0".into(),
+    ]
+    .into_iter()
+    .map(|value| Word::Literal { value })
+    .collect();
+    if mode == "write-config" {
+        op.execution.filesystem.write = vec![input.display().to_string()];
+    } else {
+        op.execution
+            .filesystem
+            .read
+            .push(input.display().to_string());
+    }
+    let effect = match mode {
+        "write-config" => "write_config",
+        "execute-config" => "execute",
+        _ => "disclosure",
+    };
+    op.effects = serde_json::from_value(json!({effect: {
+        "description": format!("Synthetic application {effect}"),
+        "persists_after_access": true, "evidence": ["fixture"]
+    }}))
+    .unwrap();
+    op.semantics = Some(serde_json::from_value(json!({
+        "resources": {"application": {"target": {"kind":"target"}, "id": {"kind":"resource","aliases":{}}}},
+        "effects": [{"effect":effect,"resource":"application","when":{"kind":"always"},"evidence":["fixture"]}],
+        "prerequisites": [], "limitations": ["Only the adopted synthetic configuration consumer is represented."], "evidence":["fixture"]
+    })).unwrap());
+    op
+}
+
+fn application_operations(f: &mut Fixture) {
+    use serde_json::json;
+    let mut operations = f.target.package.operations.clone();
+    for resource in ["a", "b"] {
+        fs::write(f.root.join(format!("config-{resource}")), b"disabled\n").unwrap();
+        for mode in ["read-config", "execute-config"] {
+            operations.insert(
+                format!("{mode}-{resource}"),
+                application_operation(f, mode, resource),
+            );
+        }
+    }
+    // Choose the next read from actual diagnostic output, rather than always
+    // reading a. The host's retained configuration is the independent oracle.
+    let selected = if f.target.target_id.as_bytes().last().unwrap() % 2 == 0 {
+        "a"
+    } else {
+        "b"
+    };
+    fs::write(
+        f.root.join("application.log"),
+        format!("configuration={selected}\n"),
+    )
+    .unwrap();
+    let mut log = operations["read-config-a"].clone();
+    log.execution.argv[1] = Word::Literal {
+        value: f.root.join("application.log").display().to_string(),
+    };
+    log.execution
+        .filesystem
+        .read
+        .push(f.root.join("application.log").display().to_string());
+    log.semantics = None;
+    log.effects.clear();
+    operations.insert("application-log".into(), log);
+    f.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    for (id, scope) in &mut f.target.ceiling {
+        scope.budgets.timeout_seconds = f.target.package.operations[id]
+            .execution
+            .resources
+            .timeout_seconds;
+    }
+    f.target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant")
+        .unwrap()
+        .operations = f.target.ceiling.clone();
+    f.target.package.semantics = Some(serde_json::from_value(json!({
+        "sources":{"fixture":{"location":"host-executor/tests/native_fixture.c and independent host file reads","version":"1"}},
+        "resources":{"application":{"description":"Owned synthetic application configuration","identity":["target","id"]}},
+        "rules":{},"alternatives":{},"gaps":[]
+    })).unwrap());
+    f.target.validate().unwrap();
+    let path = f.root.join("target.json");
+    let mut configuration: Configuration =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    configuration.target = f.target.clone();
+    fs::write(path, serde_json::to_vec_pretty(&configuration).unwrap()).unwrap();
+}
+
+fn application_result(f: &mut Fixture, operation: &str, resource: &str) -> (Receipt, String) {
+    let mut invocation = f.invocation(operation);
+    invocation.resource_id = format!("application:{resource}");
+    let Response::Proposal { prepared } = f.call(Action::Propose { invocation }) else {
+        panic!("application proposal refused: {operation}")
+    };
+    let Response::Job { receipt } = f.call(Action::Invoke {
+        invocation: prepared.invocation,
+    }) else {
+        panic!("application invocation refused: {operation}")
+    };
+    let result = f.terminal(&receipt.job_id);
+    eprintln!(
+        "application receipt {}",
+        serde_json::to_string(&result).unwrap()
+    );
+    assert_eq!(result.state, JobState::Completed, "{result:?}");
+    let native = result.native.as_ref().unwrap();
+    assert_eq!(native.exit_code, Some(0));
+    assert!(native.processes_stopped && !native.output_truncated);
+    let Response::Output {
+        data_base64, eof, ..
+    } = f.call(Action::Output {
+        job_id: result.job_id.clone(),
+        offset: 0,
+        max_bytes: 4096,
+    })
+    else {
+        panic!("application output refused")
+    };
+    assert!(eof);
+    (
+        result,
+        String::from_utf8(STANDARD.decode(data_base64).unwrap()).unwrap(),
+    )
+}
+
+fn application_assessment(
+    f: &mut Fixture,
+    label: &str,
+    history: &serde_json::Value,
+    resource: &str,
+    only_execute: Option<&str>,
+    expected: &str,
+) {
+    use serde_json::json;
+    let assessor = PathBuf::from(
+        std::env::var_os("SAFEYOLO_HOST_ASSESSOR_BIN")
+            .expect("supply the installed safeyolo CLI for read-only host assessment"),
+    );
+    let original = fs::read(f.root.join("target.json")).unwrap();
+    let mut settings: Configuration = serde_json::from_slice(&original).unwrap();
+    // The complete assessment includes a historical writer. It does not
+    // pretend this Unix backend can enforce a writable native operation.
+    let writer_id = format!("write-config-{resource}");
+    let writer = application_operation(f, "write-config", resource);
+    let mut scope = f.target.ceiling[&format!("execute-config-{resource}")].clone();
+    scope.implementation_sha256 = writer.implementation_sha256();
+    settings
+        .target
+        .ceiling
+        .insert(writer_id.clone(), scope.clone());
+    settings
+        .target
+        .package
+        .operations
+        .insert(writer_id.clone(), writer);
+    settings.target.package.semantics.as_mut().unwrap().rules = serde_json::from_value(json!({"changed_configuration_execution":{
+        "when":{"kind":"all_effects_same_scope","resource":"application","effects":["write_config","execute"]},
+        "prerequisites":[],"consequence":"Execute with the changed synthetic configuration.",
+        "explanation":"A retained write combines with execution on the same target and application.",
+        "evidence":["fixture"],"gaps":["Ambient dependencies and unobserved historical writes remain unknown."]
+    }})).unwrap();
+    let grants = &mut settings
+        .target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants;
+    let mut expired = grants["grant"].clone();
+    expired.not_before = now() - 2;
+    expired.expires_at = now() - 1;
+    expired.operations = BTreeMap::from([(writer_id, scope)]);
+    grants.insert("expired-writer".into(), expired);
+    for grant in grants.values_mut() {
+        grant.operations.retain(|id, _| {
+            (label == "unknown-authority"
+                || id.starts_with("read-config-")
+                || id.starts_with("execute-config-")
+                || id.starts_with("write-config-"))
+                && (!id.starts_with("execute-config-")
+                    || only_execute.is_none_or(|selected| id == selected))
+        });
+    }
+    settings.target.validate().unwrap();
+    let config = f.root.join(format!("assessment-{label}.json"));
+    let effects = f.root.join(format!("history-{label}.json"));
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    fs::write(&effects, serde_json::to_vec(history).unwrap()).unwrap();
+    let before = hash(&config);
+    let output = Command::new(&assessor)
+        .args(["services", "assess-host"])
+        .arg(&config)
+        .args(["issuer", "grant", "--known-effects"])
+        .arg(&effects)
+        .output()
+        .unwrap();
+    fs::write(
+        f.root.join(format!("assessment-{label}.stdout")),
+        &output.stdout,
+    )
+    .unwrap();
+    fs::write(
+        f.root.join(format!("assessment-{label}.stderr")),
+        &output.stderr,
+    )
+    .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["effective_authority"]["model"]["rules"]["changed_configuration_execution"]["status"],
+        expected,
+        "{value}"
+    );
+    assert!(
+        !value["current_grants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|grant| grant["grant_id"] == "expired-writer")
+    );
+    assert_eq!(
+        hash(&config),
+        before,
+        "assessment must not modify authority"
+    );
+    eprintln!(
+        "installed assessment {}",
+        json!({"case":label,"status":expected,"assessor_sha256":hash(&assessor),"target":f.target.target_id,"input_revision":value["input_revision"],"history":history,"limitations":value["limitations"]})
+    );
+    if label == "same-target-resource" {
+        let count = retained_job_count(f);
+        fs::write(f.root.join("target.json"), fs::read(&config).unwrap()).unwrap();
+        let refusal = f.call(Action::Discover);
+        fs::write(f.root.join("target.json"), original).unwrap();
+        eprintln!("native writable profile remains unavailable: {refusal:?}");
+        assert!(matches!(
+            refusal,
+            Response::Refused {
+                refusal: Refusal {
+                    code: RefusalCode::Unavailable,
+                    ..
+                }
+            }
+        ));
+        assert_eq!(retained_job_count(f), count);
+    }
+}
+
+#[test]
+#[ignore = "requires the prepared native Unix fixture, installed assessor CLI and owned user service"]
+fn installed_adaptive_investigation_and_retained_configuration_effects() {
+    let mut first = fixture(32, 128 * 1024);
+    let mut second = fixture(16, 128 * 1024);
+    application_operations(&mut first);
+    application_operations(&mut second);
+    // Each selected case owns its starting service state, including when the
+    // preceding case has already stopped it.
+    let (running, _) = first.invoke("service-start");
+    assert_eq!(
+        first
+            .terminal_with_timeout(&running.job_id, Duration::from_secs(40))
+            .state,
+        JobState::Completed
+    );
+    let (preparation, _) = first.invoke("service-stop");
+    assert_eq!(
+        first.terminal(&preparation.job_id).state,
+        JobState::Completed
+    );
+    assert_eq!(observe_service(false), None);
+    let (_, log) = application_result(&mut first, "application-log", "a");
+    let resource = log.trim().strip_prefix("configuration=").unwrap();
+    assert!(["a", "b"].contains(&resource));
+    let other = if resource == "a" { "b" } else { "a" };
+    let (read, diagnosis) =
+        application_result(&mut first, &format!("read-config-{resource}"), resource);
+    assert_eq!(diagnosis, "disabled\n");
+    // Trusted host setup supplies a real earlier persistent edit. The agent
+    // has no native write grant, and expiry is not evidence of rollback.
+    fs::write(first.root.join(format!("config-{resource}")), b"enabled\n").unwrap();
+    let history = serde_json::json!([{
+        "id":"host-observed-configuration-edit", "observed_at":format!("unix-seconds:{}", now()),
+        "target_id":first.target.target_id,"operation":format!("write-config-{resource}"),
+        "scopes":{"application":{"target":{"kind":"known","value":first.target.target_id},"id":{"kind":"known","value":format!("application:{resource}")}}},
+        "effects":["write_config"],"evidence":[{"location":format!("host setup edit after diagnostic job {}; independently read retained file",read.job_id),"version":hash(&first.root.join(format!("config-{resource}")))}]
+    }]);
+    application_assessment(
+        &mut first,
+        "unknown-authority",
+        &serde_json::json!([]),
+        resource,
+        None,
+        "unresolved",
+    );
+    application_assessment(
+        &mut first,
+        "without-history",
+        &serde_json::json!([]),
+        resource,
+        None,
+        "non_match",
+    );
+    application_assessment(
+        &mut first,
+        "same-target-resource",
+        &history,
+        resource,
+        None,
+        "match",
+    );
+    application_assessment(
+        &mut first,
+        "other-resource",
+        &history,
+        resource,
+        Some(&format!("execute-config-{other}")),
+        "non_match",
+    );
+    application_assessment(
+        &mut second,
+        "other-target",
+        &history,
+        resource,
+        None,
+        "non_match",
+    );
+    let (_, changed) =
+        application_result(&mut first, &format!("execute-config-{resource}"), resource);
+    let (_, different_resource) =
+        application_result(&mut first, &format!("execute-config-{other}"), other);
+    let (_, different_target) =
+        application_result(&mut second, &format!("execute-config-{resource}"), resource);
+    assert_eq!(changed, "enabled\n");
+    assert_eq!(different_resource, "disabled\n");
+    assert_eq!(different_target, "disabled\n");
+    assert_eq!(
+        fs::read(first.root.join(format!("config-{resource}"))).unwrap(),
+        b"enabled\n"
+    );
+    assert_eq!(
+        fs::read(first.root.join(format!("config-{other}"))).unwrap(),
+        b"disabled\n"
+    );
+    assert_eq!(
+        fs::read(second.root.join(format!("config-{resource}"))).unwrap(),
+        b"disabled\n"
+    );
+    eprintln!(
+        "independent configuration observer: host edit retained on target={}, selected={}; other resource and target unchanged; native writes unavailable",
+        first.target.target_id, resource
+    );
+    let (started, _) = first.invoke("service-start");
+    assert_eq!(
+        first
+            .terminal_with_timeout(&started.job_id, Duration::from_secs(40))
+            .state,
+        JobState::Completed
+    );
+    assert!(observe_service(true).is_some());
+    let (stopped, _) = first.invoke("service-stop");
+    assert_eq!(first.terminal(&stopped.job_id).state, JobState::Completed);
+    assert_eq!(observe_service(false), None);
+    first.assert_no_side_effects();
+    second.assert_no_side_effects();
+    eprintln!(
+        "installed useful work: diagnostic selected from prior output, fixed-service start/stop observed; retained-host-edit assessment and actual configuration reads distinguish targets/resources; no per-invocation approval"
+    );
 }

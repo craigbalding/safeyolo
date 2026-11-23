@@ -27,7 +27,7 @@ def fixture_request(case, inputs):
                "input_revision": inputs["input_revision"]}, "trusted": trusted, "untrusted": case["untrusted"]}
     return {"subject": {"kind": "value", "value": json.dumps(subject, separators=(",", ":"))},
             "inputs": inputs, "input_digest": hashlib.sha256(json.dumps(subject, sort_keys=True).encode()).hexdigest(),
-            "implementation_version": "task-action-1", "configuration_version": "measured-fixtures-1"}
+            "implementation_version": "task-action-2", "configuration_version": "measured-fixtures-1"}
 
 
 def finding(result, inputs):

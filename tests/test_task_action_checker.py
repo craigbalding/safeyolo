@@ -20,7 +20,7 @@ def request(case):
     return {"subject": {"kind": "value", "value": json.dumps({"schema": "task_action.v1",
                 "bindings": {"task": "task-1", "action": case["id"], "input_revision": "fixtures-1"},
                 "trusted": trusted, "untrusted": case["untrusted"]})},
-            "inputs": {"prompt_revision": "task-action-1", "model": "claude-haiku-4-5-20251001",
+            "inputs": {"prompt_revision": "task-action-2", "model": "claude-haiku-4-5-20251001",
                        "model_revision": "claude-haiku-4-5-20251001", "input_revision": "fixtures-1",
                        "service": "claude", "endpoint": "https://api.anthropic.com/v1/messages"}}
 
@@ -64,6 +64,33 @@ def test_same_adapter_uses_both_structured_actions_and_fixed_provider(case):
     assert body["system"] == CHECKER.SYSTEM
     assert "host_operation" not in body["system"]
     assert json.loads(body["messages"][0]["content"])["trusted"]["action"] == case["action"]
+
+
+def test_provider_schema_uses_only_disclosed_top_level_evidence_references():
+    value = request(CASES[-1])
+    _, calls = evaluate(value)
+    body = json.loads(base64.b64decode(calls[0]["body_base64"]))
+    response_format = body["output_config"]["format"]
+    assert response_format["type"] == "json_schema"
+    schema = response_format["schema"]
+    assert schema["type"] == "object" and schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(result()) == set(schema["properties"])
+    properties = schema["properties"]
+    assert properties["evidence_refs"] == {
+        "type": "array", "minItems": 1,
+        "items": {"type": "string", "enum": ["action", "constraints", "history", "prepared", "requester", "task"]}}
+    assert properties["relevance"]["enum"] == ["relevant", "irrelevant", "uncertain"]
+    assert properties["proportionality"]["enum"] == ["proportionate", "excessive", "uncertain"]
+
+
+@pytest.mark.parametrize("text", [
+    '```json\n' + json.dumps(result()) + '\n```',
+    json.dumps(result()) + '\nAdditional rationale',
+    json.dumps(dict(result(), evidence_refs=["task.objective"])),
+])
+def test_observed_model_format_failures_remain_unavailable(text):
+    with pytest.raises(ValueError):
+        evaluate(request(CASES[0]), patch={"content": [{"type": "text", "text": text}]})
 
 
 @pytest.mark.parametrize("patch", [{"model": "substituted"}, {"stop_reason": "max_tokens"},

@@ -77,8 +77,11 @@ through the existing credential store; select the already adopted storage type
 or make the first storage choice explicitly. The following example selects local
 storage. Move only `issuer-public.base64` to the target operator through the
 existing trusted transfer route. Compare its SHA-256 through that route.
+Set the selected instance root before importing the credential. Replace the
+example root and private-key paths with the actual paths on this host.
 
 ```sh
+export SAFEYOLO_CONFIG_DIR=/absolute/issuing-instance-root
 safeyolo-host-executor key-create --directory /home/issuer/private-host-key
 safeyolo credentials add host-signing --type api_key --value-file /home/issuer/private-host-key/issuer-key.base64 --storage local
 ```
@@ -86,6 +89,96 @@ safeyolo credentials add host-signing --type api_key --value-file /home/issuer/p
 The private bootstrap file remains after import. Remove it through the
 operator's normal secret-file procedure when the vault import is verified.
 The encrypted store and its access controls remain the credential owner.
+
+### Read the issuing identity and activate its task
+
+Continue on the **issuing operator host**, outside any agent sandbox. The
+installed issuing instance and the selected agent must already be running.
+Use that instance's host root and local Admin API address. This example uses
+agent `investigator`, task `investigation`, and service `case-host`; keep those
+names consistent with the target grant and binding below.
+
+Save this complete task document as `host-task.json` in your private working
+directory. Add any other permissions the selected task needs before registering
+it. Registration replaces that task's registered document; activation selects it
+for this issuing instance. Do not select an unrelated instance or overwrite
+another task's document.
+
+```json
+{
+  "metadata": {"description": "Investigate the selected application using bounded host operations"},
+  "permissions": [
+    {"action": "gateway:request", "resource": "case-host:/v1/host-execution/*", "effect": "allow", "condition": {"agent": "investigator"}}
+  ]
+}
+```
+
+Run the following with Python 3 on the issuing operator host. Replace the
+Admin API port with that of your selected instance first. The exported
+`SAFEYOLO_CONFIG_DIR` from credential import keeps these reads and the later
+policy commands on the same root. The
+code reads its host-held Admin token into memory, reads the trusted identities,
+registers and activates the task through the existing Admin API, and saves
+only nonsecret context. It does not copy the Admin token or signing key into
+an agent or target. Stop on an error; registration alone is not activation.
+
+```sh
+umask 077
+python3 - <<'PY_HOST_CONTEXT'
+import hashlib
+import http.client
+import json
+import os
+from pathlib import Path
+
+root = Path(os.environ["SAFEYOLO_CONFIG_DIR"])
+admin_port = 9090
+admin_token = (root / "data/admin_token").read_text().strip()
+def call(method, path, value=None):
+    data = None if value is None else json.dumps(value).encode()
+    connection = http.client.HTTPConnection("127.0.0.1", admin_port, timeout=15)
+    try:
+        connection.request(method, path, body=data,
+                           headers={"Authorization": "Bearer " + admin_token,
+                                    "Content-Type": "application/json"})
+        response = connection.getresponse()
+        result = json.load(response)
+        if response.status != 200:
+            raise RuntimeError((method, path, response.status, result))
+        return result
+    finally:
+        connection.close()
+
+instance = call("GET", "/admin/instance")["safeyolo_instance_id"]
+assert instance == (root / "data/instance_id").read_text().strip()
+agents = call("GET", "/admin/agents")["agents"]
+selected = [agent for agent in agents if agent["name"] == "investigator"]
+assert len(selected) == 1 and selected[0]["runtime_state"] == "running"
+agent = selected[0]
+assert agent["agent_id"] and agent["run_id"]
+task = json.loads(Path("host-task.json").read_text())
+assert call("PUT", "/admin/policy/task/investigation", {"policy": task})["status"] == "updated"
+assert call("POST", "/admin/policy/task/investigation/activate", {})["status"] == "activated"
+registered = call("GET", "/admin/policy/task/investigation")["policy"]
+canonical = json.dumps(registered, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=False, allow_nan=False).encode()
+context = {"issuer_id": instance,
+           "principal": {"run": {"agent": agent["name"], "agent_id": agent["agent_id"],
+                                  "run_id": agent["run_id"]}, "task_id": "investigation"},
+           "task_revision": hashlib.sha256(canonical).hexdigest()}
+Path("issuer-context.json").write_text(json.dumps(context, indent=2) + "\n")
+print(json.dumps(context, indent=2))
+PY_HOST_CONTEXT
+```
+
+Expected: the registered task is activated and `issuer-context.json` contains
+the durable instance ID, current host-observed agent/run and the digest of
+the complete registered task document. Keep `host-task.json` for re-registration
+after an issuer restart; task registration is runtime state. A new agent run
+or task change needs new context and explicit target adoption before use.
+Transfer `issuer-context.json` and `issuer-public.base64` to the target operator
+through the existing trusted route. Neither file contains a private key.
+Use their actual values in `issuer-settings.json` below.
 
 On the **target**, write `selection.json` with the exact desired resources,
 complete typed argument choices (including permitted defaults), and finite
@@ -223,6 +316,29 @@ The command adds no recurring prompt. `identity --credential host-workload`
 returns the observed workload SID and stable groups used by `starter`. The
 server and credential command also accept the noninteractive native path.
 
+The Windows starter declares `TEMP` and `TMP` as `Temp` beneath the selected
+`--root`. Before running its PowerShell operations, create that directory and
+give the workload account Modify access. PowerShell startup uses writable
+temporary storage for policy probes; an absent or unwritable location can
+leave the workload in ConstrainedLanguage even when the executor account's
+PowerShell session uses FullLanguage. The executor passes only the declared
+environment.
+
+As the **target directory owner**, use the same root and stored credential
+selected for `starter`. This example uses `C:\SafeYolo\Demo` and grants access
+only to its temporary directory; private target configuration and state must
+remain protected from the workload.
+
+```powershell
+$identity = .\safeyolo-host-executor.exe identity --credential host-workload | ConvertFrom-Json
+New-Item -ItemType Directory -Path 'C:\SafeYolo\Demo\Temp' | Out-Null
+icacls.exe 'C:\SafeYolo\Demo\Temp' /grant ('*' + $identity.principal + ':(OI)(CI)(M)')
+```
+
+For an existing directory, verify its workload access before reuse. When
+adapting an already adopted package, regenerate and explicitly select the
+operation scopes for the changed environment through the existing owners.
+
 For service installation, run an elevated operator terminal. The selected
 service account must own that same workload credential and have **Log on as a
 service** plus its documented native launch privileges. The native installer
@@ -275,14 +391,77 @@ and agent `investigator`, the task's IAM `permissions` array includes:
 {"action":"gateway:request","resource":"case-host:/v1/host-execution/*","effect":"allow","condition":{"agent":"investigator"}}
 ```
 
-Use the existing operator task registration/activation controls and calculate
-`task_revision` from that complete task document. A host policy with a `hosts`
-table compiles host rules; appending an IAM `permissions` array there does not
-add these gateway permissions. A policy using the IAM form without `hosts` can
-carry them directly. Check and privately assess the complete candidate policy
-before `safeyolo policy apply FILE`. Do not replace unrelated policy with a
-binding fragment. The gateway rechecks the active task, current run, grant,
-vault and route/check policy before every dispatch.
+The task registration and activation sequence above supplies `task_revision`
+in `issuer-context.json`. A host policy with a `hosts` table compiles host rules;
+appending an IAM `permissions` array there does not add these task permissions.
+A policy using the IAM form without `hosts` can carry them directly.
+
+Return the target's validated configuration and public TLS certificate through
+the trusted operator route. Save the configuration as `adopted-target.json`
+and the certificate as `target.pem` in the issuing operator's working directory.
+The configuration carries public authority and credential references, not the
+Windows workload password. Do not transfer the target's TLS private key,
+Windows credential store or issuer vault.
+
+The following creates the complete `case` binding for that adopted target.
+Replace the HTTPS host/port with the endpoint selected during target setup.
+For a same-host Unix target, use the Unix endpoint form above instead.
+The credential reference `host-signing`, key `host-key-1`, grant
+`investigation-1` and service `case-host` refer to the earlier selections.
+
+```sh
+python3 - <<'PY_HOST_BINDING'
+import json
+from pathlib import Path
+
+context = json.loads(Path("issuer-context.json").read_text())
+target = json.loads(Path("adopted-target.json").read_text())["target"]
+grant = target["issuers"][context["issuer_id"]]["authority"]["grants"]["investigation-1"]
+assert grant["principal"] == context["principal"]
+binding = {"target": target, "issuer_id": context["issuer_id"],
+           "grant_id": "investigation-1", "key_id": "host-key-1",
+           "credential": "host-signing", "service": "case-host",
+           "task_revision": context["task_revision"],
+           "endpoint": {"transport": "https", "host": "target.example.net", "port": 44323,
+                        "certificate_pem": Path("target.pem").read_text()},
+           "timeout_ms": 10000, "request_bytes": 1048576, "response_bytes": 1048576}
+Path("host-binding.json").write_text(json.dumps(binding, indent=2) + "\n")
+row = "case = " + json.dumps(json.dumps(binding, ensure_ascii=False)) + "\n"
+Path("host-binding-row.toml").write_text(row)
+print("Saved host-binding.json and the case row in host-binding-row.toml")
+PY_HOST_BINDING
+```
+
+Copy the selected issuing instance's complete policy to `policy-candidate.toml`.
+The command below uses the standard root's `policy.toml`. If this instance's
+`config.toml` selects another `policy_file`, copy that configured file instead.
+
+```sh
+cp "$SAFEYOLO_CONFIG_DIR/policy.toml" policy-candidate.toml
+```
+
+Insert the generated row into its existing `[host_bindings]` table, replacing
+only `case` if it already exists. Add that table only when absent. Preserve
+all other policy, agent identities and bindings. `host-binding-row.toml` is a
+row to insert, not a complete policy to apply.
+
+Check and privately assess the complete candidate through the existing
+[policy-authoring controls](../cli/src/safeyolo/agent_context/skills/policy-authoring/SKILL.md).
+When using `policy assess`, its snapshot request ID is the already approved
+snapshot from that workflow. Assessment does not grant authority or activate
+the candidate. Apply only the reviewed complete policy on the same selected
+issuing instance:
+
+```sh
+safeyolo policy check policy-candidate.toml
+safeyolo policy apply policy-candidate.toml
+safeyolo policy show
+```
+
+Expected: check reports a valid policy; apply/show confirm the candidate is
+active and saved source matches active state. If confirmation times out,
+inspect that state before another apply. The gateway rechecks the active task,
+current run, grant, vault and route/check policy before every dispatch.
 
 Remote transport validates the adopted certificate chain and endpoint name
 before sending any signed request. There are no redirects or automatic retries.
@@ -365,10 +544,18 @@ before another effect after a timeout.
 | Scheduled tasks | No general scheduler authority in this starter | Enumerate/filter tasks; selected definitions/principal/actions/recent status. No execution, registration or modification. |
 | Fixed installed executable | The content-pinned executor's inspection commands; typed limits and exact environment | `fixed-executable` runs pinned `whoami.exe`; typed allowed argument, exact account/environment, native deadline/output/status. |
 
-PowerShell query results use `{operation,status,observedAtUtc,timeZone,count,
-limitReached,data}`. A reached count limit reports `partial`; access errors
-report `access_denied` or `unavailable` and exit 2. A registry observation can
-report `absent` in its data. File content explicitly reports a bounded prefix.
+PowerShell query results use UTF-8 JSON with `{operation,status,observedAtUtc,
+timeZone,count,limitReached,data}`. A reached count limit reports `partial`.
+Permission errors, including registry `SecurityException` results, report
+`access_denied` and exit 2. Other failed queries report `unavailable` and exit 2.
+A registry observation can report `absent` in its data. The user-registry
+recipe opens the actual workload SID under `HKEY_USERS`. If that hive is not
+loaded, the recipe reports `unavailable` and exits 2. It does not load a user
+profile or read the operator or SYSTEM default hive instead.
+File content explicitly reports a bounded prefix.
+Task run-time fields remain `null` when the OS supplies no value.
+Software rows identify their uninstall `registryKey`; `Name` and `Version`
+remain `null` when the corresponding registry values are absent.
 The software inventory covers the selected uninstall registry view, not all
 portable/per-user software. Hotfix inventory is the OS provider's view, not a
 complete patch-vulnerability assessment. Missing executable paths or fields in
@@ -391,7 +578,7 @@ only the operations and scope intended for the current task.
 
 | Observation | Next action for the selected owner |
 |---|---|
-| Quiet authorized catalogue update | Keep the existing catalogue adoption's stable IDs and approved update bounds. Discovery shows desired/observed/qualified/active revisions. No routine per-command prompt is added. |
+| Quiet authorized catalogue update | Inspect the target and issuer catalogue owners' desired/observed/qualified/active revisions. Refresh the stored binding to the already adopted target as described below, then rediscover. Keep the stable IDs and approved update bounds; no routine per-command prompt is added. |
 | Scope/effect/dependency expansion | Privately assess the complete candidate. Use the existing adoption/approval path only where required; an assessment grants no permission. |
 | Missing operation | Submit an untrusted definition/scope proposal through existing policy-capability and private assessment tools. Discovery/proposal runs no proposed code. The operator adopts reviewed package bytes, ceiling and issuer policy explicitly. |
 | Revoked or expired grant | Refresh or revoke the issuer's actual grant through its owner and update the target snapshot. No automatic renewal. Revocation stops new admissions/reads; admitted effects/deadlines are retained. |
@@ -401,6 +588,27 @@ only the operations and scope intended for the current task.
 | Unsupported version/feature/native guarantee | Upgrade the matching target/gateway/package or select an explicitly supported profile. Do not silently omit required enforcement. |
 | Changed TLS certificate/key, listener or runtime | Stop at a safe boundary, preserve state and restart the selected executor. Adopt the new target certificate at the issuer. Saved TLS paths do not prove the running listener changed. |
 | Upgrade failure | Keep the previous verified binary, config and ledger; inspect the original process/listener and jobs before restarting or restoring. Never launch a second executor against the same state. |
+
+After a quiet update, both catalogue owners can have adopted the new package
+while `host_bindings.case.target` still names the previous package. Rediscovery
+or a new proposal cannot change that stored binding. On the issuing operator
+host, compare both active catalogue revisions and inspect the target's adopted
+package, authority and ceiling against the approved update bounds. Use the
+material-expansion path if the change exceeds those bounds.
+
+For an already authorized update, transfer the current validated target
+configuration as `adopted-target.json` through the same trusted route. Rerun the
+binding-generation block above with that file and the retained current
+`issuer-context.json` and certificate. Preserve the selected issuer, key,
+credential, grant, task and transport limits. Replace only the `case` row in a
+copy of the complete issuer policy, then check, privately assess and apply it
+through the same policy owner. Use `policy show` to verify activation.
+
+Return to the agent's existing `discover case` call. Compare its active package
+with the refreshed binding before preparing a new operation. This read adds no
+job. If an earlier invocation had an uncertain reply, inspect its original
+job/receipt before another invocation; binding recovery does not authorize
+replaying that effect.
 
 A discovery `HOST_RESPONSE_MISMATCH` reports `expected_package_sha256` and
 `observed_package_sha256` for comparison by the gateway and target owners.

@@ -75,6 +75,8 @@ NATIVE_PHASES = {
     "managed-feeds": (("native_policy_feeds", ""),),
     "before-after": (("lib", "coord_rooms::work::tests::automatic_tests"),),
     "mediated-services": (("lib", "jobs::mediated::tests"),),
+    "host-execution": (("host_execution", ""),
+                       ("lib", "host_execution::gateway::tests")),
 }
 
 # A completed procedure records these names after the corresponding assertions.
@@ -141,6 +143,25 @@ NATIVE_AUTHORITY = {
         "federation::operator::remote_saved_deciding_authority_preserves_the_canonical_pending_record",
         "federation::modes::renewal_and_explicit_rotation_preserve_retained_state_and_report_activation",
         "federation::modes::same_path_peer_rotation_reports_restart_until_broker_loads_new_credentials",
+    ),
+}
+
+# These cases drive the installed executor over its authenticated local HTTP
+# interface. The fixture executable and workload probe are separate inputs.
+# Service control needs an explicitly prepared owned service on the target.
+HOST_EXECUTION_AUTHORITY = {
+    "BB-38": (
+        "installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch",
+        "installed_check_serve_and_reload_share_ledger_validation",
+        "installed_unix_read_paths_resolve_without_sibling_contents",
+        "installed_unix_bounds_lifecycle_reload_and_lost_reply",
+        "installed_storage_exhaustion_preserves_output_replay_and_restart",
+        "installed_user_service_profiles_and_channel_refusals",
+        "installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch",
+        "installed_api_authentication_and_cross_principal_reads_cannot_change_authority",
+        "installed_adaptive_investigation_and_retained_configuration_effects",
+        "installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authority",
+        "installed_dependency_swaps_preserve_metadata_but_cannot_launch",
     ),
 }
 

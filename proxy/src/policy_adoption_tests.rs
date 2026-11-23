@@ -65,7 +65,7 @@ async fn catalogue_discovery_uses_actual_bytes_and_activates_coherent_gateway_de
             publisher: "publisher".into(),
             public_key: STANDARD.encode(key.public_key().as_ref()),
             package_name: package.name.clone(),
-            operations: BTreeMap::from([("restart".into(), rule)]),
+            operations: BTreeMap::from([("restart".into(), rule.clone())]),
             families: Vec::new(),
             on_withdraw: Withdrawal::Retain,
         },
@@ -80,8 +80,32 @@ async fn catalogue_discovery_uses_actual_bytes_and_activates_coherent_gateway_de
     };
     let original = std::fs::read_to_string(&path).unwrap();
     let encoded = serde_json::to_string(&serde_json::to_string(&adoption).unwrap()).unwrap();
+    let scope = json!({"implementation_sha256":package.operations["restart"].implementation_sha256(),
+        "resources":["service:demo"],"arguments":{"wait":[5],"mode":["normal"]},
+        "budgets":{"calls":2,"concurrent":1,"timeout_seconds":15,"output_bytes":512},
+        "updates":rule,"checks":[]});
+    let binding = json!({"target":{
+        "target_id":"catalogue-target","ceiling_revision":"operator-ceiling",
+        "allowed_verbs":["discover","propose","invoke","job","output","cancel"],
+        "max_authority_age_seconds":600,"ceiling":{"restart":scope},"package":package,
+        "issuers":{"issuer":{"revision":"operator-trust","public_keys":{"key":STANDARD.encode(key.public_key().as_ref())},
+            "authority":{"revision":"operator-authority","assessment_revision":"operator-assessment",
+                "observed_at":now()-1,"valid_until":now()+600,"grants":{"grant":{
+                    "principal":{"run":{"agent":"worker","agent_id":format!("ag-{}","a".repeat(32)),
+                        "run_id":"0123456789abcdef0123456789abcdef"},"task_id":"task"},
+                    "not_before":now()-1,"expires_at":now()+600,
+                    "verbs":["discover","propose","invoke","job","output","cancel"],
+                    "operations":{"restart":scope}}}}}}},
+        "issuer_id":"issuer","grant_id":"grant","key_id":"key","credential":"operator-key",
+        "service":"local-host","endpoint":{"transport":"unix","socket":root.path().join("target.sock"),"executor_uid":1000},
+        "task_revision":"a".repeat(64),"timeout_ms":1000,"request_bytes":131072,"response_bytes":131072});
+    let mut other = binding.clone();
+    other["target"]["target_id"] = json!("different-target");
+    other["target"]["package"]["source"]["version"] = json!("another target's definitions");
+    let local = serde_json::to_string(&binding.to_string()).unwrap();
+    let remote = serde_json::to_string(&other.to_string()).unwrap();
     let adopted = format!(
-        "{original}\n[host_catalogues]\n'{}'={encoded}\n",
+        "{original}\n[host_catalogues]\n'{}'={encoded}\n[host_bindings]\nlocal={local}\nother={remote}\n",
         package.name
     );
     apply_native_policy(&proxy.runtime, &adopted).unwrap();
@@ -149,6 +173,32 @@ async fn catalogue_discovery_uses_actual_bytes_and_activates_coherent_gateway_de
         revision(&retained.active.catalogue.package),
         revision(&package)
     );
+    let updated_bindings = runtime.policy.as_ref().unwrap().host_bindings().unwrap();
+    let updated = &updated_bindings["local"];
+    assert_eq!(revision(&updated.target.package), revision(&package));
+    assert_eq!(updated.target.catalogue.as_ref().unwrap().state, "active");
+    let mut observed = serde_json::to_value(updated).unwrap();
+    observed["target"]["package"] = binding["target"]["package"].clone();
+    observed["target"]
+        .as_object_mut()
+        .unwrap()
+        .remove("catalogue");
+    // Deserialisation fills these optional empty fields without changing scope.
+    let original_binding: crate::host_execution::gateway::Binding =
+        serde_json::from_value(binding).unwrap();
+    let mut expected_binding = serde_json::to_value(original_binding).unwrap();
+    expected_binding["target"]
+        .as_object_mut()
+        .unwrap()
+        .remove("catalogue");
+    assert_eq!(observed, expected_binding);
+    let other_binding: crate::host_execution::gateway::Binding =
+        serde_json::from_value(other).unwrap();
+    assert_eq!(
+        revision(&updated_bindings["other"]),
+        revision(&other_binding)
+    );
+    let active_binding = revision(&updated_bindings["local"]);
     let mut broadened = package.clone();
     broadened.version += 1;
     broadened
@@ -171,6 +221,11 @@ async fn catalogue_discovery_uses_actual_bytes_and_activates_coherent_gateway_de
         .unwrap();
     // Coherent retained input, with the exact unresolved update visible. The
     // target's invocation check refuses a mismatched package operation.
+    assert_eq!(
+        revision(&runtime.policy.as_ref().unwrap().host_bindings().unwrap()["local"]),
+        active_binding,
+        "an unadopted announcement must not invalidate the active binding"
+    );
     assert_eq!(
         registry.services[&name].raw["host_catalogue_status"]["state"],
         "awaiting_review"

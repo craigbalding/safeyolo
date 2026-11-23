@@ -1,6 +1,6 @@
 //! Hyperlight callbacks use the existing delegated proxy, never a host dialer.
 use super::{digest, network, now};
-use crate::{Error, credentials::Secret};
+use crate::Error;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -24,6 +24,7 @@ const CHUNK_BYTES: usize = 16 * 1024;
 /// destination, framing or alternate proxy path. The encoded call is bounded.
 fn request_headers(
     values: BTreeMap<String, String>,
+    authentication_header: &str,
 ) -> Result<Vec<(hyper::header::HeaderName, hyper::header::HeaderValue)>, Error> {
     values
         .into_iter()
@@ -45,6 +46,7 @@ fn request_headers(
                     | "content-type"
                     | "user-agent"
             ) || name.as_str().starts_with("x-safeyolo-")
+                || name.as_str().eq_ignore_ascii_case(authentication_header)
             {
                 return Err(
                     "mediated request headers cannot replace host-owned authority or framing"
@@ -156,7 +158,7 @@ enum Call {
 pub(super) struct Bridge {
     listener: UnixListener,
     proxy: PathBuf,
-    tokens: BTreeMap<String, Secret>,
+    service_headers: network::ServiceHeaders,
     limits: ServiceLimits,
     policy_hash: String,
     configuration_sha256: String,
@@ -169,12 +171,12 @@ impl Bridge {
         limits: ServiceLimits,
         captures: Captures,
     ) -> Result<Self, Error> {
-        let (proxy, mut tokens) = client.service_access()?;
-        tokens.retain(|name, _| limits.services.contains(name));
+        let (proxy, mut service_headers) = client.service_access()?;
+        service_headers.retain(|name, _| limits.services.contains(name));
         Ok(Self {
             listener,
             proxy,
-            tokens,
+            service_headers,
             limits,
             policy_hash: client.policy_hash.clone(),
             configuration_sha256: client.configuration_sha256.clone(),
@@ -268,15 +270,15 @@ impl Bridge {
             return Err("service call needs an HTTP(S) URL without user information".into());
         }
         let method: hyper::Method = method.parse()?;
-        let headers = request_headers(headers)?;
         // CONNECT and protocol upgrade cannot tunnel an unmediated guest socket.
         if method == hyper::Method::CONNECT {
             return Err("guest tunnels are unavailable".into());
         }
-        let token = self
-            .tokens
+        let (authentication_header, authorization) = self
+            .service_headers
             .get(&service)
             .ok_or("service is not selected or has no standing grant")?;
+        let headers = request_headers(headers, authentication_header)?;
         let body = STANDARD.decode(body_base64)?;
         if body.len() > self.limits.max_request_bytes {
             return Err("service input limit exceeded".into());
@@ -344,7 +346,7 @@ impl Bridge {
                 .method(method.clone())
                 .uri(uri.clone())
                 .header("host", uri.authority().unwrap().as_str())
-                .header("authorization", format!("Bearer {}", token.expose_secret()))
+                .header(authentication_header, authorization.expose_secret())
                 .header("user-agent", "SafeYolo-mediated-job")
                 .header("content-type", "application/json");
             for (name, value) in headers {

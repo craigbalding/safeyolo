@@ -15,6 +15,17 @@ pub(crate) fn local_tail(
     agent: Option<&str>,
     limit: usize,
 ) -> std::result::Result<LocalTail, crate::Error> {
+    local_tail_matching(path, agent, limit, |_| true)
+}
+
+/// Filter validated rows before selecting the bounded tail. Unselected rows
+/// still participate in whole-file validation and diagnostic counts.
+pub(crate) fn local_tail_matching(
+    path: &std::path::Path,
+    agent: Option<&str>,
+    limit: usize,
+    matches: impl Fn(&Value) -> bool,
+) -> std::result::Result<LocalTail, crate::Error> {
     use std::io::BufRead;
     let file = std::fs::File::open(path).map_err(|_| "local audit file could not be opened")?;
     let mut tail = LocalTail {
@@ -31,6 +42,9 @@ pub(crate) fn local_tail(
             continue;
         }
         tail.agent_rows += 1;
+        if !matches(&row) {
+            continue;
+        }
         tail.rows.push_back((tail.lines_read, row));
         if tail.rows.len() > limit {
             tail.rows.pop_front();

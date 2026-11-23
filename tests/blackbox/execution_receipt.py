@@ -399,9 +399,14 @@ def native_cases(phase: str, root: Path) -> list[tuple[str, str, list[str]]]:
     for target, module in NATIVE_PHASES[phase]:
         names = []
         for witness in witnesses:
-            if witness["kind"] == "cargo" and (witness["target"], witness["module"]) == (target, module):
+            # Rust's module filter also executes child modules. Include their
+            # separately maintained sources in the same expected result set.
+            if (witness["kind"] == "cargo" and witness["target"] == target
+                    and (witness["module"] == module
+                         or module and witness["module"].startswith(module + "::"))):
                 for reference in witness["paths"]:
-                    names += [node["node"] for node in resolve(witness, reference, root)]
+                    names += [node["node"] for node in resolve(witness, reference, root)
+                              if node["node"] not in witness.get("helpers", {})]
         if not names or len(names) != len(set(names)):
             raise ValueError(f"missing or duplicate native identities: {target}/{module}")
         groups.append((target, module, sorted(names)))
