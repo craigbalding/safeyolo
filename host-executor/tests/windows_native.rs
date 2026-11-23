@@ -4,6 +4,9 @@
 //! programs directory and writable work directory. No compiler/Python is used.
 //! --recover ROOT ATTEMPT and --storage ROOT ATTEMPT run focused checks using the
 //! retained prepared account, catalogue and ledger; they do not repeat starters.
+//! --bounds ROOT ATTEMPT [--service] uses that same native catalogue for identity,
+//! memory/process/output/deadline/cancellation checks, with canonical output and
+//! independent Job limits/process handles. It does not run service mutations.
 #[cfg(windows)]
 mod common;
 #[cfg(windows)]

@@ -465,14 +465,16 @@ impl Fixture {
             arguments,
             expected_assessment_sha256: None,
         };
-        let Response::Proposal { prepared } = self.call(Action::Propose { invocation }) else {
-            panic!("proposal {name} refused");
+        let response = self.call(Action::Propose { invocation });
+        let Response::Proposal { prepared } = response else {
+            panic!("proposal {name} refused: {response:?}");
         };
         let bytes = self.signed(Action::Invoke {
             invocation: prepared.invocation,
         });
-        let Response::Job { receipt } = self.bytes(Verb::Invoke, &bytes) else {
-            panic!("invoke {name} refused");
+        let response = self.bytes(Verb::Invoke, &bytes);
+        let Response::Job { receipt } = response else {
+            panic!("invoke {name} refused: {response:?}");
         };
         (*receipt, bytes)
     }
@@ -861,14 +863,40 @@ fn starter_refusals(fixture: &mut Fixture) {
     }
 }
 
-fn native(root: PathBuf, service: bool) {
-    let mut fixture = Fixture::new(root, service);
+fn bound_result(fixture: &mut Fixture, id: &str) -> (Receipt, Vec<u8>) {
+    let result = fixture.terminal(id);
+    let output = fixture.output(id);
+    println!(
+        "{}",
+        serde_json::json!({"case":result.prepared.invocation.operation_id,
+            "receipt":result,"output_base64":STANDARD.encode(&output)})
+    );
+    assert_eq!(output.len() as u64, result.output_bytes);
+    assert!(result.native.as_ref().unwrap().processes_stopped);
+    (result, output)
+}
+
+fn started_job(fixture: &mut Fixture, id: &str) -> Receipt {
+    let end = Instant::now() + Duration::from_secs(2);
+    loop {
+        let running = fixture.job(id);
+        if running.output_bytes > 0 {
+            return running;
+        }
+        assert!(
+            Instant::now() < end,
+            "workload did not produce its start marker: {running:?}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn bounds(fixture: &mut Fixture) {
     for mode in ["observe", "memory", "tasks", "background"] {
         let (receipt, _) = fixture.invoke(mode);
-        let result = fixture.terminal(&receipt.job_id);
+        let (result, output) = bound_result(fixture, &receipt.job_id);
         assert_eq!(result.state, JobState::Completed, "{result:?}");
-        assert!(result.native.as_ref().unwrap().processes_stopped);
-        let output = String::from_utf8(fixture.output(&receipt.job_id)).unwrap();
+        let output = String::from_utf8(output).unwrap();
         println!("{mode}: {output}");
         if mode == "memory" {
             assert!(output.contains("allocation_refused"));
@@ -878,34 +906,49 @@ fn native(root: PathBuf, service: bool) {
         }
     }
     let (receipt, _) = fixture.invoke("flood");
-    let result = fixture.terminal(&receipt.job_id);
+    let (result, output) = bound_result(fixture, &receipt.job_id);
     assert_eq!(
         result.native.as_ref().unwrap().termination_reason,
         "output_limit"
     );
     assert!(result.native.unwrap().processes_stopped);
-    assert!(fixture.output(&receipt.job_id).len() <= 64 * 1024);
+    assert!(output.len() <= 64 * 1024);
     let (receipt, _) = fixture.invoke("wait");
-    let result = fixture.terminal(&receipt.job_id);
+    started_job(fixture, &receipt.job_id);
+    let processes = observe_job_processes(fixture, &receipt);
+    let (result, _) = bound_result(fixture, &receipt.job_id);
     assert_eq!(
         result.native.as_ref().unwrap().termination_reason,
         "timeout"
     );
+    for process in processes {
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.0, 5000) },
+            WAIT_OBJECT_0
+        );
+    }
     let (receipt, _) = fixture.invoke("wait");
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let running = loop {
-        let running = fixture.job(&receipt.job_id);
-        if running.output_bytes > 0 {
-            break running;
-        }
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(10));
-    };
+    let running = started_job(fixture, &receipt.job_id);
+    let processes = observe_job_processes(fixture, &receipt);
     fixture.call(Action::Cancel {
         job_id: receipt.job_id.clone(),
         expected_revision: running.revision,
     });
-    assert_eq!(fixture.terminal(&receipt.job_id).state, JobState::Cancelled);
+    assert_eq!(
+        bound_result(fixture, &receipt.job_id).0.state,
+        JobState::Cancelled
+    );
+    for process in processes {
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.0, 5000) },
+            WAIT_OBJECT_0
+        );
+    }
+}
+
+fn native(root: PathBuf, service: bool) {
+    let mut fixture = Fixture::new(root, service);
+    bounds(&mut fixture);
     for mode in [
         "service-status",
         "service-start",
@@ -993,12 +1036,31 @@ fn restart(fixture: &mut Fixture) {
 fn recover_controller(fixture: &mut Fixture) {
     let (receipt, signed) = fixture.invoke("wait");
     println!("crash check admitted job {}", receipt.job_id);
-    let end = Instant::now() + Duration::from_secs(2);
-    while fixture.job(&receipt.job_id).output_bytes == 0 {
-        assert!(Instant::now() < end);
-        std::thread::sleep(Duration::from_millis(10));
+    started_job(fixture, &receipt.job_id);
+    let processes = observe_job_processes(fixture, &receipt);
+    restart(fixture);
+    for process in &processes {
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.0, 5000) },
+            WAIT_OBJECT_0
+        );
     }
-    // Observe the exact process handle before the crash; PID reuse cannot make
+    let uncertain = fixture.job(&receipt.job_id);
+    println!("{}", serde_json::json!({"crash_receipt":uncertain}));
+    assert_eq!(uncertain.state, JobState::Uncertain);
+    let Response::Job { receipt: replay } = fixture.bytes(Verb::Invoke, &signed) else {
+        panic!("lost-reply replay refused");
+    };
+    assert_eq!(replay.job_id, receipt.job_id);
+    assert_eq!(fixture.job(&receipt.job_id).state, JobState::Uncertain);
+    println!(
+        "original {} Job processes stopped after controller crash; uncertain receipt and exact replay retained without redispatch",
+        processes.len()
+    );
+}
+
+fn observe_job_processes(fixture: &Fixture, receipt: &Receipt) -> Vec<Handle> {
+    // Observe each exact process handle before termination; PID reuse cannot make
     // this check mistake another process for the original workload. Close our
     // temporary Job handle before killing the executor so kill-on-close applies.
     let job_name = wide(&format!(
@@ -1007,6 +1069,31 @@ fn recover_controller(fixture: &mut Fixture) {
     ));
     let job = Handle(unsafe { OpenJobObjectW(JOB_OBJECT_QUERY, 0, job_name.as_ptr()) });
     assert!(!job.0.is_null());
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    assert_ne!(
+        unsafe {
+            QueryInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                (&mut limits as *mut JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                std::mem::size_of_val(&limits) as u32,
+                null_mut(),
+            )
+        },
+        0
+    );
+    let expected = &fixture.target.package.operations[&receipt.prepared.invocation.operation_id]
+        .execution
+        .resources;
+    let flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+        | JOB_OBJECT_LIMIT_JOB_MEMORY;
+    assert_eq!(limits.BasicLimitInformation.LimitFlags & flags, flags);
+    assert_eq!(
+        limits.BasicLimitInformation.ActiveProcessLimit,
+        expected.processes
+    );
+    assert_eq!(limits.JobMemoryLimit as u64, expected.memory_bytes);
     #[repr(C)]
     struct ProcessIds {
         assigned: u32,
@@ -1036,7 +1123,14 @@ fn recover_controller(fixture: &mut Fixture) {
         ids.listed
     );
     assert!(ids.listed > 0 && ids.listed as usize <= ids.pids.len());
-    let processes: Vec<_> = ids.pids[..ids.listed as usize]
+    println!(
+        "{}",
+        serde_json::json!({"job_observer":receipt.job_id,
+        "pids":&ids.pids[..ids.listed as usize],"memory_limit":limits.JobMemoryLimit,
+        "process_limit":limits.BasicLimitInformation.ActiveProcessLimit,
+        "limit_flags":limits.BasicLimitInformation.LimitFlags})
+    );
+    ids.pids[..ids.listed as usize]
         .iter()
         .map(|pid| {
             let process = Handle(unsafe { OpenProcess(SYNCHRONIZE, 0, *pid as u32) });
@@ -1047,25 +1141,7 @@ fn recover_controller(fixture: &mut Fixture) {
             );
             process
         })
-        .collect();
-    drop(job);
-    restart(fixture);
-    for process in &processes {
-        assert_eq!(
-            unsafe { WaitForSingleObject(process.0, 5000) },
-            WAIT_OBJECT_0
-        );
-    }
-    assert_eq!(fixture.job(&receipt.job_id).state, JobState::Uncertain);
-    let Response::Job { receipt: replay } = fixture.bytes(Verb::Invoke, &signed) else {
-        panic!("lost-reply replay refused");
-    };
-    assert_eq!(replay.job_id, receipt.job_id);
-    assert_eq!(fixture.job(&receipt.job_id).state, JobState::Uncertain);
-    println!(
-        "original {} Job processes stopped after controller crash; uncertain receipt and exact replay retained without redispatch",
-        processes.len()
-    );
+        .collect()
 }
 
 fn storage_exhaustion(fixture: &mut Fixture) {
@@ -1296,6 +1372,14 @@ pub fn main() {
             PathBuf::from(&args[1]),
             args.get(2).is_some_and(|s| s == "--service"),
         ),
+        Some("--bounds") if args.len() == 3 || args.len() == 4 => {
+            let mut fixture = Fixture::new(
+                PathBuf::from(&args[1]),
+                args.get(3).is_some_and(|s| s == "--service"),
+            );
+            fixture.phase = format!("bounds-{}-{}", fixture.phase, args[2]);
+            bounds(&mut fixture);
+        }
         Some(mode @ ("--recover" | "--storage")) if args.len() == 3 => {
             let mut fixture = Fixture::new(PathBuf::from(&args[1]), false);
             fixture.phase = format!("{}-{}", mode.trim_start_matches("--"), args[2]);
