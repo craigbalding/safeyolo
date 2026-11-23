@@ -89,6 +89,62 @@ fn record(f: &Fixture, request: &str) -> pending::Record {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retained_history_uses_the_adopted_complete_input_limit() {
+    let mut f = configured_fixture().await;
+    let path = f.root.path().join("check.json");
+    let mut spec: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for (limit, expected_status) in [(131072, 200), (32768, 403)] {
+        spec["max_input_bytes"] = json!(limit);
+        let bytes = serde_json::to_vec(&spec).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let policy = task_action_policy()
+            .replace("/absent-task-action-spec.json", path.to_str().unwrap())
+            .replace(&"a".repeat(64), &content_digest(&bytes))
+            .replace("timeout_ms=100", "timeout_ms=5000")
+            .replace("max_input_bytes=32768", &format!("max_input_bytes={limit}"));
+        f.install(f.source.clone() + &policy);
+        if expected_status == 200 {
+            for index in 0..64 {
+                let reply = f
+                    .call(json!({"request_id":format!("history-{index}"),
+                    "action":{"kind":"discover"},"expected":null}))
+                    .await;
+                assert_eq!(reply.status, 200, "{}", reply.value);
+            }
+        }
+        let reply = f
+            .call(f.prepared(&format!("bound-{limit}"), Some(5)).await)
+            .await;
+        assert_eq!(reply.status, expected_status, "{}", reply.value);
+        assert_eq!(f.mutations.load(Ordering::SeqCst), 1);
+        let observed = calls(&f);
+        assert_eq!(
+            observed.len(),
+            1,
+            "An over-budget input must start no checker"
+        );
+        assert!(
+            observed[0]["request"]["subject"]["value"]
+                .as_str()
+                .unwrap()
+                .len()
+                > 24576
+        );
+        let input_bytes = serde_json::to_vec(&observed[0]["request"]).unwrap().len();
+        assert!(
+            input_bytes > 32768 && input_bytes <= 131072,
+            "{input_bytes}"
+        );
+        if expected_status == 403 {
+            assert_eq!(
+                reply.value["assessment"]["steps"][0]["unavailable"],
+                "check input limit exceeded"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn configured_task_action_dispatches_adaptive_operations_and_retains_refusals() {
     let mut f = configured_fixture().await;
     // More successful operations than max_attempts must each run the check.

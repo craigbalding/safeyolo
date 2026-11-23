@@ -117,12 +117,9 @@ pub(crate) fn subject(
         "model_revision":check.inputs.get("model_revision"),"input_revision":check.inputs.get("input_revision"),
         "explanation_digest":content_digest(&serde_json::to_vec(answers)?)},
         "trusted":trusted,"untrusted":untrusted});
+    // The adopted source bounds the complete serialized check input before
+    // execution. Preserve the canonical history within that selected budget.
     let value = serde_json::to_string(&value)?;
-    if value.len() > 24576 {
-        return Err(
-            "canonical task/action envelope exceeds 24576 bytes; no model call started".into(),
-        );
-    }
     Ok(Subject::Value { value })
 }
 
@@ -148,9 +145,6 @@ pub(crate) fn reconsideration(
     let mut value: Value = serde_json::from_str(&value)?;
     value["trusted"]["history"]["reconsideration"] = context.clone();
     let value = serde_json::to_string(&value)?;
-    if value.len() > 24576 {
-        return Err("reconsideration history exceeds canonical input bound".into());
-    }
     Ok(Subject::Value { value })
 }
 
