@@ -514,8 +514,9 @@ impl Fixture {
         (*receipt, bytes)
     }
     fn job(&mut self, id: &str) -> Receipt {
-        let Response::Job { receipt } = self.call(Action::Job { job_id: id.into() }) else {
-            panic!("job refused");
+        let response = self.call(Action::Job { job_id: id.into() });
+        let Response::Job { receipt } = response else {
+            panic!("job refused: {response:?}");
         };
         *receipt
     }
@@ -1904,7 +1905,14 @@ fn executable_swaps(fixture: &mut Fixture) {
     );
     assert_eq!(result.state, JobState::Completed);
     assert_eq!(job_count(fixture), count + 1);
-    let running = started_job(fixture, "wait");
+    executable_guards(fixture);
+}
+
+fn executable_guards(fixture: &mut Fixture) {
+    let program = probe_path(&fixture.root);
+    let original = fs::read(&program).unwrap();
+    let (admitted, _) = fixture.invoke("wait");
+    let running = started_job(fixture, &admitted.job_id);
     let processes = observe_job_processes(fixture, &running);
     let write = fs::write(&program, b"unselected replacement");
     let parent = program.parent().unwrap();
@@ -2341,6 +2349,11 @@ pub fn main() {
             );
             fixture.phase = format!("swaps-{}-{}", fixture.phase, args[2]);
             executable_swaps(&mut fixture);
+        }
+        Some("--guards") if args.len() == 3 => {
+            let mut fixture = Fixture::new(PathBuf::from(&args[1]), false);
+            fixture.phase = format!("guards-{}-{}", fixture.phase, args[2]);
+            executable_guards(&mut fixture);
         }
         Some(mode @ ("--registry" | "--registry-user")) if args.len() == 3 || args.len() == 4 => {
             let mut fixture = Fixture::new(
