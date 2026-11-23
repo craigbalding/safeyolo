@@ -198,6 +198,7 @@ OPTIONAL_CASES = (
     ('tests/proxy_contracts/test_tunnel_contract.py::test_real_openssh_preserves_server_first_output_and_client_input', 'SAFEYOLO_RUN_SSH_CONTRACT', '1', 'Opt-in owned OpenSSH daemon; requires installed ssh, ssh-keygen and sshd'),
     ('tests/proxy_contracts/test_native_skill_trace.py::test_untraced_request_timing_against_prepared_baseline', 'SAFEYOLO_TRACE_OVERHEAD_BASELINE', '', 'manual ordinary-request comparison needs a prepared baseline executable'),
     ('tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_executes_staged_worker_commands', 'SAFEYOLO_FACTORY_ACCEPTANCE_ROOT', '', 'Explicit disposable installed Factory acceptance root.'),
+    ('tests/proxy_contracts/test_native_factory_cli.py::test_factory_pending_claude_work_survives_restart', 'SAFEYOLO_FACTORY_ACCEPTANCE_ROOT', '', 'Explicit disposable installed Factory acceptance root.'),
     ('tests/proxy_contracts/test_native_factory_cli.py::test_factory_setup_interruption_preserves_prepared_roles', 'SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE', '', 'Explicit disposable installed guided-setup acceptance root.'),
     ('tests/proxy_contracts/test_native_provider_recovery.py::test_authorized_provider_survives_only_its_holder_loss', 'SAFEYOLO_971_RUNSC', '', 'Explicit prepared provider-recovery Linux venue.'),
 )

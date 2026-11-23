@@ -377,6 +377,68 @@ fn cancelled_work_has_its_own_status_and_open_work_needs_creator_authority() {
 }
 
 #[test]
+fn inline_publication_distinguishes_reference_format_from_digest_mismatch() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    let root = fixture();
+    let mut conn = db(&root);
+    let work = owned(&mut conn);
+    let bytes = b"retained output\n";
+    let digest = crate::policy::checks::content_digest(bytes);
+    let external = format!("file:///workspace/result.txt#sha256={digest}");
+    let mut input = publication(&work);
+    input["artifact_base64"] = json!(STANDARD.encode(bytes));
+    let before = counts(&conn);
+    for target_ref in [
+        external.clone(),
+        format!("urn:sha256:{digest}"),
+        format!("sha256:{}", digest.to_uppercase()),
+        "sha256:abc".into(),
+        format!("sha256:{}g", "0".repeat(63)),
+        format!("sha256:{digest}#extra"),
+    ] {
+        input["target_ref"] = json!(target_ref);
+        let error = submit(&mut conn, Actor::Agent("alice"), &input, "format").unwrap_err();
+        assert_eq!(error.0, 400);
+        assert!(error.1.contains("requires a bare sha256:<digest>"));
+        assert!(
+            error
+                .1
+                .contains("omit artifact_base64 for an external reference")
+        );
+    }
+    input["target_ref"] = json!(format!("sha256:{}", "0".repeat(64)));
+    let error = submit(&mut conn, Actor::Agent("alice"), &input, "digest").unwrap_err();
+    assert_eq!(error.0, 400);
+    assert!(
+        error
+            .1
+            .contains("decoded artifact_base64 bytes do not match")
+    );
+    assert!(error.1.contains("recompute SHA-256 from the decoded bytes"));
+    input["target_ref"] = json!(format!("sha256:{digest}"));
+    input["artifact_base64"] = json!("not base64!");
+    let error = submit(&mut conn, Actor::Agent("alice"), &input, "base64").unwrap_err();
+    assert_eq!(error.0, 400);
+    assert_eq!(error.1, "invalid output artifact base64");
+    assert_eq!(counts(&conn), before);
+
+    input["artifact_base64"] = json!(STANDARD.encode(bytes));
+    let saved = submit(&mut conn, Actor::Agent("alice"), &input, "inline").unwrap();
+    assert_eq!(saved["work"]["target_generation"], 1);
+    assert_eq!(
+        saved["work"]["output"]["artifact_base64"],
+        input["artifact_base64"]
+    );
+    let mut input = publication(&saved["work"]);
+    input["target_ref"] = json!(external);
+    let saved = submit(&mut conn, Actor::Agent("alice"), &input, "external").unwrap();
+    assert_eq!(saved["work"]["target_generation"], 2);
+    assert_eq!(saved["work"]["target_ref"], input["target_ref"]);
+    assert!(saved["work"]["output"].get("artifact_base64").is_none());
+}
+
+#[test]
 fn publication_bounds_and_output_read_permissions_fail_without_writes() {
     let root = fixture();
     let mut conn = db(&root);

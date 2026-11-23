@@ -112,9 +112,19 @@ pub(super) fn publish(
         let bytes = STANDARD
             .decode(bytes)
             .map_err(|_| invalid("invalid output artifact base64"))?;
+        if !target_ref.strip_prefix("sha256:").is_some_and(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        }) {
+            return Err(invalid(
+                "artifact_base64 requires a bare sha256:<digest> target_ref with 64 lowercase hex digits; use the SHA-256 of the decoded bytes, or omit artifact_base64 for an external reference such as file://...#sha256=...",
+            ));
+        }
         if target_ref != format!("sha256:{}", crate::policy::checks::content_digest(&bytes)) {
             return Err(invalid(
-                "output artifact does not match its sha256 target_ref",
+                "decoded artifact_base64 bytes do not match target_ref; recompute SHA-256 from the decoded bytes and set target_ref to sha256:<digest>, or supply the intended bytes",
             ));
         }
     }

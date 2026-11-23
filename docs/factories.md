@@ -49,7 +49,7 @@ declared type and target. Canonical envelope identity and the configured
 room—not names written in the body—authorize a handoff.
 
 `harness` selects the supervised coding harness for that role. The supported
-values are `codex` and `pi`; omission means `codex`. Harness selection changes
+values are `codex`, `pi` and `claude`; omission means `codex`. Harness selection changes
 the execution adapter, not the factory graph, role contract, Coord identity,
 checkpoint rules, handoffs, or observability.
 
@@ -58,7 +58,32 @@ bound into the approved snapshot and override the agent's mutable default
 arguments for that factory run. When omitted, the configured agent defaults
 retain their existing behavior. This makes a harness switch explicit instead
 of accidentally passing Codex flags to Pi (or vice versa). Credentials remain
-in the harness's agent-local login state, not in factory arguments.
+in the harness's agent-local login state or its selected service gateway, not
+in factory arguments.
+
+For a Claude Code role, set `harness = "claude"` and, if needed,
+`args = ["--model", "sonnet"]` in that role's table. Use the same
+`factory setup/check/approve/run/doctor/stop` commands. Factory preparation
+stages `claude-coord-host-setup.sh`, preserves agent-local Claude settings and
+login, and imports no host Claude state. Use `factory login NAME ROLE` for
+that role's own Claude login, or retain its configured provider. Ordinary
+Claude agents remain interactive.
+
+Claude supervision uses native `--print --output-format stream-json --verbose`,
+an explicit UUID session and `--resume`. It requires those CLI features and
+`auth status --json`; the qualified client is Claude Code 2.1.303. The
+supervisor reserves input/output/session flags and passes other options to
+Claude's argument parser during preflight. An unknown option fails before a
+turn. Authentication preflight checks the configured login; provider validity
+is established only by a model request. A failed or incomplete turn remains
+uncertain and Claude's Factory doctor reports it as not ready. Inspect
+`agent watch NAME`, native Work and retained history before recovery.
+
+Claude uses the existing Coord MCP server. The supervisor receives attention
+between bounded turns; it does not run another attention bridge or enable
+Claude's optional native channels. Supervision runs in the Linux guest on
+supported Linux and macOS hosts, with the same checkpoint and cleanup owners
+as Codex and Pi.
 
 Optional `[[updates]]` tables declare informational message types, their `from`
 and `to` roles, and exact first-line `fields`. They do not create tasks or
