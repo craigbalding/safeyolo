@@ -50,6 +50,7 @@ user_facing_docs = [
     "docs/coding-client-gateway.md",
     "docs/service-authoring.md",
     "docs/host-execution-contract.md",
+    "docs/host-operations.md",
     "docs/service-gateway-v2-yaml-spec.md",
     "docs/delegated-approvals.md",
     "docs/peer-support.md",

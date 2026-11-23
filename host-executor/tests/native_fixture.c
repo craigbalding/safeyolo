@@ -12,15 +12,35 @@
 
 /* Prepared by the developer test, never by target discovery/qualification. */
 int main(int argc, char **argv) {
-    if (argc != 4) return 2;
+    if (argc != 5) return 2;
     setbuf(stdout, NULL);
+    if (!strcmp(argv[1], "read-config") || !strcmp(argv[1], "execute-config")) {
+        FILE *input = fopen(argv[2], "r");
+        if (!input) return 20;
+        char data[128];
+        size_t count = fread(data, 1, sizeof(data), input);
+        int failed = ferror(input);
+        fclose(input);
+        if (failed || count == sizeof(data)) return 21;
+        return fwrite(data, 1, count, stdout) == count ? 0 : 24;
+    }
+    if (!strcmp(argv[1], "write-config")) {
+        FILE *output = fopen(argv[2], "w");
+        if (!output) return 25;
+        int written = fputs("enabled\n", output) >= 0;
+        return fclose(output) || !written ? 26 : 0;
+    }
     if (!strcmp(argv[1], "observe")) {
+        puts("safeyolo-native-probe-revision=1");
         gid_t groups[128];
         int count = getgroups(128, groups);
         if (count < 0) return 9;
         printf("uid=%u gid=%u groups=", getuid(), getgid());
         for (int i = 0; i < count; ++i) printf("%s%u", i ? "," : "", groups[i]);
         puts("");
+        char resolved[PATH_MAX];
+        int canonical = realpath(argv[2], resolved) != NULL;
+        printf("canonical=%d\n", canonical);
         FILE *allowed = fopen(argv[2], "r");
         FILE *forbidden = fopen(argv[3], "r");
         char destination[PATH_MAX];
@@ -28,14 +48,20 @@ int main(int argc, char **argv) {
         FILE *write = fopen(destination, "w");
         int net = socket(AF_INET, SOCK_STREAM, 0);
         int ipc = socket(AF_UNIX, SOCK_STREAM, 0);
+        /* The parent owns live receivers and checks their accept queues before
+         * and after this workload. A missing listener is not a denial oracle. */
+        struct sockaddr_in address = { .sin_family=AF_INET, .sin_port=htons((unsigned short)strtoul(argv[4],NULL,10)), .sin_addr.s_addr=htonl(INADDR_LOOPBACK) };
 #ifdef __APPLE__
-        // Seatbelt mediates connect rather than creation of a socket. EPERM
-        // distinguishes policy denial from a missing loopback listener/path.
-        struct sockaddr_in address = { .sin_len=sizeof(address), .sin_family=AF_INET, .sin_port=htons(1), .sin_addr.s_addr=htonl(INADDR_LOOPBACK) };
-        if (net >= 0) { int fd=net; int r=connect(fd,(struct sockaddr *)&address,sizeof(address)); net=(r < 0 && errno==EPERM) ? -1 : 0; close(fd); }
-        struct sockaddr_un unix_address = { .sun_len=sizeof(unix_address), .sun_family=AF_UNIX };
+        address.sin_len=sizeof(address);
+#endif
+        if (net >= 0) { int fd=net; net=connect(fd,(struct sockaddr *)&address,sizeof(address)); close(fd); }
+        struct sockaddr_un unix_address = { .sun_family=AF_UNIX };
+#ifdef __APPLE__
+        unix_address.sun_len=sizeof(unix_address);
+#endif
         if (snprintf(unix_address.sun_path,sizeof(unix_address.sun_path),"%s.socket",argv[3]) >= (int)sizeof(unix_address.sun_path)) return 11;
-        if (ipc >= 0) { int fd=ipc; int r=connect(fd,(struct sockaddr *)&unix_address,sizeof(unix_address)); ipc=(r < 0 && errno==EPERM) ? -1 : 0; close(fd); }
+        if (ipc >= 0) { int fd=ipc; ipc=connect(fd,(struct sockaddr *)&unix_address,sizeof(unix_address)); close(fd); }
+#ifdef __APPLE__
         int huge_refused=1; // Linux-only control below; no macOS HugeTLB claim.
 #else
         void *huge = mmap(NULL, 2*1024*1024, PROT_READ|PROT_WRITE,
@@ -48,7 +74,7 @@ int main(int argc, char **argv) {
                allowed != NULL, forbidden != NULL, write != NULL, net, ipc,
                getenv("FIXTURE") ? getenv("FIXTURE") : "absent",
                getenv("HOME") ? getenv("HOME") : "absent");
-        return allowed && !forbidden && !write && net == -1 && ipc == -1 && huge_refused
+        return canonical && allowed && !forbidden && !write && net == -1 && ipc == -1 && huge_refused
             && getenv("FIXTURE") && !strcmp(getenv("FIXTURE"), "native")
             && !getenv("HOME") ? 0 : 3;
     }

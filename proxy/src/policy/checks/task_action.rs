@@ -117,12 +117,9 @@ pub(crate) fn subject(
         "model_revision":check.inputs.get("model_revision"),"input_revision":check.inputs.get("input_revision"),
         "explanation_digest":content_digest(&serde_json::to_vec(answers)?)},
         "trusted":trusted,"untrusted":untrusted});
+    // The adopted source bounds the complete serialized check input before
+    // execution. Preserve the canonical history within that selected budget.
     let value = serde_json::to_string(&value)?;
-    if value.len() > 24576 {
-        return Err(
-            "canonical task/action envelope exceeds 24576 bytes; no model call started".into(),
-        );
-    }
     Ok(Subject::Value { value })
 }
 
@@ -148,9 +145,6 @@ pub(crate) fn reconsideration(
     let mut value: Value = serde_json::from_str(&value)?;
     value["trusted"]["history"]["reconsideration"] = context.clone();
     let value = serde_json::to_string(&value)?;
-    if value.len() > 24576 {
-        return Err("reconsideration history exceeds canonical input bound".into());
-    }
     Ok(Subject::Value { value })
 }
 
@@ -190,21 +184,23 @@ pub(crate) fn history(
     let omitted = records.len().saturating_sub(16);
     records.drain(..omitted);
     let (path, _) = runtime.audit.log_source();
-    let observed = match crate::audit::local_tail(&path, Some(&run.agent), 128) {
+    let observed = match crate::audit::local_tail_matching(&path, Some(&run.agent), 128, |row| {
+        matches!(
+            row["event"].as_str(),
+            Some("gateway.host_admission" | "gateway.host_result" | "gateway.host_refused")
+        ) && row["request_id"] != request_id
+            && (row["details"]["run"] == json!(run)
+                || row["details"]["scope"]["principal"]["run"] == json!(run))
+    }) {
         Ok(tail) => {
-            let rows = tail.rows.into_iter().filter_map(|(_, row)| {
-                if !matches!(row["event"].as_str(), Some("gateway.host_admission" | "gateway.host_result" | "gateway.host_refused"))
-                    || row["request_id"] == request_id
-                    || (row["details"]["run"] != json!(run) && row["details"]["scope"]["principal"]["run"] != json!(run)) {
-                    return None;
-                }
-                Some(json!({"event":row["event"],"request_id":row["request_id"],"ts":row["ts"],
+            let rows = tail.rows.into_iter().map(|(_, row)| {
+                json!({"event":row["event"],"request_id":row["request_id"],"ts":row["ts"],
                     "action":row["details"]["scope"]["action"],
                     "result_digest":content_digest(&serde_json::to_vec(&row["details"]["result"]).expect("audit JSON")),
                     "job_state":row["details"]["result"]["receipt"]["state"],
-                    "refusal_code":row["details"]["refusal"]["code"]}))
+                    "refusal_code":row["details"]["refusal"]["code"]})
             }).collect::<Vec<_>>();
-            json!({"status":"retained_tail","rows":rows,"limits":"Current validated audit file; at most 128 agent records. Rotated, dropped or unrecorded events are unknown."})
+            json!({"status":"retained_tail","rows":rows,"limits":"Current validated audit file; at most 128 prior host-operation records for this agent run. Rotated, dropped or unrecorded events are unknown."})
         }
         Err(_) => {
             json!({"status":"unavailable","rows":[],"limits":"Current audit history could not be read; absence is not evidence of no prior actions."})

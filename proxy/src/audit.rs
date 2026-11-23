@@ -16,7 +16,7 @@ pub use envelope::{
 pub(crate) use envelope::{RequestScope, wipe};
 pub use explain::{ExplainError, ExplainErrorKind};
 pub use reader::parse_record;
-pub(crate) use reader::{local_tail, selected_tails};
+pub(crate) use reader::{local_tail, local_tail_matching, selected_tails};
 pub(crate) use writer::backup;
 pub use writer::{Settings, Submission, Writer};
 

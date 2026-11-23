@@ -22,7 +22,7 @@ use windows_sys::Win32::{
 /// Windows CRT command-line quoting. lpApplicationName is supplied separately;
 /// this string is never passed to a shell. The selected executable owns any
 /// non-CRT argument parsing and is assessed as an explicit interpreter if used.
-fn quote(word: &str) -> String {
+pub(super) fn quote(word: &str) -> String {
     let mut out = String::from("\"");
     let mut slashes = 0;
     for ch in word.chars() {
@@ -251,12 +251,7 @@ pub(super) fn run(
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
         | JOB_OBJECT_LIMIT_JOB_MEMORY;
-    limits.BasicLimitInformation.ActiveProcessLimit = operation
-        .execution
-        .resources
-        .processes
-        .try_into()
-        .map_err(native::unavailable)?;
+    limits.BasicLimitInformation.ActiveProcessLimit = operation.execution.resources.processes;
     limits.JobMemoryLimit = operation
         .execution
         .resources

@@ -80,6 +80,9 @@ for filters, pagination, retention and attribution limits.
 
 ## Select the needed reference
 
+- Read [Host operations](references/host-operations.md) for adopted standalone
+  target discovery, typed proposals, bounded invocation/evidence and private
+  missing-capability assessment through the current task-bound gateway.
 - Read [job authoring](../job-authoring/SKILL.md) to choose an execution engine,
   develop a check or action, and prepare the installed GitHub/factory example.
   Adoption belongs to the selected instance's existing operator authority.
