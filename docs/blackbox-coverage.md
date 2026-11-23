@@ -1218,7 +1218,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Conformance / action:** Incomplete integrated qualification: preserve useful Linux/macOS workflow receipts, then prove the complete eight witness groups and real Windows foreground/service workflows.
 
-**Effort:** L. **Comments:** The Unix native selection uses a separately installed executor and independent host observers. It does not establish gateway, model, remote-target or Windows acceptance. Required missing facilities fail the selected run.
+**Effort:** L. **Comments:** The Unix native selection uses a separately installed executor and independent host observers. Separate retained runs join a real Linux sandbox to a co-located Linux target and a standalone macOS target over HTTPS. They observe task/run binding, API refusals, useful reads, fixed-service effects, required-check unavailability, restart and lost-reply reconciliation at their stated source identities. The full checker/model, composition, revision and platform matrix remains incomplete. Missing required facilities leave the affected run incomplete.
 
 **Owner / remaining work:** [#1677](https://github.com/craigbalding/safeyolo/issues/1677). [Audit source / evidence context](https://github.com/craigbalding/safeyolo/issues/1677).
 
