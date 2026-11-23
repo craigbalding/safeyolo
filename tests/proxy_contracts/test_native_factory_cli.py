@@ -1092,9 +1092,37 @@ def test_pending_claude_caller_refuses_replaying_started_work(tmp_path, monkeypa
 def test_factory_pending_claude_work_survives_restart():
     """Interrupt one new claimed Work in the existing installed witness."""
     supplied = os.environ.get("SAFEYOLO_FACTORY_ACCEPTANCE_ROOT")
-    if not supplied:
-        pytest.skip("requires the separately owned, prepared installed Factory witness")
-    installed_claude_pending_work(Path(supplied).resolve(), Path(os.environ["SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE"]))
+    source = os.environ.get("SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE")
+    if not supplied or not source:
+        pytest.skip("requires a prepared installed Factory witness and its Claude contract source")
+    source = Path(source)
+    selected = tomllib.loads(source.read_text())
+    if not any(role.get("harness") == "claude" for role in selected["roles"].values()):
+        pytest.skip("requires a Claude role in the selected Factory contract")
+    installed_claude_pending_work(Path(supplied).resolve(), source)
+
+
+@pytest.mark.parametrize("source_selection", ["named", "codex-pi", "claude"])
+def test_pending_claude_case_preserves_other_factory_selections(tmp_path, monkeypatch, source_selection):
+    """Only dispatch pending recovery when the selected witness has its inputs."""
+    root = tmp_path / "installed"
+    monkeypatch.setenv("SAFEYOLO_FACTORY_ACCEPTANCE_ROOT", str(root))
+    monkeypatch.setenv("SAFEYOLO_FACTORY_ACCEPTANCE_NAME", "fixture")
+    monkeypatch.delenv("SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE", raising=False)
+    source = None
+    if source_selection != "named":
+        source = contract(tmp_path / "contract", claude=source_selection == "claude")
+        monkeypatch.setenv("SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE", str(source))
+    calls = []
+    monkeypatch.setitem(globals(), "installed_claude_pending_work", lambda *args: calls.append(args))
+    if source_selection == "claude":
+        test_factory_pending_claude_work_survives_restart()
+        assert calls == [(root.resolve(), source)]
+    else:
+        with pytest.raises(pytest.skip.Exception, match="requires"):
+            test_factory_pending_claude_work_survives_restart()
+        assert calls == []
+    assert not root.exists()
 
 
 def test_factory_run_executes_staged_worker_commands():
