@@ -682,6 +682,23 @@ def test_stale_or_failed_untrusted_report_cannot_publish(sources, github):
         notices.publish(report, event(), "schedule")
 
 
+def test_all_current_controls_reach_publisher(sources, github):
+    files = sources | {changes.MAP: f'[[decisions]]\nid = "test"\ntests = ["{TEST}"]\n'}
+    report = compare(files, {TEST: ORIGINAL.replace("== 0", "== 1")})
+    assert report["changes"][0]["controls"] == [f"BB-{number:02}" for number in range(1, 39)]
+    assert notices.publish(report, event(), "pull_request_target")["status"] == "published"
+    assert "BB-38" in github.posts[0][1]["body"]
+
+
+@pytest.mark.parametrize("controls", [None, "BB-38", ["BB-00"], ["BB-39"], ["BB-038"], [38], ["BB-01"] * 39])
+def test_invalid_report_controls_cannot_publish(sources, github, controls):
+    report = compare(sources, {TEST: ORIGINAL.replace("== 0", "== 1")})
+    report["changes"][0]["controls"] = controls
+    with pytest.raises(ValueError, match="invalid change record"):
+        notices.publish(report, event(), "pull_request_target")
+    assert not github.posts
+
+
 def test_workflow_does_not_execute_candidate_with_publication_token():
     workflow = yaml.load((ROOT / changes.WORKFLOW).read_text(), Loader=yaml.BaseLoader)
     assert set(workflow["on"]) == {"pull_request_target", "push"}
@@ -727,7 +744,7 @@ def analyze_cli(root, base, head, output):
     return json.loads(report.read_text())
 
 
-def test_current_catalogue_and_bb38_witness_reach_analyzer_cli(tmp_path, git_sources):
+def test_current_catalogue_and_bb38_witness_reach_publisher(tmp_path, git_sources, github):
     root, git = git_sources
     witness = "proxy/tests/host_execution.rs"
     for name in (changes.CATALOGUE, changes.MAP, witness):
@@ -747,6 +764,9 @@ def test_current_catalogue_and_bb38_witness_reach_analyzer_cli(tmp_path, git_sou
     assert quiet["status"] == "complete"
     assert quiet["delta_id"] is None
     assert not any(row["status"] == "material" for row in quiet["changes"])
+    push = event("push") | {"before": base, "after": quiet["head"]}
+    assert notices.publish(quiet, push, "push")["status"] == "quiet"
+    assert not github.posts
 
     path = root / witness
     original = path.read_text()
@@ -759,6 +779,11 @@ def test_current_catalogue_and_bb38_witness_reach_analyzer_cli(tmp_path, git_sou
     assert material["delta_id"]
     assert [(row["path"], row["controls"]) for row in material["changes"] if row["status"] == "material"] == [
         (witness, ["BB-38"])]
+    push = event("push") | {"before": base, "after": material["head"]}
+    assert notices.publish(material, push, "push")["status"] == "published"
+    assert notices.publish(material, push, "push")["status"] == "duplicate"
+    assert len(github.posts) == 1
+    assert "BB-38" in github.posts[0][1]["body"]
 
 
 def test_trusted_workflow_bootstrap_runs_selected_interpreters(tmp_path, git_sources):
