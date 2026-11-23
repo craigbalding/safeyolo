@@ -25,6 +25,8 @@
 //! independently observing that prior file effects and retained output remain.
 //! --swaps checks a same-size/mtime byte swap after proposal, then observes
 //! executable/ancestor replacement refusal during an actual running Job.
+//! --guards ROOT ATTEMPT resumes only that running-Job observation after a
+//! retained swap result, without repeating its completed invocation.
 #[cfg(windows)]
 mod common;
 #[cfg(windows)]
