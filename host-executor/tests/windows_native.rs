@@ -23,6 +23,8 @@
 //! retained narrower announcement; the controller supplies control/updates-original.json.
 //! --lifecycle checks revocation, expiry and unavailable configuration while
 //! independently observing that prior file effects and retained output remain.
+//! --swaps checks a same-size/mtime byte swap after proposal, then observes
+//! executable/ancestor replacement refusal during an actual running Job.
 #[cfg(windows)]
 mod common;
 #[cfg(windows)]

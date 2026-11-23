@@ -1829,6 +1829,108 @@ fn lifecycle_authority(fixture: &mut Fixture) {
     assert_eq!(fixture.job(&receipt.job_id).state, JobState::Completed);
 }
 
+fn executable_swaps(fixture: &mut Fixture) {
+    let program = probe_path(&fixture.root);
+    let original = fs::read(&program).unwrap();
+    let modified = fs::metadata(&program).unwrap().modified().unwrap();
+    let operation = &fixture.target.package.operations["observe"];
+    let invocation = Invocation {
+        operation_id: "observe".into(),
+        resource_id: "fixture".into(),
+        operation_sha256: fixture.target.package.operation_sha256("observe").unwrap(),
+        implementation_sha256: operation.implementation_sha256(),
+        arguments: BTreeMap::new(),
+        expected_assessment_sha256: None,
+    };
+    let Response::Proposal { prepared } = fixture.call(Action::Propose { invocation }) else {
+        panic!("original proposal refused")
+    };
+    let signed = fixture.signed(Action::Invoke {
+        invocation: prepared.invocation,
+    });
+    let needle = b"safeyolo-windows-probe-revision=1";
+    let positions = original
+        .windows(needle.len())
+        .enumerate()
+        .filter_map(|(i, b)| (b == needle).then_some(i))
+        .collect::<Vec<_>>();
+    assert!(!positions.is_empty());
+    let mut changed = original.clone();
+    for position in positions {
+        changed[position + needle.len() - 1] = b'2';
+    }
+    fs::write(&program, changed).unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(&program)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert_eq!(
+        fs::metadata(&program).unwrap().len() as usize,
+        original.len()
+    );
+    assert_eq!(
+        fs::metadata(&program).unwrap().modified().unwrap(),
+        modified
+    );
+    let count = job_count(fixture);
+    let response = fixture.bytes(Verb::Invoke, &signed);
+    println!(
+        "{}",
+        serde_json::json!({"swap_case":"after-proposal-same-size-mtime","response":response,"actual_sha256":hash(&program),"job_count":job_count(fixture)})
+    );
+    assert!(
+        matches!(response, Response::Refused { refusal } if refusal.code == RefusalCode::Stale)
+    );
+    assert_eq!(job_count(fixture), count);
+    fs::write(&program, &original).unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(&program)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    // The explicit refusal admitted no job. Restore the exact selected bytes
+    // before one deliberate use of that same signed invocation.
+    let Response::Job { receipt } = fixture.bytes(Verb::Invoke, &signed) else {
+        panic!("restored exact bytes refused")
+    };
+    let result = fixture.terminal(&receipt.job_id);
+    let bytes = fixture.output(&receipt.job_id);
+    println!(
+        "{}",
+        serde_json::json!({"case":"swap-restored-useful","receipt":result,"output_base64":STANDARD.encode(&bytes)})
+    );
+    assert_eq!(result.state, JobState::Completed);
+    assert_eq!(job_count(fixture), count + 1);
+    let running = started_job(fixture, "wait");
+    let processes = observe_job_processes(fixture, &running);
+    let write = fs::write(&program, b"unselected replacement");
+    let parent = program.parent().unwrap();
+    let rename = fs::rename(parent, fixture.root.join("moved-programs"));
+    println!(
+        "{}",
+        serde_json::json!({"swap_case":"running-executable-and-ancestor-guard","write_error":write.as_ref().err().map(|e|e.to_string()),"rename_error":rename.as_ref().err().map(|e|e.to_string()),"sha256":hash(&program)})
+    );
+    assert!(write.is_err() && rename.is_err());
+    assert_eq!(fs::read(&program).unwrap(), original);
+    let stopped = fixture.terminal(&running.job_id);
+    let output = fixture.output(&running.job_id);
+    println!(
+        "{}",
+        serde_json::json!({"case":"swap-guard-deadline","receipt":stopped,"output_base64":STANDARD.encode(&output)})
+    );
+    assert_eq!(stopped.state, JobState::Failed);
+    assert!(stopped.native.as_ref().unwrap().processes_stopped);
+    for process in processes {
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.0, 1000) },
+            WAIT_OBJECT_0
+        );
+    }
+}
+
 fn recover_controller(fixture: &mut Fixture) {
     let (receipt, signed) = fixture.invoke("wait");
     println!("crash check admitted job {}", receipt.job_id);
@@ -2231,6 +2333,14 @@ pub fn main() {
             );
             fixture.phase = format!("lifecycle-{}-{}", fixture.phase, args[2]);
             lifecycle_authority(&mut fixture);
+        }
+        Some("--swaps") if args.len() == 3 || args.len() == 4 => {
+            let mut fixture = Fixture::new(
+                PathBuf::from(&args[1]),
+                args.get(3).is_some_and(|s| s == "--service"),
+            );
+            fixture.phase = format!("swaps-{}-{}", fixture.phase, args[2]);
+            executable_swaps(&mut fixture);
         }
         Some(mode @ ("--registry" | "--registry-user")) if args.len() == 3 || args.len() == 4 => {
             let mut fixture = Fixture::new(
