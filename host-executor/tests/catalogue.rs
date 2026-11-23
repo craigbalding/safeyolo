@@ -2,7 +2,10 @@
 #![cfg(unix)]
 mod common;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use ring::signature::{Ed25519KeyPair, KeyPair};
+use ring::{
+    rand::{SecureRandom, SystemRandom},
+    signature::{Ed25519KeyPair, KeyPair},
+};
 use safeyolo_host_executor::*;
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::PathBuf};
 
@@ -130,13 +133,12 @@ struct Store {
 }
 impl Store {
     fn new(target: &Target) -> Self {
+        // Concurrent fixtures can observe the same wall-clock timestamp on macOS.
+        let mut random = [0u8; 16];
+        SystemRandom::new().fill(&mut random).unwrap();
         let root = std::env::temp_dir().join(format!(
-            "catalogue-ledger-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "catalogue-ledger-{:032x}",
+            u128::from_le_bytes(random)
         ));
         fs::create_dir(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();

@@ -1,5 +1,6 @@
 //! Exercise the installed command surface with actual files and executable pins.
 #![cfg(unix)]
+use ring::rand::{SecureRandom, SystemRandom};
 use serde_json::{Value, json};
 use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 
@@ -24,13 +25,11 @@ fn text(path: &Path) -> &str {
 
 #[test]
 fn standalone_preparation_keeps_saved_authority_activation_and_observation_distinct() {
+    let mut random = [0u8; 16];
+    SystemRandom::new().fill(&mut random).unwrap();
     let root = std::env::temp_dir().join(format!(
-        "host-workflow-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        "host-workflow-{:032x}",
+        u128::from_le_bytes(random)
     ));
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
