@@ -1,6 +1,6 @@
 ---
 name: safeyolo-factory
-description: Design, review, prove, and troubleshoot SafeYolo supervised factories with an operator. Use before changing a running factory's brief, contract, routes, supervisor, capabilities, recovery, or agent direction, and when an operator wants to create or revise a factory, define roles and handoffs, review factory TOML or role contracts, investigate runtime behavior, estimate a nested factory, or test a factory in a controlled nested lab. Apply annotated graphs, cross-contract review, and evidence-led diagnosis without unnecessary gates or factory-specific architecture.
+description: Design, review, prove, troubleshoot, and dogfood SafeYolo supervised factories with an operator. Use before changing a running factory's brief, contract, routes, supervisor, capabilities, recovery, or agent direction, and when an operator wants to create or revise a factory, define roles and handoffs, review factory TOML or role contracts, investigate runtime behavior, estimate a nested factory, test a factory in a controlled nested lab, capture product friction during ordinary use, or exercise features from an agent or human-operator perspective. Apply annotated graphs, cross-contract review, and evidence-led diagnosis without unnecessary gates or factory-specific architecture.
 ---
 
 # SafeYolo factory operator copilot
@@ -120,6 +120,10 @@ selects another attempt after rejection, a signal resolution or an approval.
   [Cross-contract review](references/contract-review.md).
 - For commands, live behavior, failures, recovery, or a nested proving run,
   read [Operations and proving](references/operations.md).
+- For ongoing product observations or deliberate agent and human-persona
+  journeys, read [Dogfooding](references/dogfooding.md).
+  Before a journey, read [Request timings](references/request-timings.md)
+  to collect passive measurements and identify their coverage limits.
 - Before any change to a running factory, read Operations and enter
   [`sym.runtime_operator_intervention`](references/graph/runtime-triage.yaml).
   Complete that graph path before changing a brief, contract, route,
