@@ -860,11 +860,11 @@ nodes:
       obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: cli/tests/test_codex_coord_supervisor.py
-          sha256: ab5275719791928e25db3317f783afc56a7037bccab09dfcb99243cc804e8173
+          sha256: ad2c326f0ed2bac7d234ddf707d61f949678798eaba9b4f52cb003ca2785cad4
         - path: cli/tests/test_agent_command_supervisor.py
           sha256: 28d366827ecc041bac7f87f419e1728329beeb8ee93ed9f27d262f8f2bd2d9f2
         - path: tests/proxy_contracts/test_native_factory_cli.py
-          sha256: 089854740018ff27b6d3a943c0cc70d932c2748a0169c6242b328901db63fdaa
+          sha256: f084962f0e2fad76a69cffcba86b6b0fe735e0df6751196d58884dfe4bb992b4
       setup: "Use the trusted base's locked Python test environment and warm native production artifacts. Set SAFEYOLO_GUEST_ARTIFACTS to the verified guest artifact directory. Source fixtures start no guest or model; the optional launch case requires a separately owned installed Ubuntu host."
       verify: "sha256sum cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py tests/proxy_contracts/test_native_factory_cli.py"
       run: "uv run pytest -q cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py tests/proxy_contracts/test_native_factory_cli.py"

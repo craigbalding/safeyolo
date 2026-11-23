@@ -98,6 +98,8 @@ class CoordFixture:
                 owner.requests.append(("POST", self.path))
                 args = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 path = urlsplit(self.path).path
+                if path == "/v1/messages":
+                    return self.reply(403, {"error": "fixture network destination denied"})
                 if path.endswith("/join"):
                     room_id = "rm-forge-agent" if path == "/api/coord/rooms/forge%2Dagent/join" else "rm-backlog"
                     return self.reply(200, {"room_id": room_id, "permissions": ["send", "receive"], "brief": {"revision": 0}})
@@ -1498,7 +1500,7 @@ def claude_harness(fixture, binary, *, mode="success", terminal=True):
         "mcpServers": {"safeyolo-coord": {"command": str(binary), "args": []}},
     }))
     harness.write_text(f'''#!{sys.executable}
-import json,os,sys,subprocess,time
+import json,os,sys,subprocess,time,urllib.error,urllib.request
 from pathlib import Path
 mode={mode!r}
 if "--version" in sys.argv:
@@ -1529,6 +1531,17 @@ if mode=="api_denied":
     event("result",subtype="success",is_error=True,num_turns=1,api_error_status=428,
           stop_reason="stop_sequence",terminal_reason="api_error")
     sys.exit(1)
+if mode=="network_denied":
+    # Make a real HTTP request through the controlled proxy, without a model.
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({{"http":os.environ["HTTP_PROXY"]}}))
+    request=urllib.request.Request("http://model-denied.test/v1/messages",data=b"{{}}")
+    try:
+        opener.open(request,timeout=3)
+    except urllib.error.HTTPError as denied:
+        (root/"network-denial.json").write_text(json.dumps({{"status":denied.code,"body":json.loads(denied.read())}}))
+        event("result",subtype="error_during_execution",is_error=True,errors=["network destination denied"])
+        sys.exit(1)
+    raise AssertionError("the controlled network request was not denied")
 if mode=="timeout":
     child=subprocess.Popen(["sleep","90"],start_new_session=True)
     (root/"descendant").write_text(str(child.pid))
@@ -1608,7 +1621,7 @@ def test_claude_resumed_invocation_io_error_preserves_session_and_pending_input(
     assert current["in_flight"] == saved["in_flight"]
 
 
-@pytest.mark.parametrize("resume_mode", ["success", "api_denied", "malformed", "unavailable", "foreign_unavailable"])
+@pytest.mark.parametrize("resume_mode", ["success", "api_denied", "network_denied", "malformed", "unavailable", "foreign_unavailable"])
 def test_claude_crashed_native_work_resumes_original_action_until_canonical_completion(binary, fixture, resume_mode):
     coord, _, config, state, _, capture = fixture
     settings = json.loads(config.read_text())
@@ -1633,12 +1646,18 @@ def test_claude_crashed_native_work_resumes_original_action_until_canonical_comp
     assert resumed.returncode != 0 and "incomplete or uncertain Coord work" in resumed.stderr
     current = json.loads(state.read_text())
     assert current["native_in_flight"] == saved["native_in_flight"], "a successful Claude turn cannot settle native Work"
+    assert current["owned_process"] is None
     assert current["phase"] == "uncertain" and current["consecutive_failures"] > saved["consecutive_failures"]
     assert current["thread_id"] == (None if resume_mode == "unavailable" else saved["thread_id"])
     argv = [json.loads(path.read_text()) for path in capture.glob("argv-*")]
     assert any("--resume" in row and row[row.index("--resume") + 1] == saved["thread_id"] for row in argv)
     assert coord.received_actions == {action["key"]}
     assert ("POST", "/api/coord/rooms/backlog/send") not in coord.requests
+    if resume_mode == "network_denied":
+        assert json.loads((capture / "network-denial.json").read_text()) == {
+            "status": 403, "body": {"error": "fixture network destination denied"},
+        }
+        assert coord.requests.count(("POST", "http://model-denied.test/v1/messages")) == 1
     claude_harness(fixture, binary, terminal=False)
     assert run(binary, fixture, confirm_fresh_identity=False).returncode != 0
     argv = [json.loads(path.read_text()) for path in capture.glob("argv-*")]

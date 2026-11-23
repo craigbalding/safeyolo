@@ -470,8 +470,10 @@ def test_installed_doctor_checks_actual_direct_and_wrapped_role_commands(tmp_pat
 
 
 @pytest.mark.skipif(os.uname().sysname != "Linux", reason="Guest supervision uses Linux process state")
-def test_doctor_rejects_the_paused_exact_command_with_a_healthy_supervisor(tmp_path, _binary_cache, monkeypatch):
-    with prepared(tmp_path, _binary_cache, source_fixture=True) as (instance, _):
+@pytest.mark.parametrize("claude", [False, True])
+@pytest.mark.parametrize("command_failure", [False, True], ids=["paused", "failed"])
+def test_doctor_rejects_failed_or_paused_command_with_a_healthy_runtime(tmp_path, _binary_cache, monkeypatch, claude, command_failure):
+    with prepared(tmp_path, _binary_cache, source_fixture=True, claude=claude) as (instance, _):
         agent = "fixture-forge"
         home = instance.root / "agents" / agent / "home"
         state_path = home / ".safeyolo-command-supervisor.json"
@@ -491,15 +493,16 @@ def test_doctor_rejects_the_paused_exact_command_with_a_healthy_supervisor(tmp_p
         with _provider_run(instance.root, monkeypatch, name=agent):
             instance.environment.update({key: os.environ[key] for key in ("FAKE_RUN_ID", "SAFEYOLO_RUNSC_ROOT")})
             generation = json.loads(context.read_text())["generation"]
+            command = "echo fixture-runtime-failed >&2; exit 77" if command_failure else "exec sleep 60"
             state_path.write_text(json.dumps({
                 "schema_version": 1, "name": agent, "generation": generation,
                 "supervision_id": "paused-command", "runtime_owner": "guest-pid1",
-                "state": "starting", "started_at": 1, "command": "exec sleep 60",
+                "state": "starting", "started_at": 1, "command": command,
                 "restart_count": 0, "consecutive_failures": 0,
             }))
             (home.parent / "current-launch.json").write_text(json.dumps({
                 "agent_id": roles(instance)[agent]["agent_id"], "name": agent,
-                "launch_id": "paused-command", "command": "exec sleep 60",
+                "launch_id": "paused-command", "command": command,
                 "launcher": {"kind": "supervisor"}, "state": "managed",
             }))
             runsc = instance.root / "bin/runsc"
@@ -544,6 +547,17 @@ esac
                             assert value["status"] == "not-ready"
                             return next(check for check in value["checks"] if check.get("role") == "owner")
 
+                        if command_failure:
+                            failed = wait_state(lambda state: state["state"] == "failed")
+                            assert supervisor.wait(timeout=5) == 1
+                            assert failed["last_exit_code"] == 77
+                            assert "fixture-runtime-failed" in failed["last_stderr"]
+                            rejected = diagnose()
+                            assert rejected["status"] == "FAIL", rejected
+                            assert rejected["runtime"]["runtime_state"] == "running"
+                            assert rejected["runtime"]["agent_state"] != "running"
+                            assert "fixture-runtime-failed" in rejected["runtime"]["error"]
+                            return
                         running = wait_state(lambda state: state["state"] == "running")
                         assert diagnose()["status"] == "PASS"
                         pid = running["command_pid"]
