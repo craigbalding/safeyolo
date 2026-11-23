@@ -1494,6 +1494,329 @@ fn api_authority(fixture: &mut Fixture) {
     fixture.target = load(&fixture.root).target;
 }
 
+fn job_count(fixture: &Fixture) -> i64 {
+    rusqlite::Connection::open_with_flags(
+        fixture.root.join("control/state/jobs.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap()
+    .query_row("SELECT count(*) FROM jobs", [], |row| row.get(0))
+    .unwrap()
+}
+
+fn catalogue_updates(fixture: &mut Fixture) {
+    use ring::signature::KeyPair;
+    let path = config_path(&fixture.root);
+    let original = fs::read(&path).unwrap();
+    let observed = fixture.root.join("control/update-observed.json");
+    let program = fixture.root.join("programs with spaces/update-probe.exe");
+    assert!(
+        !observed.exists() && !program.exists(),
+        "inspect a previous update attempt before resuming"
+    );
+    fs::copy(probe_path(&fixture.root), &program).unwrap();
+    let mut config = load(&fixture.root);
+    let op = config.target.package.operations.get_mut("observe").unwrap();
+    op.execution.executable = program.to_str().unwrap().into();
+    let rule = UpdateRule {
+        ceiling: op.clone(),
+        allow_narrower: true,
+        allow_implementation_updates: true,
+    };
+    let pin = op.implementation_sha256();
+    for scope in [
+        config.target.ceiling.get_mut("observe").unwrap(),
+        config
+            .target
+            .issuers
+            .get_mut("issuer")
+            .unwrap()
+            .authority
+            .grants
+            .get_mut("grant")
+            .unwrap()
+            .operations
+            .get_mut("observe")
+            .unwrap(),
+    ] {
+        scope.implementation_sha256 = pin.clone();
+        scope.updates = Some(rule.clone());
+    }
+    let key = Ed25519KeyPair::from_seed_unchecked(&[58; 32]).unwrap();
+    let sign = |package: &Package, withdrawn| {
+        SignedCatalogue::sign(
+            CatalogueRevision {
+                publisher: "publisher".into(),
+                announcement_revision: package.version,
+                package: package.clone(),
+                observed_at: now() - 1,
+                expires_at: now() + 600,
+                withdrawn,
+                previous: None,
+            },
+            &key,
+        )
+    };
+    let active = sign(&config.target.package, false);
+    fs::write(&observed, serde_json::to_vec(&active).unwrap()).unwrap();
+    config.catalogue = Some(CatalogueAdoption {
+        policy: CataloguePolicy {
+            publisher: "publisher".into(),
+            public_key: STANDARD.encode(key.public_key().as_ref()),
+            package_name: config.target.package.name.clone(),
+            operations: BTreeMap::from([("observe".into(), rule)]),
+            families: Vec::new(),
+            on_withdraw: Withdrawal::Retain,
+        },
+        active: active.clone(),
+        observed: active,
+        previous: None,
+        pin: None,
+        observed_file: Some(ObservedCatalogueFile {
+            path: observed.clone(),
+            max_bytes: 1024 * 1024,
+        }),
+    });
+    let authority = revision(&(&config.target.ceiling, &config.target.issuers));
+    let policy = revision(&config.catalogue.as_ref().unwrap().policy);
+    fs::write(&path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    fixture.target = config.target;
+    let announce = |fixture: &mut Fixture, package: &Package, withdrawn| {
+        fs::write(
+            &observed,
+            serde_json::to_vec(&sign(package, withdrawn)).unwrap(),
+        )
+        .unwrap();
+        let Response::Discovery { discovery } = fixture.call(Action::Discover) else {
+            panic!("catalogue discovery refused")
+        };
+        let saved = load(&fixture.root);
+        assert_eq!(
+            revision(&(&saved.target.ceiling, &saved.target.issuers)),
+            authority
+        );
+        assert_eq!(revision(&saved.catalogue.as_ref().unwrap().policy), policy);
+        fixture.target = saved.target;
+        let status = discovery.catalogue.unwrap();
+        println!(
+            "{}",
+            serde_json::json!({"catalogue_observation":status,"job_count":job_count(fixture)})
+        );
+        status
+    };
+    let execute = |fixture: &mut Fixture, expected: &str| {
+        let (receipt, _) = fixture.invoke("observe");
+        let result = fixture.terminal(&receipt.job_id);
+        let bytes = fixture.output(&receipt.job_id);
+        println!(
+            "{}",
+            serde_json::json!({"case":"catalogue-useful","receipt":result,"output_base64":STANDARD.encode(&bytes)})
+        );
+        assert_eq!(result.state, JobState::Completed);
+        assert!(String::from_utf8(bytes).unwrap().contains(expected));
+        assert_eq!(
+            fs::read(fixture.root.join("work/allowed.txt")).unwrap(),
+            b"workload write under explicit broader account filesystem permission"
+        );
+    };
+    let needle = std::hint::black_box(b"safeyolo-windows-".as_slice())
+        .iter()
+        .chain(b"probe-revision=1")
+        .copied()
+        .collect::<Vec<_>>();
+    let marker1 = std::str::from_utf8(&needle).unwrap();
+    let count = job_count(fixture);
+    execute(fixture, marker1);
+    let mut package = fixture.target.package.clone();
+    package.version += 1;
+    package.source.version = "cosmetic metadata".into();
+    package.operations.get_mut("observe").unwrap().description =
+        "Current diagnostic description".into();
+    let status = announce(fixture, &package, false);
+    assert_eq!(status.state, "active");
+    assert_eq!(status.changes["observe"].comparison, Comparison::Equivalent);
+    execute(fixture, marker1);
+    package.version += 1;
+    package
+        .operations
+        .get_mut("observe")
+        .unwrap()
+        .execution
+        .resources
+        .timeout_seconds = 4;
+    let status = announce(fixture, &package, false);
+    assert_eq!(status.state, "active");
+    assert_eq!(status.changes["observe"].comparison, Comparison::Narrower);
+    execute(fixture, marker1);
+    let mut bytes = fs::read(&program).unwrap();
+    let positions = bytes
+        .windows(needle.len())
+        .enumerate()
+        .filter_map(|(i, b)| (b == needle).then_some(i))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        positions.len(),
+        1,
+        "probe must contain one executable revision marker"
+    );
+    bytes[positions[0] + needle.len() - 1] = b'2';
+    let modified = fs::metadata(&program).unwrap().modified().unwrap();
+    let length = bytes.len();
+    fs::write(&program, bytes).unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(&program)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert_eq!(fs::metadata(&program).unwrap().len() as usize, length);
+    assert_eq!(
+        fs::metadata(&program).unwrap().modified().unwrap(),
+        modified
+    );
+    package.version += 1;
+    package
+        .operations
+        .get_mut("observe")
+        .unwrap()
+        .execution
+        .executable_sha256 = hash(&program);
+    assert_eq!(announce(fixture, &package, false).state, "active");
+    let marker2 = marker1.strip_suffix('1').unwrap().to_owned() + "2";
+    execute(fixture, &marker2);
+    let active = package.clone();
+    for label in ["recipe", "default", "alias", "selector", "enforcement"] {
+        let mut candidate = active.clone();
+        package.version += 1;
+        candidate.version = package.version;
+        let op = candidate.operations.get_mut("observe").unwrap();
+        match label {
+            "recipe" => op.execution.argv[1] = literal("flood"),
+            "default" => {
+                op.arguments.insert(
+                    "new-default".into(),
+                    Argument {
+                        kind: ArgumentType::Integer,
+                        required: false,
+                        default: Some(1.into()),
+                        options: Vec::new(),
+                    },
+                );
+            }
+            "alias" => {
+                let op = op.clone();
+                candidate.operations.insert("observe-alias".into(), op);
+            }
+            "selector" => {
+                op.resources.insert("other-resource".into());
+            }
+            _ => op
+                .enforcement
+                .unresolved
+                .push("required containment unavailable".into()),
+        }
+        let status = announce(fixture, &candidate, false);
+        println!(
+            "{}",
+            serde_json::json!({"catalogue_case":label,"state":status.state})
+        );
+        assert_eq!(status.state, "awaiting_review");
+        assert_eq!(revision(&fixture.target.package), revision(&active));
+        assert_eq!(job_count(fixture), count + 4);
+    }
+    package.operations = active.operations;
+    package.version += 1;
+    assert_eq!(announce(fixture, &package, false).state, "active");
+    package.version += 1;
+    let status = announce(fixture, &package, true);
+    assert_eq!(status.state, "withdrawn");
+    assert_eq!(status.active, revision(&fixture.target.package));
+    assert_eq!(job_count(fixture), count + 4);
+    println!(
+        "{}",
+        serde_json::json!({"catalogue_case":"withdraw-retain","state":status.state,"persistent_file_present":fixture.root.join("work/allowed.txt").exists()})
+    );
+    fs::write(&path, original).unwrap();
+    fixture.target = load(&fixture.root).target;
+    fs::remove_file(observed).unwrap();
+    fs::remove_file(program).unwrap();
+}
+
+fn lifecycle_authority(fixture: &mut Fixture) {
+    let path = config_path(&fixture.root);
+    let original = fs::read(&path).unwrap();
+    let (receipt, _) = fixture.invoke("observe");
+    let result = fixture.terminal(&receipt.job_id);
+    let bytes = fixture.output(&receipt.job_id);
+    println!(
+        "{}",
+        serde_json::json!({"case":"lifecycle-useful","receipt":result,"output_base64":STANDARD.encode(&bytes)})
+    );
+    assert_eq!(result.state, JobState::Completed);
+    let persisted = fixture.root.join("work/allowed.txt");
+    let effect = fs::read(&persisted).unwrap();
+    for (case, expected) in [
+        ("revoked", RefusalCode::Authority),
+        ("expired", RefusalCode::Expired),
+        ("missing-configuration", RefusalCode::Unavailable),
+    ] {
+        let signed = fixture.signed(Action::Output {
+            job_id: receipt.job_id.clone(),
+            offset: 0,
+            max_bytes: 1024,
+        });
+        let mut config = load(&fixture.root);
+        match case {
+            "revoked" => {
+                config
+                    .target
+                    .issuers
+                    .get_mut("issuer")
+                    .unwrap()
+                    .authority
+                    .grants
+                    .remove("grant");
+            }
+            "expired" => {
+                config
+                    .target
+                    .issuers
+                    .get_mut("issuer")
+                    .unwrap()
+                    .authority
+                    .grants
+                    .get_mut("grant")
+                    .unwrap()
+                    .expires_at = now()
+            }
+            _ => (),
+        }
+        if case == "missing-configuration" {
+            fs::remove_file(&path).unwrap();
+        } else {
+            fs::write(&path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+        }
+        let response = fixture.bytes(Verb::Output, &signed);
+        println!(
+            "{}",
+            serde_json::json!({"lifecycle_case":case,"response":response,"persistent_file_sha256":hash(&persisted)})
+        );
+        assert!(matches!(response, Response::Refused { refusal } if refusal.code == expected));
+        assert_eq!(
+            fs::read(&persisted).unwrap(),
+            effect,
+            "ending permission does not erase an earlier effect"
+        );
+        fs::write(&path, &original).unwrap();
+        assert_eq!(
+            fixture.output(&receipt.job_id),
+            bytes,
+            "restored configuration must recover retained output"
+        );
+    }
+    assert_eq!(fixture.job(&receipt.job_id).state, JobState::Completed);
+}
+
 fn recover_controller(fixture: &mut Fixture) {
     let (receipt, signed) = fixture.invoke("wait");
     println!("crash check admitted job {}", receipt.job_id);
@@ -1734,6 +2057,7 @@ fn probe(args: &[String]) {
             CloseHandle(token);
         }
         println!("arguments_identity_protected_files_environment_ok");
+        println!("safeyolo-windows-probe-revision=1");
     } else if mode == "memory" {
         let mut bytes = Vec::<u8>::new();
         if bytes.try_reserve_exact(96 * 1024 * 1024).is_err() {
@@ -1879,6 +2203,22 @@ pub fn main() {
             );
             fixture.phase = format!("authority-{}-{}", fixture.phase, args[2]);
             api_authority(&mut fixture);
+        }
+        Some("--updates") if args.len() == 3 || args.len() == 4 => {
+            let mut fixture = Fixture::new(
+                PathBuf::from(&args[1]),
+                args.get(3).is_some_and(|s| s == "--service"),
+            );
+            fixture.phase = format!("updates-{}-{}", fixture.phase, args[2]);
+            catalogue_updates(&mut fixture);
+        }
+        Some("--lifecycle") if args.len() == 3 || args.len() == 4 => {
+            let mut fixture = Fixture::new(
+                PathBuf::from(&args[1]),
+                args.get(3).is_some_and(|s| s == "--service"),
+            );
+            fixture.phase = format!("lifecycle-{}-{}", fixture.phase, args[2]);
+            lifecycle_authority(&mut fixture);
         }
         Some(mode @ ("--registry" | "--registry-user")) if args.len() == 3 || args.len() == 4 => {
             let mut fixture = Fixture::new(
