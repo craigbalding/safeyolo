@@ -979,7 +979,7 @@ def assert_restarted_claude_policy(before, after, agent, run_id):
                        for prior in old_grants.values() if prior["option"] == "run"), "unexpected credential grant"
 
 
-def installed_claude_pending_work(root, source):
+def installed_claude_pending_work(root, source, *, session_recovery=False):
     """Pause one new native Work at a file gate, then restart its existing role."""
     contract = tomllib.loads(source.read_text())
     role = next(role for role in contract["roles"].values() if role.get("harness") == "claude")
@@ -988,9 +988,11 @@ def installed_claude_pending_work(root, source):
     identity = policy["agent_id"]
     snapshot = (root / "factories" / contract["name"] / "approved").read_text().strip()
     workspace = Path(policy["folder"])
-    marker = "claude-pending-" + snapshot
+    marker = ("claude-session-recovery-" if session_recovery else "claude-pending-") + snapshot
     artifact, started, release = (workspace / (marker + suffix) for suffix in (".txt", ".started", ".release"))
-    assert not any(path.exists() for path in (artifact, started, release)), "inspect the retained pending attempt before retrying"
+    argument_report = workspace / (marker + ".argument.json")
+    paths = (artifact, started, release, argument_report) if session_recovery else (artifact, started, release)
+    assert not any(path.exists() for path in paths), "inspect the retained pending attempt before retrying"
     host = [str(root / "bin/safeyolo"), "--root", str(root)]
     command = [*host, "factory"]
 
@@ -1004,11 +1006,23 @@ def installed_claude_pending_work(root, source):
             return db.execute("SELECT room_id, permissions FROM memberships "
                               "WHERE principal_id=? AND revoked_at IS NULL ORDER BY room_id", (identity,)).fetchall()
 
-    title = (f"Pending-Work restart qualification. Claim this Work once. Write /workspace/{started.name} "
-             f"containing exactly {marker} and a newline. Then use a foreground shell loop to wait until "
+    purpose = "C3 saved-session recovery" if session_recovery else "Pending-Work restart"
+    start_instruction = (f"Write /workspace/{started.name} containing exactly {marker} and a newline. ")
+    result_instruction = f"write /workspace/{artifact.name} containing exactly {marker} and a newline. "
+    if session_recovery:
+        start_instruction = (
+            "First exercise the remaining native argument-failure case: run the installed claude --version and "
+            "claude --safeyolo-c3-unknown-argument once, without a model prompt. "
+            f"Retain /workspace/{argument_report.name} as JSON with cli_version, argument, exit_code and diagnostic "
+            "from the actual commands; keep only the unknown-option diagnostic, no credentials. "
+            "Require a nonzero exit and an unknown-argument diagnostic naming that flag; report a failure honestly. "
+            "On redelivery reuse this report instead of repeating the command. " + start_instruction)
+        result_instruction = f"copy the complete argument report unchanged to /workspace/{artifact.name}. "
+    title = (f"{purpose} qualification. Claim this Work once. {start_instruction}"
+             f"Then use a foreground shell loop to wait until "
              f"/workspace/{release.name} exists. The operator will stop and restart this role during that wait. "
              "On redelivery, read this original Work and reuse its claim and existing files. Do not create other Work. "
-             f"Once the release file exists, write /workspace/{artifact.name} containing exactly {marker} and a newline. "
+             f"Once the release file exists, {result_instruction}"
              "Retain it, compute SHA256 and publish_work_output with its file URI plus #sha256=<digest>, "
              "omit artifact_base64, execution_outcome succeeded, then explicitly complete_work. "
              "Use native tools, current versions and operation IDs. Read existing output before any repeated publication.")
@@ -1019,7 +1033,7 @@ def installed_claude_pending_work(root, source):
     work_id = created["work"]["work_id"]
     work = invoke("coord", "work", "show", contract["room"], work_id)
     assert work["state"] == "open" and work["claim_generation"] == 0, "inspect the original attempt; do not replay it"
-    result_path = root / "claude-pending-work-result.json"
+    result_path = root / ("claude-session-recovery-result.json" if session_recovery else "claude-pending-work-result.json")
     evidence = {"work_id": work_id, "agent_id": identity, "snapshot": snapshot, "created": work}
     result_path.write_text(json.dumps(evidence, indent=2) + "\n")
     home = root / "agents" / agent / "home"
@@ -1088,7 +1102,17 @@ def installed_claude_pending_work(root, source):
         assert completed["target_generation"] == 1
         assert completed["output"]["producer"] == {"kind": "agent", "id": identity}
         assert completed["output"]["execution_outcome"] == "succeeded"
-        assert artifact.read_text() == marker + "\n"
+        if session_recovery:
+            failure = json.loads(artifact.read_text())
+            evidence["native_argument_failure"] = failure
+            result_path.write_text(json.dumps(evidence, indent=2) + "\n")
+            assert (failure["cli_version"] and isinstance(failure["exit_code"], int) and failure["exit_code"] != 0
+                    and failure["argument"] == "--safeyolo-c3-unknown-argument"
+                    and failure["argument"] in failure["diagnostic"]
+                    and "unknown" in failure["diagnostic"].lower()), "native Claude unknown argument was not rejected"
+            assert artifact.read_bytes() == argument_report.read_bytes(), "native argument report changed"
+        else:
+            assert artifact.read_text() == marker + "\n"
         digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
         assert completed["target_ref"] == "file:///workspace/" + artifact.name + "#sha256=" + digest
         deadline = time.monotonic() + 60
@@ -1120,7 +1144,8 @@ def installed_claude_pending_work(root, source):
 
 
 @pytest.mark.parametrize("state", ["claimed", "done"])
-def test_pending_claude_caller_refuses_replaying_started_work(tmp_path, monkeypatch, state):
+@pytest.mark.parametrize("session_recovery", [False, True])
+def test_pending_claude_caller_refuses_replaying_started_work(tmp_path, monkeypatch, state, session_recovery):
     source = Path(__file__).parents[1] / "blackbox/fixtures/claude-factory/one-role.toml"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1138,13 +1163,16 @@ def test_pending_claude_caller_refuses_replaying_started_work(tmp_path, monkeypa
 
     monkeypatch.setattr(subprocess, "run", run)
     with pytest.raises(AssertionError, match="inspect the original attempt"):
-        installed_claude_pending_work(tmp_path, source)
+        installed_claude_pending_work(tmp_path, source, session_recovery=session_recovery)
     assert calls == [["coord", "work", "create"], ["coord", "work", "show"]]
     assert not list(workspace.iterdir())
 
 
-@pytest.mark.parametrize("defect", [None, "setup-json", "session", "policy", "credential", "grant-scope", "prior-grant"])
-def test_pending_claude_caller_observes_setup_recovery_and_scoped_grants(tmp_path, monkeypatch, defect):
+@pytest.mark.parametrize(("session_recovery", "defect"), [
+    (session, defect) for session in (False, True)
+    for defect in (None, "setup-json", "session", "policy", "credential", "grant-scope", "prior-grant")
+] + [(True, "native-argument")])
+def test_pending_claude_caller_observes_setup_recovery_and_scoped_grants(tmp_path, monkeypatch, defect, session_recovery):
     """Exercise the caller with setup's JSON sequence and completed idle state."""
     source = Path(__file__).parents[1] / "blackbox/fixtures/claude-factory/one-role.toml"
     agent, identity, snapshot = "proof-claude", "ag-proof", "a" * 64
@@ -1172,7 +1200,13 @@ def test_pending_claude_caller_observes_setup_recovery_and_scoped_grants(tmp_pat
     with sqlite3.connect(database) as db:
         db.execute("CREATE TABLE memberships (room_id TEXT, permissions TEXT, principal_id TEXT, revoked_at INTEGER)")
         db.execute("INSERT INTO memberships VALUES ('rm-proof', 'send,receive', ?, NULL)", (identity,))
-    marker = "claude-pending-" + snapshot
+    marker = ("claude-session-recovery-" if session_recovery else "claude-pending-") + snapshot
+    accepted = []
+    if session_recovery:
+        accepted = [workspace / ("claude-pending-" + snapshot + suffix) for suffix in (".txt", ".started", ".release")]
+        accepted += [home / ("claude-pending-" + snapshot), tmp_path / "claude-pending-work-result.json"]
+        for path in accepted:
+            path.write_text("accepted pending-work proof\n")
     action = {"action": {"work_id": "work-pending"}}
     work = {"work_id": "work-pending", "state": "open", "claim_generation": 0, "output": None, "target_generation": 0}
     setup_count, stop_count = 0, 0
@@ -1181,11 +1215,14 @@ def test_pending_claude_caller_observes_setup_recovery_and_scoped_grants(tmp_pat
         nonlocal setup_count, stop_count, work
         args = command[3:]
         if args[:3] == ["coord", "work", "create"]:
+            assert args[-1] == marker
+            assert ("C3 saved-session recovery" in args[4]) == session_recovery
             value = {"work": {"work_id": work["work_id"]}}
         elif args[:3] == ["coord", "work", "show"]:
             if setup_count == 2 and (workspace / (marker + ".release")).exists():
                 artifact = workspace / (marker + ".txt")
-                artifact.write_text(marker + "\n")
+                artifact.write_text((workspace / (marker + ".argument.json")).read_text()
+                                    if session_recovery else marker + "\n")
                 digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
                 work = {**work, "state": "done", "target_generation": 1,
                         "target_ref": "file:///workspace/" + artifact.name + "#sha256=" + digest,
@@ -1196,6 +1233,11 @@ def test_pending_claude_caller_observes_setup_recovery_and_scoped_grants(tmp_pat
         elif args[:2] == ["factory", "setup"]:
             setup_count += 1
             work = {**work, "state": "claimed", "claim_agent_id": identity, "claim_generation": 1}
+            if session_recovery and setup_count == 1:
+                (workspace / (marker + ".argument.json")).write_text(json.dumps({
+                    "cli_version": "2.1.317", "argument": "--safeyolo-c3-unknown-argument",
+                    "exit_code": 0 if defect == "native-argument" else 1,
+                    "diagnostic": "error: unknown option '--safeyolo-c3-unknown-argument'"}))
             (workspace / (marker + ".started")).write_text(marker + "\n")
             checkpoint.write_text(json.dumps({"phase": "running", "thread_id": "other" if defect == "session" and setup_count == 2 else "original",
                                               "safe_cursor": 11, "owned_process": {"pid": setup_count, "token": f"birth-{setup_count}"},
@@ -1228,22 +1270,25 @@ def test_pending_claude_caller_observes_setup_recovery_and_scoped_grants(tmp_pat
     monkeypatch.setattr(subprocess, "run", run)
     if defect == "setup-json":
         with pytest.raises(json.JSONDecodeError):
-            installed_claude_pending_work(tmp_path, source)
+            installed_claude_pending_work(tmp_path, source, session_recovery=session_recovery)
     elif defect:
         message = {"session": "interrupted Claude session was replaced", "policy": "required agent bindings changed",
                    "credential": "unexpected credential grant", "grant-scope": "unexpected credential grant",
-                   "prior-grant": "prior credential grants changed"}[defect]
+                   "prior-grant": "prior credential grants changed",
+                   "native-argument": "native Claude unknown argument was not rejected"}[defect]
         with pytest.raises(AssertionError, match=message):
-            installed_claude_pending_work(tmp_path, source)
+            installed_claude_pending_work(tmp_path, source, session_recovery=session_recovery)
     else:
-        installed_claude_pending_work(tmp_path, source)
-    evidence = json.loads((tmp_path / "claude-pending-work-result.json").read_text())
+        installed_claude_pending_work(tmp_path, source, session_recovery=session_recovery)
+    result = "claude-session-recovery-result.json" if session_recovery else "claude-pending-work-result.json"
+    evidence = json.loads((tmp_path / result).read_text())
+    assert all(path.read_text() == "accepted pending-work proof\n" for path in accepted)
     assert evidence["work_id"] == "work-pending" and evidence["setup_results"]
     assert stop_count == (1 if defect == "setup-json" else 2)
     if defect == "session":
         assert evidence["checkpoint_resumed_pending"]["thread_id"] == "other"
         assert not (workspace / (marker + ".release")).exists()
-    elif defect != "setup-json":
+    elif defect not in ("setup-json", "native-argument"):
         assert evidence["checkpoint_after_resume"]["thread_id"] is None
         expected_run = "other-run" if defect == "grant-scope" else "new-run"
         assert evidence["policy_after"]["credential_grants"]["apr-new"]["beneficiary"]["run_id"] == expected_run
@@ -1260,25 +1305,29 @@ def test_factory_pending_claude_work_survives_restart():
     selected = tomllib.loads(source.read_text())
     if not any(role.get("harness") == "claude" for role in selected["roles"].values()):
         pytest.skip("requires a Claude role in the selected Factory contract")
-    installed_claude_pending_work(Path(supplied).resolve(), source)
+    if os.environ.get("SAFEYOLO_FACTORY_SESSION_RECOVERY") == "1":
+        installed_claude_pending_work(Path(supplied).resolve(), source, session_recovery=True)
+    else:
+        installed_claude_pending_work(Path(supplied).resolve(), source)
 
 
-@pytest.mark.parametrize("source_selection", ["named", "codex-pi", "claude"])
+@pytest.mark.parametrize("source_selection", ["named", "codex-pi", "claude", "claude-session"])
 def test_pending_claude_case_preserves_other_factory_selections(tmp_path, monkeypatch, source_selection):
     """Only dispatch pending recovery when the selected witness has its inputs."""
     root = tmp_path / "installed"
     monkeypatch.setenv("SAFEYOLO_FACTORY_ACCEPTANCE_ROOT", str(root))
     monkeypatch.setenv("SAFEYOLO_FACTORY_ACCEPTANCE_NAME", "fixture")
+    monkeypatch.setenv("SAFEYOLO_FACTORY_SESSION_RECOVERY", "1" if source_selection == "claude-session" else "0")
     monkeypatch.delenv("SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE", raising=False)
     source = None
     if source_selection != "named":
-        source = contract(tmp_path / "contract", claude=source_selection == "claude")
+        source = contract(tmp_path / "contract", claude=source_selection in ("claude", "claude-session"))
         monkeypatch.setenv("SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE", str(source))
     calls = []
-    monkeypatch.setitem(globals(), "installed_claude_pending_work", lambda *args: calls.append(args))
-    if source_selection == "claude":
+    monkeypatch.setitem(globals(), "installed_claude_pending_work", lambda *args, **kwargs: calls.append((args, kwargs)))
+    if source_selection in ("claude", "claude-session"):
         test_factory_pending_claude_work_survives_restart()
-        assert calls == [(root.resolve(), source)]
+        assert calls == [((root.resolve(), source), {"session_recovery": True} if source_selection == "claude-session" else {})]
     else:
         with pytest.raises(pytest.skip.Exception, match="requires"):
             test_factory_pending_claude_work_survives_restart()
