@@ -393,6 +393,8 @@ limitReached,data}`. A reached count limit reports `partial`; access errors
 report `access_denied` or `unavailable` and exit 2. A registry observation can
 report `absent` in its data. File content explicitly reports a bounded prefix.
 Task run-time fields remain `null` when the OS supplies no value.
+Software rows identify their uninstall `registryKey`; `Name` and `Version`
+remain `null` when the corresponding registry values are absent.
 The software inventory covers the selected uninstall registry view, not all
 portable/per-user software. Hotfix inventory is the OS provider's view, not a
 complete patch-vulnerability assessment. Missing executable paths or fields in

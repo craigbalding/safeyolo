@@ -720,6 +720,14 @@ fn starter_result(fixture: &mut Fixture, name: &str) -> bool {
     );
     assert!(result.native.as_ref().unwrap().processes_stopped);
     assert!(!result.native.as_ref().unwrap().output_truncated);
+    if name == "software-inventory" && result.state == JobState::Completed {
+        let observation = observation.as_ref().expect("software inventory JSON");
+        let data = observation["data"]
+            .as_array()
+            .expect("software inventory rows");
+        assert_eq!(observation["count"].as_u64(), Some(data.len() as u64));
+        assert!(data.iter().all(|row| row["registryKey"].is_string()));
+    }
     result.state == JobState::Completed
 }
 
