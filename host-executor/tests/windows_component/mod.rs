@@ -323,6 +323,7 @@ struct Fixture {
     counter: u64,
     server: Option<Child>,
     phase: String,
+    server_pid: std::cell::Cell<u32>,
 }
 impl Fixture {
     fn new(root: PathBuf, service: bool) -> Self {
@@ -332,6 +333,7 @@ impl Fixture {
             target,
             counter: 0,
             server: None,
+            server_pid: std::cell::Cell::new(0),
             phase: if service {
                 "service".into()
             } else {
@@ -414,6 +416,11 @@ impl Fixture {
                 self.target.target_id
             ))?;
         server_identity(&pipe)?;
+        let mut pid = 0;
+        if unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut pid) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        self.server_pid.set(pid);
         write!(
             pipe,
             "POST {path} HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
@@ -446,6 +453,26 @@ impl Fixture {
         let mut bytes = vec![0; length];
         reader.read_exact(&mut bytes)?;
         Ok(serde_json::from_slice(&bytes).unwrap())
+    }
+    fn signed_as(&mut self, action: Action, issuer: &str, grant: &str) -> Vec<u8> {
+        let mut signed: SignedRequest = serde_json::from_slice(&self.signed(action)).unwrap();
+        signed.request.issuer_id = issuer.into();
+        signed.request.grant_id = grant.into();
+        signed.request.principal = self.target.issuers[issuer].authority.grants[grant]
+            .principal
+            .clone();
+        signed.request.expected = Some(
+            self.target
+                .request_revisions(issuer, grant, &signed.request.action)
+                .unwrap(),
+        );
+        let seed = if issuer == "other" { 59 } else { 58 };
+        serde_json::to_vec(&SignedRequest::sign(
+            signed.request,
+            "key".into(),
+            &Ed25519KeyPair::from_seed_unchecked(&[seed; 32]).unwrap(),
+        ))
+        .unwrap()
     }
     fn bytes(&self, verb: Verb, bytes: &[u8]) -> Response {
         self.try_bytes(verb.path(), bytes).unwrap()
@@ -1073,7 +1100,7 @@ fn path_boundaries(root: &Path) {
         (
             "verbatim-local",
             format!("\\\\?\\{}", program.display()),
-            true,
+            false,
         ),
         ("trailing-dot", format!("{}.", program.display()), false),
         ("trailing-space", format!("{} ", program.display()), false),
@@ -1239,22 +1266,12 @@ fn inherited_handles(fixture: &mut Fixture) {
         serde_json::json!({"inherited_handle_control":control})
     );
     assert_eq!(control["sentinel_inherited"], true);
-    let pipe = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION)
-        .open(format!(
-            "\\\\.\\pipe\\safeyolo-host-{}",
-            fixture.target.target_id
-        ))
-        .unwrap();
-    server_identity(&pipe).unwrap();
-    let mut pid = 0;
-    assert_ne!(
-        unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut pid) },
-        0
-    );
-    drop(pipe);
+    assert!(!matches!(
+        fixture.call(Action::Discover),
+        Response::Refused { .. }
+    ));
+    let pid = fixture.server_pid.get();
+    assert_ne!(pid, 0);
     let server = Handle(unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, pid) });
     assert!(!server.0.is_null());
     let mut remote = null_mut();
@@ -1311,6 +1328,170 @@ fn inherited_handles(fixture: &mut Fixture) {
     drop(Handle(closed));
     drop(file);
     fs::remove_file(sentinel).unwrap();
+}
+
+fn api_authority(fixture: &mut Fixture) {
+    use ring::signature::KeyPair;
+    let original = fs::read(config_path(&fixture.root)).unwrap();
+    let backup = fixture
+        .root
+        .join(format!("control/{}-before.json", fixture.phase));
+    assert!(!backup.exists());
+    fs::write(backup, &original).unwrap();
+    let mut config = load(&fixture.root);
+    let mut other_grant = config.target.issuers["issuer"].authority.grants["grant"].clone();
+    other_grant.principal.run.agent = "other".into();
+    other_grant.principal.run.agent_id = "ag-other".into();
+    other_grant.principal.run.run_id = "22222222222222222222222222222222".into();
+    config
+        .target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .insert("other".into(), other_grant);
+    let mut other_issuer = config.target.issuers["issuer"].clone();
+    let key = Ed25519KeyPair::from_seed_unchecked(&[59; 32]).unwrap();
+    other_issuer
+        .public_keys
+        .insert("key".into(), STANDARD.encode(key.public_key().as_ref()));
+    config.target.issuers.insert("other".into(), other_issuer);
+    fs::write(
+        config_path(&fixture.root),
+        serde_json::to_vec_pretty(&config).unwrap(),
+    )
+    .unwrap();
+    fixture.target = config.target;
+    assert!(matches!(
+        fixture.call(Action::Discover),
+        Response::Discovery { .. }
+    ));
+    let (receipt, invoke) = fixture.invoke("observe");
+    let result = fixture.terminal(&receipt.job_id);
+    let output = fixture.output(&receipt.job_id);
+    println!(
+        "{}",
+        serde_json::json!({"case":"authority-useful","receipt":result,"output_base64":STANDARD.encode(&output)})
+    );
+    assert_eq!(result.state, JobState::Completed);
+    assert_eq!(
+        fs::read(fixture.root.join("work/allowed.txt")).unwrap(),
+        b"workload write under explicit broader account filesystem permission"
+    );
+    let Response::Job { receipt: replay } = fixture.bytes(Verb::Invoke, &invoke) else {
+        panic!("same-request replay refused")
+    };
+    assert_eq!(replay.job_id, receipt.job_id);
+    let mut invocation = receipt.prepared.invocation.clone();
+    invocation.expected_assessment_sha256 = None;
+    let actions = vec![
+        Action::Discover,
+        Action::Propose {
+            invocation: invocation.clone(),
+        },
+        Action::Invoke {
+            invocation: invocation.clone(),
+        },
+        Action::Job {
+            job_id: receipt.job_id.clone(),
+        },
+        Action::Output {
+            job_id: receipt.job_id.clone(),
+            offset: 0,
+            max_bytes: 1024,
+        },
+        Action::Cancel {
+            job_id: receipt.job_id.clone(),
+            expected_revision: result.revision,
+        },
+    ];
+    for action in &actions {
+        let mut signed: SignedRequest =
+            serde_json::from_slice(&fixture.signed(action.clone())).unwrap();
+        signed.signature = STANDARD.encode([0; 64]);
+        let response = fixture.bytes(action.verb(), &serde_json::to_vec(&signed).unwrap());
+        println!(
+            "{}",
+            serde_json::json!({"authority_case":"bad-signature","verb":action.verb(),"response":response})
+        );
+        assert!(
+            matches!(response, Response::Refused { refusal } if refusal.code == RefusalCode::Signature)
+        );
+    }
+    for (issuer, grant) in [("issuer", "other"), ("other", "grant")] {
+        for action in &actions {
+            // Proposals and discovery are legitimate for each independently
+            // granted actor. Only the original actor may access the saved job.
+            if matches!(action, Action::Invoke { .. }) {
+                continue;
+            }
+            let signed = fixture.signed_as(action.clone(), issuer, grant);
+            let response = fixture.bytes(action.verb(), &signed);
+            println!(
+                "{}",
+                serde_json::json!({"authority_case":"other-actor","issuer":issuer,"grant":grant,"verb":action.verb(),"response":response})
+            );
+            match action {
+                Action::Discover => assert!(matches!(response, Response::Discovery { .. })),
+                Action::Propose { .. } => assert!(matches!(response, Response::Proposal { .. })),
+                _ => assert!(
+                    matches!(response, Response::Refused { refusal } if refusal.code == RefusalCode::Authority)
+                ),
+            }
+        }
+    }
+    for (case, expected) in [
+        ("wrong-principal", RefusalCode::Principal),
+        ("expired", RefusalCode::Expired),
+        ("wrong-target", RefusalCode::Target),
+    ] {
+        let mut signed: SignedRequest =
+            serde_json::from_slice(&fixture.signed(Action::Discover)).unwrap();
+        match case {
+            "wrong-principal" => signed.request.principal.run.agent_id = "ag-forged".into(),
+            "expired" => signed.request.expires_at = now() - 1,
+            _ => signed.request.target_id = "unselected-target".into(),
+        }
+        let signed = SignedRequest::sign(
+            signed.request,
+            "key".into(),
+            &Ed25519KeyPair::from_seed_unchecked(&[58; 32]).unwrap(),
+        );
+        let response = fixture.bytes(Verb::Discover, &serde_json::to_vec(&signed).unwrap());
+        println!(
+            "{}",
+            serde_json::json!({"authority_case":case,"response":response})
+        );
+        assert!(matches!(response, Response::Refused { refusal } if refusal.code == expected));
+    }
+    let mut expanded = invocation.clone();
+    expanded.resource_id = "ungranted-resource".into();
+    let response = fixture.call(Action::Propose {
+        invocation: expanded,
+    });
+    println!(
+        "{}",
+        serde_json::json!({"authority_case":"resource-expansion","response":response})
+    );
+    assert!(
+        matches!(response, Response::Refused { refusal } if refusal.code == RefusalCode::Authority)
+    );
+    let mut definitions: serde_json::Value =
+        serde_json::from_slice(&fixture.signed(Action::Invoke { invocation })).unwrap();
+    definitions["request"]["definitions"] = serde_json::json!({"operation":"caller replacement"});
+    let response = fixture.bytes(Verb::Invoke, &serde_json::to_vec(&definitions).unwrap());
+    println!(
+        "{}",
+        serde_json::json!({"authority_case":"caller-definitions","response":response})
+    );
+    assert!(
+        matches!(response, Response::Refused { refusal } if refusal.code == RefusalCode::Malformed)
+    );
+    assert_eq!(fixture.job(&receipt.job_id).state, JobState::Completed);
+    assert_eq!(fixture.output(&receipt.job_id), output);
+    fs::write(config_path(&fixture.root), original).unwrap();
+    fixture.target = load(&fixture.root).target;
 }
 
 fn recover_controller(fixture: &mut Fixture) {
@@ -1690,6 +1871,14 @@ pub fn main() {
             );
             fixture.phase = format!("handles-{}-{}", fixture.phase, args[2]);
             inherited_handles(&mut fixture);
+        }
+        Some("--authority") if args.len() == 3 || args.len() == 4 => {
+            let mut fixture = Fixture::new(
+                PathBuf::from(&args[1]),
+                args.get(3).is_some_and(|s| s == "--service"),
+            );
+            fixture.phase = format!("authority-{}-{}", fixture.phase, args[2]);
+            api_authority(&mut fixture);
         }
         Some(mode @ ("--registry" | "--registry-user")) if args.len() == 3 || args.len() == 4 => {
             let mut fixture = Fixture::new(

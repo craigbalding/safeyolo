@@ -15,6 +15,8 @@
 //! --handles ROOT ATTEMPT [--service] requires a newly prepared native catalogue
 //! containing the handles probe. It compares inherited-file identity against a
 //! positive Win32 inheritance control, then checks an actual executor child.
+//! --authority ROOT ATTEMPT [--service] adopts explicit synthetic second-actor
+//! grants, exercises signed API requests and restores the original configuration.
 #[cfg(windows)]
 mod common;
 #[cfg(windows)]
