@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "safeyolo": "/operator/selected-instance/bin/safeyolo",
+  "instance_root": "/operator/selected-instance",
+  "jobs": {
+    "validate": "/operator/adopted-media/v1/validate-job.json",
+    "scan": "/operator/adopted-media/v1/scan-job.json"
+  },
+  "quarantine": "/operator/private-media-quarantine",
+  "library": "/operator/selected-library",
+  "filename": "Selected title.mkv",
+  "file_mode": "0640",
+  "signatures": "/operator/qualified-clamav-signatures",
+  "source": {
+    "url": "https://authorized-source.example.test/selected-title.mkv",
+    "sha256": "REPLACE_WITH_SELECTED_ARTIFACT_SHA256",
+    "title": "REPLACE_WITH_TITLE_AND_EDITION",
+    "source_evidence": "REPLACE_WITH_DATED_SOURCE_REFERENCE",
+    "rights": "REPLACE_WITH_ACQUISITION_AUTHORITY_REFERENCE",
+    "subtitle_evidence": "REPLACE_WITH_SOURCE_SPECIFIC_ENGLISH_SUBTITLE_EVIDENCE"
+  },
+  "max_bytes": 1073741824,
+  "download_timeout_seconds": 300,
+  "validation": {
+    "formats": ["matroska", "webm"],
+    "subtitle_language": "eng",
+    "max_duration_seconds": 14400,
+    "timeout_seconds": 90
+  },
+  "scan": {
+    "database_sha256": {"daily.cvd": "REPLACE_WITH_QUALIFIED_DATABASE_SHA256"},
+    "valid_until_unix": 0,
+    "max_scan_bytes": 2147483648,
+    "timeout_seconds": 270
+  }
+}

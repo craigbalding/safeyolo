@@ -68,6 +68,16 @@ For Python, validate `hyperlight-unikraft-service.json` instead. Missing
 artifacts, runtime/architecture mismatches or unavailable virtualization stop
 the run; there is no engine fallback. A validation pass is not a VM execution.
 
+Repeated jobs restore a clean initialized template by default. Every call still
+uses current adopted inputs and service grants, a fresh helper and new capability
+handles. Inspect `runtime_report.initialization` for `constructed`, `restored`
+or an explicit `cold` reason and the template identity. Grant revocation takes
+effect even when that template remains reusable. To compare cold execution of
+the same engine, set `reuse_initialization=false` in a copy of the trusted
+definition's engine object. See the engine guide for retention, time/randomness
+limits and measurement scope. Preparing or installing a bundle alone does not
+establish warm runtime behavior on that host.
+
 The core examples have a five-second job deadline; the Unikraft examples have
 a fifteen-second deadline. The helper gives each named check five additional
 seconds for its surrounding execution. These are finite budgets, not latency

@@ -34,7 +34,7 @@ Each native report records the selected and observed exact Cargo test names, exe
 
 With the matching native CLI/proxy/Coord binaries and existing fixture inputs prepared, `./tests/blackbox/run-controls.sh policy-recipe` selects deterministic preview/composition/redirect cases. It defaults to the accepted installed layout. `SAFEYOLO_AUTHORING_LAYOUT=source` explicitly selects source-layout proof, which proves neither package integrity nor installer behavior. `./tests/blackbox/run-controls.sh sudo-disclosure` selects current host disclosure/consent cases and early rootless preparation. That Linux fixture needs its documented guest sudo, ACL and archive tools; authentication modes are controlled. Guest preparation itself uses no sudo; its metadata, failure/cleanup and usability controls belong to BB-33. Its tiny metadata stages need the [native guest filesystem](../tests/test_linux_host.py); a nested 9p workspace cannot supply ACLs. Keep bulk inputs, pytest scratch and reports on disk. Use `SAFEYOLO_NATIVE_ARTIFACTS`, `SAFEYOLO_BUILD_PROFILE` and `SAFEYOLO_NATIVE_CLI` as their fixtures require. Both selections reuse named pytest receipts; required skips and teardown failures remain incomplete.
 
-For BB-31's real engine boundary, use `./tests/blackbox/run-controls.sh hyperlight-services --help` and the existing [two-engine driver](../tests/blackbox/host/hyperlight_services.py). It requires a matching protocol-3 artifact bundle, accessible Linux KVM or entitled Apple-silicon HVF, a new owned instance, empty private disk-backed scratch, authorized ports and a privately supplied scoped GitHub read credential. Its `procedure.json` records permitted/scope/lifetime cases per engine, host-observed invocation/artifact/authority identities and cleanup. A lifetimes-only run cannot complete the two-engine receipt. The mediated-services native phase uses controlled adapters and does not prove that either engine ran. These focused selectors are manual. Existing workflow selectors below retain their actual conditions; no recurring real-engine deployment is inferred. Accepted product evidence and its platform limits remain linked in the catalogue; a complete phase does not establish whole-control acceptance.
+For BB-31's real engine boundary, use `./tests/blackbox/run-controls.sh hyperlight-services --help` and the existing [two-engine driver](../tests/blackbox/host/hyperlight_services.py). It requires a matching protocol-4 artifact bundle, accessible Linux KVM or entitled Apple-silicon HVF, a new owned instance, empty private disk-backed scratch, authorized ports and a privately supplied scoped GitHub read credential. Its `procedure.json` records permitted/scope/lifetime cases per engine, host-observed invocation/artifact/authority identities and cleanup. A lifetimes-only run cannot complete the two-engine receipt. The mediated-services native phase uses controlled adapters and does not prove that either engine ran. These focused selectors are manual. Existing workflow selectors below retain their actual conditions; no recurring real-engine deployment is inferred. Accepted product evidence and its platform limits remain linked in the catalogue; a complete phase does not establish whole-control acceptance.
 
 On an authorized prepared Linux AMD64 host, `rootless-preparation --execute` runs the maintained install/update/cache, failure/cancellation and existing-install controls plus the production metadata witness. Run as UID/GID 1000. Preparation must already provide the namespace entry, delegated UID/GID ranges 100000/100000 and 231072/296608, newuidmap/newgidmap, nsenter, GNU tar and zstd. The fixture reuses preparation and makes sudo unavailable through the candidate's PATH. The sudo recorder is not process tracing. The selected installed CLI must match the prepared package; the checkout's four import/mapping source files must match that package's source commit. The retained #1553 baseline and canonical, device, V2-capability and raw-ACL42 specimens are verified against their accepted digests. These are fixture prerequisites, not additional product restrictions. Obtain those inputs from the existing product acceptance records. From this checkout, set the following paths to those local inputs and new disk-backed output/scratch locations:
 
@@ -297,7 +297,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/proxy_contracts/test_gateway_redirect.py](../tests/proxy_contracts/test_gateway_redirect.py#L186) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_gateway_redirect.py](../tests/proxy_contracts/test_gateway_redirect.py#L192) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-gateway-redirect-py).
 - [tests/proxy_contracts/test_coding_client_auth.py](../tests/proxy_contracts/test_coding_client_auth.py#L88) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-coding-client-auth-py).
@@ -348,6 +348,8 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-installed-shared-approvals-py).
 - [tests/proxy_contracts/test_guard_approval_audit.py](../tests/proxy_contracts/test_guard_approval_audit.py#L39) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-guard-approval-audit-py).
+- [tests/proxy_contracts/test_media_recipe_gateway.py](../tests/proxy_contracts/test_media_recipe_gateway.py#L28) — Native process; owned loopback dispatch origin. Evidence: Shipped recipe service/policy; no installed library or job proof.
+  Exact identities: [source inventory](#witness-tests-proxy-contracts-test-media-recipe-gateway-py).
 - [tests/proxy_contracts/test_control_updates.py](../tests/proxy_contracts/test_control_updates.py#L111) — Native signals process; optional prepared Linux sandbox jobs. Evidence: Signed native candidates, owned NATS and controlled route requests; real isolated checks require the selected installed host.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-control-updates-py).
 - [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L635) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
@@ -390,7 +392,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/proxy_contracts/test_gateway_redirect.py](../tests/proxy_contracts/test_gateway_redirect.py#L186) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_gateway_redirect.py](../tests/proxy_contracts/test_gateway_redirect.py#L192) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-gateway-redirect-py).
 - [tests/proxy_contracts/test_coding_client_auth.py](../tests/proxy_contracts/test_coding_client_auth.py#L88) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-coding-client-auth-py).
@@ -1031,15 +1033,15 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 - [tests/test_hyperlight_adoption.py](../tests/test_hyperlight_adoption.py#L21) — Host job authoring and adoption; controlled adapters. Evidence: Controlled build/runner adapters; not a live Hyperlight boundary pass.
   Exact identities: [source inventory](#witness-tests-test-hyperlight-adoption-py).
-- [tests/test_hyperlight_service_checker.py](../tests/test_hyperlight_service_checker.py#L45) — Host job authoring and adoption; controlled adapters. Evidence: Controlled build/runner adapters; not a live Hyperlight boundary pass.
+- [tests/test_hyperlight_service_checker.py](../tests/test_hyperlight_service_checker.py#L48) — Host job authoring and adoption; controlled adapters. Evidence: Controlled build/runner adapters; not a live Hyperlight boundary pass.
   Exact identities: [source inventory](#witness-tests-test-hyperlight-service-checker-py).
 - [tests/test_job_authoring.py](../tests/test_job_authoring.py#L61) — Host job authoring and adoption; controlled adapters. Evidence: Controlled build/runner adapters; not a live Hyperlight boundary pass.
   Exact identities: [source inventory](#witness-tests-test-job-authoring-py).
 - [tests/blackbox/host/hyperlight_adoption.py::main](../tests/blackbox/host/hyperlight_adoption.py#L165) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
-- [tests/blackbox/host/hyperlight_services.py::main](../tests/blackbox/host/hyperlight_services.py#L499) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/host/hyperlight_services.py::main](../tests/blackbox/host/hyperlight_services.py#L988) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
-- [proxy/src/jobs/hyperlight/tests.rs](../proxy/src/jobs/hyperlight/tests.rs#L63) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Controlled executable-helper supervisor; no VM or Python checker execution.
+- [proxy/src/jobs/hyperlight/tests.rs](../proxy/src/jobs/hyperlight/tests.rs#L71) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Controlled executable-helper supervisor; no VM or Python checker execution.
   Exact identities: [source inventory](#witness-proxy-src-jobs-hyperlight-tests-rs).
 - [proxy/src/jobs/mediated/tests.rs](../proxy/src/jobs/mediated/tests.rs#L31) — Native mediated job capabilities; host process. Evidence: Controlled runtime, artifact and credential fixtures; real native capability enforcement.
   Exact identities: [source inventory](#witness-proxy-src-jobs-mediated-tests-rs).
@@ -1405,8 +1407,7 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 - [`tests/proxy_contracts/test_agent_api_policy.py::test_agent_api_policy_canonical_baseline_is_shared`](../tests/proxy_contracts/test_agent_api_policy.py#L121)
 - [`tests/proxy_contracts/test_agent_api_policy.py::test_agent_api_policy_read_uses_last_valid_reload`](../tests/proxy_contracts/test_agent_api_policy.py#L137)
 - [`tests/proxy_contracts/test_agent_api_policy.py::test_agent_api_policy_requires_the_shared_token`](../tests/proxy_contracts/test_agent_api_policy.py#L157)
-- [`tests/proxy_contracts/test_agent_api_policy.py::test_agent_api_policy_gateway_tokens_follow_baseline_reload`](../tests/proxy_contracts/test_agent_api_policy.py#L251)
-- [`tests/proxy_contracts/test_agent_api_policy.py::test_agent_api_policy_preserves_non_string_gateway_capability`](../tests/proxy_contracts/test_agent_api_policy.py#L304)
+- [`tests/proxy_contracts/test_agent_api_policy.py::test_agent_api_policy_gateway_tokens_stay_with_the_caller_across_reload`](../tests/proxy_contracts/test_agent_api_policy.py#L204)
 
 <a id="witness-tests-proxy-contracts-test-agent-api-policy-yaml-py"></a>
 ### [`tests/proxy_contracts/test_agent_api_policy_yaml.py`](../tests/proxy_contracts/test_agent_api_policy_yaml.py)
@@ -1500,8 +1501,8 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_gateway_redirect.py::test_client_followed_gateway_redirect_keeps_vault_credential_at_owned_origin`](../tests/proxy_contracts/test_gateway_redirect.py#L186)
-- [`tests/proxy_contracts/test_gateway_redirect.py::test_client_that_reapplies_gateway_token_on_redirect_cannot_reach_new_authority`](../tests/proxy_contracts/test_gateway_redirect.py#L335)
+- [`tests/proxy_contracts/test_gateway_redirect.py::test_client_followed_gateway_redirect_keeps_vault_credential_at_owned_origin`](../tests/proxy_contracts/test_gateway_redirect.py#L192)
+- [`tests/proxy_contracts/test_gateway_redirect.py::test_client_that_reapplies_gateway_token_on_redirect_cannot_reach_new_authority`](../tests/proxy_contracts/test_gateway_redirect.py#L341)
 
 <a id="witness-tests-proxy-contracts-test-coding-client-auth-py"></a>
 ### [`tests/proxy_contracts/test_coding_client_auth.py`](../tests/proxy_contracts/test_coding_client_auth.py)
@@ -1623,6 +1624,13 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
 - [`tests/proxy_contracts/test_guard_approval_audit.py::test_guard_prompt_waits_for_audit_append`](../tests/proxy_contracts/test_guard_approval_audit.py#L39)
+
+<a id="witness-tests-proxy-contracts-test-media-recipe-gateway-py"></a>
+### [`tests/proxy_contracts/test_media_recipe_gateway.py`](../tests/proxy_contracts/test_media_recipe_gateway.py)
+
+Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+
+- [`tests/proxy_contracts/test_media_recipe_gateway.py::test_media_dispatch_cannot_change_source_destination_job_or_command`](../tests/proxy_contracts/test_media_recipe_gateway.py#L28)
 
 <a id="witness-tests-proxy-contracts-test-control-updates-py"></a>
 ### [`tests/proxy_contracts/test_control_updates.py`](../tests/proxy_contracts/test_control_updates.py)
@@ -2555,30 +2563,43 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`).
 
-- [`tests/test_hyperlight_service_checker.py::test_complete_chunked_capture_and_identity_mismatch`](../tests/test_hyperlight_service_checker.py#L45)
-- [`tests/test_hyperlight_service_checker.py::test_non_json_constants_in_capture_are_unavailable`](../tests/test_hyperlight_service_checker.py#L58)
-- [`tests/test_hyperlight_service_checker.py::test_missing_evidence_is_unavailable`](../tests/test_hyperlight_service_checker.py#L65)
-- [`tests/test_hyperlight_service_checker.py::test_mismatched_subject_and_wrong_types_are_unavailable`](../tests/test_hyperlight_service_checker.py#L74)
-- [`tests/test_hyperlight_service_checker.py::test_incomplete_capture_is_unavailable`](../tests/test_hyperlight_service_checker.py#L82)
-- [`tests/test_hyperlight_service_checker.py::test_provider_denial_and_limit_are_unavailable`](../tests/test_hyperlight_service_checker.py#L89)
-- [`tests/test_hyperlight_service_checker.py::test_bundle_keeps_patched_dependency_licenses`](../tests/test_hyperlight_service_checker.py#L99)
-- [`tests/test_hyperlight_service_checker.py::test_bundle_pins_both_service_checkers_without_changing_offline_examples`](../tests/test_hyperlight_service_checker.py#L129)
-- [`tests/test_hyperlight_service_checker.py::test_shared_author_and_autonomy_cases`](../tests/test_hyperlight_service_checker.py#L181)
-- [`tests/test_hyperlight_service_checker.py::test_shared_exact_artifact_cases`](../tests/test_hyperlight_service_checker.py#L195)
-- [`tests/test_hyperlight_service_checker.py::test_non_json_constants_in_artifact_subject_are_unavailable`](../tests/test_hyperlight_service_checker.py#L209)
-- [`tests/test_hyperlight_service_checker.py::test_driver_preserves_job33_failure_before_decoding_stdout`](../tests/test_hyperlight_service_checker.py#L231)
-- [`tests/test_hyperlight_service_checker.py::test_driver_cannot_accept_json_from_a_failed_command`](../tests/test_hyperlight_service_checker.py#L265)
-- [`tests/test_hyperlight_service_checker.py::test_driver_accepts_only_the_explicit_retained_grant_denial`](../tests/test_hyperlight_service_checker.py#L300)
-- [`tests/test_hyperlight_service_checker.py::test_driver_matches_sibling_job_outcomes_and_cli_status`](../tests/test_hyperlight_service_checker.py#L320)
-- [`tests/test_hyperlight_service_checker.py::test_expected_negative_still_rejects_command_and_observation_failures`](../tests/test_hyperlight_service_checker.py#L339)
-- [`tests/test_hyperlight_service_checker.py::test_expected_negative_requires_a_retained_json_file`](../tests/test_hyperlight_service_checker.py#L347)
-- [`tests/test_hyperlight_service_checker.py::test_host_capture_retains_the_current_policy_and_configuration_identities`](../tests/test_hyperlight_service_checker.py#L372)
-- [`tests/test_hyperlight_service_checker.py::test_engine_observer_matches_selected_engine_and_artifact_pins`](../tests/test_hyperlight_service_checker.py#L383)
-- [`tests/test_hyperlight_service_checker.py::test_host_capture_rejects_invalid_identity_or_time_binding`](../tests/test_hyperlight_service_checker.py#L404)
-- [`tests/test_hyperlight_service_checker.py::test_named_evidence_binds_the_raw_adopted_definition_digest`](../tests/test_hyperlight_service_checker.py#L410)
-- [`tests/test_hyperlight_service_checker.py::test_held_controls_keep_entry_triggers_late_release_and_fresh_runs`](../tests/test_hyperlight_service_checker.py#L431)
-- [`tests/test_hyperlight_service_checker.py::test_held_controls_reject_an_unreached_or_finished_call`](../tests/test_hyperlight_service_checker.py#L495)
-- [`tests/test_hyperlight_service_checker.py::test_remaining_window_skips_completed_phases_and_reports_its_actual_scope`](../tests/test_hyperlight_service_checker.py#L510)
+- [`tests/test_hyperlight_service_checker.py::test_complete_chunked_capture_and_identity_mismatch`](../tests/test_hyperlight_service_checker.py#L48)
+- [`tests/test_hyperlight_service_checker.py::test_non_json_constants_in_capture_are_unavailable`](../tests/test_hyperlight_service_checker.py#L61)
+- [`tests/test_hyperlight_service_checker.py::test_missing_evidence_is_unavailable`](../tests/test_hyperlight_service_checker.py#L68)
+- [`tests/test_hyperlight_service_checker.py::test_mismatched_subject_and_wrong_types_are_unavailable`](../tests/test_hyperlight_service_checker.py#L77)
+- [`tests/test_hyperlight_service_checker.py::test_incomplete_capture_is_unavailable`](../tests/test_hyperlight_service_checker.py#L85)
+- [`tests/test_hyperlight_service_checker.py::test_provider_denial_and_limit_are_unavailable`](../tests/test_hyperlight_service_checker.py#L92)
+- [`tests/test_hyperlight_service_checker.py::test_bundle_keeps_patched_dependency_licenses`](../tests/test_hyperlight_service_checker.py#L102)
+- [`tests/test_hyperlight_service_checker.py::test_bundle_pins_both_service_checkers_without_changing_offline_examples`](../tests/test_hyperlight_service_checker.py#L132)
+- [`tests/test_hyperlight_service_checker.py::test_shared_author_and_autonomy_cases`](../tests/test_hyperlight_service_checker.py#L184)
+- [`tests/test_hyperlight_service_checker.py::test_shared_exact_artifact_cases`](../tests/test_hyperlight_service_checker.py#L198)
+- [`tests/test_hyperlight_service_checker.py::test_non_json_constants_in_artifact_subject_are_unavailable`](../tests/test_hyperlight_service_checker.py#L212)
+- [`tests/test_hyperlight_service_checker.py::test_resident_memory_reads_a_live_process_and_rejects_a_missing_one`](../tests/test_hyperlight_service_checker.py#L233)
+- [`tests/test_hyperlight_service_checker.py::test_process_memory_includes_descendants_and_excludes_unrelated_processes`](../tests/test_hyperlight_service_checker.py#L239)
+- [`tests/test_hyperlight_service_checker.py::test_darwin_memory_aggregates_descendants_counts_pids_and_grows_full_buffers`](../tests/test_hyperlight_service_checker.py#L279)
+- [`tests/test_hyperlight_service_checker.py::test_darwin_memory_omits_processes_that_disappear_during_sampling`](../tests/test_hyperlight_service_checker.py#L292)
+- [`tests/test_hyperlight_service_checker.py::test_darwin_memory_preserves_denied_or_incomplete_observations`](../tests/test_hyperlight_service_checker.py#L312)
+- [`tests/test_hyperlight_service_checker.py::test_darwin_process_enumeration_keeps_the_existing_five_second_bound`](../tests/test_hyperlight_service_checker.py#L331)
+- [`tests/test_hyperlight_service_checker.py::test_job_memory_retains_live_processes_and_samples_idle_after_reaping`](../tests/test_hyperlight_service_checker.py#L341)
+- [`tests/test_hyperlight_service_checker.py::test_job_memory_preserves_failed_observation_without_claiming_zero_memory`](../tests/test_hyperlight_service_checker.py#L354)
+- [`tests/test_hyperlight_service_checker.py::test_spin_observer_rejects_missing_or_other_invocation_entry`](../tests/test_hyperlight_service_checker.py#L367)
+- [`tests/test_hyperlight_service_checker.py::test_spin_observer_waits_for_the_current_live_marker`](../tests/test_hyperlight_service_checker.py#L387)
+- [`tests/test_hyperlight_service_checker.py::test_template_probe_compares_frozen_generator_state_before_drawing`](../tests/test_hyperlight_service_checker.py#L401)
+- [`tests/test_hyperlight_service_checker.py::test_warm_probe_rejects_replayed_runtime_randomness_and_preserves_samples`](../tests/test_hyperlight_service_checker.py#L425)
+- [`tests/test_hyperlight_service_checker.py::test_driver_preserves_job33_failure_before_decoding_stdout`](../tests/test_hyperlight_service_checker.py#L477)
+- [`tests/test_hyperlight_service_checker.py::test_driver_cannot_accept_json_from_a_failed_command`](../tests/test_hyperlight_service_checker.py#L511)
+- [`tests/test_hyperlight_service_checker.py::test_driver_accepts_only_the_explicit_retained_grant_denial`](../tests/test_hyperlight_service_checker.py#L546)
+- [`tests/test_hyperlight_service_checker.py::test_driver_matches_sibling_job_outcomes_and_cli_status`](../tests/test_hyperlight_service_checker.py#L566)
+- [`tests/test_hyperlight_service_checker.py::test_expected_negative_still_rejects_command_and_observation_failures`](../tests/test_hyperlight_service_checker.py#L585)
+- [`tests/test_hyperlight_service_checker.py::test_expected_negative_requires_a_retained_json_file`](../tests/test_hyperlight_service_checker.py#L593)
+- [`tests/test_hyperlight_service_checker.py::test_host_capture_retains_the_current_policy_and_configuration_identities`](../tests/test_hyperlight_service_checker.py#L618)
+- [`tests/test_hyperlight_service_checker.py::test_capture_observer_requires_the_selected_current_principal`](../tests/test_hyperlight_service_checker.py#L627)
+- [`tests/test_hyperlight_service_checker.py::test_engine_observer_matches_selected_engine_and_artifact_pins`](../tests/test_hyperlight_service_checker.py#L640)
+- [`tests/test_hyperlight_service_checker.py::test_host_capture_rejects_invalid_identity_or_time_binding`](../tests/test_hyperlight_service_checker.py#L661)
+- [`tests/test_hyperlight_service_checker.py::test_named_evidence_binds_the_raw_adopted_definition_digest`](../tests/test_hyperlight_service_checker.py#L667)
+- [`tests/test_hyperlight_service_checker.py::test_held_controls_keep_entry_triggers_late_release_and_fresh_runs`](../tests/test_hyperlight_service_checker.py#L688)
+- [`tests/test_hyperlight_service_checker.py::test_held_controls_reject_an_unreached_or_finished_call`](../tests/test_hyperlight_service_checker.py#L752)
+- [`tests/test_hyperlight_service_checker.py::test_remaining_window_skips_completed_phases_and_reports_its_actual_scope`](../tests/test_hyperlight_service_checker.py#L768)
 
 <a id="witness-tests-test-job-authoring-py"></a>
 ### [`tests/test_job_authoring.py`](../tests/test_job_authoring.py)
@@ -2739,14 +2760,24 @@ Selection: manual native phase `named-checks` (named execution receipt; ignored 
 
 Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::pinned_helper_captures_complete_streams_and_removes_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L63)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::operator_selected_artifact_links_still_verify_the_copied_bytes -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L84)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::substituted_artifacts_and_manifest_architecture_fail_before_spawn -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L105)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_artifacts_identify_role_path_and_os_error_before_discovery -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L134)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_or_failed_vm_report_cannot_make_a_successful_helper_exit_pass -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L192)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::deadline_kills_and_reaps_a_spinning_helper_before_returning -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L205)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::cancellation_stops_a_blocked_helper_and_preserves_no_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L235)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L261)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::live_console_precedes_completion_and_survives_cancellation -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L71)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::console_command_refuses_a_previous_invocations_file_before_spawn -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L132)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::pinned_helper_captures_complete_streams_and_removes_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L154)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::operator_selected_artifact_links_still_verify_the_copied_bytes -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L175)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::substituted_artifacts_and_manifest_architecture_fail_before_spawn -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L196)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_artifacts_identify_role_path_and_os_error_before_discovery -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L248)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_or_failed_vm_report_cannot_make_a_successful_helper_exit_pass -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L312)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::reaped_helpers_never_signal_a_stale_process_group -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L325)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::refused_group_signal_uses_owned_child_termination_and_reaps -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L358)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::refused_signals_wait_for_a_delayed_owned_child_exit -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L377)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::refused_termination_of_a_live_child_remains_a_cleanup_error -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L417)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::unproved_child_disposal_preserves_the_callers_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L440)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::deadline_kills_and_reaps_a_spinning_helper_before_returning -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L473)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::cancellation_stops_a_blocked_helper_and_preserves_no_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L503)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L529)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::template_identity_tracks_frozen_inputs_and_keeps_invocation_authority_separate -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L554)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::template_identity_binds_each_verified_runtime_manifest_input -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L618)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::shutdown_removes_idle_templates_and_preserves_a_live_mapping_lease -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L676)
 
 <a id="witness-tests-proxy-contracts-test-agent-api-config-py"></a>
 ### [`tests/proxy_contracts/test_agent_api_config.py`](../tests/proxy_contracts/test_agent_api_config.py)
