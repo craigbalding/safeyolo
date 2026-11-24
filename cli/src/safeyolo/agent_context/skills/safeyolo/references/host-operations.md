@@ -65,7 +65,9 @@ observation time and `file_revision`. For later chunks, pass that revision with
 `--file-revision REVISION` and advance the offset by the decoded chunk length.
 Replacement or observed modification returns a stale result. A file read is a
 live observation, not an atomic snapshot or proof that this job produced every
-byte. Symlinks below a selected root and special files are refused. Missing or
+byte. Select writable roots and file paths without symlink components. Retrieval
+refuses symlinks at every component and refuses special files. Ordinary file or
+directory replacement through those paths remains supported. Missing or
 unreadable files remain unavailable, including after host storage failure.
 Windows file retrieval is not implemented. Job/stream inspection still works.
 

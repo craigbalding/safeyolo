@@ -557,6 +557,7 @@ impl Target {
                 Verb::Invoke,
                 Verb::Job,
                 Verb::Output,
+                #[cfg(unix)]
                 Verb::File,
                 Verb::Cancel,
             ]

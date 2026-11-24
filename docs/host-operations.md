@@ -534,8 +534,10 @@ The response reports base64 bytes, observed total length, a chunk SHA256,
 observation time and `file_revision`. For later chunks, pass that revision with
 `--file-revision REVISION` and advance by the decoded chunk length. Replacement
 or observed modification returns a stale result. Reads are live observations,
-not atomic snapshots or proof that the job produced every byte. Symlinks below
-a selected root and special files are refused. Missing or unreadable files are
+not atomic snapshots or proof that the job produced every byte. Select writable
+roots and file paths without symlink components. Retrieval refuses symlinks at
+every component and refuses special files. Ordinary file/directory replacement
+through those paths remains supported. Missing or unreadable files are
 unavailable, including after host storage failure. Windows file retrieval is
 not implemented; its existing job/stream inspection remains available.
 

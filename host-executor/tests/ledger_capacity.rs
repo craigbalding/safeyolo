@@ -153,6 +153,8 @@ fn file_results_keep_original_and_current_scope_and_detect_replacement() {
     fs::create_dir(&output).unwrap();
     let result = output.join("result");
     fs::create_dir(output.join("nested")).unwrap();
+    let alias = f.root.join("root-alias");
+    std::os::unix::fs::symlink(output.join("nested"), &alias).unwrap();
     fs::write(&result, b"partial retained result").unwrap();
     fs::write(f.root.join("private"), b"unrelated secret").unwrap();
     std::os::unix::fs::symlink(f.root.join("private"), output.join("escape")).unwrap();
@@ -165,6 +167,7 @@ fn file_results_keep_original_and_current_scope_and_detect_replacement() {
         .write = vec![
         output.to_str().unwrap().into(),
         output.join("nested").to_str().unwrap().into(),
+        alias.to_str().unwrap().into(),
     ];
     f.target = common::target(f.target.target_id.clone(), operations, &f.key);
     let mut ledger = f.open();
@@ -227,6 +230,12 @@ fn file_results_keep_original_and_current_scope_and_detect_replacement() {
     // trusted root. Opening from the outer scope keeps it a denied descendant.
     fs::remove_dir(output.join("nested")).unwrap();
     std::os::unix::fs::symlink(&f.root, output.join("nested")).unwrap();
+    assert_eq!(
+        read(&mut ledger, &f, action(&alias.join("private"), 0, 8, None))
+            .unwrap_err()
+            .code,
+        RefusalCode::Unavailable
+    );
     assert_eq!(
         read(
             &mut ledger,

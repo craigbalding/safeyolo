@@ -730,6 +730,11 @@ fn validate_response(
                 && prepared.invocation.arguments
                     == binding.target.package.operations[&invocation.operation_id]
                         .arguments(&invocation.arguments)?
+                && prepared.file_roots
+                    == binding.target.package.operations[&invocation.operation_id]
+                        .execution
+                        .filesystem
+                        .write
                 && request.expected.as_ref() == Some(&prepared.revisions)
                 && prepared.valid_until == request.expires_at
         }

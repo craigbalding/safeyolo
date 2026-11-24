@@ -154,7 +154,7 @@ def main() -> int:
                 sub.add_argument("--bytes", type=int, default=65536)
             if command == "file":
                 sub.add_argument("--path", required=True, help="Absolute target path within the job's selected writable scope")
-                sub.add_argument("--file-revision", help="Observed file revision required for subsequent chunks")
+                sub.add_argument("--file-revision", help="Refuse the read if the observed file revision changed")
             if command == "cancel":
                 sub.add_argument("--revision", type=int, required=True)
     args = parser.parse_args()

@@ -42,30 +42,24 @@ pub(crate) fn read(
     // Check both scopes before any filesystem observation. A later operation
     // revision cannot turn an old job into access to new paths, and revocation
     // cannot be bypassed with a retained job ID.
-    let selected = receipt
-        .prepared
-        .file_roots
-        .iter()
-        .filter(|root| path_value.starts_with(root))
-        .min_by_key(|root| Path::new(root).components().count());
     // DOC: docs/host-operations.md
     require(
-        selected.is_some()
+        receipt
+            .prepared
+            .file_roots
+            .iter()
+            .any(|root| path_value.starts_with(root))
             && current_roots
                 .iter()
                 .any(|root| path_value.starts_with(root)),
         RefusalCode::Authority,
         "file result is outside admitted or current writable paths",
     )?;
-    let root = Path::new(selected.unwrap());
-    let suffix = path_value
-        .strip_prefix(root)
-        .map_err(crate::native::unavailable)?;
-    // Resolve only the operator-selected root. Pin each resulting component;
-    // a workload symlink or replaced parent cannot redirect an openat read.
-    let real = root.canonicalize().map_err(file_error)?;
+    // Pin every component, including the selected root. Resolving a root alias
+    // here would let a workload redirect it through another writable scope
+    // between native validation and this read.
     let mut file = File::open("/").map_err(file_error)?;
-    for component in real.components().chain(suffix.components()) {
+    for component in path_value.components() {
         if let Component::Normal(name) = component {
             let name = CString::new(name.as_encoded_bytes()).map_err(file_error)?;
             // SAFETY: descriptors/names remain live. O_NONBLOCK prevents FIFO
@@ -78,7 +72,13 @@ pub(crate) fn read(
                 )
             };
             if descriptor < 0 {
-                return Err(file_error(std::io::Error::last_os_error()));
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ELOOP) {
+                    return Err(crate::native::unavailable(
+                        "selected file path contains a symlink or changed during traversal; ask the target operator to inspect it, and select writable roots without symlink components for future jobs",
+                    ));
+                }
+                return Err(file_error(error));
             }
             file = unsafe { File::from_raw_fd(descriptor) };
         }
