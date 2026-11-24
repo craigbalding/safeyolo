@@ -12,6 +12,12 @@ Run prepare once in an idle disposable guest, then patch. After externally
 selected recreation use restored; on a satisfactory later base use fixed.
 Use recover on a separate prepared guest to fail health deliberately.
 Service restart, startup gating and physical VZ witnesses remain separate.
+
+prepare_guest_maintenance_inputs.sh makes a separate corrected Linux tree.
+Pass the prepared directory to install_native.sh --platform-assets DIRECTORY
+in a fresh owned instance for the normal-default case; leave agent/rootfs absent.
+An explicit agent/rootfs override is the separate custom case. Bind the printed
+hook SHA-256 as --hook-sha256. A copied custom-built input is not a released image.
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ def main() -> None:
     parser.add_argument("--agent-id", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--hook-sha256", required=True)
     parser.add_argument("--root-kind", required=True, choices=["stock", "custom"])
     parser.add_argument("--rootfs", required=True, type=Path)
     parser.add_argument("--base-id", required=True, help="actual retained-state base, not the OCI index")
@@ -52,6 +59,7 @@ def main() -> None:
     cli = root / "bin/safeyolo"
     report = {"phase": args.phase, "root": str(root), "agent": args.agent,
               "agent_id": args.agent_id, "run_id": args.run_id, "commit": args.commit,
+              "hook_sha256": args.hook_sha256,
               "root_kind": args.root_kind, "rootfs": str(args.rootfs), "overlay": args.overlay,
               "base_id": args.base_id, "started_at": time.time(), "outcome": "in_progress"}
     # Reserve the result before effects. A killed caller leaves its original
@@ -113,6 +121,9 @@ def main() -> None:
         binding()
         identity = shell("/safeyolo/safeyolo-guest --version")
         assert f"commit={args.commit} profile=debug" in identity
+        report["observed_hook_sha256"] = guest_root(
+            "sha256sum /usr/local/lib/safeyolo/guest-state-hook").split()[0]
+        assert report["observed_hook_sha256"] == args.hook_sha256
         retained()
         prior = None
         if args.phase in {"restored", "fixed"}:
