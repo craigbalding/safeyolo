@@ -176,151 +176,88 @@ grant_ttl_seconds = 31
 '''
 
 
-class GatewayPolicyRead:
-    """Keep gateway response bytes out of wire logs and failure representations."""
+def gateway_services(proxy, agent):
+    forged = "bob" if agent == "alice" else "alice"
+    status, _, body = send_request(
+        proxy.paths[agent], f"http://{HOST}/gateway/services?agent={forged}",
+        headers={"Authorization": f"Bearer {TOKEN}", "X-SafeYolo-Agent": forged},
+    )
+    assert status == 200
+    return json.loads(body)["authorized"]
 
-    def __init__(self, proxy, agent="alice"):
-        __tracebackhide__ = True
+
+def assert_gateway_diagnostics(proxy, expected, tokens):
+    for agent in ("alice", "bob"):
         forged = "bob" if agent == "alice" else "alice"
-        status, headers, body = send_request(
+        status, _, body = send_request(
             proxy.paths[agent], f"http://{HOST}/policy?agent={forged}&agent_id={forged}",
             headers={"Authorization": f"Bearer {TOKEN}", "X-SafeYolo-Agent": forged},
         )
-        status_ok = status == 200
-        assert status_ok, "Gateway baseline read did not succeed"
-        headers = {name.lower(): value for name, value in headers.items()}
-        headers_ok = headers.get("content-type") == "application/json" and headers.get("x-safeyolo-agent-api") == "true"
-        assert headers_ok, "Gateway baseline response did not have API JSON headers"
-        try:
-            self._view = json.loads(body)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise AssertionError("Gateway baseline response was not valid JSON") from None
-        self._wire = body
-
-    def __repr__(self):
-        return "GatewayPolicyRead()"
-
-    def token_count(self):
-        __tracebackhide__ = True
-        return len(self._view["policy"]["gateway"]["token_map"])
-
-    def matches_gateway_model(self, capability="reader", *, granted=True):
-        __tracebackhide__ = True
-        token_map = self._view["policy"]["gateway"]["token_map"]
-        if len(token_map) != int(granted):
-            return False
-        expected_gateway = {"token_map": {}, "agent_env": {"alice": {}}, "host_map": {"slack.com": "slack"}}
-        if granted:
-            token = next(iter(token_map))
-            if not (token.startswith("sgw_") and len(token) == 68
-                    and all(character in "0123456789abcdef" for character in token[4:])):
-                return False
-            expected_gateway["token_map"][token] = {
-                "agent": "alice", "service": "slack", "capability": capability,
-                "token": "fixture-vault-reference", "account": "agent",
-            }
-            expected_gateway["agent_env"]["alice"]["slack"] = token
-        expected_gateway["grant_ttl_seconds"] = 31
-        expected = {"policy": {**EMPTY_BASELINE, "gateway": expected_gateway}}
-        return self._wire == json.dumps(expected).encode()
-
-    def same_snapshot(self, other):
-        __tracebackhide__ = True
-        return self._wire == other._wire
-
-    def same_tokens(self, other):
-        __tracebackhide__ = True
-        return (self._view["policy"]["gateway"]["token_map"].keys()
-                == other._view["policy"]["gateway"]["token_map"].keys())
-
-    def token_values_absent_from_files(self, directory):
-        __tracebackhide__ = True
-        tokens = [token.encode() for token in self._view["policy"]["gateway"]["token_map"]]
-        return all(not any(token in path.read_bytes() for token in tokens)
-                   for path in directory.rglob("*") if path.is_file())
+        assert status == 200
+        assert not any(token.encode() in body for token in tokens)
+        assert b"fixture-vault-reference" not in body
+        assert b'"token_map"' not in body and b'"agent_env"' not in body
+        assert json.loads(body)["policy"]["gateway"] == expected
 
 
-def source_gateway_runtime_is_absent(proxy):
-    """Observe the source addon boundary without recording any possible tokens."""
-    __tracebackhide__ = True
-    status, _, body = send_request(proxy.paths["alice"], f"http://{HOST}/gateway/services",
-                                  headers={"Authorization": f"Bearer {TOKEN}"})
-    return status == 503 and body == b'{"error": "service-gateway addon not loaded"}'
-
-
-def test_agent_api_policy_gateway_tokens_follow_baseline_reload(proxy_backend, tmp_path):
+@pytest.mark.parametrize("capability", ["reader", 7], ids=["string-capability", "numeric-capability"])
+def test_agent_api_policy_gateway_tokens_stay_with_the_caller_across_reload(proxy_backend, tmp_path, capability):
     directory = tmp_path / proxy_backend
-    reads = []
-    with origin_server() as parent:
-        with policy_proxy(proxy_backend, directory, GATEWAY_SOURCE, agent_api=True,
-                          parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}") as proxy:
-            if proxy_backend == "python":
-                runtime_absent = source_gateway_runtime_is_absent(proxy)
-                assert runtime_absent, "Source gateway runtime unexpectedly loaded"
-            before = GatewayPolicyRead(proxy)
-            repeated = GatewayPolicyRead(proxy)
-            other_agent = GatewayPolicyRead(proxy, "bob")
-            reads.extend((before, repeated, other_agent))
-            canonical = all(read.matches_gateway_model() for read in reads)
-            shared_stable = before.same_snapshot(repeated) and before.same_snapshot(other_agent)
-            assert canonical, "Gateway canonical fields or values changed"
-            assert shared_stable, "Repeated or cross-agent baseline reads changed the snapshot"
-
-            replace_policy(proxy, proxy_backend, directory, GATEWAY_SOURCE)
-            reloaded = GatewayPolicyRead(proxy)
-            reads.append(reloaded)
-            rotated = not before.same_tokens(reloaded)
-            canonical = reloaded.matches_gateway_model()
-            assert rotated, "Successful identical reload did not rotate the gateway token"
-            assert canonical, "Reload changed canonical gateway fields or values"
-
-            replace_policy(proxy, proxy_backend, directory, "[hosts\n", valid=False)
-            retained = GatewayPolicyRead(proxy, "bob")
-            reads.append(retained)
-            failure_retained = reloaded.same_snapshot(retained)
-            assert failure_retained, "Failed reload changed the last valid gateway snapshot"
-
-            replace_policy(proxy, proxy_backend, directory, NO_GATEWAY_GRANT_SOURCE)
-            removed = GatewayPolicyRead(proxy)
-            removed_other_agent = GatewayPolicyRead(proxy, "bob")
-            reads.extend((removed, removed_other_agent))
-            empty_canonical = removed.matches_gateway_model(granted=False)
-            empty_shared = removed.same_snapshot(removed_other_agent)
-            assert empty_canonical, "Last-grant removal did not expose the canonical empty token map"
-            assert empty_shared, "Identities observed different grant-removal snapshots"
-            assert parent.accepts == 0 and parent.requests == []
-            assert proxy.events("traffic.egress") == []
-    tokens_private = all(read.token_values_absent_from_files(directory) for read in reads)
-    assert tokens_private, "Gateway bearer values reached fixture files"
-    (directory / "gateway-policy-observations.json").write_text(json.dumps({
-        "source_gateway_absence_observed": proxy_backend == "python", "canonical_values_preserved": canonical,
-        "repeated_and_shared_reads_stable": shared_stable, "successful_reload_rotated_token": rotated,
-        "failed_reload_retained_snapshot": failure_retained, "last_grant_removal_empty": empty_canonical,
-        "empty_snapshot_shared": empty_shared, "tokens_absent_from_files": tokens_private,
-        "baseline_reads": len(reads), "tokens_before": before.token_count(), "tokens_after_removal": removed.token_count(),
-    }, indent=2) + "\n")
-
-
-def test_agent_api_policy_preserves_non_string_gateway_capability(proxy_backend, tmp_path):
-    directory = tmp_path / proxy_backend
-    source = GATEWAY_SOURCE.replace('capability = "reader"', "capability = 7")
+    builtin = directory / "builtin"
+    services = directory / "services"
+    builtin.mkdir(parents=True)
+    services.mkdir()
+    for name, host in (("slack", "slack.com"), ("second", "second.invalid")):
+        (services / f"{name}.yaml").write_text(f"""schema_version: 1
+name: {name}
+default_host: {host}
+capabilities:
+  reader:
+    routes: [{{methods: [GET], path: /read}}]
+""")
+    source = GATEWAY_SOURCE + '''[hosts."second.invalid"]
+service = "second"
+[agents.bob.services.second]
+capability = "reader"
+token = "fixture-vault-reference-bob"
+[agents.alice.services.second]
+capability = "reader"
+token = "fixture-vault-reference-alice-second"
+'''
+    source = source.replace('capability = "reader"', f"capability = {json.dumps(capability)}")
+    expected = {"host_map": {"slack.com": "slack", "second.invalid": "second"}, "grant_ttl_seconds": 31}
     with origin_server() as parent:
         with policy_proxy(proxy_backend, directory, source, agent_api=True,
+                          gateway_services_dir=services, gateway_builtin_services_dir=builtin,
                           parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}") as proxy:
-            if proxy_backend == "python":
-                runtime_absent = source_gateway_runtime_is_absent(proxy)
-                assert runtime_absent, "Source gateway runtime unexpectedly loaded"
-            first = GatewayPolicyRead(proxy)
-            other_agent = GatewayPolicyRead(proxy, "bob")
-            canonical = first.matches_gateway_model(capability=7) and other_agent.matches_gateway_model(capability=7)
-            shared = first.same_snapshot(other_agent)
-            assert canonical, "Source-valid non-string capability did not survive the canonical baseline"
-            assert shared, "Non-string grant baseline was filtered by caller identity"
+            alice = gateway_services(proxy, "alice")
+            bob = gateway_services(proxy, "bob")
+            assert set(alice) == {"slack", "second"}
+            assert set(bob) == {"second"}
+            assert all(service["capability"] == capability for service in (*alice.values(), *bob.values()))
+            tokens = [service["token"] for service in (*alice.values(), *bob.values())]
+            assert len(set(tokens)) == 3
+            assert_gateway_diagnostics(proxy, expected, tokens)
+            assert gateway_services(proxy, "alice") == alice
+            assert gateway_services(proxy, "bob") == bob
+
+            replace_policy(proxy, proxy_backend, directory, source)
+            reloaded = gateway_services(proxy, "alice")
+            rotated = reloaded["slack"]["token"] != alice["slack"]["token"]
+            assert rotated, "Successful identical reload did not rotate the gateway token"
+            tokens.extend(service["token"] for service in reloaded.values())
+            tokens.extend(service["token"] for service in gateway_services(proxy, "bob").values())
+            assert_gateway_diagnostics(proxy, expected, tokens)
+
+            replace_policy(proxy, proxy_backend, directory, "[hosts\n", valid=False)
+            assert gateway_services(proxy, "alice") == reloaded
+            assert_gateway_diagnostics(proxy, expected, tokens)
+
+            replace_policy(proxy, proxy_backend, directory, NO_GATEWAY_GRANT_SOURCE)
+            assert gateway_services(proxy, "alice") == {}
+            assert gateway_services(proxy, "bob") == {}
+            assert_gateway_diagnostics(proxy, {"host_map": {"slack.com": "slack"}, "grant_ttl_seconds": 31}, tokens)
             assert parent.accepts == 0 and parent.requests == []
             assert proxy.events("traffic.egress") == []
-    tokens_private = first.token_values_absent_from_files(directory) and other_agent.token_values_absent_from_files(directory)
-    assert tokens_private, "Gateway bearer values reached fixture files"
-    (directory / "gateway-policy-observations.json").write_text(json.dumps({
-        "source_gateway_absence_observed": proxy_backend == "python", "non_string_capability_preserved": canonical,
-        "snapshot_shared": shared, "tokens_absent_from_files": tokens_private, "token_count": first.token_count(),
-    }, indent=2) + "\n")
+    assert all(not any(token.encode() in path.read_bytes() for token in tokens)
+               for path in directory.rglob("*") if path.is_file())
