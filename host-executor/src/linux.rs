@@ -1,5 +1,6 @@
 //! Linux execution with a private cgroup and bubblewrap namespaces. This path
-//! supports read-only, disconnected operations under the executor's identity.
+//! supports selected file reads and writes under the executor's identity.
+//! Ordinary operations remain disconnected until a network scope is supported.
 //! Only the pinned native service client receives its fixed manager channel.
 use crate::*;
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,9 @@ use std::{
     sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
+
+mod runtime_files;
+mod writes;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -139,6 +143,21 @@ fn dependency_snapshot(
 }
 
 impl LinuxRuntime {
+    fn write_mounts(
+        &self,
+        paths: &[String],
+        protected: &[PathBuf],
+    ) -> Result<Vec<writes::WriteMount>, Refusal> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut protected = protected.to_vec();
+        protected.push(self.cgroup.clone());
+        protected.push(self.bubblewrap.canonicalize().map_err(unavailable)?);
+        protected.extend(runtime_files::dependencies(&self.bubblewrap)?);
+        writes::open(paths, &protected)
+    }
+
     /// Pure filesystem validation: never run an adopted command for discovery,
     /// qualification, startup or reload. Every entry uses the same validation.
     pub fn validate(&self, target: &Target, protected: &[PathBuf]) -> Result<(), Refusal> {
@@ -232,7 +251,7 @@ impl LinuxRuntime {
         require(
             service || execution.broader.is_empty(),
             RefusalCode::Unavailable,
-            "this Linux profile enforces required read-only/disconnected bounds; broader profiles are not silently substituted",
+            "this Linux profile enforces selected filesystem and disconnected network bounds; broader profiles are not silently substituted",
         )?;
         // SAFETY: these identity accessors have no pointer arguments. getgroups
         // is given a vector sized by its immediately preceding count query.
@@ -265,15 +284,15 @@ impl LinuxRuntime {
             "this backend retains this executor host UID and all its supplementary host GIDs; identity cannot select another account or a group subset",
         )?;
         require(
-            execution.filesystem.write.is_empty()
-                && execution.network.destinations.is_empty()
+            execution.network.destinations.is_empty()
                 && (service || execution.network.ipc.is_empty())
                 && (service || execution.delegated_services.is_empty()),
             RefusalCode::Unavailable,
-            "writable storage and direct network/IPC are unavailable; the service channel requires the fixed native OS client profile",
+            "direct network/IPC are unavailable; the service channel requires the fixed native OS client profile",
         )?;
         let mut protected = protected.to_vec();
         protected.push(self.cgroup.clone());
+        self.write_mounts(&execution.filesystem.write, &protected)?;
         let mounts = mounts()?;
         for endpoint in &execution.network.ipc {
             let IpcEndpoint::UnixSocket { path } = endpoint else {
@@ -362,9 +381,10 @@ impl LinuxRuntime {
         target: &Target,
         ledger: Arc<Mutex<Ledger>>,
         job_id: &str,
+        protected: &[PathBuf],
     ) -> Result<(), Refusal> {
         crate::native::execute_job(target, ledger, job_id, |op, receipt, ledger| {
-            self.run(op, receipt, ledger)
+            self.run(op, receipt, ledger, protected)
         })
     }
 
@@ -373,7 +393,27 @@ impl LinuxRuntime {
         operation: &Operation,
         receipt: &Receipt,
         ledger: &Arc<Mutex<Ledger>>,
+        protected: &[PathBuf],
     ) -> Result<NativeObservation, Refusal> {
+        // Pin and check the actual writable referents before creating a job.
+        // The bind mounts use these descriptors, never a second path lookup.
+        let writes = match self.write_mounts(&operation.execution.filesystem.write, protected) {
+            Ok(writes) => writes,
+            Err(error) => {
+                return Ok(NativeObservation {
+                    backend: "linux-bubblewrap-cgroup-v2".into(),
+                    enforcement: vec![
+                        "write validation refused before cgroup creation or workload launch".into(),
+                    ],
+                    dependencies: Vec::new(),
+                    exit_code: None,
+                    signal: None,
+                    processes_stopped: true,
+                    output_truncated: false,
+                    termination_reason: format!("launch_refused: {error}"),
+                });
+            }
+        };
         let path = self.cgroup.join(&receipt.job_id);
         fs::create_dir(&path).map_err(unavailable)?;
         let mut group = JobCgroup { path, child: None };
@@ -441,6 +481,13 @@ impl LinuxRuntime {
             native.args(["--ro-bind-fd", &file.as_raw_fd().to_string(), path]);
             reads.push(file);
         }
+        for mount in &writes {
+            native.args([
+                "--bind-fd",
+                &mount.file.as_raw_fd().to_string(),
+                &mount.path,
+            ]);
+        }
         for (path, dependency) in &operation.execution.dependencies {
             let file = dependency_snapshot(operation, path, dependency)?;
             native.args([
@@ -498,6 +545,7 @@ impl LinuxRuntime {
             .args(&command.argv);
         let fds: Vec<i32> = reads
             .iter()
+            .chain(writes.iter().map(|mount| &mount.file))
             .chain([&binary, &helper, &seccomp])
             .map(|f| f.as_raw_fd())
             .collect();
@@ -533,7 +581,7 @@ impl LinuxRuntime {
         group.child = Some(native.spawn().map_err(|error| {
             unavailable(format!("place and launch the cgroup workload: {error}"))
         })?);
-        drop((binary, helper, seccomp, reads, attach));
+        drop((binary, helper, seccomp, reads, writes, attach));
         let child = group.child.as_mut().expect("spawned child");
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
@@ -659,12 +707,15 @@ impl LinuxRuntime {
         }
         let mut result = NativeObservation {
             backend: "linux-bubblewrap-cgroup-v2".into(),
-            enforcement: vec!["read-only opened filesystem mounts; sealed executable snapshot".into(), "separate user/PID/network/IPC/UTS namespaces; no sockets or nested namespaces".into(), "cgroup memory.max, memory.swap.max=0 and pids.max include runtime overhead".into(), "bounded retained merged output, deadline and descendant termination".into()],
+            enforcement: vec!["opened read-only mounts and selected descriptor-pinned writable roots; sealed executable snapshot".into(), "separate user/PID/network/IPC/UTS namespaces; no sockets or nested namespaces".into(), "cgroup memory.max, memory.swap.max=0 and pids.max include runtime overhead".into(), "bounded retained merged output, deadline and descendant termination".into()],
             dependencies: vec![format!("host UID {} and supplementary host GIDs {:?}; the user namespace maps the primary GID, while supplementary GIDs are retained for host ACL checks and appear as the kernel overflow GID inside it", operation.execution.identity.principal, operation.execution.identity.groups), "pinned bubblewrap; kernel user namespaces, seccomp and delegated cgroup v2".into(), "adopted read paths include mutable host-owned runtime dependencies; their content is not pinned".into()],
             exit_code: status.and_then(|s| s.code()), signal: status.and_then(|s| s.signal()),
             processes_stopped: quiescent, output_truncated: truncated || output_open,
             termination_reason: reason.into(),
         };
+        if !operation.execution.filesystem.write.is_empty() {
+            result.dependencies.push(format!("selected host write roots {:?}; files persist after job cleanup, cancellation and restart; output_bytes bounds stdout/stderr, not file storage; the Output route does not retrieve selected files", operation.execution.filesystem.write));
+        }
         if service {
             result.enforcement[1] = "separate user/network/IPC/UTS namespaces; only AF_UNIX sockets and the fixed systemd user channel; host process signalling and cross-process memory/FD access are denied".into();
             result.dependencies.push("EXPLICIT BROADER PROCESS VISIBILITY: the trusted OS client shares the host PID namespace so the service owner has a visible peer PID for SO_PEERCRED authentication. Host /proc is not mounted. The cgroup still bounds and terminates the helper and its descendants".into());
