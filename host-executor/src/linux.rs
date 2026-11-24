@@ -343,8 +343,7 @@ impl LinuxRuntime {
             "this backend retains this executor host UID and all its supplementary host GIDs; identity cannot select another account or a group subset",
         )?;
         require(
-            (service || execution.network.ipc.is_empty())
-                && (service || execution.delegated_services.is_empty()),
+            service || execution.network.ipc.is_empty() && execution.delegated_services.is_empty(),
             RefusalCode::Unavailable,
             "Unix IPC requires the fixed native OS service client profile; direct TCP does not grant IPC or service-manager authority",
         )?;
