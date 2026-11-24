@@ -213,6 +213,15 @@ pub fn command(args: Vec<String>) -> Result<(), Refusal> {
             settings.target.target_id
         );
         for (id, operation) in &settings.target.package.operations {
+            #[cfg(unix)]
+            if settings.target.allowed_verbs.contains(&Verb::File)
+                && !operation.execution.filesystem.write.is_empty()
+            {
+                println!(
+                    "operation {id}: file retrieval paths {:?}; requires the issuer's file verb and current operation/resource scope, intersected with the job's admitted paths. Reads are bounded live observations, not atomic snapshots or proof of file authorship. Every path component must be symlink-free. Host files retain their operator-selected lifetime; retrieval adds no copy, rollback or file-storage quota.",
+                    operation.execution.filesystem.write
+                );
+            }
             if !operation.execution.network.destinations.is_empty()
                 || !operation.execution.network.listeners.is_empty()
             {

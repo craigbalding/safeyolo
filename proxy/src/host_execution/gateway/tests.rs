@@ -109,6 +109,7 @@ impl Fixture {
             Verb::Invoke,
             Verb::Job,
             Verb::Output,
+            Verb::File,
             Verb::Cancel,
         ]
         .into();
@@ -404,6 +405,67 @@ impl Fixture {
 
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn file_replies_bind_the_job_path_range_and_observed_revision() {
+    let f = Fixture::new("").await;
+    let input = f.input(
+        "file-read",
+        Action::File {
+            job_id: "job-retained".into(),
+            path: "/selected/result".into(),
+            offset: 7,
+            max_bytes: 8,
+            expected_file_revision: Some("file-revision".into()),
+        },
+    );
+    let request = f
+        .binding
+        .request(f.binding.grant().unwrap().principal.clone(), &input)
+        .unwrap();
+    let bytes = b"partial";
+    let response = Response::File {
+        job_id: "job-retained".into(),
+        revision: 3,
+        path: "/selected/result".into(),
+        file_revision: "file-revision".into(),
+        observed_at: now(),
+        offset: 7,
+        data_base64: STANDARD.encode(bytes),
+        eof: true,
+        total_bytes: 14,
+        chunk_sha256: ring::digest::digest(&ring::digest::SHA256, bytes)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
+    };
+    validate_response(&f.binding, &request, &response).unwrap();
+    for (field, value) in [
+        ("job_id", json!("job-other")),
+        ("path", json!("/unrelated/result")),
+        ("offset", json!(0)),
+        ("file_revision", json!("replacement")),
+        ("data_base64", json!("c2VjcmV0")),
+        ("chunk_sha256", json!("wrong")),
+        ("total_bytes", json!(13)),
+        ("eof", json!(false)),
+    ] {
+        let mut changed = json!(response);
+        changed[field] = value;
+        assert!(
+            validate_response(
+                &f.binding,
+                &request,
+                &serde_json::from_value(changed).unwrap()
+            )
+            .is_err(),
+            "{field}"
+        );
+    }
+    f.stop().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn package_mismatch_discovery_reports_revisions_without_a_possible_job() {
     let mut f = Fixture::new("").await;
     let original = serde_json::to_string(&serde_json::to_string(&f.binding).unwrap()).unwrap();
@@ -680,6 +742,13 @@ async fn native_scopes_defaults_current_policy_and_cross_agent_objects_are_enfor
             job_id: receipt.job_id.clone(),
             offset: 0,
             max_bytes: 1,
+        },
+        Action::File {
+            job_id: receipt.job_id.clone(),
+            path: "/selected/result".into(),
+            offset: 0,
+            max_bytes: 1,
+            expected_file_revision: None,
         },
         Action::Cancel {
             job_id: receipt.job_id.clone(),
