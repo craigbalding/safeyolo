@@ -602,6 +602,7 @@ async fn dispatch(
             // Output bytes stay in the target's bounded output owner.
             event.details = json!({"host_binding":name,"run":run,"target_id":binding.target.target_id,"result":match &response {
                 Response::Output { job_id, revision, sha256, .. } => json!({"kind":"output","job_id":job_id,"revision":revision,"sha256":sha256}),
+                Response::File { job_id, revision, path, file_revision, chunk_sha256, .. } => json!({"kind":"file","job_id":job_id,"revision":revision,"path":path,"file_revision":file_revision,"chunk_sha256":chunk_sha256}),
                 _ => json!(response)
             }}).into();
             if runtime.audit.emit_confirmed(event).await.is_err() {
@@ -753,6 +754,45 @@ fn validate_response(
                 job_id: expected, ..
             },
         ) => job_id == expected,
+        (
+            Response::File {
+                job_id,
+                path,
+                offset,
+                file_revision,
+                data_base64,
+                eof,
+                total_bytes,
+                chunk_sha256,
+                ..
+            },
+            Action::File {
+                job_id: expected,
+                path: expected_path,
+                offset: expected_offset,
+                max_bytes,
+                expected_file_revision,
+            },
+        ) => {
+            job_id == expected
+                && path == expected_path
+                && offset == expected_offset
+                && expected_file_revision
+                    .as_ref()
+                    .is_none_or(|expected| expected == file_revision)
+                && STANDARD.decode(data_base64).is_ok_and(|data| {
+                    data.len() as u64 <= *max_bytes
+                        && offset
+                            .checked_add(data.len() as u64)
+                            .is_some_and(|end| end <= *total_bytes && *eof == (end == *total_bytes))
+                        && ring::digest::digest(&ring::digest::SHA256, &data)
+                            .as_ref()
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>()
+                            == *chunk_sha256
+                })
+        }
         _ => false,
     };
     if valid {

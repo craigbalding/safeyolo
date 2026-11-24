@@ -117,8 +117,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "arguments": arguments, "expected_assessment_sha256": None,
         }}, operation["revisions"])
     action = {"kind": args.command, "job_id": args.job}
-    if args.command == "output":
+    if args.command in {"output", "file"}:
         action.update(offset=args.offset, max_bytes=args.bytes)
+    if args.command == "file":
+        action.update(path=args.path, expected_file_revision=args.file_revision)
     if args.command == "cancel":
         action["expected_revision"] = args.revision
     try:
@@ -135,7 +137,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("bindings", help="Current bindings for this trusted run and active task")
-    for command in ("discover", "propose", "invoke", "job", "output", "cancel"):
+    for command in ("discover", "propose", "invoke", "job", "output", "file", "cancel"):
         sub = commands.add_parser(command)
         sub.add_argument("binding")
         sub.add_argument("--request-id", required=True, help="Retain this exact ID with the original result")
@@ -145,11 +147,14 @@ def main() -> int:
             sub.add_argument("--arguments", help="JSON object; literal typed values, never script text")
         elif command == "invoke":
             sub.add_argument("--prepared", required=True, help="Unchanged successful proposal JSON")
-        elif command in ("job", "output", "cancel"):
+        elif command in ("job", "output", "file", "cancel"):
             sub.add_argument("--job", required=True)
-            if command == "output":
+            if command in {"output", "file"}:
                 sub.add_argument("--offset", type=int, default=0)
                 sub.add_argument("--bytes", type=int, default=65536)
+            if command == "file":
+                sub.add_argument("--path", required=True, help="Absolute target path within the job's selected writable scope")
+                sub.add_argument("--file-revision", help="Observed file revision required for subsequent chunks")
             if command == "cancel":
                 sub.add_argument("--revision", type=int, required=True)
     args = parser.parse_args()

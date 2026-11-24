@@ -532,10 +532,15 @@ impl Ledger {
             }
             Action::Job { job_id }
             | Action::Output { job_id, .. }
+            | Action::File { job_id, .. }
             | Action::Cancel { job_id, .. } => {
                 let mut retained = receipt(&transaction, job_id)?;
                 target.authorize_job(&auth, &retained)?;
                 match req.action {
+                    Action::File { max_bytes, .. } => {
+                        let roots = target.file_result_roots(&auth, &retained, max_bytes)?;
+                        crate::files::read(&retained, &req.action, roots, now)?
+                    }
                     Action::Cancel {
                         expected_revision, ..
                     } => {

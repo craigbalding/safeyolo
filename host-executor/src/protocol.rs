@@ -15,6 +15,7 @@ pub enum Verb {
     Invoke,
     Job,
     Output,
+    File,
     Cancel,
 }
 
@@ -26,6 +27,7 @@ impl Verb {
             Self::Invoke => "/v1/host-execution/invoke",
             Self::Job => "/v1/host-execution/job",
             Self::Output => "/v1/host-execution/output",
+            Self::File => "/v1/host-execution/file",
             Self::Cancel => "/v1/host-execution/cancel",
         }
     }
@@ -76,6 +78,13 @@ pub enum Action {
         offset: u64,
         max_bytes: u64,
     },
+    File {
+        job_id: String,
+        path: String,
+        offset: u64,
+        max_bytes: u64,
+        expected_file_revision: Option<String>,
+    },
     Cancel {
         job_id: String,
         expected_revision: u64,
@@ -90,14 +99,16 @@ impl Action {
             Self::Invoke { .. } => Verb::Invoke,
             Self::Job { .. } => Verb::Job,
             Self::Output { .. } => Verb::Output,
+            Self::File { .. } => Verb::File,
             Self::Cancel { .. } => Verb::Cancel,
         }
     }
     pub fn job_id(&self) -> Option<&str> {
         match self {
-            Self::Job { job_id } | Self::Output { job_id, .. } | Self::Cancel { job_id, .. } => {
-                Some(job_id)
-            }
+            Self::Job { job_id }
+            | Self::Output { job_id, .. }
+            | Self::File { job_id, .. }
+            | Self::Cancel { job_id, .. } => Some(job_id),
             _ => None,
         }
     }
@@ -219,6 +230,8 @@ pub struct Prepared {
     pub valid_until: u64,
     /// A proposal is an assessment, never an approval or a reservation.
     pub assessment_sha256: String,
+    /// Adopted writable paths at admission. File reads also need current scope.
+    pub file_roots: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
@@ -451,6 +464,18 @@ pub enum Response {
         eof: bool,
         retained_bytes: u64,
         sha256: Option<String>,
+    },
+    File {
+        job_id: String,
+        revision: u64,
+        path: String,
+        file_revision: String,
+        observed_at: u64,
+        offset: u64,
+        data_base64: String,
+        eof: bool,
+        total_bytes: u64,
+        chunk_sha256: String,
     },
     Refused {
         refusal: Refusal,

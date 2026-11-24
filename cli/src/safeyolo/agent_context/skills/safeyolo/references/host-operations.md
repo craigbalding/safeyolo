@@ -50,6 +50,34 @@ python3 "$HOST_CLIENT" job case --request-id metadata-status-1 --job JOB_ID
 python3 "$HOST_CLIENT" output case --request-id metadata-output-1 --job JOB_ID --offset 0 --bytes 65536
 ```
 
+For an authorised Unix job that wrote files, `prepared.file_roots` gives the
+selected host paths. The issuer grant and target must explicitly permit `file`;
+`output` alone grants no file access. Select a regular file within both the
+admitted and current writable scope. Replace `/selected/result` with its actual
+target path and `JOB_ID` with the retained job ID:
+
+```sh
+python3 "$HOST_CLIENT" file case --request-id file-read-1 --job JOB_ID --path /selected/result --offset 0 --bytes 4096
+```
+
+The response contains base64 bytes, the observed total length, a chunk SHA256,
+observation time and `file_revision`. For later chunks, pass that revision with
+`--file-revision REVISION` and advance the offset by the decoded chunk length.
+Replacement or observed modification returns a stale result. A file read is a
+live observation, not an atomic snapshot or proof that this job produced every
+byte. Symlinks below a selected root and special files are refused. Missing or
+unreadable files remain unavailable, including after host storage failure.
+Windows file retrieval is not implemented. Job/stream inspection still works.
+
+Files remain at their selected host paths after completion, failure, cancellation
+and executor restart. This route does not copy files into a retained artifact
+store, extend their lifetime, undo writes, or impose a file-storage quota.
+The target operator controls host-file retention and removal. Current file and
+operation/resource authority must still permit retrieval; revocation/expiry
+can remove agent access without deleting the files. Stream truncation and job
+failure do not imply that partial files are absent. Read their observed length
+and bytes separately from the job's termination and stream result.
+
 For cancellation, read the current job revision, then use `cancel BINDING
 --request-id ID --job JOB_ID --revision REVISION`. Inspect the next receipt;
 requesting cancellation is not observed termination.

@@ -73,6 +73,30 @@ def test_discovery_pins_and_typed_data_cross_preparation_without_authority_field
     assert invoke["expected"] == {"authority": "observed"}
 
 
+def test_file_cli_keeps_target_path_revision_and_read_failure(transport, monkeypatch, capsys):
+    calls, responses = transport
+    responses.extend([
+        {"discovery": {"revisions": {"authority": "observed"}}},
+        {"kind": "file", "file_revision": "file-1", "data_base64": "cGFydGlhbA==", "eof": False},
+    ])
+    arguments = [str(SOURCE), "file", "case:linux", "--request-id", "file-read", "--job", "job-original",
+                 "--path", "/selected/result with spaces; $data", "--offset", "7", "--bytes", "4096", "--file-revision", "file-1"]
+    monkeypatch.setattr(client.sys, "argv", arguments)
+    assert client.main() == 0
+    assert json.loads(capsys.readouterr().out)["file_revision"] == "file-1"
+    assert json.loads(calls[-1].data) == {
+        "request_id": "file-read", "expected": {"authority": "observed"},
+        "action": {"kind": "file", "job_id": "job-original", "path": "/selected/result with spaces; $data",
+                   "offset": 7, "max_bytes": 4096, "expected_file_revision": "file-1"},
+    }
+    responses.extend([{"discovery": {"revisions": {"authority": "observed"}}}, TimeoutError("file unavailable")])
+    assert client.main() == 1
+    failure = json.loads(capsys.readouterr().out)
+    assert failure["execution_outcome"] == "unavailable"
+    assert failure["request_id"] == "file-read"
+    assert len(calls) == 4  # Each explicit attempt does discovery and one read.
+
+
 @pytest.mark.parametrize("kind", ["invoke", "cancel"])
 def test_lost_mutation_reply_is_uncertain_and_is_not_retried(transport, kind):
     calls, responses = transport

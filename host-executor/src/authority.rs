@@ -557,6 +557,7 @@ impl Target {
                 Verb::Invoke,
                 Verb::Job,
                 Verb::Output,
+                Verb::File,
                 Verb::Cancel,
             ]
             .into_iter()
@@ -722,6 +723,7 @@ impl Target {
         }
         normalized.expected_assessment_sha256 = Some(assessment_sha256.clone());
         Ok(Prepared {
+            file_roots: op.execution.filesystem.write.clone(),
             invocation: normalized,
             revisions: authorized.revisions.clone(),
             limits,
@@ -749,6 +751,50 @@ impl Target {
             RefusalCode::Authority,
             "job/output belongs to another target, issuer, principal or grant",
         )
+    }
+
+    pub(crate) fn file_result_roots<'a>(
+        &'a self,
+        authorized: &Authorized<'_>,
+        receipt: &Receipt,
+        max_bytes: u64,
+    ) -> Result<&'a [String], Refusal> {
+        self.authorize_job(authorized, receipt)?;
+        let invocation = &receipt.prepared.invocation;
+        let op = self
+            .package
+            .operations
+            .get(&invocation.operation_id)
+            .ok_or_else(|| Refusal {
+                code: RefusalCode::Authority,
+                message: "file results need a currently adopted operation and file scope".into(),
+            })?;
+        let (delegated, ceiling) = authorized.scopes(&invocation.operation_id)?;
+        for (scope, families) in [
+            (delegated.scope, &authorized.grant.families),
+            (ceiling.scope, &self.families),
+        ] {
+            require(
+                self.scope_is_current(&invocation.operation_id, op, scope, families)
+                    && op.required_checks.is_subset(&scope.checks)
+                    && op.resources.contains(&invocation.resource_id)
+                    && scope.resources.contains(&invocation.resource_id),
+                RefusalCode::Authority,
+                "file results are outside current operation/resource authority",
+            )?;
+            require(
+                max_bytes > 0 && max_bytes <= scope.budgets.output_bytes,
+                RefusalCode::Arguments,
+                "file chunk exceeds current output limit",
+            )?;
+        }
+        require(
+            max_bytes <= receipt.prepared.limits.output_bytes
+                && max_bytes <= op.execution.resources.output_bytes,
+            RefusalCode::Arguments,
+            "file chunk exceeds admitted or current execution output limit",
+        )?;
+        Ok(&op.execution.filesystem.write)
     }
 
     /// The executor must reserve Usage and retain this receipt atomically

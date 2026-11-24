@@ -173,6 +173,57 @@ impl Fixture {
         self.server.wait().unwrap();
         self.server = start(&self.root);
     }
+    fn assert_file_result(&mut self, job_id: &str, path: &Path, expected: &[u8]) {
+        let request = |offset, max_bytes, expected_file_revision| Action::File {
+            job_id: job_id.into(),
+            path: path.to_str().unwrap().into(),
+            offset,
+            max_bytes,
+            expected_file_revision,
+        };
+        let Response::File {
+            data_base64,
+            file_revision,
+            total_bytes,
+            eof,
+            ..
+        } = self.call(request(0, 7, None))
+        else {
+            panic!("selected file result")
+        };
+        assert_eq!(STANDARD.decode(data_base64).unwrap(), expected[..7]);
+        assert_eq!(total_bytes, expected.len() as u64);
+        assert!(!eof);
+        self.restart();
+        let Response::File {
+            data_base64, eof, ..
+        } = self.call(request(7, 4096, Some(file_revision.clone())))
+        else {
+            panic!("file result after restart")
+        };
+        assert_eq!(STANDARD.decode(data_base64).unwrap(), expected[7..]);
+        assert!(eof);
+        assert!(
+            matches!(self.call(request(0, 4096, Some("stale".into()))), Response::Refused { refusal } if refusal.code == RefusalCode::Stale)
+        );
+        for denied in [
+            self.root.join("forbidden"),
+            path.parent().unwrap().join("escape"),
+        ] {
+            let response = self.call(Action::File {
+                job_id: job_id.into(),
+                path: denied.to_str().unwrap().into(),
+                offset: 0,
+                max_bytes: 4096,
+                expected_file_revision: None,
+            });
+            assert!(matches!(response, Response::Refused { .. }), "{response:?}");
+        }
+        eprintln!(
+            "selected file {} read in two signed chunks across restart; stale cursor, outside path and symlink refused",
+            path.display()
+        );
+    }
 }
 
 fn accept_positive_connection<T>(mut accept: impl FnMut() -> std::io::Result<T>) -> T {
@@ -1503,7 +1554,7 @@ fn installed_linux_scoped_writes_children_and_retained_partial_results() {
         assert!(!output.join("new").exists());
         assert!(!output.join("read-alias").exists());
         let Response::Output { data_base64, .. } = f.call(Action::Output {
-            job_id: admitted.job_id,
+            job_id: admitted.job_id.clone(),
             offset: 0,
             max_bytes: 4096,
         }) else {
@@ -1523,6 +1574,11 @@ fn installed_linux_scoped_writes_children_and_retained_partial_results() {
             b"retained result\nmodified\n"
         );
         f.assert_no_side_effects();
+        f.assert_file_result(
+            &admitted.job_id,
+            &output.join("result"),
+            b"retained result\nmodified\n",
+        );
         eprintln!(
             "{mode}: {:?}; {:?}; scoped output retained after executor restart",
             result.state, result.native
@@ -1629,6 +1685,11 @@ fn installed_macos_scoped_writes_and_retained_results() {
         );
         assert_eq!(f.job(&admitted.job_id).state, expected);
         f.assert_no_side_effects();
+        f.assert_file_result(
+            &admitted.job_id,
+            &work.join("result"),
+            b"retained result\nmodified\n",
+        );
         eprintln!("{mode}: {native:?}; selected files and output retained after restart");
     }
     // A legitimate internal hard link is still usable. An external link would
@@ -1688,6 +1749,7 @@ fn installed_macos_scoped_writes_and_retained_results() {
     assert_eq!(failed.state, JobState::Failed);
     assert_eq!(failed.native.unwrap().exit_code, Some(33));
     assert_eq!(fs::read(work.join("new")).unwrap(), b"retained result\n");
+    f.assert_file_result(&admitted.job_id, &work.join("new"), b"retained result\n");
     // The original narrow operation still has no write or socket authority.
     let (admitted, _) = f.invoke("observe");
     assert_eq!(f.terminal(&admitted.job_id).state, JobState::Completed);

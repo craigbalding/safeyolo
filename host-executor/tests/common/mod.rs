@@ -47,6 +47,7 @@ pub fn target(
         Verb::Invoke,
         Verb::Job,
         Verb::Output,
+        Verb::File,
         Verb::Cancel,
     ]
     .into();
@@ -90,6 +91,7 @@ pub fn target(
                                 Verb::Invoke,
                                 Verb::Job,
                                 Verb::Output,
+                                Verb::File,
                                 Verb::Cancel,
                             ]
                             .into(),

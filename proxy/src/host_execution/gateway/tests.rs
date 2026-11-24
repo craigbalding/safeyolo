@@ -681,6 +681,13 @@ async fn native_scopes_defaults_current_policy_and_cross_agent_objects_are_enfor
             offset: 0,
             max_bytes: 1,
         },
+        Action::File {
+            job_id: receipt.job_id.clone(),
+            path: "/selected/result".into(),
+            offset: 0,
+            max_bytes: 1,
+            expected_file_revision: None,
+        },
         Action::Cancel {
             job_id: receipt.job_id.clone(),
             expected_revision: 1,
