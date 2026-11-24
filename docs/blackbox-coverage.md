@@ -297,7 +297,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/proxy_contracts/test_gateway_redirect.py](../tests/proxy_contracts/test_gateway_redirect.py#L186) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_gateway_redirect.py](../tests/proxy_contracts/test_gateway_redirect.py#L192) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-gateway-redirect-py).
 - [tests/proxy_contracts/test_coding_client_auth.py](../tests/proxy_contracts/test_coding_client_auth.py#L88) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-coding-client-auth-py).
@@ -390,7 +390,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/proxy_contracts/test_gateway_redirect.py](../tests/proxy_contracts/test_gateway_redirect.py#L186) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_gateway_redirect.py](../tests/proxy_contracts/test_gateway_redirect.py#L192) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-gateway-redirect-py).
 - [tests/proxy_contracts/test_coding_client_auth.py](../tests/proxy_contracts/test_coding_client_auth.py#L88) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-coding-client-auth-py).
@@ -1499,8 +1499,8 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_gateway_redirect.py::test_client_followed_gateway_redirect_keeps_vault_credential_at_owned_origin`](../tests/proxy_contracts/test_gateway_redirect.py#L186)
-- [`tests/proxy_contracts/test_gateway_redirect.py::test_client_that_reapplies_gateway_token_on_redirect_cannot_reach_new_authority`](../tests/proxy_contracts/test_gateway_redirect.py#L335)
+- [`tests/proxy_contracts/test_gateway_redirect.py::test_client_followed_gateway_redirect_keeps_vault_credential_at_owned_origin`](../tests/proxy_contracts/test_gateway_redirect.py#L192)
+- [`tests/proxy_contracts/test_gateway_redirect.py::test_client_that_reapplies_gateway_token_on_redirect_cannot_reach_new_authority`](../tests/proxy_contracts/test_gateway_redirect.py#L341)
 
 <a id="witness-tests-proxy-contracts-test-coding-client-auth-py"></a>
 ### [`tests/proxy_contracts/test_coding_client_auth.py`](../tests/proxy_contracts/test_coding_client_auth.py)
