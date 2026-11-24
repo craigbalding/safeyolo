@@ -26,6 +26,10 @@ pub enum NativeRuntime {
 }
 impl NativeRuntime {
     pub(crate) fn network_enforcement(&self, operation: &Operation) -> Vec<String> {
+        #[cfg(unix)]
+        if crate::endpoints::validate(operation).unwrap_or(false) {
+            return crate::endpoints::disclosure();
+        }
         match self {
             #[cfg(target_os = "linux")]
             Self::Linux(_) => crate::linux::network_enforcement(operation),

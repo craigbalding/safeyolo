@@ -115,6 +115,7 @@ impl MacRuntime {
         for op in target.package.operations.values() {
             let e = &op.execution;
             let service = crate::unix_services::validate(op)?;
+            crate::endpoints::validate(op)?;
             let mut declared = e.identity.groups.clone();
             declared.sort();
             declared.dedup();
@@ -227,6 +228,7 @@ impl MacRuntime {
     ) -> Result<NativeObservation, Refusal> {
         let command = op.command(&receipt.prepared.invocation.arguments)?;
         let service = crate::unix_services::validate(op)?;
+        let endpoint = crate::endpoints::validate(op)?;
         let root = ledger
             .lock()
             .map_err(unavailable)?
@@ -263,6 +265,13 @@ impl MacRuntime {
             ),
             quoted(snapshot.to_str().unwrap())
         );
+        if endpoint {
+            // Only this executable's fixed native helper receives socket
+            // access. Its typed selector and filtering are trusted executor
+            // code; no arbitrary adopted program receives this exception.
+            profile.push_str("(allow network*)");
+            profile.push_str("(allow file-read* (subpath \"/usr/lib\") (subpath \"/System/Library\") (subpath \"/Library/Apple/System/Library\"))");
+        }
         if service {
             profile.push_str("(allow mach-lookup)");
             if matches!(
@@ -385,6 +394,10 @@ impl MacRuntime {
             child.reaped = true;
         }
         let mut result = NativeObservation { backend: "macos-seatbelt-no-fork".into(), enforcement: vec!["Seatbelt adopted read paths and ancestor directory metadata, no file writes, no direct socket connections or Mach lookups, no process fork, pinned private executable snapshot and exact environment".into(), "single process; observed waitpid termination; bounded retained output and wall deadline while the executor remains live".into()], dependencies: vec!["EXPLICIT BROADER MEMORY: resident memory is polled; transient allocations and kernel pressure are not hard-capped".into(), "EXPLICIT BROADER EXECUTOR RESTART: a controller crash may leave the process running beyond its deadline; restart retains unknown cleanup and concurrency until the recorded process birth is absent. macOS Seatbelt, baseline sysctl reads and host-owned libraries are required".into()], exit_code: status.and_then(|s| std::process::ExitStatus::from_raw(s).code()), signal: status.and_then(|s| std::process::ExitStatus::from_raw(s).signal()), processes_stopped: stopped, output_truncated: truncated, termination_reason: reason.into() };
+        if endpoint {
+            result.enforcement[0] = "Seatbelt denies files, Mach lookups and fork; only the pinned trusted endpoint helper receives sockets. Its native implementation filters the authorised typed selector before output.".into();
+            result.enforcement.extend(crate::endpoints::disclosure());
+        }
         if service {
             result.enforcement[0] = "Seatbelt adopted read paths and ancestor directory metadata, no file writes, no direct sockets or fork; the pinned trusted launchctl client receives Mach lookup and, for stop/restart, native signal permission, with fixed adopted action/resource and exact environment".into();
             result.dependencies.push("EXPLICIT BROADER NETWORK/IPC: Mach lookup scope is not per-service isolation; the OS client and its system libraries are trusted executor code".into());

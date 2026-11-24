@@ -407,7 +407,7 @@ reports `commit=unknown`; this is not a release identity.
 | Target | Required runtime components and current native profile |
 |---|---|
 | Linux x86-64 / ARM64 | Compatible C runtime; a pinned bubblewrap with the options used by the backend, including `--bind-fd`; kernel user namespaces, seccomp and delegated cgroup v2 memory/pids controls. The executor must run where it can migrate its own jobs into that delegation. Ordinary programs receive selected read/write paths and may execute descendants inside those namespaces and the same cgroup. The explicit broader TCP profile below shares the target network namespace and separates connect from listen/accept permission. Direct IPC remains unavailable. The fixed service profile separately admits its trusted OS client. |
-| macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive no fork, writes, sockets or Mach access. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
+| macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive no fork, writes, sockets or Mach access. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed endpoint helper below receives sockets for scoped observations. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
 | Windows x86-64 | Native Windows security, Credential Manager, local named pipes, Job Objects, the Service Control Manager and the Universal C Runtime supplied by current Windows. The GNU package statically links its compiler runtime. Its remaining imports are Windows system DLLs. No MinGW installation is required on the target. |
 
 SQLite is bundled into the executable. Operation definitions separately declare
@@ -458,8 +458,8 @@ host-execution correction.
 
 ### Linux broader TCP authority
 
-Empty `execution.network.destinations` and `listeners` retain disconnected
-execution. A destination declares a host, nonzero port and transport. A
+For ordinary programs, empty `execution.network.destinations` and `listeners`
+retain disconnected execution. A destination declares a host, nonzero port and transport. A
 listener separately declares a numeric IPv4/IPv6 `address`, `port` and
 `transport`. A listener port of zero describes kernel allocation; it does not
 reserve or report the allocated port. Adding either direction changes the operation digest and needs
@@ -498,12 +498,45 @@ TLS or audience reachability. Unobserved forwarding and arbitrary program
 behavior remain unknown.
 
 This profile makes explicitly broader TCP work executable. Exact endpoint/peer
-containment, scoped live endpoint resolution/availability, authorised port
-alternatives and reach assessment remain unfinished under #1704. A real
+containment and composed reach assessment remain unfinished under #1704. The
+fixed helper below supplies selected endpoint observations and permitted
+alternatives; it does not contain an arbitrary program's endpoints. A real
 competing bind fails in the program and its output/exit result; a declaration
 does not reserve the endpoint. Ordinary job completion, cancellation and
 restart use the same cgroup descendant cleanup. Intentional persistence is not
 implemented by this profile.
+
+### Scoped native endpoint inspection
+
+The Unix starter's `endpoint-inspect` operation uses the current pinned native
+executor with `inspect-endpoint` and one structured enum argument. The enum
+contains typed `EndpointSelection` choices. Each complete choice is selected
+through the existing issuer grant and target ceiling before observation.
+Normal discovery, proposal, admission, retained job output and restart owners
+apply. See the [selected endpoint workflow](host-operations.md#inspect-a-selected-endpoint-on-unix)
+for the selector fields and commands.
+
+The common native validation path requires the current executor's executable
+path and digest, the fixed helper command, valid selector choices, an empty
+environment and no workload file, network, IPC or delegated-service scopes.
+The helper receives the target's native socket facilities to resolve only the
+selected interface and briefly probe the selected endpoints. Its trusted
+implementation filters host facts before output. Arbitrary adopted programs
+receive no socket exception. Linux retains its filesystem/PID/IPC namespaces
+and cgroup; macOS retains its no-fork Seatbelt profile and explicit broader
+memory/restart limits. This is trusted helper enforcement, not per-address
+kernel isolation for arbitrary code.
+
+The helper applies TCP/UDP, IPv4/IPv6, IPv6-only and reuse options. It can resolve
+an address from the selected interface or verify the selected address there.
+It tries only the supplied alternatives and returns one scoped observation.
+Interface identity describes the address source, not an ingress device bound.
+Probe sockets close before the result; the real service bind can still lose
+a race. Permission failure, missing interface/address, conflict and incomplete
+observation are distinct. No unrelated listener, process, route or interface
+inventory is returned. Readiness, forwarding, authentication, TLS, transport
+protection and audience reach are unobserved. A check grants no service-start,
+replacement, termination, firewall or publication authority.
 
 The native proxy workflow retains an executor archive for each target below,
 named `host-executor-TARGET-COMMIT`. Download the archive for the selected source

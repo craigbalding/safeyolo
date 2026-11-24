@@ -22,7 +22,9 @@ For TCP clients or listeners, an adopted Linux operation can select
 [broader TCP authority](host-execution-contract.md#linux-broader-tcp-authority).
 The operator must assess its account-wide address/port exposure. Discovery and
 proposals show the target's actual network boundary before invocation. The
-starter's narrow definitions remain disconnected.
+starter's ordinary narrow definitions remain disconnected. Its Unix
+`endpoint-inspect` operation uses a separate fixed native inspection helper,
+as described below.
 On macOS, resolving an adopted read path also permits
 metadata reads of its ancestor directories. It grants no sibling file contents
 or ancestor directory listing.
@@ -551,7 +553,7 @@ before another effect after a timeout.
 | Registry | No OS registry counterpart | Machine/workload-user hive, selected key/value and 32/64 view; value type; absent differs from denied. |
 | Processes, system, software, updates | Adapt a fixed installed tool, such as the hostctl `host-memory` or `host-cpu` recipe, to actual supported bounds | Process parent/start/resource observations; OS/hostname/uptime; bounded uninstall-registry and update inventories with source limits. |
 | Files | Native bounded directory/content evidence | Directory/metadata/hash/bounded-content commands, selected literal paths. |
-| Network | Starter definitions remain disconnected. Custom Linux definitions can select the explicit broader TCP profile; scoped endpoint inspection remains unfinished. macOS ordinary network scopes remain unavailable. | Interface/routes/listeners in `network-inspect`; separately granted destination/port probe in `network-diagnostics`. No reconfiguration. |
+| Network | `endpoint-inspect` checks only adopted endpoint choices. Ordinary definitions remain disconnected. Custom Linux definitions can select the explicit broader TCP profile. macOS ordinary network scopes remain unavailable. | Interface/routes/listeners in `network-inspect`; separately granted destination/port probe in `network-diagnostics`. No reconfiguration. |
 | Scheduled tasks | No general scheduler authority in this starter | Enumerate/filter tasks; selected definitions/principal/actions/recent status. No execution, registration or modification. |
 | Fixed installed executable | The content-pinned executor's inspection commands; typed limits and exact environment | `fixed-executable` runs pinned `whoami.exe`; typed allowed argument, exact account/environment, native deadline/output/status. |
 
@@ -584,6 +586,83 @@ code behavior or make agent-writable service dependencies trustworthy.
 The Windows source also contains separately governed write/transmit/reviewer
 composition examples. They have no implicit grant from query access. Select
 only the operations and scope intended for the current task.
+
+## Inspect a selected endpoint on Unix
+
+On the target, `starter` includes `endpoint-inspect`, with resource
+`endpoint:selected`. The example selects TCP IPv4 loopback and a kernel-chosen
+port. That example is not a product restriction. Before adoption, replace or
+extend `arguments.endpoint.options` with the complete choices required by the
+task. Select the same choices in the existing issuer grant and target ceiling
+through `scopes`. Loading a definition grants no access.
+
+Each choice is a typed JSON object. `candidates` contains the permitted
+alternatives in the order to try. Each candidate declares `transport` (`tcp`
+or `udp`), `family` (`ipv4` or `ipv6`), `address`, `interface`, `port`,
+`ipv6_only`, `reuse_address` and `reuse_port`. For example:
+
+```json
+{"candidates":[{"transport":"tcp","family":"ipv4","address":"127.0.0.1","interface":null,"port":8080,"ipv6_only":false,"reuse_address":false,"reuse_port":false}]}
+```
+
+An explicit address must match its family. To resolve a current address on a
+selected interface, set `address` to `null` and supply that target's interface
+name. With both fields supplied, the helper verifies that the address belongs
+to that interface. It returns only the selected interface and address, without
+other inventory. An interface identifies the source of the address; it is not
+an enforced ingress device restriction. A wildcard address with an interface
+selector is unsupported because this helper does not enforce device binding.
+An explicit wildcard with `interface: null` remains a valid choice. IPv6
+link-local resolution carries the interface index. IPv4 requires
+`ipv6_only: false`.
+
+Inside the authorised agent sandbox, propose `endpoint-inspect` using resource
+`endpoint:selected` and the chosen object as the `endpoint` argument. Use the
+same proposal, invocation, job and output commands described above. The normal
+signature, run/task, revision, argument, ceiling and budget checks apply before
+the helper observes the target. No recurring confirmation is added.
+
+For the example above, save `{"endpoint": CHOICE}` as `endpoint-arguments.json`,
+replacing `CHOICE` with the complete object. With the same `HOST_CLIENT` and
+authorised `case` binding used above, prepare the inspection:
+
+```sh
+python3 "$HOST_CLIENT" propose case --request-id endpoint-proposal-1 --operation endpoint-inspect --resource endpoint:selected --arguments endpoint-arguments.json > endpoint-prepared.json
+python3 "$HOST_CLIENT" invoke case --request-id endpoint-invoke-1 --prepared endpoint-prepared.json > endpoint-admission.json
+```
+
+Expected: a proposal followed by an admitted job. Read that job and its retained
+output through the same `job` and `output` commands. A completed inspection job
+can report a conflict or denial; completion means the observation completed,
+not that the endpoint is available.
+
+The retained output is an `EndpointObservation` JSON object. It reports
+`available_at_observation`, `conflict`, `denied`, `unavailable` or `unknown`,
+with the observation time, selected candidate, concrete binding, selected
+interface when requested, and a scoped reason. Native permission failures and
+incomplete observations do not report availability. The trusted native helper
+filters host facts before output; it returns no unrelated listener, port,
+process, route or interface inventory. Its exact executable and empty
+environment are validated before launch. Arbitrary adopted programs receive
+no inspection exception.
+
+The helper tests a real bind with the selected reuse and IPv6-only options.
+TCP also tests listen; UDP tests bind. All probe sockets close before the
+result returns. Port zero returns the endpoint allocated for that observation.
+With `reuse_port`, a TCP probe can briefly share an existing listener and receive
+queued connections; the helper does not accept them. Select reuse options only
+when that observation matches the intended service operation.
+Only explicitly authorised alternatives are tried. A check is not a
+reservation: a later competing bind can win, and the service's actual bind
+remains authoritative. A probe does not grant service start, replacement,
+termination, firewall or publication authority.
+
+Binding, application readiness and audience reachability are separate facts.
+`reservation` is false; `application_ready` and `reachable_audience` remain
+null. The helper does not observe forwarding, firewall, authentication,
+application TLS or VPN/tunnel protection. The operator's intended audience
+and the agent's rationale do not become observations. Broader standing grants
+still require assessment through the existing effect and policy owners.
 
 ## Update, recover, revoke and uninstall
 
