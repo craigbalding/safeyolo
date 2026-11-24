@@ -1940,10 +1940,17 @@ fn installed_macos_broader_network_directions_and_ports() {
         assert!(TcpStream::connect((v4, service_ports[0])).is_ok());
         if restart {
             f.restart();
-            assert_eq!(f.job(&admitted.job_id).state, JobState::Uncertain);
-            assert!(
-                TcpStream::connect((v4, service_ports[0])).is_ok(),
-                "restart must not claim it stopped the orphan"
+            let uncertain = f.job(&admitted.job_id);
+            assert_eq!(uncertain.state, JobState::Uncertain);
+            assert!(!uncertain.detail.contains("observed quiescence"));
+            // The wait program does not accept the first queued connection.
+            // A second connect would fill its one-entry backlog and wait for
+            // its own exit. Observe the occupied binding without adding a peer.
+            assert_eq!(
+                TcpListener::bind((v4, service_ports[0]))
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::AddrInUse
             );
             // The test-owned program self-terminates; this is not an executor
             // guarantee. Wait for real bindability before confirming recovery.
