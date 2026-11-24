@@ -364,7 +364,7 @@ def test_remap_preserves_unchanged_inode_metadata(native_cli, owned_stage):
     for path in (plain, attributed, agent):
         path.write_bytes(b"guest bytes")
     os.setxattr(attributed, "user.safeyolo-test", b"unchanged")
-    subprocess.run(["setfacl", "-m", "u:42:r-x", str(attributed)], check=True)
+    subprocess.run(["setfacl", "-m", "u:100042:r-x", str(attributed)], check=True)
     for path in (tree, plain, attributed):
         own(path, 100000, 100000)
     own(agent, 101000, 101000)
@@ -377,7 +377,7 @@ def test_remap_preserves_unchanged_inode_metadata(native_cli, owned_stage):
         assert (after.st_ino, after.st_mode, after.st_ctime_ns) == (
             metadata.st_ino, metadata.st_mode, metadata.st_ctime_ns)
     assert (agent.stat().st_uid, agent.stat().st_gid) == (os.getuid(), os.getgid())
-    assert "user:42:r-x" in command("getfacl", "-ncp", attributed).stdout
+    assert "user:100042:r-x" in command("getfacl", "-ncp", attributed).stdout
 
 
 @pytest.mark.parametrize("uid_base,gid_base", [(100000, 100000), (300000, 500000)])

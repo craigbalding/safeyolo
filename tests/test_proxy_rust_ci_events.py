@@ -18,6 +18,9 @@ from scripts import diagnose_ci_apt
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "proxy-rust.yml"
 
 
+MAC_TEST_CONFIG = "${{ matrix.os == 'macos-latest' && '--config profile.release.package.safeyolo-proxy.opt-level=1' || '' }}"
+
+
 def rust_workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
@@ -238,7 +241,7 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     # it does not turn each intermediate PR's focused check into a load probe.
     assert "repeated_service_oauth_activity_runs_concurrently" not in runs
     full_runs = "\n".join(step.get("run", "") for step in rust_workflow()["jobs"]["contracts"]["steps"])
-    assert "cargo_with_space.sh test --release --locked" in full_runs
+    assert f"cargo_with_space.sh {MAC_TEST_CONFIG} test --release --locked" in full_runs
     assert not any("tests/proxy_contracts --proxy-backend rust" in step.get("run", "") for step in job["steps"])
 
 
@@ -546,9 +549,10 @@ def test_linux_input_callers_pin_the_supported_ubuntu_runtime_baseline(workflow_
     steps = {step.get("name"): step for step in build["steps"]}
     package = steps["Retain complete Linux production bundle"]["run"]
     # Acquire tmux on the same baseline as the host build and package assembly.
-    assert "sudo -n apt-get install -y -qq --no-install-recommends tmux" in steps["Install patched runtime build dependencies"]["run"]
+    assert "sudo -n apt-get -o Acquire::Retries=3 install -y -qq --no-install-recommends tmux" in steps["Install patched runtime build dependencies"]["run"]
     assert '--artifacts proxy/target/release --guest-artifacts guest/command/target/release' in package
-    assert '--runtime-artifacts "$(dirname "$(command -v tmux)")" --profile production' in package
+    assert '--runtime-artifacts "$(dirname "$(command -v tmux)")"' in package
+    assert '--hyperlight-artifacts "$RUNNER_TEMP/hyperlight" --profile production' in package
 
 
 def test_full_matrix_is_overnight_or_explicit_and_uses_the_exact_head() -> None:
@@ -596,7 +600,10 @@ def test_full_matrix_uses_only_the_native_proxy() -> None:
     )
     rendered = str(steps)
     assert "--proxy-backend python" not in rendered
-    assert "-- --ignored" not in rendered
+    native_tests = named["Test the Rust proxy"]["run"].splitlines()
+    assert f"../scripts/cargo_with_space.sh {MAC_TEST_CONFIG} test --release --locked" in native_tests
+    assert f"../scripts/cargo_with_space.sh {MAC_TEST_CONFIG} test --release --locked --test native_signals -- --ignored" in native_tests
+    assert "test --release --locked -- --ignored" not in rendered
     assert "git fetch --no-tags --depth=1 origin" not in rendered
     assert "SAFEYOLO_PYTHON_SOURCE" not in rendered
 
@@ -609,19 +616,19 @@ def test_overnight_compilation_prepares_shared_outputs_then_keeps_all_release_ta
     integration = steps["Compile Rust agent API and native contract targets"]
     complete = steps["Compile Rust contract executables"]
     assert library["run"] == (
-        "../scripts/cargo_with_space.sh test --release --locked "
+        f"../scripts/cargo_with_space.sh {MAC_TEST_CONFIG} test --release --locked "
         "--lib --no-run --timings --verbose"
     )
     assert binaries["run"] == (
-        "../scripts/cargo_with_space.sh test --release --locked "
+        f"../scripts/cargo_with_space.sh {MAC_TEST_CONFIG} test --release --locked "
         "--bins --test version --no-run --timings --verbose"
     )
     assert integration["run"] == (
-        "../scripts/cargo_with_space.sh test --release --locked "
+        f"../scripts/cargo_with_space.sh {MAC_TEST_CONFIG} test --release --locked "
         "--test 'agent_api*' --test 'native*' --no-run --timings --verbose"
     )
     assert complete["run"] == (
-        "../scripts/cargo_with_space.sh test --release --locked --no-run --timings --verbose"
+        f"../scripts/cargo_with_space.sh {MAC_TEST_CONFIG} test --release --locked --no-run --timings --verbose"
     )
     for step in (library, binaries, integration, complete):
         assert step["working-directory"] == "proxy"
@@ -629,6 +636,14 @@ def test_overnight_compilation_prepares_shared_outputs_then_keeps_all_release_ta
         assert step["env"] == {"SAFEYOLO_PYTHON": "${{ github.workspace }}/.venv/bin/python"}
         assert "if" not in step
         assert not step.get("continue-on-error")
+    execution = steps["Test the Rust proxy"]["run"]
+    test_calls = [line.strip() for line in execution.splitlines()
+                  if "cargo_with_space.sh" in line and " test " in line]
+    assert len(test_calls) == 6
+    assert all(line.count(MAC_TEST_CONFIG) == 1 for line in test_calls)
+    production = steps["Compile production native executables"]["run"]
+    assert "--config" not in production
+    assert execution.splitlines()[-1] == "../scripts/cargo_with_space.sh build --release --locked --bins"
     ordered = [steps[name] for name in (
         "Compile production native executables", "Compile Rust library contract target",
         "Compile Rust binary contract targets",
@@ -644,7 +659,7 @@ def test_overnight_compilation_prepares_shared_outputs_then_keeps_all_release_ta
     assert timings["with"]["path"] == "proxy/target/cargo-timings/*.html"
     assert timings["with"]["if-no-files-found"] == "ignore"
     execution = steps["Test the Rust proxy"]["run"]
-    assert "../scripts/cargo_with_space.sh test --release --locked\n" in execution
+    assert f"../scripts/cargo_with_space.sh {MAC_TEST_CONFIG} test --release --locked\n" in execution
     assert "inventory::native_inventory_uses_current_grants_and_fixture_provider_evidence_across_restart -- --exact --ignored" in execution
     assert "../scripts/cargo_with_space.sh build --release --locked --bins" in execution
 
@@ -825,10 +840,19 @@ def test_native_producers_and_consumers_share_the_existing_compatible_dependency
                 if not str(step.get("uses", "")).startswith("Swatinem/rust-cache@"):
                     continue
                 options = step["with"]
+                if job is workflow["jobs"].get("host-executor"):
+                    assert options["shared-key"] == "executor-${{ matrix.target }}"
+                    assert options["workspaces"] == "host-executor -> target"
+                    assert "key" not in options
+                    assert options["cache-bin"] is False
+                    continue
                 expected = "production-focused-pr" if workflow is not shared else "${{ inputs.profile }}-focused-pr"
                 assert options["shared-key"] == expected
                 assert "key" not in options  # The pinned action ignores key when shared-key is set.
-                assert options["workspaces"].splitlines() == ["proxy -> target", "guest/command -> target"]
+                workspaces = ["proxy -> target", "guest/command -> target"]
+                if workflow is shared:
+                    workspaces += ["jobs/hyperlight-host -> target", "jobs/hyperlight-guest -> target"]
+                assert options["workspaces"].splitlines() == workspaces
                 assert options["cache-bin"] is False
                 assert "add-rust-environment-hash-key" not in options
                 assert "env-vars" not in options
@@ -919,6 +943,7 @@ def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix
     ("tests/reference/safeyolo/platform/linux.py", {"linux": "true"}, "available"),
     ("tests/reference/safeyolo/platform/darwin.py", {"macos": "true"}, "available"),
     ("proxy/src/host_platform.rs", {"rust": "true", "linux": "true", "macos": "true"}, "available"),
+    ("host-executor/src/package.rs", {"rust": "true", "macos": "true"}, "available"),
     ("tests/proxy_contracts/test_native_policy_cli.py", {"rust": "true"}, "available"),
     ("tests/proxy_contracts/test_first_agent_launch.py", {"rust": "true"}, "available"),
     ("tests/proxy_contracts/test_readiness.py", {}, "available"),
@@ -936,7 +961,7 @@ def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix
     ("guest/command/src/main.rs", {"guest": "true"}, "available"),
     ("proxy/src/host_platform.rs", {}, "missing"),
     ("proxy/src/host_platform.rs", {}, "failing"),
-], ids=["linux-only", "mac-only", "shared-native", "native-policy-only", "first-agent-only", "readiness-only",
+], ids=["linux-only", "mac-only", "shared-native", "shared-executor", "native-policy-only", "first-agent-only", "readiness-only",
         "docs-only", "dispatch-content", "dispatch-workflow",
         "native-profile-workflow", "shared-profile-workflow", "python-profile-workflow", "rust-cache-command",
         "cargo-wrapper-only", "coord-fixture-only", "workflow-controls-only", "blackbox-only", "guest-only",
@@ -1044,6 +1069,68 @@ def test_general_python_workflow_uses_quick_pr_and_full_overnight_selections(eve
     # These comparisons and nonzero numeric choices share Actions' truth table.
     timeout = timeout.replace("&&", " and ").replace("||", " or ")
     assert eval(timeout, {"__builtins__": {}}, {}) == timeout_minutes
+
+
+@pytest.mark.parametrize("failure", ["none", "mirror", "update", "install", "target"])
+def test_windows_compiler_preparation_preserves_failure_before_contracts(tmp_path, failure):
+    job = rust_workflow()["jobs"]["host-executor"]
+    step = next(step for step in job["steps"] if step.get("name") == "Prepare the Windows cross compiler")
+    commands = tmp_path / "bin"
+    commands.mkdir()
+    sudo = commands / "sudo"
+    sudo.write_text(
+        '#!/bin/bash\nset -e\n[[ "$1" == -n ]]\nshift\n'
+        'printf "%s\\n" "$*" >> "$CALLS"\n'
+        'if [[ "$1" == tee ]]; then\n'
+        '  [[ "$2" == /etc/apt/apt-mirrors.txt ]]\n'
+        '  if [[ "$FAILURE" == mirror ]]; then exit 23; fi\n'
+        '  exec tee "$MIRRORS"\n'
+        'fi\n'
+        '[[ "$1" == apt-get ]]\n'
+        'if [[ "$2" == "$FAILURE" ]]; then echo "original apt error" >&2; exit 100; fi\n'
+    )
+    rustup = commands / "rustup"
+    rustup.write_text('#!/bin/bash\nprintf "rustup %s\\n" "$*" >> "$CALLS"\n'
+                      'if [[ "$FAILURE" == target ]]; then exit 31; fi\n')
+    sudo.chmod(0o755)
+    rustup.chmod(0o755)
+    calls = tmp_path / "calls"
+    mirrors = tmp_path / "mirrors"
+    mirrors.write_text("http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:1\n")
+    environment = tmp_path / "github-env"
+    # Actions' implicit Linux shell is Bash -e, without implicit pipefail.
+    result = subprocess.run(
+        ["bash", "-e", "-c", step["run"] + '\nprintf "contract step reached\\n"'],
+        capture_output=True, text=True, timeout=10,
+        env=dict(os.environ, BASH_ENV=os.devnull, PATH=f"{commands}:{os.environ['PATH']}",
+                 CALLS=str(calls), MIRRORS=str(mirrors), FAILURE=failure,
+                 EXECUTOR_TARGET="x86_64-pc-windows-gnu", GITHUB_ENV=str(environment)),
+    )
+    assert result.returncode == {"none": 0, "mirror": 23, "update": 100,
+                                 "install": 100, "target": 31}[failure], result.stderr
+    assert ("contract step reached" in result.stdout) == (failure == "none")
+    if failure == "mirror":
+        assert not environment.exists()
+        return
+    assert mirrors.read_text().splitlines() == [
+        "https://archive.ubuntu.com/ubuntu/\tpriority:1", "https://security.ubuntu.com/ubuntu/\tpriority:2",
+    ]
+    if failure == "update":
+        assert calls.read_text().splitlines() == ["tee /etc/apt/apt-mirrors.txt", "apt-get update -qq"]
+        assert not environment.exists()
+        return
+    assert "apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64-win32" in calls.read_text().splitlines()
+    assert ("original apt error" in result.stderr) == (failure == "install")
+    if failure != "none":
+        assert not environment.exists()
+        return
+    exported = dict(line.split("=", 1) for line in environment.read_text().splitlines())
+    assert exported == {
+        "CC_x86_64_pc_windows_gnu": "x86_64-w64-mingw32-gcc-win32",
+        "AR_x86_64_pc_windows_gnu": "x86_64-w64-mingw32-ar",
+        "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER": "x86_64-w64-mingw32-gcc-win32",
+        "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS": "-C target-feature=+crt-static -C link-arg=-static",
+    }
 
 
 @pytest.mark.parametrize("failure,diagnostic_status", [

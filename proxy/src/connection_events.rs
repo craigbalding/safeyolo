@@ -93,6 +93,15 @@ impl ConnectionEvents {
         event.attribution = Some(identity.audit_attribution());
     }
 
+    pub(crate) fn request_scope(&self, identity: &ConnectionIdentity) -> audit::RequestScope {
+        audit::RequestScope {
+            instance_id: self.instance_id.clone(),
+            runtime_id: self.runtime_id.clone(),
+            client_connection_id: identity.connection_id.clone(),
+            sandbox_run: identity.current_agent_run().cloned(),
+        }
+    }
+
     pub(crate) fn emit(
         &self,
         identity: &ConnectionIdentity,

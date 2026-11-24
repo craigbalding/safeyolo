@@ -538,7 +538,7 @@ sys.path.insert(0, '/workspace/tests/blackbox')
 from harness.containment import assert_host_canaries_absent
 assert os.geteuid() == 0
 for path in ('/dev/kvm', '/dev/mem', '/dev/kmem'):
-    assert not os.path.exists(path), f'host device exposed: {path}')
+    assert not os.path.exists(path), f'host device exposed: {path}'
 assert_host_canaries_absent()
 """
         result = _run_as_gvisor_sandbox_root([sys.executable, "-c", code])

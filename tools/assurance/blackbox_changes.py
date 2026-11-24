@@ -262,8 +262,19 @@ def rust_definition(source: str, *, inline: bool) -> list[str]:
     while offset < len(tokens):
         if tokens[offset:offset + 6] == ["#", "[", "cfg", "(", "test", ")"]:
             start = offset
-            while offset < len(tokens) and tokens[offset] != "{":
+            # External test modules end at a semicolon. Nested attribute or
+            # parameter tokens can contain semicolons without ending the item.
+            prefix_depth = 0
+            while offset < len(tokens):
+                token = tokens[offset]
+                if prefix_depth == 0 and token in {"{", ";"}:
+                    break
+                prefix_depth += (token in {"(", "["}) - (token in {")", "]"})
                 offset += 1
+            if offset < len(tokens) and tokens[offset] == ";":
+                selected.extend(tokens[start:offset + 1])
+                offset += 1
+                continue
             depth = 1
             offset += 1
             while depth and offset < len(tokens):
@@ -388,8 +399,8 @@ def assurance_jobs(jobs: dict, *, guard: bool) -> dict:
 def catalogue_scope(base: Revision) -> dict[str, set[str]]:
     metadata = tomllib.loads(base.read(CATALOGUE))
     controls = {row["id"]: row for row in metadata["controls"]}
-    if set(controls) != {f"BB-{number:02}" for number in range(1, 38)}:
-        raise ValueError("trusted catalogue must identify BB-01 through BB-37")
+    if set(controls) != {f"BB-{number:02}" for number in range(1, 39)}:
+        raise ValueError("trusted catalogue must identify BB-01 through BB-38")
     scope: dict[str, set[str]] = {}
     for witness in metadata["witnesses"]:
         for reference in [*witness["paths"], *([witness["owner"]] if "owner" in witness else [])]:

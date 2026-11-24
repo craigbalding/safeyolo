@@ -1,4 +1,4 @@
-//! Harness checks retained from the supervised Codex/Pi launch contract.
+//! Harness checks for the existing supervised launch contract.
 use super::*;
 use std::{
     ffi::OsStr,
@@ -72,8 +72,95 @@ async fn output(
         .map_err(Into::into)
 }
 
+pub(super) fn claude_arguments(args: &[OsString]) -> Result<(), Error> {
+    // Keep CLI configuration/provider options, but reserve the native
+    // input, output and session protocol for the bounded supervisor.
+    for arg in args {
+        let name = arg
+            .as_bytes()
+            .split(|byte| *byte == b'=')
+            .next()
+            .unwrap_or_default();
+        if let Some(name) = [
+            "--print",
+            "-p",
+            "--input-format",
+            "--output-format",
+            "--resume",
+            "-r",
+            "--continue",
+            "-c",
+            "--session-id",
+            "--fork-session",
+            "--no-session-persistence",
+            "--replay-user-messages",
+            "--permission-prompt-tool",
+            "--background",
+            "--bg",
+            "--worktree",
+            "-w",
+            "--remote-control",
+            "--teleport",
+            "--from-pr",
+            "--desktop",
+            "--cloud",
+        ]
+        .into_iter()
+        .find(|option| {
+            option.as_bytes() == name
+                || (["-p", "-r", "-c", "-w"].contains(option)
+                    && name.starts_with(option.as_bytes()))
+        }) {
+            return Err(format!("Claude option {name} is owned by the supervisor").into());
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn check(config: &Config, args: &[OsString]) -> Result<(), Error> {
     let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME is missing")?);
+    if config.harness == "claude" {
+        claude_arguments(args)?;
+        let document: Value =
+            serde_json::from_str(&crate::coord_setup::read_text(&home.join(".claude.json"))?)?;
+        let launcher = document["mcpServers"]["safeyolo-coord"]["command"]
+            .as_str()
+            .ok_or("Claude safeyolo-coord MCP registration is missing")?;
+        let metadata = fs::metadata(launcher)?;
+        if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+            return Err("Claude Coord MCP launcher is not executable".into());
+        }
+        let program = std::env::var_os("SAFEYOLO_CLAUDE_BIN").unwrap_or_else(|| "claude".into());
+        if !output(&program, &["--version"], 20).await?.status.success() {
+            return Err("Claude installation is not runnable".into());
+        }
+        let mut command = tokio::process::Command::new(program);
+        command
+            .args(args)
+            .args(["auth", "status", "--json"])
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
+        crate::coding_client::authenticate(command.as_std_mut(), "claude").await?;
+        let status = tokio::time::timeout(Duration::from_secs(20), command.output())
+            .await
+            .map_err(|_| "Claude authentication preflight deadline expired")??;
+        if !status.status.success() {
+            return Err(format!(
+                "Claude authentication or arguments failed: {}",
+                String::from_utf8_lossy(&status.stderr)
+            )
+            .into());
+        }
+        let auth: Value = serde_json::from_slice(&status.stdout)
+            .map_err(|_| "Claude auth status did not return JSON; update the selected client")?;
+        if auth["loggedIn"] != true {
+            return Err(
+                "Claude is not authenticated; use this role's own login or configured provider"
+                    .into(),
+            );
+        }
+        return Ok(());
+    }
     if config.harness == "pi" {
         for arg in args {
             let name = arg

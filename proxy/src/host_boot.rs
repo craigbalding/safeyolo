@@ -10,6 +10,7 @@ use std::{
 
 pub(crate) fn workspace(path: &Path, allow_unowned: bool) -> Result<PathBuf, Error> {
     let path = path.canonicalize()?;
+    crate::instance::check_writable_asset(&path)?;
     let metadata = path.metadata()?;
     if !metadata.is_dir() {
         return Err("workspace must be a directory".into());
@@ -101,6 +102,9 @@ pub(crate) fn mount(spec: &str) -> Result<(PathBuf, String, bool), Error> {
         .into());
     }
     let read_only = parts.len() == 3;
+    if !read_only {
+        crate::instance::check_writable_asset(&host)?;
+    }
     if !read_only
         && let Some(protected) = crate::native_config::host_settings()?
             .protected_host_directories
@@ -244,6 +248,8 @@ pub(crate) async fn setup(
 pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value, Error> {
     validate_sandbox(agent)?;
     let root = config_dir();
+    crate::instance::verify_guest_assets(&root)?;
+    crate::instance::check_agent_socket_paths(&root, &agent.name)?;
     let (host_package, guest_inputs) = crate::guest_acquisition::selected_boot_inputs(&root)?;
     let directory = root.join("agents").join(&agent.name);
     let home = directory.join("home");
@@ -291,12 +297,6 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
         "extra_shares":shares.iter().map(|(host,guest,ro)| json!({"host_path":host,"guest_path":guest,"read_only":ro})).collect::<Vec<_>>(),
         "writable_mounts":shares.iter().filter(|(_,_,ro)| !ro).map(|(host,_,_)| host).collect::<Vec<_>>(),
         "command_payloads":previous.get("command_payloads").cloned().unwrap_or_else(|| json!({}))});
-    crate::guest_commands::stage(
-        &home,
-        &share,
-        &host_package.join("assets/guest"),
-        context.clone(),
-    )?;
     stage_skills(&host_package.join("assets/skills"), &share).await?;
     for name in ["agent_token", "authorized_keys"] {
         let source = if name == "agent_token" {
@@ -315,10 +315,12 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
         root.join("certs/mitmproxy-ca-cert.pem"),
         share.join("mitmproxy-ca-cert.pem"),
     )?;
-    if host_package.join("assets/guest/guest-sudo").is_file() {
-        fs::copy(
-            host_package.join("assets/guest/guest-sudo"),
-            share.join("guest-sudo"),
+    let guest_sudo = host_package.join("assets/guest/guest-sudo");
+    if guest_sudo.is_file() {
+        crate::guest_commands::copy_executable(
+            &guest_sudo,
+            &share.join("guest-sudo"),
+            guest_sudo.metadata()?.permissions().mode(),
         )?;
     }
     fs::write(share.join("agent-name"), &agent.name)?;
@@ -398,7 +400,9 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
         )?;
         crate::guest_commands::write_json(&directory.join("config.json"), &spec)?;
     }
-    Ok(context)
+    // Select the new context and command wrappers only after host preparation
+    // succeeds. Command staging restores unwrapped inputs if publication fails.
+    crate::guest_commands::stage(&home, &share, &host_package.join("assets/guest"), context)
 }
 
 async fn stage_skills(source: &Path, share: &Path) -> Result<(), Error> {
@@ -966,6 +970,7 @@ mod package_tests {
             user_default_args: vec![],
             mounts: vec![],
             dangerously_allow_unowned: false,
+            lifecycle: None,
         };
         crate::host_platform::in_instance(root.to_owned(), async {
             let old_context = stage(&agent, "10.200.0.1", &"1".repeat(32)).await.unwrap();

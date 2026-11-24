@@ -10,14 +10,12 @@ fn config_paths_belong_to_the_selected_root_and_replaced_choices_are_named() {
     )
     .unwrap();
     let config = native_config::read(&path).unwrap();
+    let root = directory.path().canonicalize().unwrap();
     assert!(config.native_product);
-    assert_eq!(
-        config.policy_file.unwrap(),
-        directory.path().join("policy.toml")
-    );
+    assert_eq!(config.policy_file.unwrap(), root.join("policy.toml"));
     assert_eq!(
         config.listeners[0].socket_path,
-        directory.path().join("data/alice.sock")
+        root.join("data/alice.sock")
     );
     for key in [
         "addons",

@@ -17,23 +17,15 @@ ROOT = Path(__file__).resolve().parents[2]
 if __name__ == "__main__":
     sys.path.insert(0, str(ROOT))
     from scripts.select_blackbox_artifacts import installed_binaries
+    from tests.blackbox.execution_receipt import controller_identity
 else:
     from scripts.select_blackbox_artifacts import installed_binaries
+    from tests.blackbox.execution_receipt import controller_identity
 
 
 def sha256(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def controller_identity() -> dict:
-    try:
-        revision = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
-        dirty = bool(subprocess.check_output(["git", "-C", str(ROOT), "status", "--porcelain"], text=True, stderr=subprocess.DEVNULL).strip())
-    except (OSError, subprocess.SubprocessError):
-        # A standalone copied instrument has no verifiable source revision.
-        return {"controller_revision": None, "controller_dirty": True}
-    return {"controller_revision": None if dirty else revision, "controller_dirty": dirty}
 
 
 def selected(path: Path) -> dict:

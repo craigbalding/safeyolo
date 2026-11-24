@@ -50,6 +50,12 @@ if [ "$(uname)" != "Linux" ]; then
     exit 1
 fi
 
+NATIVE_CLI="${SAFEYOLO_NATIVE_CLI:-$(command -v safeyolo || true)}"
+[[ -x "$NATIVE_CLI" ]] || {
+    echo 'Set SAFEYOLO_NATIVE_CLI to the built SafeYolo CLI for canonical guest ownership, ACL and capability normalization.' >&2
+    exit 1
+}
+
 # --- Architecture selection -------------------------------------------------
 HOST_ARCH=$(uname -m)
 case "${ARCH:-$HOST_ARCH}" in
@@ -173,6 +179,9 @@ cleanup_workdir() {
         sudo -n rm -rf "$WORK_DIR" 2>/dev/null \
             || rm -rf "$WORK_DIR" 2>/dev/null \
             || true
+    fi
+    if [[ -n ${TREE_STAGE:-} && -d $TREE_STAGE ]]; then
+        sudo -n rm -rf -- "$TREE_STAGE"
     fi
 }
 trap cleanup_workdir EXIT
@@ -308,7 +317,11 @@ echo "=== Installing base packages ==="
 sudo chroot "$ROOTFS" env DEBIAN_FRONTEND=noninteractive \
     /usr/bin/apt-get install -y --no-install-recommends "${APT_TLS_OPTIONS[@]}" \
     ca-certificates curl git openssh-client openssh-server \
-    iproute2 procps util-linux xz-utils busybox-static socat fd-find sudo cron at sensible-utils
+    iproute2 procps util-linux xz-utils busybox-static socat fd-find sudo cron at sensible-utils etckeeper
+
+# etckeeper initialized this newly assembled standard base's /etc repository.
+# Runtime capture uses the persistent mirror; do not ship a duplicate history.
+sudo rm -rf "$ROOTFS/etc/.git"
 
 # Capture the verified build repositories before the hook clears APT lists
 # and installs the separate runtime proxy settings.
@@ -372,6 +385,10 @@ if [ -n "$BUILD_SSL_CERT_DEST" ]; then
     fi
 fi
 
+# Capture only final static defaults, after temporary builder network material
+# has been removed. A retained reference must not copy that material back in.
+sudo chroot "$ROOTFS" /usr/local/lib/safeyolo/guest-state-base
+
 # --- Emit: directory tree for Linux gVisor ------------------------------
 # gVisor's OCI root.path wants a real filesystem directory, and
 # dir= overlay needs a tree-based root (not rootfs.source=erofs).
@@ -380,23 +397,18 @@ fi
 # under sudo gets flustered by overlayfs-style special files in
 # certain rootfs contents, the tar pipe is more reliable.
 echo "=== Emitting directory tree ==="
+TREE_STAGE=$(mktemp -d "$OUTPUT_DIR/extract-default.XXXXXX")
+chmod 0700 "$TREE_STAGE"
+sudo rsync -aHAX --numeric-ids "$ROOTFS/" "$TREE_STAGE/rootfs-tree/"
+# Reuse profile export's normalizer: all guest IDs, named ACL principals and
+# capability root identities use base 100000. chown alone loses guest users
+# and leaves embedded ACL/capability IDs in ordinary guest coordinates.
+sudo -n "$NATIVE_CLI" host archive-profile-tree "$TREE_STAGE/rootfs-tree" "$(id -u)"  # DOC: guest/README.md, SECURITY.md
 sudo rm -rf "$OUTPUT_TREE"
-sudo mkdir -p "$OUTPUT_TREE"
-sudo rsync -aHAX --numeric-ids "$ROOTFS/" "$OUTPUT_TREE/"
-
-# Rootless gVisor userns semantics: container uid 0 is mapped to host
-# uid 100000 (see linux.py::_start_userns), and CAP_DAC_OVERRIDE inside
-# the sandbox only covers files owned by uids in the subordinate range
-# (100000–101000). If we ship the tree owned by host uid 0, those files
-# show as `nobody` inside the sandbox and sandbox-root can't modify
-# them — apt-get install dies on dpkg lock EACCES. Shipping the tree
-# pre-owned by 100000 makes it writable by sandbox-root out of the box.
-# No-op / harmless for macOS VZ (ext4 image is rebuilt from the tree
-# below; file ownership in the image is preserved by mkfs.ext4 -d, but
-# VZ runs a full Linux VM with its own real root, so ownership doesn't
-# matter there).
-echo "=== Chowning tree to 100000:100000 (rootless subuid-root) ==="
-sudo chown -R 100000:100000 "$OUTPUT_TREE"  # DOC: guest/README.md, SECURITY.md
+# Moving the normalized directory to another parent requires write access to it.
+sudo -n mv -- "$TREE_STAGE/rootfs-tree" "$OUTPUT_TREE"
+rmdir -- "$TREE_STAGE"
+TREE_STAGE=
 echo "tree:  $OUTPUT_TREE/ ($(sudo du -sh "$OUTPUT_TREE" | cut -f1))"
 
 # --- Emit: ext4 for macOS VZ ---------------------------------------------

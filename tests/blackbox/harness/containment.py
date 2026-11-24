@@ -145,11 +145,17 @@ def attempt_resolver(endpoint: dict) -> list[dict]:
     assert endpoint is not None, "no owned IPv4 resolver selected; DNS coverage is incomplete"
     # Perform the lookup as the calling user; use guest sudo only to select
     # and restore resolv.conf. A failed setup or restore must fail the phase.
-    path = Path("/etc/resolv.conf")
+    path = Path("/etc/resolv.conf").resolve()
     route = guest_destination(endpoint)
-    original = path.read_bytes()
+    try:
+        original = path.read_bytes()
+    except FileNotFoundError:
+        # Some disposable guests have no resolver file. Remove only the file
+        # this fixture creates, leaving any existing symlink intact.
+        original = None
     setter = ["sudo", "-n", "python3", "-c",
-              "import sys; from pathlib import Path; Path('/etc/resolv.conf').write_bytes(sys.stdin.buffer.read())"]
+              "import sys; from pathlib import Path; Path(sys.argv[1]).write_bytes(sys.stdin.buffer.read())",
+              str(path)]
     configured = f"nameserver {endpoint['address']}\noptions attempts:1 timeout:1\n".encode()
     query = "guest-" + uuid.uuid4().hex + ".test"
     try:
@@ -160,7 +166,12 @@ def attempt_resolver(endpoint: dict) -> list[dict]:
         except socket.gaierror:
             outcome = "no_answer"
     finally:
-        subprocess.run(setter, input=original, check=True, timeout=10, capture_output=True)
+        if original is None:
+            subprocess.run(["sudo", "-n", "python3", "-c",
+                            "import sys; from pathlib import Path; Path(sys.argv[1]).unlink(missing_ok=True)",
+                            str(path)], check=True, timeout=10, capture_output=True)
+        else:
+            subprocess.run(setter, input=original, check=True, timeout=10, capture_output=True)
     result = {"uid": os.geteuid(), "query_sha256": digest(query.encode()), "resolver_outcome": outcome,
               "endpoint": endpoint, "guest_network": route}
     print("CONTAINMENT_RESOLVER=" + json.dumps(result), flush=True)

@@ -413,6 +413,7 @@ PY
 fi
 
 if [ "$ACCESS" = true ]; then
+    export SAFEYOLO_BLACKBOX_DESKTOP=1
     # The installed lane supplies its matching native host command. Config-only
     # consumers also select an explicit input, without requiring a warm build.
     if ! SAFEYOLO_NATIVE_CLI="$(cd "$CALLER_DIR" && python3 - "$SCRIPT_DIR" "$INSTALLED_RUST_BIN" "$INSTALL_COMMIT" "$INSTALLED_CLI" <<'PY'
@@ -526,7 +527,7 @@ config = tomlkit.parse((root / "config.toml").read_text())
 config["admin_port"] = int(sys.argv[2])
 config["gateway_builtin_services_dir"] = str(root / "assets/services")
 config["gateway_services_dir"] = str(root / "services")
-if sys.argv[5] == "vz" and sys.argv[6] == "1":
+if sys.argv[5] == "vz":
     # The access selection has no lifecycle owner; use its permitted port
     # for the operator's desktop instead of an ephemeral host listener.
     config.setdefault("desktop", tomlkit.table())["present_host_port"] = 46375
@@ -549,6 +550,20 @@ safeyolo policy check "$SAFEYOLO_CONFIG_DIR/policy.toml"
 if [ "$ACCESS_CONFIG_ONLY" = true ]; then
     echo "Access configuration prepared; no proxy or guest started"
     exit 0
+fi
+
+# Desktop authority tests observe real viewer bytes. Replace only the host
+# browser opener with an owned marker, so the fixture needs no visual UI.
+if [ "$ACCESS" = true ]; then
+    mkdir -p "$SAFEYOLO_CONFIG_DIR/desktop-opener"
+    for opener in open xdg-open; do
+        cat > "$SAFEYOLO_CONFIG_DIR/desktop-opener/$opener" <<'DESKTOP_OPENER'
+#!/bin/sh
+printf 'opened\n' >> "$SAFEYOLO_CONFIG_DIR/desktop-openings"
+DESKTOP_OPENER
+        chmod 755 "$SAFEYOLO_CONFIG_DIR/desktop-opener/$opener"
+    done
+    export PATH="$SAFEYOLO_CONFIG_DIR/desktop-opener:$PATH"
 fi
 
 # Symlink shared guest artifacts (rootfs, kernel) from the caller's
@@ -596,6 +611,7 @@ PARENT_PID_FILE="$SAFEYOLO_CONFIG_DIR/native-parent.pid"
 PARENT_ARGV_FILE="$SAFEYOLO_CONFIG_DIR/native-parent.argv"
 PARENT_PORT_FILE="$SAFEYOLO_CONFIG_DIR/native-parent.port"
 HOST_LISTENER_PID=""
+ACCESS_XVFB_PID=""
 
 canonical_path() {
     local candidate="$1"
@@ -813,6 +829,12 @@ PY_OWNER
         wait "$HOST_LISTENER_PID" 2>/dev/null || true
     fi
 
+    if [ -n "${ACCESS_XVFB_PID:-}" ]; then
+        echo "Stopping access host display (PID $ACCESS_XVFB_PID)..."
+        kill "$ACCESS_XVFB_PID" 2>/dev/null || true
+        wait "$ACCESS_XVFB_PID" 2>/dev/null || true
+    fi
+
     if [ "$PROXY_IMPL" = "rust" ]; then
         python3 "$SCRIPT_DIR/harness/native_parent_config.py" restore "$SAFEYOLO_CONFIG_DIR" || cleanup_failed=true
     fi
@@ -859,6 +881,33 @@ PY_SURVIVORS
     exit "$section_exit"
 }
 trap cleanup EXIT
+
+# --- Access host display ---
+# The typed desktop action checks a real host display before guest readiness.
+# Keep a supplied display; on headless Linux, own a separate local X server.
+if [ "$ACCESS" = true ] && [ "$(uname -s)" = Linux ] && [ -z "${DISPLAY:-}" ]; then
+    if ! command -v Xvfb >/dev/null 2>&1 || \
+       { ! command -v xdpyinfo >/dev/null 2>&1 && ! command -v xrandr >/dev/null 2>&1; }; then
+        echo 'ERROR: headless access tests need host Xvfb and xdpyinfo or xrandr; prepare these host packages before running the access section' >&2
+        exit 2
+    fi
+    : > "$SAFEYOLO_CONFIG_DIR/desktop-display"
+    Xvfb -displayfd 3 -screen 0 1280x800x24 -nolisten tcp \
+        3> "$SAFEYOLO_CONFIG_DIR/desktop-display" \
+        > "$SAFEYOLO_CONFIG_DIR/desktop-display.log" 2>&1 &
+    ACCESS_XVFB_PID=$!
+    for _ in {1..50}; do
+        [ -s "$SAFEYOLO_CONFIG_DIR/desktop-display" ] && break
+        kill -0 "$ACCESS_XVFB_PID" 2>/dev/null || break
+        sleep 0.1
+    done
+    access_display="$(cat "$SAFEYOLO_CONFIG_DIR/desktop-display")"
+    if ! [[ "$access_display" =~ ^[0-9]+$ ]] || ! kill -0 "$ACCESS_XVFB_PID" 2>/dev/null; then
+        echo "ERROR: access host display did not become ready; see $SAFEYOLO_CONFIG_DIR/desktop-display.log" >&2
+        exit 2
+    fi
+    export DISPLAY=":$access_display"
+fi
 
 # --- Clean stale state from previous run ---
 # Done at start (not end) so post-mortem analysis of failures is possible.

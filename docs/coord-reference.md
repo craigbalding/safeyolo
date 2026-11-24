@@ -168,8 +168,23 @@ with the publication. Its `target_ref` must equal `sha256:HEX_DIGEST` for those
 decoded bytes. The existing serialized publication bound includes the artifact.
 See [automatic Work requirements](policy-checks.md#automatic-requirements-on-native-work)
 for required verification and durable follow-up semantics.
+
 `execution_outcome` is `succeeded`, `failed`, or `uncertain`. It reports the
 producer's execution result; it does not establish acceptance of the output.
+
+An adopted effectful issue-admission prerequisite retains its invocation before
+dispatch, even before Work creation. The refusal identifies its invocation ID.
+Use `safeyolo coord work prerequisite ROOM INVOCATION_ID`, or authenticated
+`GET /api/coord/rooms/ROOM/work?invocation_id=INVOCATION_ID`, to inspect the
+version, exact request, reached result and attempt count. Adopted recovery
+agents use `read_work_prerequisite`, `resolve_work_prerequisite` and
+`retry_work_prerequisite`. The mutation actions are `resolve_prerequisite`
+and `retry_prerequisite`. The host CLI spells these `resolve-prerequisite` and `retry-prerequisite`.
+Reconciliation requires an external observation. Retry requires separate
+bounded idempotent authority and only selects another attempt; the original
+requester resumes its exact operation. See the
+[adoption and recovery example](policy-checks.md#require-an-action-before-issue-admission)
+for fields, authority and uncertainty limits.
 
 Retain the external artifact before publication. Use a reference that identifies
 its actual immutable revision, such as an exact commit or a retained report's

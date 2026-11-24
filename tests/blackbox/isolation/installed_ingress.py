@@ -20,16 +20,19 @@ AGENT_API = "http://_safeyolo.proxy.internal"
 GUEST_PROXY = "http://127.0.0.1:8080"
 
 
+def relay_upstream(argv: list[str]) -> str | None:
+    """Read the current guest-proxy-forwarder command's loopback route."""
+    if len(argv) != 5 or Path(argv[0]).name != "sy-proxy-relay" or argv[1:3] != ["-t", "600"]:
+        return None
+    listener, *options = argv[3].split(",")
+    if listener != "TCP-LISTEN:8080" or "bind=127.0.0.1" not in options:
+        return None
+    return argv[4].split(",", 1)[0]
+
+
 def is_mounted_forwarder(argv: list[str]) -> bool:
     """Recognize the guest listener and the mounted per-agent UDS route."""
-    if len(argv) != 3 or Path(argv[0]).name != "sy-proxy-relay":
-        return False
-    listener, *options = argv[1].split(",")
-    return (
-        listener == "TCP-LISTEN:8080"
-        and "bind=127.0.0.1" in options
-        and argv[2].split(",", 1)[0] == f"UNIX-CONNECT:{GUEST_SOCKET}"
-    )
+    return relay_upstream(argv) == f"UNIX-CONNECT:{GUEST_SOCKET}"
 
 
 def forwarder_identity(proc_root: Path = Path("/proc")) -> dict:
@@ -58,22 +61,13 @@ def bridge(platform: str, proc_root: Path = Path("/proc")) -> dict:
                 argv = [part.decode() for part in (directory / "cmdline").read_bytes().split(b"\0") if part]
             except (FileNotFoundError, ProcessLookupError, PermissionError):
                 continue
-            if (
-                len(argv) == 3
-                and Path(argv[0]).name == "sy-proxy-relay"
-                and argv[1].startswith("TCP-LISTEN:8080,")
-                and argv[2].startswith("VSOCK-CONNECT:2:1080,")
-            ):
+            if relay_upstream(argv) == "VSOCK-CONNECT:2:1080":
                 forwarder = {"pid": int(directory.name), "argv": argv}
                 break
         assert forwarder is not None, "guest localhost proxy has no VZ forwarder"
     else:
         forwarder = forwarder_identity(proc_root)
-    argv = forwarder["argv"]
-    if platform == "vz":
-        assert argv[2].startswith("VSOCK-CONNECT:2:1080,"), argv
-    else:
-        assert GUEST_SOCKET.is_socket() and argv[2].startswith(f"UNIX-CONNECT:{GUEST_SOCKET},"), argv
+        assert GUEST_SOCKET.is_socket(), forwarder["argv"]
     return forwarder
 
 

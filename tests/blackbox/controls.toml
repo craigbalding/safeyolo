@@ -7,7 +7,7 @@ control = "Direct network egress"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_vm_isolation.py"
 what = "TCP, IPv6 and metadata routes cannot bypass the proxy."
 existing = "Guest BB; nightly."
-conformance = "Host TCP receivers compare delivered bytes with independent before/after controls. Assigned non-loopback destinations, host namespaces and guest interfaces/routes are retained. Missing IPv4/IPv6 or owned metadata targets are incomplete coverage. Installed run pending; VZ delivery receivers remain omitted."
+conformance = "Host TCP receivers compare delivered bytes with independent before/after controls. Assigned non-loopback destinations and actual network context are retained. User/root IPv4/IPv6 and owned metadata delivery checks have [independent Linux systrap acceptance at 91f805e0](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7141516865). KVM/VZ delivery remains unproved."
 effort = "M"
 comments = "Exercise ordinary agent and guest root."
 owner = "#1560"
@@ -19,7 +19,7 @@ control = "DNS/UDP egress"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_vm_isolation.py"
 what = "Queries/datagrams cannot leak even when no response returns."
 existing = "Guest BB; nightly."
-conformance = "Owned UDP/TCP receivers record unique DNS payloads independently of replies. The disposable guest selects the owned libc resolver temporarily and records its actual route. Missing receiver addresses are incomplete coverage. Installed run pending; VZ receivers remain omitted."
+conformance = "Owned UDP/TCP receivers record unique DNS payloads independently of replies. The disposable guest selects the owned libc resolver temporarily and restores the prior file state. Raw datagram observations passed at 91f805e0; the corrected libc resolver still needs installed proof. KVM/VZ delivery remains unproved."
 effort = "M"
 comments = "Share receiver infrastructure with BB-01."
 owner = "#1560"
@@ -31,7 +31,7 @@ control = "Guest-root containment"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_vm_isolation.py"
 what = "Guest administration cannot modify host configuration or access host processes/devices."
 existing = "Guest BB; nightly; partly conformant."
-conformance = "UID mapping/read-only checks remain. Host file/process canaries replace PID-name and null-pointer inferences. BPF uses valid architecture-specific attributes and nonnegative-FD semantics; device creation and use are distinct. Installed run pending."
+conformance = "UID mapping/read-only checks remain. Host file/process canaries replace PID-name and null-pointer inferences. BPF uses valid architecture-specific attributes and nonnegative-FD semantics; device creation and use are distinct. The corrected elevated device/canary probe still needs installed proof; BB-03 remains open."
 effort = "M"
 comments = "Guest root is intentionally allowed; device-node creation and device use are different claims."
 owner = "#1560"
@@ -43,7 +43,7 @@ control = "Agent identity / peer isolation"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_ingress_pair.py"
 what = "Forged claims cannot select another agent; peer sockets/private files remain inaccessible as user and root."
 existing = "Two real peers are selected by the default systrap ingress section."
-conformance = "Default systrap selects the pair, forged claims, authorized peer context, user/root private-file/socket refusals and restart. Guessed-neighbour and unused-port probes are removed. Installed run of the extended journey remains pending."
+conformance = "Default systrap selects the pair, forged claims, authorized peer context, user/root private-file/socket refusals and restart. The extended journey has [independent Linux systrap acceptance at 91f805e0](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7141516865). This does not establish KVM/VZ coverage."
 effort = "S"
 comments = "Existing pair covers guest root and proxy restart; retain its actual platform scope."
 owner = "#1560"
@@ -103,7 +103,7 @@ control = "Host-secret custody"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_key_isolation.py"
 what = "Guest and guest root cannot directly read host CA/vault secrets."
 existing = "Scans and injection checks exist; partial."
-conformance = "Installed access fingerprints its unique signing key and synthetic encrypted-store credential. User/root scans cover relevant files, environment and scoped APIs after authorized TLS/injection; unauthorized origins must not receive the value. Installed run pending."
+conformance = "Installed access fingerprints its unique signing key and synthetic encrypted-store credential. User/root scans cover relevant files, environment and scoped APIs after authorized TLS/injection; unauthorized origins must not receive the value. Custody has [independent Linux systrap acceptance at 91f805e0](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7141516865); KVM/VZ remains unproved."
 effort = "M"
 comments = "Preserve deliberately provisioned client credentials and authorized operator views."
 owner = "#1560"
@@ -115,7 +115,7 @@ control = "Subscription credential adoption / renewal"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/proxy/tests/credential_http/codex.rs"
 what = "Refresh/import cannot change identity or resurrect revoked authority."
 existing = "Strong native HTTP tests; run-lifetime backend is synthetic."
-conformance = "Default systrap pair composes explicit run-scoped import, two controlled-provider renewals, proxy restart, revocation and wrong-guest attempts. Exact provider effects and sanitized fingerprints are retained. Installed run pending."
+conformance = "Default systrap pair composes explicit run-scoped import, two controlled-provider renewals, proxy restart, revocation and wrong-guest attempts. Exact provider effects and sanitized fingerprints have [independent Linux systrap acceptance at 91f805e0](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7141516865). This does not establish KVM/VZ coverage."
 effort = "M"
 comments = "No paid model service needed; retain existing native cases."
 owner = "#1560"
@@ -175,7 +175,7 @@ control = "Restart / abrupt-failure recovery"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_shared_approvals.py"
 what = "Outages cannot bypass enforcement, revive authority or replay effects."
 existing = "Graceful lifecycle stays selected; installed access also selects the shared owned-process SIGKILL witness."
-conformance = "Access checks outage non-delivery, no automatic replay, revoked service and consumed risk-grant refusal after recovery, then an allowed origin control. The approval crash journey also records outage effects. Installed run pending."
+conformance = "Access checks outage non-delivery, no automatic replay, revoked service and consumed risk-grant refusal after recovery, then an allowed origin control. This journey has [independent Linux systrap acceptance at 91f805e0](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7141516865). KVM/VZ and deployed cadence remain unproved."
 effort = "M"
 comments = "Preserve graceful drain and admitted-stream semantics."
 owner = "#1560"
@@ -186,8 +186,8 @@ id = "BB-16"
 control = "Disposable-job isolation"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/host/job_sandbox.py"
 what = "Jobs receive only declared inputs/privilege, without inherited agent authority or persistent state."
-existing = "Real installed tests; on demand."
-conformance = "Wire and extend: retain input/state/signal/timeout checks; prove network-off non-delivery at an owned receiver."
+existing = "Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap observations qualified](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6886804289); [prepared public-shell run 18869 accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6925236509) at controller 0422caec, production 607d8488, original runsc 65645198 and sentry f29a1416. [Shipped systrap jobs accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6933305891) and [shipped KVM jobs accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6934606070) at controller b0fa383677936be1e32582bb440b26ccefa09451, Linux AMD64 production 1a8c698e6ca23f83655a2801c10e99f4d24a6829 and guest archive 1fb64d224df243e24bddbab42a4b1c12b876712270ae5eb59822cdb4c5f8febe. [Physical Apple Virtualization.framework (VZ) jobs accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6938258553) at controller 899cd7313865287e766311b054ba0b18af810615, Darwin ARM64 production 1a8c698e6ca23f83655a2801c10e99f4d24a6829, standard guest source e138ebefba90919311e9e60cc272b140e78b5d61, index 712ef9468f4383945b5a4484c45d6c8d20a062fbcf1cb3351bc4e9b86012d2db and archive 010efdf86315df1426bedb49d33834e9317abc455dcb738650fe2f6289552e93. Public installation acquisition and installed catalogue qualification remain unverified; deployed cadence remains with #1563 and venue automation with #889."
+conformance = "Retain named default/explicit privilege, input, discarded-state, signal/exit and timeout cases and direct network-off attempts at a functioning owned receiver. Shipped systrap/KVM typed outcomes and output details rely on matching procedure assertions; separate raw records are absent. Physical VZ typed results and streams are retained. The failed Kali execution and earlier failed attempts remain failed. Accepted platform executions do not establish deployed recurrence."
 effort = "M"
 comments = "Missing proxy environment variables alone do not prove containment; foundation for new engines."
 owner = "#1562"
@@ -198,8 +198,8 @@ id = "BB-17"
 control = "Disposable-job network authority"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/host/job_network.py"
 what = "Gate/service scopes constrain job effects; teardown ends delegated authority."
-existing = "Real installed tests; on demand."
-conformance = "Wire and extend revocation, cancellation and socket/runtime lifetime."
+existing = "Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap procedure accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6905097277); [prepared public-shell run 18861 accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6924137097) at controller 50c62547, production 607d8488, original runsc 65645198 and sentry f29a1416. [Shipped systrap jobs accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6933305891) and [shipped KVM jobs accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6934606070) at controller b0fa383677936be1e32582bb440b26ccefa09451, Linux AMD64 production 1a8c698e6ca23f83655a2801c10e99f4d24a6829 and guest archive 1fb64d224df243e24bddbab42a4b1c12b876712270ae5eb59822cdb4c5f8febe. [Physical Apple Virtualization.framework (VZ) jobs accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6938258553) at controller 899cd7313865287e766311b054ba0b18af810615, Darwin ARM64 production 1a8c698e6ca23f83655a2801c10e99f4d24a6829, standard guest source e138ebefba90919311e9e60cc272b140e78b5d61, index 712ef9468f4383945b5a4484c45d6c8d20a062fbcf1cb3351bc4e9b86012d2db and archive 010efdf86315df1426bedb49d33834e9317abc455dcb738650fe2f6289552e93. Public installation acquisition and installed catalogue qualification remain unverified; deployed cadence remains with #1563 and venue automation with #889."
+conformance = "Retain exact scoped origin counts, credential replacement, live revocation, timeout/cancellation, old/new delegated-connection refusal, native audit attribution and listener cleanup. Shipped systrap/KVM and physical VZ acceptance retains matching source assertions and completed checkpoints for lifecycle CLI exits, delegated refusal and audit; separate teardown/audit transcripts are absent. Earlier failed attempts remain failed; deployed recurrence remains unproved."
 effort = "M"
 comments = "Origin counts and credential replacement already exist."
 owner = "#1562"
@@ -210,8 +210,8 @@ id = "BB-18"
 control = "Local peer support"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_peer_support.py"
 what = "Granted target/action/current-run scope, expiry and revocation constrain effects."
-existing = "Strong real-guest tests; on demand."
-conformance = "Wire and extend target canaries where denial currently relies on status."
+existing = "The standalone real-guest systrap journey with independently read target canaries is accepted at its [recorded revision](https://github.com/craigbalding/safeyolo/issues/1561#issuecomment-6943564850). The current runner selects this journey; deployed cadence remains unverified."
+conformance = "Retain guest-root, replay, narrowing, expiry/revocation and stale-run controls. Verify recurring execution separately from the accepted standalone run."
 effort = "M"
 comments = "Retain guest-root, replay, narrowing and stale-generation coverage."
 owner = "#1561"
@@ -222,8 +222,8 @@ id = "BB-19"
 control = "Delegated approvals / route exceptions"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_shared_approvals.py"
 what = "Helpers decide only permitted typed actions for the exact principal, run and route."
-existing = "Installed drivers plus proxy tests; full guest journey not nightly."
-conformance = "Wire a deterministic real-guest journey: wrong helper/target/run, revocation/expiry, exact effects and no automatic replay."
+existing = "The standalone deterministic installed helper/worker journey is accepted at its [recorded revision](https://github.com/craigbalding/safeyolo/issues/1561#issuecomment-6943009258). Native process controller tests and the installed selector remain available; deployed cadence remains unverified."
+conformance = "Retain exact network/gateway effects, wrong principal/route/run, expiry/revocation and no decision replay. Verify recurring execution separately; model/human modes remain optional."
 effort = "M"
 comments = "Model/human modes remain optional; reuse native route-challenge coverage."
 owner = "#1561"
@@ -234,8 +234,8 @@ id = "BB-20"
 control = "Agent-provided services"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_provider.py"
 what = "Only authorized callers/peers reach the service; a stopped provider cannot cause fallback."
-existing = "Strong two-guest tests; on demand."
-conformance = "Existing checks conformant: wire recurring execution."
+existing = "The standalone two-guest journey is accepted at its [recorded revision](https://github.com/craigbalding/safeyolo/issues/1561#issuecomment-6941122401). The systrap runner selects the driver; deployed cadence remains unverified."
+conformance = "Retain exact delivery, caller/peer/method/path/port scope, revocation, closed/stopped provider and a live zero-hit fallback observer."
 effort = "S–M"
 comments = "Trusted receiver identity, revocation and zero-hit fallback are already observed."
 owner = "#1561"
@@ -246,8 +246,8 @@ id = "BB-21"
 control = "Nested Docker / gateway"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_docker_preflight.py"
 what = "Extra guest privileges remain contained; Docker API scopes constrain actual effects."
-existing = "Extensive real-sandbox tests; on demand."
-conformance = "Adapt and wire a bounded pinned workload: privileged inner-container negatives, allowed/denied management effects and revocation."
+existing = "Maintained installed section; scheduled systrap selector. [Manual gateway effects accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6913325766); [fresh-token provider-stop observation accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6914345354); [bounded build/initial application accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6918014934); [retained application continuation accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6922996148); [bounded public pull accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6928512058); [gateway continuation accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6929891544); [prepared public-wrapper run 18935 accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6930793693) at controller 5893892b, production 607d8488 and complete qualified ae76 runtime. [Shipped systrap Docker result accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6933640925) at controller b0fa383677936be1e32582bb440b26ccefa09451, Linux AMD64 production 1a8c698e6ca23f83655a2801c10e99f4d24a6829 and guest archive 1fb64d224df243e24bddbab42a4b1c12b876712270ae5eb59822cdb4c5f8febe. Applicable KVM/VZ proof remains unqualified. Public installation acquisition and installed catalogue qualification remain unverified; deployed cadence remains with #1563 and venue automation with #889."
+conformance = "Prepared and shipped Ubuntu systrap proof cover the uninterrupted ten-checkpoint wrapper, provider-to-gateway transition, privileged inner containment, joined outbound/origin observations, Docker effects, adjacent refusal, revocation, daemon/provider failure and application persistence/deletion. Individual shipped Docker step output is checked by matching source assertions; raw stdout is not separately retained. Prepared-runtime acceptance and supplier comparison remain distinct from the shipped execution; neither establishes public installation acquisition or deployed recurrence. Failed run 18910 and earlier failed/setup attempts remain failed."
 effort = "L"
 comments = "This is a distinct privilege configuration."
 owner = "#1562"
@@ -258,8 +258,8 @@ id = "BB-22"
 control = "Live mounts / removal"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/nested-linux/live_mount_backend_proof.py"
 what = "Only approved paths/modes are exposed; removal truthfully reports remaining access."
-existing = "Strong Linux and physical-Mac tests; on demand."
-conformance = "Existing checks conformant: wire per supported backend."
+existing = "Maintained installed section; scheduled systrap selector. [Manual Ubuntu systrap journey accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6887897586). [Prepared public-shell mounts accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6932179534) at controller b0fa383677936be1e32582bb440b26ccefa09451, production 607d8488a7fdc5c0c6ada605077ca99b4cb21682, original runsc 65645198 and sentry f29a1416, guest archive 1fb64d224df243e24bddbab42a4b1c12b876712270ae5eb59822cdb4c5f8febe. [Shipped systrap mounts accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6933640925) and [shipped KVM mounts accepted](https://github.com/craigbalding/safeyolo/issues/1562#issuecomment-6934606070) at controller b0fa383677936be1e32582bb440b26ccefa09451, Linux AMD64 production 1a8c698e6ca23f83655a2801c10e99f4d24a6829 and guest archive 1fb64d224df243e24bddbab42a4b1c12b876712270ae5eb59822cdb4c5f8febe. The physical VZ mount attempt stopped before invocation at third-listener admission; physical mount execution remains unproved. Public installation acquisition and installed catalogue qualification remain unverified; deployed cadence remains with #1563 and venue automation with #889."
+conformance = "Preserve the accepted public-command journey with read-only/protected/reserved/stale refusals, busy file, working directory and memory map refusals, four actual detachments and eight process exits, saved/live intent after restart and unaffected peers/host files. Busy refusal is not removal. Failed preparation 18949 and 19223, the earlier shipped setup failures and their observer limits remain. Physical VZ execution, installed catalogue qualification and deployed recurrence remain unproved."
 effort = "M"
 comments = "Retain busy-file refusal, real detach and unaffected-peer evidence."
 owner = "#1562"
@@ -270,8 +270,8 @@ id = "BB-23"
 control = "Desktop / service sharing"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_access.py"
 what = "Unlock/session authority binds to the target; expiry/revocation/stop ends access under the advertised lifecycle."
-existing = "Native plus optional installed tests."
-conformance = "Extend and wire invalid session/target, active-session revocation/expiry and stale-run checks with actual bytes."
+existing = "The standalone installed viewer/session journey is accepted at its [recorded controller e940ae38 and production 607d8488](https://github.com/craigbalding/safeyolo/issues/1561#issuecomment-6947528574). Native controls remain separate; deployed cadence remains unverified."
+conformance = "Retain live VNC bytes, invalid session/target, active-viewer revocation/expiry, stale-run refusal and independent-source preservation. Verify recurring execution separately."
 effort = "M"
 comments = "No visual UI automation is required."
 owner = "#1561"
@@ -282,8 +282,8 @@ id = "BB-24"
 control = "Coord ownership / review / output authority"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/proxy/tests/native_coord/reviews.rs"
 what = "Ownership/review cannot be forged; evidence cannot authorize a different output or generation."
-existing = "Ignored native acceptance tests; basic guest messaging nightly."
-conformance = "Wire curated deterministic ownership, attestation, review, immutable-output, replay and stale-authority cases."
+existing = "The curated native cases are accepted at their [original f15e execution](https://github.com/craigbalding/safeyolo/issues/1561#issuecomment-6944537893), using real NATS without a guest. The scheduled Linux contract job selects these cases; deployed cadence remains unverified. Basic guest messaging is a separate narrower control."
+conformance = "Retain exact selected/executed case receipts and independent acceptance; process tests do not prove a guest or deployed cadence."
 effort = "M"
 comments = "Retain special-venue limitations; basic messaging is a narrower claim."
 owner = "#1561"
@@ -294,8 +294,8 @@ id = "BB-25"
 control = "Federation authority / TLS"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/proxy/tests/native_coord/federation.rs"
 what = "Destination owns the grant; identity, partition, rotation and revocation cannot widen authority."
-existing = "Real-instance/NATS tests exist but are ignored."
-conformance = "Wire deterministic cases and add one guest-to-remote-instance effect journey."
+existing = "Curated TLS/NATS cases and a real-guest-to-separate-instance systrap selector; installed acceptance remains incomplete."
+conformance = "Verify destination-owned guest effects and refusals, retained partition/restart/revocation and rotation cases; live tailnet remains separate."
 effort = "L"
 comments = "Reuse support, delegation and rotation fixtures."
 owner = "#1561"
@@ -306,10 +306,10 @@ id = "BB-26"
 control = "Tailscale transport validation"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/proxy/src/coord_rooms/federation/tailscale.rs"
 what = "Credentials are withheld without the correct node, interface and protected route."
-existing = "Unit coverage; no maintained live BB found in the audit."
-conformance = "Write wrong-node/route, interface-loss and restored-path controls; observe credential-bearing connections independently."
+existing = "Maintained two-host refusal, live-source loss/recovery and destination-effect controllers with a fresh independent forwarding observer; protected execution pending."
+conformance = "Execute wrong-node, isolated wrong-route/missing-interface, active source loss and restored-path phases; pair withheld bytes, canonical destination effects and owned cleanup."
 effort = "L"
-comments = "Requires a two-host tailnet venue."
+comments = "Two-host bindings are supplied privately; isolated wrong-route/loss capability and deployed cadence remain unverified."
 owner = "#1561"
 decisions = ["management_evidence"]
 
@@ -345,7 +345,7 @@ what = "Composition, evidence type, freshness and subject binding govern actual 
 existing = "Accepted #1543/#1544/#1546 fixtures; maintained named-checks and policy-recipe phases."
 conformance = "Maintained native named-checks and pytest policy-recipe phases cover composition, binding, freshness, unknown/error, redirect and pending revocation. Preview observes zero assessed-target/dependency contact. The prepared real-job case remains required and incomplete without its selected host."
 effort = "L"
-comments = "Accepted product evidence: [typed/composition proof](https://github.com/craigbalding/safeyolo/issues/1543#issuecomment-6854609584), [job/service proof](https://github.com/craigbalding/safeyolo/issues/1544#issuecomment-6858612088) and #1546. These process/installed-layout selections boot no guest; no new installed-platform or live-provider pass is inferred."
+comments = "Retain accepted [typed/composition proof](https://github.com/craigbalding/safeyolo/issues/1543#issuecomment-6854609584), [job/service proof](https://github.com/craigbalding/safeyolo/issues/1544#issuecomment-6858612088), #1546 and [maintained BB-29 acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6901839101). The 30 nonignored native cases have [partial scheduled process evidence](https://github.com/craigbalding/safeyolo/actions/runs/43707854900/job/132807509327) at `d43ba93d`, before a later transport-test failure. The prepared real-job case was ignored. The focused receipt remains manual and incomplete without that case. These process/installed-layout selections boot no guest; no new installed-platform or live-provider pass is inferred."
 owner = "#1563"
 decisions = ["authorization"]
 
@@ -357,7 +357,7 @@ what = "Invalid or stale refreshes cannot grant access contrary to configured po
 existing = "Accepted #1545 native CLI/proxy fixtures; maintained managed-feeds phase."
 conformance = "Owned feed server covers acquisition, automatic membership change, malformed/partial/rejected updates, atomic last-valid activation, configured expiry, restart, rollback and recovery. Named-feed and local-list paths remain distinct witnesses."
 effort = "M"
-comments = "Retain [feed proof](https://github.com/craigbalding/safeyolo/issues/1545#issuecomment-6858989106) and its scoped proof. The phase runs native processes in an installed layout, without a guest or public-package acquisition. Selection is manual; deployed recurring coverage is not established."
+comments = "Retain [feed proof](https://github.com/craigbalding/safeyolo/issues/1545#issuecomment-6858989106) and [maintained BB-30 acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6901839101). All eight native feed cases have [partial scheduled process evidence](https://github.com/craigbalding/safeyolo/actions/runs/43707854900/job/132807509327) at `d43ba93d`, before a later transport-test failure. The focused receipt remains manual. Both paths run native processes in an installed layout, without a guest or public-package acquisition; no recurring installed-guest coverage is established."
 owner = "#1563"
 decisions = ["policy_publication"]
 
@@ -369,7 +369,7 @@ what = "Both engines receive only adopted scoped capabilities; revoked/expired i
 existing = "Accepted #1549/#1550/#1552 engine fixtures; manual two-engine driver and native mediated-services phase."
 conformance = "The shared real-engine driver covers permitted GitHub reads, destination/method/path/repository and socket/DNS/direct-IP/ABI refusal, finite limits, cancellation/revocation/shutdown and late completion. Per-engine checkpoints and owned cleanup are required. Native mediated-services tests alone establish no VM boundary."
 effort = "L"
-comments = "Reuse [engine evidence](https://github.com/craigbalding/safeyolo/issues/1552#issuecomment-6877115753) and [installed adoption proof](https://github.com/craigbalding/safeyolo/issues/1552#issuecomment-6877595456) at their recorded Linux/Mac sources and limits. KVM/HVF, compatible artifacts and scoped GitHub credentials are explicit prerequisites. A missing engine or lifetimes-only run cannot complete the two-engine receipt. No recurring engine deployment is claimed."
+comments = "Retain [maintained two-engine acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6902006974), [engine evidence](https://github.com/craigbalding/safeyolo/issues/1552#issuecomment-6877115753) and [installed adoption proof](https://github.com/craigbalding/safeyolo/issues/1552#issuecomment-6877595456) at their recorded sources, profiles and Linux/Mac limits. The maintained execution used pinned accepted debug artifacts; it is not current-production qualification. Six native bridge cases have [partial scheduled process evidence](https://github.com/craigbalding/safeyolo/actions/runs/43707854900/job/132807509327) at `d43ba93d`, before a later transport-test failure; these cases prove no VM boundary. KVM/HVF, compatible artifacts and scoped GitHub credentials are explicit prerequisites for the manual two-engine driver. A missing engine or lifetimes-only run cannot complete its receipt. The selected AMD64 engine dispatch is deployed through the daily devstack rundeck caller. Its natural 19 November 2026 run 7fd9c86285a64d76af2ec5daaebad022 passed the engine phase; the five-dispatch adapter and cleanup returned zero. The independently reviewed recurrence receipt retains source, run and phase operands; no separate ARM64 recurrence is inferred. See the [independent AMD64 cadence disposition](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6967616840)."
 owner = "#1563"
 decisions = ["foreign_and_embedded"]
 
@@ -381,7 +381,7 @@ what = "Required checks bind to the exact operation/output; follow-up effects ar
 existing = "Accepted #1551 native transition fixtures; maintained before-after phase."
 conformance = "Real native Work/service boundaries cover omitted selectors, stale/substituted evidence, exact output replacement, pending revocation, committed-obligation recovery, crash after dispatch and explicit uncertainty without automatic replay. Follow-up failure cannot undo the committed transition."
 effort = "L"
-comments = "Owned effect counters and controlled providers observe enforcement. The process receipt does not establish an external GitHub merge/release boundary or repeat #1552 installed factory proof. Manual selection is distinct from deployed cadence."
+comments = "Retain [maintained BB-32 acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6901839101). All eleven native transition cases have [partial scheduled process evidence](https://github.com/craigbalding/safeyolo/actions/runs/43707854900/job/132807509327) at `d43ba93d`, before a later transport-test failure. The focused receipt remains manual. Owned effect counters and controlled providers observe enforcement. These process results do not establish an external GitHub merge/release boundary or repeat #1552 installed factory proof."
 owner = "#1563"
 decisions = ["external_effects"]
 
@@ -390,10 +390,10 @@ id = "BB-33"
 control = "Rootless guest preparation"
 source = "https://github.com/craigbalding/safeyolo/issues/1553"
 what = "Install/update/cleanup needs no sudo after prerequisites and retains required metadata/usable guest behavior."
-existing = "Planned/incomplete: feasibility #1553 and implementation #1554 are open; their independent acceptance is required."
-conformance = "Extend/write sudo-unavailable, regular/special metadata, distinct UID/GID, cancellation and old-install preservation cases."
+existing = "Feasibility #1553 and all seven #1554 product criteria at 607d8488 are independently accepted. The maintained process/native-kernel and booted-guest phases at cb04eb10 have combined independent BB-33 acceptance under #1563."
+conformance = "The manual rootless-preparation --execute selector runs native install/update/cache, active cancellation, failed-stage cleanup and existing-install preservation controls with recorded preparation and unavailable candidate sudo. It also runs the accepted default/distinct-map production metadata witness against the retained baseline. Every selected parameter case and setup/call/teardown must pass. The separate --boot selection reuses installed_storage.py and the prepared public guest for two systrap boots, root/user persistence, fresh-overlay checks and owned cleanup with host sudo unavailable. Without --execute or --boot, the selector remains a read-only digest-bound storage-receipt observer."
 effort = "L"
-comments = "Current acquisition/archive witnesses may invoke guest sudo and do not prove rootless preparation. Await #1553/#1554; preserve special metadata, distinct UID/GID, cancellation, cache/update and existing-installation requirements. Other controls do not wait."
+comments = "Retain [accepted feasibility](https://github.com/craigbalding/safeyolo/issues/1553#issuecomment-6892802583), [all-seven product acceptance](https://github.com/craigbalding/safeyolo/issues/1554#issuecomment-6899892091) and [combined maintained BB-33 acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6901362593). The executable fixture requires prepared Linux AMD64 UID/GID1000, delegated default/distinct ranges, the retained baseline and four verified specimens. It imports small synthetic trees, observes native ACL/xattr/capability/set-ID effects and specific unsupported refusals, then cleans owned trees without sudo. The process phase proves native-kernel metadata; the separate boot phase proves gVisor usability, not new gVisor ACL/capability enforcement or macOS qualification. The boot phase verifies the retained archive/index, records package and runtime hashes, observes actual UID/GID maps and reuses the lower tree without download, import or reinstall. The retained storage receipt separately covers installation, repeat/cache, same-index upgrade and two usable systrap boots; its original setup failures and narrower metadata/failure limits remain. Product Mac usability does not prove normal shutdown; installed same-index upgrades do not prove changed guest bytes. The selected AMD64 rootless-process and rootless-boot phases are deployed through the daily devstack rundeck caller. Their natural 19 November 2026 run 7fd9c86285a64d76af2ec5daaebad022 returned zero with no timeout or truncation; the independently reviewed receipt retains the actual pins and phase operands. This does not extend the product or platform qualifications above. See the [independent AMD64 cadence disposition](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6967616840). Missing prerequisites, omitted cases, observer or cleanup failure remain incomplete. Phase completion remains separate from independent control acceptance."
 owner = "#1563"
 decisions = ["other_sinks_and_launch"]
 
@@ -405,7 +405,7 @@ what = "Exact privileged commands and reasons appear before existing consent and
 existing = "Accepted #1555 fixtures; maintained sudo-disclosure pytest phase."
 conformance = "Reuse exact preview/execution argument agreement, quoting, helper effects, consent/decline, fresh/cached/passwordless/refused authentication, early cleanup, failure/retry and prepared-host no-op cases."
 effort = "M"
-comments = "Retain [disclosure proof](https://github.com/craigbalding/safeyolo/issues/1555#issuecomment-6874142655). Authentication uses controlled executors; extraction/remapping uses real guest sudo. This is not production-host authentication, macOS qualification or rootless proof. Existing consent is unchanged."
+comments = "Retain [disclosure proof](https://github.com/craigbalding/safeyolo/issues/1555#issuecomment-6874142655) and [maintained BB-34 acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6901839101). Authentication uses controlled executors for current host preparation and command installation. Public-installer cases cover early rootless guest preparation without sudo; BB-33 owns its full metadata, cleanup and usability proof. The selected AMD64 sudo-disclosure phase is deployed through the daily devstack rundeck caller. Its natural 19 November 2026 run 7fd9c86285a64d76af2ec5daaebad022 returned zero with no timeout or truncation. The independently reviewed recurrence receipt retains exact source and phase operands; the authentication and macOS limits below remain. See the [independent AMD64 cadence disposition](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6967616840). This is not production-host authentication or macOS qualification. Existing consent is unchanged."
 owner = "#1563"
 decisions = ["other_sinks_and_launch"]
 
@@ -446,6 +446,70 @@ owner = "#889"
 decisions = []
 
 
+[[controls]]
+id = "BB-38"
+control = "Host-operation authority and native execution"
+source = "https://github.com/craigbalding/safeyolo/issues/1677"
+what = "Authenticated host operations retain exact scope and revision checks; native execution has observable bounds and cleanup."
+existing = "Native protocol and installed Unix fixtures, including adaptive application reads, fixed-service control, retained configuration effects, quiet/reviewed updates and dependency swaps. The Windows fixture selects packaged starters, machine/workload-user registry views, path aliases/reparse points, inherited handles, signed API isolation, catalogue updates/withdrawal, executable swaps, revocation/expiry, native bounds, controller crash recovery and storage limits. It retains canonical output and independent Windows service, file-identity and Job Object observations; platform results remain separate."
+conformance = "Qualify all eight witness groups through installed interfaces. Independent acceptance at PR #1695/41b29878 covers useful progress and refused expansion, quiet updates and the selected fallback, measured cleanup/recovery, and real Windows starter categories, modes and advertised bounds. Complete native deployment/composition evidence and maintained coverage remain open."
+effort = "L"
+comments = "The separately installed executor and independent host observers retain actual source, operating system, account, mode and output limits. Accepted evidence joins a real Linux sandbox to its co-located Linux target and a standalone macOS target over HTTPS, plus native Python-free Windows foreground and Windows Service runs. Windows proves every documented starter category, service status/start/stop/restart, Job Object memory/process/output/deadline bounds, protected paths, registry views, encoding and inherited handles; it does not claim disk/network containment, containment of delegated service effects, another architecture or a full Windows host stack. Linux adds whole-API scope refusals, cancellation/descendants, duplicate/lost-reply and crash reconciliation, expiry/revocation, adaptive investigation and stored-binding repair. Reuse the accepted #1675 finite Hyperlight/model and real-gVisor required-check evidence at their recorded limits; no general provider/platform cross-product is implied. An installed approved-stale journey now refuses both the original revisions and a fresh preparation carrying the earlier exact approval, with no new native job. Private assessment retains an unresolved full grant when four fixture operations lack annotations; the isolated characterised service pair reports same-resource match and different-resource non-match. A fresh four-job Windows continuation observes actual service consumption after each restart: the same-service edit is consumed; the different-resource edit changes only the other file, while a new service PID consumes the unchanged application bytes. The original 66 native rows remain preserved in the 70-row ledger, and both owned services stop afterward. Prior persistent effects and the original missing middle observation remain identified rather than reconstructed. A co-located physical macOS proxy/VZ guest/target reaches authenticated discovery, proposal and admission, but its required Seatbelt child exits71 with sandbox_apply denied; useful native execution there remains incomplete. Keep that actual facility failure visible without changing the host profile or claiming containment. Preserve the original uncertain results, persistent effects and explicit platform exceptions. See [the criterion disposition](https://github.com/craigbalding/safeyolo/issues/1677#issuecomment-7099825211). Missing required facilities leave the affected run incomplete."
+owner = "#1677"
+decisions = ["authorization", "other_sinks_and_launch"]
+
+[[witnesses]]
+paths = ["host-executor/tests/unix_native.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+manifest = "host-executor/Cargo.toml"
+target = "unix_native"
+module = ""
+owner = "host-executor/tests/unix_native.rs"
+scope = "Real Unix installed executor; local authenticated HTTP; explicit native prerequisites"
+adapter = "Independent file and socket observations plus canonical job/output and owned cgroup/service checks; ignored unless explicitly selected; no Windows or whole-workflow acceptance"
+
+[[witnesses]]
+paths = ["proxy/tests/host_execution.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+target = "host_execution"
+module = ""
+owner = "proxy/tests/host_execution.rs"
+helpers = { durable_crash_child = "Executed by durable_process_failure_after_committed_admission with its private child environment; no separate phase obligation." }
+scope = "Controlled authenticated protocol, signatures, ledger and HTTP fixtures"
+adapter = "Protocol/component evidence; simulated dispatch does not establish native containment"
+
+[[witnesses]]
+paths = ["proxy/src/policy_adoption_tests.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+target = "lib"
+module = "policy_adoption_tests"
+owner = "proxy/src/lib.rs"
+scope = "Controlled saved/runtime catalogue and gateway binding adoption"
+adapter = "Exact binding snapshots, rejected announcement stability and policy transaction rollback; no native execution claim"
+
+[[witnesses]]
+paths = ["proxy/src/host_execution/gateway/tests.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+target = "lib"
+module = "host_execution::gateway::tests"
+owner = "proxy/src/host_execution/gateway.rs"
+scope = "Controlled gateway authentication, scope, dispatch and reply-loss fixtures"
+adapter = "Real gateway request parsing and controlled upstream; not a deployed target or native boundary"
+
+[[witnesses]]
+paths = ["proxy/src/host_execution/gateway/task_action_tests.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+target = "lib"
+module = "host_execution::gateway::tests::configured_task_action"
+owner = "proxy/src/host_execution/gateway/tests.rs"
+scope = "Configured task/action admission and bounded checker fixtures"
+adapter = "Controlled check results and upstream dispatch counts; model measurements remain separate supplementary evidence"
+
 [[witnesses]]
 paths = ["tests/proxy_contracts/test_local_api_authorization.py", "tests/proxy_contracts/test_agent_api_contract.py", "tests/proxy_contracts/test_agent_egress_scope.py", "tests/proxy_contracts/test_agent_api_test_context.py"]
 controls = ["BB-04", "BB-05"]
@@ -473,6 +537,20 @@ controls = ["BB-08", "BB-19"]
 kind = "pytest"
 scope = "Native process; Linux/macOS; host identity"
 adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_media_recipe_gateway.py"]
+controls = ["BB-08"]
+kind = "pytest"
+scope = "Native process; owned loopback dispatch origin"
+adapter = "Shipped recipe service/policy; no installed library or job proof"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_control_updates.py"]
+controls = ["BB-08", "BB-19", "BB-29"]
+kind = "pytest"
+scope = "Native signals process; optional prepared Linux sandbox jobs"
+adapter = "Signed native candidates, owned NATS and controlled route requests; real isolated checks require the selected installed host"
 
 [[witnesses]]
 paths = ["tests/proxy_contracts/test_https_contract.py", "tests/proxy_contracts/test_https_trust_continuity.py"]
@@ -619,6 +697,27 @@ scope = "Ordinary native CLI; Linux/macOS; host identity"
 adapter = "Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers"
 
 [[witnesses]]
+paths = ["tests/blackbox/rootless_preparation.py::observe"]
+controls = ["BB-33"]
+kind = "procedure"
+scope = "Retained native Linux storage observations; recorded ordinary host identity and systrap guest root/user"
+adapter = "Manual run-controls.sh rootless-preparation; canonical source/digest supplied separately; recorded operands checked without command replay or independent product acceptance"
+
+[[witnesses]]
+paths = ["tests/blackbox/rootless_metadata.py::qualify"]
+controls = ["BB-33"]
+kind = "procedure"
+scope = "Prepared Linux AMD64 ordinary UID/GID1000; native-kernel metadata and default/distinct UID/GID imports"
+adapter = "Manual rootless-preparation --execute; retained baseline/specimens, installed CLI and declared namespace preparation; no guest boot or deployed cadence inferred"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_storage.py::qualify"]
+controls = ["BB-28", "BB-33"]
+kind = "procedure"
+scope = "Prepared native Linux installation; acquisition or prepared-guest reuse and two systrap boots with root/user persistence"
+adapter = "Rootless --boot uses the maintained pytest receipt and unavailable host sudo; standalone acquisition keeps its original scope. Both record actual package/guest/maps and owned cleanup; manual selection establishes no recurring cadence"
+
+[[witnesses]]
 paths = ["tests/test_host_sudo.py"]
 controls = ["BB-34"]
 kind = "pytest"
@@ -630,7 +729,7 @@ paths = ["tests/test_public_installer.py::test_guest_cache_is_prepared_during_ho
 controls = ["BB-34"]
 kind = "pytest"
 scope = "Public bootstrap composition; Linux ordinary account with guest sudo"
-adapter = "Owned registry, controlled host package and held native guest remapper; disclosure must precede early/background execution; no public release acquisition"
+adapter = "Owned registry, controlled host package and held rootless guest validation; no guest-preparation sudo or early activation; no public release acquisition"
 
 [[witnesses]]
 paths = ["tests/test_hyperlight_adoption.py", "tests/test_hyperlight_service_checker.py", "tests/test_job_authoring.py"]
@@ -708,6 +807,34 @@ controls = ["BB-15", "BB-19"]
 kind = "procedure"
 scope = "Installed driver; actual backend and identities recorded in its own report"
 adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_shared_approvals.py::deterministic_exchange"]
+controls = ["BB-19"]
+kind = "procedure"
+scope = "Two actual Linux/systrap guests; deterministic typed decisions"
+adapter = "Worker and helper requests, exact network/gateway effects, wrong principal/route, expiry/revocation and run turnover; no model or human decision"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_shared_authority_assurance.py"]
+controls = ["BB-19"]
+kind = "pytest"
+scope = "Native proxy processes; controlled backend births and guest transport"
+adapter = "The actual deterministic controller, typed decisions and independently served origin effects; no real-guest claim"
+
+[[witnesses]]
+paths = ["tests/blackbox/native_authority.py::main"]
+controls = ["BB-24", "BB-25", "BB-38"]
+kind = "procedure"
+scope = "Curated Coord cases on Linux or explicitly selected installed host-executor cases on Unix"
+adapter = "Per-control procedure receipts and exact executed cases with separate test/product/probe identities; process evidence without whole-workflow or Windows acceptance"
+
+[[witnesses]]
+paths = ["tests/blackbox/installed_federation.py::main"]
+controls = ["BB-25"]
+kind = "procedure"
+scope = "Two actual systrap guests and a separate destination instance on the same Linux host"
+adapter = "Real TLS/NATS, destination operator history, exact delivery, wrong principal/instance and trust revocation; no live Tailscale claim"
 
 [[witnesses]]
 paths = ["tests/blackbox/installed_provider.py::main"]
@@ -826,6 +953,13 @@ module = "federation"
 owner = "proxy/tests/native_coord.rs"
 
 [[witnesses]]
+paths = ["tests/blackbox/installed_tailnet.py::main"]
+controls = ["BB-26"]
+kind = "procedure"
+scope = "Manual two-host tailnet journey; real status, native CLI/Coord and unchanged source proxy/guest identities"
+adapter = "Fresh observer forwards to owned real NATS, brackets fixed phases on the source clock and forces an active reconnect. Destination verifies canonical effects, refused non-delivery and cleanup. Faults require authorized isolated contexts; no executed live-tailnet or scheduled coverage inferred"
+
+[[witnesses]]
 paths = ["proxy/src/coord_rooms/federation/tailscale.rs"]
 controls = ["BB-26"]
 kind = "cargo"
@@ -926,6 +1060,16 @@ scope = "Native Coord/NATS; host process; cfg and ignore annotations retain venu
 adapter = "Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself"
 target = "native_coord"
 module = "continuation"
+owner = "proxy/tests/native_coord.rs"
+
+[[witnesses]]
+paths = ["proxy/tests/native_coord/diagnostics.rs"]
+controls = ["BB-05", "BB-24"]
+kind = "cargo"
+scope = "Native Agent API/MCP; host process; controlled HTTP failures"
+adapter = "Actual native client and scoped audit reader; canned body/deadline variants. These tests do not establish an installed guest or real-agent journey."
+target = "native_coord"
+module = "diagnostics"
 owner = "proxy/tests/native_coord.rs"
 
 [[witnesses]]
@@ -1174,7 +1318,7 @@ paths = ["proxy/src/coord_rooms/work/automatic_tests.rs"]
 controls = ["BB-29", "BB-32"]
 kind = "cargo"
 scope = "Native Work and HTTP service boundaries; process fixtures"
-adapter = "Real proxy/SQLite with owned service/effect counters; crash child and restart; uncertain dispatch is never automatically replayed"
+adapter = "Real proxy/SQLite with independent helper-launch and service/effect counters; crash child and restart; uncertain dispatch is never automatically replayed"
 target = "lib"
 module = "coord_rooms::work::tests::automatic_tests"
 owner = "proxy/src/coord_rooms/work/tests.rs"

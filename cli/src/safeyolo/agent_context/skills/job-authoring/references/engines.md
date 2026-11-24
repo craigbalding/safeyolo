@@ -11,23 +11,25 @@ by the upstream projects.
 
 | Property | Core Hyperlight | Hyperlight-Unikraft | Linux gVisor job | Linux VZ job on macOS |
 |---|---|---|---|---|
-| Supported host | Linux x86_64/aarch64; Apple-silicon macOS | Same | Linux x86_64/aarch64 with the matching packaged gVisor runtime | Physical Apple-silicon macOS with the signed VM helper |
+| Runtime-qualified host | Linux x86_64 with Kernel-based Virtual Machine (KVM); physical Apple-silicon macOS with Hypervisor.framework (HVF). Linux aarch64 execution remains unqualified. | Same | Linux x86_64/aarch64 with the matching packaged gVisor runtime | Physical Apple-silicon macOS with the signed VM helper |
 | Virtualization | Accessible KVM on Linux; entitled Hypervisor.framework on macOS | Same | Existing gVisor platform selection; systrap requires no KVM | Virtualization.framework (VZ), matching prepared Linux kernel/rootfs; unsupported nested VZ fails |
 | Guest artifact | Rust compiled to the matching Hyperlight guest ABI, not a host/Linux executable | Pinned Unikraft kernel/Python runtime plus checker script | Matching Linux guest image/userspace and fixed argv | Matching ARM64 Linux guest image/userspace and fixed argv |
 | Ordinary Linux compatibility | No Linux system-call or process environment | Linux subset; Python/native extensions must fit the pinned runtime | gVisor implements Linux system calls in a userspace kernel; not every syscall/device is supported | Real Linux kernel in a VM; devices and mounts remain explicitly selected |
 | Filesystem | Bounded `ReadInput` host function under selected read-only inputs; no arbitrary host path | Read-only `/input`; transient RAM root and `/work` | Selected read-only `/input`; disposable `/work` and `/home/agent` | Same job contract using guest mounts and disposable storage |
 | Processes and privilege | No Unix PID, fork or guest-root semantics | One vCPU, cooperative threads; supported `vfork`/PIE exec subset, no `fork`; no full Linux privilege model | Linux process model within gVisor; explicit unprivileged or guest-root job selection | Linux process model within the VM; explicit unprivileged or guest-root job selection |
 | Network/capabilities | No guest sockets; optional bounded mediated service host call | Same; upstream host-socket passthrough is disabled by this integration | Optional existing delegated proxy path with adopted service/network/credential rules | Same through the VZ guest's delegated proxy path |
-| Persistent state | Fresh helper/guest for each invocation; no warm template | Fresh helper/guest for each invocation; no saved runtime snapshot | Disposable writable job state; prepared image/runtime reuse is separate | Disposable overlay/job state; prepared VM assets are separate |
+| Persistent state | Clean initialization template; fresh helper and restored sandbox per invocation | Clean initialized Python template; fresh helper, mounts and restored sandbox per invocation | Disposable writable job state; prepared image/runtime reuse is separate | Disposable overlay/job state; prepared VM assets are separate |
 | Memory setting | `memory_mb` selects scratch, not total host resident memory | Same | Existing sandbox resource controls; check actual enforcement for the selected platform | VM memory and existing job controls; host helper overhead remains separate |
 | Deadline/cancellation | Owning helper process group is stopped and reaped; VM errors remain separate from OS helper status | Same | Existing job process/runtime cleanup | Existing VM/job cleanup |
 
-The Hyperlight package includes `runtime.json`, helper, core guest, pinned
-Python CPIO, checkers, JSON definitions and license notices. Runtime/guest/helper
-digests and architecture must match. The source builder is
-`scripts/build_hyperlight_jobs.py`; native packaging uses the
-`--hyperlight-artifacts` input. Building and installing bytes does not adopt
-a policy or make a selected runtime available on a different host.
+Production SafeYolo host packages include `assets/hyperlight` with `runtime.json`,
+helper, core guest, pinned Python runtime archive, checkers, JSON definitions and
+license notices. Runtime/guest/helper digests and architecture must match.
+Use the normal published installer or host
+upgrade; running the installed examples requires no source checkout or Rust/LLVM
+build tools. The producer accepts Linux aarch64 as a build target, which does
+not qualify runtime execution there. Building and installing bytes does not
+adopt policy or supply virtualization on a different host.
 
 For new code, start from the installed example's logical request/result
 contract. Build Rust with the pinned `cargo-hyperlight` tool and matching guest
@@ -44,11 +46,16 @@ status, VM `runtime_report`, stream counts/hashes and `observation_error`.
 A VM-reported return is not an OS guest-process exit. The typed evaluator
 separately decides whether successful execution produced a qualifying finding.
 
-There is no implemented warm VM/template lane for either Hyperlight engine.
-Repeating a fresh invocation with cached files is a repeated cold-VM run, not
-a restore measurement. Neither runtime is promised to be faster or smaller than
-gVisor or VZ. Selected scratch sizes (16 MiB for the small core example and
-256 MiB for Python) are configuration, not measured resident-memory peaks.
+Both Hyperlight engines restore clean initialization templates by default.
+Set `reuse_initialization=false` in the engine object for a cold comparison.
+`runtime_report.initialization` identifies construction, restoration and cold
+reasons, with template identities and stage times. See
+[initialized workloads](https://github.com/craigbalding/safeyolo/blob/master/docs/hyperlight-jobs.md#reuse-initialized-workloads)
+for the freeze boundary, current-authority rules, retention and randomness
+limits. A restored invocation does not reuse the preceding call's mutated VM.
+Neither runtime is promised to be faster or smaller than gVisor or VZ. Scratch
+sizes (16 MiB for the small core example and 256 MiB for Python) are
+configuration, not measured resident-memory peaks.
 
 ### Installed offline observations
 
@@ -125,4 +132,5 @@ Pinned upstream references explain the
 [core guest ABI](https://github.com/hyperlight-dev/hyperlight/blob/a03088470d822b538d2525ef9a5ae9e29daea1e8/docs/how-to-build-a-hyperlight-guest-binary.md),
 [Unikraft execution model](https://github.com/hyperlight-dev/hyperlight-unikraft/blob/34c0d647a9f8679c0ce53b76e174894b2c5bfa7a/docs/execution.md)
 and [cooperative scheduling/process subset](https://github.com/hyperlight-dev/hyperlight-unikraft/blob/34c0d647a9f8679c0ce53b76e174894b2c5bfa7a/docs/concurrency.md).
-Upstream snapshots and sockets do not imply that SafeYolo adopts those features.
+SafeYolo uses the initialized snapshot paths described here. Upstream socket
+passthrough remains disabled; use the adopted mediated-service contract.

@@ -23,6 +23,8 @@ from pathlib import Path
 
 if __package__:
     from .selections import (
+        AUTHORITY_CONTROLS,
+        BOUNDARY_SECTIONS,
         HOST_EXCLUSIONS,
         NATIVE_PHASES,
         OPTIONAL_CASES,
@@ -33,6 +35,8 @@ if __package__:
     )
 else:
     from selections import (
+        AUTHORITY_CONTROLS,
+        BOUNDARY_SECTIONS,
         HOST_EXCLUSIONS,
         NATIVE_PHASES,
         OPTIONAL_CASES,
@@ -46,7 +50,20 @@ ROOT = Path(__file__).resolve().parents[2]
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 
 
-def read_json(path: Path) -> dict:
+def controller_identity(root: Path = ROOT) -> dict:
+    """Identify clean controller source; copied instruments remain unknown."""
+    try:
+        revision = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                           text=True, stderr=subprocess.DEVNULL).strip()
+        dirty = bool(subprocess.check_output(["git", "-C", str(root), "status", "--porcelain"],
+                                            text=True, stderr=subprocess.DEVNULL).strip())
+    except (OSError, subprocess.SubprocessError):
+        # A standalone copied instrument has no verifiable source revision.
+        return {"controller_revision": None, "controller_dirty": True}
+    return {"controller_revision": None if dirty else revision, "controller_dirty": dirty}
+
+
+def read_json(path: Path, *, sha256: str | None = None) -> dict:
     """Read bounded regular reports without following candidate symlinks."""
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
@@ -56,6 +73,8 @@ def read_json(path: Path) -> dict:
         data = stream.read(MAX_REPORT_BYTES + 1)
     if len(data) > MAX_REPORT_BYTES:
         raise ValueError("report grew beyond the read bound")
+    if sha256 is not None and hashlib.sha256(data).hexdigest() != sha256:
+        raise ValueError("report SHA-256 differs from the supplied evidence reference")
     document = json.loads(data)
     if not isinstance(document, dict):
         raise ValueError("report must contain a JSON mapping")
@@ -168,18 +187,36 @@ class ProcedureReceipt:
         self.document = {"section": section, "run_id": os.environ.get("SAFEYOLO_BLACKBOX_RUN_ID"),
                          "lane": os.environ.get("SAFEYOLO_BLACKBOX_LANE"),
                          "agent": os.environ.get("SAFEYOLO_TEST_AGENT", "bbtest"),
+                         "expected_checkpoints": list(PROCEDURES[section][1]),
                          "checkpoints": [], "finished": False, "complete": False}
         self.document["guest"] = json.loads(os.environ.get("SAFEYOLO_BLACKBOX_GUEST_IDENTITY", "null"))
         save(self.path, self.document)
 
-    def checkpoint(self, name: str) -> None:
+    def checkpoint(self, name: str, **observations) -> None:
         expected = PROCEDURES[self.document["section"]][1]
         if name not in expected or name in self.document["checkpoints"]:
             raise ValueError(f"unexpected or repeated procedure checkpoint: {name}")
         self.document["checkpoints"].append(name)
+        if observations:
+            self.document.setdefault("observations", {})[name] = observations
         self.document["finished"] = name == "finished"
         self.document["complete"] = self.document["checkpoints"] == list(expected)
         save(self.path, self.document)
+
+
+def procedure_problems(report: dict, phase: str) -> list[str]:
+    """Require the maintained checkpoints and their independent observations."""
+    problems = []
+    if (report.get("section") != phase or report.get("finished") is not True
+            or report.get("checkpoints") != list(PROCEDURES[phase][1])):
+        problems.append("missing/partial procedure checkpoints")
+    required = next((names for section, names in AUTHORITY_CONTROLS.values() if section == phase), ())
+    observations = report.get("observations", {})
+    for checkpoint in required:
+        if (not isinstance(observations, dict) or not isinstance(observations.get(checkpoint), dict)
+                or not observations[checkpoint]):
+            problems.append(f"missing independent observations: {checkpoint}")
+    return problems
 
 
 def section_execution(artifacts: Path, section: str, lane: str, run_id: str,
@@ -191,7 +228,7 @@ def section_execution(artifacts: Path, section: str, lane: str, run_id: str,
     rows = []
     context = None
     context_problem = None
-    if section != "continuity":
+    if section not in ("continuity", "tailnet", *BOUNDARY_SECTIONS):
         try:
             context = guest_context(read_json(artifacts / "platform.json"))
             if context["platform"] != lane:
@@ -212,6 +249,16 @@ def section_execution(artifacts: Path, section: str, lane: str, run_id: str,
             problems.append("report belongs to another guest/backend lifetime")
         if report.get("run_id") != run_id:
             problems.append("report belongs to another run")
+        if section in BOUNDARY_SECTIONS and report.get("lane") != lane:
+            problems.append("procedure belongs to another backend")
+        if section in BOUNDARY_SECTIONS:
+            identities = report.get("identities")
+            if not isinstance(identities, dict) or not all(
+                    isinstance(identities.get(key), dict) and identities[key]
+                    for key in ("product", "controller", "guest_selection")):
+                problems.append("missing product/controller/guest identities")
+            elif identities["controller"].get("controller_dirty") is not False or not identities["controller"].get("controller_revision"):
+                problems.append("controller source is not a clean recorded revision")
         if phase in PYTEST_PHASES:
             problems += pytest_problems(report, phase, lane, root=root)
             if phase in {"guest-agent", "guest-root"}:
@@ -232,14 +279,44 @@ def section_execution(artifacts: Path, section: str, lane: str, run_id: str,
             failed_stages = sorted({stage for steps in outcomes.values()
                                     for stage, outcome in steps.items() if outcome == "failed" and stage in {"setup", "call", "teardown"}})
         else:
-            if (report.get("section") != phase or report.get("finished") is not True
-                    or report.get("checkpoints") != list(PROCEDURES[phase][1])):
-                problems.append("missing/partial procedure checkpoints")
+            problems += procedure_problems(report, phase)
             excluded = {}
             failed_stages = []
         rows.append({"phase": phase, "complete": not problems, "problems": problems,
-                     "exclusions": excluded, "failed_stages": failed_stages})
+                     "exclusions": excluded, "failed_stages": failed_stages,
+                     **({"expected_checkpoints": list(PROCEDURES[phase][1]),
+                         "checkpoints": report.get("checkpoints", []),
+                         "observations": report.get("observations", {}),
+                         "guest": report.get("guest")} if phase in PROCEDURES else {})})
     return {"complete": bool(rows) and all(row["complete"] for row in rows), "phases": rows}
+
+
+def authority_controls(report: dict) -> dict:
+    """Project current installed execution, without borrowing historical proof."""
+    rows = {row["section"]: row for row in report["sections"]}
+    controls = {}
+    for control, (section, _) in AUTHORITY_CONTROLS.items():
+        selected = section is not None and section in report["selected_sections"]
+        row = rows.get(section)
+        complete = bool(selected and row and row["exit"] == 0 and row["result"] == "passed"
+                        and row["cleanup"] == "stopped"
+                        and row.get("execution", {}).get("complete") is True)
+        remaining = []
+        if control in {"BB-24", "BB-25"}:
+            remaining.append("Curated native process results are recorded separately by native_authority.py.")
+        if control == "BB-26":
+            remaining.append("The two-host installed_tailnet.py journey requires its protected venue and paired reports.")
+        if section and not selected:
+            remaining.append(f"Installed section {section} was not selected on this lane.")
+        controls[control] = {"section": section, "selected": selected, "executed": row is not None,
+                             "boundary": "two-host-tailnet" if control == "BB-26" else
+                             "native-process" if control == "BB-24" else "installed-guest",
+                             "execution_complete": complete,
+                             "artifacts": section,
+                             "result": row["result"] if row else "unexecuted",
+                             "execution": row.get("execution") if row else None,
+                             "remaining": remaining}
+    return controls
 
 
 class PytestReceipt:
@@ -252,7 +329,7 @@ class PytestReceipt:
         self.document["enabled_optional"] = [node for node, variable, value, _reason in OPTIONAL_CASES
                                              if (os.environ.get(variable) == value if value else bool(os.environ.get(variable)))]
         self.document["guest"] = json.loads(os.environ.get("SAFEYOLO_BLACKBOX_GUEST_IDENTITY", "null"))
-        if phase in {"policy-recipe", "sudo-disclosure"}:
+        if phase in {"policy-recipe", "sudo-disclosure", "rootless-preparation", "rootless-guest"}:
             self.document.update(focused_inputs(root, phase))
         save(self.path, self.document)
 
@@ -298,13 +375,28 @@ def focused_inputs(root: Path, phase: str) -> dict:
               "controller_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
               "working_tree_changed": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=root)),
               "product_binaries": {}}
-    if phase == "sudo-disclosure":
+    if phase in {"sudo-disclosure", "rootless-preparation", "rootless-guest"}:
         binaries = [Path(os.environ.get("SAFEYOLO_NATIVE_CLI", root / "proxy/target/release/safeyolo"))]
     else:
         from tests.proxy_contracts.test_native_policy_cli import native_inputs
 
         host, _guest, _profile = native_inputs()
         binaries = [host / name for name in ("safeyolo", "safeyolo-proxy", "safeyolo-coord")]
+    if phase == "rootless-preparation":
+        result.update(boundary="installed-cli/native-kernel", control_complete=False,
+                      prerequisites={name: os.environ.get(name) for name in (
+                          "SAFEYOLO_ROOTLESS_PREPARED_CONFIG", "SAFEYOLO_ROOTLESS_BASELINE",
+                          "SAFEYOLO_ROOTLESS_SPECIMENS")},
+                      remaining=["Booted guest/platform proof is separate from these process and native-kernel cases.",
+                                 "This manually selected phase establishes no deployed recurring cadence."])
+    if phase == "rootless-guest":
+        result.update(boundary="installed-cli/gvisor-systrap", control_complete=False,
+                      prerequisites={name: os.environ.get(name) for name in (
+                          "SAFEYOLO_ROOTLESS_PREPARED_CONFIG", "SAFEYOLO_ROOTLESS_GUEST_ARCHIVE",
+                          "SAFEYOLO_ROOTLESS_GUEST_INDEX", "SAFEYOLO_ROOTLESS_GUEST_SHA256")},
+                      remaining=["Process/native-metadata obligations use the separate rootless-preparation --execute phase.",
+                                 "Native metadata parity does not establish new gVisor ACL/capability enforcement.",
+                                 "This manually selected phase establishes no macOS or deployed recurring cadence proof."])
     for binary in binaries:
         if binary.is_file():
             with binary.open("rb") as stream:
@@ -324,9 +416,14 @@ def native_cases(phase: str, root: Path) -> list[tuple[str, str, list[str]]]:
     for target, module in NATIVE_PHASES[phase]:
         names = []
         for witness in witnesses:
-            if witness["kind"] == "cargo" and (witness["target"], witness["module"]) == (target, module):
+            # Rust's module filter also executes child modules. Include their
+            # separately maintained sources in the same expected result set.
+            if (witness["kind"] == "cargo" and witness["target"] == target
+                    and (witness["module"] == module
+                         or module and witness["module"].startswith(module + "::"))):
                 for reference in witness["paths"]:
-                    names += [node["node"] for node in resolve(witness, reference, root)]
+                    names += [node["node"] for node in resolve(witness, reference, root)
+                              if node["node"] not in witness.get("helpers", {})]
         if not names or len(names) != len(set(names)):
             raise ValueError(f"missing or duplicate native identities: {target}/{module}")
         groups.append((target, module, sorted(names)))
@@ -447,6 +544,8 @@ def main() -> int:
         return 2
 
     os.chdir(root)
+    if args.phase in {"rootless-preparation", "rootless-guest"}:
+        os.environ["SAFEYOLO_BLACKBOX_ROOTLESS"] = "1"
     plugin = PytestReceipt(args.output.resolve(), args.phase, args.lane, args.run_id, root)
     # Keep the report reader usable in the stdlib-only installation bootstrap.
     PytestReceipt.pytest_collection_modifyitems = pytest.hookimpl(hookwrapper=True, tryfirst=True)(

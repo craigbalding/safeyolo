@@ -16,6 +16,8 @@ use serde_json::{Value, json};
 
 use crate::{Error, host_agents::Agent};
 
+pub(crate) mod scheduled;
+
 fn tmux_command() -> tokio::process::Command {
     tokio::process::Command::new(crate::host_platform::config_dir().join("bin/tmux"))
 }
@@ -1066,7 +1068,7 @@ fn harness(agent: &Agent) -> Option<&'static str> {
     match agent.host_script.as_deref()?.rsplit('/').next()? {
         "codex-host-setup.sh" | "codex-coord-host-setup.sh" => Some("codex"),
         "pi-host-setup.sh" | "pi-coord-host-setup.sh" => Some("pi"),
-        "claude-host-setup.sh" => Some("claude"),
+        "claude-host-setup.sh" | "claude-coord-host-setup.sh" => Some("claude"),
         "mise-shell-host-setup.sh" => Some("shell"),
         _ => None,
     }
@@ -1477,6 +1479,7 @@ pub(crate) async fn runtime(agent: &Agent) -> Result<Value, Error> {
         "next_start_configuration":{"workspace":agent.folder,"memory_mb":agent.memory_mb.unwrap_or(4096),"mounts":agent.mounts},
         "terminal_state":if attachable {"running"} else {"absent"},
         "agent_state":state,"launcher":launcher,"attachable":attachable,
+        "lifecycle":scheduled::observation(&crate::host_platform::config_dir(),agent,&sandbox["runtime_state"]),
         "launch_id":launch_id,"exit_code":exit_code,"error":error,
         "hook_errors":hook_errors,"harness":harness(agent)
     }))
@@ -1545,6 +1548,25 @@ pub(crate) async fn start_authorized(
     allow_unowned: bool,
     check: &(dyn Fn() -> Result<(), Error> + Send + Sync),
 ) -> Result<Value, Error> {
+    scheduled::start(
+        agent,
+        operation,
+        setup_lock,
+        arguments,
+        allow_unowned,
+        check,
+    )
+    .await
+}
+
+pub(super) async fn start_inner(
+    agent: &Agent,
+    operation: &str,
+    setup_lock: Option<SetupLock>,
+    arguments: Option<&[String]>,
+    allow_unowned: bool,
+    check: &(dyn Fn() -> Result<(), Error> + Send + Sync),
+) -> Result<Value, Error> {
     let interactive = operation == "start-interactive";
     let foreground = operation == "start-foreground";
     crate::host_agents::refresh(agent)?;
@@ -1591,6 +1613,7 @@ pub(crate) async fn start_authorized(
         agent.dangerously_allow_unowned,
     )?;
     if observed["runtime_state"] == "stopped" {
+        scheduled::release_previous_scope(agent)?;
         if observed["backend"].is_object() {
             crate::host_platform::stop_sandbox(&agent.name).await?;
         }
@@ -1600,7 +1623,8 @@ pub(crate) async fn start_authorized(
         let slot = crate::host_agents::reserve_network_slot(&agent.name)?;
         let address = u32::from(slot) + 1;
         let ip = format!("10.200.{}.{}", address / 256, address % 256);
-        let run_id = uuid::Uuid::new_v4().simple().to_string();
+        let run_id = scheduled::planned_run(agent)?
+            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
         crate::host_boot::stage(agent, &ip, &run_id).await?;
         let mut run = json!({"name":agent.name,"agent_id":agent.id,"run_id":run_id,"ip":ip,"state":"starting"});
         if cfg!(target_os = "linux") {
@@ -2299,6 +2323,7 @@ async fn stop_locked(
         crate::host_platform::check_stop_sandbox(&agent.name).await?;
     }
     check()?;
+    scheduled::stopping(agent)?;
     if let Some(mut run) = crate::host_runs::read(&agent.name)?
         && run["agent_id"] == agent.id
         && matches!(run["state"].as_str(), Some("starting" | "running"))
@@ -2306,11 +2331,29 @@ async fn stop_locked(
         run["state"] = "stopping".into();
         crate::host_runs::save(&agent.name, &run)?;
     }
-    let command_warning = stop_supervisor(&agent.name)
+    let command_warning = if let Some(wait) = scheduled::mandatory_command_wait(agent)? {
+        // A launcher failure or a non-cooperating command cannot veto a
+        // configured cutoff. Share the existing command-termination interval.
+        match tokio::time::timeout(wait, async {
+            let supervisor = stop_supervisor(&agent.name).await;
+            let launcher = stop_launcher(agent).await;
+            supervisor.and(launcher)
+        })
         .await
-        .err()
-        .map(|error| error.to_string());
-    stop_launcher(agent).await?;
+        {
+            Ok(result) => result.err().map(|error| error.to_string()),
+            Err(_) => Some(
+                "command stop interval expired; continuing verified backend termination".into(),
+            ),
+        }
+    } else {
+        let warning = stop_supervisor(&agent.name)
+            .await
+            .err()
+            .map(|error| error.to_string());
+        stop_launcher(agent).await?;
+        warning
+    };
     let observed = crate::host_runs::observe(&agent.name).await;
     if observed["runtime_state"] != "stopped" || observed["backend"].is_object() {
         crate::host_platform::stop_sandbox(&agent.name).await?;
@@ -2334,6 +2377,12 @@ async fn stop_locked(
     if let Some(warning) = command_warning {
         result["command_stop_warning"] = warning.into();
     }
+    scheduled::stopped(agent, &result)?;
+    result["lifecycle"] = scheduled::observation(
+        &crate::host_platform::config_dir(),
+        agent,
+        &result["runtime_state"],
+    );
     Ok(result)
 }
 
@@ -2610,7 +2659,10 @@ async fn stop_launcher(agent: &Agent) -> Result<(), Error> {
             .ok_or("host launcher path missing")?;
         let path = std::path::Path::new(path).canonicalize()?;
         validate_host_script(&path)?;
-        let status = script_command(&path, "stop", &record).status().await?;
+        let status = script_command(&path, "stop", &record)
+            .kill_on_drop(true)
+            .status()
+            .await?;
         if !status.success() {
             return Err("Host launcher stop failed".into());
         }
@@ -2872,6 +2924,9 @@ mod tests {
             }
             std::fs::create_dir_all(root.join("assets/skills/safeyolo")).unwrap();
             std::fs::write(root.join("assets/skills/safeyolo/SKILL.md"), "fixture").unwrap();
+            let sudo_source = root.join("assets/guest/guest-sudo");
+            std::fs::write(&sudo_source, "selected guest sudo\n").unwrap();
+            std::fs::set_permissions(&sudo_source, std::fs::Permissions::from_mode(0o555)).unwrap();
             std::fs::create_dir_all(root.join("certs")).unwrap();
             std::fs::write(root.join("certs/mitmproxy-ca-cert.pem"), "fixture CA").unwrap();
             let peer = json!({"agent_id":"peer", "socket_path":root.join("peer.sock")});
@@ -2903,6 +2958,100 @@ mod tests {
             std::fs::write(directory.join("home/keep"), "saved home").unwrap();
             crate::host_agents::reserve_network_slot(&agent.name).unwrap();
             let policy = std::fs::read(root.join("policy.toml")).unwrap();
+            let home = directory.join("home");
+            let share = directory.join("config-share");
+            std::fs::create_dir_all(&share).unwrap();
+            let sudo = share.join("guest-sudo");
+            std::fs::write(&sudo, "previous guest sudo\n").unwrap();
+            std::fs::set_permissions(&sudo, std::fs::Permissions::from_mode(0o555)).unwrap();
+            assert_eq!(
+                OpenOptions::new()
+                    .write(true)
+                    .open(&sudo)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            let mut previous_sudo = File::open(&sudo).unwrap();
+            for name in [".safeyolo-command", ".safeyolo-interactive-command"] {
+                std::fs::write(home.join(name), "#!/bin/sh\nexec marker\n").unwrap();
+                std::fs::set_permissions(home.join(name), std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
+            }
+            let old_run_id = "0".repeat(32);
+            crate::host_boot::stage(&agent, "10.200.0.1", &old_run_id)
+                .await
+                .unwrap();
+            assert_eq!(
+                std::fs::read(&sudo).unwrap(),
+                std::fs::read(&sudo_source).unwrap()
+            );
+            let info = std::fs::metadata(&sudo).unwrap();
+            assert_eq!(info.uid(), unsafe { libc::geteuid() });
+            assert_eq!(info.gid(), std::fs::metadata(&share).unwrap().gid());
+            assert_eq!(info.permissions().mode() & 0o7777, 0o555);
+            use std::io::Read;
+            let mut previous_bytes = String::new();
+            previous_sudo.read_to_string(&mut previous_bytes).unwrap();
+            assert_eq!(previous_bytes, "previous guest sudo\n");
+            assert_eq!(
+                previous_sudo.metadata().unwrap().permissions().mode() & 0o7777,
+                0o555
+            );
+            let mut holder = tokio::process::Command::new("/bin/sleep")
+                .arg("30")
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let holder_pid = holder.id().unwrap();
+            let holder_token = process_token(i64::from(holder_pid)).unwrap();
+            holder.kill().await.unwrap();
+            holder.wait().await.unwrap();
+            let stopped = json!({"name":agent.name,"agent_id":agent.id,"run_id":old_run_id,
+                "ip":"10.200.0.1","state":"stopped","holder_pid":holder_pid,"holder_token":holder_token});
+            crate::host_runs::save(&agent.name, &stopped).unwrap();
+            let context = std::fs::read(share.join("host-launch-context.json")).unwrap();
+            let identities = [".safeyolo-command", ".safeyolo-interactive-command"].map(|name| {
+                crate::guest_commands::payload_identity(&home.join(format!("{name}.payload")))
+                    .unwrap()
+            });
+            // A real write failure late in host staging must not select a new
+            // generation or disturb the stopped run's wrapped commands.
+            std::fs::remove_file(share.join("network.env")).unwrap();
+            std::fs::create_dir(share.join("network.env")).unwrap();
+            let error = start(&agent, "sandbox-start", None, None, false)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(libc::EISDIR)
+            );
+            assert_eq!(
+                std::fs::read(share.join("host-launch-context.json")).unwrap(),
+                context
+            );
+            assert_eq!(crate::host_runs::read(&agent.name).unwrap(), Some(stopped));
+            assert_eq!(runtime(&agent).await.unwrap()["runtime_state"], "stopped");
+            assert!(!root.join("namespace-attempted").exists());
+            assert!(directory.join("last-start-failure.json").is_file());
+            for (name, identity) in [".safeyolo-command", ".safeyolo-interactive-command"]
+                .iter()
+                .zip(&identities)
+            {
+                assert_eq!(
+                    std::fs::read(home.join(name)).unwrap(),
+                    crate::guest_commands::WRAPPER
+                );
+                assert_eq!(
+                    &crate::guest_commands::payload_identity(&home.join(format!("{name}.payload")))
+                        .unwrap(),
+                    identity
+                );
+            }
+            std::fs::remove_dir(share.join("network.env")).unwrap();
             let error = start(&agent, "sandbox-start", None, None, false)
                 .await
                 .unwrap_err()
@@ -2931,6 +3080,13 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(first_context["agent_id"], agent.id);
+            assert_ne!(first_context["generation"], old_run_id);
+            for (name, identity) in [".safeyolo-command", ".safeyolo-interactive-command"]
+                .iter()
+                .zip(&identities)
+            {
+                assert_eq!(&first_context["command_payloads"][name], identity);
+            }
             script("setfacl", "#!/bin/sh\nexit 0\n");
             let retry = start(&agent, "sandbox-start", None, None, false)
                 .await

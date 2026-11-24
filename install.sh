@@ -229,7 +229,7 @@ if [[ ! -f $archive ]] || [[ $(archive_sha256 "$archive") != "$expected" ]]; the
     if "$early/bin/safeyolo" guest download --help | grep -F -- '--prepare' >/dev/null; then
       guest_arguments+=(--prepare)
     fi
-    "$early/bin/safeyolo" guest download --package-info "$early/package-info" ${guest_arguments[@]+"${guest_arguments[@]}"} > "$stage/guest-index" &
+    "$early/bin/safeyolo" --root "$root" guest download --package-info "$early/package-info" ${guest_arguments[@]+"${guest_arguments[@]}"} > "$stage/guest-index" &
     guest_pid=$!
   fi
   native_decoder=false stream_verified=false

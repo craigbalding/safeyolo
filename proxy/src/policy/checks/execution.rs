@@ -124,6 +124,19 @@ impl CheckExecutions {
 }
 
 pub(super) fn validate_source(source: &mut EvidenceSource) -> Result<()> {
+    if let EvidenceSource::Job {
+        spec_sha256: Some(expected),
+        ..
+    } = source
+        && (expected.len() != 64
+            || !expected
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    {
+        return Err(invalid(
+            "job specification pin must be a full lowercase SHA-256",
+        ));
+    }
     let limits = match source {
         EvidenceSource::Job { limits, .. } => limits,
         EvidenceSource::Service { operation, limits } => {
@@ -171,6 +184,16 @@ pub(super) fn validate_source(source: &mut EvidenceSource) -> Result<()> {
 }
 
 impl Checks {
+    pub(crate) fn invoke_challenge<'a>(
+        &'a self,
+        name: &'a str,
+        subject: Subject,
+        runtime: &'a Runtime,
+        state: &'a RuntimeState,
+    ) -> futures_util::future::BoxFuture<'a, std::result::Result<Evidence, Error>> {
+        self.invoke_adopted(name, None, subject, runtime, state, false, false, None)
+    }
+
     /// Manual invocation is still an adopted check. Callers supply no host
     /// paths, expected values, implementation or authoritative result.
     pub(crate) fn invoke_named<'a>(
@@ -181,7 +204,16 @@ impl Checks {
         runtime: &'a Runtime,
         state: &'a RuntimeState,
     ) -> futures_util::future::BoxFuture<'a, std::result::Result<Evidence, Error>> {
-        self.invoke_adopted(name, Some(caller), subject, runtime, state, false, false)
+        self.invoke_adopted(
+            name,
+            Some(caller),
+            subject,
+            runtime,
+            state,
+            false,
+            false,
+            None,
+        )
     }
 
     pub(crate) fn invoke_automatic<'a>(
@@ -190,10 +222,21 @@ impl Checks {
         subject: Subject,
         runtime: &'a Runtime,
         state: &'a RuntimeState,
-        action: bool,
-        capture_issue: bool,
+        boundary: super::work::Boundary,
+        invocation_id: Option<&'a str>,
     ) -> futures_util::future::BoxFuture<'a, std::result::Result<Evidence, Error>> {
-        self.invoke_adopted(name, None, subject, runtime, state, action, capture_issue)
+        let action = boundary == super::work::Boundary::AfterComplete || invocation_id.is_some();
+        let capture_issue = boundary == super::work::Boundary::AdmitIssue && !action;
+        self.invoke_adopted(
+            name,
+            None,
+            subject,
+            runtime,
+            state,
+            action,
+            capture_issue,
+            invocation_id,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -206,6 +249,7 @@ impl Checks {
         state: &'a RuntimeState,
         action: bool,
         capture_issue: bool,
+        invocation_id: Option<&'a str>,
     ) -> futures_util::future::BoxFuture<'a, std::result::Result<Evidence, Error>> {
         // This entry can itself be reached by a delegated proxy listener.
         // As with collect_live, box the boundary to keep its Send type finite.
@@ -259,6 +303,7 @@ impl Checks {
                 vec![name.into()],
                 action,
                 capture_issue,
+                invocation_id,
             )
             .await
         })
@@ -304,6 +349,7 @@ impl Checks {
                         stack,
                         false,
                         false,
+                        None,
                     )
                     .await;
                 match outcome {
@@ -326,10 +372,22 @@ impl Checks {
         stack: Vec<String>,
         action: bool,
         capture_issue: bool,
+        invocation_id: Option<&str>,
     ) -> std::result::Result<Evidence, Error> {
         let (limits, prepared) = match &check.source {
-            EvidenceSource::Job { spec, limits, .. } => {
+            EvidenceSource::Job {
+                spec,
+                limits,
+                spec_sha256,
+                ..
+            } => {
                 let (bytes, version) = read_bounded(spec, limits.max_input_bytes).await?;
+                if spec_sha256
+                    .as_ref()
+                    .is_some_and(|expected| *expected != content_digest(&bytes))
+                {
+                    return Err("job specification differs from its adopted SHA-256; no execution was started".into());
+                }
                 let mut job: crate::jobs::JobSpec = serde_json::from_slice(&bytes)?;
                 job.resolve_artifacts(spec.parent().ok_or("check job spec has no parent")?);
                 job.validate()?;
@@ -351,7 +409,7 @@ impl Checks {
             EvidenceSource::Service { operation, limits } => {
                 // Recheck the adopted capability even on a cache hit. The actual
                 // call still goes through all normal network and gateway controls.
-                let service = service_request(runtime, operation, check, &entry)?;
+                let service = service_request(runtime, operation, check, &entry, invocation_id)?;
                 (
                     limits,
                     Prepared::Service {
@@ -362,11 +420,13 @@ impl Checks {
             }
             _ => unreachable!(),
         };
-        let input = serde_json::to_vec(
-            &json!({"subject":entry.subject,"input_digest":entry.input_digest,
+        let mut input = json!({"subject":entry.subject,"input_digest":entry.input_digest,
             "inputs":check.inputs,"implementation_version":check.implementation_version,
-            "configuration_version":check.configuration_version}),
-        )?;
+            "configuration_version":check.configuration_version});
+        if let Some(id) = invocation_id {
+            input["invocation_id"] = json!(id);
+        }
+        let input = serde_json::to_vec(&input)?;
         if input.len() > limits.max_input_bytes {
             return Err("check input limit exceeded".into());
         }
@@ -580,6 +640,7 @@ fn service_request(
     operation: &ServiceOperation,
     check: &Check,
     entry: &Evidence,
+    invocation_id: Option<&str>,
 ) -> std::result::Result<ServiceRequest, Error> {
     let policy = runtime
         .policy
@@ -612,9 +673,12 @@ fn service_request(
     {
         Vec::new()
     } else {
-        serde_json::to_vec(
-            &json!({"subject":subject,"input_digest":entry.input_digest,"inputs":check.inputs}),
-        )?
+        let mut input =
+            json!({"subject":subject,"input_digest":entry.input_digest,"inputs":check.inputs});
+        if let Some(id) = invocation_id {
+            input["invocation_id"] = json!(id);
+        }
+        serde_json::to_vec(&input)?
     };
     let registry = gateway
         .registry()
@@ -623,22 +687,8 @@ fn service_request(
         .services
         .get(&operation.service)
         .and_then(|service| service.auth.as_ref());
-    let auth_header = auth
-        .map_or("Authorization", |auth| auth.header.as_str())
-        .to_owned();
-    let authorization =
-        crate::credentials::Secret::new(match auth.map(|auth| auth.kind.as_str()) {
-            Some("basic") => format!(
-                "Basic {}",
-                STANDARD.encode(format!(
-                    "{}:{}",
-                    auth.unwrap().username,
-                    token.expose_secret()
-                ))
-            ),
-            Some("bearer") | None => format!("Bearer {}", token.expose_secret()),
-            _ => token.expose_secret().to_owned(),
-        });
+    let (auth_header, authorization) =
+        crate::services::gateway_token_header(auth, token.expose_secret());
     let mut headers = vec![
         (
             auth_header.clone(),

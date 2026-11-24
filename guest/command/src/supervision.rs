@@ -694,10 +694,17 @@ pub(super) fn check(paths: &Paths) -> Result<i32, Error> {
     }
     if value["state"] == "running" {
         let (pid, token) = saved_command.ok_or("guest command identity is missing")?;
-        if live_token(pid)?.as_deref() != Some(token) {
+        let Some((_, process_state, _)) = process(pid)?
+            .filter(|(current, state, _)| current == token && !matches!(state, 'Z' | 'X'))
+        else {
             return Err(
                 "guest command identity is stale or missing; command state is unknown".into(),
             );
+        };
+        // A stopped command still belongs to its supervisor and must remain
+        // visible to cleanup. Only this readiness check excludes T/t.
+        if matches!(process_state, 'T' | 't') {
+            return Err("guest command is paused; command is not ready".into());
         }
         check_process_owner(
             pid,

@@ -1,0 +1,4227 @@
+{
+  "format": "safeyolo.host-execution/v1",
+  "name": "windows-starter",
+  "version": 2,
+  "source": {
+    "location": "repo:host-executor/examples/windows-starter.json",
+    "version": "1"
+  },
+  "operations": {
+    "service-enumerate": {
+      "description": "Enumerate service names and state; grant no service-control authority. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "host:local"
+      ],
+      "arguments": {
+        "filter": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "options": []
+        },
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "default": 25,
+          "options": []
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { Get-Service | Where-Object { !$env:SY_FILTER -or $_.Name.IndexOf($env:SY_FILTER,[StringComparison]::OrdinalIgnoreCase) -ge 0 } | Select-Object -First ([int]$env:SY_LIMIT) Name,DisplayName,Status,StartType }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "service-enumerate"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_FILTER": {
+            "kind": "argument",
+            "name": "filter"
+          },
+          "SY_LIMIT": {
+            "kind": "argument",
+            "name": "limit"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "disclosure": {
+          "description": "Disclose the selected host information in the result. Output may contain private data and remains disclosed after access ends.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "host": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "fixed",
+              "value": "local-host"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "disclosure",
+            "resource": "host",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "service-status": {
+      "description": "Status the fixed Demo service. It does not change the service definition or grant an arbitrary service name. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "service:demo",
+        "service:Demo"
+      ],
+      "arguments": {
+        "service": {
+          "type": "enum",
+          "options": [
+            "Demo",
+            "demo"
+          ],
+          "required": false,
+          "default": "Demo"
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { Get-Service -Name $env:SY_SERVICE | Select-Object Name,DisplayName,Status,StartType,@{n='DependsOn';e={@($_.ServicesDependedOn.Name)}},@{n='DependentServices';e={@($_.DependentServices.Name)}} }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "service-status"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_SERVICE": {
+            "kind": "argument",
+            "name": "service"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "service_status": {
+          "description": "Read selected service state without starting, stopping or changing its definition.",
+          "persists_after_access": false,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        },
+        "disclosure": {
+          "description": "Disclose the selected host information in the result. Output may contain private data and remains disclosed after access ends.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "service": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "resource",
+              "aliases": {
+                "service:demo": "service:demo",
+                "service:Demo": "service:demo"
+              }
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "service_status",
+            "resource": "service",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          },
+          {
+            "effect": "disclosure",
+            "resource": "service",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code.",
+          "Starting or restarting uses the service executable, configuration and account at execution time. Agent-writable service code/configuration can execute with that account authority. Existing dependencies are not pinned or independently attested."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "service-start": {
+      "description": "Start the fixed Demo service. It does not change the service definition or grant an arbitrary service name. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "service:demo",
+        "service:Demo"
+      ],
+      "arguments": {
+        "service": {
+          "type": "enum",
+          "options": [
+            "Demo",
+            "demo"
+          ],
+          "required": false,
+          "default": "Demo"
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { Start-Service -Name $env:SY_SERVICE -Confirm:$false; $s=Get-Service -Name $env:SY_SERVICE; $s.WaitForStatus('Running',[timespan]::FromSeconds(15)); Get-Service -Name $env:SY_SERVICE | Select-Object Name,DisplayName,Status,StartType,@{n='DependsOn';e={@($_.ServicesDependedOn.Name)}},@{n='DependentServices';e={@($_.DependentServices.Name)}} }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "service-start"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_SERVICE": {
+            "kind": "argument",
+            "name": "service"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "service_start": {
+          "description": "Start the selected service with its configured service-account authority. Required dependency services can also start.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        },
+        "execute": {
+          "description": "Execute selected adopted code/configuration with its service or workload account authority. Changes persist according to that code.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "service": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "resource",
+              "aliases": {
+                "service:demo": "service:demo",
+                "service:Demo": "service:demo"
+              }
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "service_start",
+            "resource": "service",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          },
+          {
+            "effect": "execute",
+            "resource": "service",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code.",
+          "Starting or restarting uses the service executable, configuration and account at execution time. Agent-writable service code/configuration can execute with that account authority. Existing dependencies are not pinned or independently attested."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "service-stop": {
+      "description": "Stop the fixed Demo service. It does not change the service definition or grant an arbitrary service name. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "service:demo",
+        "service:Demo"
+      ],
+      "arguments": {
+        "service": {
+          "type": "enum",
+          "options": [
+            "Demo",
+            "demo"
+          ],
+          "required": false,
+          "default": "Demo"
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { Stop-Service -Name $env:SY_SERVICE -Confirm:$false; $s=Get-Service -Name $env:SY_SERVICE; $s.WaitForStatus('Stopped',[timespan]::FromSeconds(15)); Get-Service -Name $env:SY_SERVICE | Select-Object Name,DisplayName,Status,StartType,@{n='DependsOn';e={@($_.ServicesDependedOn.Name)}},@{n='DependentServices';e={@($_.DependentServices.Name)}} }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "service-stop"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_SERVICE": {
+            "kind": "argument",
+            "name": "service"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "service_stop": {
+          "description": "Stop the selected service and disrupt its clients. Dependent services can prevent the stop; this recipe does not force them.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "service": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "resource",
+              "aliases": {
+                "service:demo": "service:demo",
+                "service:Demo": "service:demo"
+              }
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "service_stop",
+            "resource": "service",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code.",
+          "Starting or restarting uses the service executable, configuration and account at execution time. Agent-writable service code/configuration can execute with that account authority. Existing dependencies are not pinned or independently attested."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "service-restart": {
+      "description": "Restart the fixed Demo service. It does not change the service definition or grant an arbitrary service name. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "service:demo",
+        "service:Demo"
+      ],
+      "arguments": {
+        "service": {
+          "type": "enum",
+          "options": [
+            "Demo",
+            "demo"
+          ],
+          "required": false,
+          "default": "Demo"
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { Restart-Service -Name $env:SY_SERVICE -Confirm:$false; $s=Get-Service -Name $env:SY_SERVICE; $s.WaitForStatus('Running',[timespan]::FromSeconds(15)); Get-Service -Name $env:SY_SERVICE | Select-Object Name,DisplayName,Status,StartType,@{n='DependsOn';e={@($_.ServicesDependedOn.Name)}},@{n='DependentServices';e={@($_.DependentServices.Name)}} }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "service-restart"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_SERVICE": {
+            "kind": "argument",
+            "name": "service"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "service_stop": {
+          "description": "Stop the selected service and disrupt its clients. Dependent services can prevent the stop; this recipe does not force them.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        },
+        "service_start": {
+          "description": "Start the selected service with its configured service-account authority. Required dependency services can also start.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        },
+        "execute": {
+          "description": "Execute selected adopted code/configuration with its service or workload account authority. Changes persist according to that code.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "service": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "resource",
+              "aliases": {
+                "service:demo": "service:demo",
+                "service:Demo": "service:demo"
+              }
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "service_stop",
+            "resource": "service",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          },
+          {
+            "effect": "service_start",
+            "resource": "service",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          },
+          {
+            "effect": "execute",
+            "resource": "service",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code.",
+          "Starting or restarting uses the service executable, configuration and account at execution time. Agent-writable service code/configuration can execute with that account authority. Existing dependencies are not pinned or independently attested."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "event-log-query": {
+      "description": "Read a bounded Event Log channel/provider query; grant no log-clearing authority. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "host:local"
+      ],
+      "arguments": {
+        "channel": {
+          "type": "enum",
+          "options": [
+            "Application",
+            "System"
+          ],
+          "required": false,
+          "default": "Application"
+        },
+        "source": {
+          "type": "enum",
+          "options": [
+            "Application Error",
+            "Service Control Manager"
+          ],
+          "required": false,
+          "default": "Application Error"
+        },
+        "limit": {
+          "type": "enum",
+          "options": [
+            10,
+            50,
+            100
+          ],
+          "required": false,
+          "default": 50
+        },
+        "since": {
+          "type": "string",
+          "options": [],
+          "required": false,
+          "default": "2026-11-01T00:00:00Z"
+        },
+        "until": {
+          "type": "string",
+          "required": false,
+          "default": "2026-11-22T00:00:00Z",
+          "options": []
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { $culture=[Globalization.CultureInfo]::InvariantCulture; $styles=[Globalization.DateTimeStyles]::RoundtripKind; $from=[datetime]::Parse($env:SY_SINCE,$culture,$styles); $to=[datetime]::Parse($env:SY_UNTIL,$culture,$styles); if($from -ge $to){throw 'since must precede until'}; $filter=@{LogName=$env:SY_CHANNEL;StartTime=$from;EndTime=$to}; if($env:SY_SOURCE){$filter.ProviderName=$env:SY_SOURCE}; try { Get-WinEvent -FilterHashtable $filter -MaxEvents ([int]$env:SY_LIMIT) | Select-Object RecordId,LogName,Id,ProviderName,LevelDisplayName,Message,@{n='TimeCreatedUtc';e={$_.TimeCreated.ToUniversalTime().ToString('o')}} } catch {if($_.FullyQualifiedErrorId -notmatch 'NoMatchingEventsFound'){throw}} }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "event-log-query"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_CHANNEL": {
+            "kind": "argument",
+            "name": "channel"
+          },
+          "SY_SOURCE": {
+            "kind": "argument",
+            "name": "source"
+          },
+          "SY_LIMIT": {
+            "kind": "argument",
+            "name": "limit"
+          },
+          "SY_SINCE": {
+            "kind": "argument",
+            "name": "since"
+          },
+          "SY_UNTIL": {
+            "kind": "argument",
+            "name": "until"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "disclosure": {
+          "description": "Disclose the selected host information in the result. Output may contain private data and remains disclosed after access ends.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "event_log": {
+            "target": {
+              "kind": "target"
+            },
+            "channel": {
+              "kind": "argument",
+              "argument": "channel",
+              "aliases": {}
+            },
+            "source": {
+              "kind": "argument",
+              "argument": "source",
+              "aliases": {}
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "disclosure",
+            "resource": "event_log",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code.",
+          "Time filter, provider and finite result count bound returned events; output byte limits can truncate results. A failed query is not an empty event log. Messages can contain secrets."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "registry-query-machine": {
+      "description": "Query one registry value with an explicit view. HKCU means the actual workload account hive, never the requesting operator hive. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "host:local"
+      ],
+      "arguments": {
+        "hive": {
+          "type": "enum",
+          "options": [
+            "HKLM",
+            "HKEY_LOCAL_MACHINE"
+          ],
+          "required": false,
+          "default": "HKLM"
+        },
+        "key": {
+          "type": "enum",
+          "options": [
+            "SOFTWARE\\SafeYolo\\Demo",
+            "software\\safeyolo\\demo"
+          ],
+          "required": false,
+          "default": "SOFTWARE\\SafeYolo\\Demo"
+        },
+        "value": {
+          "type": "enum",
+          "options": [
+            "Setting",
+            "setting"
+          ],
+          "required": false,
+          "default": "Setting"
+        },
+        "view": {
+          "type": "enum",
+          "options": [
+            "32",
+            "64"
+          ],
+          "required": false,
+          "default": "64"
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { $view=if($env:SY_VIEW -eq '32'){[Microsoft.Win32.RegistryView]::Registry32}else{[Microsoft.Win32.RegistryView]::Registry64}; $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,$view); try {$key=$base.OpenSubKey($env:SY_KEY,$false); if($null -eq $key){@{status='absent';key=$env:SY_KEY}}else{try {if($key.GetValueNames() -notcontains $env:SY_VALUE){@{status='absent';valueName=$env:SY_VALUE}}else{@{status='ok';queriedUser=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value;hive=$env:SY_HIVE;key=$env:SY_KEY;view=$env:SY_VIEW;valueName=$env:SY_VALUE;valueType=$key.GetValueKind($env:SY_VALUE).ToString();value=$key.GetValue($env:SY_VALUE,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)}}} finally {$key.Dispose()}}} finally {$base.Dispose()} }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "registry-query-machine"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_HIVE": {
+            "kind": "argument",
+            "name": "hive"
+          },
+          "SY_KEY": {
+            "kind": "argument",
+            "name": "key"
+          },
+          "SY_VALUE": {
+            "kind": "argument",
+            "name": "value"
+          },
+          "SY_VIEW": {
+            "kind": "argument",
+            "name": "view"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "disclosure": {
+          "description": "Disclose the selected host information in the result. Output may contain private data and remains disclosed after access ends.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "registry": {
+            "target": {
+              "kind": "target"
+            },
+            "hive": {
+              "kind": "argument",
+              "argument": "hive",
+              "aliases": {
+                "HKLM": "HKLM",
+                "HKEY_LOCAL_MACHINE": "HKLM"
+              }
+            },
+            "key": {
+              "kind": "argument",
+              "argument": "key",
+              "aliases": {
+                "SOFTWARE\\SafeYolo\\Demo": "software\\safeyolo\\demo",
+                "software\\safeyolo\\demo": "software\\safeyolo\\demo"
+              }
+            },
+            "value": {
+              "kind": "argument",
+              "argument": "value",
+              "aliases": {
+                "Setting": "setting",
+                "setting": "setting"
+              }
+            },
+            "view": {
+              "kind": "argument",
+              "argument": "view",
+              "aliases": {
+                "32": "32",
+                "64": "64"
+              }
+            },
+            "user": {
+              "kind": "fixed",
+              "value": "machine"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "disclosure",
+            "resource": "registry",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code.",
+          "Read-only .NET registry handle; no registry write or arbitrary hive/key operation. HKCU identity is the execution SID. This reviewed user key is shared across 32/64-bit views; the machine SOFTWARE key is redirected. Other keys, merged hives, links and aliases need their own reviewed identity mapping."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "registry-query-user": {
+      "description": "Query one registry value with an explicit view. HKCU means the actual workload account hive, never the requesting operator or SYSTEM default hive. An unloaded workload hive returns unavailable and exit 2; this operation does not load a profile. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "host:local"
+      ],
+      "arguments": {
+        "hive": {
+          "type": "enum",
+          "options": [
+            "HKCU",
+            "HKEY_CURRENT_USER"
+          ],
+          "required": false,
+          "default": "HKCU"
+        },
+        "key": {
+          "type": "enum",
+          "options": [
+            "SOFTWARE\\SafeYolo\\Demo",
+            "software\\safeyolo\\demo"
+          ],
+          "required": false,
+          "default": "SOFTWARE\\SafeYolo\\Demo"
+        },
+        "value": {
+          "type": "enum",
+          "options": [
+            "Setting",
+            "setting"
+          ],
+          "required": false,
+          "default": "Setting"
+        },
+        "view": {
+          "type": "enum",
+          "options": [
+            "32",
+            "64"
+          ],
+          "required": false,
+          "default": "64"
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { $view=if($env:SY_VIEW -eq '32'){[Microsoft.Win32.RegistryView]::Registry32}else{[Microsoft.Win32.RegistryView]::Registry64}; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $users=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::Users,$view); try {$base=$users.OpenSubKey($sid,$false); if($null -eq $base){throw [System.InvalidOperationException]::new('Workload user registry hive is not loaded: '+$sid)}; try {$key=$base.OpenSubKey($env:SY_KEY,$false); if($null -eq $key){@{status='absent';queriedUser=$sid;hive=$env:SY_HIVE;view=$env:SY_VIEW;key=$env:SY_KEY}}else{try {if($key.GetValueNames() -notcontains $env:SY_VALUE){@{status='absent';queriedUser=$sid;hive=$env:SY_HIVE;view=$env:SY_VIEW;valueName=$env:SY_VALUE}}else{@{status='ok';queriedUser=$sid;hive=$env:SY_HIVE;key=$env:SY_KEY;view=$env:SY_VIEW;valueName=$env:SY_VALUE;valueType=$key.GetValueKind($env:SY_VALUE).ToString();value=$key.GetValue($env:SY_VALUE,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)}}} finally {$key.Dispose()}}} finally {$base.Dispose()} } finally {$users.Dispose()} }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "registry-query-user"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_HIVE": {
+            "kind": "argument",
+            "name": "hive"
+          },
+          "SY_KEY": {
+            "kind": "argument",
+            "name": "key"
+          },
+          "SY_VALUE": {
+            "kind": "argument",
+            "name": "value"
+          },
+          "SY_VIEW": {
+            "kind": "argument",
+            "name": "view"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "disclosure": {
+          "description": "Disclose the selected host information in the result. Output may contain private data and remains disclosed after access ends.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "registry": {
+            "target": {
+              "kind": "target"
+            },
+            "hive": {
+              "kind": "argument",
+              "argument": "hive",
+              "aliases": {
+                "HKCU": "HKCU",
+                "HKEY_CURRENT_USER": "HKCU"
+              }
+            },
+            "key": {
+              "kind": "argument",
+              "argument": "key",
+              "aliases": {
+                "SOFTWARE\\SafeYolo\\Demo": "software\\safeyolo\\demo",
+                "software\\safeyolo\\demo": "software\\safeyolo\\demo"
+              }
+            },
+            "value": {
+              "kind": "argument",
+              "argument": "value",
+              "aliases": {
+                "Setting": "setting",
+                "setting": "setting"
+              }
+            },
+            "view": {
+              "kind": "argument",
+              "argument": "view",
+              "aliases": {
+                "32": "shared",
+                "64": "shared"
+              }
+            },
+            "user": {
+              "kind": "execution_principal"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "disclosure",
+            "resource": "registry",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code.",
+          "Read-only .NET registry handle; no registry write or arbitrary hive/key operation. HKCU identity is the execution SID. This reviewed user key is shared across 32/64-bit views; the machine SOFTWARE key is redirected. Other keys, merged hives, links and aliases need their own reviewed identity mapping."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "process-inspect": {
+      "description": "Inspect process identifiers, names and executable paths visible to the workload; grant no terminate or injection operation. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "host:local"
+      ],
+      "arguments": {
+        "limit": {
+          "type": "enum",
+          "options": [
+            10,
+            50,
+            100
+          ],
+          "required": false,
+          "default": 50
+        },
+        "filter": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "options": []
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { Get-CimInstance Win32_Process | Where-Object { !$env:SY_FILTER -or $_.Name.IndexOf($env:SY_FILTER,[StringComparison]::OrdinalIgnoreCase) -ge 0 } | Select-Object -First ([int]$env:SY_LIMIT) ProcessId,ParentProcessId,Name,ExecutablePath,WorkingSetSize,ThreadCount,HandleCount,@{n='CreatedUtc';e={if($_.CreationDate){$_.CreationDate.ToUniversalTime().ToString('o')}}} }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "process-inspect"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_LIMIT": {
+            "kind": "argument",
+            "name": "limit"
+          },
+          "SY_FILTER": {
+            "kind": "argument",
+            "name": "filter"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "disclosure": {
+          "description": "Disclose the selected host information in the result. Output may contain private data and remains disclosed after access ends.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "host": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "fixed",
+              "value": "local-host"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "disclosure",
+            "resource": "host",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "system-inventory": {
+      "description": "Read operating-system and computer inventory; grant no configuration-change authority. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "host:local"
+      ],
+      "arguments": {},
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,OSArchitecture,CSName,TotalVisibleMemorySize,FreePhysicalMemory,@{n='BootUtc';e={$_.LastBootUpTime.ToUniversalTime().ToString('o')}},@{n='UptimeSeconds';e={([datetime]::Now-$_.LastBootUpTime).TotalSeconds}} }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "system-inventory"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "disclosure": {
+          "description": "Disclose the selected host information in the result. Output may contain private data and remains disclosed after access ends.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "host": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "fixed",
+              "value": "local-host"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "disclosure",
+            "resource": "host",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "software-inventory": {
+      "description": "Read installed-software registry metadata without Win32_Product queries or package repair. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "host:local"
+      ],
+      "arguments": {
+        "view": {
+          "type": "enum",
+          "options": [
+            "32",
+            "64"
+          ],
+          "required": false,
+          "default": "64"
+        },
+        "limit": {
+          "type": "enum",
+          "options": [
+            10,
+            50,
+            100
+          ],
+          "required": false,
+          "default": 50
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { $view=if($env:SY_VIEW -eq '32'){[Microsoft.Win32.RegistryView]::Registry32}else{[Microsoft.Win32.RegistryView]::Registry64}; $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,$view); try {$root=$base.OpenSubKey('SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall',$false); if($null -eq $root){throw 'Uninstall key absent'}; try {$root.GetSubKeyNames() | Select-Object -First ([int]$env:SY_LIMIT) | ForEach-Object {$item=$root.OpenSubKey($_,$false); try {@{registryKey=$_;Name=$item.GetValue('DisplayName');Version=$item.GetValue('DisplayVersion')}} finally {$item.Dispose()}}} finally {$root.Dispose()}} finally {$base.Dispose()} }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "software-inventory"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_VIEW": {
+            "kind": "argument",
+            "name": "view"
+          },
+          "SY_LIMIT": {
+            "kind": "argument",
+            "name": "limit"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "disclosure": {
+          "description": "Disclose the selected host information in the result. Output may contain private data and remains disclosed after access ends.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "host": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "fixed",
+              "value": "local-host"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "disclosure",
+            "resource": "host",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "update-inventory": {
+      "description": "Read installed hotfix metadata; grant no install or removal authority. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "host:local"
+      ],
+      "arguments": {
+        "limit": {
+          "type": "enum",
+          "options": [
+            10,
+            50,
+            100
+          ],
+          "required": false,
+          "default": 50
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { Get-HotFix | Select-Object -First ([int]$env:SY_LIMIT) HotFixID,InstalledOn,Description | ConvertTo-Json -Compress }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "update-inventory"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_LIMIT": {
+            "kind": "argument",
+            "name": "limit"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "disclosure": {
+          "description": "Disclose the selected host information in the result. Output may contain private data and remains disclosed after access ends.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "host": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "fixed",
+              "value": "local-host"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "disclosure",
+            "resource": "host",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "file-inspect": {
+      "description": "Inspect fixed local file metadata or a bounded text prefix. Content inspection can disclose credentials. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "file:demo-config"
+      ],
+      "arguments": {
+        "path": {
+          "type": "enum",
+          "options": [
+            "C:\\SafeYolo\\Demo\\config.json",
+            "c:\\safeyolo\\demo\\config.json"
+          ],
+          "required": false,
+          "default": "C:\\SafeYolo\\Demo\\config.json"
+        },
+        "content": {
+          "type": "enum",
+          "options": [
+            false,
+            true
+          ],
+          "required": false,
+          "default": false
+        },
+        "lines": {
+          "type": "enum",
+          "options": [
+            10,
+            50,
+            100
+          ],
+          "required": false,
+          "default": 50
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { if($env:SY_CONTENT -eq 'true'){@{path=$env:SY_PATH;lines=@(Get-Content -LiteralPath $env:SY_PATH -TotalCount ([int]$env:SY_LINES));lineLimit=[int]$env:SY_LINES;completeness='bounded prefix; remaining content not read'}}else{Get-Item -LiteralPath $env:SY_PATH | Select-Object FullName,Length,Attributes,@{n='LastWriteUtc';e={$_.LastWriteTimeUtc.ToString('o')}}} }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "file-inspect"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_PATH": {
+            "kind": "argument",
+            "name": "path"
+          },
+          "SY_CONTENT": {
+            "kind": "argument",
+            "name": "content"
+          },
+          "SY_LINES": {
+            "kind": "argument",
+            "name": "lines"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "disclosure": {
+          "description": "Disclose the selected host information in the result. Output may contain private data and remains disclosed after access ends.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "file": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "resource",
+              "aliases": {
+                "file:demo-config": "file:demo-config"
+              }
+            }
+          },
+          "service": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "fixed",
+              "value": "service:demo"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "disclosure",
+            "resource": "file",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code.",
+          "The finite path selectors are reviewed case aliases. Reparse points, hard links and other path aliases require target evidence; the model does not discover them. Reading a config file does not modify it."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "network-diagnostics": {
+      "description": "Probe one authorized TCP destination/port and return diagnostic evidence; grant no arbitrary network scanner or program. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "host:local"
+      ],
+      "arguments": {
+        "destination": {
+          "type": "enum",
+          "options": [
+            "example.com"
+          ],
+          "required": false,
+          "default": "example.com"
+        },
+        "port": {
+          "type": "enum",
+          "options": [
+            443
+          ],
+          "required": false,
+          "default": 443
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { Test-NetConnection -ComputerName $env:SY_DESTINATION -Port ([int]$env:SY_PORT) -InformationLevel Detailed | Select-Object ComputerName,RemoteAddress,RemotePort,TcpTestSucceeded | ConvertTo-Json -Compress }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "network-diagnostics"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_DESTINATION": {
+            "kind": "argument",
+            "name": "destination"
+          },
+          "SY_PORT": {
+            "kind": "argument",
+            "name": "port"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "network_probe": {
+          "description": "Transmit a TCP connection probe to the selected destination and port. DNS resolution can disclose the name to the configured resolver.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "network": {
+            "target": {
+              "kind": "target"
+            },
+            "destination": {
+              "kind": "argument",
+              "argument": "destination",
+              "aliases": {}
+            },
+            "port": {
+              "kind": "argument",
+              "argument": "port",
+              "aliases": {}
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "network_probe",
+            "resource": "network",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code.",
+          "Destination is not pinned to an IP. DNS and network location can change. A failed connection is not proof that a service is absent."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "scheduled-task-inspect": {
+      "description": "Inspect selected scheduled-task metadata; grant no register, alter, run or deletion operation. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "host:local"
+      ],
+      "arguments": {
+        "task": {
+          "type": "enum",
+          "options": [
+            "DemoTask"
+          ],
+          "required": false,
+          "default": "DemoTask"
+        },
+        "folder": {
+          "type": "enum",
+          "options": [
+            "\\SafeYolo\\"
+          ],
+          "required": false,
+          "default": "\\SafeYolo\\"
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { Get-ScheduledTask -TaskName $env:SY_TASK -TaskPath $env:SY_FOLDER | ForEach-Object {$t=$_; $info=Get-ScheduledTaskInfo -TaskName $t.TaskName -TaskPath $t.TaskPath; @{name=$t.TaskName;path=$t.TaskPath;state=$t.State.ToString();principal=$t.Principal;actions=@($t.Actions);lastRunUtc=$(if($null -ne $info.LastRunTime){$info.LastRunTime.ToUniversalTime().ToString('o')}else{$null});lastResult=$info.LastTaskResult;nextRunUtc=$(if($null -ne $info.NextRunTime){$info.NextRunTime.ToUniversalTime().ToString('o')}else{$null})}} }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "scheduled-task-inspect"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_TASK": {
+            "kind": "argument",
+            "name": "task"
+          },
+          "SY_FOLDER": {
+            "kind": "argument",
+            "name": "folder"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "disclosure": {
+          "description": "Disclose the selected host information in the result. Output may contain private data and remains disclosed after access ends.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "host": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "fixed",
+              "value": "local-host"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "disclosure",
+            "resource": "host",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "fixed-executable": {
+      "description": "Run a fixed adopted executable with a finite typed argument; grant no arbitrary executable, command or script input.",
+      "resources": [
+        "host:local"
+      ],
+      "arguments": {
+        "mode": {
+          "type": "enum",
+          "options": [
+            "/user",
+            "/groups"
+          ],
+          "required": false,
+          "default": "/user"
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\whoami.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "argument",
+            "name": "mode"
+          }
+        ],
+        "environment": {
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 268435456,
+          "processes": 4
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "disclosure": {
+          "description": "Disclose the selected host information in the result. Output may contain private data and remains disclosed after access ends.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        },
+        "execute": {
+          "description": "Execute selected adopted code/configuration with its service or workload account authority. Changes persist according to that code.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "host": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "fixed",
+              "value": "local-host"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "disclosure",
+            "resource": "host",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          },
+          {
+            "effect": "execute",
+            "resource": "host",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "write-service-config": {
+      "description": "Explicit broader write operation: replace Demo service configuration with an authorized complete value.",
+      "resources": [
+        "service:demo",
+        "service:Demo"
+      ],
+      "arguments": {
+        "content": {
+          "type": "string",
+          "options": [],
+          "required": true,
+          "default": null
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; Set-Content -LiteralPath $env:SY_PATH -Value $env:SY_CONTENT -NoNewline"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "write-service-config"
+          },
+          "SY_PATH": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\config.json"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_CONTENT": {
+            "kind": "argument",
+            "name": "content"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 268435456,
+          "processes": 4
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "write_executable": {
+          "description": "Change executable code/configuration which can later run with the consumer service authority.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "service": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "resource",
+              "aliases": {
+                "service:demo": "service:demo",
+                "service:Demo": "service:demo"
+              }
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "write_executable",
+            "resource": "service",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "transmit-data": {
+      "description": "Explicit broader operation: send the selected Demo configuration to the authorized endpoint.",
+      "resources": [
+        "host:local"
+      ],
+      "arguments": {},
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; Invoke-WebRequest -Uri \"https://example.com/upload\" -Method Post -InFile $env:SY_PATH -UseBasicParsing"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "transmit-data"
+          },
+          "SY_PATH": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\config.json"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 268435456,
+          "processes": 4
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "transmission": {
+          "description": "Transmit selected data outside the target using the operation network authority.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "file": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "fixed",
+              "value": "file:demo-config"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "transmission",
+            "resource": "file",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "reviewer-status": {
+      "description": "Read the fixed reviewer status without controlling its process or executable.",
+      "resources": [
+        "host:local"
+      ],
+      "arguments": {},
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; Get-Service -Name DemoReviewer | Select-Object Name,Status | ConvertTo-Json -Compress"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "reviewer-status"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 268435456,
+          "processes": 4
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "reviewer_evidence": {
+          "description": "Rely on evidence from the selected purportedly independent reviewer.",
+          "persists_after_access": false,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "reviewer": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "fixed",
+              "value": "reviewer:demo"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "reviewer_evidence",
+            "resource": "reviewer",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "reviewer-restart": {
+      "description": "Explicit broader control of the purportedly independent DemoReviewer service.",
+      "resources": [
+        "host:local"
+      ],
+      "arguments": {},
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; Restart-Service -Name DemoReviewer -Confirm:$false"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "reviewer-restart"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 268435456,
+          "processes": 4
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "reviewer_control": {
+          "description": "Control a reviewer process or its executable/configuration and therefore compromise its independence.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "reviewer": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "fixed",
+              "value": "reviewer:demo"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "reviewer_control",
+            "resource": "reviewer",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "file-hash": {
+      "description": "file hash. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "file:demo-config"
+      ],
+      "arguments": {
+        "path": {
+          "type": "enum",
+          "options": [
+            "C:\\SafeYolo\\Demo\\config.json",
+            "c:\\safeyolo\\demo\\config.json"
+          ],
+          "required": false,
+          "default": "C:\\SafeYolo\\Demo\\config.json"
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { Get-FileHash -LiteralPath $env:SY_PATH -Algorithm SHA256 | Select-Object Path,Algorithm,Hash }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "file-hash"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_PATH": {
+            "kind": "argument",
+            "name": "path"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "disclosure": {
+          "description": "Disclose the selected host information in the result. Output may contain private data and remains disclosed after access ends.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "file": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "resource",
+              "aliases": {
+                "file:demo-config": "file:demo-config"
+              }
+            }
+          },
+          "service": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "fixed",
+              "value": "service:demo"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "disclosure",
+            "resource": "file",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code.",
+          "The finite path selectors are reviewed case aliases. Reparse points, hard links and other path aliases require target evidence; the model does not discover them. Reading a config file does not modify it."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "directory-list": {
+      "description": "directory list. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "directory:demo"
+      ],
+      "arguments": {
+        "path": {
+          "type": "enum",
+          "required": false,
+          "default": "C:\\SafeYolo\\Demo",
+          "options": [
+            "C:\\SafeYolo\\Demo"
+          ]
+        },
+        "limit": {
+          "type": "integer",
+          "required": false,
+          "default": 25,
+          "options": []
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { Get-ChildItem -LiteralPath $env:SY_PATH -Force | Select-Object -First ([int]$env:SY_LIMIT) FullName,Length,Attributes,@{n='LastWriteUtc';e={$_.LastWriteTimeUtc.ToString('o')}} }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "directory-list"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_PATH": {
+            "kind": "argument",
+            "name": "path"
+          },
+          "SY_LIMIT": {
+            "kind": "argument",
+            "name": "limit"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "disclosure": {
+          "description": "Disclose the selected host information in the result. Output may contain private data and remains disclosed after access ends.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "file": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "resource",
+              "aliases": {
+                "directory:demo": "directory:demo"
+              }
+            }
+          },
+          "service": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "fixed",
+              "value": "service:demo"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "disclosure",
+            "resource": "file",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code.",
+          "The finite path selectors are reviewed case aliases. Reparse points, hard links and other path aliases require target evidence; the model does not discover them. Reading a config file does not modify it."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "network-inspect": {
+      "description": "network inspect. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "host:local"
+      ],
+      "arguments": {
+        "limit": {
+          "type": "enum",
+          "options": [
+            10,
+            50,
+            100
+          ],
+          "required": false,
+          "default": 50
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { foreach($kind in @('interfaces','routes','connections')){$rows=@(switch($kind){'interfaces'{Get-NetIPConfiguration | Select-Object -First ([int]$env:SY_LIMIT) InterfaceAlias,InterfaceIndex,IPv4Address,IPv6Address,IPv4DefaultGateway};'routes'{Get-NetRoute | Select-Object -First ([int]$env:SY_LIMIT) DestinationPrefix,NextHop,InterfaceIndex,RouteMetric};'connections'{Get-NetTCPConnection | Select-Object -First ([int]$env:SY_LIMIT) LocalAddress,LocalPort,RemoteAddress,RemotePort,State,OwningProcess}}); @{kind=$kind;data=$rows;limitReached=($rows.Count -ge [int]$env:SY_LIMIT)}} }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "network-inspect"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_LIMIT": {
+            "kind": "argument",
+            "name": "limit"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "disclosure": {
+          "description": "Disclose the selected host information in the result. Output may contain private data and remains disclosed after access ends.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "host": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "fixed",
+              "value": "local-host"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "disclosure",
+            "resource": "host",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "scheduled-task-enumerate": {
+      "description": "scheduled task enumerate. Output is a JSON observation with UTC time, status, data, count and limitReached. Access failures return status access_denied or unavailable and exit 2.",
+      "resources": [
+        "host:local"
+      ],
+      "arguments": {
+        "limit": {
+          "type": "enum",
+          "options": [
+            10,
+            50,
+            100
+          ],
+          "required": false,
+          "default": 50
+        },
+        "filter": {
+          "type": "string",
+          "required": false,
+          "default": "",
+          "options": []
+        }
+      },
+      "execution": {
+        "broader": [
+          "filesystem",
+          "registry",
+          "network_ipc",
+          "delegated_services"
+        ],
+        "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "executable_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "argv": [
+          {
+            "kind": "literal",
+            "value": "-NoLogo"
+          },
+          {
+            "kind": "literal",
+            "value": "-NoProfile"
+          },
+          {
+            "kind": "literal",
+            "value": "-NonInteractive"
+          },
+          {
+            "kind": "literal",
+            "value": "-Command"
+          },
+          {
+            "kind": "literal",
+            "value": "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; try { [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $data=@(& { Get-ScheduledTask | Where-Object { !$env:SY_FILTER -or $_.TaskName.IndexOf($env:SY_FILTER,[StringComparison]::OrdinalIgnoreCase) -ge 0 } | Select-Object -First ([int]$env:SY_LIMIT) TaskName,TaskPath,State }); $limited=($env:SY_LIMIT -and ($data.Count -ge [int]$env:SY_LIMIT -or @($data | Where-Object {$_.limitReached}).Count -gt 0)); @{operation=$env:SY_OPERATION;status=$(if($limited){'partial'}else{'ok'});source='Windows PowerShell 5.1 inbox modules';observedAtUtc=[datetime]::UtcNow.ToString('o');timeZone='UTC';count=$data.Count;limitReached=[bool]$limited;data=$data} | ConvertTo-Json -Depth 8 -Compress } catch { $denied=($_.Exception -is [System.UnauthorizedAccessException] -or $_.FullyQualifiedErrorId -match 'Unauthorized|AccessDenied|PermissionDenied|SecurityException'); @{operation=$env:SY_OPERATION;status=$(if($denied){'access_denied'}else{'unavailable'});observedAtUtc=[datetime]::UtcNow.ToString('o');error=$_.Exception.Message;errorId=$_.FullyQualifiedErrorId;data=@()} | ConvertTo-Json -Depth 5 -Compress; exit 2 }"
+          }
+        ],
+        "environment": {
+          "SY_OPERATION": {
+            "kind": "literal",
+            "value": "scheduled-task-enumerate"
+          },
+          "SystemRoot": {
+            "kind": "literal",
+            "value": "C:\\Windows"
+          },
+          "SY_LIMIT": {
+            "kind": "argument",
+            "name": "limit"
+          },
+          "SY_FILTER": {
+            "kind": "argument",
+            "name": "filter"
+          },
+          "TEMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          },
+          "TMP": {
+            "kind": "literal",
+            "value": "C:\\SafeYolo\\Demo\\Temp"
+          }
+        },
+        "working_directory": "C:\\Windows\\Temp",
+        "identity": {
+          "principal": "S-1-5-21-100-200-300-1001",
+          "groups": []
+        },
+        "filesystem": {
+          "read": [],
+          "write": []
+        },
+        "network": {
+          "listeners": [],
+          "destinations": [],
+          "ipc": []
+        },
+        "resources": {
+          "timeout_seconds": 30,
+          "output_bytes": 65536,
+          "memory_bytes": 536870912,
+          "processes": 8
+        },
+        "delegated_services": []
+      },
+      "effects": {
+        "disclosure": {
+          "description": "Disclose the selected host information in the result. Output may contain private data and remains disclosed after access ends.",
+          "persists_after_access": true,
+          "evidence": [
+            "package",
+            "windows"
+          ]
+        }
+      },
+      "enforcement": {
+        "enforced": [
+          "The target validates exact operation pins, typed arguments and intersected finite choices. The fixed command source is part of the implementation revision."
+        ],
+        "adopted": [
+          "Bind the target powershell.exe content hash and the actual non-administrative workload SID/groups before adoption. Windows inbox modules and service definitions are ambient host-owned dependencies; the native executor does not attest them."
+        ],
+        "unresolved": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ]
+      },
+      "semantics": {
+        "resources": {
+          "host": {
+            "target": {
+              "kind": "target"
+            },
+            "id": {
+              "kind": "fixed",
+              "value": "local-host"
+            }
+          }
+        },
+        "effects": [
+          {
+            "effect": "disclosure",
+            "resource": "host",
+            "when": {
+              "kind": "always"
+            },
+            "evidence": [
+              "package",
+              "windows"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The target administrator has adopted the exact implementation and workload account. Required Windows modules and object ACL access are available."
+        ],
+        "limitations": [
+          "Windows Job Objects do not confine filesystem, registry, network/IPC or delegated service access. These operations run with the explicitly adopted broader workload account permissions. The fixed command is reviewed behavior, not a proof about arbitrary executable or module code."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    }
+  },
+  "semantics": {
+    "sources": {
+      "windows": {
+        "location": "https://learn.microsoft.com/en-us/powershell/scripting/overview",
+        "version": "Windows PowerShell 5.1; reviewed 2026-11-22"
+      },
+      "registry-views": {
+        "location": "https://learn.microsoft.com/en-us/windows/win32/winprog64/shared-registry-keys",
+        "version": "Windows 7 and newer view rules"
+      }
+    },
+    "resources": {
+      "service": {
+        "description": "service",
+        "identity": [
+          "target",
+          "id"
+        ]
+      },
+      "event_log": {
+        "description": "event log",
+        "identity": [
+          "target",
+          "channel",
+          "source"
+        ]
+      },
+      "registry": {
+        "description": "registry",
+        "identity": [
+          "target",
+          "hive",
+          "key",
+          "value",
+          "view",
+          "user"
+        ]
+      },
+      "host": {
+        "description": "host",
+        "identity": [
+          "target",
+          "id"
+        ]
+      },
+      "file": {
+        "description": "file",
+        "identity": [
+          "target",
+          "id"
+        ]
+      },
+      "network": {
+        "description": "network",
+        "identity": [
+          "target",
+          "destination",
+          "port"
+        ]
+      },
+      "reviewer": {
+        "description": "reviewer",
+        "identity": [
+          "target",
+          "id"
+        ]
+      }
+    },
+    "rules": {
+      "changed_service_execution": {
+        "when": {
+          "kind": "all_effects_same_scope",
+          "resource": "service",
+          "effects": [
+            "write_executable",
+            "execute"
+          ]
+        },
+        "prerequisites": [
+          "The resource identity and relevant executable/configuration/dependency relationship are correct on the selected target."
+        ],
+        "consequence": "Execute modified service code/configuration with the configured service-account authority.",
+        "explanation": "Write and start/restart on the same target and service combine even when granted in separate requests. Expiry cannot undo an earlier write.",
+        "evidence": [
+          "package",
+          "windows"
+        ],
+        "gaps": [
+          "Unobserved historical edits, ambient dependency changes and undeclared aliases remain unknown."
+        ]
+      },
+      "data_transmission": {
+        "when": {
+          "kind": "all_effects_same_scope",
+          "resource": "file",
+          "effects": [
+            "disclosure",
+            "transmission"
+          ]
+        },
+        "prerequisites": [
+          "The resource identity and relevant executable/configuration/dependency relationship are correct on the selected target."
+        ],
+        "consequence": "Disclose selected data beyond the target.",
+        "explanation": "Read/disclosure and transmission authority over the same data compose; a harmless submitted sample cannot narrow the complete grant.",
+        "evidence": [
+          "package",
+          "windows"
+        ],
+        "gaps": [
+          "Unobserved historical edits, ambient dependency changes and undeclared aliases remain unknown."
+        ]
+      },
+      "reviewer_independence": {
+        "when": {
+          "kind": "all_effects_same_scope",
+          "resource": "reviewer",
+          "effects": [
+            "reviewer_control",
+            "reviewer_evidence"
+          ]
+        },
+        "prerequisites": [
+          "The resource identity and relevant executable/configuration/dependency relationship are correct on the selected target."
+        ],
+        "consequence": "Reviewer evidence is not independent of the agent controlling that reviewer.",
+        "explanation": "Control and reliance concern the same target/reviewer. A separate process name does not establish independence.",
+        "evidence": [
+          "package",
+          "windows"
+        ],
+        "gaps": [
+          "Unobserved historical edits, ambient dependency changes and undeclared aliases remain unknown."
+        ]
+      }
+    },
+    "alternatives": {
+      "service-status-before-control": {
+        "steps": [
+          {
+            "operation": "service-status",
+            "enforcement": "service-status",
+            "arguments": {
+              "service": "Demo"
+            },
+            "expected_effects": [
+              "disclosure",
+              "service_status"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The fixed target object exists and its ACL permits the workload account."
+        ],
+        "unverified_prerequisites": [
+          "Target liveness, adopted executable hash and ambient module/service definitions need current target evidence."
+        ],
+        "limitations": [
+          "This alternative only answers the stated query. It does not grant mutation authority and can still disclose private data."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      },
+      "file-metadata-before-content": {
+        "steps": [
+          {
+            "operation": "file-inspect",
+            "enforcement": "file-inspect",
+            "arguments": {
+              "path": "C:\\SafeYolo\\Demo\\config.json",
+              "content": false,
+              "lines": 10
+            },
+            "expected_effects": [
+              "disclosure"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The fixed target object exists and its ACL permits the workload account."
+        ],
+        "unverified_prerequisites": [
+          "Target liveness, adopted executable hash and ambient module/service definitions need current target evidence."
+        ],
+        "limitations": [
+          "This alternative only answers the stated query. It does not grant mutation authority and can still disclose private data."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      },
+      "registry-value-query": {
+        "steps": [
+          {
+            "operation": "registry-query-user",
+            "enforcement": "registry-query-user",
+            "arguments": {
+              "hive": "HKCU",
+              "key": "SOFTWARE\\SafeYolo\\Demo",
+              "value": "Setting",
+              "view": "64"
+            },
+            "expected_effects": [
+              "disclosure"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The fixed target object exists and its ACL permits the workload account."
+        ],
+        "unverified_prerequisites": [
+          "Target liveness, adopted executable hash and ambient module/service definitions need current target evidence."
+        ],
+        "limitations": [
+          "This alternative only answers the stated query. It does not grant mutation authority and can still disclose private data."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      },
+      "bounded-events": {
+        "steps": [
+          {
+            "operation": "event-log-query",
+            "enforcement": "event-log-query",
+            "arguments": {
+              "channel": "Application",
+              "source": "Application Error",
+              "limit": 10,
+              "since": "2026-11-01T00:00:00Z"
+            },
+            "expected_effects": [
+              "disclosure"
+            ]
+          }
+        ],
+        "prerequisites": [
+          "The fixed target object exists and its ACL permits the workload account."
+        ],
+        "unverified_prerequisites": [
+          "Target liveness, adopted executable hash and ambient module/service definitions need current target evidence."
+        ],
+        "limitations": [
+          "This alternative only answers the stated query. It does not grant mutation authority and can still disclose private data."
+        ],
+        "evidence": [
+          "package",
+          "windows"
+        ]
+      }
+    },
+    "gaps": [
+      "Starter definitions need target-specific executable hashes, actual workload SID/groups, paths, ACL and module/service dependency review before adoption. Example hashes identify no installed executable.",
+      "Windows operation semantic fixtures do not qualify physical Windows execution. Native packaging and direct-use qualification retain their own owners.",
+      "Broader explicitly authorized operations remain possible. Query models do not authorize log clearing, registry writes, arbitrary scripts or service-definition changes."
+    ]
+  }
+}

@@ -185,6 +185,39 @@ fn effect_key(effect: &Effect, facts: &BTreeMap<&str, &Fact>) -> String {
     crate::approvals::pending::digest(&json!([effect.controller, fact.holder, fact.capability]))
 }
 
+/// The whole-policy caller supplies both complete source projections. Traversal
+/// and typed composition are identical to the support/delegation preview.
+pub(crate) fn compare_policy_authority(before: Snapshot, after: Snapshot) -> Value {
+    let mut gaps = BTreeSet::new();
+    if before.truncated || after.truncated {
+        gaps.insert("authority projection budget reached; further effects are unknown".into());
+    }
+    gaps.insert("Source-derived authority only. Remote trust, live runs, factory bindings and issued access need current checks by their owners; guest programs and external effects are unmodelled.".into());
+    let old = Graph::new(before.facts.iter().collect()).reach(None, &mut gaps);
+    let new = Graph::new(after.facts.iter().collect()).reach(None, &mut gaps);
+    let facts: BTreeMap<_, _> = before
+        .facts
+        .iter()
+        .chain(&after.facts)
+        .map(|fact| (fact.fact_id.as_str(), fact))
+        .collect();
+    let old_keys: BTreeSet<_> = old
+        .effects
+        .iter()
+        .map(|effect| effect_key(effect, &facts))
+        .collect();
+    let new_keys: BTreeSet<_> = new
+        .effects
+        .iter()
+        .map(|effect| effect_key(effect, &facts))
+        .collect();
+    json!({"before":old,"after":new,
+        "added":new.effects.iter().filter(|effect| !old_keys.contains(&effect_key(effect,&facts))).collect::<Vec<_>>(),
+        "removed":old.effects.iter().filter(|effect| !new_keys.contains(&effect_key(effect,&facts))).collect::<Vec<_>>(),
+        "before_facts":before.facts,"after_facts":after.facts,"agents":after.bindings,"previous_agents":before.bindings,"limitations":gaps,
+        "warnings":after.known_influences})
+}
+
 pub(super) struct Change {
     pub owner_instance_id: String,
     pub replaced_source: Option<(String, String)>,

@@ -569,7 +569,7 @@ impl Store {
     pub(crate) fn edit_native_policy<T>(
         &self,
         skip_unchanged: bool,
-        prepare: impl FnOnce(&str) -> Result<(T, String)>,
+        prepare: impl FnOnce(&str, &[Grant]) -> Result<(T, String)>,
         activate: impl FnMut(
             &str,
             crate::approvals::PolicyActivation,
@@ -581,7 +581,7 @@ impl Store {
             &self.path,
             skip_unchanged,
             |original| {
-                let (result, source) = prepare(original)?;
+                let (result, source) = prepare(original, &current.grants)?;
                 if !skip_unchanged || source != original {
                     let (document, context) = crate::policy::parse_toml_for_edit(&source)
                         .map_err(|error| invalid(error.to_string()))?;
@@ -666,16 +666,30 @@ impl Store {
             |document, state, context| {
                 let mut approval = approval;
                 if let Some((runtime, record)) = &mut approval
-                    && !crate::approvals::pending::check_saved_grants(runtime, &document.to_string(), record, &state.grants)? {
+                    && !crate::approvals::pending::check_saved_grants(
+                        runtime,
+                        &document.to_string(),
+                        record,
+                        &state.grants,
+                    )?
+                {
                     record.status = "superseded".into();
                     return Err(invalid("approval is superseded; make a new request"));
                 }
                 let expires = now
                     .checked_add(Duration::seconds(state.ttl_seconds))
                     .ok_or_else(|| invalid("grant expiry overflow"))?;
-                let delegated = approval.as_ref().and_then(|(_, record)| record.result.get("issued_access"))
-                    .map(serde_json::to_string).transpose().map_err(|e| invalid(e.to_string()))?;
-                let delegated_expiry = delegated.as_deref().and_then(|s| serde_json::from_str::<crate::policy::delegation::IssuedAccess>(s).ok())
+                let delegated = approval
+                    .as_ref()
+                    .and_then(|(_, record)| record.result.get("issued_access"))
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|e| invalid(e.to_string()))?;
+                let delegated_expiry = delegated
+                    .as_deref()
+                    .and_then(|s| {
+                        serde_json::from_str::<crate::policy::delegation::IssuedAccess>(s).ok()
+                    })
                     .and_then(|issued| issued.expires_at.as_deref().and_then(parse_expiry));
                 let grant = Grant {
                     delegated,
@@ -687,7 +701,9 @@ impl Store {
                     literal_path: approval.is_some(),
                     scope: request.scope,
                     created: timestamp(now)?,
-                    expires: timestamp(delegated_expiry.map_or(expires, |bound| bound.min(expires)))?,
+                    expires: timestamp(
+                        delegated_expiry.map_or(expires, |bound| bound.min(expires)),
+                    )?,
                 };
                 let persistence = if grant.scope == GrantScope::Session {
                     Persistence::SessionOnly
@@ -710,10 +726,12 @@ impl Store {
                 }
                 replace_grant(&mut state.grants, grant.clone());
                 if let Some((_, record)) = approval {
-                    let issued = record.result.get("issued_access").cloned();
-                    record.result = serde_json::json!({"grant_id":grant.grant_id,"scope":grant.scope,"literal_path":grant.literal_path,
-                        "created":grant.created,"expires":grant.expires,"persistence":persistence});
-                    if let Some(issued) = issued { record.result["issued_access"] = issued; }
+                    record.result["grant_id"] = serde_json::json!(grant.grant_id);
+                    record.result["scope"] = serde_json::json!(grant.scope);
+                    record.result["literal_path"] = serde_json::json!(grant.literal_path);
+                    record.result["created"] = serde_json::json!(grant.created);
+                    record.result["expires"] = serde_json::json!(grant.expires);
+                    record.result["persistence"] = serde_json::json!(persistence);
                     crate::approvals::pending::save_receipt(document, record)?;
                 }
                 Ok(GrantAddition { grant, persistence })

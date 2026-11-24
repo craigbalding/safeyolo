@@ -38,20 +38,27 @@ fn context_counts(fixture: &Fixture) -> (u64, u64) {
         .unwrap();
     (stats.checks_total, stats.allowed_total)
 }
-fn trace_from_owned_diagnostic(fixture: &Fixture) -> Value {
-    let rows = records(fixture.directory.path(), "audit.jsonl");
-    let request = rows
-        .iter()
-        .find(|row| row["event"] == "security.network_guard.evaluated")
-        .expect("request reached actual head admission");
+async fn trace_from_owned_diagnostic(fixture: &Fixture) -> Value {
+    let request_id = timeout(LIMIT, async {
+        loop {
+            assert!(fixture.runtime.audit.wait_for_drain(LIMIT).unwrap());
+            let rows = records(fixture.directory.path(), "audit.jsonl");
+            if let Some(request) = rows
+                .iter()
+                .find(|row| row["event"] == "security.network_guard.evaluated")
+            {
+                break request["request_id"].as_str().unwrap().to_owned();
+            }
+            // An empty queue does not mean the request head was admitted yet.
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("request reached actual head admission");
     fixture
         .runtime
         .traces
-        .get(
-            request["request_id"].as_str().unwrap(),
-            Some("alice"),
-            crate::circuit_runtime::now(),
-        )
+        .get(&request_id, Some("alice"), crate::circuit_runtime::now())
         .unwrap()
         .unwrap()
 }
@@ -73,10 +80,49 @@ async fn held_without_success(fixture: &Fixture, stream: &mut UnixStream) {
             .is_err(),
         "incomplete buffered request must have no reply"
     );
+    let trace = trace_from_owned_diagnostic(fixture).await;
     assert_eq!(context_counts(fixture), (0, 0));
     assert_eq!(memory(fixture)["total_flows"], 0);
     assert_eq!(logger(fixture)["requests_total"], 0);
-    no_sink_or_response(&trace_from_owned_diagnostic(fixture));
+    no_sink_or_response(&trace);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_diagnostic_waits_for_head_admission_and_a_held_writer() {
+    let fixture = Fixture::new(false, false).await;
+    assert!(fixture.runtime.audit.wait_for_drain(LIMIT).unwrap());
+    let lock =
+        crate::host_platform::lock_host_state(&fixture.directory.path().join("audit.jsonl.lock"))
+            .unwrap();
+    let mut stream = UnixStream::connect(fixture.directory.path().join("alice.sock"))
+        .await
+        .unwrap();
+    let runtime = fixture.runtime.clone();
+    let mut observation = tokio::spawn(async move {
+        let trace = trace_from_owned_diagnostic(&fixture).await;
+        (fixture, trace)
+    });
+    stream
+        .write_all(upload_head("Content-Length: 4\r\n", "", true).as_bytes())
+        .await
+        .unwrap();
+    timeout(LIMIT, async {
+        while runtime.audit.pending_count().unwrap() == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        timeout(Duration::from_millis(30), &mut observation)
+            .await
+            .is_err()
+    );
+    drop(lock);
+    let (fixture, trace) = timeout(LIMIT, observation).await.unwrap().unwrap();
+    no_sink_or_response(&trace);
+    drop(stream);
+    fixture.stop().await;
 }
 
 #[tokio::test]
@@ -228,7 +274,7 @@ async fn truncated_small_upload_never_applies_context_or_sink() {
     stream.shutdown().await.unwrap();
     let reply = remaining(&mut stream).await;
     assert!(reply.is_empty() || status(&reply) != 200);
-    no_sink_or_response(&trace_from_owned_diagnostic(&fixture));
+    no_sink_or_response(&trace_from_owned_diagnostic(&fixture).await);
     assert_eq!(context_counts(&fixture), (0, 0));
     assert_eq!(memory(&fixture)["total_flows"], 0);
     assert_eq!(logger(&fixture)["requests_total"], 0);

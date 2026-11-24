@@ -5,9 +5,9 @@ the same names. Platform exclusions are explicit and do not hide missing setup.
 """
 
 SECTIONS = {
-    "systrap": ("isolation", "ingress", "workloads", "access", "lifecycle", "continuity"),
-    "kvm": ("isolation", "ingress", "workloads"),
-    "vz": ("isolation", "access", "lifecycle", "continuity"),
+    "systrap": ("isolation", "ingress", "workloads", "access", "peer-support", "shared-approvals", "provider", "federation", "lifecycle", "continuity", "job-sandbox", "job-network", "mounts", "docker"),
+    "kvm": ("isolation", "ingress", "workloads", "job-sandbox", "job-network", "mounts"),
+    "vz": ("isolation", "access", "lifecycle", "continuity", "job-sandbox", "job-network", "mounts"),
 }
 OPTIONAL_SECTIONS = {"systrap": ("claude",), "kvm": (), "vz": ()}
 
@@ -48,10 +48,24 @@ PYTEST_PHASES = {
         "tests/test_host_sudo.py",
         "tests/test_public_installer.py::test_guest_cache_is_prepared_during_host_extraction_without_early_activation",
     )),
+    "rootless-preparation": ("host", (
+        "tests/test_guest_acquisition.py::test_native_selection_pins_one_index_and_keeps_existing_installation",
+        "tests/test_guest_acquisition.py::test_guest_validation_failure_keeps_verified_archive_for_retry",
+        "tests/test_guest_acquisition.py::test_early_preparation_defers_unavailable_setup_and_reports_cleanup_failure",
+        "tests/test_guest_acquisition.py::test_guest_download_interruption_removes_partial_blob_and_allows_retry",
+        "tests/test_guest_acquisition.py::test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes",
+        "tests/test_guest_acquisition.py::test_rootless_production_metadata_and_distinct_mappings",
+        "tests/test_guest_upgrade.py::test_explicit_upgrade_pins_reuses_and_rolls_back_without_changing_host_or_state",
+        "tests/test_guest_upgrade.py::test_upgrade_refusals_preserve_active_and_previous_selection",
+        "tests/test_guest_upgrade.py::test_failed_activation_is_retryable_and_bad_selected_inputs_can_be_rolled_back",
+        "tests/test_guest_upgrade.py::test_killed_archive_pull_preserves_selection_and_next_upgrade_recovers",
+    )),
+    "rootless-guest": ("host", ("tests/test_guest_acquisition.py::test_prepared_rootless_guest_remains_usable_after_restart",)),
 }
 
 # These are native process boundaries. Real Hyperlight engines use the existing
-# hyperlight_services.py driver; rootless installation remains unimplemented.
+# hyperlight_services.py driver. The rootless selector also offers a separate
+# retained-storage observer and a separate maintained booted-guest phase.
 NATIVE_PHASES = {
     "named-checks": (("lib", "policy::checks::tests"),
                      ("lib", "policy::checks::fixture_tests"),
@@ -61,6 +75,8 @@ NATIVE_PHASES = {
     "managed-feeds": (("native_policy_feeds", ""),),
     "before-after": (("lib", "coord_rooms::work::tests::automatic_tests"),),
     "mediated-services": (("lib", "jobs::mediated::tests"),),
+    "host-execution": (("host_execution", ""),
+                       ("lib", "host_execution::gateway::tests")),
 }
 
 # A completed procedure records these names after the corresponding assertions.
@@ -69,18 +85,84 @@ PROCEDURES = {
     "ingress": ("installed_ingress.py", ("identity", "policy", "guest", "origin", "finished")),
     "ingress-pair": ("installed_ingress_pair.py", ("identity", "subscription-adoption", "user-and-root", "subscription-renewal-revocation", "restart", "finished")),
     "workloads": ("installed_workloads.py", ("identity", "package-repo", "sse", "wss-ssh", "origin", "finished")),
-    "access": ("installed_access.py", ("identity", "service", "contract", "flow-ownership", "coord", "host-secret-custody", "origin", "abrupt-failure", "finished")),
+    "access": ("installed_access.py", ("identity", "service", "contract", "flow-ownership", "coord", "host-secret-custody", "origin", "desktop-sharing", "abrupt-failure", "finished")),
     "lifecycle": ("installed_lifecycle.py", ("identity", "listener", "tls", "restart", "drain", "recovery", "finished")),
     "continuity": ("installed_state_transition.py", ("initial", "restart", "replacement", "return", "cleanup", "finished")),
+    "peer-support": ("installed_peer_support.py", ("identity", "scope", "permitted-effect", "replay", "stale-run", "narrow-expire-revoke", "finished")),
+    "shared-approvals": ("installed_shared_approvals.py", ("identity", "scope", "permitted-effect", "expire-revoke", "stale-run", "gateway-route", "finished")),
+    "provider": ("installed_provider.py", ("identity", "scope", "delivery", "revoke-recover", "closed-stopped", "observer", "finished")),
+    "native-authority": ("native_authority.py", ("selected-cases", "finished")),
+    "federation": ("installed_federation.py", ("identity", "scope", "destination-effect", "revocation", "finished")),
+    "tailnet": ("installed_tailnet.py", ("identity", "scope", "connection-loss", "destination-effect", "cleanup", "finished")),
+    "job-sandbox": ("host/job_sandbox.py", ("identity", "inputs", "privilege-state", "exit-signal", "timeout", "caller-signals", "network-off", "cleanup", "finished")),
+    "job-network": ("host/job_network.py", ("identity", "scoped-requests", "revocation", "expiry", "cancellation", "audit", "cleanup", "finished")),
+    "mounts": ("../nested-linux/live_mount_backend_proof.py", ("identity", "startup", "path-refusals", "busy-file", "busy-cwd", "busy-mmap", "detach", "saved-live", "cleanup", "finished")),
+    "docker": ("installed_docker_preflight.py", ("identity", "containment", "application", "gateway-effects", "gateway-revocation", "gateway-failures", "cleanup", "origin", "receivers", "finished")),
     "hyperlight-services": ("host/hyperlight_services.py", (
         "hyperlight", "hyperlight-unikraft", "provider", "cleanup", "finished",
     )),
 }
 
+# These procedures launch their own job/guest lifetimes and retain their actual
+# identities. They do not use the isolation section's bbtest platform receipt.
+BOUNDARY_SECTIONS = ("job-sandbox", "job-network", "mounts", "docker")
+
 SECTION_DRIVERS = {
     "isolation": tuple(PYTEST_PHASES)[:6],
-    **{name: (name,) for name in ("ingress", "workloads", "access", "lifecycle", "continuity")},
+    **{name: (name,) for name in PROCEDURES if name not in {"ingress-pair", "native-authority"}},
     "claude": ("claude_smoke.py",),
+}
+
+# Each installed authority control retains the observations made at these
+# existing checkpoints. Native BB-24/25 and two-host BB-26 have separate inputs.
+AUTHORITY_CONTROLS = {
+    "BB-18": ("peer-support", ("scope", "permitted-effect", "replay", "stale-run", "narrow-expire-revoke")),
+    "BB-19": ("shared-approvals", ("scope", "permitted-effect", "expire-revoke", "stale-run", "gateway-route")),
+    "BB-20": ("provider", ("scope", "delivery", "revoke-recover", "closed-stopped", "observer")),
+    "BB-23": ("access", ("desktop-sharing",)),
+    "BB-24": (None, ()),
+    "BB-25": ("federation", ("scope", "destination-effect", "revocation")),
+    "BB-26": ("tailnet", ("scope", "connection-loss", "destination-effect", "cleanup")),
+}
+
+# Each case owns isolated native instances and a real pinned NATS broker.
+# Model, human-interaction, long-duration and child-helper tests remain opt-in.
+NATIVE_AUTHORITY = {
+    "BB-24": (
+        "work::native_work_claims_replay_identity_revocation_and_crash_recovery",
+        "attestations::native_attestations_exact_candidate_authorship_replay_and_recovery",
+        "outputs::retained_external_outputs_recover_once_or_reject_stale_publication",
+        "reviews::code_and_report_checks_challenges_corrections_and_independent_dispositions",
+        "factory::factory_selection_enforces_native_obligations_for_direct_callers",
+        "continuation::continuation_recovers_once_and_retains_delivery_across_restart",
+    ),
+    "BB-25": (
+        "federation::two_safeyolos_share_only_home_authority_across_partition_restart_and_revocation",
+        "federation::support::authenticated_mutation_misrouted_to_another_trusted_instance_has_no_effect",
+        "federation::support::remote_support_uses_owner_grants_receipts_and_independent_attention_sources",
+        "federation::operator::remote_saved_deciding_authority_preserves_the_canonical_pending_record",
+        "federation::modes::renewal_and_explicit_rotation_preserve_retained_state_and_report_activation",
+        "federation::modes::same_path_peer_rotation_reports_restart_until_broker_loads_new_credentials",
+    ),
+}
+
+# These cases drive the installed executor over its authenticated local HTTP
+# interface. The fixture executable and workload probe are separate inputs.
+# Service control needs an explicitly prepared owned service on the target.
+HOST_EXECUTION_AUTHORITY = {
+    "BB-38": (
+        "installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch",
+        "installed_check_serve_and_reload_share_ledger_validation",
+        "installed_unix_read_paths_resolve_without_sibling_contents",
+        "installed_unix_bounds_lifecycle_reload_and_lost_reply",
+        "installed_storage_exhaustion_preserves_output_replay_and_restart",
+        "installed_user_service_profiles_and_channel_refusals",
+        "installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch",
+        "installed_api_authentication_and_cross_principal_reads_cannot_change_authority",
+        "installed_adaptive_investigation_and_retained_configuration_effects",
+        "installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authority",
+        "installed_dependency_swaps_preserve_metadata_but_cannot_launch",
+    ),
 }
 
 # These checks assert gVisor-specific behavior. VZ has a real guest kernel.
@@ -121,6 +203,7 @@ OPTIONAL_CASES = (
     ('tests/proxy_contracts/test_tunnel_contract.py::test_real_openssh_preserves_server_first_output_and_client_input', 'SAFEYOLO_RUN_SSH_CONTRACT', '1', 'Opt-in owned OpenSSH daemon; requires installed ssh, ssh-keygen and sshd'),
     ('tests/proxy_contracts/test_native_skill_trace.py::test_untraced_request_timing_against_prepared_baseline', 'SAFEYOLO_TRACE_OVERHEAD_BASELINE', '', 'manual ordinary-request comparison needs a prepared baseline executable'),
     ('tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_executes_staged_worker_commands', 'SAFEYOLO_FACTORY_ACCEPTANCE_ROOT', '', 'Explicit disposable installed Factory acceptance root.'),
+    ('tests/proxy_contracts/test_native_factory_cli.py::test_factory_pending_claude_work_survives_restart', 'SAFEYOLO_FACTORY_ACCEPTANCE_ROOT', '', 'Explicit disposable installed Factory acceptance root.'),
     ('tests/proxy_contracts/test_native_factory_cli.py::test_factory_setup_interruption_preserves_prepared_roles', 'SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE', '', 'Explicit disposable installed guided-setup acceptance root.'),
     ('tests/proxy_contracts/test_native_provider_recovery.py::test_authorized_provider_survives_only_its_holder_loss', 'SAFEYOLO_971_RUNSC', '', 'Explicit prepared provider-recovery Linux venue.'),
 )

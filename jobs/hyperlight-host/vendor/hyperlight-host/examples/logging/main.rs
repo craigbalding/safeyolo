@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2025 The Hyperlight Authors.
+extern crate hyperlight_host;
+
+use std::sync::{Arc, Barrier};
+
+use hyperlight_host::{Result, SandboxBuilder};
+use hyperlight_testing::simple_guest_as_pathbuf;
+
+fn fn_writer(_msg: String) -> Result<i32> {
+    Ok(0)
+}
+
+// This example demonstrates how to use the env_logger crate to emit log messages from hyperlight. As no tracing subscriber is set up any trace events that are created
+// by Hyperlight will also be emitted as log messages.
+
+fn main() -> Result<()> {
+    env_logger::builder()
+        .parse_filters("none,hyperlight=info")
+        .init();
+    // Get the path to a simple guest binary.
+    let hyperlight_guest_path = simple_guest_as_pathbuf();
+
+    for _ in 0..20 {
+        let path = hyperlight_guest_path.clone();
+        let res: Result<()> = {
+            // Create a new sandbox.
+            let mut multiuse_sandbox = SandboxBuilder::from_file(path)
+                .host_print(fn_writer)
+                .build()?;
+
+            // Call a guest function 5 times to generate some log entries.
+            for _ in 0..5 {
+                multiuse_sandbox
+                    .call::<String>("Echo", "a".to_string())
+                    .unwrap();
+            }
+
+            // Define a message to send to the guest.
+
+            let msg = "Hello, World!!\n".to_string();
+
+            // Call a guest function that calls the HostPrint host function 5 times to generate some log entries.
+            for _ in 0..5 {
+                multiuse_sandbox
+                    .call::<i32>("PrintOutput", msg.clone())
+                    .unwrap();
+            }
+            Ok(())
+        };
+
+        res.unwrap()
+    }
+
+    // Create a new sandbox.
+    let mut multiuse_sandbox = SandboxBuilder::from_file(hyperlight_guest_path.clone()).build()?;
+    let interrupt_handle = multiuse_sandbox.interrupt_handle();
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = barrier.clone();
+    const NUM_CALLS: i32 = 5;
+    let thread = std::thread::spawn(move || {
+        for _ in 0..NUM_CALLS {
+            barrier2.wait();
+            // Sleep for a short time to allow the guest function to run.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // Cancel the host function call.
+            interrupt_handle.kill();
+        }
+    });
+
+    // Call a function that gets cancelled by the host function 5 times to generate some log entries.
+
+    for _ in 0..NUM_CALLS {
+        barrier.wait();
+        multiuse_sandbox.call::<()>("Spin", ()).unwrap_err();
+    }
+    thread.join().unwrap();
+
+    Ok(())
+}

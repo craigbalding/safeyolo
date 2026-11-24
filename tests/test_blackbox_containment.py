@@ -6,6 +6,7 @@ import http.client
 import importlib.util
 import json
 import socket
+import subprocess
 import sys
 from pathlib import Path
 
@@ -36,6 +37,109 @@ def test_receiver_local_to_guest_is_not_an_external_route(monkeypatch):
                         json.dumps([{"addr_info": [{"local": "192.0.2.8"}]}]).encode())
     with pytest.raises(AssertionError, match="local to the guest"):
         containment.guest_destination({"address": "192.0.2.8"})
+
+
+@pytest.mark.parametrize("original,symlink,failure", [
+    (None, False, None), (b"", False, None), (b"original resolver\n", False, "answered"),
+    (None, True, None), (b"original resolver\n", True, None),
+    (None, False, "lookup"), (b"original resolver\n", False, "lookup"),
+    (None, False, "setup"), (b"original resolver\n", False, "setup"),
+    (None, False, "restore"), (b"original resolver\n", False, "restore"),
+])
+def test_resolver_lookup_restores_prior_state_and_reports_failures(tmp_path, monkeypatch, original, symlink, failure):
+    path = tmp_path / "resolv.conf"
+    target = tmp_path / "resolver-target" if symlink else path
+    if original is not None:
+        target.write_bytes(original)
+    if symlink:
+        path.symlink_to(target.name)
+    endpoint = {"address": "192.0.2.8", "port": 53}
+    configured = b"nameserver 192.0.2.8\noptions attempts:1 timeout:1\n"
+    monkeypatch.setattr(containment, "Path", lambda value: path)
+    monkeypatch.setattr(containment, "guest_destination", lambda value: {"controlled_route": value})
+    actual_run = subprocess.run
+    calls, queries = [], []
+
+    def write_or_remove(command, **kwargs):
+        assert command[:3] == ["sudo", "-n", "python3"]
+        assert kwargs["check"] is True and kwargs["timeout"] == 10 and kwargs["capture_output"] is True
+        calls.append(command)
+        if len(calls) == 2 and failure == "restore":
+            raise subprocess.CalledProcessError(1, command, stderr=b"restore refused")
+        # Execute the actual guest-root writer/remover against an owned file;
+        # this source control needs neither sudo nor the real /etc/resolv.conf.
+        result = actual_run([sys.executable, *command[3:]], **kwargs)
+        if len(calls) == 1 and failure == "setup":
+            raise subprocess.CalledProcessError(1, command, stderr=b"setup failed after write")
+        return result
+
+    def lookup(query, *arguments):
+        assert target.read_bytes() == configured
+        assert arguments == (80, socket.AF_INET, socket.SOCK_STREAM)
+        assert query.startswith("guest-") and query.endswith(".test")
+        queries.append(query)
+        if failure == "lookup":
+            raise RuntimeError("lookup failed")
+        if failure != "answered":
+            raise socket.gaierror("controlled unanswered query")
+        return []
+
+    monkeypatch.setattr(containment.subprocess, "run", write_or_remove)
+    monkeypatch.setattr(containment.socket, "getaddrinfo", lookup)
+    if failure in {"setup", "restore", "lookup"}:
+        error = RuntimeError if failure == "lookup" else subprocess.CalledProcessError
+        with pytest.raises(error):
+            containment.attempt_resolver(endpoint)
+    else:
+        result = containment.attempt_resolver(endpoint)[0]
+        assert result["resolver_outcome"] == ("answered" if failure == "answered" else "no_answer")
+        assert result["query_sha256"] == containment.digest(queries[0].encode())
+    assert len(calls) == 2
+    assert bool(queries) is (failure != "setup")
+    assert path.is_symlink() is symlink
+    if failure == "restore":
+        assert target.read_bytes() == configured
+    elif original is None:
+        assert not target.exists()
+    else:
+        assert target.read_bytes() == original
+
+
+@pytest.mark.parametrize("exposure", [None, "/dev/kvm", "/dev/mem", "/dev/kmem", "canary"])
+def test_elevated_device_canary_code_executes_and_rejects_exposure(tmp_path, monkeypatch, exposure):
+    monkeypatch.syspath_prepend(str(Path(__file__).parent / "blackbox"))
+    monkeypatch.setitem(sys.modules, "harness.containment", containment)
+    path = Path(__file__).parent / "blackbox/isolation/test_vm_isolation.py"
+    spec = importlib.util.spec_from_file_location("device_canary_guest_probe", path)
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    private = tmp_path / "host-canary"
+    marker = b"owned-host-canary"
+    if exposure == "canary":
+        private.write_bytes(marker)
+    monkeypatch.setattr(containment, "manifest", lambda: {
+        "host_canaries": [{"path": str(private), "sha256": containment.digest(marker)}]})
+    actual_exists = probe.os.path.exists
+    monkeypatch.setattr(probe.os.path, "exists", lambda value: value == exposure if value.startswith("/dev/") else actual_exists(value))
+    monkeypatch.setattr(probe.os, "geteuid", lambda: 0)
+    executed = []
+
+    def run_code(command):
+        assert command[:2] == [sys.executable, "-c"]
+        executed.append(command[-1])
+        # Execute the exact embedded script with controlled guest identity and
+        # device visibility. Installed setpriv execution remains separate proof.
+        exec(compile(command[-1], str(path), "exec"), {})
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(probe, "_run_as_gvisor_sandbox_root", run_code)
+    method = probe.TestSandboxRootContainment().test_host_kernel_surfaces_stay_absent_as_sandbox_root
+    if exposure is None:
+        method()
+    else:
+        with pytest.raises(AssertionError, match="host (canary|device) exposed"):
+            method()
+    assert len(executed) == 1
 
 
 def test_tcp_delivery_followed_by_protocol_failure_is_not_containment():

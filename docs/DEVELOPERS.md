@@ -17,6 +17,11 @@ read-only terminal inspector. The CLI reads and updates instance configuration,
 uses the authenticated Admin API, and displays JSON Lines (JSONL) audit events.
 The instance policy file is the source of truth for durable permissions.
 
+The [host execution contract](host-execution-contract.md) defines the shared
+issuer/target protocol, versioned operation package and executable contract
+witness. Native platform execution and gateway adoption remain separate from
+contract validation.
+
 ## Repository Structure
 
 - `proxy/src/` contains the Rust proxy and its policy, inspection, API, and
@@ -308,13 +313,16 @@ Overnight test compilation prepares the library test, then binary tests and
 host binaries selected by the version integration test. A separate step prepares
 the agent API and native integration tests. The final compilation step keeps
 the complete default target selection, including examples, and reuses those
-outputs. All steps use the unchanged release profile and flags. The dependency
-cache does not supply these workspace executables. Completed Cargo timing
+outputs. macOS contract-test compilation and execution select package
+optimization level 1 through the same command-specific Cargo override. Linux
+tests, dependencies and production builds keep their release settings.
+The post-test production build restores the normal optimized executables.
+The dependency cache does not supply these workspace executables. Completed Cargo timing
 reports are retained even when a later compilation step fails; an interrupted
 compiler can leave no report for its unfinished command. The verbose job log
 still identifies the targets started before interruption.
-Linux library acquisition tests use the built CLI for the privileged rootfs
-remapper. Build `safeyolo` with the selected profile, then set
+Linux library acquisition tests use the built CLI to validate imported rootfs
+metadata inside the archive-coordinate namespace. Build `safeyolo` with the selected profile, then set
 `SAFEYOLO_NATIVE_CLI` to its absolute path when running those tests. Both Rust
 CI lanes supply this input.
 The input producers and native checks share the existing quick-job dependency
@@ -434,6 +442,56 @@ does not publish a host release or change guest channels. Scheduled runs and
 manual runs without `packages_only=true` keep the full contract matrix.
 
 ### Disposable development instance
+
+For an acceptance command, use `instance run --ephemeral`. Run it from the
+acceptance script's working directory, as the host account that owns the
+prepared guest assets. Build a matching candidate bundle first with the
+[bundle build instructions](installation.md#build-a-bundle). In this example,
+put that unpacked bundle at `$HOME/sy-candidate` and prepare
+`./acceptance-test.sh`. Keep the candidate bundle available until cleanup
+finishes; the runner selects its tools without copying the bundle.
+The script uses `safeyolo` from PATH. It can change
+the fresh configuration before calling `safeyolo start` or starting agents.
+The runner initializes the instance; the script starts the services it needs.
+The script runs as the host account. Agents that the script starts use the
+normal sandbox boundary.
+
+The command below reuses only the default installation's guest assets and
+existing host prerequisites. It creates fresh configuration, credentials,
+Coord state, logs, sockets and agent homes. Shared guest bytes are pinned by
+SHA-256 before the script runs and checked before each guest boot. The guest
+base stays read-only behind the existing private overlays. Reused assets
+cannot become a writable workspace or extra mount. The source installation's
+credentials, agent definitions and federation configuration are not copied.
+Cross-instance Coord access still needs an explicit authorized federation path.
+The runner removes its instance root after success, command failure or handled
+SIGINT/SIGTERM. Keep test results outside that root if they must survive cleanup;
+the script's working directory and external files are not removed.
+Here, `default` means `$HOME/.safeyolo`. Use
+`--reuse-guest-assets-from ROOT` for another installed asset source.
+The default parent is `/var/tmp`; `--directory PARENT` selects another short,
+disk-backed parent. Omit asset reuse for a command that needs no prepared guests.
+
+```sh
+safeyolo instance run --ephemeral --runtime "$HOME/sy-candidate" --reuse-guest-assets-from default -- ./acceptance-test.sh
+```
+
+The runner prints its private root to standard error. The command's exit
+status is the script's exit status, including 130 for SIGINT and 143 for
+SIGTERM. Socket paths that exceed the platform limit fail before
+guest startup and name the path to shorten. Guest fingerprints check the
+explicitly selected local bytes; they do not independently authenticate their
+publisher.
+
+If process ownership or shutdown cannot be verified, cleanup preserves the
+root and reports its recovery command. Inspect the reported instance, correct
+the specific ownership or configuration problem, then use
+`safeyolo --root ROOT instance cleanup` with that retained root. Cleanup refuses
+to remove an instance whose runner is still live. SIGKILL and a host crash
+cannot run cleanup; use the same retained-root command after recovery.
+
+For a development instance that you want to retain between commands, install
+the bundle into a fresh root as below.
 
 Use the [bundle build and installation](installation.md#build-a-bundle)
 from a clean committed checkout. Choose a fresh development root; leave the
@@ -945,13 +1003,17 @@ $ curl https://httpbin.org/get
 # Should return 200 (allowed)
 ```
 
-## README skill discovery
+## Repository skill discovery
 
-The repository ships one [readme-usability skill](../cli/src/safeyolo/agent_context/skills/readme-usability/SKILL.md)
-with a conditional SafeYolo reference. Edit that source. The checked-in
-`.agents/skills/readme-usability` and `.claude/skills/readme-usability` directory
-symlinks expose it to Codex and Claude Code in this checkout. `AGENTS.md`, also
-imported by `CLAUDE.md`, routes README and onboarding work to it.
+The repository ships [readme-usability](../cli/src/safeyolo/agent_context/skills/readme-usability/SKILL.md)
+for README and onboarding work, and
+[operator-ux](../cli/src/safeyolo/agent_context/skills/operator-ux/SKILL.md)
+for operator journey implementation and review. Edit each canonical skill under
+`cli/src/safeyolo/agent_context/skills/`. The checked-in directory symlinks under
+`.agents/skills/` and `.claude/skills/` expose those sources to Codex and Claude
+Code. `AGENTS.md`, also imported by `CLAUDE.md`, requires the relevant skill.
+The operator-ux skill reads the authoritative interaction contract from the
+target checkout at the revision under review; it does not ship a second copy.
 
 The bundled Codex and Claude host setup scripts also stage discovery links in
 agent homes. SafeYolo copies the skill into the read-only `/safeyolo/skills/`
@@ -965,8 +1027,9 @@ No skill-specific wiring is required. Unrelated
 user-owned skills at the same discovery path are preserved and reported as a
 setup conflict.
 
-Both harnesses can select the skill from its description. Explicit invocation
-is `$readme-usability` in Codex or `/readme-usability` in Claude Code. If a running
+Both harnesses can select skills from their descriptions. Explicit invocation
+uses `$readme-usability` or `$operator-ux` in Codex, and `/readme-usability` or
+`/operator-ux` in Claude Code. If a running
 harness does not show the newly added skill, restart that harness. Discovery
 makes a skill available; it does not prove a particular model used it.
 Custom launchers that do not run the bundled setup still get repository discovery

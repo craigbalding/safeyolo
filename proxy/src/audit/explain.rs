@@ -130,7 +130,7 @@ fn exists(path: &Path) -> Result<bool> {
     }
 }
 
-fn retained(current: &Path, backups: &BigInt) -> Result<Vec<PathBuf>> {
+pub(super) fn retained(current: &Path, backups: &BigInt) -> Result<Vec<PathBuf>> {
     // pathlib.Path("") denotes the current directory, unlike metadata("").
     let current = if current.as_os_str().is_empty() {
         Path::new(".")

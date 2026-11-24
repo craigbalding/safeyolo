@@ -12,9 +12,63 @@ from types import SimpleNamespace
 import pytest
 
 from tests.blackbox import execution_receipt as receipts
-from tests.blackbox.selections import NATIVE_PHASES, OPTIONAL_CASES, PROCEDURES
+from tests.blackbox.selections import AUTHORITY_CONTROLS, NATIVE_PHASES, OPTIONAL_CASES, PROCEDURES
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("section", [section for section, _names in AUTHORITY_CONTROLS.values() if section])
+@pytest.mark.parametrize("defect", [None, "missing-observer", "partial", "wrong-run", "wrong-guest", "unreadable"])
+def test_authority_receipts_keep_observations_and_refuse_incomplete_execution(tmp_path, monkeypatch, section, defect):
+    monkeypatch.setenv("SAFEYOLO_BLACKBOX_RUN_ID", "current")
+    context = {"platform": "systrap", "agent": "caller", "pid": 123, "start_token": "current-birth"}
+    monkeypatch.setenv("SAFEYOLO_BLACKBOX_GUEST_IDENTITY", json.dumps(context))
+    receipts.save(tmp_path / "platform.json", context)
+    receipt = receipts.ProcedureReceipt(section, tmp_path / "result.json")
+    names = next(names for selected, names in AUTHORITY_CONTROLS.values() if selected == section)
+    for checkpoint in PROCEDURES[section][1]:
+        if defect == "partial" and checkpoint == names[-1]:
+            continue
+        observations = {"origin_before": 0, "origin_after": 1, "observer": "controlled-source"}
+        receipt.checkpoint(checkpoint, **(observations if checkpoint in names else {}))
+    if defect == "missing-observer":
+        receipt.document["observations"].pop(names[-1])
+    elif defect == "wrong-run":
+        receipt.document["run_id"] = "historical-accepted-run"
+    elif defect == "wrong-guest":
+        # Tailnet's paired lifetime is verified by its maintained verifier.
+        receipt.document["run_id"] = "historical-tailnet" if section == "tailnet" else "current"
+        receipt.document["guest"] = context | {"start_token": "retired-birth"}
+    receipts.save(receipt.path, receipt.document)
+    if defect == "unreadable":
+        receipt.path.write_text("observer report was interrupted")
+    result = receipts.section_execution(tmp_path, section, "systrap", "current")
+    assert result["complete"] is (defect is None)
+    row = result["phases"][0]
+    if defect is None:
+        assert row["observations"][names[-1]]["origin_after"] == 1
+        assert row["guest"] == context
+    report = {"selected_sections": [section], "sections": [{"section": section, "exit": 0,
+              "cleanup": "stopped", "result": "passed", "execution": result}]}
+    control = next(control for control, (name, _steps) in AUTHORITY_CONTROLS.items() if name == section)
+    controls = receipts.authority_controls(report)
+    assert controls[control]["selected"] is True and controls[control]["executed"] is True
+    assert controls[control]["execution_complete"] is (defect is None)
+    assert controls["BB-24"]["execution_complete"] is False
+
+
+def test_authority_selection_and_successful_process_exit_are_not_executed_coverage():
+    report = {"selected_sections": ["access", "provider"], "sections": []}
+    initial = receipts.authority_controls(report)
+    assert initial["BB-23"]["selected"] is True and initial["BB-23"]["executed"] is False
+    assert all(row["execution_complete"] is False for row in initial.values())
+    report["sections"] = [{"section": "access", "exit": 0, "cleanup": "stopped", "result": "passed"}]
+    assert receipts.authority_controls(report)["BB-23"]["execution_complete"] is False
+    report["sections"][0]["execution"] = {"complete": True, "phases": []}
+    report["sections"][0]["cleanup"] = "failed"
+    assert receipts.authority_controls(report)["BB-23"]["execution_complete"] is False
+    assert initial["BB-25"]["selected"] is False and initial["BB-25"]["remaining"]
+    assert initial["BB-26"]["executed"] is False and initial["BB-26"]["remaining"]
 
 
 @pytest.mark.parametrize("defect", [None, "ignored", "include-ignored", "failed", "missing", "empty", "build", "observer", "source"])

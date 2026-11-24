@@ -3,8 +3,11 @@
 import base64
 import contextlib
 import copy
+import errno
 import importlib.util
 import json
+import random
+import runpy
 import signal
 import sys
 import threading
@@ -96,13 +99,43 @@ def test_provider_denial_and_limit_are_unavailable():
             checker.service_check(request(), lambda _: response)
 
 
+def test_bundle_keeps_patched_dependency_licenses(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("builder", REPO / "scripts/build_hyperlight_jobs.py")
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    upstream = tmp_path / "registry-dependency"
+    upstream.mkdir()
+    (upstream / "LICENSE").write_text("registry license")
+    patched = REPO / "jobs/hyperlight-host/vendor/hyperlight-host"
+    metadata = {"workspace_members": ["root"], "packages": [
+        {"id": "root", "source": None},
+        {"id": "patched", "source": None, "name": "hyperlight-host", "version": "0.19.0",
+         "license": "Apache-2.0", "license_file": None, "manifest_path": str(patched / "Cargo.toml")},
+        {"id": "registry", "source": "registry+https://github.com/rust-lang/crates.io-index",
+         "name": "other", "version": "1.0.0", "license": "MIT", "license_file": None,
+         "manifest_path": str(upstream / "Cargo.toml")},
+    ]}
+    monkeypatch.setattr(builder.subprocess, "check_output", lambda *args, **kwargs: json.dumps(metadata))
+    output = tmp_path / "bundle"
+    output.mkdir()
+    builder.copy_licenses(REPO, output)
+    licenses = output / "licenses"
+    for name in ("LICENSE", "NOTICE"):
+        assert (licenses / "hyperlight-host-0.19.0" / name).read_bytes() == (patched / name).read_bytes()
+    assert (licenses / "other-1.0.0/LICENSE").read_text() == "registry license"
+    inventory = json.loads((licenses / "dependencies.json").read_text())
+    assert sorted(inventory) == ["hyperlight-host-0.19.0", "other-1.0.0"]
+    assert inventory["hyperlight-host-0.19.0"]["license"] == "Apache-2.0"
+    assert inventory["hyperlight-host-0.19.0"]["source"] is None
+
+
 def test_bundle_pins_both_service_checkers_without_changing_offline_examples(tmp_path):
     import hashlib
 
     spec = importlib.util.spec_from_file_location("builder", REPO / "scripts/build_hyperlight_jobs.py")
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
-    for name in ("core.elf", "checker.py", "service_checker.py", "artifact_checker.py", "runtime.json"):
+    for name in ("core.elf", "checker.py", "service_checker.py", "artifact_checker.py", "task_action_checker.py", "runtime.json"):
         (tmp_path / name).write_text(name)
     builder.write_job_definitions(tmp_path)
     for kind in ("hyperlight", "hyperlight-unikraft"):
@@ -136,6 +169,15 @@ def test_bundle_pins_both_service_checkers_without_changing_offline_examples(tmp
             assert artifact["engine"]["function"] == "ArtifactCheck"
         else:
             assert artifact["engine"]["checker"]["sha256"] == hashlib.sha256((tmp_path / "artifact_checker.py").read_bytes()).hexdigest()
+    task = json.loads((tmp_path / "task-action-check.json").read_text())
+    assert task["engine"]["kind"] == "hyperlight-unikraft"
+    assert task["engine"]["checker"] == {
+        "path": "task_action_checker.py",
+        "sha256": hashlib.sha256((tmp_path / "task_action_checker.py").read_bytes()).hexdigest(),
+    }
+    assert task["network"] is False
+    assert task["mediated_services"]["services"] == ["claude"]
+    assert task["mediated_services"]["max_calls"] == 1
 
 
 @pytest.mark.parametrize("case", json.loads((REPO / "proxy/tests/fixtures/hyperlight-author-cases.json").read_bytes()), ids=lambda case: case["name"])
@@ -186,6 +228,249 @@ def host_driver(monkeypatch):
     driver = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(driver)
     return driver
+
+
+def test_resident_memory_reads_a_live_process_and_rejects_a_missing_one(host_driver):
+    assert host_driver.resident_bytes(host_driver.os.getpid()) > 0
+    with pytest.raises(OSError):
+        host_driver.resident_bytes(2147483647)
+
+
+def test_process_memory_includes_descendants_and_excludes_unrelated_processes(host_driver, monkeypatch):
+    monkeypatch.setattr(host_driver.sys, "platform", "linux")
+    monkeypatch.setattr(host_driver.subprocess, "check_output", lambda *_args, **_kwargs:
+                        "10 1 8\n12 11 32\n11 10 16\n99 1 1024\n")
+    sample = host_driver.process_memory([10])
+    assert {row["pid"] for row in sample["processes"]} == {10, 11, 12}
+    assert sample["rss_sum_bytes"] == (8 + 16 + 32) * 1024
+
+
+@pytest.fixture
+def darwin_observer(host_driver, monkeypatch):
+    parents = {10: 1, 11: 10, 12: 11, 99: 1}
+    children = {10: [11, 99], 11: [12]}
+    capacities = []
+
+    def pidinfo(pid, flavor, argument, destination, size):
+        assert flavor == 3 and argument == 0 and size == 136
+        if pid not in parents:
+            host_driver.ctypes.set_errno(errno.ESRCH)
+            return 0
+        destination._obj.pid = pid
+        destination._obj.parent_pid = parents[pid]
+        return size
+
+    def childpids(pid, buffer, size):
+        assert size == host_driver.ctypes.sizeof(buffer)
+        capacities.append(len(buffer))
+        selected = children.get(pid, [])[:len(buffer)]
+        for index, child in enumerate(selected):
+            buffer[index] = child
+        return len(selected)
+
+    library = SimpleNamespace(proc_pidinfo=pidinfo, proc_listchildpids=childpids)
+    monkeypatch.setattr(host_driver.sys, "platform", "darwin")
+    monkeypatch.setattr(host_driver.ctypes, "CDLL", lambda *_args, **_kwargs: library)
+    monkeypatch.setattr(host_driver, "resident_bytes", lambda pid: pid * 1024)
+    return SimpleNamespace(driver=host_driver, library=library, parents=parents,
+                           children=children, capacities=capacities)
+
+
+def test_darwin_memory_aggregates_descendants_counts_pids_and_grows_full_buffers(darwin_observer):
+    probe = darwin_observer
+    probe.parents.update(dict.fromkeys(range(20, 60), 10))
+    probe.children[10].extend(range(20, 60))
+    # Overlapping roots count once; 99 was reparented before its metadata read.
+    sample = probe.driver.process_memory([10, 11, 500])
+    expected = {10, 11, 12, *range(20, 60)}
+    assert {row["pid"] for row in sample["processes"]} == expected
+    assert sample["rss_sum_bytes"] == sum(expected) * 1024
+    assert 32 in probe.capacities and 64 in probe.capacities
+
+
+@pytest.mark.parametrize("phase", ["metadata", "resident", "children"])
+def test_darwin_memory_omits_processes_that_disappear_during_sampling(darwin_observer, monkeypatch, phase):
+    probe = darwin_observer
+
+    def missing(*_args):
+        probe.driver.ctypes.set_errno(errno.ESRCH)
+        return 0
+
+    if phase == "metadata":
+        monkeypatch.setattr(probe.library, "proc_pidinfo", missing)
+    elif phase == "children":
+        monkeypatch.setattr(probe.library, "proc_listchildpids", missing)
+    else:
+        def missing_rss(_pid):
+            raise ProcessLookupError(errno.ESRCH, "exited during sampling")
+        monkeypatch.setattr(probe.driver, "resident_bytes", missing_rss)
+    sample = probe.driver.process_memory([10])
+    assert sample["processes"] == [] and sample["rss_sum_bytes"] == 0
+
+
+@pytest.mark.parametrize("phase", ["metadata", "short_metadata", "resident", "children"])
+def test_darwin_memory_preserves_denied_or_incomplete_observations(darwin_observer, monkeypatch, phase):
+    probe = darwin_observer
+
+    def refused(*_args):
+        probe.driver.ctypes.set_errno(0 if phase == "short_metadata" else errno.EPERM)
+        return 135 if phase == "short_metadata" else 0
+
+    if phase in {"metadata", "short_metadata"}:
+        monkeypatch.setattr(probe.library, "proc_pidinfo", refused)
+    elif phase == "children":
+        monkeypatch.setattr(probe.library, "proc_listchildpids", refused)
+    else:
+        def refused_rss(_pid):
+            raise PermissionError(errno.EPERM, "RSS denied")
+        monkeypatch.setattr(probe.driver, "resident_bytes", refused_rss)
+    with pytest.raises(OSError):
+        probe.driver.process_memory([10])
+
+
+def test_darwin_process_enumeration_keeps_the_existing_five_second_bound(darwin_observer, monkeypatch):
+    probe = darwin_observer
+    monkeypatch.setattr(probe.library, "proc_listchildpids", lambda _pid, buffer, _size: len(buffer))
+    times = iter([0, 6])
+    with monkeypatch.context() as context:
+        context.setattr(probe.driver.time, "monotonic", lambda: next(times))
+        with pytest.raises(TimeoutError):
+            probe.driver.darwin_children(probe.library, 10, 5)
+
+
+def test_job_memory_retains_live_processes_and_samples_idle_after_reaping(host_driver, tmp_path):
+    # The same standalone command is runnable by the confined consumer without
+    # installing pytest or starting the Hyperlight product.
+    result = host_driver.subprocess.run(
+        [sys.executable, str(REPO / "tests/blackbox/host/hyperlight_memory_probe.py"),
+         "--output", str(tmp_path / "job")], capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    observed = json.loads(result.stdout)
+    assert observed["native_vm_executed"] is False
+    assert observed["sample"]["sample_count"] > 0
+
+
+def test_job_memory_preserves_failed_observation_without_claiming_zero_memory(host_driver, tmp_path, monkeypatch):
+    def denied(_roots):
+        raise PermissionError("process observation denied")
+    monkeypatch.setattr(host_driver, "process_memory", denied)
+    child = SimpleNamespace(pid=123, poll=lambda: None)
+    with host_driver.sample_job_memory(child, child, tmp_path / "job"):
+        pass
+    sample = json.loads((tmp_path / "job.memory.json").read_bytes())
+    assert sample["error"] == "process observation denied"
+    assert sample["peak"] is sample["idle"] is None and sample["sample_count"] == 0
+
+
+@pytest.mark.parametrize("console", ["missing", "other", "wrong", "exited"])
+def test_spin_observer_rejects_missing_or_other_invocation_entry(host_driver, tmp_path, console):
+    prefix = tmp_path / "current"
+    if console == "other":
+        (tmp_path / "previous.console").write_bytes(b"template-spin-entered\n")
+    elif console == "wrong":
+        prefix.with_suffix(".console").write_bytes(b"initializing\n")
+    elif console == "exited":
+        prefix.with_suffix(".console").write_bytes(b"template-spin-entered\n")
+    child = host_driver.subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+    try:
+        if console == "exited":
+            host_driver.stop(child)
+        with pytest.raises(RuntimeError, match="spin entry"):
+            host_driver.wait_spin_entry(child, prefix, timeout=0.05)
+        if console != "exited":
+            assert child.poll() is None
+    finally:
+        host_driver.stop(child)
+
+
+def test_spin_observer_waits_for_the_current_live_marker(host_driver, tmp_path):
+    prefix = tmp_path / "current"
+    program = ("import pathlib, sys, time; "
+               "p = pathlib.Path(sys.argv[1]); p.write_bytes(b'template-'); time.sleep(.05); "
+               "p.write_bytes(b'template-spin-entered\\n'); time.sleep(10)")
+    child = host_driver.subprocess.Popen([sys.executable, "-c", program, str(prefix.with_suffix(".console"))])
+    try:
+        host_driver.wait_spin_entry(child, prefix, timeout=2)
+        assert child.poll() is None
+    finally:
+        host_driver.stop(child)
+
+
+@pytest.mark.parametrize("inherited", [False, True])
+def test_template_probe_compares_frozen_generator_state_before_drawing(
+        tmp_path, monkeypatch, capsys, inherited):
+    import builtins
+
+    (tmp_path / "request.json").write_text("{}")
+    monkeypatch.setattr(builtins, "_sy_initialized_ns", 123, raising=False)
+    state = random.getstate() if inherited else random.Random().getstate()
+    monkeypatch.setattr(builtins, "_sy_initialized_random_state", state, raising=False)
+    monkeypatch.setattr(builtins, "_sy_probe_calls", 0, raising=False)
+    monkeypatch.setenv("SY_INVOCATION_ID", "current-invocation")
+    monkeypatch.setenv("SY_DEADLINE_MONOTONIC_MS", "1234")
+    paths = {"/input/request.json": tmp_path / "request.json",
+             "/work/prior-invocation": tmp_path / "prior-invocation"}
+    with monkeypatch.context() as path_patch:
+        path_patch.setattr("pathlib.Path", lambda path: paths[path])
+        runpy.run_path(str(REPO / "jobs/template_probe.py"))
+    value = json.loads(capsys.readouterr().out)
+    assert value["initialized_random_state_inherited"] is inherited
+    assert value["calls"] == 1 and not value["inherited_file"]
+    assert value["context"]["invocation_id"] == "current-invocation"
+
+
+@pytest.mark.parametrize("unavailable_memory", [False, True])
+@pytest.mark.parametrize("replayed", ["runtime_random", "initialized_random_state"])
+def test_warm_probe_rejects_replayed_runtime_randomness_and_preserves_samples(
+        host_driver, tmp_path, monkeypatch, unavailable_memory, replayed):
+    (tmp_path / "hyperlight-unikraft.json").write_text(json.dumps({"engine": {}}))
+    (tmp_path / "template_probe.py").write_text("probe")
+    instance = SimpleNamespace(args=SimpleNamespace(bundle=tmp_path), scratch=tmp_path,
+                               proxy=SimpleNamespace(pid=host_driver.os.getpid()))
+    results = []
+
+    @contextlib.contextmanager
+    def job(engine, request, **options):
+        index = len(results)
+        run_id = f"run-{index}"
+        payload = json.dumps({"calls": 1, "input": list(request["value"].encode()), "initialized_at": 42,
+                              "initialized_random_state_inherited": replayed == "initialized_random_state" and index > 0,
+                              "context": {"invocation_id": run_id, "unix_ms": 100,
+                                          "random": [index], "runtime_random": 0.25 if replayed == "runtime_random" else index}}).encode()
+        result = {"outcome": {"kind": "exit", "code": 0}, "observation_error": None,
+                  "run_id": run_id, "started_unix_ms": 99, "ended_unix_ms": 101,
+                  "stdout": {"bytes": len(payload), "retained_base64": base64.b64encode(payload).decode(),
+                             "sha256": host_driver.hashlib.sha256(payload).hexdigest()},
+                  "runtime_report": {"initialization": {
+                      "mode": "constructed" if index == 0 else "restored", "initialization_events": 1 - index,
+                      "template_key": "same-template", "snapshot_digest": "sha256:" + "a" * 64}}}
+        results.append(result)
+        prefix = tmp_path / run_id
+        yield SimpleNamespace(wait=lambda **_: None, returncode=0), prefix
+        prefix.with_suffix(".stdout").write_text(json.dumps(result))
+        prefix.with_suffix(".stderr").write_text("")
+        prefix.with_suffix(".status.json").write_text(json.dumps({"returncode": 0, "command_wall_ms": 10}))
+
+    instance.job = job
+    if unavailable_memory:
+        def refused(_pid):
+            raise PermissionError("memory sample refused")
+        monkeypatch.setattr(host_driver, "resident_bytes", refused)
+    with pytest.raises(AssertionError):
+        host_driver.warm_templates(instance, "hyperlight-unikraft")
+    assert len(results) == 2
+    retained = json.loads((tmp_path / "hyperlight-unikraft-templates.json").read_bytes())
+    assert "idle_worker_bytes" not in retained
+    samples = retained["observations"]
+    assert len(samples) == 2
+    for sample in samples:
+        if unavailable_memory:
+            assert sample["idle_proxy_rss_bytes"] is None
+            assert sample["memory_observation_error"] == "memory sample refused"
+        else:
+            assert sample["idle_proxy_rss_bytes"] > 0
+            assert sample["memory_observation_error"] is None
 
 
 @pytest.mark.parametrize("entrypoint", ["job_result", "run_job"])
@@ -339,6 +624,17 @@ def test_host_capture_retains_the_current_policy_and_configuration_identities(ho
         host_driver.captured(host_capture)
 
 
+def test_capture_observer_requires_the_selected_current_principal(host_driver, host_capture):
+    principal = "gate:hyperlight-template-other"
+    with pytest.raises(AssertionError):
+        host_driver.captured(host_capture, principal)
+    host_capture["gate_principal"] = principal
+    with pytest.raises(AssertionError):
+        host_driver.captured(host_capture, principal)
+    host_capture["authorization_principal"] = principal
+    assert host_driver.captured(host_capture, principal) == host_capture["service_evidence"]
+
+
 @pytest.mark.parametrize("engine", ["hyperlight", "hyperlight-unikraft"])
 @pytest.mark.parametrize("defect", [None, "engine", "kind", "runtime_manifest_sha256", "artifact_sha256"])
 def test_engine_observer_matches_selected_engine_and_artifact_pins(host_driver, host_capture, tmp_path, engine, defect):
@@ -468,10 +764,14 @@ def test_held_controls_reject_an_unreached_or_finished_call(host_driver, tmp_pat
     assert triggered == [] and not origin.release.is_set()
 
 
-def test_remaining_window_skips_completed_phases_and_reports_its_actual_scope(host_driver, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("remaining_state,boundaries", [(False, False), (True, False), (False, True)])
+def test_remaining_window_skips_completed_phases_and_reports_its_actual_scope(
+        host_driver, tmp_path, monkeypatch, capsys, remaining_state, boundaries):
     args = SimpleNamespace(root=tmp_path / "root", scratch=tmp_path, admin_port=18450,
                            bundle=tmp_path, cli=tmp_path / "cli", proxy=tmp_path / "proxy",
-                           unikraft_lifetimes_only=True)
+                           unikraft_lifetimes_only=not remaining_state and not boundaries,
+                           unikraft_remaining_only=remaining_state, template_boundaries_only=boundaries,
+                           warm_templates_only=False, provider_port=0)
     for name in ("runtime.json", "cli", "proxy"):
         (tmp_path / name).write_text(name)
     calls = []
@@ -481,15 +781,30 @@ def test_remaining_window_skips_completed_phases_and_reports_its_actual_scope(ho
     monkeypatch.setattr(host_driver, "wait_ready", lambda *_args: calls.append("ready"))
     monkeypatch.setattr(host_driver, "stop", lambda *_args: calls.append("stop"))
 
+    def warm(actual, engine, *, remaining_only):
+        assert actual is instance and engine == "hyperlight-unikraft" and remaining_only
+        calls.append("state")
+        return []
+
+    monkeypatch.setattr(host_driver, "warm_templates", warm)
+    monkeypatch.setattr(host_driver, "template_comparison", lambda actual, engine: calls.append(engine + " comparison"))
+    monkeypatch.setattr(host_driver, "template_authority", lambda actual, engine, origin, port: calls.append(engine + " authority"))
+    monkeypatch.setattr(host_driver, "template_cache", lambda actual: {"entries": []})
     def held(actual, engine, origin, port):
         assert actual is instance and engine == "hyperlight-unikraft"
         calls.append("held")
 
     monkeypatch.setattr(host_driver, "held_lifetimes", held)
     host_driver.exercise(args)
-    assert calls == ["prepare", "ready", "held", "stop"]
+    if boundaries:
+        assert calls == ["prepare", "ready", "hyperlight comparison", "hyperlight authority", "stop",
+                         "ready", "hyperlight-unikraft comparison", "hyperlight-unikraft authority", "stop"]
+    else:
+        assert calls == ["prepare", "ready", *(["state"] if remaining_state else []), "held", "stop"]
     result = json.loads((tmp_path / "result.json").read_bytes())
-    assert result["engines"] == ["hyperlight-unikraft"]
-    assert result["checks"] == "held deadline/cancel/revoke/shutdown lifetimes"
+    assert result["engines"] == (["hyperlight", "hyperlight-unikraft"] if boundaries else ["hyperlight-unikraft"])
+    assert result["checks"] == ("template authority, equivalent comparisons, capacity, expiry and shutdown" if boundaries else
+                                "remaining Unikraft state and held-call lifetimes" if remaining_state
+                                else "held deadline/cancel/revoke/shutdown lifetimes")
     report = capsys.readouterr().out
     assert "hyperlight-unikraft" in report and "live GitHub" not in report and "both" not in report

@@ -353,11 +353,15 @@ is `HOME/.local/share/safeyolo/guests`, with `blobs/sha256` and `trees/sha256`
 directories. Completed trees are renamed into their digest-addressed location;
 failed extraction removes its owned staging directory. The host's maintained
 tar extracts the selected backend members, preserving its path/link safeguards;
-Linux extraction uses sudo for numeric ownership. The ownership operation
-checks every source owner, hard link and attribute before changing a fresh
-stage. It then reopens only inodes that need ownership or attribute changes,
-relative to the pinned root without following symlinks. Hard links that leave
-that stage are refused. Existing prepared trees
+Linux extracts canonical archive IDs in the installation's authorized delegated
+user namespace without sudo. Host UID/GID zero is excluded; guest user 1000 maps
+to the operator. The kernel translates owners, named ACLs and revision-3
+capability root identities. The cache-path list is host text and uses a separate
+ordinary-account extraction. Validation checks every source owner, hard link,
+mount and attribute through pinned descriptors before publication; it does not
+remap the tree again. Hard links that leave the private stage are refused.
+Failure or interruption waits for extraction and removes only that stage in
+the same namespace. Existing prepared trees
 are checked against the selected mapping and remain unchanged. Native zstd decoding needs
 no separately installed zstd program. Explicit/offline inputs remain available
 with `--platform-assets`; `--no-guest-download` retains proxy-only/contributor use.
@@ -436,8 +440,9 @@ On the consumer host, run `guest acquire` as the installation owner from any
 working directory. Use a verified host package for that platform and a fresh
 root without configuration or guest inputs. Registry access uses the configured
 proxy, if present, and needs usable system or configured CA trust. Linux also needs the
-host account's subordinate UID/GID ranges and sudo for numeric ownership, as
-prepared by `safeyolo host prepare`.
+host account's delegated UID/GID ranges and the final root's namespace
+authorization, prepared by `safeyolo host prepare`. Acquisition uses no sudo;
+missing authorization is an error with a host-preparation recovery command.
 
 Before running the example, replace `/path/to/host-package` with the verified
 unpacked host package. Replace `/owned/fresh-root` and `/owned/guest-store` with
@@ -467,8 +472,8 @@ release. Use `guest upgrade --index sha256:DIGEST` to change an installed guest.
 On the installed host, run these commands as the instance owner from any working
 directory. The instance must have a default guest acquired through OCI and an
 installed `package-info`. The commands use the installed host's compatibility
-identifier and trusted repository. Linux extraction retains the installer's sudo
-requirement for numeric ownership; Mac staging uses APFS image clones.
+identifier and trusted repository. Linux reuses that installation's delegated IDs and namespace authorization
+without sudo; Mac staging uses APFS image clones.
 
 Upgrade downloads changed guest bytes and selects the complete guest for the next
 sandbox boot. Running guests keep their current inputs until you stop and start
@@ -514,6 +519,52 @@ Custom guest profiles and host/component-pair upgrades are outside these
 commands. Local source controls cover selection, guest boot staging, failure
 recovery and state preservation. Public GHCR and clean booted-platform proof
 remain under #239.
+
+### Assess and maintain installed agents
+
+Without an adopted assessment rule, OS maintenance remains an explicit operator
+operation. A published guest does not update an installed selection. A selected
+guest does not change a running sandbox. `guest upgrade` changes the instance-wide
+default for future boots. A per-agent custom `rootfs` or `rootfs.ext4` still takes
+precedence over that default; VZ boot kernel/initramfs selection is separate.
+
+For an instance with an OCI guest selection and installed `package-info`, the
+instance owner runs the following from a host terminal in any working directory.
+Replace `NAME` with the configured agent. Stop/start interrupts its current work;
+repeat it only for the other agents you choose to recreate.
+
+```sh
+safeyolo guest upgrade
+safeyolo agent stop NAME
+safeyolo agent start NAME
+```
+
+For another instance, put `--root /absolute/instance/path` before each subcommand.
+A harness restart, or `agent start` on an already-running sandbox, does not
+replace its guest. A compatible host-only upgrade retains the selected guest
+unless a guest change is explicitly selected.
+
+Both Linux/gVisor overlay modes lose ordinary root OS writes on recreation.
+Download caches do not preserve installed packages or replay configuration.
+An in-place package patch can therefore disappear at the next boot. The default
+macOS Virtualization.framework (VZ) writable overlay retains root changes;
+ephemeral VZ discards them. Retained VZ files and package metadata can mask a new
+base's files. Base selection alone does not prove effective repair.
+
+`guest rollback` restores the previous base selection. It does not restore a
+mutable overlay or reverse package/configuration changes. Recreate the affected
+sandbox to use the restored selection. Preserve home, workspace and required
+customisations through their existing owners; home-installed tools, the host's
+gVisor runtime and the separately supplied VZ boot kernel need their own updates.
+
+For already-running Debian agents, [adopted signal assessment](signals.md#assess-running-debian-guests)
+can collect actual installed packages on explicit request or at a selected
+interval. It reassesses retained advisories without waiting for republication
+and uses the selected notification, approval or maintenance-Work response.
+It does not patch packages, enforce a check before harness startup, select a
+guest, restart processes, restore customisations or verify repair. Those effects
+remain with their authorised maintenance and lifecycle owners. A notification
+or dispatched Work is not completed maintenance.
 
 ## Prepare and publish a default guest release
 

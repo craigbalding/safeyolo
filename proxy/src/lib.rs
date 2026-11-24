@@ -61,11 +61,13 @@ mod host_client_auth;
 pub mod host_commands;
 mod host_doctor;
 mod host_events;
+pub mod host_execution;
 mod host_launch;
 mod host_lifecycle;
 mod host_mounts;
 mod host_runs;
 mod host_sudo;
+pub mod instance;
 pub mod lab;
 pub mod linux_host;
 #[cfg(target_os = "macos")]
@@ -123,6 +125,7 @@ mod security_indicators;
 #[cfg(test)]
 mod service_catalog_tests;
 pub mod services;
+pub mod signals;
 pub mod ssh_proxy;
 pub mod startup_timings;
 pub mod subscription_login;
@@ -598,11 +601,13 @@ impl Runtime {
             // its selected task only after the new baseline has compiled;
             // failure rejects the candidate and retains the prior snapshot.
             if let Some(policy) = policy.as_mut()
-                && let Some((_, task)) = tasks.active().map_err(|error| Box::new(error) as Error)?
+                && let Some((task_id, task)) =
+                    tasks.active().map_err(|error| Box::new(error) as Error)?
             {
-                let candidate = policy
+                let mut candidate = policy
                     .with_task_document(task.document())
                     .map_err(|error| Box::new(error) as Error)?;
+                candidate.bind_registered_task(&task_id);
                 *policy = candidate;
             }
             if let Some(timing) = startup.as_mut() {
@@ -1065,7 +1070,7 @@ pub(crate) fn edit_native_policy<T>(
         .gateway_grants
         .clone();
     if let Some(store) = store {
-        Ok(store.edit_native_policy(skip_unchanged, prepare, activate)?)
+        Ok(store.edit_native_policy(skip_unchanged, |source, _| prepare(source), activate)?)
     } else {
         Ok(approvals::policy_transaction(
             &path,
@@ -1073,6 +1078,98 @@ pub(crate) fn edit_native_policy<T>(
             prepare,
             activate,
         )?)
+    }
+}
+
+/// Review admission holds the latest store, source and runtime together, from
+/// comparison through save, activation, receipt and rollback. Candidate loading
+/// belongs to `prepare`; activation publishes that same compiled policy.
+pub(crate) fn adopt_native_policy(
+    state: &RuntimeState,
+    prepare: impl FnOnce(
+        &str,
+        &Runtime,
+        &[grants::Grant],
+    ) -> approvals::Result<(String, policy::Policy)>,
+    committed: impl FnOnce() -> approvals::Result<()>,
+) -> approvals::Result<()> {
+    use std::cell::RefCell;
+    let (path, store) = {
+        let current = state
+            .read()
+            .map_err(|_| approvals::invalid("runtime unavailable"))?;
+        (
+            current
+                .config
+                .policy_file
+                .clone()
+                .ok_or_else(|| approvals::invalid("policy unavailable"))?,
+            current.gateway_grants.clone(),
+        )
+    };
+    let locked = RefCell::new(None);
+    let candidate = RefCell::new(None);
+    let previous = RefCell::new(None);
+    let mut committed = Some(committed);
+    let prepare = |source: &str, grants: &[grants::Grant]| {
+        let current = state
+            .write()
+            .map_err(|_| approvals::invalid("runtime unavailable"))?;
+        let (source, policy) = prepare(source, &current, grants)?;
+        let runtime = prepare_policy_runtime(&current, policy)
+            .map_err(|_| approvals::invalid("candidate runtime could not be prepared"))?;
+        *previous.borrow_mut() = Some(Arc::clone(&current));
+        *candidate.borrow_mut() = Some(runtime);
+        *locked.borrow_mut() = Some(current);
+        Ok(((), source))
+    };
+    let activate = |_: &str, activation| -> Result<(), String> {
+        let mut locked = locked.borrow_mut();
+        let current = locked.as_mut().ok_or("runtime lock unavailable")?;
+        let mut runtime = match activation {
+            approvals::PolicyActivation::Candidate => candidate
+                .borrow_mut()
+                .take()
+                .ok_or("candidate unavailable")?,
+            approvals::PolicyActivation::Rollback { list_mtime } => {
+                let mut runtime = previous
+                    .borrow_mut()
+                    .take()
+                    .ok_or("previous runtime unavailable")?
+                    .as_ref()
+                    .clone();
+                if let Some(policy) = runtime.policy.as_mut() {
+                    Arc::make_mut(policy)
+                        .observe_restored_native_file(list_mtime)
+                        .map_err(|error| error.to_string())?;
+                }
+                runtime
+            }
+        };
+        if matches!(activation, approvals::PolicyActivation::Candidate)
+            && let Some(policy) = runtime.policy.as_mut()
+        {
+            Arc::make_mut(policy)
+                .observe_baseline_files(current.policy.as_deref())
+                .map_err(|error| error.to_string())?;
+        }
+        runtime
+            .configure_declarations()
+            .map_err(|error| error.to_string())?;
+        runtime
+            .withhold_revoked_approval_results(current)
+            .map_err(|error| error.to_string())?;
+        **current = Arc::new(runtime);
+        if matches!(activation, approvals::PolicyActivation::Candidate) {
+            committed.take().ok_or("receipt callback unavailable")?()
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    };
+    if let Some(store) = store {
+        store.edit_native_policy(false, prepare, activate)
+    } else {
+        approvals::policy_transaction(&path, false, |source| prepare(source, &[]), activate)
     }
 }
 
@@ -1289,9 +1386,10 @@ pub(crate) fn activate_registered_task(
         .policy
         .as_ref()
         .ok_or(TaskPolicyActivationError::Unavailable)?;
-    let candidate = policy
+    let mut candidate = policy
         .with_task_document(task.document())
         .map_err(|_| TaskPolicyActivationError::Invalid)?;
+    candidate.bind_registered_task(task_id);
     let previous_guard = current
         .credential_guard
         .as_ref()
@@ -2011,6 +2109,8 @@ pub struct Proxy {
     service_check_at: Option<tokio::time::Instant>,
     policy_check_at: Option<tokio::time::Instant>,
     feed_refresh: policy_feeds::Refresh,
+    signal_follow: signals::Follow,
+    lifecycle_follow: host_lifecycle::scheduled::Follow,
 }
 
 impl Proxy {
@@ -2074,6 +2174,8 @@ impl Proxy {
             service_check_at: service_files.as_ref().map(|_| tokio::time::Instant::now()),
             service_files,
             feed_refresh: policy_feeds::Refresh::default(),
+            signal_follow: signals::Follow::default(),
+            lifecycle_follow: host_lifecycle::scheduled::Follow::default(),
             policy_check_at: config
                 .policy_file
                 .as_ref()
@@ -2339,6 +2441,7 @@ impl Proxy {
     /// Reload a changed baseline against the accepted service registry. Keep
     /// file observation and publication separate from catalog change detection.
     pub async fn reload_policy_if_changed(&mut self) -> Result<bool, Error> {
+        let catalogue_activated = host_execution::reconcile_catalogues(&self.runtime)?;
         let root = self.runtime.read().ok().and_then(|runtime| {
             runtime
                 .config
@@ -2353,10 +2456,25 @@ impl Proxy {
                 })
                 .flatten()
         });
-        if let Some(root) = root
-            && let Err(error) = self.feed_refresh.poll(root).await
-        {
-            eprintln!("Managed feed refresh: {error}");
+        let lifecycle_configured = root.is_some();
+        if let Some(root) = root {
+            if let Err(error) = self.feed_refresh.poll(root.clone()).await {
+                eprintln!("Managed feed refresh: {error}");
+            }
+            let services = {
+                let runtime = self
+                    .runtime
+                    .read()
+                    .map_err(|_| "runtime read lock poisoned")?;
+                external_ingress::status(&self.ingress_bindings, &runtime.config)
+            };
+            if let Err(error) = self
+                .signal_follow
+                .poll(root, self.runtime.clone(), services)
+                .await
+            {
+                eprintln!("Signal reconciliation: {error}");
+            }
         }
         let result = (|| {
             let previous = self
@@ -2391,7 +2509,13 @@ impl Proxy {
         self.policy_check_at = self
             .policy_check_at
             .map(|_| tokio::time::Instant::now() + Duration::from_secs(2));
-        result
+        if lifecycle_configured
+            && result.is_ok()
+            && let Err(error) = self.lifecycle_follow.poll(self.runtime.clone()).await
+        {
+            eprintln!("Worker lifecycle: {error}");
+        }
+        result.map(|changed| changed || catalogue_activated)
     }
 
     fn publish_policy(&self, previous: &Runtime, policy: policy::Policy) -> Result<(), Error> {
@@ -2486,6 +2610,7 @@ impl Proxy {
         self.service_files = service_files;
         if previous.config.policy_file != config.policy_file {
             self.feed_refresh = policy_feeds::Refresh::default();
+            self.signal_follow = signals::Follow::default();
             self.policy_check_at = config
                 .policy_file
                 .as_ref()
@@ -2502,6 +2627,7 @@ impl Proxy {
 
     pub async fn shutdown(mut self) {
         self.feed_refresh = policy_feeds::Refresh::default();
+        self.signal_follow = signals::Follow::default();
         clear_readiness(&self.readiness_file, &self.default_via);
         let credential_activation = self
             .runtime
@@ -2558,6 +2684,22 @@ impl Proxy {
             }
         }
 
+        let job_config = self
+            .runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .config
+            .native_config_path
+            .clone();
+        if let Some(config) = job_config {
+            match tokio::task::spawn_blocking(move || jobs::clear_hyperlight_templates(&config))
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => eprintln!("Hyperlight template cleanup failed: {error}"),
+                Err(error) => eprintln!("Hyperlight template cleanup task failed: {error}"),
+            }
+        }
         service_mutations.drain().await;
         let coord = self
             .runtime
@@ -2622,3 +2764,6 @@ mod audit_runtime_tests;
 
 #[cfg(test)]
 mod listener_reload_tests;
+
+#[cfg(test)]
+mod policy_adoption_tests;

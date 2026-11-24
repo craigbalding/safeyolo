@@ -597,7 +597,10 @@ fn stage_claude_state(home: &Path, operator_home: Option<&Path>) -> Result<(), E
                     "safeyolo",
                     "safeyolo-lab-controller",
                     "safeyolo-factory",
+                    "operator-ux",
                     "job-authoring",
+                    "safeyolo-commission",
+                    "harness-authoring",
                 ]
                 .iter()
                 .any(|name| entry.file_name() == *name)
@@ -801,6 +804,10 @@ pub(crate) fn supervised_launcher_source(source: &str, harness: &str) -> Result<
         "pi" => (
             "exec \"$pi_bin\" \"${args[@]}\" \"$@\"\n",
             "export SAFEYOLO_PI_BIN=\"$pi_bin\"\nexec \"$HOME/.safeyolo/safeyolo-coord\" supervise \"${supervisor_args[@]}\" -- \"${args[@]}\" \"$@\"\n",
+        ),
+        "claude" => (
+            "exec \"$HOME/.safeyolo/safeyolo-coord\" client-exec claude -- claude \"${args[@]}\" \"$@\"\n",
+            "exec \"$HOME/.safeyolo/safeyolo-coord\" supervise \"${supervisor_args[@]}\" -- \"${args[@]}\" \"$@\"\n",
         ),
         _ => return Err("unknown supervised harness".into()),
     };

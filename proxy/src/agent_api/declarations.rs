@@ -128,11 +128,38 @@ where
         Ok(scope) => scope,
         Err(outcome) => return Ok(outcome),
     };
+    if route(request).starts_with("/policy/capabilities") {
+        if let Some(state) = state
+            && let Ok(config) = crate::operator_actions::config_path(state)
+        {
+            return crate::host_platform::in_config(
+                config,
+                capabilities::respond(request, policy, Some(state), controls.gateway, body),
+            )
+            .await;
+        }
+        return capabilities::respond(request, policy, None, None, body).await;
+    }
     if route(request) == "/checks/invoke" {
         return checks::respond(request, state, body).await;
     }
+    if route(request) == "/gateway/host" || route(request).starts_with("/gateway/host/") {
+        return host_execution::respond(request, state, body).await;
+    }
     if route(request).starts_with("/support/") {
         return support::respond(request, state, controls.audit, body).await;
+    }
+    if route(request) == "/lifecycle" || route(request).starts_with("/lifecycle/") {
+        return lifecycle::respond(request, state, body).await;
+    }
+    if route(request) == "/policy/snapshots" || route(request).starts_with("/policy/snapshots/") {
+        return super::policy_snapshots::respond(request, state, controls.audit, body).await;
+    }
+    if route(request) == "/policy/assess" {
+        return super::policy_assessment::respond(request, state, controls.audit, body).await;
+    }
+    if route(request) == "/policy/changes" || route(request).starts_with("/policy/changes/") {
+        return super::policy_changes::respond(request, state, controls.audit, body).await;
     }
     // Reconciliation is the single request-boundary owner decision. A true
     // source conflict rejects scoped routes before reading a body or invoking

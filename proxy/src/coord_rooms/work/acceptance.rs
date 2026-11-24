@@ -390,6 +390,7 @@ pub(super) fn decide(
     summary: String,
     evidence_refs: Vec<String>,
     at: i64,
+    validation: Validation,
 ) -> Result<(), WorkError> {
     let requirements = work
         .acceptance_requirements
@@ -417,8 +418,13 @@ pub(super) fn decide(
         return Err(conflict("acceptance decision requires a published output"));
     }
     let observations = obligations(conn, work, requirements, None)?;
+    // Preflight must allow acquisition of automatic evidence. Participant
+    // reviews still apply, and commit requires every observation to be satisfied.
     if matches!(verdict, attestations::Verdict::Approve)
-        && observations.iter().any(|o| o["status"] != "satisfied")
+        && observations.iter().any(|o| {
+            o["status"] != "satisfied"
+                && (validation == Validation::Commit || o["kind"] != "automatic_check")
+        })
     {
         return Err(conflict(
             "required review obligations are unmet; read current acceptance_status",

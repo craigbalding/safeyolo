@@ -103,6 +103,14 @@ Preview reads snapshots without refreshing or contacting their members.
 
 ## Execute adopted checks
 
+The same executor qualifies and runs checks in
+[versioned control updates](signals.md#adopt-versioned-checks-and-challenges).
+Native `route_challenges` compose ordered questions and typed job/service
+findings before missing-route escalation. Their host-generated subject binds
+the request/effect identity and selected revision. Agent answers are explicitly
+untrusted context. Missing or failed required evidence prevents escalation;
+it is not a negative finding or permission grant.
+
 An active native policy can use `source.kind = "job"` or `"service"`. Each
 source declares its effects and execution limits. Effects are `passive`,
 `retains_input`, `active` or `unknown`. These are the operator's adopted
@@ -135,6 +143,9 @@ must fit the adopted check bounds. The check copies one host-generated
 `subject`, `input_digest`, policy-owned `inputs` and implementation/configuration
 versions. There are no workload-selected mount paths. The existing job runner
 retains isolation, rootfs/input hashes, observed wait status and cleanup.
+An optional `source.spec_sha256` pins the complete job specification bytes.
+Versioned control updates set this pin from the signed bundled job. A mismatch
+is unavailable evidence and starts no execution.
 The check retains those execution facts and the specification digest in its
 explanation. The existing audit stream records reached execution and result
 provenance before admission revalidates current policy. Discarded results remain
@@ -187,6 +198,116 @@ Unknown definitions, unpermitted invokers, invalid inputs, execution failure
 and authority replacement return explicit errors. Policy replacement cancels
 pending work and discards late results. This route accepts no JobSpec,
 executable path, replacement expected identity or caller-authored result.
+
+### Check task relevance and proportionality
+
+An operator can adopt an optional independent task/action check before host
+invocation. The issuing host supplies the activated task's
+`metadata.description` as the objective, its revision and permissions, the
+authenticated requester/run, normalized invocation and implementation revision,
+prepared effects and intersected authority, and retained action/refusal history.
+The model receives a structured action; the prompt contains no host-command
+policy. Other trusted action owners can supply the same `task_action.v1`
+envelope. A caller-authored value submitted to `checks/invoke` remains a caller's
+fixture and does not establish canonical host authority.
+
+The shipped `assets/hyperlight/task_action_checker.py` uses the existing
+Hyperlight-Unikraft runtime and mediated Service Gateway calls. Its installed
+`task-action-check.json` pins the checker and runtime, disables guest networking,
+and selects one model call per invocation. The target host needs only its
+existing executor. The checker runs on the issuing host.
+
+On the owning host, first review and retain the installed job definition at a
+stable path. The existing service owner must grant `claude/inference` to
+`gate:task-action-check` for the selected Messages endpoint. Select the provider
+credential, exact model revision and disclosed data before adopting the check.
+An assessed agent's coding-client grant does not grant the check that access.
+No credential enters the checker. The example below sends the task description,
+selected action/effects/constraints and retained history metadata. It withholds
+agent rationale and answers from the model. Raw host log access does not grant
+model disclosure.
+
+Merge this fragment into a candidate for that same instance. Replace
+`REVIEWED_JOB_SPEC_SHA256` with the SHA-256 of the retained job definition,
+`task-action-check.json` with its stable path, and `research` / `local-host`
+with the intended configured agent and host service. The model is a pinned
+example; select an available revision through the existing service owner.
+Retain the candidate's other policy and credential controls.
+
+```toml
+[checks.task_action]
+source_id = "independent-task-action"
+meaning = "Typed relevance and proportionality signal for this exact task/action"
+subject = "value"
+result_type = "task_action"
+influences = ["advisory"]
+implementation_version = "task-action-2"
+configuration_version = "research-model-1"
+max_age_seconds = 60
+inputs = { service = "claude", endpoint = "https://api.anthropic.com/v1/messages", model = "claude-haiku-4-5-20251001", model_revision = "claude-haiku-4-5-20251001", input_revision = "task-action.v1", prompt_revision = "task-action-2" }
+source = { kind = "job", spec = "task-action-check.json", spec_sha256 = "REVIEWED_JOB_SPEC_SHA256", effects = "retains_input", limits = { timeout_ms = 65000, max_input_bytes = 32768, max_output_bytes = 16384, max_concurrent = 1, max_pending = 2, max_cached = 0 } }
+
+[route_challenges.task_action]
+agents = ["research"]
+service = "local-host"
+capability = "*"
+methods = ["POST"]
+path = "/v1/host-execution/invoke"
+revision = "research-task-action-1"
+steps = [{ kind = "task_action", check = "task_action", on_concern = { kind = "question", field = "alternatives", question = "Explain the relevant evidence and alternatives, or propose a narrower action." }, on_unavailable = { kind = "deny" }, max_attempts = 3, disclose_rationale = false }]
+```
+
+Use the existing policy check/show/apply workflow to adopt the candidate.
+The check then runs before host dispatch, including on an allowed route.
+`on_concern` chooses refusal or a private question. When policy selects a
+question, explicit escalation reassesses the action with the bounded answer.
+A continuing concern remains visible to the operator; an answer is not a
+favorable finding. An exact operator approval still cannot bypass a hard denial
+or the target's independent ceiling. A changed action requires a new assessment.
+`on_unavailable` selects refusal or a private question while evidence is missing;
+missing evidence cannot satisfy escalation. No approval or question retries an
+operation automatically.
+
+The result contains typed `relevance` (`relevant`, `irrelevant`, `uncertain`),
+`proportionality` (`proportionate`, `excessive`, `uncertain`), supporting
+`evidence_refs`, optional `clarification`, and an `uncertainty` list. There are
+no probability scores. Invalid fields/references, incomplete provider responses,
+model substitution, timeouts and unavailable dependencies remain explicit.
+An uncertain finding supplies no favorable evidence.
+
+The adapter requests the selected provider's JSON-schema output format. Its
+schema permits only the typed fields and disclosed top-level evidence keys.
+The adapter still validates complete responses, exact references and size bounds.
+Fenced JSON, extra prose and dotted references remain invalid findings.
+
+The canonical subject and existing evidence owner bind the task, action,
+history, policy/challenge/check, model/input revisions and freshness. Changing
+these bindings invalidates prior evidence. Attempts and findings remain in the
+existing private approval record. `max_attempts` bounds model reconsideration
+for the same unresolved run/task/action episode and check configuration,
+including under a new request ID. A successful check ends that episode;
+later operations receive a new budget while prior attempts and refusals remain
+in retained history. An older challenge cannot reopen a completed episode.
+A narrower action has its own budget and retains prior refusal
+metadata. Retained history describes the current validated audit tail and
+approval records; unavailable or omitted history is explicit. It does not claim
+complete lifetime history or disclose target output as trusted instructions.
+
+The existing host-binding assessment shows the selected checker definitions,
+model inputs, source pins, full grant and modeled combined authority. Review
+those together. A broad host grant can permit changing the checker, policy or
+credentials. Separate configuration owners alone do not prove independence.
+Another model can share failure modes or be misled. Its finding is an additional
+signal, not a containment guarantee.
+
+The maintained [synthetic cases](../tests/fixtures/task-action-cases.json) cover
+adaptive host investigation and structured artifact publication. The
+[measurement runner](../tests/blackbox/host/task_action_assessment.py) exercises an
+installed check and reports
+false positives, false negatives, unavailable/uncertain cases, exact input/spec
+identities and observed durations for its selected model run. Controlled
+protocol tests do not measure model accuracy. Results from these finite cases
+do not establish general prompt-injection detection.
 
 For a passive Registration Data Access Protocol (RDAP) service, use
 `mapping = "rdap_registration"`. It reads only the exact domain object's
@@ -480,11 +601,21 @@ grants. A binding grants no network or service access to the invoking job.
 Normal invocation uses the standing adopted authority and creates no recurring
 approval. Role instructions are explanatory; the proxy enforces the binding.
 
+Before a protected Work mutation acquires automatic evidence, Coord validates
+the caller, request and current Work state through the same rules used at
+commit. An already unauthorized or invalid operation starts no job and contacts
+no provider. Coord recovers an exact committed operation receipt before acquiring new evidence; changed input
+under that operation ID remains a conflict. Retained follow-up obligations keep
+their existing recovery rules. Preflight grants no later commit authority:
+Coord revalidates state, selected requirements and effective authority after
+evidence collection. Job execution and provider I/O hold neither the Coord
+transaction nor the global policy lock.
+
 The supported Coord boundaries are:
 
 | `boundary` | `input` | Protected transition and result |
 |---|---|---|
-| `admit_issue` | `github_issue` | Before creating ordinary issue Work, claiming it, reassigning it or continuing it, require the adopted predicate. The value subject is the canonical positive issue number. The binding's repository must equal the job's policy-owned `inputs.repository`. |
+| `admit_issue` | `github_issue` | Before creating ordinary issue Work, claiming it, reassigning it or continuing it, require the adopted predicate or effectful prerequisite. The value subject is the canonical positive issue number. The binding's repository must equal the job's policy-owned `inputs.repository`. |
 | `verify_output` | `published_artifact` | Retain the output and a verification obligation together. Invoke the job automatically, then hold `decide_acceptance` approval until its predicate qualifies for those exact bytes and that output generation. |
 | `after_complete` | `completed_work` | Retain a follow-up with ordinary Work completion. Dispatch the action under its separately adopted capabilities. Its failure or uncertain result cannot prevent or undo the committed completion. |
 
@@ -556,6 +687,110 @@ predicate types, effectful predicate sources and unsupported retry policies
 fail validation. Bindings have no dependency edges to other bindings; unknown
 fields such as `depends_on` are rejected. Job/service dependencies retain the
 shared cycle detection and bounded failure behavior.
+
+### Require an action before issue admission
+
+An effectful `admit_issue` binding can reserve external capacity before the
+protected transition. The operator first adopts an executable job or service
+named `reserve_issue` with explicit effects, limits, immutable implementation
+and dependency capabilities. Its `inputs.repository` must be
+`owner/repository`. In this example, the external reservation implementation
+deduplicates requests by the proxy-supplied `invocation_id`; verify that
+guarantee before adopting `retry = "idempotent"`. An HTTP acknowledgment or
+successful job completion is the action's completion condition. The action
+does not return a predicate and cannot replace an independent review.
+
+For the selected instance, the operator adds this binding alongside the
+adopted source and applies it through the existing policy check/show/apply
+workflow. Factory `example` must already be approved for room `engineering`.
+Replace `ag-reservation-recovery` with the recovery agent's durable ID:
+
+```toml
+[[work_bindings]]
+name = "reserve_before_admission"
+room = "engineering"
+factory = "example"
+boundary = "admit_issue"
+job = "reserve_issue"
+repository = "owner/repository"
+input = "github_issue"
+on_failure = "hold"
+retry = "idempotent"
+recovery = { reconcilers = ["ag-reservation-recovery"], retryers = ["ag-reservation-recovery"], max_retries = 1 }
+```
+
+Use `retry = "never"` when safe repetition is not established. Recovery is
+optional. Its `reconcilers` and `retryers` lists grant separate permissions to
+named agents with current room access. `max_retries` bounds additional attempts
+after the first dispatch. Selecting a retry performs no external operation.
+The original requester must resume the exact protected request with the same
+operation ID. Normal adopted execution and recovery need no recurring approval.
+Recovery grants no execution authority for another agent's protected transition.
+
+Before an effectful admission, the requester must select an operation ID.
+Coord retains the logical invocation in its immutable operation ledger before
+dispatch, including when the protected Work does not yet exist. Job input and
+service request bodies carry `invocation_id`; the subject and adopted inputs
+remain unchanged. The invocation binds the requester, complete mutation,
+operation ID, binding, policy, service definitions and selected job definition.
+Passive preflight and previews dispatch nothing. Already invalid or
+unauthorized requests dispatch nothing. Commit rechecks current actor, Work,
+requirements, factory and authority through the shared mutation rules.
+
+A lost reply or restart preserves that invocation. An interrupted dispatch is
+`uncertain`; it is never blindly repeated. A retained successful action is
+reused if the later protected commit fails. Changed inputs under the original
+operation ID conflict. A changed authority or subject cannot reuse or retarget
+the invocation. An unknown result does not establish exactly-once remote
+execution, rollback or failure of the external effect.
+
+For diagnosis, the refused operation names its prerequisite invocation ID.
+On the owning host, read it with
+`safeyolo coord work prerequisite engineering INVOCATION_ID`. The record shows
+its version, original request, attempts, reached state, evidence and recovery
+observation. Replace `INVOCATION_ID` with the reported ID. The authenticated
+Agent API exposes the same read at
+`GET /api/coord/rooms/engineering/work?invocation_id=INVOCATION_ID`.
+
+After inspecting that exact invocation at the external reservation authority,
+an adopted reconciler can POST to the room's Work endpoint with
+`action = "resolve_prerequisite"`, `invocation_id`, current
+`expected_version`, `outcome` (`completed`, `failed` or `uncertain`),
+`summary`, a nonempty `evidence_refs` array and a caller-selected
+`operation_id`. The owning host uses `coord work resolve-prerequisite` with
+the corresponding named options. A completed observation satisfies only that
+invocation; the protected transition still needs current authority.
+
+For example, after the reservation authority confirms completion, the adopted
+reconciler calls `resolve_work_prerequisite` with the following arguments.
+Replace `INVOCATION_ID`, version `2` and the receipt reference with the exact
+values from the current invocation and external observation:
+
+```json
+{
+  "room_name": "engineering",
+  "invocation_id": "INVOCATION_ID",
+  "expected_version": 2,
+  "outcome": "completed",
+  "summary": "The reservation authority confirms this exact invocation",
+  "evidence_refs": ["reservation://observed-receipt"],
+  "operation_id": "reservation-observation-1"
+}
+```
+
+If the result remains failed or uncertain and adopted idempotent retry is
+available, a named retry actor can use `action = "retry_prerequisite"` with
+the same fields except `outcome`. The host equivalent is
+`coord work retry-prerequisite`. This retains `pending` and consumes no effect;
+the next valid original request dispatches another attempt with the same
+invocation ID and external inputs. The retry bound applies even when replies
+are lost again. Removing recovery permission or changing adopted authority
+prevents further recovery. A recovery actor cannot change capabilities,
+replace the subject or remove the prerequisite.
+
+Effectful prerequisites are supported at `admit_issue`. `verify_output`
+retains its passive predicate semantics. `after_complete` retains its
+operator-only reconciliation and `retry = "never"` semantics described below.
 
 ### Retain and verify an exact small artifact
 

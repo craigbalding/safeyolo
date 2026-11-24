@@ -784,6 +784,17 @@ ordinary messages it renders published coding-session and supervisor events.
 This lets you follow what the agents are doing; activity alone does not prove
 that work met its acceptance requirements.
 
+During a supervised invocation, one sender attempts telemetry publication in event order.
+Harness completion, stderr draining, and process ownership and deadline checks
+continue while publication waits. The sender buffers at most 64 events of up to
+256 KiB each, plus one event being published. If the buffer is full, new telemetry
+is omitted and supervisor stderr reports the loss. Each publication has a
+five-second deadline. After owned-process cleanup, shutdown allows one second for the entire
+remaining buffer, then cancels the sender. Pending events are omitted; an
+in-flight publication can have an unknown outcome. Failed or uncertain telemetry
+is not retried. Telemetry does not settle native Work or replace canonical
+receipts and reconciliation.
+
 For a concise display, use `--compact`. Add `--redact` to hide common credential
 patterns and URL queries in the display; stored messages remain unchanged.
 `--once` prints the retained tail and exits. `--since SEQUENCE` resumes after a

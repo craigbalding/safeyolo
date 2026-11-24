@@ -5,6 +5,138 @@ agent workloads, access approvals and lifecycle. Rust proxy process and
 protocol contracts live in [`tests/proxy_contracts`](../proxy_contracts/).
 A hosted process or package result does not prove KVM or Apple VZ isolation.
 
+## Qualify installed host operations
+
+The existing native authority runner has a `host-execution` selection for
+BB-38. Run it on the owned Linux or macOS target as its executor account, from
+a clean pinned controller checkout with the frozen development environment.
+It drives a separately installed executor through signed local HTTP requests.
+It creates disposable state, controls an explicitly selected test service,
+and observes files and live TCP/Unix socket receivers from the host.
+
+Prepare `unix_native` from `host-executor/tests/unix_native.rs` and the C probe
+from `host-executor/tests/native_fixture.c` at the same controller revision.
+The target consumes those prebuilt test tools; executor operation needs no
+compiler or Python. Prepare an owned user service that may be started, stopped
+and restarted. Use its systemd unit name on Linux or its loaded launchd selector
+on macOS. Linux also needs the delegated cgroup v2 subtree, pinned bubblewrap
+and native account setup described in the
+[host-operation guide](../../docs/host-operations.md#acquire-and-prepare-the-target).
+This runner does not provision or broaden those host capabilities.
+The update case edits its own copied probe. On macOS it uses the system
+`codesign` tool to give the changed fixture a valid ad-hoc signature.
+
+Before running, set `SAFEYOLO_HOST_EXECUTOR_PROBE` to the prebuilt probe and
+`SAFEYOLO_HOST_EXECUTOR_SERVICE` to that service selector. Set
+`SAFEYOLO_HOST_ASSESSOR_BIN` to the installed `safeyolo` CLI with the
+`services assess-host` command. Assessment reads the fixture's authority and
+observed persistent effects; it grants and executes nothing. On Linux, also set
+`SAFEYOLO_HOST_EXECUTOR_CGROUP` to the delegated subtree.
+Use `SAFEYOLO_HOST_EXECUTOR_BWRAP` when the pinned Linux bubblewrap executable
+is outside `/usr/bin/bwrap`.
+Replace the three `/owned/` paths below with the exact fixture executable,
+installed executor and a new private disk-backed output directory. Preserve the existing host's
+required account/containment launcher when invoking this command.
+
+```sh
+bash tests/blackbox/run-controls.sh native-authority --suite host-execution --test-executable /owned/unix_native --executor /owned/safeyolo-host-executor --output /owned/host-operation-results
+```
+
+Success requires all eleven selected cases to execute and pass. `result.json`
+retains the host, controller, installed executable/version, fixture/probe
+digests, exact cases and exits. Each case retains its log and the existing
+procedure receipt. Missing inputs, an ignored/missing case, a failure or a
+timeout leaves the report incomplete. After a timeout or lost reply, inspect
+the retained fixture/process state before another execution.
+
+The application case selects its next diagnostic read from prior output and
+checks configuration consumption on the same versus different target/resource.
+Host setup supplies and independently observes the earlier configuration edit.
+The installed assessment must distinguish those identities and retain the
+observed write after its permission expires. Both Unix backends must still
+refuse a writable native profile. Fixed-service start/stop is checked against
+the host service manager. The case does not prove native agent writes, run a
+model or renew a grant.
+An assessment with additional uncharacterised authority must remain unresolved.
+
+The update case observes useful execution before and after equivalent,
+narrower and explicitly trusted implementation updates. Changed recipes,
+defaults, aliases, resource selectors and unavailable enforcement must await
+review without changing the active bytes, grants or job count. Restart must
+retain earlier receipts without replay. These are executor catalogue
+observations; gateway approval counts remain a separate workflow witness.
+The dependency case also checks actual byte and alias changes after proposal
+with unchanged size/mtime. Linux must block dispatch; macOS must report its
+unavailable pinned-dependency guarantee before a job is created.
+
+These are installed Unix component witnesses. They do not complete
+[#1677](https://github.com/craigbalding/safeyolo/issues/1677)'s eight witness
+groups or real Windows requirement. The generated
+[control catalogue](../../docs/blackbox-coverage.md#bb-38--host-operation-authority-and-native-execution)
+keeps that remaining integrated qualification explicit. Reuse applicable
+authenticated Linux/macOS investigation, fixed-service and quiet-update
+receipts at their original revisions; do not replay them for report formatting.
+
+For the separate controlled protocol/gateway selection, use the same controller
+checkout on Linux with its trusted Rust toolchain, warm Cargo target and current
+native test prerequisites. Set `SAFEYOLO_BLACKBOX_ARTIFACTS_DIR` to a new private
+disk-backed directory. The following command builds and runs the named protocol,
+gateway and configured checker cases through the existing receipt owner:
+
+```sh
+bash tests/blackbox/run-controls.sh host-execution
+```
+
+`host-execution.json` must report every named case as `ok`. These controlled
+upstream/checker results complement the installed selection; they do not prove
+native containment or repeat the separate finite model measurement.
+
+The existing prebuilt Windows fixture also drives the packaged starter recipes.
+Its starter runtime qualification remains incomplete; a build or parser check
+does not establish successful native operations or service-mode execution.
+Use a disposable Windows target with the separate ordinary workload account,
+executor-owned credential and protected paths from the
+[Windows setup](../../docs/host-operations.md#windows-foreground-and-windows-service).
+Prepare a new private fixture root with `control` and `control\state`
+subdirectories. Its workload needs read/execute access to the fixture programs
+and synthetic evidence; it must have no access to `control`. Supply the owned
+`SafeYolo1671Fixture` service with start/stop/query/restart permissions and an
+unused local TCP port 19477. Keep the existing fixture and service owners.
+Set `SAFEYOLO_HOST_EXECUTOR_BIN` to the separately installed executor.
+Replace `C:\Owned\qualification` and `host-workload` below with that root and
+the existing credential name. Replace `HOST\workload` with the selected ordinary
+workload account. These commands create synthetic evidence, a
+target configuration and finite test authority signed by a public fixture key;
+use them only in the disposable test environment.
+The ACL command grants read/execute access only to the new synthetic evidence.
+It follows preparation because the native `demo` command creates private files.
+
+```powershell
+.\windows_native.exe --starter-prepare C:\Owned\qualification host-workload
+icacls "C:\Owned\qualification\case with spaces ünicode" /grant "HOST\workload:(RX)" /T
+.\windows_native.exe --starters C:\Owned\qualification
+```
+
+The fixture records canonical receipts, complete output, native enforcement,
+service-manager state/PIDs and a live TCP receiver. It exercises the read and
+fixed-service categories plus wrong channel, hive, key, view, service and path
+refusals. Inspect actual absent/denied results and retained effects after a
+failure. A service recipe can change state before a later PowerShell method
+fails in `ConstrainedLanguage`; its failure does not prove no effect occurred.
+The native API carries binary output. The fixture retains base64 output when
+UTF-8 decoding fails and continues the other categories. A completed job with
+undecoded output does not establish correct Unicode handling. To resume one
+unexecuted operation, use
+`--starter ROOT OPERATION`.
+Use `--starter-refusals ROOT` to run only the refused proposals after inspecting
+an interrupted run; that selection dispatches no job.
+For a further attempt after inspecting the result and changing its input, use
+`--starter-attempt ROOT OPERATION ATTEMPT` with a new short attempt name.
+The name selects new request IDs; it grants no permission or authority renewal.
+Append `--service` only after the same target configuration is running under
+the selected Windows Service account. This fixture does not install that
+service, configure ACLs or renew a credential.
+
 ## Test retained nightly inputs
 
 The [nightly workflow](../../.github/workflows/blackbox.yml) runs at 03:17 UTC.
@@ -218,6 +350,50 @@ Apple Silicon and the Swift helper build prerequisites in the
 
 ### Run installed sections with one preparation
 
+For Linux access tests, a supplied `DISPLAY` must reach a usable host X display.
+When `DISPLAY` is unset or empty, prepare host `Xvfb` plus `xdpyinfo` or `xrandr`
+first (Debian packages `xvfb` and `x11-utils` provide the first pair). The access
+runner starts a separate Xvfb display before the proxy and stops it during owned
+cleanup. Xvfb selects a free display number and disables TCP listeners. Missing
+commands or failed startup exit 2; the log stays at the access instance's
+`desktop-display.log`. The production action still probes the display and checks
+guest readiness. Guest desktop packages alone do not satisfy this host prerequisite.
+
+Default installed sections include disposable-job isolation, job network
+authority and live-mount removal. Linux systrap also runs the nested-Docker
+journey. That journey installs Debian Docker tools in its owned guest, pulls
+the fixture's digest-pinned base and builds/runs disposable inner containers.
+It needs the guest's approved package/registry network access. If the prepared
+instance uses a parent proxy, set `SAFEYOLO_DOCKER_ORIGIN_BIND` to an owned host
+IPv4 address reachable through that route. The Docker observer binds two
+temporary TCP ports there and closes them after the journey.
+
+The mount journey uses a small static Linux holder for the guest's CPU
+architecture. On Linux, the driver builds it with the host's `cc` and static
+C library; the host needs those build tools. To prepare the holder in advance
+or for VZ, build it on a Linux host with the guest's CPU architecture. From the
+repository root, replace `/owned/mount-holder` with an output path in an existing
+disk-backed directory. The command creates that file.
+
+```sh
+cc -std=c11 -O2 -static -Wall -Wextra -Werror tests/fixtures/live-mount-holder.c -o /owned/mount-holder
+```
+
+For a prepared holder, transfer the executable to the acceptance host if needed. Set
+`SAFEYOLO_MOUNT_HOLDER_PROBE` to its absolute path before running installed
+sections. For VZ, build for Linux ARM64; the macOS host does not run the holder.
+The driver copies it into the owned workspace and records its hash. No guest
+Python or compiler is needed. Holder failures retain their exit code and log
+and leave the result incomplete. The direct mount driver accepts the same file
+through `--holder-probe`. For the physical hardware launcher, set the same
+variable in its host deployment environment; the path must be readable by the
+account that runs the lane.
+
+For a full VZ run, also set `SAFEYOLO_JOB_OBSERVER_PROBE` to the static Linux
+ARM64 executable built from [job-observer-probe.c](../fixtures/job-observer-probe.c).
+Use the existing physical-host runner and its authorized fixture ports.
+Missing inputs or required cases produce incomplete results.
+
 Choose the host's actual mechanism. From the repository root, the following
 runs the checked-out HEAD; `--install-commit FULL_SHA` checks an explicit full
 commit before installing anything.
@@ -265,14 +441,36 @@ scenario state. NATS executable bytes are prepared once and reverified by the
 installed launcher in each instance; credentials and JetStream data are private.
 Individual procedural compositions remain intact.
 
+To run only these boundary controls against an already verified installation,
+replace `/owned/prepared-instance` with its absolute root. From this checkout
+with the Python test environment prepared, run on the same disposable Linux
+host that owns that installation:
+
+```sh
+./tests/blackbox/run-installed.sh systrap --prepared-config /owned/prepared-instance --section job-sandbox --section job-network --section mounts --section docker
+```
+
+The runner retains each procedure's expected checkpoints and reached cases,
+observed backend lifetimes, product/controller/guest identities and cleanup.
+The nightly systrap workflow selects these default sections. KVM/VZ selection
+does not establish hardware deployment under #889. [Issue #1562](https://github.com/craigbalding/safeyolo/issues/1562)
+records accepted installed results and remaining platform, catalogue and
+recurring-deployment limits.
+
 For a guest without Debian or Python Package Index (PyPI) network access, first
 stage verified offline test inputs under the test checkout's `offline/`
-directory. Supply `debs/*.deb` for Python, pip and all their Debian dependencies,
+directory. Supply `debs/*.deb` for Python, pip, the OpenSSH client and all their Debian dependencies,
 matched to the selected guest's architecture and installed packages. Supply `wheels/*.whl` for the
 unchanged [`guest-requirements.txt`](guest-requirements.txt), including its
 interpreter-specific dependencies. Verify the input archive against the
 supplier's checksum before extracting it. Keep the host's proxy and certificate
 settings.
+
+The access section also prepares the guest desktop. Its offline archives must
+include `xvfb`, `x11vnc`, `x11-utils`, `novnc` and a window manager (`fluxbox`
+or `openbox`), with their dependencies. Online preparation installs these test
+packages in the owned guest. The host browser opener records a marker; the
+checks observe live VNC bytes without visual UI automation.
 
 Set `SAFEYOLO_GUEST_TEST_INPUTS` to the absolute path **inside each guest**.
 The test checkout is mounted at `/workspace` for the subject, peers and lifecycle
@@ -292,11 +490,17 @@ still needs its usual prepared inputs or network access.
 
 | Lane | Default independent sections |
 |---|---|
-| `systrap` | isolation, ingress, workloads, access, lifecycle, host continuity |
-| `kvm` | isolation, ingress, workloads |
-| `vz` | isolation, access, lifecycle, host continuity |
+| `systrap` | isolation, ingress, workloads, access, peer support, deterministic shared approvals, provider sharing, federation, lifecycle, host continuity, disposable jobs, job network authority, live mounts, nested Docker |
+| `kvm` | isolation, ingress, workloads, disposable jobs, job network authority, live mounts |
+| `vz` | isolation, access, lifecycle, host continuity, disposable jobs, job network authority, live mounts |
 
 `--section NAME` runs just that supported section; repeat it to select several.
+The systrap peer and sharing section names are `peer-support`, `shared-approvals`,
+`provider` and `federation`. They reuse the prepared host/guest bytes in separate
+owned instances. The shared-approval and federation HTTP probes use the guest's
+shipped curl. The federation section uses real TLS and NATS on one host; the
+two-host Tailscale venue remains separate and unverified under #1561.
+
 For example, run access on the software-isolation host:
 
 ```sh
@@ -352,6 +556,141 @@ remaining sections and is recorded as `cleanup_failure`. A later inspection
 with no markers cannot clear an inner cleanup failure that already detected a
 surviving owned process. Stop the proxy and each disposable guest: `safeyolo stop`
 alone does not stop a guest.
+
+## Manual two-host tailnet journey
+
+`installed_tailnet.py` pairs native protection checks and one live source
+proxy/guest with an independent destination observer. It covers wrong node,
+wrong route, missing interface, active interface loss and restored delivery.
+The observer forwards to an owned real NATS broker. It records byte counts and
+only the test's nonsecret markers. It never retains incoming credentials.
+Available controllers and passing local controller tests do not establish live
+tailnet execution or deployed cadence.
+
+Use two authorized host accounts with live Tailscale node IDs and assigned
+IPv4 addresses for this fixture. The source uses an owned disposable installation, running proxy and
+sandbox, reusing the guest-to-remote-instance fixture from the federation
+journey. This exercises the proxy's existing cached connection and reconnect
+callback. Keep that proxy, guest, home and credential unchanged across phases.
+On the destination, prepare an owned disposable instance with a dedicated room,
+scoped trust and membership for that source agent, and a real NATS listener.
+Use the current [federation setup](../../docs/coord-reference.md#collaborate-through-a-home-safeyolo).
+Mark both disposable roots with `.safeyolo-platform-smoke`, as the other
+installed drivers do. Keep credentials and instance state outside guest mounts.
+
+The execution owner supplies real isolated network contexts for wrong-route,
+missing-interface and source interface loss/restoration. Do not change shared
+routes, interfaces or a live Tailscale service. A refused provisioning operation
+is not a retry instruction. If an isolated capability is unavailable, retain
+that exact unmet need; independent controls may still run. The driver does not
+provision network namespaces or apply faults. Use the same source host and
+monotonic clock for ordinary-context probes and isolated-context attempts.
+
+Run modules from this checkout with its Python dependencies. Replace uppercase
+inputs below with the selected host addresses, stable node IDs, installed CLI,
+instance roots and paths. Every output directory must be new, private and
+disk-backed. Fresh roots for the three `check` cases differ from the persistent
+`SOURCE_ROOT`. On the destination, `BROKER_PORT` is its actual owned NATS port:
+
+```sh
+python -m tests.blackbox.installed_tailnet observe \
+  --address DEST_IP --source SOURCE_IP --forward-port BROKER_PORT \
+  --duration 900 --output OBSERVER_OUTPUT
+```
+
+Keep this process foreground in its authorized transport. Its `ready.json`
+supplies a fresh `port` and nonsecret `nonce`. Select that port for the source's
+Tailscale home using its existing host-held credential. The literal endpoint
+must match the observer, not the upstream broker port:
+
+```sh
+INSTALLED_ROOT/bin/safeyolo --root SOURCE_ROOT coord federation home destination \
+  DEST_INSTANCE_ID tailscale nats://DEST_IP:PORT DEST_NODE_ID PEER_CREDENTIAL_FILE
+```
+
+For each row below, first run `probe` with that row's `--phase` from the ordinary
+source host context. Then run its attempt in the stated context. The next probe
+closes the previous observation window. Probes before and after each refusal
+prove the observer is functioning. Their source-clock bounds must enclose the
+attempt; the final verifier rejects a result from another window.
+
+| Phase, in order | Attempt and context |
+|---|---|
+| `initial` | Run `phase --phase initial` through the source's working isolated context. Require authenticated owner reachability and one guest-originated destination message. |
+| `wrong-node` | Run `check --expect wrong-node` in the ordinary context, selecting the source's real ID for the destination address. |
+| `wrong-route` | Run `check --expect wrong-route` in an authorized isolated context which retains the assigned source interface but routes the destination through another interface. |
+| `missing-interface` | Run `check --expect missing-interface` in an authorized isolated context without the assigned interface, still reading real host daemon status. |
+| `lost-interface` | Remove the interface only in the source's owned isolated context. This ordinary-host probe closes the observer's active product connections, forcing the live proxy to recheck protection on reconnect. Then run `phase --phase lost-interface` there. |
+| `restored` | Restore that same owned source interface and protected route. Run `phase --phase restored` with the original proxy/guest/home. Require actual destination delivery. |
+| `finished` | No attempt. The observer closes its listener and forwarding connections and writes its final result. |
+
+The representative probe and initial phase commands are:
+
+```sh
+python -m tests.blackbox.installed_tailnet probe \
+  --address DEST_IP --source SOURCE_IP --port PORT --nonce NONCE --phase initial
+python -m tests.blackbox.installed_tailnet phase \
+  --address DEST_IP --source SOURCE_IP --port PORT --nonce NONCE \
+  --source-node SOURCE_NODE_ID --destination-node DEST_NODE_ID \
+  --cli INSTALLED_ROOT/bin/safeyolo --root SOURCE_ROOT --agent SOURCE_AGENT \
+  --home destination --room ROOM --phase initial --output INITIAL_OUTPUT
+```
+
+For `lost-interface` and `restored`, use those phase names and separate output
+directories; add `--initial INITIAL_OUTPUT/result.json`. Every phase checks the
+same live proxy process birth, guest run/birth, binary bytes and selected home.
+Each submits its unique marker once. A timeout or lost reply leaves incomplete
+evidence; inspect the destination's canonical history before any further
+attempt. Restoration must not deliver a delayed marker from the refused phase.
+For each `check` row, use a distinct new root and output directory:
+
+```sh
+python -m tests.blackbox.installed_tailnet check \
+  --address DEST_IP --source SOURCE_IP --port PORT --nonce NONCE \
+  --source-node SOURCE_NODE_ID --destination-node DEST_NODE_ID \
+  --cli INSTALLED_ROOT/bin/safeyolo --root NEW_CHECK_ROOT \
+  --expect wrong-node --output WRONG_NODE_OUTPUT
+```
+
+Use the other two expectation names and their authorized contexts for the
+remaining refusal checks. Each retains the exact native cause and owned stop.
+An absent listener or unavailable observer is incomplete evidence. A silent
+reconnect may reach TCP, but it must send no authentication/application bytes
+while protection is unavailable. The observer requires the permitted markers
+over authenticated connections both before loss and after restoration.
+
+After the `finished` probe and the observer's terminal result, stop the owned
+source with the maintained cleanup helper. This stops its guests, proxy and
+broker; it preserves diagnostic state:
+
+```sh
+python -m tests.blackbox.installed_tailnet stop \
+  --cli INSTALLED_ROOT/bin/safeyolo --root SOURCE_ROOT --output SOURCE_STOP_OUTPUT
+```
+
+Transfer only the nonsecret reports through the existing authorized transport.
+On the destination, `verify` reads its canonical room history, checks the exact
+federated source principal and both permitted markers, and rejects refused or
+delayed delivery. It pairs all phase/refusal reports with the observer nonce,
+port, source-clock windows, identities and source cleanup. **It also stops the
+selected disposable destination, including after a failed assertion.**
+
+```sh
+python -m tests.blackbox.installed_tailnet verify \
+  --cli DEST_INSTALLED_ROOT/bin/safeyolo --root DEST_ROOT \
+  --phase-report INITIAL_OUTPUT/result.json --phase-report LOST_OUTPUT/result.json \
+  --phase-report RESTORED_OUTPUT/result.json \
+  --check-report WRONG_NODE_OUTPUT/result.json --check-report WRONG_ROUTE_OUTPUT/result.json \
+  --check-report MISSING_INTERFACE_OUTPUT/result.json \
+  --observer OBSERVER_OUTPUT/result.json --source-cleanup SOURCE_STOP_OUTPUT/result.json \
+  --output VERIFIED_OUTPUT
+```
+
+Success requires `status: passed` and `cleanup: stopped` in the final destination
+report. Retain the exact product/controller/guest identities and the execution
+owner's isolated-fault/restoration observations with that result. A local
+controlled fixture, script selection or partial receipt does not qualify this
+live two-host journey. Hardware deployment/publication remains with #889.
 
 ## Journey with Python unavailable
 

@@ -17,6 +17,9 @@ pub struct Permission {
     pub enforcement: Option<String>,
     pub bindings: Map<String, Value>,
     pub path_arguments: BTreeMap<String, Scope>,
+    /// Trusted native authority, including normalized defaults and omission.
+    /// A submitted example or rationale must never populate this projection.
+    pub native_arguments: BTreeMap<String, Vec<Option<Value>>>,
     pub unresolved: Vec<String>,
     pub proposed: bool,
 }
@@ -29,6 +32,7 @@ impl Permission {
             enforcement: example.enforcement.clone(),
             bindings: example.bindings.clone(),
             path_arguments: BTreeMap::new(),
+            native_arguments: BTreeMap::new(),
             unresolved: Vec::new(),
             proposed: false,
         }
@@ -142,10 +146,16 @@ impl EffectModel {
         service: &ServiceDefinition,
         permissions: &[Permission],
     ) -> Result<Assessment, Error> {
-        let mut direct = permissions
+        let direct = permissions
             .iter()
             .map(|permission| self.direct(service, permission))
             .collect::<Result<Vec<_>, _>>()?;
+        Ok(self.assess_direct(direct))
+    }
+
+    /// Native retained-effect observations use the same composition evaluator.
+    /// Callers supply host-derived scope; this method grants no authority.
+    pub(crate) fn assess_direct(&self, mut direct: Vec<DirectEffects>) -> Assessment {
         direct.sort_by(|a, b| a.permission.id.cmp(&b.permission.id));
         let rules = self
             .rules
@@ -161,14 +171,14 @@ impl EffectModel {
         let mut limitations = self.gaps.clone();
         limitations.push("This intentionally partial model describes potential authority. No matching rule does not establish safety. Missing annotations remain unknown.".into());
         limitations.push("Upstream state, prior edits, job existence, runner permissions and actual execution are unverified. Expired or revoked modification access does not prove that prior edits were undone. Effects can persist after access ends; access expiry does not cancel an admitted operation.".into());
-        Ok(Assessment {
+        Assessment {
             effect_definitions: self.effects.clone(),
             sources: self.sources.clone(),
             direct,
             rules,
             unresolved_conditions,
             limitations,
-        })
+        }
     }
 
     fn direct(
@@ -233,6 +243,7 @@ impl EffectModel {
                 contract,
                 &permission.bindings,
                 &permission.path_arguments,
+                &permission.native_arguments,
                 &effect.when,
             );
             let state = if !permission.unresolved.is_empty() && condition != Match::NonMatch {
@@ -290,7 +301,10 @@ impl EffectModel {
                     .collect()
             })
             .collect();
-        let mut combinations = Vec::new();
+        let mut combinations = Combinations {
+            values: Vec::new(),
+            remaining_work: 50_000,
+        };
         combine(
             &choices,
             resource,
@@ -300,10 +314,13 @@ impl EffectModel {
             false,
             &mut combinations,
         );
+        let remaining_work = combinations.remaining_work;
+        let combinations = combinations.values;
         let matched = combinations.iter().any(|item| item.status == Match::Match);
-        let unresolved = combinations
-            .iter()
-            .any(|item| item.status == Match::Unresolved)
+        let unresolved = remaining_work == 0
+            || combinations
+                .iter()
+                .any(|item| item.status == Match::Unresolved)
             || (!matched
                 && direct
                     .iter()
@@ -333,7 +350,15 @@ impl EffectModel {
             explanation: rule.explanation.clone(),
             combinations,
             unverified_prerequisites: rule.prerequisites.clone(),
-            gaps: rule.gaps.clone(),
+            gaps: if remaining_work == 0 {
+                let mut gaps = rule.gaps.clone();
+                gaps.push(
+                    "Composition work budget reached; further combinations are unknown.".into(),
+                );
+                gaps
+            } else {
+                rule.gaps.clone()
+            },
             evidence: rule.evidence.clone(),
         }
     }
@@ -368,6 +393,7 @@ fn possible(
     contract: Option<&ContractOperation>,
     bindings: &Map<String, Value>,
     path_arguments: &BTreeMap<String, Scope>,
+    native_arguments: &BTreeMap<String, Vec<Option<Value>>>,
     condition: &Condition,
 ) -> Match {
     let (argument, expected) = match condition {
@@ -376,6 +402,17 @@ fn possible(
         Condition::Equals { argument, value } => (argument, Some(value)),
     };
     let reference = argument;
+    if let Some(choices) = native_arguments.get(reference) {
+        return if choices.iter().any(|choice| {
+            choice
+                .as_ref()
+                .is_some_and(|value| expected.is_none_or(|expected| value == expected))
+        }) {
+            Match::Match
+        } else {
+            Match::NonMatch
+        };
+    }
     let argument = &operation.arguments[argument];
     if argument.location == Location::Path {
         let Some(expected) = expected else {
@@ -461,6 +498,30 @@ fn possible(
 /// concrete job; an unresolved upstream identity never becomes that job.
 pub(crate) fn intersect(a: &Scope, b: &Scope) -> Option<Scope> {
     match (a, b) {
+        (Scope::Values { values }, other) | (other, Scope::Values { values }) => {
+            if let Scope::Unresolved { reason } = other {
+                return Some(Scope::Unresolved {
+                    reason: reason.clone(),
+                });
+            }
+            let remaining: BTreeSet<_> = values
+                .iter()
+                .filter(|value| match other {
+                    Scope::Known { value: known } => *value == known,
+                    Scope::Values { values } => values.contains(*value),
+                    Scope::Except { values } => !values.contains(*value),
+                    _ => true,
+                })
+                .cloned()
+                .collect();
+            match remaining.len() {
+                0 => None,
+                1 => Some(Scope::Known {
+                    value: remaining.into_iter().next().unwrap(),
+                }),
+                _ => Some(Scope::Values { values: remaining }),
+            }
+        }
         (Scope::Known { value: a }, Scope::Known { value: b }) if a != b => None,
         (Scope::Except { values }, Scope::Known { value })
         | (Scope::Known { value }, Scope::Except { values })
@@ -486,6 +547,11 @@ pub(crate) fn intersect(a: &Scope, b: &Scope) -> Option<Scope> {
     }
 }
 
+struct Combinations {
+    values: Vec<Combination>,
+    remaining_work: usize,
+}
+
 fn combine(
     choices: &[Vec<(&DirectEffects, bool)>],
     resource: &str,
@@ -493,10 +559,14 @@ fn combine(
     scope: BTreeMap<String, Scope>,
     permissions: BTreeSet<String>,
     unresolved: bool,
-    output: &mut Vec<Combination>,
+    output: &mut Combinations,
 ) {
+    if output.remaining_work == 0 {
+        return;
+    }
+    output.remaining_work -= 1;
     if index == choices.len() {
-        output.push(Combination {
+        output.values.push(Combination {
             status: if unresolved {
                 Match::Unresolved
             } else {
@@ -508,6 +578,10 @@ fn combine(
         return;
     }
     for (direct, unknown) in &choices[index] {
+        if output.remaining_work == 0 {
+            break;
+        }
+        output.remaining_work -= 1;
         let mut next = scope.clone();
         let mut disjoint = false;
         for (key, value) in &direct.scopes[resource] {

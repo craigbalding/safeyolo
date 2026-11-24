@@ -1,14 +1,97 @@
 ---
 name: policy-authoring
-description: Turn an operator's cyber brief or research workload and risk choices into a reviewable SafeYolo policy, source and check configuration. Use on the host that owns the selected instance; use existing policy authority and keep administrative credentials outside the research workload.
+description: Turn an operator's cyber brief or research workload and risk choices into a reviewable SafeYolo policy, source and check configuration. Discover installed policy capabilities and request an operator-approved full local policy snapshot in an ordinary guest. Author and apply through the owning host's existing policy authority. Keep administrative credentials outside the research workload.
 ---
 
 # Author a research policy
 
 Use the installed `safeyolo` commands and the selected instance's current
 configuration. This skill supplies the first cyber research recipe. It grants
-no host or policy access. Inside an ordinary guest, prepare the proposed
-choices and ask the existing host owner to perform host operations.
+no host or policy access. Inside an ordinary guest, use the approved snapshot
+workflow below to prepare proposed choices. The host owner decides policy
+application through canonical human approvals.
+The guest can submit an exact candidate and read its scoped result.
+
+Read [capability discovery](references/capabilities.md) for the guest sequence:
+discover → compose → validate the accepted form → assess → revise or discuss
+with the operator → submit through the existing owner. Discovery and component
+validation grant no permission. A valid component is not a complete candidate
+safety assessment. Discovery is available before full-policy disclosure.
+
+For publisher-delivered check/challenge revisions, read
+[control updates](references/control-updates.md). Use the selected publisher,
+standing adoption/qualification bounds and existing approval owner. Receipt,
+signature verification and a satisfactory agent answer do not grant access.
+
+## Read the full local policy in a guest
+
+Use the installed `request_policy_snapshot` and `read_policy_snapshot` tools.
+Choose a fresh operation ID (`req-` followed by 32 lowercase hexadecimal
+digits) before submitting. Retain that ID if the response is lost. The tools
+select the authenticated local instance and current requester; they accept no
+host path, remote home or identity override.
+
+For a shell invocation in the ordinary Linux guest, replace the example ID
+with your chosen operation ID. The following command creates a canonical
+request for the human operator; it grants no permission by itself:
+
+```sh
+printf '%s\n' '{"operation_id":"req-0123456789abcdef0123456789abcdef"}' |
+  safeyolo-coord call request_policy_snapshot
+```
+
+The response identifies the canonical approval and snapshot, source revision
+and saved/active status. Ask the existing operator to inspect that approval
+through the normal approval interface. Send the approval reference and purpose,
+not policy contents. An agent deciding delegation cannot approve this request.
+
+After the human approves, read the same operation ID or returned approval ID:
+
+```sh
+printf '%s\n' '{"request_id":"req-0123456789abcdef0123456789abcdef"}' |
+  safeyolo-coord call read_policy_snapshot
+```
+
+Only an approved response contains `snapshot.source`. Pending, rejected,
+superseded, expired or unavailable state supplies no source. Reconcile an
+uncertain request or read with its original ID. Repeated reads return the same
+approved bytes, including after the live policy changes. Request a new snapshot
+when different source bytes are needed. Reads require the original current
+requester/run and use the existing seven-day terminal approval-result retention.
+
+`source_kind: saved_authored_toml` identifies the saved authored document.
+`source_revision`, `saved_source_revision` and `active_source_revision` identify
+its SHA-256 source bytes and active basis. A mismatch is explicit. Effective
+controls/defaults and expanded inputs describe active observations separately;
+do not insert them into authored text by accident. `/policy` remains the
+existing compiled baseline read and omits authored support/delegation settings.
+
+Keep the complete snapshot and candidate private. Preserve its identity,
+credential references and `redactions` field paths. Each hidden literal
+credential has a snapshot-bound preservation marker. Leave that marker at its
+original field; deleting, moving or substituting it cannot authorize a hidden
+value change. The host retains restoration data. Use `assess_policy` with the
+original snapshot request ID, complete candidate source and installed
+`definition_version` from discovery. Assessment is private and read-only.
+Read its consequences, narrower alternatives and coverage limits, then revise
+or discuss the tradeoff. Private assessment does not submit an approval or
+apply a policy. The authorized host owner can inspect the same candidate with
+`policy assess SNAPSHOT_REQUEST_ID FILE`. Explicitly submit the same candidate
+with `submit_policy_change`, using
+`{operation_id, candidate: {snapshot_request_id, source, definition_version}}`.
+Choose the operation ID before submission. Only explicit submission creates
+operator attention. Keep source private and send the canonical approval
+reference. The human uses ordinary `approvals show` / `explain --option apply`
+and approves or declines the complete diff under current authority.
+
+Use `read_policy_change` with the original operation ID after a lost reply.
+Pending, declined, stale, failed or unresolved outcomes grant no retry.
+An approved receipt names saved and active revisions; a later edit does not
+turn replay into another apply. A stale candidate needs fresh preparation and
+review. The operator's `policy restore APPROVAL_ID --operation-id req-ID`
+prepares another reviewed candidate against the current base. Restoration
+cannot undo disclosures or external effects. Never request an Admin token or
+copy host configuration into the guest.
 
 Read [the walkthrough](references/recipe.md) for the complete first run,
 host discovery, prerequisites, helper commands and saved-choice updates.

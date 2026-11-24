@@ -13,8 +13,8 @@ supported host. The unpacked bundle and the repository's `install.sh` invoke
 the same installer. Supply a fresh root and either `--bundle UNPACKED_BUNDLE`
 or the prepared build inputs described in the
 [source build instructions](../docs/installation.md#build-a-bundle).
-Prepare the [guest runtime](../docs/installation.md#guest-prerequisites)
-before starting an agent. There is no migration or Python-package rollback
+The installer prepares the [host runtime](../docs/installation.md#guest-prerequisites)
+and downloads a compatible prebuilt guest; normal users do not build Linux guests. There is no migration or Python-package rollback
 operation in this fresh-state product.
 
 From a source checkout on the owning host account, this example consumes an
@@ -23,7 +23,10 @@ unpacked bundle at `$HOME/safeyolo-bundle` and prepared guest inputs at
 `$HOME/.safeyolo` must have no existing instance configuration. If it is in use,
 preserve it and follow the custom-instance reference. Installation makes
 `safeyolo` available in new terminals without per-terminal setup. It may ask
-for your normal sudo password to create the command entry.
+for sudo during missing host-prerequisite setup or command linking into an
+unwritable directory. A user-writable `--command-dir` avoids the latter. Guest
+extraction, cleanup, repeat installation and guest upgrades use no sudo after
+host preparation; ordinary execution runs as your account.
 
 ```sh
 ./install.sh --root "$HOME/.safeyolo" --bundle "$HOME/safeyolo-bundle" --platform-assets "$HOME/safeyolo-platform"

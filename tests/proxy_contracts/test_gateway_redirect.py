@@ -143,6 +143,7 @@ def _assert_untrusted_wire_has_no_gateway_secret(wire: bytes, gateway_token: str
 def _policy(owned_port: int, untrusted_port: int) -> str:
     return f'''[hosts."127.0.0.1"]
 service = "redirect"
+credentials = ["synthetic-gateway-vault:*"]
 [hosts."127.0.0.1:{owned_port}"]
 egress = "allow"
 [hosts."127.0.0.2:{untrusted_port}"]
@@ -154,6 +155,11 @@ egress = "deny"
 capability = "reader"
 token = "{VAULT_NAME}"
 [agents.bob]
+[[credential_rules]]
+name = "synthetic-gateway-vault"
+patterns = ["{VAULT_CREDENTIAL}"]
+allowed_hosts = ["127.0.0.1"]
+header_names = ["authorization"]
 '''
 
 

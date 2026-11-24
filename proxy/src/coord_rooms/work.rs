@@ -144,6 +144,19 @@ pub(crate) enum Mutation {
         #[serde(default)]
         evidence_refs: Vec<String>,
     },
+    ResolvePrerequisite {
+        invocation_id: String,
+        expected_version: i64,
+        outcome: automatic::State,
+        summary: String,
+        evidence_refs: Vec<String>,
+    },
+    RetryPrerequisite {
+        invocation_id: String,
+        expected_version: i64,
+        summary: String,
+        evidence_refs: Vec<String>,
+    },
     Cancel {
         work_id: String,
         expected_version: i64,
@@ -293,7 +306,7 @@ pub(crate) struct Work {
     pub version: i64,
 }
 
-pub(super) fn authorize(
+pub(crate) fn authorize(
     conn: &Connection,
     room: &str,
     actor: Actor<'_>,
@@ -509,6 +522,166 @@ pub(crate) fn revision(
     Ok(serde_json::from_str(&document)?)
 }
 
+struct MutationRequest {
+    room_id: String,
+    input: Value,
+    operation: String,
+    operation_type: String,
+    request_hash: String,
+    replay: Option<Value>,
+}
+
+fn validate_request(
+    conn: &Connection,
+    room: &str,
+    actor: Actor<'_>,
+    mutation: &Mutation,
+    operation: Option<&str>,
+) -> Result<MutationRequest, WorkError> {
+    let room_id = authorize(conn, room, actor, true)?;
+    if matches!(mutation, Mutation::Continue { .. }) && operation.is_none() {
+        return Err(invalid(
+            "continuation requires a caller-selected operation ID",
+        ));
+    }
+    let generated = match mutation {
+        Mutation::ReceiveAction { action_key, .. } => action_key.clone(),
+        _ => uuid::Uuid::new_v4().simple().to_string(),
+    };
+    // Delivery uses its canonical action key, independent of a caller retry ID.
+    let operation = match mutation {
+        Mutation::ReceiveAction { .. } => generated.as_str(),
+        _ => operation.unwrap_or(&generated),
+    };
+    if operation.trim().is_empty() {
+        return Err(invalid("operation ID must be nonempty"));
+    }
+    let input = serde_json::to_value(mutation)?;
+    if input.to_string().len().saturating_add(operation.len()) > MAX_REQUEST_BYTES {
+        return Err(invalid("work mutation exceeds 262144 UTF-8 bytes"));
+    }
+    let action = input["action"].as_str().unwrap();
+    let operation_type = format!("coord.work.{action}");
+    let request_hash = hash(
+        json!({"room_id":room_id,"mutation":input})
+            .to_string()
+            .as_bytes(),
+    );
+    // A prerequisite may retain an external effect before a Work receipt exists.
+    // Check that request before selecting bindings, even if this input selects none.
+    let retained: Option<String> = conn.query_row(
+        "SELECT request_hash FROM coord_operations WHERE principal_kind=?1 AND principal_id=?2 AND operation_type=?3 AND operation_id=?4",
+        params![actor.kind(),actor.id(),format!("{operation_type}.prerequisite"),operation], |r| r.get(0),
+    ).optional()?;
+    if retained.is_some_and(|original| original != request_hash) {
+        return Err(conflict(
+            "operation ID conflicts with the original canonical request",
+        ));
+    }
+    let prior: Option<(String,String)> = conn.query_row(
+        "SELECT request_hash,outcome_json FROM coord_operations WHERE principal_kind=?1 AND principal_id=?2 AND operation_type=?3 AND operation_id=?4",
+        params![actor.kind(),actor.id(),operation_type,operation], |r| Ok((r.get(0)?,r.get(1)?)),
+    ).optional()?;
+    let replay = if let Some((original, result)) = prior {
+        if original != request_hash {
+            return Err(conflict(
+                "operation ID conflicts with the original canonical request",
+            ));
+        }
+        Some(serde_json::from_str(&result)?)
+    } else {
+        None
+    };
+    Ok(MutationRequest {
+        room_id,
+        input,
+        operation: operation.into(),
+        operation_type,
+        request_hash,
+        replay,
+    })
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Validation {
+    Preflight,
+    Commit,
+}
+
+pub(super) enum Preflight {
+    Replay(Value),
+    Ready(Option<Box<Work>>),
+}
+
+/// Validate a proposed change against one read snapshot without recording it.
+pub(super) fn preflight(
+    factory_files: Option<(&std::path::Path, &std::path::Path)>,
+    configured: &automatic::Configuration,
+    conn: &mut Connection,
+    room: &str,
+    actor: Actor<'_>,
+    mutation: Mutation,
+    operation: Option<&str>,
+) -> Result<Preflight, WorkError> {
+    let tx = conn.transaction()?;
+    let MutationRequest {
+        room_id,
+        input,
+        replay,
+        ..
+    } = validate_request(&tx, room, actor, &mutation, operation)?;
+    if let Some(result) = replay {
+        return Ok(Preflight::Replay(result));
+    }
+    if automatic::prerequisite::prepare_recovery(configured, &tx, room, actor, &mutation)?.is_some()
+    {
+        return Ok(Preflight::Ready(None));
+    }
+    let work = automatic::current_work(&tx, &room_id, &input)?;
+    let guard = automatic::guard(
+        configured,
+        &tx,
+        room,
+        &room_id,
+        &input,
+        None,
+        Validation::Preflight,
+    )?;
+    if let Mutation::ReceiveAction {
+        work_id,
+        action_key,
+    } = &mutation
+    {
+        current_delivery_action(&tx, &room_id, actor, work_id, action_key)?;
+    } else {
+        prepare_change(
+            factory_files,
+            configured,
+            &tx,
+            room,
+            &room_id,
+            actor,
+            mutation,
+            &guard,
+            Validation::Preflight,
+        )?;
+    }
+    Ok(Preflight::Ready(work.map(Box::new)))
+}
+
+fn current_delivery_action(
+    conn: &Connection,
+    room_id: &str,
+    actor: Actor<'_>,
+    work_id: &str,
+    action_key: &str,
+) -> Result<actions::Action, WorkError> {
+    actions::for_source(conn, room_id, actor, work_id)?
+        .into_iter()
+        .find(|a| a.key == action_key)
+        .ok_or_else(|| conflict("work action is no longer current for this participant"))
+}
+
 pub(crate) fn mutate(
     factory_files: Option<(&std::path::Path, &std::path::Path)>,
     conn: &mut Connection,
@@ -535,63 +708,91 @@ pub(crate) fn mutate_prepared(
     // wait within the client's 60-second request deadline for the 100-caller case.
     conn.busy_timeout(std::time::Duration::from_secs(30))?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let room_id = authorize(&tx, room, actor, true)?;
-    if matches!(mutation, Mutation::Continue { .. }) && operation.is_none() {
-        return Err(invalid(
-            "continuation requires a caller-selected operation ID",
-        ));
+    let MutationRequest {
+        room_id,
+        input,
+        operation,
+        operation_type,
+        request_hash,
+        replay,
+    } = validate_request(&tx, room, actor, &mutation, operation)?;
+    if let Some(result) = replay {
+        return Ok(result);
     }
-    let generated = match &mutation {
-        Mutation::ReceiveAction { action_key, .. } => action_key.clone(),
-        _ => uuid::Uuid::new_v4().simple().to_string(),
-    };
-    // Delivery uses its canonical action key, independent of a caller retry ID.
-    let operation = match &mutation {
-        Mutation::ReceiveAction { .. } => generated.as_str(),
-        _ => operation.unwrap_or(&generated),
-    };
-    if operation.trim().is_empty() {
-        return Err(invalid("operation ID must be nonempty"));
-    }
-    let input = serde_json::to_value(&mutation)?;
-    if input.to_string().len().saturating_add(operation.len()) > MAX_REQUEST_BYTES {
-        return Err(invalid("work mutation exceeds 262144 UTF-8 bytes"));
-    }
+    let operation = operation.as_str();
     let action = input["action"].as_str().unwrap();
-    let operation_type = format!("coord.work.{action}");
-    let request_hash = hash(
-        json!({"room_id":room_id,"mutation":input})
-            .to_string()
-            .as_bytes(),
-    );
-    let prior: Option<(String,String)> = tx.query_row(
-        "SELECT request_hash,outcome_json FROM coord_operations WHERE principal_kind=?1 AND principal_id=?2 AND operation_type=?3 AND operation_id=?4",
-        params![actor.kind(),actor.id(),operation_type,operation], |r| Ok((r.get(0)?,r.get(1)?)),
-    ).optional()?;
-    if let Some((original, result)) = prior {
-        if original != request_hash {
-            return Err(conflict(
-                "operation ID conflicts with the original canonical request",
-            ));
-        }
-        return Ok(serde_json::from_str(&result)?);
+    if let Some(mut invocation) =
+        automatic::prerequisite::prepare_recovery(&configured, &tx, room, actor, &mutation)?
+    {
+        let mut result = automatic::prerequisite::retain_recovery(&tx, &mut invocation)?;
+        result["operation_id"] = json!(operation);
+        tx.execute("INSERT INTO coord_operations(principal_kind,principal_id,operation_type,operation_id,request_hash,outcome_kind,outcome_json,created_at) VALUES(?1,?2,?3,?4,?5,'success',?6,?7)", params![actor.kind(),actor.id(),operation_type,operation,request_hash,result.to_string(),now()])?;
+        let _authority = prepared.map(automatic::Prepared::current).transpose()?;
+        tx.commit()?;
+        return Ok(result);
     }
-    let automatic = automatic::guard(&configured, &tx, room, &room_id, actor, &input, prepared)?;
+    let automatic = automatic::guard(
+        &configured,
+        &tx,
+        room,
+        &room_id,
+        &input,
+        prepared,
+        Validation::Commit,
+    )?;
     let changed_at = now();
     if let Mutation::ReceiveAction {
         work_id,
         action_key,
     } = &mutation
     {
-        let action = actions::for_source(&tx, &room_id, actor, work_id)?
-            .into_iter()
-            .find(|a| a.key == *action_key)
-            .ok_or_else(|| conflict("work action is no longer current for this participant"))?;
+        let action = current_delivery_action(&tx, &room_id, actor, work_id, action_key)?;
         let result = json!({"action":action,"operation_id":operation});
         tx.execute("INSERT INTO coord_operations(principal_kind,principal_id,operation_type,operation_id,request_hash,outcome_kind,outcome_json,created_at) VALUES(?1,?2,?3,?4,?5,'success',?6,?7)", params![actor.kind(),actor.id(),operation_type,operation,request_hash,result.to_string(),changed_at])?;
         tx.commit()?;
         return Ok(result);
     }
+    let (mut work, attestation) = prepare_change(
+        factory_files,
+        &configured,
+        &tx,
+        room,
+        &room_id,
+        actor,
+        mutation,
+        &automatic,
+        Validation::Commit,
+    )?;
+    let changed_at = work.updated_at;
+    if action == "publish_output" {
+        factory_policy::publication(&tx, &mut work, actor, operation, changed_at)?;
+    }
+    let result = record_change(&tx, &work, actor, operation, action, attestation)?;
+    tx.execute("INSERT INTO coord_operations(principal_kind,principal_id,operation_type,operation_id,request_hash,outcome_kind,outcome_json,created_at) VALUES(?1,?2,?3,?4,?5,'success',?6,?7)", params![actor.kind(),actor.id(),operation_type,operation,request_hash,result.to_string(),changed_at])?;
+    // Only the commit holds the runtime read guard. No evidence acquisition or
+    // job execution occurs under this guard or the Coord transaction.
+    let _authority = prepared.map(automatic::Prepared::current).transpose()?;
+    tx.commit()?;
+    Ok(result)
+}
+
+/// Apply the authoritative actor, input and state rules to an in-memory change.
+/// Both preflight and the committing transaction use this function.
+#[allow(clippy::too_many_arguments)]
+fn prepare_change(
+    factory_files: Option<(&std::path::Path, &std::path::Path)>,
+    configured: &automatic::Configuration,
+    conn: &Connection,
+    room: &str,
+    room_id: &str,
+    actor: Actor<'_>,
+    mutation: Mutation,
+    automatic: &automatic::Guard,
+    validation: Validation,
+) -> Result<(Work, Option<Value>), WorkError> {
+    let input = serde_json::to_value(&mutation)?;
+    let action = input["action"].as_str().unwrap();
+    let changed_at = now();
     let mut attestation = None;
     let mut work = match mutation {
         Mutation::Create {
@@ -607,14 +808,14 @@ pub(crate) fn mutate_prepared(
                 if assignee.kind != "agent" {
                     return Err(invalid("execution assignment requires a durable agent ID"));
                 }
-                assignee.validate(&tx, &room_id)?;
+                assignee.validate(conn, room_id)?;
             }
-            let mut work = new_work(&room_id, actor, title, external_ref, changed_at);
+            let mut work = new_work(room_id, actor, title, external_ref, changed_at);
             work.assignee = assignee;
             if let Some(reference) = automatic.factory.clone().or(factory) {
                 factory_policy::select(
                     factory_files,
-                    &tx,
+                    conn,
                     room,
                     actor,
                     &mut work,
@@ -631,8 +832,8 @@ pub(crate) fn mutate_prepared(
             independent,
             external_ref,
         } => checks::request(
-            &tx,
-            &room_id,
+            conn,
+            room_id,
             actor,
             subject,
             criterion,
@@ -651,8 +852,8 @@ pub(crate) fn mutate_prepared(
             independent,
             external_ref,
         } => challenges::raise(
-            &tx,
-            &room_id,
+            conn,
+            room_id,
             actor,
             subject,
             assertion,
@@ -666,8 +867,8 @@ pub(crate) fn mutate_prepared(
         )?,
         mutation => {
             let id = input["work_id"].as_str().unwrap();
-            let mut work = current(&tx, &room_id, id)?;
-            automatic::apply(&mut work, &automatic);
+            let mut work = current(conn, room_id, id)?;
+            automatic::apply(&mut work, automatic);
             if work.factory.is_none()
                 && let Some(reference) = automatic.factory.clone()
             {
@@ -679,7 +880,7 @@ pub(crate) fn mutate_prepared(
                 };
                 factory_policy::select(
                     factory_files,
-                    &tx,
+                    conn,
                     room,
                     selector,
                     &mut work,
@@ -726,7 +927,7 @@ pub(crate) fn mutate_prepared(
                     evidence_refs,
                     ..
                 } => {
-                    continuation::select(&tx, &mut work, actor, reason, evidence_refs, changed_at)?
+                    continuation::select(conn, &mut work, actor, reason, evidence_refs, changed_at)?
                 }
                 Mutation::SetRequirements {
                     expected_requirements_version,
@@ -738,7 +939,7 @@ pub(crate) fn mutate_prepared(
                     reason,
                     ..
                 } => acceptance::set_requirements(
-                    &tx,
+                    conn,
                     &mut work,
                     actor,
                     expected_requirements_version,
@@ -758,7 +959,7 @@ pub(crate) fn mutate_prepared(
                     reason,
                     ..
                 } => acceptance::select_review(
-                    &tx,
+                    conn,
                     &mut work,
                     actor,
                     expected_requirements_version,
@@ -776,7 +977,7 @@ pub(crate) fn mutate_prepared(
                     evidence_refs,
                     ..
                 } => acceptance::decide(
-                    &tx,
+                    conn,
                     &mut work,
                     actor,
                     expected_requirements_version,
@@ -785,6 +986,7 @@ pub(crate) fn mutate_prepared(
                     summary,
                     evidence_refs,
                     changed_at,
+                    validation,
                 )?,
                 Mutation::AnswerCheck {
                     verdict,
@@ -808,7 +1010,7 @@ pub(crate) fn mutate_prepared(
                     ..
                 } => {
                     challenges::respond(
-                        &tx,
+                        conn,
                         &mut work,
                         actor,
                         summary,
@@ -837,7 +1039,7 @@ pub(crate) fn mutate_prepared(
                 Mutation::RecoverChallengeDeciders {
                     deciders, reason, ..
                 } => {
-                    challenges::recover_deciders(&tx, &mut work, actor, deciders, reason)?;
+                    challenges::recover_deciders(conn, &mut work, actor, deciders, reason)?;
                 }
                 Mutation::PublishOutput {
                     expected_target_generation,
@@ -928,6 +1130,18 @@ pub(crate) fn mutate_prepared(
                     attestation = Some(record);
                 }
                 Mutation::Claim { .. } | Mutation::Reassign { .. } => {
+                    if matches!(mutation, Mutation::Claim { .. })
+                        && crate::host_lifecycle::scheduled::work_deferred(
+                            conn,
+                            actor.id(),
+                            room_id,
+                        )
+                        .map_err(|error| WorkError(503, error.to_string()))?
+                    {
+                        return Err(conflict(
+                            "worker scope is closed for shutdown; retained Work can resume on the next activation",
+                        ));
+                    }
                     let agent_id = match &mutation {
                         Mutation::Reassign { agent_id, .. } if matches!(actor, Actor::Operator) => {
                             agent_id.as_str()
@@ -951,7 +1165,7 @@ pub(crate) fn mutate_prepared(
                     if action == "claim" && work.state != "open" {
                         return Err(conflict("work is not open for claim"));
                     }
-                    member(&tx, &room_id, agent_id, true)?;
+                    member(conn, room_id, agent_id, true)?;
                     if action == "claim"
                         && work
                             .assignee
@@ -1010,6 +1224,8 @@ pub(crate) fn mutate_prepared(
                     }
                 }
                 Mutation::Create { .. }
+                | Mutation::ResolvePrerequisite { .. }
+                | Mutation::RetryPrerequisite { .. }
                 | Mutation::ReceiveAction { .. }
                 | Mutation::RequestCheck { .. }
                 | Mutation::RaiseChallenge { .. } => unreachable!(),
@@ -1022,17 +1238,8 @@ pub(crate) fn mutate_prepared(
         }
     };
     work.updated_at = changed_at;
-    automatic::retain(&configured, room, &mut work, &automatic, action, changed_at)?;
-    if action == "publish_output" {
-        factory_policy::publication(&tx, &mut work, actor, operation, changed_at)?;
-    }
-    let result = record_change(&tx, &work, actor, operation, action, attestation)?;
-    tx.execute("INSERT INTO coord_operations(principal_kind,principal_id,operation_type,operation_id,request_hash,outcome_kind,outcome_json,created_at) VALUES(?1,?2,?3,?4,?5,'success',?6,?7)", params![actor.kind(),actor.id(),operation_type,operation,request_hash,result.to_string(),changed_at])?;
-    // Only the commit holds the runtime read guard. No evidence acquisition or
-    // job execution occurs under this guard or the Coord transaction.
-    let _authority = prepared.map(automatic::Prepared::current).transpose()?;
-    tx.commit()?;
-    Ok(result)
+    automatic::retain(configured, room, &mut work, automatic, action, changed_at)?;
+    Ok((work, attestation))
 }
 
 fn record_change(
