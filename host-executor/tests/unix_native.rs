@@ -3691,7 +3691,9 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
         }
         e.network.listener_handoff = Some(EndpointSelection { candidates });
         if mode == "timeout" {
-            e.resources.timeout_seconds = 1;
+            // Exercise a started service timing out, with margin for native
+            // qualification/launch and whole-second deadline rounding.
+            e.resources.timeout_seconds = 5;
         }
         operations.insert(mode.into(), op);
     }
@@ -3739,6 +3741,7 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
         panic!("invoke")
     };
     let mut first = Some(*receipt);
+    let mut started_timeout = false;
     for mode in [
         "fallback",
         "direct4",
@@ -3756,8 +3759,8 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
         let receipt = first.take().unwrap_or_else(|| f.invoke(mode).0);
         let deadline = Instant::now() + Duration::from_secs(3);
         let observed = if mode == "timeout" {
-            // A short deadline can expire before the first observer read.
-            // Validate its retained bind/output and cleanup from the final receipt.
+            // A terminal timeout may precede observation. Its receipt must
+            // establish whether any process or socket was actually started.
             f.terminal(&receipt.job_id)
         } else {
             loop {
@@ -3770,6 +3773,25 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
                 std::thread::sleep(Duration::from_millis(10));
             }
         };
+        if mode == "timeout" && observed.listener_handoff.is_none() {
+            assert_eq!(observed.state, JobState::Failed, "{observed:?}");
+            assert!(
+                observed.native.is_none() && observed.process.is_none(),
+                "{observed:?}"
+            );
+            assert_eq!(observed.output_bytes, 0, "{observed:?}");
+            assert!(
+                observed.updated_at >= observed.deadline
+                    && observed.detail.contains("deadline expired before start"),
+                "{observed:?}"
+            );
+            eprintln!(
+                "timeout: valid expiry before native launch; started-service proof is missing: {observed:?}"
+            );
+            // Still exercise the remaining lifecycle/refusal rows. This legal
+            // expiry does not count as a started-service timeout pass below.
+            continue;
+        }
         let observation = observed.listener_handoff.as_ref().unwrap();
         assert_eq!(observation.status, EndpointStatus::BoundForHandoff);
         assert!(
@@ -3866,6 +3888,7 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
                 STANDARD.decode(data_base64).unwrap(),
                 b"application ready to accept on inherited listener\n"
             );
+            started_timeout = true;
         }
         assert_eq!(
             f.job(&receipt.job_id)
@@ -3926,4 +3949,8 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
     )
     .unwrap();
     f.assert_no_side_effects();
+    assert!(
+        started_timeout,
+        "started-service timeout was not established; remaining lifecycle/refusal rows completed"
+    );
 }
