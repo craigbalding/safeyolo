@@ -33,7 +33,9 @@ impl NativeRuntime {
         match self {
             #[cfg(target_os = "linux")]
             Self::Linux(_) => crate::linux::network_enforcement(operation),
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            Self::Macos(_) => crate::macos::network_enforcement(operation),
+            #[cfg(windows)]
             _ => {
                 let _ = operation;
                 Vec::new()
@@ -89,13 +91,13 @@ impl NativeRuntime {
         id: &str,
         protected: &[PathBuf],
     ) -> Result<(), Refusal> {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(windows)]
         let _ = protected;
         match self {
             #[cfg(target_os = "linux")]
             Self::Linux(runtime) => runtime.execute(target, ledger, id, protected),
             #[cfg(target_os = "macos")]
-            Self::Macos(runtime) => runtime.execute(target, ledger, id),
+            Self::Macos(runtime) => runtime.execute(target, ledger, id, protected),
             #[cfg(windows)]
             Self::Windows(runtime) => runtime.execute(target, ledger, id),
         }

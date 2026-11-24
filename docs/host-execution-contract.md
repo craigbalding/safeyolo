@@ -407,7 +407,7 @@ reports `commit=unknown`; this is not a release identity.
 | Target | Required runtime components and current native profile |
 |---|---|
 | Linux x86-64 / ARM64 | Compatible C runtime; a pinned bubblewrap with the options used by the backend, including `--bind-fd`; kernel user namespaces, seccomp and delegated cgroup v2 memory/pids controls. The executor must run where it can migrate its own jobs into that delegation. Ordinary programs receive selected read/write paths and may execute descendants inside those namespaces and the same cgroup. The explicit broader TCP profile below shares the target network namespace and separates connect from listen/accept permission. Direct IPC remains unavailable. The fixed service profile separately admits its trusted OS client. |
-| macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive no fork, writes, sockets or Mach access. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed endpoint helper below receives sockets for scoped observations. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
+| macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive selected read/write paths and the explicitly broader IP socket profile below. Fork, Unix sockets and Mach access remain denied. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed endpoint helper receives sockets for scoped observations. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
 | Windows x86-64 | Native Windows security, Credential Manager, local named pipes, Job Objects, the Service Control Manager and the Universal C Runtime supplied by current Windows. The GNU package statically links its compiler runtime. Its remaining imports are Windows system DLLs. No MinGW installation is required on the target. |
 
 SQLite is bundled into the executable. Operation definitions separately declare
@@ -505,6 +505,62 @@ competing bind fails in the program and its output/exit result; a declaration
 does not reserve the endpoint. Ordinary job completion, cancellation and
 restart use the same cgroup descendant cleanup. Intentional persistence is not
 implemented by this profile.
+
+### macOS writable paths and broader network authority
+
+An adopted macOS operation can select existing files or directories in
+`execution.filesystem.write`. A directory permits creation, modification,
+replacement, rename and removal within that directory. Select the parent when
+creating a new path. A working directory alone grants no access. Empty write
+scopes retain the read-only default. The issuer grant and target ceiling bind
+the changed operation through the existing implementation digest.
+
+Qualification and launch resolve scope roots and inspect existing aliases.
+Every hard link to a writable file must be inside the selected write scopes;
+overlapping scopes and APFS firmlink aliases do not count the same entry twice.
+Executor configuration, keys, state, native images and system runtime roots
+remain protected, including aliases identified by device/inode. Special files
+need an independently supported IPC boundary. Seatbelt checks resolved paths
+for each workload access, including symbolic links and link/rename source and
+destination checks. These scopes select paths, rather than Linux-style pinned
+mounts: a trusted host replacement changes the contents selected by that path.
+
+Files remain at their selected host paths after completion, failure,
+cancellation and restart. Job cleanup does not delete them. As on Linux,
+`output_bytes` bounds stdout/stderr, not file storage. Output-file failure can
+leave partial files. The Output route returns the retained stream; selected-file
+retrieval, automated retention and disk quotas remain unfinished under #1704.
+
+For IP sockets, add `network_ipc` to the operation's existing `execution.broader`
+set and adopt matching issuer and target authority. Destinations and listeners
+are separate. Seatbelt enforces TCP/UDP transport, direction and selected port
+through its supported address classes. A loopback address or `localhost`
+selects the IPv4/IPv6 loopback class at that port. **Every other address or
+hostname selects all addresses accessible to the target account at that port.**
+An exact IP, interface, address family, hostname or inbound peer is not contained.
+A listener port of zero permits **any local port**, rather than only kernel
+allocation. This expansion is disclosed before invocation; it cannot be
+selected through a narrow grant. Empty network declarations retain socket denial.
+
+A destination permits outbound use; it does not grant bind/listen authority.
+A listener permits bind and inbound use; it does not grant arbitrary outbound
+use. UDP responses need matching outbound authority. Raw and Unix sockets and
+Mach lookups remain denied to ordinary programs. DNS access is not implicit.
+The target's network context applies, outside the issuing instance's proxy.
+Discovery, proposals, `check` and native receipts report this boundary separately
+from the authored intent and agent rationale. Binding, readiness, publication
+and reachable audience remain distinct. Forwarding, firewall/peer controls,
+application authentication/TLS and VPN/tunnel protection remain unknown unless
+separately observed. A permitted port grants no authority to replace an
+occupying service or change firewall, proxy or publication configuration.
+
+This profile retains the single-process Seatbelt boundary, polled memory and
+explicit controller-crash exception. Cancellation and deadlines stop the owned
+child while the executor is live. Restart retains uncertainty until its recorded
+birth is absent; it does not kill a recovered PID. Subprocesses, intentional
+persistence, exact network address/peer bounds and composed reach assessment
+remain unfinished under #1704. The fixed trusted service client and endpoint
+helper keep their existing separate exceptions.
 
 ### Scoped native endpoint inspection
 
@@ -643,7 +699,7 @@ retains uncertain cleanup and concurrency until the recorded process birth is
 absent; it does not signal a recovered PID. The macOS backend requires both
 exceptions. An enforcement label cannot select either exception. Adapters
 refuse required guarantees they cannot apply. Linux supports the explicitly
-broader TCP profile above; macOS still refuses ordinary network scopes.
+broader TCP profile above; macOS supports the broader transport/port profile above.
 An ordinary adopted program cannot receive a service-manager channel: under
 the executor account that channel could launch code outside the sandbox and
 modify executor inputs. A service name or executable digest alone does not

@@ -22,6 +22,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod filesystem;
+mod network;
+pub(crate) use network::disclosure as network_enforcement;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MacRuntime {
@@ -128,19 +132,26 @@ impl MacRuntime {
             )?;
             require(
                 service
-                    || e.broader == [BroaderBound::Memory, BroaderBound::ExecutorRestart].into(),
+                    || e.broader.contains(&BroaderBound::Memory)
+                        && e.broader.contains(&BroaderBound::ExecutorRestart)
+                        && e.broader.iter().all(|b| {
+                            matches!(
+                                b,
+                                BroaderBound::Memory
+                                    | BroaderBound::ExecutorRestart
+                                    | BroaderBound::NetworkIpc
+                            )
+                        }),
                 RefusalCode::Unavailable,
                 "macOS requires explicit broader memory and executor_restart authority: memory is polled and a controller crash can leave an orphan; restart preserves unknown cleanup and its reservation",
             )?;
             require(
-                e.filesystem.write.is_empty()
-                    && e.network.destinations.is_empty()
-                    && e.network.listeners.is_empty()
-                    && e.network.ipc.is_empty()
-                    && (service || e.delegated_services.is_empty()),
+                e.network.ipc.is_empty() && (service || e.delegated_services.is_empty()),
                 RefusalCode::Unavailable,
-                "this macOS profile supports read-only files, no socket or Mach access and no delegated services; service effects require an independently protected executor identity or enforced service boundary",
+                "ordinary macOS programs have no Unix socket or Mach access and no delegated services; service effects require the validated fixed OS client or an independently enforced service boundary",
             )?;
+            network::validate(e)?;
+            filesystem::validate(&e.filesystem.write, protected)?;
             let mut read_paths = e.filesystem.read.clone();
             if endpoint {
                 read_paths.extend(crate::endpoints::runtime_reads());
@@ -218,9 +229,10 @@ impl MacRuntime {
         target: &Target,
         ledger: Arc<Mutex<Ledger>>,
         id: &str,
+        protected: &[PathBuf],
     ) -> Result<(), Refusal> {
         execute_job(target, ledger, id, |op, receipt, ledger| {
-            self.run(op, receipt, ledger)
+            self.run(op, receipt, ledger, protected)
         })
     }
 
@@ -229,10 +241,13 @@ impl MacRuntime {
         op: &Operation,
         receipt: &Receipt,
         ledger: &Arc<Mutex<Ledger>>,
+        protected: &[PathBuf],
     ) -> Result<NativeObservation, Refusal> {
         let command = op.command(&receipt.prepared.invocation.arguments)?;
         let service = crate::unix_services::validate(op)?;
         let endpoint = crate::endpoints::validate(op)?;
+        network::validate(&op.execution)?;
+        let writes = filesystem::validate(&op.execution.filesystem.write, protected)?;
         let root = ledger
             .lock()
             .map_err(unavailable)?
@@ -288,7 +303,26 @@ impl MacRuntime {
                 profile.push_str("(allow signal)");
             }
         }
-        for path in &op.execution.filesystem.read {
+        profile.push_str(&network::profile(&op.execution));
+        for path in &writes {
+            // Source and destination link/rename checks still pass through
+            // Seatbelt. Resolving an inner symlink grants no outside access.
+            profile.push_str(&format!(
+                "(allow file-read* file-write* (subpath {}))",
+                quoted(
+                    path.to_str()
+                        .ok_or_else(|| unavailable("write path is not UTF-8"))?
+                )
+            ));
+        }
+        for path in op
+            .execution
+            .filesystem
+            .read
+            .iter()
+            .map(Path::new)
+            .chain(writes.iter().map(PathBuf::as_path))
+        {
             let real = Path::new(path).canonicalize().map_err(unavailable)?;
             // realpath resolves each parent before opening the adopted path.
             // Parent metadata grants no sibling content or directory listing.
@@ -406,6 +440,18 @@ impl MacRuntime {
             result.enforcement[0] = "Seatbelt adopted read paths and ancestor directory metadata, no file writes, no direct sockets or fork; the pinned trusted launchctl client receives Mach lookup and, for stop/restart, native signal permission, with fixed adopted action/resource and exact environment".into();
             result.dependencies.push("EXPLICIT BROADER NETWORK/IPC: Mach lookup scope is not per-service isolation; the OS client and its system libraries are trusted executor code".into());
             result.dependencies.push(crate::unix_services::disclosure());
+        }
+        if !writes.is_empty() {
+            result.enforcement[0] = "Seatbelt selected read/write paths, canonical ancestor metadata, no process fork, no Mach or Unix sockets, pinned private executable snapshot and exact environment; selected IP sockets follow the separately reported network boundary".into();
+            result.dependencies.push(format!("selected host write paths {writes:?}; validation refuses existing hard links outside the writable scope and executor control/runtime aliases. Seatbelt follows resolved paths at access time; host replacement changes the selected path contents. New descendants and file replacement are allowed within selected directories. Files persist after completion, cancellation and restart. output_bytes bounds stdout/stderr, not file storage; Output does not retrieve these files."));
+        }
+        if !op.execution.network.destinations.is_empty()
+            || !op.execution.network.listeners.is_empty()
+        {
+            result.dependencies.extend(network_enforcement(op));
+            if writes.is_empty() {
+                result.enforcement[0] = "Seatbelt selected read paths, no writes/fork/Mach/Unix sockets, pinned private executable snapshot and exact environment; IP sockets follow the separately reported network boundary".into();
+            }
         }
         Ok(result)
     }

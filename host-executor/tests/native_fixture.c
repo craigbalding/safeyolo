@@ -102,12 +102,83 @@ static int tcp_probe(const char *mode, const char *directory, int local_port, in
 }
 #endif
 
+#ifdef __APPLE__
+static int mac_network_probe(const char *mode, const char *directory, int local_port, int remote_port) {
+    int outbound = strstr(mode,"connect") || strstr(mode,"both");
+    int listener = strstr(mode,"listen") || strstr(mode,"both") || strstr(mode,"wait");
+    int ipv6 = mode[strlen(mode)-1]=='6';
+    int udp = strstr(mode,"udp") != NULL;
+    int family = ipv6 ? AF_INET6 : AF_INET;
+    int type = udp ? SOCK_DGRAM : SOCK_STREAM;
+    struct sockaddr_in v4 = { .sin_family=AF_INET, .sin_addr.s_addr=htonl(INADDR_LOOPBACK) };
+    struct sockaddr_in6 v6 = { .sin6_family=AF_INET6, .sin6_addr=IN6ADDR_LOOPBACK_INIT };
+    struct sockaddr *address = ipv6 ? (struct sockaddr *)&v6 : (struct sockaddr *)&v4;
+    socklen_t length = ipv6 ? sizeof(v6) : sizeof(v4);
+    if (socket(AF_UNIX,SOCK_STREAM,0)!=-1 || errno!=EPERM) return 90;
+    if (socket(AF_INET,SOCK_RAW,IPPROTO_ICMP)!=-1 || errno!=EPERM) return 91;
+    if (fork()!=-1 || errno!=EPERM) return 92;
+    if (getenv("DENIED_TCP_PORT")) {
+        struct sockaddr_in denied = { .sin_family=AF_INET, .sin_addr.s_addr=htonl(INADDR_LOOPBACK),
+            .sin_port=htons((unsigned short)atoi(getenv("DENIED_TCP_PORT"))) };
+        int fd=socket(AF_INET,SOCK_STREAM,0);
+        if (fd!=-1) {
+            if (connect(fd,(struct sockaddr *)&denied,sizeof(denied))!=-1 || errno!=EPERM) return 93;
+            close(fd);
+        }
+    }
+    v4.sin_port=htons((unsigned short)remote_port);
+    v6.sin6_port=htons((unsigned short)remote_port);
+    int fd=socket(family,type,0);
+    if (fd<0) { perror("socket"); return 94; }
+    if (outbound) {
+        struct timeval timeout={.tv_sec=3};
+        if (setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout))) return 95;
+        char answer[2];
+        if (connect(fd,address,length) || write(fd,"request",7)!=7
+            || recv(fd,answer,2,udp ? 0 : MSG_WAITALL)!=2 || memcmp(answer,"ok",2)) {
+            perror("outbound"); return 96;
+        }
+        puts("selected outbound request completed");
+    } else if (connect(fd,address,length)!=-1 || errno!=EPERM) return 97;
+    close(fd);
+    fd=socket(family,type,0);
+    v4.sin_port=htons((unsigned short)local_port);
+    v6.sin6_port=htons((unsigned short)local_port);
+    if (listener) {
+        if (bind(fd,address,length)) { printf("bind_failed_errno=%d\n",errno); return 98; }
+        if (!udp && listen(fd,1)) { perror("listen"); return 99; }
+        printf("bound=%d family=%d\n",local_port,ipv6 ? 6 : 4);
+        char path[PATH_MAX];
+        if (snprintf(path,sizeof(path),"%s/%s",directory,mode)>=(int)sizeof(path)) return 100;
+        FILE *file=fopen(path,"w");
+        if (!file || fputs("retained network result\n",file)<0 || fclose(file)) return 101;
+        if (strstr(mode,"wait")) { alarm(4); for (;;) pause(); }
+        struct timeval timeout={.tv_sec=3};
+        if (setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout))) return 102;
+        if (udp) {
+            char data[7];
+            if (recv(fd,data,7,0)!=7 || memcmp(data,"request",7)) return 103;
+        } else {
+            int peer=accept(fd,NULL,NULL);
+            if (peer<0 || write(peer,"service",7)!=7) { perror("accept/reply"); return 104; }
+            close(peer);
+        }
+    } else if (bind(fd,address,length)!=-1 || errno!=EPERM) return 105;
+    close(fd);
+    puts("selected socket directions and ports enforced; Unix/raw sockets and fork denied");
+    return 0;
+}
+#endif
+
 /* Prepared by the developer test, never by target discovery/qualification. */
 int main(int argc, char **argv) {
     if (argc != 5) return 2;
     setbuf(stdout, NULL);
 #ifdef __linux__
     if (!strncmp(argv[1],"tcp-",4)) return tcp_probe(argv[1],argv[2],atoi(argv[3]),atoi(argv[4]));
+#endif
+#ifdef __APPLE__
+    if (!strncmp(argv[1],"mac-net-",8)) return mac_network_probe(argv[1],argv[2],atoi(argv[3]),atoi(argv[4]));
 #endif
     if (!strncmp(argv[1], "write-", 6)) {
         char path[PATH_MAX], replacement[PATH_MAX];
@@ -126,6 +197,15 @@ int main(int argc, char **argv) {
         if (output) { fclose(output); return 37; }
         if (snprintf(path,sizeof(path),"%s/read-alias",argv[2]) >= (int)sizeof(path)) return 38;
         if (!link(argv[3],path)) return 39;
+#ifdef __APPLE__
+        if (!strncmp(argv[1],"write-single",12)) {
+            if (fork()!=-1 || errno!=EPERM) return 47;
+            puts("created, replaced, modified, removed; outside write/link and fork denied");
+            if (strstr(argv[1],"wait")) { alarm(4); for (;;) pause(); }
+            if (strstr(argv[1],"flood")) { for (int i=0;i<10000;i++) puts("output"); }
+            return strstr(argv[1],"partial") ? 46 : 0;
+        }
+#endif
         pid_t pid=fork();
         if (pid<0) return 40;
         if (pid==0) {
