@@ -282,7 +282,9 @@ No system certificate or trust store is changed.
 
 `prepare` saves a candidate configuration and reports `activated: false`.
 `check` validates all adopted implementations and native dependencies without
-launching them. `serve` prints the selected target and ready listener only after
+launching them. For Linux TCP operations, it also prints the selected directions
+and broader address/port exposure from the same target-generated disclosure
+used by discovery and proposals. `serve` prints the selected target and ready listener only after
 validation, ledger reconciliation and binding. A saved file is not evidence of
 running-target readiness.
 
