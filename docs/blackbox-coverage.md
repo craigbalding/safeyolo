@@ -1405,8 +1405,7 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 - [`tests/proxy_contracts/test_agent_api_policy.py::test_agent_api_policy_canonical_baseline_is_shared`](../tests/proxy_contracts/test_agent_api_policy.py#L121)
 - [`tests/proxy_contracts/test_agent_api_policy.py::test_agent_api_policy_read_uses_last_valid_reload`](../tests/proxy_contracts/test_agent_api_policy.py#L137)
 - [`tests/proxy_contracts/test_agent_api_policy.py::test_agent_api_policy_requires_the_shared_token`](../tests/proxy_contracts/test_agent_api_policy.py#L157)
-- [`tests/proxy_contracts/test_agent_api_policy.py::test_agent_api_policy_gateway_tokens_follow_baseline_reload`](../tests/proxy_contracts/test_agent_api_policy.py#L251)
-- [`tests/proxy_contracts/test_agent_api_policy.py::test_agent_api_policy_preserves_non_string_gateway_capability`](../tests/proxy_contracts/test_agent_api_policy.py#L304)
+- [`tests/proxy_contracts/test_agent_api_policy.py::test_agent_api_policy_gateway_tokens_stay_with_the_caller_across_reload`](../tests/proxy_contracts/test_agent_api_policy.py#L204)
 
 <a id="witness-tests-proxy-contracts-test-agent-api-policy-yaml-py"></a>
 ### [`tests/proxy_contracts/test_agent_api_policy_yaml.py`](../tests/proxy_contracts/test_agent_api_policy_yaml.py)

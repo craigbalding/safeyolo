@@ -975,8 +975,9 @@ impl Policy {
         Ok(policy)
     }
 
-    /// Borrow the canonical baseline for an authorized API response. This value
-    /// may contain gateway tokens and must not enter diagnostics or event logs.
+    /// Borrow the internal canonical baseline. This value may contain gateway
+    /// tokens and must not enter diagnostics or event logs. Agent responses
+    /// must exclude credential-bearing fields.
     pub(crate) fn baseline(
         &self,
     ) -> std::result::Result<Option<&Value>, BaselineSerializationError> {
