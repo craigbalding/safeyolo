@@ -348,6 +348,8 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-installed-shared-approvals-py).
 - [tests/proxy_contracts/test_guard_approval_audit.py](../tests/proxy_contracts/test_guard_approval_audit.py#L39) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-guard-approval-audit-py).
+- [tests/proxy_contracts/test_media_recipe_gateway.py](../tests/proxy_contracts/test_media_recipe_gateway.py#L28) — Native process; owned loopback dispatch origin. Evidence: Shipped recipe service/policy; no installed library or job proof.
+  Exact identities: [source inventory](#witness-tests-proxy-contracts-test-media-recipe-gateway-py).
 - [tests/proxy_contracts/test_control_updates.py](../tests/proxy_contracts/test_control_updates.py#L111) — Native signals process; optional prepared Linux sandbox jobs. Evidence: Signed native candidates, owned NATS and controlled route requests; real isolated checks require the selected installed host.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-control-updates-py).
 - [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L635) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
@@ -1622,6 +1624,13 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
 - [`tests/proxy_contracts/test_guard_approval_audit.py::test_guard_prompt_waits_for_audit_append`](../tests/proxy_contracts/test_guard_approval_audit.py#L39)
+
+<a id="witness-tests-proxy-contracts-test-media-recipe-gateway-py"></a>
+### [`tests/proxy_contracts/test_media_recipe_gateway.py`](../tests/proxy_contracts/test_media_recipe_gateway.py)
+
+Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+
+- [`tests/proxy_contracts/test_media_recipe_gateway.py::test_media_dispatch_cannot_change_source_destination_job_or_command`](../tests/proxy_contracts/test_media_recipe_gateway.py#L28)
 
 <a id="witness-tests-proxy-contracts-test-control-updates-py"></a>
 ### [`tests/proxy_contracts/test_control_updates.py`](../tests/proxy_contracts/test_control_updates.py)
