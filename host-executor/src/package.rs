@@ -294,6 +294,12 @@ impl Operation {
                         code: RefusalCode::Arguments,
                         message: "missing command argument".into(),
                     })?;
+                    // Enum bindings already accept complete JSON values. Pass
+                    // a structured choice as one JSON word, without a shell.
+                    if matches!(self.arguments[name].kind, ArgumentType::Enum) && value.is_object()
+                    {
+                        return Ok(vec![value.to_string()]);
+                    }
                     if let Some(values) = value.as_array() {
                         values
                             .iter()

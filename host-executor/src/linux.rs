@@ -283,6 +283,7 @@ impl LinuxRuntime {
     ) -> Result<(), Refusal> {
         let execution = &operation.execution;
         let service = crate::unix_services::validate(operation)?;
+        let endpoint = crate::endpoints::validate(operation)?;
         let tcp = TcpAccess::selected(operation);
         require(
             service
@@ -373,7 +374,11 @@ impl LinuxRuntime {
             )?;
             validate_read_mounts(path, &protected, &mounts)?;
         }
-        for path in &execution.filesystem.read {
+        let mut read_paths = execution.filesystem.read.clone();
+        if endpoint {
+            read_paths.extend(crate::endpoints::runtime_reads());
+        }
+        for path in &read_paths {
             let path = Path::new(path);
             require(
                 absolute(path),
@@ -506,8 +511,9 @@ impl LinuxRuntime {
             self.executable_bytes,
         )?;
         let service = crate::unix_services::validate(operation)?;
+        let endpoint = crate::endpoints::validate(operation)?;
         let tcp = TcpAccess::selected(operation);
-        let seccomp = socket_filter(service, tcp)?;
+        let seccomp = socket_filter(service, tcp, endpoint)?;
         let command = operation.command(&receipt.prepared.invocation.arguments)?;
         let mut native = ProcessCommand::new(format!("/proc/self/fd/{}", helper.as_raw_fd()));
         native
@@ -527,7 +533,7 @@ impl LinuxRuntime {
             "ALL",
             "--clearenv",
         ]);
-        if !tcp.enabled() {
+        if !tcp.enabled() && !endpoint {
             native.arg("--unshare-net");
         }
         if !service {
@@ -540,7 +546,11 @@ impl LinuxRuntime {
             &unsafe { libc::getegid() }.to_string(),
         ]);
         let mut reads = Vec::new();
-        for path in &operation.execution.filesystem.read {
+        let mut read_paths = operation.execution.filesystem.read.clone();
+        if endpoint {
+            read_paths.extend(crate::endpoints::runtime_reads());
+        }
+        for path in &read_paths {
             let file = File::open(path).map_err(unavailable)?;
             native.args(["--ro-bind-fd", &file.as_raw_fd().to_string(), path]);
             reads.push(file);
@@ -777,6 +787,10 @@ impl LinuxRuntime {
             processes_stopped: quiescent, output_truncated: truncated || output_open,
             termination_reason: reason.into(),
         };
+        if endpoint {
+            result.enforcement[1] = "Pinned trusted endpoint helper in the target network context; no workload-selected code, environment, files or service channel. Native helper filters interface facts and probes only the authorised typed selector.".into();
+            result.enforcement.extend(crate::endpoints::disclosure());
+        }
         if !operation.execution.filesystem.write.is_empty() {
             result.dependencies.push(format!("selected host write roots {:?}; files persist after job cleanup, cancellation and restart; output_bytes bounds stdout/stderr, not file storage; the Output route does not retrieve selected files", operation.execution.filesystem.write));
         }
@@ -942,7 +956,7 @@ impl Drop for JobCgroup {
     }
 }
 
-fn socket_filter(service: bool, tcp: TcpAccess) -> Result<File, Refusal> {
+fn socket_filter(service: bool, tcp: TcpAccess, endpoint: bool) -> Result<File, Refusal> {
     #[cfg(target_arch = "x86_64")]
     const ARCH: u32 = 0xc000003e;
     #[cfg(target_arch = "aarch64")]
@@ -998,7 +1012,10 @@ fn socket_filter(service: bool, tcp: TcpAccess) -> Result<File, Refusal> {
             stmt(0x06, 0x7fff0000),
         ]);
     }
-    for syscall in [libc::SYS_socket, libc::SYS_socketpair] {
+    for syscall in [libc::SYS_socket, libc::SYS_socketpair]
+        .into_iter()
+        .filter(|_| !endpoint)
+    {
         if service {
             filter.extend([
                 jump(syscall as u32, 0, 4),
@@ -1138,7 +1155,7 @@ mod tests {
     #[test]
     #[ignore = "requires native Linux kernel seccomp; run with the installed contract fixtures"]
     fn service_filter_allows_unix_ipc_and_denies_host_process_control() {
-        let mut file = socket_filter(true, TcpAccess::default()).unwrap();
+        let mut file = socket_filter(true, TcpAccess::default(), false).unwrap();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
         let parent = unsafe { libc::getpid() };

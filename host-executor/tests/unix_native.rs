@@ -2771,3 +2771,281 @@ fn installed_adaptive_investigation_and_retained_configuration_effects() {
         "installed useful work: diagnostic selected from prior output, fixed-service start/stop observed; retained-host-edit assessment and actual configuration reads distinguish targets/resources; no per-invocation approval"
     );
 }
+
+#[test]
+#[ignore = "requires native Unix host; Linux also needs bubblewrap and delegated cgroup v2"]
+fn installed_unix_selected_endpoint_inspection() {
+    use endpoints::{EndpointObservation, EndpointStatus};
+    use serde_json::json;
+    let mut f = fixture(40, 1024 * 1024);
+    let config = f.root.join("target.json");
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    let occupied = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let occupied_port = occupied.local_addr().unwrap().port();
+    let unrelated = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let unrelated_port = unrelated.local_addr().unwrap().port();
+    let loopback = if cfg!(target_os = "macos") {
+        "lo0"
+    } else {
+        "lo"
+    };
+    let candidate = |transport: &str,
+                     family: &str,
+                     address: Option<&str>,
+                     interface: Option<&str>,
+                     port: u16| {
+        json!({"transport":transport,"family":family,"address":address,"interface":interface,"port":port,
+            "ipv6_only":family=="ipv6","reuse_address":false,"reuse_port":false})
+    };
+    let v4 = |port| candidate("tcp", "ipv4", Some("127.0.0.1"), None, port);
+    let mut choices = vec![
+        json!({"candidates":[v4(occupied_port)]}),
+        json!({"candidates":[v4(0)]}),
+        json!({"candidates":[v4(occupied_port),v4(0)]}),
+        json!({"candidates":[candidate("udp","ipv4",Some("127.0.0.1"),None,0)]}),
+        json!({"candidates":[candidate("tcp","ipv6",Some("::1"),Some(loopback),0)]}),
+        json!({"candidates":[candidate("udp","ipv6",Some("::1"),None,0)]}),
+        json!({"candidates":[candidate("tcp","ipv4",None,Some(loopback),0)]}),
+        json!({"candidates":[candidate("tcp","ipv4",None,Some("safeyolo-interface-absent"),0)]}),
+        json!({"candidates":[candidate("tcp","ipv4",Some("192.0.2.1"),Some(loopback),0)]}),
+        json!({"candidates":[candidate("tcp","ipv4",Some("0.0.0.0"),None,0)]}),
+    ];
+    let mut dual_stack = candidate("tcp", "ipv6", Some("::"), None, occupied_port);
+    dual_stack["ipv6_only"] = false.into();
+    choices.push(json!({"candidates":[dual_stack]}));
+    choices.push(json!({"candidates":[candidate("tcp","ipv6",Some("::"),None,occupied_port)]}));
+    let mut reuse = v4(0);
+    reuse["reuse_address"] = true.into();
+    reuse["reuse_port"] = true.into();
+    choices.push(json!({"candidates":[reuse]}));
+    let mut operation = f.target.package.operations["observe"].clone();
+    operation.description =
+        "Inspect only the selected endpoint; release probes before returning.".into();
+    operation.arguments = BTreeMap::from([(
+        "endpoint".into(),
+        Argument {
+            kind: ArgumentType::Enum,
+            required: true,
+            default: None,
+            options: choices.clone(),
+        },
+    )]);
+    operation.execution.executable = executor().to_str().unwrap().into();
+    operation.execution.executable_sha256 = hash(&executor());
+    operation.execution.argv = vec![
+        Word::Literal {
+            value: endpoints::INSPECT_COMMAND.into(),
+        },
+        Word::Argument {
+            name: "endpoint".into(),
+        },
+    ];
+    operation.execution.environment.clear();
+    operation.execution.filesystem.read.clear();
+    operation.execution.resources.memory_bytes = 128 * 1024 * 1024;
+    let mut operations = f.target.package.operations.clone();
+    operations.insert("endpoint".into(), operation);
+    settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    settings
+        .target
+        .ceiling
+        .get_mut("endpoint")
+        .unwrap()
+        .arguments
+        .insert("endpoint".into(), choices.clone());
+    settings
+        .target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant")
+        .unwrap()
+        .operations
+        .get_mut("endpoint")
+        .unwrap()
+        .arguments
+        .insert("endpoint".into(), choices.clone());
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    f.target = settings.target;
+    let Response::Discovery { discovery } = f.call(Action::Discover) else {
+        panic!("discovery")
+    };
+    assert!(
+        discovery
+            .operations
+            .iter()
+            .find(|o| o.operation_id == "endpoint")
+            .unwrap()
+            .network_enforcement
+            .iter()
+            .any(|s| s.contains("trusted helper"))
+    );
+    let invoke = |f: &mut Fixture, selection: serde_json::Value| {
+        let mut invocation = f.invocation("endpoint");
+        invocation.arguments.insert("endpoint".into(), selection);
+        let Response::Proposal { prepared, .. } = f.call(Action::Propose { invocation }) else {
+            panic!("endpoint proposal")
+        };
+        let Response::Job { receipt } = f.call(Action::Invoke {
+            invocation: prepared.invocation,
+        }) else {
+            panic!("endpoint invoke")
+        };
+        let result = f.terminal(&receipt.job_id);
+        assert_eq!(result.state, JobState::Completed, "{result:?}");
+        let Response::Output { data_base64, .. } = f.call(Action::Output {
+            job_id: receipt.job_id.clone(),
+            offset: 0,
+            max_bytes: 4096,
+        }) else {
+            panic!("endpoint output")
+        };
+        let bytes = STANDARD.decode(data_base64).unwrap();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(!text.contains(&format!("\"port\":{unrelated_port}")));
+        let observed: EndpointObservation = serde_json::from_slice(&bytes).unwrap();
+        assert!(!observed.reservation);
+        assert!(observed.application_ready.is_none() && observed.reachable_audience.is_none());
+        assert!(observed.observed_at >= receipt.admitted_at);
+        (observed, receipt.job_id.clone(), bytes)
+    };
+    assert_eq!(
+        invoke(&mut f, choices[0].clone()).0.status,
+        EndpointStatus::Conflict
+    );
+    let (available, retained_id, retained_bytes) = invoke(&mut f, choices[1].clone());
+    assert_eq!(available.status, EndpointStatus::AvailableAtObservation);
+    // Probe resources were released. A competing real bind can win immediately.
+    let binding = available.binding.unwrap();
+    let competitor = TcpListener::bind(binding).unwrap();
+    let collision = json!({"candidates":[v4(binding.port())]});
+    // Add only this exact newly chosen endpoint to both current authority owners.
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    settings
+        .target
+        .package
+        .operations
+        .get_mut("endpoint")
+        .unwrap()
+        .arguments
+        .get_mut("endpoint")
+        .unwrap()
+        .options
+        .push(collision.clone());
+    let digest = settings.target.package.operations["endpoint"].implementation_sha256();
+    let scope = settings.target.ceiling.get_mut("endpoint").unwrap();
+    scope.implementation_sha256 = digest.clone();
+    scope
+        .arguments
+        .get_mut("endpoint")
+        .unwrap()
+        .push(collision.clone());
+    let scope = settings
+        .target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant")
+        .unwrap()
+        .operations
+        .get_mut("endpoint")
+        .unwrap();
+    scope.implementation_sha256 = digest;
+    scope
+        .arguments
+        .get_mut("endpoint")
+        .unwrap()
+        .push(collision.clone());
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    f.target = settings.target;
+    assert_eq!(invoke(&mut f, collision).0.status, EndpointStatus::Conflict);
+    drop(competitor);
+    for (i, choice) in choices.iter().enumerate().skip(2) {
+        let observed = invoke(&mut f, choice.clone()).0;
+        let expected = if i == 10 {
+            EndpointStatus::Conflict
+        } else if [7, 8].contains(&i) {
+            EndpointStatus::Unavailable
+        } else {
+            EndpointStatus::AvailableAtObservation
+        };
+        assert_eq!(observed.status, expected, "case {i}: {observed:?}");
+        if i == 2 {
+            assert_ne!(observed.binding.unwrap().port(), occupied_port);
+        }
+        if i == 4 || i == 6 {
+            assert_eq!(observed.interface.unwrap().name, loopback);
+        }
+    }
+    // A request cannot append an unadopted selector or gain inventory/start authority.
+    let mut invocation = f.invocation("endpoint");
+    invocation.arguments.insert(
+        "endpoint".into(),
+        json!({"candidates":[v4(unrelated_port)]}),
+    );
+    assert!(matches!(
+        f.call(Action::Propose { invocation }),
+        Response::Refused { .. }
+    ));
+    // Malformed typed choices fail the same check/reload validation before observation.
+    let original = fs::read(&config).unwrap();
+    for invalid in ["environment", "selector", "executable"] {
+        let mut changed: Configuration = serde_json::from_slice(&original).unwrap();
+        let op = changed
+            .target
+            .package
+            .operations
+            .get_mut("endpoint")
+            .unwrap();
+        match invalid {
+            "environment" => {
+                op.execution.environment.insert(
+                    "LD_PRELOAD".into(),
+                    Word::Literal {
+                        value: "untrusted".into(),
+                    },
+                );
+            }
+            "selector" => op
+                .arguments
+                .get_mut("endpoint")
+                .unwrap()
+                .options
+                .push(json!({"candidates":[]})),
+            "executable" => op.execution.executable_sha256 = "0".repeat(64),
+            _ => unreachable!(),
+        }
+        fs::write(&config, serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert!(matches!(f.call(Action::Discover), Response::Refused { .. }));
+    }
+    fs::write(&config, &original).unwrap();
+    f.restart();
+    let Response::Output { data_base64, .. } = f.call(Action::Output {
+        job_id: retained_id,
+        offset: 0,
+        max_bytes: 4096,
+    }) else {
+        panic!("retained observation")
+    };
+    assert_eq!(STANDARD.decode(data_base64).unwrap(), retained_bytes);
+    unrelated.set_nonblocking(true).unwrap();
+    occupied.set_nonblocking(true).unwrap();
+    assert_eq!(
+        unrelated.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        occupied.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    let (admitted, _) = f.invoke("observe");
+    assert_eq!(f.terminal(&admitted.job_id).state, JobState::Completed);
+    f.assert_no_side_effects();
+    eprintln!(
+        "scoped endpoint: TCP/UDP IPv4/IPv6, concrete/wildcard/interface resolution, missing/changed address, conflict, approved alternative, competing bind, denial and restart-retained observation verified; unrelated receivers unchanged"
+    );
+}
