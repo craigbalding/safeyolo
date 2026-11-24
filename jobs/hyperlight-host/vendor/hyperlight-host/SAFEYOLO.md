@@ -18,17 +18,20 @@ compiler, target, profile and available Git metadata still use the existing
 build script. A local checkout can supply Git metadata from its containing
 repository; a source archive can have no Git metadata.
 
-The metadata patch leaves runtime code, backend selection, the guest ABI and
-SafeYolo's helper identity unchanged. Optional crashdump and upstream development
-features can still select chrono. The copied standalone lockfile includes those
-dependencies; it is separate from SafeYolo's selected normal/build feature graph.
+Optional crashdump filenames use Jiff's local clock and retain the
+`hl_core_YYYYMMDD_THHMMSS.mmm.elf` form. Development tracing selects the local
+`../tracing-forest` patch, which retains timestamped context trees using
+maintained `time`. The standalone lockfile includes these optional and
+development dependencies; it is separate from SafeYolo's selected normal/build
+feature graph. The patch does not change backend selection, the guest ABI,
+or the helper's identity format.
 Upstream integration tests require their own guest fixtures and tools; the
 SafeYolo helper's focused tests do not require those fixtures or a guest boot.
 
 The standalone `Cargo.lock` is locally refreshed from the published archive.
 It selects libz-sys 1.1.33 and rustix 1.1.6 to address the patchable advisories
 in those selections. The source, license and notice remain those identified
-above. The optional and development chrono maintenance notice remains.
+above. The optional and development date consumers no longer require chrono.
 It also selects url 2.5.9 and form_urlencoded 1.2.3 to address the nested
 `blob:` origin stack overflow in RUSTSEC-2026-0592.
 SafeYolo's helper dependencies use `jobs/hyperlight-host/Cargo.lock`, separately
