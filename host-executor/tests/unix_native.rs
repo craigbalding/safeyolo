@@ -1357,7 +1357,9 @@ fn installed_linux_broader_tcp_directions_and_descendants() {
             if String::from_utf8_lossy(&STANDARD.decode(data_base64).unwrap())
                 .contains("listening descendant ready")
             {
-                break current;
+                // Read the revision after observing the final ready output;
+                // output appends can advance it between the two API reads.
+                break f.job(&admitted.job_id);
             }
             assert!(Instant::now() < deadline, "{current:?}");
             std::thread::sleep(Duration::from_millis(10));
@@ -1366,13 +1368,11 @@ fn installed_linux_broader_tcp_directions_and_descendants() {
         if restart {
             f.restart();
         } else {
-            assert!(matches!(
-                f.call(Action::Cancel {
-                    job_id: admitted.job_id.clone(),
-                    expected_revision: running.revision
-                }),
-                Response::Job { .. }
-            ));
+            let response = f.call(Action::Cancel {
+                job_id: admitted.job_id.clone(),
+                expected_revision: running.revision,
+            });
+            assert!(matches!(response, Response::Job { .. }), "{response:?}");
         }
         let stopped = f.terminal(&admitted.job_id);
         assert_eq!(

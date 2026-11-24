@@ -460,8 +460,9 @@ host-execution correction.
 
 Empty `execution.network.destinations` and `listeners` retain disconnected
 execution. A destination declares a host, nonzero port and transport. A
-listener separately declares a numeric IPv4/IPv6 `address`, nonzero `port` and
-`transport`. Adding either direction changes the operation digest and needs
+listener separately declares a numeric IPv4/IPv6 `address`, `port` and
+`transport`. A listener port of zero describes kernel allocation; it does not
+reserve or report the allocated port. Adding either direction changes the operation digest and needs
 matching issuer and target authority. Catalogue update ceilings compare
 listeners separately from destinations.
 

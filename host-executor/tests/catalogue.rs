@@ -331,6 +331,37 @@ fn expansions_defaults_identity_effects_and_missing_enforcement_cannot_inherit_a
 }
 
 #[test]
+fn listeners_accept_kernel_allocation_without_becoming_destination_authority() {
+    let (mut target, _, _) = fixture();
+    let before = target.package.operations["restart"].clone();
+    let listener = NetworkListener {
+        address: "::".parse().unwrap(),
+        port: 0,
+        transport: NetworkTransport::Tcp,
+    };
+    target
+        .package
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .execution
+        .network
+        .listeners
+        .push(listener);
+    target.package.validate().unwrap();
+    let after = &target.package.operations["restart"];
+    assert!(after.execution.network.destinations.is_empty());
+    assert_ne!(before.authority_sha256(), after.authority_sha256());
+    assert!(!within_operation(after, &before, true));
+    assert!(
+        serde_json::from_value::<NetworkListener>(
+            serde_json::json!({"address":"not-an-address","port":0,"transport":"tcp"})
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn signature_metadata_and_effect_labels_do_not_authorise_same_name_replacement() {
     let (target, key, mut adoption) = fixture();
     adoption
