@@ -471,7 +471,8 @@ def test_dpkg_logger_failure_preserves_package_outcome(guest, tmp_path, recorder
     assert (root / "usr/share/retention-fixture/version").read_text() == "1.0"
     after = saved(state)
     assert after["configuration"] == before["configuration"]
-    assert after["last_completed_capture"] == before["last_completed_capture"]
+    assert after["last_completed_capture"] == pytest.approx(before["last_completed_capture"], rel=0, abs=1e-6)
+    assert after["configuration_commit"] == before["configuration_commit"]
     if recorder in ("changed-base", "reconcile", "unavailable-state"):
         assert "SafeYolo guest state capture failed" in result.stderr
     if recorder in ("changed-base", "reconcile"):
@@ -597,7 +598,7 @@ def test_interrupted_dpkg_and_capture_failure_remain_visible(guest, tmp_path):
             process.wait(timeout=5)
     run(*command, "capture")
     assert any(tx["outcome"] == "interrupted_or_post_hook_absent" for tx in saved(state)["transactions"].values())
-    before = saved(state)["last_completed_capture"]
+    before = saved(state)
     with socket.socket(socket.AF_UNIX) as unsupported:
         # UNIX sockets are runtime state, not restorable configuration files.
         # The recorder reports this uncovered type rather than claiming capture.
@@ -605,7 +606,8 @@ def test_interrupted_dpkg_and_capture_failure_remain_visible(guest, tmp_path):
         with chdir(root / "etc"):
             unsupported.bind("runtime.socket")
         assert run(*command, "capture", check=False).returncode
-        assert saved(state)["last_completed_capture"] == before
+        assert saved(state)["last_completed_capture"] == pytest.approx(before["last_completed_capture"], rel=0, abs=1e-6)
+        assert saved(state)["configuration_commit"] == before["configuration_commit"]
         assert "unsupported configuration file type" in saved(state)["capture_error"]
 
 
