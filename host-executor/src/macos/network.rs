@@ -19,6 +19,13 @@ fn transport(transport: NetworkTransport) -> &'static str {
     }
 }
 
+fn socket_type(transport: NetworkTransport) -> &'static str {
+    match transport {
+        NetworkTransport::Tcp => "SOCK_STREAM",
+        NetworkTransport::Udp => "SOCK_DGRAM",
+    }
+}
+
 pub(super) fn validate(e: &Execution) -> Result<(), Refusal> {
     require(
         e.network.destinations.is_empty() && e.network.listeners.is_empty()
@@ -32,10 +39,11 @@ pub(super) fn profile(e: &Execution) -> String {
     let mut profile = String::new();
     for destination in &e.network.destinations {
         profile.push_str(&format!(
-            "(allow network-outbound (remote {} \"{}:{}\"))",
+            "(allow network-outbound (require-all (remote {} \"{}:{}\") (socket-type {})))",
             transport(destination.transport),
             host(&destination.host),
-            destination.port
+            destination.port,
+            socket_type(destination.transport)
         ));
     }
     for listener in &e.network.listeners {
@@ -45,10 +53,11 @@ pub(super) fn profile(e: &Execution) -> String {
             listener.port.to_string()
         };
         profile.push_str(&format!(
-            "(allow network-bind network-inbound (local {} \"{}:{}\"))",
+            "(allow network-bind network-inbound (require-all (local {} \"{}:{}\") (socket-type {})))",
             transport(listener.transport),
             host(&listener.address.to_string()),
-            port
+            port,
+            socket_type(listener.transport)
         ));
     }
     for (kind, name, protocol) in [
@@ -77,7 +86,7 @@ pub(crate) fn disclosure(operation: &Operation) -> Vec<String> {
     }
     vec![
         format!("Seatbelt TCP/UDP outbound selectors {:?}; bind/inbound selectors {:?}. Connecting does not confer listener authority; a listener does not confer arbitrary outbound authority.", e.network.destinations, e.network.listeners),
-        "EXPLICIT BROADER NETWORK/IPC: each loopback selector permits the IPv4/IPv6 loopback class at its selected port; every other address or hostname permits all target-account addresses at that port. A listener port of zero permits any local port, not only kernel allocation. Exact IP/interface, hostname, address-family and inbound-peer restrictions are not enforced. Raw sockets, Unix sockets and Mach lookups remain denied to ordinary programs.".into(),
+        "EXPLICIT BROADER NETWORK/IPC: each loopback selector permits the IPv4/IPv6 loopback class at its selected port; every other address or hostname permits all target-account addresses at that port. A listener port of zero permits any local port, not only kernel allocation. Exact IP/interface, hostname, address-family and inbound-peer restrictions are not enforced. Network rules require TCP stream or UDP datagram sockets. Raw socket traffic, Unix-socket bind/connect and Mach lookups remain denied to ordinary programs; creating an unconnected Unix descriptor grants no channel.".into(),
         "The workload uses the target's network context, outside the issuing proxy. DNS is not implicitly granted. Binding, application readiness, publication and audience reach are separate; routing/firewall/forwarding, authentication, application TLS and VPN/tunnel protection are unobserved unless separately established. UDP replies require matching outbound authority.".into(),
     ]
 }

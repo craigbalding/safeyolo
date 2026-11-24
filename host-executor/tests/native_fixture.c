@@ -117,6 +117,10 @@ static int mac_network_probe(const char *mode, const char *directory, int local_
     int ipc=socket(AF_UNIX,SOCK_STREAM,0);
     if (ipc>=0) {
         struct sockaddr_un unix_address={.sun_family=AF_UNIX};
+        if (snprintf(unix_address.sun_path,sizeof(unix_address.sun_path),"%s/probe.socket",directory)>=(int)sizeof(unix_address.sun_path)) return 90;
+        if (bind(ipc,(struct sockaddr *)&unix_address,sizeof(unix_address))!=-1 || errno!=EPERM) {
+            perror("forbidden Unix bind"); return 90;
+        }
         if (snprintf(unix_address.sun_path,sizeof(unix_address.sun_path),"%s/../forbidden.socket",directory)>=(int)sizeof(unix_address.sun_path)) return 90;
         if (connect(ipc,(struct sockaddr *)&unix_address,sizeof(unix_address))!=-1 || errno!=EPERM) {
             perror("forbidden Unix connect"); return 90;
@@ -175,7 +179,7 @@ static int mac_network_probe(const char *mode, const char *directory, int local_
         }
     } else if (bind(fd,address,length)!=-1 || errno!=EPERM) return 105;
     close(fd);
-    puts("selected socket directions and ports enforced; Unix connections, raw sockets and fork denied");
+    puts("selected socket directions and ports enforced; Unix bind/connect, raw sockets and fork denied");
     return 0;
 }
 #endif

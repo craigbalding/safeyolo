@@ -148,7 +148,7 @@ impl MacRuntime {
             require(
                 e.network.ipc.is_empty() && (service || e.delegated_services.is_empty()),
                 RefusalCode::Unavailable,
-                "ordinary macOS programs have no Unix socket or Mach access and no delegated services; service effects require the validated fixed OS client or an independently enforced service boundary",
+                "ordinary macOS programs cannot bind/connect Unix sockets, look up Mach services or delegate service control; service effects require the validated fixed OS client or an independently enforced service boundary",
             )?;
             network::validate(e)?;
             filesystem::validate(&e.filesystem.write, protected)?;
@@ -442,7 +442,7 @@ impl MacRuntime {
             result.dependencies.push(crate::unix_services::disclosure());
         }
         if !writes.is_empty() {
-            result.enforcement[0] = "Seatbelt selected read/write paths, canonical ancestor metadata, no process fork, no Mach or Unix sockets, pinned private executable snapshot and exact environment; selected IP sockets follow the separately reported network boundary".into();
+            result.enforcement[0] = "Seatbelt selected read/write paths, canonical ancestor metadata, no process fork, Mach lookup or Unix-socket bind/connect, pinned private executable snapshot and exact environment; selected IP sockets follow the separately reported network boundary".into();
             result.dependencies.push(format!("selected host write paths {writes:?}; validation refuses existing hard links outside the writable scope and executor control/runtime aliases. Seatbelt follows resolved paths at access time; host replacement changes the selected path contents. New descendants and file replacement are allowed within selected directories. Files persist after completion, cancellation and restart. output_bytes bounds stdout/stderr, not file storage; Output does not retrieve these files."));
         }
         if !op.execution.network.destinations.is_empty()
@@ -450,7 +450,7 @@ impl MacRuntime {
         {
             result.dependencies.extend(network_enforcement(op));
             if writes.is_empty() {
-                result.enforcement[0] = "Seatbelt selected read paths, no writes/fork/Mach/Unix sockets, pinned private executable snapshot and exact environment; IP sockets follow the separately reported network boundary".into();
+                result.enforcement[0] = "Seatbelt selected read paths, no writes, fork, Mach lookup or Unix-socket bind/connect, pinned private executable snapshot and exact environment; IP sockets follow the separately reported network boundary".into();
             }
         }
         Ok(result)

@@ -407,7 +407,7 @@ reports `commit=unknown`; this is not a release identity.
 | Target | Required runtime components and current native profile |
 |---|---|
 | Linux x86-64 / ARM64 | Compatible C runtime; a pinned bubblewrap with the options used by the backend, including `--bind-fd`; kernel user namespaces, seccomp and delegated cgroup v2 memory/pids controls. The executor must run where it can migrate its own jobs into that delegation. Ordinary programs receive selected read/write paths and may execute descendants inside those namespaces and the same cgroup. The explicit broader TCP profile below shares the target network namespace and separates connect from listen/accept permission. Direct IPC remains unavailable. The fixed service profile separately admits its trusted OS client. |
-| macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive selected read/write paths and the explicitly broader IP socket profile below. Fork, Unix sockets and Mach access remain denied. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed endpoint helper receives sockets for scoped observations. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
+| macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive selected read/write paths and the explicitly broader IP socket profile below. Fork, Unix-socket bind/connect and Mach access remain denied. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed endpoint helper receives sockets for scoped observations. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
 | Windows x86-64 | Native Windows security, Credential Manager, local named pipes, Job Objects, the Service Control Manager and the Universal C Runtime supplied by current Windows. The GNU package statically links its compiler runtime. Its remaining imports are Windows system DLLs. No MinGW installation is required on the target. |
 
 SQLite is bundled into the executable. Operation definitions separately declare
@@ -545,8 +545,10 @@ selected through a narrow grant. Empty network declarations retain socket denial
 
 A destination permits outbound use; it does not grant bind/listen authority.
 A listener permits bind and inbound use; it does not grant arbitrary outbound
-use. UDP responses need matching outbound authority. Raw and Unix sockets and
-Mach lookups remain denied to ordinary programs. DNS access is not implicit.
+use. UDP responses need matching outbound authority. Rules require TCP stream
+or UDP datagram sockets. Raw socket traffic, Unix-socket bind/connect and Mach
+lookups remain denied to ordinary programs. An unconnected Unix descriptor
+does not grant a channel. DNS access is not implicit.
 The target's network context applies, outside the issuing instance's proxy.
 Discovery, proposals, `check` and native receipts report this boundary separately
 from the authored intent and agent rationale. Binding, readiness, publication
