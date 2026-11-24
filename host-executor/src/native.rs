@@ -71,10 +71,13 @@ impl NativeRuntime {
         target: &Target,
         ledger: Arc<Mutex<Ledger>>,
         id: &str,
+        protected: &[PathBuf],
     ) -> Result<(), Refusal> {
+        #[cfg(not(target_os = "linux"))]
+        let _ = protected;
         match self {
             #[cfg(target_os = "linux")]
-            Self::Linux(runtime) => runtime.execute(target, ledger, id),
+            Self::Linux(runtime) => runtime.execute(target, ledger, id, protected),
             #[cfg(target_os = "macos")]
             Self::Macos(runtime) => runtime.execute(target, ledger, id),
             #[cfg(windows)]

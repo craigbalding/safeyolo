@@ -370,7 +370,15 @@ pub(crate) fn connection(
                 // begin reauthenticates the retained original request.
                 match load_selected(&config, &state, &original) {
                     Ok(current) => {
-                        if let Err(error) = current.native.execute(&current.target, ledger, &job_id)
+                        let mut protected = vec![config, state];
+                        if let Some(https) = &current.https {
+                            protected
+                                .extend([https.certificate.clone(), https.private_key.clone()]);
+                        }
+                        if let Err(error) =
+                            current
+                                .native
+                                .execute(&current.target, ledger, &job_id, &protected)
                         {
                             eprintln!("{job_id}: {error}");
                         }

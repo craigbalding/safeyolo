@@ -8,12 +8,49 @@
 #include <sys/socket.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* Prepared by the developer test, never by target discovery/qualification. */
 int main(int argc, char **argv) {
     if (argc != 5) return 2;
     setbuf(stdout, NULL);
+    if (!strncmp(argv[1], "write-", 6)) {
+        char path[PATH_MAX], replacement[PATH_MAX];
+        if (snprintf(path,sizeof(path),"%s/new",argv[2]) >= (int)sizeof(path)
+            || snprintf(replacement,sizeof(replacement),"%s/result",argv[2]) >= (int)sizeof(replacement)) return 30;
+        FILE *output = fopen(path,"w");
+        if (!output) return 31;
+        if (fputs("retained result\n",output)<0 || fclose(output)) return 32;
+        if (rename(path,replacement)) return 33;
+        output=fopen(replacement,"a");
+        if (!output || fputs("modified\n",output)<0 || fclose(output)) return 34;
+        output=fopen(path,"w");
+        if (!output || fclose(output) || unlink(path)) return 35;
+        if (snprintf(path,sizeof(path),"%s/escape",argv[2]) >= (int)sizeof(path)) return 36;
+        output=fopen(path,"w");
+        if (output) { fclose(output); return 37; }
+        if (snprintf(path,sizeof(path),"%s/read-alias",argv[2]) >= (int)sizeof(path)) return 38;
+        if (!link(argv[3],path)) return 39;
+        pid_t pid=fork();
+        if (pid<0) return 40;
+        if (pid==0) {
+            if (!strcmp(argv[1],"write-wait")) {
+                if (setsid()<0) _exit(41);
+                if (snprintf(path,sizeof(path),"%s/background",argv[2]) >= (int)sizeof(path)) _exit(42);
+                FILE *marker=fopen(path,"w");
+                if (!marker || fprintf(marker,"%d\n",getpid())<0 || fclose(marker)) _exit(43);
+                for (;;) pause();
+            }
+            execl("/usr/bin/printf","printf","child executed\\n",(char *)NULL);
+            _exit(44);
+        }
+        if (!strcmp(argv[1],"write-wait")) { puts("started"); for (;;) pause(); }
+        int status;
+        if (waitpid(pid,&status,0)!=pid || !WIFEXITED(status) || WEXITSTATUS(status)) return 45;
+        puts("created, replaced, modified, removed; outside write/link denied");
+        return !strcmp(argv[1],"write-partial") ? 46 : 0;
+    }
     if (!strcmp(argv[1], "read-config") || !strcmp(argv[1], "execute-config")) {
         FILE *input = fopen(argv[2], "r");
         if (!input) return 20;

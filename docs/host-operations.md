@@ -14,7 +14,11 @@ enrol an issuer.
 
 On Linux, the operation's process limit includes bubblewrap's monitor and
 namespace init; the Unix starter reserves three processes for its native
-inspection program. On macOS, resolving an adopted read path also permits
+inspection program. Adopted Linux commands can also use selected
+[`filesystem.write` paths](host-execution-contract.md#linux-writable-paths)
+and descendants under the same authority. File results stay at those host
+paths after job cleanup; the Output route returns stdout/stderr only.
+On macOS, resolving an adopted read path also permits
 metadata reads of its ancestor directories. It grants no sibling file contents
 or ancestor directory listing.
 

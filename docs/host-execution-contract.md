@@ -404,7 +404,7 @@ reports `commit=unknown`; this is not a release identity.
 
 | Target | Required runtime components and current native profile |
 |---|---|
-| Linux x86-64 / ARM64 | Compatible C runtime; a pinned bubblewrap with the options used by the backend; kernel user namespaces, seccomp and delegated cgroup v2 memory/pids controls. The executor must run where it can migrate its own jobs into that delegation. Ordinary programs receive read paths with no writes, network or IPC. The fixed service profile below separately admits its trusted OS client. |
+| Linux x86-64 / ARM64 | Compatible C runtime; a pinned bubblewrap with the options used by the backend, including `--bind-fd`; kernel user namespaces, seccomp and delegated cgroup v2 memory/pids controls. The executor must run where it can migrate its own jobs into that delegation. Ordinary programs receive selected read/write paths and may execute descendants inside those namespaces and the same cgroup. Ordinary network/IPC remains unavailable. The fixed service profile below separately admits its trusted OS client. |
 | macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive no fork, writes, sockets or Mach access. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
 | Windows x86-64 | Native Windows security, Credential Manager, local named pipes, Job Objects, the Service Control Manager and the Universal C Runtime supplied by current Windows. The GNU package statically links its compiler runtime. Its remaining imports are Windows system DLLs. No MinGW installation is required on the target. |
 
@@ -413,6 +413,46 @@ their runtime libraries, tools, interpreters and service permissions. A server
 binary that loads does not establish that an adopted operation's dependencies
 or native guarantees are available. The required native starter operations
 must not hide a Python dependency.
+
+### Linux writable paths
+
+An empty `execution.filesystem.write` keeps the existing read-only boundary.
+To retain tool output, select an existing writable directory in the adopted
+operation and grant that exact operation through the existing issuer and target
+ceilings. Commands can create, modify, replace, rename and remove descendants
+of that directory. A selected existing file permits writes to its pinned inode;
+select its directory when the tool replaces or removes the file itself. New
+scope roots need their parent directory selected first. A working directory
+alone grants no write access.
+
+The executor resolves each selected root, checks its backing mounts and pins
+its referent before binding it into the job. A host replacement after pinning
+does not redirect that job's mount. Nested symbolic links resolve inside the
+job's filesystem namespace; they do not expose unmounted host paths or make
+read-only mounts writable. Every existing hard-link entry for a writable inode
+must be inside the selected write scopes. Internal hard links are supported;
+an alias outside the scopes causes qualification or launch to refuse. The
+executor repeats these checks at launch. Mount aliases and overlapping scopes
+cannot expose executor configuration, trust files, ledger state or cgroup
+controls. The current writable profile supports regular files, directories
+and symbolic links. It does not yet enforce device or special-file IPC scopes.
+It also protects the executor's mapped code/data by inode, the helper's native
+loader dependencies, and the loader cache/preload configuration. Helper
+dependency qualification reads native ELF files and the glibc cache without
+executing them. A helper or helper library with custom ELF RPATH/RUNPATH, an
+unresolved dependency, or a relative dependency with a directory separator
+cannot yet qualify a
+writable operation. Those helper configurations retain the read-only profile.
+
+Written files stay at the selected host paths after completion, failure,
+cancellation and executor restart. Job cleanup does not remove them. The
+operator remains responsible for their storage and deletion. The job's
+`output_bytes` limit applies to its retained stdout/stderr stream; it is not a
+disk quota for those host paths. A tool's file-write failure or nonzero exit
+does not imply that its earlier writes were rolled back. The existing Output
+route retrieves stdout/stderr, not arbitrary selected files. File retrieval
+and automated file-retention selection remain separate work under the general
+host-execution correction.
 
 The native proxy workflow retains an executor archive for each target below,
 named `host-executor-TARGET-COMMIT`. Download the archive for the selected source

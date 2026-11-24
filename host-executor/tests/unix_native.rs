@@ -1134,6 +1134,104 @@ fn installed_unix_read_paths_resolve_without_sibling_contents() {
     f.assert_no_side_effects();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires the native Linux fixture with bubblewrap and delegated cgroup v2"]
+fn installed_linux_scoped_writes_children_and_retained_partial_results() {
+    let mut f = fixture(16, 64 * 1024);
+    let output = f.root.join("work");
+    fs::create_dir(&output).unwrap();
+    std::os::unix::fs::symlink(f.root.join("allowed"), output.join("escape")).unwrap();
+    let config = f.root.join("target.json");
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    let mut operations = f.target.package.operations.clone();
+    for mode in ["write-files", "write-partial", "write-wait"] {
+        let mut operation = operations["observe"].clone();
+        operation.execution.filesystem.write = vec![output.to_str().unwrap().into()];
+        operation.execution.argv = [
+            mode.into(),
+            output.to_str().unwrap().into(),
+            f.root.join("allowed").to_str().unwrap().into(),
+            "0".into(),
+        ]
+        .into_iter()
+        .map(|value| Word::Literal { value })
+        .collect();
+        operations.insert(mode.into(), operation);
+    }
+    settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    f.target = settings.target.clone();
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    // The existing read operation still has no write authority.
+    let (read, _) = f.invoke("observe");
+    assert_eq!(f.terminal(&read.job_id).state, JobState::Completed);
+    for (mode, expected) in [
+        ("write-files", JobState::Completed),
+        ("write-partial", JobState::Failed),
+        ("write-wait", JobState::Cancelled),
+    ] {
+        let (admitted, _) = f.invoke(mode);
+        if mode == "write-wait" {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let running = loop {
+                let running = f.job(&admitted.job_id);
+                if output.join("background").exists() && running.output_bytes > 0 {
+                    break running;
+                }
+                assert!(Instant::now() < deadline, "background child did not start");
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            assert!(matches!(
+                f.call(Action::Cancel {
+                    job_id: admitted.job_id.clone(),
+                    expected_revision: running.revision,
+                }),
+                Response::Job { .. }
+            ));
+        }
+        let result = f.terminal(&admitted.job_id);
+        assert_eq!(result.state, expected, "{result:?}");
+        assert!(result.native.as_ref().unwrap().processes_stopped);
+        assert!(!f.cgroup.join(&admitted.job_id).exists());
+        assert_eq!(
+            fs::read(output.join("result")).unwrap(),
+            b"retained result\nmodified\n"
+        );
+        assert!(!output.join("new").exists());
+        assert!(!output.join("read-alias").exists());
+        let Response::Output { data_base64, .. } = f.call(Action::Output {
+            job_id: admitted.job_id,
+            offset: 0,
+            max_bytes: 4096,
+        }) else {
+            panic!("output unavailable");
+        };
+        let bytes = STANDARD.decode(data_base64).unwrap();
+        assert!(
+            String::from_utf8_lossy(&bytes).contains(if mode == "write-wait" {
+                "started"
+            } else {
+                "child executed"
+            })
+        );
+        f.restart();
+        assert_eq!(
+            fs::read(output.join("result")).unwrap(),
+            b"retained result\nmodified\n"
+        );
+        f.assert_no_side_effects();
+        eprintln!(
+            "{mode}: {:?}; {:?}; scoped output retained after executor restart",
+            result.state, result.native
+        );
+    }
+    // A new hard-link alias must be refused by check/reload before admission.
+    fs::hard_link(f.root.join("allowed"), output.join("outside-alias")).unwrap();
+    assert!(
+        matches!(f.call(Action::Discover), Response::Refused { refusal } if refusal.message.contains("hard link outside"))
+    );
+}
+
 #[test]
 #[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]
 fn installed_unix_bounds_lifecycle_reload_and_lost_reply() {
@@ -1281,7 +1379,7 @@ fn installed_unix_bounds_lifecycle_reload_and_lost_reply() {
     assert_eq!(f.job(&admitted.job_id).revision, uncertain.revision);
     let config = f.root.join("target.json");
     let original = fs::read(&config).unwrap();
-    for invalid in ["network", "ipc", "service", "write", "broader"] {
+    for invalid in ["network", "ipc", "service", "protected_write", "broader"] {
         let mut changed: Configuration = serde_json::from_slice(&original).unwrap();
         let execution = &mut changed
             .target
@@ -1311,7 +1409,7 @@ fn installed_unix_bounds_lifecycle_reload_and_lost_reply() {
                 capability: "control".into(),
                 resources: vec!["fixture".into()],
             }),
-            "write" => execution
+            "protected_write" => execution
                 .filesystem
                 .write
                 .push(f.root.to_str().unwrap().into()),
@@ -2350,7 +2448,7 @@ fn installed_adaptive_investigation_and_retained_configuration_effects() {
         b"disabled\n"
     );
     eprintln!(
-        "independent configuration observer: host edit retained on target={}, selected={}; other resource and target unchanged; native writes unavailable",
+        "independent configuration observer: host edit retained on target={}, selected={}; other resource and target unchanged; this fixture has no native write grant",
         first.target.target_id, resource
     );
     let (started, _) = first.invoke("service-start");
