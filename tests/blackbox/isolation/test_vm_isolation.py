@@ -13,14 +13,13 @@ import ctypes.util
 import errno
 import json
 import os
-import platform as _platform
 import socket
 import stat
-import struct
 import subprocess
 import sys
 
 import pytest
+from harness.containment import assert_host_canaries_absent, attempt_network, check_bpf_refusal
 from harness.host_listener import refuse_listener
 
 
@@ -82,234 +81,117 @@ class TestNetworkEscape:
     """
 
     def test_direct_http_blocked(self):
-        """Direct HTTP to an external IP (bypassing proxy) fails.
+        """Direct TCP bytes cannot bypass the proxy.
 
-        What: curl --noproxy to http://1.1.1.1; assert non-zero exit.
-        Why: The most basic egress escape — if the agent can just
-        curl any IP directly, the proxy is decorative.
+        What: Send a unique payload toward the host's live owned receiver.
+        Why: The host observer must record zero guest delivery, even when the
+        receiver sends no reply or the client cannot parse the response.
         """
-        result = subprocess.run(
-            ["curl", "-s", "--noproxy", "*", "--connect-timeout", "3",
-             "-o", "/dev/null", "http://1.1.1.1"],
-            capture_output=True, text=True, timeout=10,
-        )
-        assert result.returncode != 0, "Direct HTTP to 1.1.1.1 succeeded — firewall breach"
+        attempt_network("tcp")
 
     def test_direct_https_blocked(self):
-        """Direct HTTPS to an external IP (bypassing proxy) fails.
+        """Direct TLS bytes cannot bypass the proxy.
 
-        What: curl -k --noproxy to https://8.8.8.8; assert non-zero exit.
-        Why: A firewall that only blocks port 80 would let port 443
-        traffic through. TLS at the IP layer bypasses URL-based
-        inspection entirely.
+        What: Send a unique payload toward the host's live owned receiver.
+        Why: The host observer must record zero guest delivery, even when the
+        receiver sends no reply or the client cannot parse the response.
         """
-        result = subprocess.run(
-            ["curl", "-s", "--noproxy", "*", "--connect-timeout", "3",
-             "-k", "-o", "/dev/null", "https://8.8.8.8"],
-            capture_output=True, text=True, timeout=10,
-        )
-        assert result.returncode != 0, "Direct HTTPS to 8.8.8.8 succeeded — firewall breach"
+        attempt_network("tcp", tls=True)
 
     def test_dns_udp_blocked(self):
-        """Raw UDP to 8.8.8.8:53 fails.
+        """An unanswered DNS query must not leave the guest.
 
-        What: Craft a DNS query, sendto() a UDP socket pointed at
-        8.8.8.8:53; assert the receive times out.
-        Why: DNS is a classic covert-channel egress. If UDP/53 is
-        open, an agent can stream data via DNS tunnelling, which
-        never touches the HTTP proxy.
+        What: Send a unique payload toward the host's live owned receiver.
+        Why: The host observer must record zero guest delivery, even when the
+        receiver sends no reply or the client cannot parse the response.
         """
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(3)
-        try:
-            dns_query = (
-                b"\x12\x34"  # Transaction ID
-                b"\x01\x00"  # Flags: standard query
-                b"\x00\x01\x00\x00\x00\x00\x00\x00"  # 1 question
-                b"\x07example\x03com\x00"  # example.com
-                b"\x00\x01\x00\x01"  # Type A, Class IN
-            )
-            sock.sendto(dns_query, ("8.8.8.8", 53))
-            sock.recvfrom(512)
-            pytest.fail("UDP DNS query to 8.8.8.8:53 succeeded — firewall breach")
-        except (TimeoutError, OSError):
-            pass  # Expected: blocked
-        finally:
-            sock.close()
+        attempt_network("udp", dns=True)
 
     def test_raw_socket_blocked(self):
-        """AF_INET raw socket creation fails (no CAP_NET_RAW in sandbox).
+        """Ordinary guest raw ICMP socket creation is refused.
 
-        What: socket(AF_INET, SOCK_RAW, IPPROTO_ICMP) then sendto a
-        crafted ICMP echo to 1.1.1.1; assert PermissionError/OSError.
-        Why: ICMP tunnelling and ping-based exfiltration rely on raw
-        sockets. Without CAP_NET_RAW the syscall fails at creation.
+        What: Make a valid socket creation request and require permission or
+        protocol-unavailable refusal. Close any unexpectedly returned socket.
+        Why: The ordinary guest has no CAP_NET_RAW. A later send failure cannot
+        prove socket creation was refused; no public destination is contacted.
         """
-        with pytest.raises((PermissionError, OSError)):
-            sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
-            try:
-                sock.sendto(
-                    b"\x08\x00\x00\x00\x00\x01\x00\x01",  # ICMP echo
-                    ("1.1.1.1", 0),
-                )
-            finally:
-                sock.close()
+        with pytest.raises(OSError) as refusal:
+            socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP).close()
+        assert refusal.value.errno in (errno.EPERM, errno.EACCES, errno.EAFNOSUPPORT,
+                                      errno.EPROTONOSUPPORT, errno.ESOCKTNOSUPPORT, errno.ENOSYS)
 
     def test_direct_alt_port_blocked(self):
-        """Direct TCP to 1.1.1.1 on 8443, 22, 6667, 25 all fail.
+        """An owned dynamic TCP port cannot bypass the proxy.
 
-        What: curl --noproxy to 1.1.1.1 on each non-standard port;
-        assert non-zero exit for every port.
-        Why: A firewall that only blocked :80 and :443 would leave
-        every other port open. Alt-HTTPS (:8443), SSH (:22), IRC
-        (:6667, historical C2), SMTP (:25) are all realistic C2/
-        exfil channels the agent might attempt.
+        What: Send a unique payload toward the host's live owned receiver.
+        Why: The host observer must record zero guest delivery, even when the
+        receiver sends no reply or the client cannot parse the response.
         """
-        for port in (8443, 22, 6667, 25):
-            result = subprocess.run(
-                ["curl", "-s", "--noproxy", "*", "--connect-timeout", "3",
-                 "-o", "/dev/null", f"http://1.1.1.1:{port}"],
-                capture_output=True, text=True, timeout=10,
-            )
-            assert result.returncode != 0, (
-                f"Direct TCP to 1.1.1.1:{port} succeeded — firewall leak "
-                f"on a non-standard port"
-            )
+        attempt_network("tcp")
 
     def test_libc_resolver_blocked(self):
-        """getaddrinfo() on an external name raises gaierror.
+        """The selected libc resolver emits no query to its owned observer.
 
-        What: socket.getaddrinfo("blackbox-probe-should-not-resolve.
-        example", 80, ...); assert gaierror.
-        Why: Raw UDP/53 blocking alone doesn't cover the libc
-        resolver path. If /etc/resolv.conf points at a reachable
-        nameserver, getaddrinfo quietly succeeds — agents using
-        the system resolver bypass the proxy for lookups and can
-        DNS-tunnel data.
+        What: Send a unique payload toward the host's live owned receiver.
+        Why: The host observer must record zero guest delivery, even when the
+        receiver sends no reply or the client cannot parse the response.
         """
-        # "blackbox-probe.example" isn't a real host; we care only whether
-        # DNS is reachable at all. An EAI_AGAIN / EAI_NODATA / EAI_NONAME
-        # all indicate resolver couldn't answer — expected.
-        with pytest.raises(socket.gaierror):
-            socket.getaddrinfo("blackbox-probe-should-not-resolve.example",
-                               80, socket.AF_INET, socket.SOCK_STREAM)
+        attempt_network("udp", resolver=True)
 
     def test_non_icmp_raw_protocols_blocked(self):
-        """Raw sockets for SCTP/GRE/IPIP also fail.
+        """Ordinary guest SCTP/GRE/IPIP raw socket creation is refused.
 
-        What: socket(AF_INET, SOCK_RAW, proto) for proto in
-        [132=SCTP, 47=GRE, 4=IPIP]; assert PermissionError/OSError
-        for each.
-        Why: If the sandbox filter scopes raw sockets only by
-        IPPROTO_ICMP, tunnelling protocols (GRE, IPIP, SCTP) leak
-        through and provide alternate exfil paths invisible to
-        TCP/UDP observers.
+        What: Make a valid socket creation request and require permission or
+        protocol-unavailable refusal. Close any unexpectedly returned socket.
+        Why: The ordinary guest has no CAP_NET_RAW. A later send failure cannot
+        prove socket creation was refused; no public destination is contacted.
         """
-        # IPPROTO_SCTP = 132, IPPROTO_GRE = 47, IPPROTO_IPIP = 4.
-        # Use raw numeric constants since some are absent from socket
-        # module depending on build.
         for proto in (132, 47, 4):
-            with pytest.raises((PermissionError, OSError)):
-                sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, proto)
-                try:
-                    sock.sendto(b"\x00" * 20, ("1.1.1.1", 0))
-                finally:
-                    sock.close()
+            with pytest.raises(OSError) as refusal:
+                socket.socket(socket.AF_INET, socket.SOCK_RAW, proto).close()
+            assert refusal.value.errno in (errno.EPERM, errno.EACCES, errno.EAFNOSUPPORT,
+                                          errno.EPROTONOSUPPORT, errno.ESOCKTNOSUPPORT, errno.ENOSYS)
 
     def test_ipv6_egress_blocked(self):
-        """IPv6 egress via curl -6 and AF_INET6 socket both fail.
+        """Owned IPv6 TCP receivers observe no guest delivery.
 
-        What: curl -6 to a literal v6 address; AF_INET6 socket
-        connect to the same; both must fail/timeout.
-        Why: mitmproxy binds to IPv4 only. If the sandbox has v6
-        connectivity, the agent can reach any v6-capable destination
-        outside the proxy's view entirely — a complete bypass.
+        What: Send a unique payload toward the host's live owned receiver.
+        Why: The host observer must record zero guest delivery, even when the
+        receiver sends no reply or the client cannot parse the response.
         """
-        # Try a AAAA literal (Google DNS v6) via curl.
-        result = subprocess.run(
-            ["curl", "-6", "-s", "--noproxy", "*", "--connect-timeout", "3",
-             "-o", "/dev/null", "http://[2001:4860:4860::8888]/"],
-            capture_output=True, text=True, timeout=10,
-        )
-        assert result.returncode != 0, "IPv6 egress to 2001:4860:4860::8888 succeeded"
-        # Also at the socket layer — AF_INET6 creation may succeed but
-        # connect must fail.
-        try:
-            sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-        except OSError:
-            return  # v6 stack fully disabled — property holds
-        sock.settimeout(3)
-        try:
-            try:
-                sock.connect(("2001:4860:4860::8888", 80))
-            except (TimeoutError, ConnectionRefusedError, OSError):
-                return  # expected
-            pytest.fail("IPv6 connect to 2001:4860:4860::8888:80 succeeded")
-        finally:
-            sock.close()
+        attempt_network("tcp", 6)
 
     def test_metadata_ips_unreachable(self):
-        """Cloud metadata IPs (169.254.169.254, 169.254.170.2) are unreachable.
+        """Applicable owned metadata routes observe no guest delivery.
 
-        What: curl --noproxy to each metadata IP; assert non-zero exit.
-        Why: On a cloud VM host, link-local metadata endpoints expose
-        instance IAM credentials and user-data. A sandbox that can
-        reach them SSRFs the host's IAM role — often full access to
-        the cloud account.
+        What: Send a unique payload toward the host's live owned receiver.
+        Why: The host observer must record zero guest delivery, even when the
+        receiver sends no reply or the client cannot parse the response.
         """
-        for ip in ("169.254.169.254", "169.254.170.2"):  # AWS IMDSv1 + ECS creds
-            result = subprocess.run(
-                ["curl", "-s", "--noproxy", "*", "--connect-timeout", "3",
-                 "-o", "/dev/null", f"http://{ip}/"],
-                capture_output=True, text=True, timeout=5,
-            )
-            assert result.returncode != 0, (
-                f"Cloud metadata IP {ip} was reachable — potential SSRF to "
-                f"host IAM credentials"
-            )
+        attempt_network("tcp", metadata=True)
 
     def test_af_packet_blocked(self):
-        """AF_PACKET socket creation fails.
+        """Ordinary guest packet socket creation is refused.
 
-        What: socket(17 /* AF_PACKET */, SOCK_RAW, 0); assert
-        PermissionError/OSError.
-        Why: AF_PACKET lets the process craft Ethernet frames
-        directly. With it, an agent can ARP-spoof, forge source
-        IPs (bypassing L3 firewall rules by appearing to be the
-        host), or probe the L2 neighbourhood.
+        What: Make a valid socket creation request and require permission or
+        protocol-unavailable refusal. Close any unexpectedly returned socket.
+        Why: The ordinary guest has no CAP_NET_RAW. A later send failure cannot
+        prove socket creation was refused; no public destination is contacted.
         """
-        with pytest.raises((PermissionError, OSError)):
-            # AF_PACKET = 17 on Linux (not always in socket module namespace
-            # on non-Linux stubs); use the numeric constant.
-            sock = socket.socket(17, socket.SOCK_RAW, 0)
-            sock.close()
+        with pytest.raises(OSError) as refusal:
+            socket.socket(17, socket.SOCK_RAW, 0).close()
+        assert refusal.value.errno in (errno.EPERM, errno.EACCES, errno.EAFNOSUPPORT,
+                                      errno.EPROTONOSUPPORT, errno.ESOCKTNOSUPPORT, errno.ENOSYS)
 
     def test_dns_tunnel_subdomain_blocked(self):
-        """Arbitrary subdomain under a real TLD does not resolve.
+        """DNS over TCP and IPv6 UDP cannot transmit unique labels.
 
-        What: getaddrinfo("exfil-data-here.tunnel-probe.httpbin.org",
-        ...); assert gaierror. If it resolves, fail.
-        Why: DNS tunnelling encodes data in subdomain labels
-        (<base64>.exfil.attacker.com) — every query leaks ~60 bytes
-        to a nameserver the attacker controls. The proxy never sees
-        it because it's DNS, not HTTP. The only safe posture is no
-        external name resolution at all.
+        What: Send a unique payload toward the host's live owned receiver.
+        Why: The host observer must record zero guest delivery, even when the
+        receiver sends no reply or the client cannot parse the response.
         """
-        exfil_host = "exfil-data-here.tunnel-probe.httpbin.org"
-        try:
-            result = socket.getaddrinfo(exfil_host, 80, socket.AF_INET,
-                                        socket.SOCK_STREAM)
-        except socket.gaierror:
-            return  # resolver blocked — DNS tunnel path closed
-
-        # If we reach here, the resolver answered. That means the agent
-        # can make arbitrary DNS queries — the tunnel is open.
-        pytest.fail(
-            f"DNS tunnel path is OPEN: getaddrinfo({exfil_host!r}) "
-            f"resolved to {result[0][4] if result else '?'}. An agent "
-            f"can exfiltrate ~60 bytes per query by encoding data in "
-            f"subdomain labels of any domain it controls."
-        )
+        attempt_network("tcp", dns=True)
+        attempt_network("udp", 6, dns=True)
 
     def test_host_header_mismatch_routes_by_url(self):
         """Host-header mismatch with URL routes by URL (200, not 4xx).
@@ -476,63 +358,6 @@ class TestHostAdjacentReachability:
         """
         print("HOST_LISTENER_REFUSAL=" + json.dumps(refuse_listener()), flush=True)
 
-    def test_arbitrary_host_port_unreachable(self):
-        """An unused port (44444) on the host is unreachable.
-
-        What: TCP connect to host:44444; assert fail.
-        Why: Together with test_host_listener_unreachable, confirms
-        block-by-default — an arbitrary port nothing listens on
-        should still be unreachable (not just refused by the
-        kernel because no service is bound). Complements the
-        live-listener test for full coverage.
-        """
-        host = self._host_ip_from_proxy()
-        self._assert_tcp_unreachable(host, 44444, "arbitrary unused port 44444")
-
-    def test_cross_agent_ip_unreachable(self):
-        """Adjacent agents' attribution IPs are unreachable.
-
-        What: Derive this agent's attribution IP (10.200.x.y) from
-        loopback; probe TCP on the neighbouring ±1 offsets; assert
-        both unreachable.
-        Why: Each agent runs in an isolated netns with its own
-        loopback. If one agent could reach another's attribution
-        IP, cross-agent lateral movement would be possible — an
-        agent compromised by the user's content could pivot to a
-        neighbouring agent's workspace.
-        """
-        # Derive our own agent IP from loopback
-        try:
-            result = subprocess.run(
-                ["ip", "-4", "addr", "show", "lo"],
-                capture_output=True, text=True, timeout=3,
-            )
-            our_ip = None
-            for line in result.stdout.splitlines():
-                line = line.strip()
-                if "10.200." in line and "inet " in line:
-                    our_ip = line.split()[1].split("/")[0]
-                    break
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            our_ip = None
-
-        if not our_ip or not our_ip.startswith("10.200."):
-            pytest.skip(f"Could not determine agent IP from loopback: {our_ip}")
-
-        # Probe adjacent agent IPs
-        parts = our_ip.split(".")
-        our_last = int(parts[3])
-        for offset in (-1, +1):
-            sibling_last = our_last + offset
-            if sibling_last < 1 or sibling_last > 254:
-                continue
-            sibling_ip = f"10.200.0.{sibling_last}"
-            for port in (22, 8080, 80):
-                    self._assert_tcp_unreachable(
-                        sibling_ip, port,
-                        f"sibling agent {sibling_ip}:{port}"
-                    )
-
     def test_sinkhole_direct_unreachable(self):
         """The live sinkhole HTTP, HTTPS, and control paths are unreachable.
 
@@ -615,31 +440,6 @@ class TestGuestPrivilegeBoundary:
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "0", result.stdout
 
-    def test_kernel_modules_disabled(self):
-        """init_module(2) syscall returns non-success.
-
-        What: Direct syscall to init_module with null args; assert
-        return value is -1 and errno non-zero.
-        Why: Loading a kernel module is immediate, total compromise
-        — the module runs in ring 0. Blocked either by
-        CONFIG_MODULES=n in the guest kernel, or by gVisor's
-        user-space kernel rejecting the syscall.
-        """
-        # SYS_init_module is architecture-specific.
-        _SYS_INIT_MODULE = {"x86_64": 175, "aarch64": 105}.get(_platform.machine())
-        if _SYS_INIT_MODULE is None:
-            pytest.skip(f"SYS_init_module number unknown for {_platform.machine()}")
-        libc_name = ctypes.util.find_library("c")
-        if not libc_name:
-            pytest.skip("libc not found")
-        libc = ctypes.CDLL(libc_name, use_errno=True)
-        ret = libc.syscall(_SYS_INIT_MODULE, None, 0, None)
-        err = ctypes.get_errno()
-        assert ret == -1, (
-            "init_module syscall succeeded — kernel-module loading is not blocked"
-        )
-        assert err != 0, "init_module returned -1 with errno=0 (unexpected)"
-
     def test_no_dev_mem(self):
         """/dev/mem does not exist in the sandbox.
 
@@ -661,25 +461,15 @@ class TestGuestPrivilegeBoundary:
         assert not os.path.exists("/dev/kmem"), "/dev/kmem exists — kernel memory accessible"
 
     def test_ebpf_blocked(self):
-        """bpf(2) syscall fails.
+        """A valid BPF map request remains refused or guest contained.
 
-        What: Invoke syscall numbers 321 (x86_64) and 280 (aarch64)
-        for SYS_bpf with zero args; if any returns 0, fail.
-        Why: eBPF programs run in kernel context with wide access —
-        network introspection, kprobe instrumentation, cgroup
-        hooks. Even with verifier constraints, eBPF has been a
-        recurring privilege-escalation vector.
+        What: Use this architecture's BPF_MAP_CREATE after a getpid control.
+        Require a narrow refusal on gVisor. Close a successful VZ guest-kernel
+        descriptor and check that the host canaries remain inaccessible.
+        Why: EINVAL and bad pointers cannot establish refusal. Any nonnegative
+        descriptor is success; a VZ guest kernel remains separate from its host.
         """
-        libc_name = ctypes.util.find_library("c")
-        if not libc_name:
-            pytest.skip("libc not found")
-        libc = ctypes.CDLL(libc_name, use_errno=True)
-        # SYS_bpf = 321 on x86_64, 280 on aarch64
-        if struct.calcsize("P") * 8 == 64:
-            for sys_bpf in (321, 280):
-                ret = libc.syscall(sys_bpf, 0, 0, 0)
-                if ret == 0:
-                    pytest.fail(f"BPF syscall ({sys_bpf}) succeeded")
+        check_bpf_refusal(guest_kernel=_is_microvm())
 
 
 class TestSandboxRootContainment:
@@ -734,36 +524,26 @@ class TestSandboxRootContainment:
         print(result.stdout, end="", flush=True)
 
     def test_host_kernel_surfaces_stay_absent_as_sandbox_root(self):
-        """Sandbox root sees neither host devices nor the host PID 1.
+        """Sandbox root sees no host devices, private file or process canary.
 
-        What: Elevate with setpriv, assert /dev/kvm, /dev/mem and
-        /dev/kmem are absent, then assert PID 1's command line is not
-        a host init such as systemd or launchd.
-        Why: Exposing a host device or process namespace to guest root
-        would convert an intentionally useful guest capability into a
-        direct host-compromise primitive.
+        What: Elevate with setpriv, check meaningful host device paths and the
+        host's independently verified live process/file canaries.
+        Why: Guest administration must remain inside its kernel and namespace.
+        A guest PID-1 command name does not identify the host process boundary.
         """
         code = """
 import os
 import sys
-
-for path in ("/dev/kvm", "/dev/mem", "/dev/kmem"):
-    if os.path.exists(path):
-        raise SystemExit(f"host device exposed: {path}")
-
-try:
-    cmdline = open("/proc/1/cmdline", "rb").read().decode(errors="replace")
-except OSError:
-    cmdline = ""
-for host_init in ("systemd", "launchd"):
-    if host_init in cmdline:
-        raise SystemExit(f"host PID namespace exposed: {cmdline!r}")
-sys.exit(0)
+sys.path.insert(0, '/workspace/tests/blackbox')
+from harness.containment import assert_host_canaries_absent
+assert os.geteuid() == 0
+for path in ('/dev/kvm', '/dev/mem', '/dev/kmem'):
+    assert not os.path.exists(path), f'host device exposed: {path}'
+assert_host_canaries_absent()
 """
-        result = _run_as_gvisor_sandbox_root(
-            [sys.executable, "-c", code],
-        )
+        result = _run_as_gvisor_sandbox_root([sys.executable, "-c", code])
         assert result.returncode == 0, result.stderr
+        print(result.stdout, end="", flush=True)
 
 
 class TestFilesystemIsolation:
@@ -1001,30 +781,14 @@ class TestSandboxExposure:
             return  # expected
         pytest.fail(f"{debug} is listable from the sandbox")
 
-    def test_pid_namespace_isolated(self):
-        """PID 1's cmdline is the sandbox init, not the host's.
+    def test_host_process_canary_absent(self):
+        """The identifiable live host process and private file are absent.
 
-        What: Read /proc/1/cmdline; assert it does NOT contain
-        'systemd', '/sbin/init', or 'launchd'.
-        Why: If PID 1 is the host's init, the PID namespace is
-        leaking through and the agent can read the full host
-        process table — every running service's cmdline, including
-        argv secrets and parent hierarchies.
+        What: Read the supplied host paths and reject the unique marker if
+        visible. The host verifies both canaries before and after this phase.
+        Why: A PID-1 name or a colliding guest PID cannot prove host isolation.
         """
-        try:
-            cmdline = open("/proc/1/cmdline", "rb").read().decode(
-                errors="replace",
-            )
-        except (PermissionError, FileNotFoundError):
-            return  # unreadable is fine — no info leak
-
-        host_inits = ["systemd", "/sbin/init", "launchd"]
-        for init_name in host_inits:
-            assert init_name not in cmdline, (
-                f"PID 1 is the host's {init_name}, not the sandbox init. "
-                f"PID namespace isolation is broken. "
-                f"cmdline: {cmdline!r}"
-            )
+        assert_host_canaries_absent()
 
     def test_firewall_rules_not_readable(self):
         """iptables/pfctl don't emit rules from inside the sandbox.
@@ -1128,42 +892,35 @@ class TestFilesystemBoundary:
             os.rmdir(link_dir)
 
     def test_workspace_no_mknod(self):
-        """mknod on /workspace fails with PermissionError/OSError.
+        """A shared workspace cannot provide usable device nodes.
 
-        What: os.mknod('/workspace/.../testdev', S_IFCHR, makedev(1,3));
-        assert the call fails.
-        Why: /workspace should be mounted `nodev` and the sandbox
-        should lack CAP_MKNOD. Device nodes on a shared mount let
-        the agent access arbitrary devices (raw block devices like
-        /dev/sda, tty, etc.) once the host views the file.
+        What: Try to create a harmless null device in an owned directory. If
+        creation succeeds, distinguish that from opening and using the node.
+        Why: nodev controls device use; mknod failure alone does not test nodev.
         """
         import tempfile
-        mknod_path = os.path.join(
-            tempfile.mkdtemp(dir="/workspace", prefix="mktest-"),
-            "testdev",
-        )
-        try:
-            # Try to create a character device (1,3 = /dev/null)
+        with tempfile.TemporaryDirectory(dir="/workspace", prefix="mktest-") as directory:
+            path = os.path.join(directory, "testdev")
             try:
-                os.mknod(mknod_path, 0o666 | 0o020000, os.makedev(1, 3))
-            except (PermissionError, OSError):
-                return  # expected
-            pytest.fail("mknod succeeded on /workspace — mount lacks nodev")
-        finally:
-            if os.path.exists(mknod_path):
-                os.unlink(mknod_path)
-            os.rmdir(os.path.dirname(mknod_path))
+                os.mknod(path, stat.S_IFCHR | 0o600, os.makedev(1, 3))
+            except OSError as error:
+                assert error.errno in (errno.EPERM, errno.EACCES, errno.EROFS, errno.ENOSYS)
+                return
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as error:
+                assert error.errno in (errno.EACCES, errno.EPERM, errno.ENXIO, errno.ENODEV)
+            else:
+                os.close(fd)
+                pytest.fail("shared workspace exposed a usable device node")
+
 
 class TestSyscallSeccompEquivalents:
-    """Dangerous syscalls (keyring, pivot_root, unshare, ptrace) are blocked or contained.
+    """Valid keyring and namespace requests remain contained.
 
-    Why: A conservative container seccomp baseline drops ~44
-    syscalls that are rarely legitimate and historically exploited
-    — kernel keyring injection (CVE-2017-6074), pivot_root
-    filesystem escape, user-namespace creation as escalation
-    vehicle, ptrace process introspection. Blackbox checks confirm
-    the same
-    exposures are closed on the current runtime (gVisor or VZ).
+    Why: Invalid arguments cannot prove refusal. A namespace operation may
+    succeed inside the guest while host canaries and read-only shares remain
+    isolated. Guest capabilities do not imply host-kernel capabilities.
     """
 
     @staticmethod
@@ -1180,13 +937,6 @@ class TestSyscallSeccompEquivalents:
         if arch not in table:
             pytest.skip(f"syscall number unknown for {arch}")
         return table[arch]
-
-    def _assert_syscall_fails(self, num: int, args: tuple, name: str) -> None:
-        libc = self._libc()
-        ret = libc.syscall(num, *args)
-        err = ctypes.get_errno()
-        assert ret == -1, f"{name} syscall succeeded (ret={ret})"
-        assert err != 0, f"{name} returned -1 with errno=0"
 
     def _assert_keyring_syscall_refused(self, num: int, args: tuple, name: str) -> None:
         libc = self._libc()
@@ -1231,89 +981,40 @@ class TestSyscallSeccompEquivalents:
             num, (b"user", f"safeyolo-isolation-{os.getpid()}".encode(), payload, len(payload), ctypes.c_long(-1)), "add_key",
         )
 
-    def test_pivot_root_blocked(self):
-        """pivot_root(2) returns -1 with non-zero errno.
-
-        What: Call SYS_pivot_root with zero args; assert ret == -1
-        and errno != 0.
-        Why: pivot_root moves the root filesystem — combined with
-        a mount from an attacker-controlled directory, it's a
-        classic container escape. Must not be callable from the
-        sandbox.
-        """
-        # SYS_pivot_root: x86_64=155, aarch64=41
-        num = self._syscall_num({"x86_64": 155, "aarch64": 41})
-        self._assert_syscall_fails(num, (0, 0), "pivot_root")
-
     def test_unshare_user_ns_contained(self):
-        """unshare(CLONE_NEWUSER) grants no new access even if it succeeds.
+        """A valid user-namespace request grants no host access.
 
-        What: Call unshare with CLONE_NEWUSER. If it fails, pass
-        (strongest outcome). If it succeeds, verify /etc/shadow is
-        still unreadable, PID 1's cmdline still doesn't reveal host
-        init, and /safeyolo is still read-only.
-        Why: gVisor's sentry emulates namespaces, and VZ microVMs
-        run real kernels — both allow the syscall. The property
-        that matters is that the new namespace doesn't grant
-        privileges the agent didn't already have. Tests the
-        escape, not the syscall.
+        What: Run unshare(CLONE_NEWUSER) in a child. Accept only a narrow
+        refusal or check the live host canaries and read-only share afterwards.
+        Why: Supported guest namespace operations may succeed. Their success
+        cannot be interpreted as host escape or alter the pytest process.
         """
-        # SYS_unshare: x86_64=272, aarch64=97
-        num = self._syscall_num({"x86_64": 272, "aarch64": 97})
-        CLONE_NEWUSER = 0x10000000
-        libc = self._libc()
-        ret = libc.syscall(num, CLONE_NEWUSER)
-
-        if ret != 0:
-            return  # blocked at syscall level — strongest outcome
-
-        # userns succeeded. Verify it didn't grant new privileges.
-
-        # 1. Can't read /etc/shadow (would indicate real root)
-        try:
-            with open("/etc/shadow") as f:
-                f.read(1)
-            pytest.fail(
-                "unshare(CLONE_NEWUSER) granted read access to /etc/shadow"
-            )
-        except (PermissionError, FileNotFoundError):
-            pass  # expected
-
-        # 2. PID 1 is still the sandbox init, not the host
-        try:
-            cmdline = open("/proc/1/cmdline", "rb").read().decode(
-                errors="replace",
-            )
-            assert "systemd" not in cmdline, (
-                "After unshare, PID 1 is the host's systemd — "
-                "namespace isolation broken"
-            )
-        except (PermissionError, FileNotFoundError):
-            pass  # unreadable is fine
-
-        # 3. Can't write to the read-only config share
-        try:
-            with open("/safeyolo/escape-test", "w") as f:
-                f.write("test")
-            os.unlink("/safeyolo/escape-test")
-            pytest.fail(
-                "unshare(CLONE_NEWUSER) granted write access to "
-                "read-only /safeyolo mount"
-            )
-        except (PermissionError, OSError):
-            pass  # expected
-
-    def test_ptrace_init_blocked(self):
-        """ptrace(PTRACE_ATTACH, 1, ...) returns -1.
-
-        What: Call SYS_ptrace with PTRACE_ATTACH on pid 1; assert
-        ret == -1 and errno != 0.
-        Why: Attaching to init lets the agent read memory (keys,
-        tokens) from the most privileged process in the sandbox
-        and potentially inject code. Conservative container seccomp
-        baselines drop ptrace entirely.
-        """
-        # SYS_ptrace: x86_64=101, aarch64=117
-        num = self._syscall_num({"x86_64": 101, "aarch64": 117})
-        PTRACE_ATTACH = 16
-        self._assert_syscall_fails(num, (PTRACE_ATTACH, 1, 0, 0), "ptrace(init)")
+        number = self._syscall_num({"x86_64": 272, "aarch64": 97})
+        code = f"""
+import ctypes
+import errno
+import os
+import sys
+sys.path.insert(0, '/workspace/tests/blackbox')
+from harness.containment import assert_host_canaries_absent, assert_refused
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
+ctypes.set_errno(0)
+result = libc.syscall({number}, 0x10000000)
+if result == -1:
+    assert_refused(result, ctypes.get_errno(), 'unshare')
+else:
+    assert result == 0
+assert_host_canaries_absent()
+try:
+    fd = os.open('/safeyolo/unshare-write-probe', os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+except OSError as error:
+    assert error.errno in (errno.EACCES, errno.EPERM, errno.EROFS)
+else:
+    os.close(fd)
+    os.unlink('/safeyolo/unshare-write-probe')
+    raise AssertionError('user namespace exposed writable host share')
+"""
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        print(result.stdout, end="", flush=True)

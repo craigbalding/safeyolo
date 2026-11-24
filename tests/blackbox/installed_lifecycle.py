@@ -16,6 +16,7 @@ import json
 import os
 import select
 import shlex
+import signal
 import socket
 import subprocess
 import time
@@ -33,6 +34,7 @@ if __package__:
         _pid_alive,
         _probe_agent_health,
         _process_start_token,
+        _runtime_observation,
         _sha256,
     )
     from .installed_ingress import installed_identity, runsc_identity
@@ -47,6 +49,7 @@ else:
         _pid_alive,
         _probe_agent_health,
         _process_start_token,
+        _runtime_observation,
         _sha256,
     )
     from installed_ingress import installed_identity, runsc_identity
@@ -54,6 +57,19 @@ else:
 
 PEER = "bbpeer"
 FIXTURE = "failing.test"
+
+
+def crash_owned_proxy(root: Path, binary: Path, native: dict, pid: int, start_token: str) -> dict:
+    """Reuse the abrupt-approval witness's authenticated process selection."""
+    current = _runtime_observation(root, native, binary, config_path=root / "config.toml",
+        working_directory=root, require_running=True, require_authenticated_identity=True)
+    assert current["pid"] == pid and _process_start_token(pid) == start_token, "owned crash target changed"
+    os.kill(pid, signal.SIGKILL)
+    deadline = time.monotonic() + 10
+    while _pid_alive(pid) and _process_start_token(pid) == start_token:
+        assert time.monotonic() < deadline, "owned crash target did not exit"
+        time.sleep(0.05)
+    return {"pid": pid, "start_token": start_token, "signal": "SIGKILL", "exited": True}
 
 
 def running_guest(config_dir: Path, agent: str, status: dict) -> dict:

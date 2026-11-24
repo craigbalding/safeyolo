@@ -7,10 +7,12 @@ filesystem directly from the adversary's perspective.
 No JSON result files, no verifier containers — direct probes only.
 """
 
+import json
 import os
 from pathlib import Path
 
 import pytest
+from harness.containment import assert_no_secret
 
 # Paths where certificates are expected in the guest
 CERT_TRUST_STORE = Path("/usr/local/share/ca-certificates")
@@ -24,6 +26,57 @@ EXPECTED_SSH_HOST_PRIVATE_KEYS = frozenset(
         Path("/etc/ssh/ssh_host_rsa_key"),
     }
 )
+
+
+def check_host_secret_custody(commitments: list[str], roots: tuple[Path, ...]) -> dict:
+    """Scan exact host canaries without rejecting provisioned client credentials."""
+    assert len(commitments) == 2 and len(set(commitments)) == 2
+    inspected = 0
+    for root in roots:
+        assert root.is_dir(), f"required guest scan directory is missing: {root}"
+        for directory, _dirs, files in os.walk(root):
+            for filename in files:
+                path = Path(directory) / filename
+                if not path.is_file():
+                    continue
+                try:
+                    data = path.read_bytes()
+                except PermissionError:
+                    # An unreadable file cannot disclose bytes to this user.
+                    # The separate guest-root invocation checks root's access.
+                    continue
+                assert_no_secret(data, commitments, str(path))
+                inspected += 1
+    assert_no_secret(json.dumps(dict(os.environ)).encode(), commitments, "guest environment")
+    # Scoped operator evidence and authorized gateway tokens are allowed.
+    # These APIs must still not disclose the host signing key or vault value.
+    from tests.blackbox.isolation.installed_access import api
+    for method, route, payload in (("GET", "/config", None), ("GET", "/gateway/services", None),
+                                   ("POST", "/api/flows/search", {"limit": 100})):
+        status, _headers, value = api(method, route, payload=payload)
+        assert status == 200, f"custody API control failed: {route} HTTP {status}"
+        assert_no_secret(json.dumps(value).encode(), commitments, route)
+    return {"uid": os.geteuid(), "fingerprints": commitments, "files_inspected": inspected,
+            "scoped_api_controls": ["/config", "/gateway/services", "/api/flows/search"]}
+
+
+def installed_custody(path: str) -> None:
+    """Emit a sanitized observation for the installed host caller."""
+    commitments = json.loads(Path(path).read_text())
+    roots = tuple(Path(path) for path in ("/safeyolo", "/home/agent", "/tmp", "/etc", "/usr/local/share/ca-certificates"))
+    if os.geteuid() == 0:
+        roots += (Path("/root"),)
+    import ssl
+    import uuid
+    from urllib.request import urlopen
+    marker = "bb-custody-" + uuid.uuid4().hex
+    context = ssl.create_default_context(cafile=str(PUBLIC_CERT))
+    with urlopen("https://api.github.com/" + marker, context=context, timeout=10) as reply:
+        assert reply.status == 200, "host CA authorized-use control failed"
+        assert_no_secret(reply.read(1_000_001), commitments, "authorized HTTPS reply")
+    observation = check_host_secret_custody(commitments, roots)
+    observation["tls_origin_path"] = "/" + marker
+    print("SECRET_CUSTODY=" + json.dumps(observation), flush=True)
 
 
 def _find_unexpected_private_keys(scan_root=Path("/")):

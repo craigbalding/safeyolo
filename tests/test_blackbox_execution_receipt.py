@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -250,6 +251,41 @@ def test_guest_user_and_root_are_not_interchangeable(identity, uid):
     report = {"phase": identity, "lane": "kvm", "identity": identity, "uid": uid,
               "finished": True, "exit": 0, "collected": [], "selected": [], "tests": {}}
     assert "wrong guest uid" in receipts.pytest_problems(report, identity, "kvm")
+
+
+@pytest.mark.parametrize("defect", [None, "missing", "failed", "wrong-run", "wrong-phase", "wrong-guest"])
+def test_guest_phase_needs_its_independent_host_observer(tmp_path, monkeypatch, defect):
+    context = {"platform": "systrap", "agent": "bbtest", "pid": 123, "start_token": "birth"}
+    receipts.save(tmp_path / "platform.json", context)
+    monkeypatch.setitem(receipts.SECTION_DRIVERS, "isolation", ("guest-agent",))
+    monkeypatch.setattr(receipts, "pytest_problems", lambda *args, **kwargs: [])
+    report = {"phase": "guest-agent", "run_id": "current", "guest": context, "tests": {}, "collected": [], "selected": []}
+    receipts.save(tmp_path / "pytest-guest-agent.json", report)
+    observer = {"phase": "guest-agent", "run_id": "current", "guest": context, "status": "passed"}
+    if defect == "failed":
+        observer["status"] = "incomplete"
+    elif defect == "wrong-run":
+        observer["run_id"] = "previous"
+    elif defect == "wrong-phase":
+        observer["phase"] = "guest-root"
+    elif defect == "wrong-guest":
+        observer["guest"] = {**context, "start_token": "previous-birth"}
+    if defect != "missing":
+        receipts.save(tmp_path / "containment-guest-agent.json", observer)
+    result = receipts.section_execution(tmp_path, "isolation", "systrap", "current")
+    assert result["complete"] == (defect is None)
+
+
+def test_guest_destination_observations_are_retained_in_the_phase_receipt(tmp_path):
+    plugin = receipts.PytestReceipt(tmp_path / "receipt.json", "guest-agent", "systrap", "run", tmp_path)
+    plugin.nodes["probe"] = "test_network.py::test_owned_receiver"
+    observed = [{"address": "192.0.2.8", "guest_network": {"route_exit": 2, "route": []}, "uid": 1000}]
+    plugin.pytest_runtest_logreport(SimpleNamespace(
+        nodeid="probe", when="call", outcome="passed",
+        capstdout="CONTAINMENT_ATTEMPTS=" + json.dumps(observed) + "\n"))
+    saved = json.loads(plugin.path.read_text())
+    assert saved["containment_observations"][plugin.nodes["probe"]] == [
+        {"kind": "CONTAINMENT_ATTEMPTS", "value": observed}]
 
 
 def test_explicit_optional_selection_makes_its_skipped_case_required(tmp_path, monkeypatch):
