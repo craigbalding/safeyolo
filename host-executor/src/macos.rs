@@ -323,7 +323,7 @@ impl MacRuntime {
             .map(Path::new)
             .chain(writes.iter().map(PathBuf::as_path))
         {
-            let real = Path::new(path).canonicalize().map_err(unavailable)?;
+            let real = path.canonicalize().map_err(unavailable)?;
             // realpath resolves each parent before opening the adopted path.
             // Parent metadata grants no sibling content or directory listing.
             for parent in real.ancestors().skip(1) {

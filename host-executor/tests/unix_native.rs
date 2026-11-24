@@ -1554,6 +1554,13 @@ fn installed_macos_scoped_writes_and_retained_results() {
     ] {
         let mut op = operations["observe"].clone();
         op.execution.filesystem.write = vec![work.to_str().unwrap().into()];
+        let alias = PathBuf::from(format!("/System/Volumes/Data{}", work.display()));
+        if alias.is_dir() {
+            op.execution
+                .filesystem
+                .write
+                .push(alias.to_str().unwrap().into());
+        }
         op.execution.argv = [
             mode.into(),
             work.to_str().unwrap().into(),
@@ -1643,6 +1650,35 @@ fn installed_macos_scoped_writes_and_retained_results() {
     assert!(!check.status.success());
     assert!(String::from_utf8_lossy(&check.stderr).contains("hard link outside"));
     fs::remove_file(work.join("outside-alias")).unwrap();
+    let saved = fs::read(&config).unwrap();
+    let control_alias = PathBuf::from(format!("/System/Volumes/Data{}", f.root.display()));
+    let control = if control_alias.is_dir() {
+        control_alias
+    } else {
+        f.root.clone()
+    };
+    for protected in [control, PathBuf::from(executor()).canonicalize().unwrap()] {
+        let mut changed = settings.clone();
+        let mut operations = changed.target.package.operations.clone();
+        operations
+            .get_mut("write-single")
+            .unwrap()
+            .execution
+            .filesystem
+            .write = vec![protected.to_str().unwrap().into()];
+        changed.target = common::target(f.target.target_id.clone(), operations, &f.key);
+        fs::write(&config, serde_json::to_vec(&changed).unwrap()).unwrap();
+        let check = Command::new(executor())
+            .args(["check", "--config"])
+            .arg(&config)
+            .arg("--state")
+            .arg(f.root.join("state"))
+            .output()
+            .unwrap();
+        assert!(!check.status.success());
+        assert!(String::from_utf8_lossy(&check.stderr).contains("executor"));
+    }
+    fs::write(&config, saved).unwrap();
     // Replacing an existing result with a directory produces a real partial
     // file outcome. The failed rename retains the new file and a failed job.
     fs::remove_file(work.join("result")).unwrap();
@@ -1760,6 +1796,23 @@ fn installed_macos_broader_network_directions_and_ports() {
     settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
     f.target = settings.target.clone();
     fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    let check = Command::new(executor())
+        .args(["check", "--config"])
+        .arg(&config)
+        .arg("--state")
+        .arg(f.root.join("state"))
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let human = String::from_utf8(check.stdout).unwrap();
+    assert!(human.contains(&format!("target {}", f.target.target_id)));
+    assert!(human.contains("EXPLICIT BROADER NETWORK/IPC"));
+    assert!(human.contains("Exact IP/interface"));
+    eprintln!("check: selected target and actual socket authority displayed before invocation");
     let Response::Discovery { discovery } = f.call(Action::Discover) else {
         panic!("discovery");
     };
@@ -1845,7 +1898,6 @@ fn installed_macos_broader_network_directions_and_ports() {
             }
         }
         let result = f.terminal(&receipt.job_id);
-        receiver.join().unwrap();
         let Response::Output { data_base64, .. } = f.call(Action::Output {
             job_id: receipt.job_id.clone(),
             offset: 0,
@@ -1854,6 +1906,12 @@ fn installed_macos_broader_network_directions_and_ports() {
             panic!("output");
         };
         let output = String::from_utf8(STANDARD.decode(data_base64).unwrap()).unwrap();
+        eprintln!(
+            "{mode}: state={:?}, exit={:?}\n{output}",
+            result.state,
+            result.native.as_ref().map(|n| n.exit_code)
+        );
+        receiver.join().unwrap();
         assert_eq!(result.state, JobState::Completed, "{result:?}\n{output}");
         assert!(result.native.as_ref().unwrap().processes_stopped);
         assert!(output.contains("directions and ports enforced"), "{output}");
@@ -1889,7 +1947,7 @@ fn installed_macos_broader_network_directions_and_ports() {
             );
             // The test-owned program self-terminates; this is not an executor
             // guarantee. Wait for real bindability before confirming recovery.
-            let deadline = Instant::now() + Duration::from_secs(6);
+            let deadline = Instant::now() + Duration::from_secs(10);
             loop {
                 if let Ok(released) = TcpListener::bind((v4, service_ports[0])) {
                     drop(released);

@@ -4,7 +4,6 @@ use super::*;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::CStr,
-    path::Component,
 };
 
 type Inode = (u64, u64);
@@ -12,23 +11,16 @@ fn inode(meta: &fs::Metadata) -> Inode {
     (meta.dev(), meta.ino())
 }
 
-fn absolute(path: &Path) -> bool {
-    path.is_absolute()
-        && path
-            .components()
-            .all(|c| !matches!(c, Component::ParentDir | Component::CurDir))
-}
-
 fn protected_paths(protected: &[PathBuf]) -> Result<Vec<PathBuf>, Refusal> {
     let mut paths = protected.to_vec();
     paths.push(std::env::current_exe().map_err(unavailable)?);
     // Shared-cache images can have no separate on-disk file. Protect their
     // system roots as well as each real image mapped into this executor.
-    paths.extend(["/System", "/usr/lib", "/Library/Apple/System"].map(PathBuf::from));
+    paths.extend(["/System/Library", "/usr/lib", "/Library/Apple/System"].map(PathBuf::from));
     // SAFETY: dyld owns these NUL-terminated names for the loaded images. Copy
     // each name immediately; this executable does not unload runtime images.
-    for index in 0..unsafe { libc::_dyld_image_count() } {
-        let name = unsafe { libc::_dyld_get_image_name(index) };
+    for index in 0..unsafe { _dyld_image_count() } {
+        let name = unsafe { _dyld_get_image_name(index) };
         require(
             !name.is_null(),
             RefusalCode::Unavailable,
@@ -40,6 +32,13 @@ fn protected_paths(protected: &[PathBuf]) -> Result<Vec<PathBuf>, Refusal> {
         paths.push(PathBuf::from(name));
     }
     Ok(paths)
+}
+
+// These two libSystem APIs need no separate Mach crate. libc has deprecated
+// its bindings; the OS signatures are declared here, as for addchdir_np.
+unsafe extern "C" {
+    fn _dyld_image_count() -> u32;
+    fn _dyld_get_image_name(index: u32) -> *const libc::c_char;
 }
 
 type Links = BTreeMap<Inode, (u64, BTreeSet<(Inode, std::ffi::OsString)>)>;
@@ -110,9 +109,9 @@ pub(super) fn validate(paths: &[String], protected: &[PathBuf]) -> Result<Vec<Pa
     let mut selected = Vec::new();
     for path in paths {
         require(
-            absolute(Path::new(path)),
+            Path::new(path).is_absolute(),
             RefusalCode::Unavailable,
-            "write scopes need absolute paths without parent traversal",
+            "write scopes need absolute paths",
         )?;
         let real = Path::new(path).canonicalize().map_err(|error| unavailable(format!(
             "write scope must already exist; select its parent directory to create new descendants: {error}")))?;

@@ -114,7 +114,15 @@ static int mac_network_probe(const char *mode, const char *directory, int local_
     struct sockaddr_in6 v6 = { .sin6_family=AF_INET6, .sin6_addr=IN6ADDR_LOOPBACK_INIT };
     struct sockaddr *address = ipv6 ? (struct sockaddr *)&v6 : (struct sockaddr *)&v4;
     socklen_t length = ipv6 ? sizeof(v6) : sizeof(v4);
-    if (socket(AF_UNIX,SOCK_STREAM,0)!=-1 || errno!=EPERM) return 90;
+    int ipc=socket(AF_UNIX,SOCK_STREAM,0);
+    if (ipc>=0) {
+        struct sockaddr_un unix_address={.sun_family=AF_UNIX};
+        if (snprintf(unix_address.sun_path,sizeof(unix_address.sun_path),"%s/../forbidden.socket",directory)>=(int)sizeof(unix_address.sun_path)) return 90;
+        if (connect(ipc,(struct sockaddr *)&unix_address,sizeof(unix_address))!=-1 || errno!=EPERM) {
+            perror("forbidden Unix connect"); return 90;
+        }
+        close(ipc);
+    } else if (errno!=EPERM) { perror("Unix socket"); return 90; }
     if (socket(AF_INET,SOCK_RAW,IPPROTO_ICMP)!=-1 || errno!=EPERM) return 91;
     if (fork()!=-1 || errno!=EPERM) return 92;
     if (getenv("DENIED_TCP_PORT")) {
@@ -152,7 +160,7 @@ static int mac_network_probe(const char *mode, const char *directory, int local_
         if (snprintf(path,sizeof(path),"%s/%s",directory,mode)>=(int)sizeof(path)) return 100;
         FILE *file=fopen(path,"w");
         if (!file || fputs("retained network result\n",file)<0 || fclose(file)) return 101;
-        if (strstr(mode,"wait")) { alarm(4); for (;;) pause(); }
+        if (strstr(mode,"wait")) { alarm(8); for (;;) pause(); }
         struct timeval timeout={.tv_sec=3};
         if (setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout))) return 102;
         if (udp) {
@@ -161,11 +169,13 @@ static int mac_network_probe(const char *mode, const char *directory, int local_
         } else {
             int peer=accept(fd,NULL,NULL);
             if (peer<0 || write(peer,"service",7)!=7) { perror("accept/reply"); return 104; }
+            char byte;
+            if (read(peer,&byte,1)!=0) return 106;
             close(peer);
         }
     } else if (bind(fd,address,length)!=-1 || errno!=EPERM) return 105;
     close(fd);
-    puts("selected socket directions and ports enforced; Unix/raw sockets and fork denied");
+    puts("selected socket directions and ports enforced; Unix connections, raw sockets and fork denied");
     return 0;
 }
 #endif
