@@ -674,7 +674,9 @@ impl LinuxRuntime {
                     }
                 }
                 if let Some(fd) = listener_fd
-                    && libc::dup2(fd, 3) < 0
+                    // dup2(fd, fd) preserves FD_CLOEXEC. Clear it even when
+                    // a concurrently closed parent descriptor freed slot 3.
+                    && (libc::dup2(fd, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0)
                 {
                     return Err(std::io::Error::last_os_error());
                 }
