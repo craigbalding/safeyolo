@@ -466,6 +466,7 @@ pub fn show_policy_assessment(view: &Value) {
         "base",
         "current_state",
         "consequences",
+        "configured_agents",
         "authority",
         "services",
         "network",

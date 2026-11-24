@@ -52,6 +52,11 @@ pub enum Metadata {
 #[serde(deny_unknown_fields)]
 pub struct Source {
     pub endpoint: String,
+    /// The signal source owns acquisition; this host only activates snapshots.
+    #[serde(default)]
+    pub distributed: bool,
+    #[serde(default)]
+    pub publish: Option<crate::signals::Publication>,
     #[serde(default)]
     pub redirect_endpoints: Vec<String>,
     pub format: Format,
@@ -175,6 +180,9 @@ fn parse_configuration(source: &str) -> Result<Configuration, Error> {
     for (name, source) in &config.sources {
         source_name(name)?;
         source.validate()?;
+        if let Some(publication) = &source.publish {
+            publication.validate()?;
+        }
     }
     Ok(config)
 }
@@ -193,6 +201,29 @@ fn directory(root: &Path, name: &str) -> PathBuf {
 pub(crate) fn snapshot_path(root: &Path, name: &str) -> Result<PathBuf, Error> {
     source_name(name)?;
     Ok(directory(root, name).join("accepted.json"))
+}
+
+/// The adopted list interpretation belongs in a response preview and approval,
+/// without disclosing its private acquisition endpoint.
+pub(crate) fn signal_target(root: &Path, name: &str) -> Result<Value, Error> {
+    let config = configuration(root)?;
+    let source = config
+        .sources
+        .get(name)
+        .ok_or("unknown signal list target")?;
+    if !source.distributed {
+        return Err("signal target must be an explicitly distributed feed".into());
+    }
+    let interpretation = json!({"format":source.format,"scope":source.scope,
+        "on_stale":source.on_stale,"on_unavailable":source.on_unavailable,
+        "max_age_seconds":source.max_age_seconds,"max_bytes":source.max_bytes,
+        "min_entries":source.min_entries,"max_entries":source.max_entries,
+        "max_change_percent":source.max_change_percent});
+    Ok(
+        json!({"feed":name,"configuration_digest":digest(&serde_json::to_vec(&interpretation)?),
+        "format":source.format,"scope":source.scope,"on_stale":source.on_stale,
+        "max_age_seconds":source.max_age_seconds}),
+    )
 }
 fn digest(bytes: &[u8]) -> String {
     crate::jobs::hex(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
@@ -217,6 +248,10 @@ pub struct Snapshot {
     pub validated_at: u64,
     pub provider_observed_at: Option<u64>,
     pub provider_version: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<u64>,
+    #[serde(default)]
+    pub withdrawn: bool,
     pub entries: Vec<String>,
     // Kept private on disk; never part of status or policy views.
     config_identity: String,
@@ -227,7 +262,9 @@ impl Snapshot {
             .unwrap_or(self.evidence_first_observed_at)
     }
     fn usable(&self, source: &Source, at: u64) -> bool {
-        at >= self.evidence_time()
+        !self.withdrawn
+            && self.expires_at.is_none_or(|expiry| at < expiry)
+            && at >= self.evidence_time()
             && at.saturating_sub(self.evidence_time()) < source.max_age_seconds
     }
     pub(crate) fn status(&self) -> Value {
@@ -236,6 +273,7 @@ impl Snapshot {
             "acquired_at":self.acquired_at, "validated_at":self.validated_at,
             "evidence_first_observed_at":self.evidence_first_observed_at,
             "provider_observed_at":self.provider_observed_at, "provider_version":self.provider_version,
+            "expires_at":self.expires_at,"withdrawn":self.withdrawn,
             "entries":self.entries.len()})
     }
 }
@@ -489,6 +527,14 @@ async fn refresh_due(root: &Path, selected: Option<&str>) -> Result<(), Error> {
         if selected.is_some_and(|selected| selected != name) {
             continue;
         }
+        if source.distributed {
+            if selected.is_some() {
+                return Err(
+                    "this feed follows adopted signal updates; inspect signals status".into(),
+                );
+            }
+            continue;
+        }
         let dir = directory(root, &name);
         fs::create_dir_all(&dir)?;
         let _lock = match crate::host_platform::try_lock_host_state(&dir.join("refresh.lock")) {
@@ -522,7 +568,16 @@ async fn refresh_due(root: &Path, selected: Option<&str>) -> Result<(), Error> {
             .min(source.max_retry_seconds);
         state.next_refresh = attempt.saturating_add(retry);
         atomic(&dir.join("state.json"), &state)?;
-        let result = update(root, &name, &source, &mut state).await;
+        let result = async {
+            update(root, &name, &source, &mut state).await?;
+            if let Some(publication) = &source.publish {
+                let accepted = snapshot(root, &name, &source, "accepted.json")?
+                    .ok_or("feed publication has no accepted snapshot")?;
+                crate::signals::distribute_list(root, publication, &accepted, &source).await?;
+            }
+            Ok::<(), Error>(())
+        }
+        .await;
         state.attempt_pending = false;
         match result {
             Ok(()) => {
@@ -598,6 +653,8 @@ async fn update(root: &Path, name: &str, source: &Source, state: &mut State) -> 
         validated_at: at,
         provider_observed_at,
         provider_version,
+        expires_at: None,
+        withdrawn: false,
         entries,
         config_identity: source.identity(),
     };
@@ -621,4 +678,82 @@ async fn update(root: &Path, name: &str, source: &Source, state: &mut State) -> 
     state.last_modified = downloaded.last_modified;
     state.cache_endpoint = Some(downloaded.endpoint);
     Ok(())
+}
+
+/// Called with the host policy lock held. Acquisition and response rules share
+/// the existing validated local snapshot owner, but never choose its effect.
+pub(crate) fn adopt_signal(
+    root: &Path,
+    name: &str,
+    update: &crate::signals::Update,
+    body: &str,
+) -> Result<(), Error> {
+    fs::create_dir_all(directory(root, name))?;
+    let config = configuration(root)?;
+    let source = config
+        .sources
+        .get(name)
+        .ok_or("unknown signal list target")?;
+    if !source.distributed {
+        return Err("signal target must be an explicitly distributed feed".into());
+    }
+    let current = snapshot(root, name, source, "accepted.json")?;
+    let version = digest(&serde_json::to_vec(update)?);
+    if let Some(current) = &current {
+        let prefix = format!("{}:{}:", update.source_id, update.id);
+        if let Some(revision) = current
+            .provider_version
+            .as_deref()
+            .and_then(|v| v.strip_prefix(&prefix))
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            if current.version == version {
+                return Ok(());
+            }
+            if update.revision <= revision || update.observed_at < current.evidence_time() {
+                return Err(
+                    "distributed list cannot replace a newer accepted revision or evidence time"
+                        .into(),
+                );
+            }
+        }
+    }
+    let entries = if update.withdrawn {
+        Vec::new()
+    } else {
+        let parsed = parse::entries(source, body.as_bytes())?;
+        if let Some(current) = &current {
+            parse::validate_change(&current.entries, &parsed.entries, source.max_change_percent)?;
+        }
+        parsed.entries
+    };
+    let at = now();
+    let accepted = Snapshot {
+        source: name.into(),
+        endpoint: source.redacted_endpoint(),
+        format: source.format,
+        scope: source.scope,
+        version,
+        source_sha256: digest(body.as_bytes()),
+        acquired_at: at,
+        validated_at: at,
+        evidence_first_observed_at: update.observed_at,
+        provider_observed_at: Some(update.observed_at),
+        provider_version: Some(format!(
+            "{}:{}:{}",
+            update.source_id, update.id, update.revision
+        )),
+        expires_at: Some(update.expires_at),
+        withdrawn: update.withdrawn,
+        entries,
+        config_identity: source.identity(),
+    };
+    if current.as_ref() == Some(&accepted) {
+        return Ok(());
+    }
+    let dir = directory(root, name);
+    if let Some(current) = current {
+        atomic(&dir.join("previous.json"), &current)?;
+    }
+    atomic(&dir.join("accepted.json"), &accepted)
 }

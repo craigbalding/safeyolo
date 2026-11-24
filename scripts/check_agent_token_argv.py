@@ -83,7 +83,7 @@ def _shell_value_provenance(
     if _AGENT_HOST in value.lower():
         provenance.add(_ENDPOINT)
     for substitution in _SUBSTITUTION_RE.finditer(value):
-        body = substitution.group("dollar") or substitution.group("backtick")
+        body = substitution.group("dollar") or substitution.group("backtick") or ""
         if _substitution_uses_path(body, state):
             provenance.add(_TOKEN)
     return provenance
@@ -147,7 +147,7 @@ def _shell_findings(text: str) -> list[tuple[int, str]]:
                 )
                 if not unsafe:
                     for substitution in _SUBSTITUTION_RE.finditer(bearer_tail):
-                        body = substitution.group("dollar") or substitution.group("backtick")
+                        body = substitution.group("dollar") or substitution.group("backtick") or ""
                         if _substitution_uses_path(body, state):
                             unsafe = True
                             break

@@ -17,6 +17,11 @@ read-only terminal inspector. The CLI reads and updates instance configuration,
 uses the authenticated Admin API, and displays JSON Lines (JSONL) audit events.
 The instance policy file is the source of truth for durable permissions.
 
+The [host execution contract](host-execution-contract.md) defines the shared
+issuer/target protocol, versioned operation package and executable contract
+witness. Native platform execution and gateway adoption remain separate from
+contract validation.
+
 ## Repository Structure
 
 - `proxy/src/` contains the Rust proxy and its policy, inspection, API, and
@@ -308,8 +313,11 @@ Overnight test compilation prepares the library test, then binary tests and
 host binaries selected by the version integration test. A separate step prepares
 the agent API and native integration tests. The final compilation step keeps
 the complete default target selection, including examples, and reuses those
-outputs. All steps use the unchanged release profile and flags. The dependency
-cache does not supply these workspace executables. Completed Cargo timing
+outputs. macOS contract-test compilation and execution select package
+optimization level 1 through the same command-specific Cargo override. Linux
+tests, dependencies and production builds keep their release settings.
+The post-test production build restores the normal optimized executables.
+The dependency cache does not supply these workspace executables. Completed Cargo timing
 reports are retained even when a later compilation step fails; an interrupted
 compiler can leave no report for its unfinished command. The verbose job log
 still identifies the targets started before interruption.

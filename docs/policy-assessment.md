@@ -39,7 +39,12 @@ PY
 safeyolo-coord call assess_policy < assessment-request.json > assessment.json
 ```
 
-Read `consequences`, `effective`, `authority`, `alternatives` and `limitations`.
+Read `consequences`, `effective`, `configured_agents`, `authority`, `alternatives`
+and `limitations`. `configured_agents` explains changed worker identities,
+settings, writable workspace and declared mount access. It separates saved
+configuration from the next authorized sandbox start and grants no peer
+administration. Host path contents, scripts, launcher defaults and installed
+readiness remain outside this source-only assessment.
 The source diff includes the complete redacted before/after TOML.
 `valid: true` means that the installed compiler accepted the redacted form
 using the available inputs. Hidden literal credentials remain opaque during

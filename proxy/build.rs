@@ -25,13 +25,18 @@ fn main() {
         PathBuf::from("Cargo.lock"),
         PathBuf::from("build.rs"),
         PathBuf::from("../scripts/rust_build_identity.rs"),
+        PathBuf::from("../host-executor/Cargo.toml"),
     ];
     sources(Path::new("src"), &mut paths);
     sources(Path::new("vendor"), &mut paths);
+    // Host package/schema types and their validators also back installed
+    // capability discovery. Their changes must stale prior definition inputs.
+    sources(Path::new("../host-executor/src"), &mut paths);
     paths.sort();
     let mut hash = Sha256::new();
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=vendor");
+    println!("cargo:rerun-if-changed=../host-executor/src");
     for path in paths {
         println!("cargo:rerun-if-changed={}", path.display());
         hash.update(path.to_string_lossy().as_bytes());

@@ -17,6 +17,24 @@ see_also:
     when: "the response was a plain block (not an approval flow)"
 
 nodes:
+  - id: sym.control_update_changed
+    kind: symptom
+    label: "A control update failed, needs adoption approval, or changed a route challenge"
+    keywords: [control update, signature, publisher, qualification, revision, superseded, rollback, challenge, "422"]
+    source: authored
+
+  - id: ev.control_update_current
+    kind: evidence
+    label: "Read canonical challenge guidance; on the owning host inspect signals status, the exact approval and policy show"
+    detail: "Distinguish the recorded result from current saved/active policy. Read publisher, digest, adoption authority, proposed effects and bounds, qualification and next action. Use the installed assets/docs/signals.md guide."
+    source: authored
+
+  - id: con.control_update_recover
+    kind: conclusion
+    label: "Use current requirements and the existing adoption/recovery owner"
+    detail: "Supply required answers only to the current challenge. Missing or failed checks do not authorize escalation. A superseded challenge needs a fresh original request through normal controls. The host decides an out-of-authority update through its exact once approval; unchanged failed qualification is not replayed. A pin or signed-withdrawal replacement requalifies only that update and never restores unrelated grants."
+    source: authored
+
   # ---- Symptoms --------------------------------------------------------
   - id: sym.approval_428_generic
     kind: symptom
@@ -166,6 +184,8 @@ nodes:
 
 
 edges:
+  - {from: sym.control_update_changed, to: ev.control_update_current, kind: next_check}
+  - {from: ev.control_update_current, to: con.control_update_recover, kind: implies}
   # Entry symptoms fan out to a first read of the response body
   - {from: sym.approval_428_generic,      to: ev.approval_read_action_field, kind: next_check}
   - {from: sym.approval_428_self_correct, to: ev.approval_read_action_field, kind: next_check}
@@ -211,6 +231,7 @@ edges:
 
 
 entries:
+  - symptom: sym.control_update_changed
   - symptom: sym.approval_428_generic
   - symptom: sym.approval_428_self_correct
   - symptom: sym.gateway_202_pending

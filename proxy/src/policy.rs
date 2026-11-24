@@ -440,6 +440,15 @@ struct HostList {
     source: zeroize::Zeroizing<String>,
     hosts: Vec<String>,
     managed: Option<crate::policy_feeds::List>,
+    /// None means a global host reference; otherwise only these agents use it.
+    agents: Option<Vec<String>>,
+}
+impl HostList {
+    fn applies(&self, agent: Option<&str>) -> bool {
+        self.agents
+            .as_ref()
+            .is_none_or(|agents| agent.is_some_and(|agent| agents.iter().any(|name| name == agent)))
+    }
 }
 
 impl fmt::Debug for Policy {
@@ -455,6 +464,7 @@ impl fmt::Debug for Policy {
 
 #[derive(Clone)]
 struct TaskPolicy {
+    id: Option<String>,
     baseline: Arc<Baseline>,
     rules: Vec<Rule>,
     global_budget: Option<u64>,
@@ -498,6 +508,21 @@ pub(crate) fn validate_task_id(task: &str) -> Result<()> {
 }
 
 impl Policy {
+    pub(crate) fn bind_registered_task(&mut self, task_id: &str) {
+        if let Some(task) = &mut self.task {
+            task.id = Some(task_id.into());
+        }
+    }
+
+    pub(crate) fn host_gateway_revision(&self) -> String {
+        crate::host_execution::revision(&(
+            self.work_authority_digest(),
+            self.task
+                .as_ref()
+                .map(|task| (&task.id, &task.baseline.value)),
+        ))
+    }
+
     /// An initialized local engine without a configured baseline defaults to
     /// denial while the baseline API reports null.
     pub fn unconfigured() -> Self {
@@ -629,6 +654,7 @@ impl Policy {
         let task = Self::from_document(parsed, None, None, true, None)?;
         let mut replacement = self.clone();
         replacement.task = Some(TaskPolicy {
+            id: None,
             baseline: task.baseline.expect("loaded task has a canonical model"),
             rules: task.rules,
             global_budget: task.global_budget,
@@ -949,8 +975,9 @@ impl Policy {
         Ok(policy)
     }
 
-    /// Borrow the canonical baseline for an authorized API response. This value
-    /// may contain gateway tokens and must not enter diagnostics or event logs.
+    /// Borrow the internal canonical baseline. This value may contain gateway
+    /// tokens and must not enter diagnostics or event logs. Agent responses
+    /// must exclude credential-bearing fields.
     pub(crate) fn baseline(
         &self,
     ) -> std::result::Result<Option<&Value>, BaselineSerializationError> {
@@ -1524,9 +1551,11 @@ impl Policy {
             return Err(invalid("budget timestamp must be finite"));
         }
         if let Some((name, _)) = self.list_files.iter().find(|(_, list)| {
-            list.managed
-                .as_ref()
-                .is_some_and(|feed| feed.unavailable(now_ms))
+            list.applies(request.agent)
+                && list
+                    .managed
+                    .as_ref()
+                    .is_some_and(|feed| feed.unavailable(now_ms))
         }) {
             return Ok(Decision {
                 effect: Effect::Deny,
@@ -1537,6 +1566,7 @@ impl Policy {
         let canonical_host = self
             .list_files
             .values()
+            .filter(|list| list.applies(request.agent))
             .filter_map(|list| list.managed.as_ref())
             .find_map(|feed| feed.canonical_member(request.host));
         let request = NetworkRequest {
@@ -1976,9 +2006,35 @@ fn expand_lists(
     else {
         return Ok(loaded);
     };
-    let Some(hosts) = document.get_mut("hosts").and_then(Value::as_object_mut) else {
-        return Ok(loaded);
-    };
+    if let Some(hosts) = document.get_mut("hosts").and_then(Value::as_object_mut) {
+        expand_host_lists(hosts, &lists, base_dir, timestamps, None, &mut loaded)?;
+    }
+    if let Some(agents) = document.get_mut("agents").and_then(Value::as_object_mut) {
+        for (agent, settings) in agents {
+            if let Some(hosts) = settings.get_mut("hosts").and_then(Value::as_object_mut) {
+                expand_host_lists(
+                    hosts,
+                    &lists,
+                    base_dir,
+                    timestamps,
+                    Some(agent),
+                    &mut loaded,
+                )?;
+            }
+        }
+    }
+    Ok(loaded)
+}
+
+fn expand_host_lists(
+    hosts: &mut Map<String, Value>,
+    lists: &Map<String, Value>,
+    base_dir: Option<&Path>,
+    timestamps: &mut TimestampPaths,
+    agent: Option<&str>,
+    loaded: &mut IndexMap<String, HostList>,
+) -> Result<()> {
+    let host_prefix = agent.map_or_else(|| vec!["hosts"], |agent| vec!["agents", agent, "hosts"]);
     let references: Vec<_> = hosts
         .iter()
         .filter_map(|(host, config)| {
@@ -1998,7 +2054,13 @@ fn expand_lists(
         if timestamps.value_at(&["lists", &name]).is_some() {
             return Err(invalid("list path must be a string"));
         }
-        let (path, source, managed) = if let Some(fields) = lists[&name].as_object() {
+        let (path, source, managed) = if let Some(previous) = loaded.get(&name) {
+            (
+                previous.path.clone(),
+                previous.source.clone(),
+                previous.managed.clone(),
+            )
+        } else if let Some(fields) = lists[&name].as_object() {
             if fields.len() != 1 {
                 return Err(invalid("managed lists require only feed = 'SOURCE'"));
             }
@@ -2047,8 +2109,10 @@ fn expand_lists(
             config
         };
         hosts.shift_remove(&host);
-        let inherited_timestamps = timestamps.projected(&["hosts", &host]);
-        timestamps.remove_under(&["hosts", &host]);
+        let mut reference_path = host_prefix.clone();
+        reference_path.push(&host);
+        let inherited_timestamps = timestamps.projected(&reference_path);
+        timestamps.remove_under(&reference_path);
         let members = if let Some(managed) = &managed {
             managed
                 .snapshot
@@ -2072,22 +2136,35 @@ fn expand_lists(
             // keeps its existing interpretation.
             for pattern in [Some(entry.as_str()), apex].into_iter().flatten() {
                 if !hosts.contains_key(pattern) {
-                    timestamps.extend(inherited_timestamps.copy_under(&[], &["hosts", pattern]));
+                    let mut path = host_prefix.clone();
+                    path.push(pattern);
+                    timestamps.extend(inherited_timestamps.copy_under(&[], &path));
                     hosts.insert(pattern.to_owned(), config.clone());
                 }
             }
         }
-        loaded.insert(
-            name,
-            HostList {
-                path,
-                source,
-                hosts: members,
-                managed,
-            },
-        );
+        if let Some(previous) = loaded.get_mut(&name) {
+            if let (Some(agents), Some(agent)) = (&mut previous.agents, agent) {
+                if !agents.iter().any(|name| name == agent) {
+                    agents.push(agent.into());
+                }
+            } else if agent.is_none() {
+                previous.agents = None;
+            }
+        } else {
+            loaded.insert(
+                name,
+                HostList {
+                    path,
+                    source,
+                    hosts: members,
+                    managed,
+                    agents: agent.map(|agent| vec![agent.into()]),
+                },
+            );
+        }
     }
-    Ok(loaded)
+    Ok(())
 }
 
 fn local_list_members(source: &str) -> Vec<String> {

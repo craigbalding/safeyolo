@@ -78,7 +78,7 @@
           "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"command_execution\", \"id\": \"missing-start\", \"command\": \"printf marker\", \"exit_code\": -9, \"aggregated_output\": \"older\\nlast failure\"}}"
         }
       ],
-      "expected": "00:00 $ printf marker\n00:00 ! command failed rc=7: failed token=<redacted> https://example.test/?<omitted>\n00:00 ! command failed rc=-9: last failure\n"
+      "expected": "00:00 $ printf marker\n00:00 ! command failed rc=7: failed token=<redacted> https://example.test/?<omitted>#<omitted>\n00:00 ! command failed rc=-9: last failure\n"
     },
     {
       "name": "skill read is a successful literal read, not mere command text",
@@ -484,6 +484,61 @@
       ],
       "expected": "00:00 # a [middle snipped;xxxxxxxxxxxxxxxxxxxxx\u2026\n",
       "max_text": 40
+    },
+    {
+      "name": "redacted public issue, PR, comment and source references",
+      "redact": true,
+      "max_text": 600,
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"agent_message\", \"text\": \"[issue](https://github.com/craigbalding/safeyolo/issues/1632#issuecomment-6882721322).\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"agent_message\", \"text\": \"https://github.com/craigbalding/safeyolo/pull/1650#discussion_r1234\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"agent_message\", \"text\": \"https://github.com/craigbalding/safeyolo/blob/205a9a6efbb87eeb12bd9778b3b61359b2af3a55/proxy/src/coord_timeline.rs?plain=1#L513-L545\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"agent_message\", \"text\": \"https://github.com/craigbalding/safeyolo/commit/205a9a6efbb87eeb12bd9778b3b61359b2af3a55#diff-205a9a6efbb87eeb12bd9778b3b61359b2af3a55R513\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"agent_message\", \"text\": \"205a9a6efbb87eeb12bd9778b3b61359b2af3a55\"}}"
+        }
+      ],
+      "expected": "00:00 # [issue](https://github.com/craigbalding/safeyolo/issues/1632#issuecomment-6882721322).\n00:00 # https://github.com/craigbalding/safeyolo/pull/1650#discussion_r1234\n00:00 # https://github.com/craigbalding/safeyolo/blob/205a9a6efbb87eeb12bd9778b3b61359b2af3a55/proxy/src/coord_timeline.rs?<omitted>#L513-L545\n00:00 # https://github.com/craigbalding/safeyolo/commit/205a9a6efbb87eeb12bd9778b3b61359b2af3a55#diff-205a9a6efbb87eeb12bd9778b3b61359b2af3a55R513\n00:00 # 205a9a6efbb87eeb12bd9778b3b61359b2af3a55\n"
+    },
+    {
+      "name": "public-looking hosts still hide URL and adjacent secrets",
+      "redact": true,
+      "messages": [
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"agent_message\", \"text\": \"https://user:pass@github.com/craigbalding/safeyolo/issues/1632?token=query-canary#issuecomment-123 token=assignment-canary\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"agent_message\", \"text\": \"https://github.com/craigbalding/safeyolo/issues/1632#access_token=fragment-canary Bearer bearer-canary\"}}"
+        },
+        {
+          "sent_at": 0,
+          "sender_kind": "agent",
+          "body": "{\"type\": \"item.completed\", \"item\": {\"type\": \"agent_message\", \"text\": \"https://github.com/craigbalding/safeyolo/issues/1632#opaque-fragment-canary sgw_service_canary sk-service-canary ghp_servicecanary\"}}"
+        }
+      ],
+      "expected": "00:00 # https://github.com/craigbalding/safeyolo/issues/1632?<omitted>#issuecomment-123 token=<redacted>\n00:00 # https://github.com/craigbalding/safeyolo/issues/1632#<omitted> <redacted>\n00:00 # https://github.com/craigbalding/safeyolo/issues/1632#<omitted> <redacted> <redacted> <redacted>\n"
     }
   ]
 }

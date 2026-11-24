@@ -438,6 +438,12 @@ impl Policy {
     ) -> Result<(Self, super::ExpiredHosts)> {
         let (mut authored, mut timestamps) = super::parse_toml_with_timestamps(source)?;
         validate_authoring(&authored)?;
+        let registry = crate::host_execution::catalogue_registry(
+            &authored,
+            registry,
+            (now_ms / 1000.0) as u64,
+        )
+        .map_err(|error| invalid(format!("host catalogues: {error}")))?;
         let controls: Controls = serde_json::from_value(
             authored
                 .get("controls")
@@ -463,6 +469,8 @@ impl Policy {
         fields.shift_remove("controls");
         fields.shift_remove("approval_delegations");
         fields.shift_remove("support_grants");
+        fields.shift_remove("host_catalogues");
+        fields.shift_remove("host_bindings");
         // Approval receipts belong to the saved host permission. They are not
         // evaluator fields; keep the authoritative authored copy for outcome
         // reconciliation while compiling only existing egress/rate inputs.
@@ -676,12 +684,63 @@ impl Policy {
         self.native.as_ref().map(|native| native.source.as_str())
     }
 
+    /// Authored selectors and effects of these feed snapshots. Membership itself
+    /// is excluded: accepting evidence must not change an approval's authority.
+    pub(crate) fn signal_list_scope(&self, feeds: &[String]) -> Option<Value> {
+        let native = self.native.as_ref()?;
+        let mut hosts = serde_json::Map::new();
+        if let Some(lists) = native.authored["lists"].as_object() {
+            for (alias, definition) in lists {
+                if !feeds.iter().any(|feed| definition["feed"] == *feed) {
+                    continue;
+                }
+                let key = format!("${alias}");
+                let mut agents = serde_json::Map::new();
+                if let Some(configured) = native.authored["agents"].as_object() {
+                    for (agent, config) in configured {
+                        if let Some(effect) = config["hosts"].get(&key) {
+                            agents.insert(agent.clone(), effect.clone());
+                        }
+                    }
+                }
+                hosts.insert(
+                    alias.clone(),
+                    json!({"definition":definition,
+                    "global":native.authored["hosts"].get(&key),"agents":agents}),
+                );
+            }
+        }
+        let selected = self.checks.checks.iter().filter(|(_, check)| {
+            matches!(&check.source, super::checks::EvidenceSource::Feed { name } if feeds.contains(name))
+        }).map(|(name, check)| (name.clone(), check.clone())).collect::<std::collections::BTreeMap<_,_>>();
+        let rules = self
+            .checks
+            .rules
+            .iter()
+            .filter(|rule| {
+                let mut names = std::collections::BTreeSet::new();
+                rule.when.names(&mut names);
+                names.iter().any(|name| selected.contains_key(name))
+            })
+            .collect::<Vec<_>>();
+        Some(
+            json!({"hosts":hosts,"checks":selected,"check_rules":rules,"network":native.controls.network}),
+        )
+    }
+
     pub(crate) fn native_view(&self, path: &Path) -> Option<Value> {
         let native = self.native.as_ref()?;
         let mut effective = native.authored.clone();
         effective["controls"] =
             serde_json::to_value(&native.controls).expect("validated native controls");
         effective["logging"] = json!({"quiet_hosts": self.request_logger_settings().value()});
+        if native.authored.get("host_catalogues").is_some() {
+            effective["host_catalogue_status"] = crate::host_execution::catalogue_statuses(
+                &native.authored,
+                crate::host_execution::now(),
+            )
+            .unwrap_or_else(|error| json!({"state":"unavailable", "reason":error.to_string()}));
+        }
         let mut sources = serde_json::Map::new();
         sources.insert("policy".into(), json!(path));
         if native.authored.get("lists").is_some() {
@@ -737,6 +796,16 @@ impl Policy {
         Some(json!({"effective":effective, "sources":sources, "permission_count":self.rules.len()}))
     }
 
+    pub(crate) fn host_bindings(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, crate::host_execution::gateway::Binding>> {
+        match &self.native {
+            Some(native) => crate::host_execution::gateway::bindings(&native.authored)
+                .map_err(|error| invalid(format!("host bindings: {error}"))),
+            None => Ok(Default::default()),
+        }
+    }
+
     pub(crate) fn native_sensor_config(
         &self,
     ) -> Option<std::result::Result<Value, super::BaselineSerializationError>> {
@@ -760,6 +829,9 @@ impl Policy {
             .iter()
             .map(|(name, list)| {
                 let mut status = json!({"source":list.path});
+                if let Some(agents) = &list.agents {
+                    status["agents"] = json!(agents);
+                }
                 if let Some(managed) = &list.managed {
                     status["active_snapshot"] = managed.status(super::current_time_ms());
                     match crate::policy_feeds::load_list(
@@ -801,6 +873,8 @@ impl Policy {
 }
 
 fn validate_authoring(document: &Value) -> Result<()> {
+    crate::host_execution::gateway::bindings(document)
+        .map_err(|error| invalid(format!("host bindings: {error}")))?;
     super::authority::validate(document)?;
     super::support::parse(document)?;
     super::delegation::parse(document)?;
@@ -841,6 +915,10 @@ fn validate_authoring(document: &Value) -> Result<()> {
             }
             validate_hosts(agent.get("hosts"), &format!("agents.{name}.hosts"))?;
             super::evidence::validate_reads(agent.get("evidence_reads"))?;
+            if let Some(lifecycle) = agent.get("lifecycle") {
+                crate::host_lifecycle::scheduled::configuration(lifecycle)
+                    .map_err(|error| invalid(error.to_string()))?;
+            }
         }
     }
     Ok(())

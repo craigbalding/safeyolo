@@ -700,9 +700,26 @@ async fn doctor(root: &Path, snapshot: &Snapshot) -> Result<Value, Error> {
             }
             crate::coord_rooms::factory_access(root, &snapshot.room, &agent.id)?;
             crate::coord_rooms::factory_access(root, &format!("{}-agent", role.agent), &agent.id)?;
+            if runtime["runtime_state"]=="stopped"
+                && matches!(runtime["lifecycle"]["state"].as_str(),Some("dormant"|"paused")) {
+                let path=home(root,role).join(".safeyolo/coord-supervisor-state.json");
+                let checkpoint=if path.try_exists()? {coord_supervisor::inspect(&path)?}
+                    else {
+                        let prior:i64=crate::coord_rooms::open(root)?.query_row(
+                            "SELECT COALESCE(MAX(last_sequence),0) FROM coord_attention_feeds WHERE recipient_agent_id=?1",
+                            [&agent.id],|row|row.get(0))?;
+                        if prior>0 {return Err("dormant role has prior targeted attention but no supervisor checkpoint; recover its checkpoint before starting".into());}
+                        json!({"state":"not_yet_supervised","meaning":"No prior targeted attention was recorded. Explicit fresh-identity checks still apply on first supervision."})
+                    };
+                return Ok(json!({"agent_id":agent.id,"runtime":runtime,"checkpoint":checkpoint,
+                    "operating_state":runtime["lifecycle"]["state"],"running_ready":false}));
+            }
             if runtime["runtime_state"] != "running" || runtime["agent_state"] != "running" || runtime["proxy_attachment"]["state"] != "ready" { return Err(format!("role runtime is not ready: {runtime}").into()); }
             let state = home(root, role).join(".safeyolo/coord-supervisor-state.json");
-            coord_supervisor::inspect(&state)?;
+            let checkpoint = coord_supervisor::inspect(&state)?;
+            if role.harness == "claude" && checkpoint["phase"] == "uncertain" {
+                return Err("Claude's last turn is uncertain; inspect agent watch and retained native Work before retrying".into());
+            }
             guest_preflight(role, role.args.as_deref().unwrap_or(&agent.user_default_args)).await?;
             Ok::<_, Error>(json!({"agent_id":agent.id,"runtime":runtime,"checkpoint":coord_supervisor::inspect(&state)?}))
         }.await;
@@ -758,6 +775,14 @@ async fn start_roles(
             .as_deref()
             .unwrap_or(&agent.user_default_args)
             .to_vec();
+        if agent
+            .lifecycle
+            .as_ref()
+            .is_some_and(|c| c.paused || c.mode == host_lifecycle::scheduled::Mode::Scheduled)
+            && crate::host_runs::observe(&agent.name).await["runtime_state"] == "stopped"
+        {
+            continue;
+        }
         if confirm_fresh_identity {
             args.insert(0, "--confirm-fresh-identity".into());
         }
@@ -819,6 +844,8 @@ async fn login(snapshot: &Snapshot, name: &str) -> Result<(), Error> {
     let result = async {
         let command = if role.harness == "codex" {
             "/home/agent/.safeyolo-interactive-command login --device-auth && /home/agent/.safeyolo/safeyolo-coord codex-state adopt".into()
+        } else if role.harness == "claude" {
+            "/home/agent/.safeyolo-interactive-command auth login".into()
         } else {
             println!("Use Pi /login for the selected provider, then exit. Only this role's home is used.");
             format!("/home/agent/.safeyolo-interactive-command {}", role.args.as_deref().unwrap_or(&agent.user_default_args).iter().map(|arg| shell_quote(arg)).collect::<Vec<_>>().join(" "))

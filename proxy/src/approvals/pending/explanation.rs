@@ -465,6 +465,11 @@ pub(crate) fn explain_policy_changes(changes: &[Value], effective: bool) -> Vec<
             "Enforcement is disabled for this control and its affected traffic. Other controls still use their own settings."
         } else if control && last == "action" && change["after"] == "warn" {
             "This control records a warning while allowing the operation to continue. It no longer blocks this condition."
+        } else if root == "agents" && path.len() == 3
+            && let Some(meaning) = crate::services::effects::agent_configuration::consequence(last) {
+            meaning
+        } else if root=="agents" && path.get(2).and_then(Value::as_str)==Some("lifecycle"){
+            crate::services::effects::agent_configuration::consequence("lifecycle").expect("lifecycle consequence")
         } else if root == "authority_readers" || (root == "agents" && path.len() == 3 && last == "evidence_reads") {
             "This changes diagnostic or authority disclosure to the selected identities and scope. Information already read cannot be retracted. Runtime records still require their native read authority."
         } else if effective && root == "permissions" {

@@ -4,6 +4,8 @@ use crate::policy::{Effect, NetworkRequest, Policy};
 fn source() -> Source {
     Source {
         endpoint: "https://feeds.example/private-key/list?token=synthetic-secret".into(),
+        distributed: false,
+        publish: None,
         redirect_endpoints: vec![],
         format: Format::Domains,
         scope: Scope::Hostname,
@@ -34,6 +36,8 @@ fn accepted(source: &Source, version: &str, entry: &str, at: u64) -> Snapshot {
         validated_at: at,
         provider_observed_at: None,
         provider_version: None,
+        expires_at: None,
+        withdrawn: false,
         entries: vec![entry.into()],
         config_identity: source.identity(),
     }
@@ -140,6 +144,120 @@ fn named_request(host: &str) -> crate::policy::checks::Request<'_> {
         ip: None,
         value: None,
     }
+}
+
+#[test]
+fn agent_list_membership_and_unavailability_keep_the_selected_agent_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let source = source();
+    setup(root, &source);
+    atomic(
+        &snapshot_path(root, "test").unwrap(),
+        &accepted(&source, "scoped", "bad.example", now()),
+    )
+    .unwrap();
+    let path = root.join("policy.toml");
+    fs::write(
+        &path,
+        r#"
+[hosts.'*']
+egress='allow'
+[lists]
+selected={feed='test'}
+[agents.alice.hosts.'$selected']
+egress='deny'
+"#,
+    )
+    .unwrap();
+    let policy = Policy::from_native_path(&path).unwrap();
+    let decide = |agent, host, at| {
+        policy
+            .evaluate(
+                NetworkRequest {
+                    agent,
+                    host,
+                    port: Some(443),
+                    method: "GET",
+                    path: "/",
+                },
+                at as f64 * 1000.,
+                false,
+            )
+            .unwrap()
+            .effect
+    };
+    assert_eq!(decide(Some("alice"), "BAD.EXAMPLE.", now()), Effect::Deny);
+    assert_eq!(decide(Some("bob"), "bad.example", now()), Effect::Allow);
+    assert_eq!(decide(None, "bad.example", now()), Effect::Allow);
+    assert_eq!(decide(Some("alice"), "other.example", now()), Effect::Allow);
+    let stale = now() + source.max_age_seconds + 1;
+    assert_eq!(decide(Some("alice"), "other.example", stale), Effect::Deny);
+    assert_eq!(decide(Some("bob"), "other.example", stale), Effect::Allow);
+    let source = fs::read_to_string(&path).unwrap();
+    let run = crate::host_runs::AgentRun {
+        agent: "alice".into(),
+        agent_id: "ag-fixture".into(),
+        run_id: "11111111111111111111111111111111".into(),
+    };
+    let snapshot = policy
+        .full_snapshot(&source, &path, "sy-fixture", &run)
+        .unwrap();
+    let (captured, _) = snapshot
+        .compile_assessment(&source, None, now() as f64 * 1000.)
+        .unwrap();
+    let captured = captured.unwrap();
+    let request = NetworkRequest {
+        agent: Some("bob"),
+        host: "other.example",
+        port: Some(443),
+        method: "GET",
+        path: "/",
+    };
+    assert_eq!(
+        captured
+            .evaluate(request, stale as f64 * 1000., false)
+            .unwrap()
+            .effect,
+        Effect::Allow
+    );
+}
+
+#[tokio::test]
+async fn named_feed_honors_distributed_expiry_and_withdrawal() {
+    use crate::policy::checks::Stage;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let source = source();
+    setup(root, &source);
+    let mut selected = accepted(&source, "signal-1", "bad.example", now() - 1);
+    selected.expires_at = Some(now() + 2);
+    atomic(&snapshot_path(root, "test").unwrap(), &selected).unwrap();
+    let policy = named_policy(root, false);
+    let collected = policy
+        .named_checks()
+        .collect(&named_request("bad.example"), Stage::Connect)
+        .await
+        .unwrap();
+    assert_eq!(
+        collected["threat"].result.as_ref().unwrap().valid_until_ms,
+        selected.expires_at.map(|t| t * 1000)
+    );
+    selected.withdrawn = true;
+    selected.version = "signal-2".into();
+    selected.entries.clear();
+    atomic(&snapshot_path(root, "test").unwrap(), &selected).unwrap();
+    let policy = named_policy(root, true);
+    let collected = policy
+        .named_checks()
+        .collect(&named_request("bad.example"), Stage::Connect)
+        .await
+        .unwrap();
+    assert_eq!(
+        collected["threat"].unavailable.as_deref(),
+        Some("managed feed was withdrawn")
+    );
+    assert!(collected["threat"].result.is_none());
 }
 
 #[tokio::test]

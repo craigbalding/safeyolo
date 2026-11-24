@@ -13,7 +13,9 @@ use std::{
     path::{Path, PathBuf},
 };
 use tokio::io::AsyncReadExt;
+pub mod challenges;
 pub(crate) mod execution;
+pub mod task_action;
 pub(crate) mod work;
 
 pub fn content_digest(bytes: &[u8]) -> String {
@@ -133,6 +135,7 @@ impl Subject {
 #[serde(rename_all = "snake_case")]
 pub enum ResultType {
     Finding,
+    TaskAction,
     Score,
     Timestamp,
     Fact,
@@ -158,6 +161,9 @@ pub enum ScoreDirection {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Finding {
+    TaskAction {
+        assessment: task_action::Assessment,
+    },
     Finding {
         positive: bool,
     },
@@ -187,7 +193,7 @@ pub enum Finding {
 
 // Tagged enums buffer JSON numbers as maps with arbitrary_precision enabled.
 // Read through Number to preserve that representation before converting to f64.
-fn deserialize_score_value<'de, D>(deserializer: D) -> std::result::Result<f64, D::Error>
+pub(crate) fn deserialize_score_value<'de, D>(deserializer: D) -> std::result::Result<f64, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -214,6 +220,7 @@ where
 impl Finding {
     fn result_type(&self) -> Option<ResultType> {
         match self {
+            Self::TaskAction { .. } => Some(ResultType::TaskAction),
             Self::Finding { .. } => Some(ResultType::Finding),
             Self::Score { .. } => Some(ResultType::Score),
             Self::Timestamp { .. } => Some(ResultType::Timestamp),
@@ -258,6 +265,8 @@ pub enum EvidenceSource {
     Unavailable { reason: String },
     Job {
         spec: PathBuf,
+        #[serde(default)]
+        spec_sha256: Option<String>,
         effects: execution::Effects,
         limits: execution::Limits,
     },
@@ -374,7 +383,7 @@ pub enum Condition {
     },
 }
 impl Condition {
-    fn names(&self, names: &mut BTreeSet<String>) {
+    pub(crate) fn names(&self, names: &mut BTreeSet<String>) {
         match self {
             Self::Finding { check }
             | Self::Fact { check, .. }
@@ -450,6 +459,8 @@ pub struct Checks {
     pub rules: Vec<Rule>,
     #[serde(default)]
     pub work_bindings: Vec<work::Binding>,
+    #[serde(default)]
+    pub route_challenges: BTreeMap<String, challenges::Challenge>,
     #[serde(skip)]
     execution: std::sync::Arc<execution::CheckExecutions>,
     #[serde(skip)]
@@ -620,6 +631,7 @@ impl Checks {
             "checks": document.get("checks").cloned().unwrap_or_else(|| json!({})),
             "check_rules": document.get("check_rules").cloned().unwrap_or_else(|| json!([])),
             "work_bindings": document.get("work_bindings").cloned().unwrap_or_else(|| json!([])),
+            "route_challenges": document.get("route_challenges").cloned().unwrap_or_else(|| json!({})),
         }))
         .map_err(|error| invalid(format!("named checks: {error}")))?;
         for (name, check) in &mut checks.checks {
@@ -675,6 +687,7 @@ impl Checks {
             }
         }
         work::validate(&checks)?;
+        challenges::validate(&checks)?;
         for rule in &mut checks.rules {
             if rule.host != "*" {
                 rule.host = if let Some(suffix) = rule.host.strip_prefix("*.") {
@@ -1131,7 +1144,7 @@ fn severity(action: Action) -> u8 {
     }
 }
 
-fn validate_evidence(check: &Check, entry: &mut Evidence, now: u64) {
+pub(crate) fn validate_evidence(check: &Check, entry: &mut Evidence, now: u64) {
     let Some(record) = entry.result.as_ref() else {
         return;
     };
@@ -1192,6 +1205,9 @@ fn validate_evidence(check: &Check, entry: &mut Evidence, now: u64) {
         Some("incompatible evidence result type")
     } else {
         match &record.finding {
+            Finding::TaskAction { assessment } if !assessment.valid(&record.subject) => {
+                Some("invalid task/action assessment or evidence references")
+            }
             Finding::Score { value, confidence }
                 if !value.is_finite()
                     || confidence.is_some_and(|value| !value.is_finite())

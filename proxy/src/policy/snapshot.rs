@@ -76,7 +76,7 @@ impl Policy {
     pub(crate) fn assessment_list_inputs(&self) -> Value {
         json!(self.list_files.iter().map(|(name, list)| {
             json!({"reference":self.native.as_ref().map(|native| &native.authored["lists"][name]),"managed":list.managed,
-                "entries":list.hosts,"include_apex":list.managed.as_ref().is_some_and(|managed|
+                "entries":list.hosts,"agents":list.agents,"include_apex":list.managed.as_ref().is_some_and(|managed|
                     managed.snapshot.as_ref().is_some_and(|snapshot| matches!(snapshot.scope, crate::policy_feeds::Scope::DomainSuffix)))})
         }).collect::<Vec<_>>())
     }
@@ -467,19 +467,42 @@ impl RetainedPolicySnapshot {
     ) -> super::Result<(Option<Policy>, Vec<Value>)> {
         let (mut document, context) = super::parse_toml_for_edit(source)?;
         let mut dependencies = Vec::new();
-        let mut resolved_lists = Vec::new();
-        let references: Vec<_> = document
+        let mut resolved_lists: std::collections::BTreeMap<String, (Value, Option<Vec<String>>)> =
+            Default::default();
+        let mut references: Vec<_> = document
             .get("hosts")
             .and_then(toml_edit::Item::as_table_like)
             .into_iter()
             .flat_map(|hosts| hosts.iter())
             .filter_map(|(host, config)| {
                 host.strip_prefix('$')
-                    .map(|name| (host.to_owned(), name.to_owned(), config.clone()))
+                    .map(|name| (None, host.to_owned(), name.to_owned(), config.clone()))
             })
             .collect();
+        for (agent, settings) in document
+            .get("agents")
+            .and_then(toml_edit::Item::as_table_like)
+            .into_iter()
+            .flat_map(|agents| agents.iter())
+        {
+            if let Some(hosts) = settings
+                .get("hosts")
+                .and_then(toml_edit::Item::as_table_like)
+            {
+                references.extend(hosts.iter().filter_map(|(host, config)| {
+                    host.strip_prefix('$').map(|name| {
+                        (
+                            Some(agent.to_owned()),
+                            host.to_owned(),
+                            name.to_owned(),
+                            config.clone(),
+                        )
+                    })
+                }));
+            }
+        }
         let mut missing = false;
-        for (host, name, config) in references {
+        for (agent, host, name, config) in references {
             let reference = document
                 .get("lists")
                 .and_then(|lists| lists.get(&name))
@@ -496,17 +519,36 @@ impl RetainedPolicySnapshot {
                 .into_iter()
                 .flatten()
                 .find(|input| Some(&input["reference"]) == value.as_ref());
-            dependencies.push(json!({"kind":"host_list","name":name,"reference":value,
+            dependencies.push(json!({"kind":"host_list","name":name,"agent":agent,"reference":value,
                 "status":if accepted.is_some(){"captured_adopted_input"}else{"trusted_adoption_required"},
                 "content_revision":accepted.map(|input| assessment_inputs_revision(&json!([input])))}));
             let Some(accepted) = accepted else {
                 missing = true;
                 continue;
             };
-            resolved_lists.push((name.clone(), accepted.clone()));
-            let hosts = document["hosts"]
-                .as_table_like_mut()
-                .expect("referenced hosts");
+            resolved_lists
+                .entry(name.clone())
+                .and_modify(|(_, scopes)| {
+                    if let (Some(scopes), Some(agent)) = (scopes.as_mut(), agent.as_ref()) {
+                        if !scopes.contains(agent) {
+                            scopes.push(agent.clone());
+                        }
+                    } else if agent.is_none() {
+                        *scopes = None;
+                    }
+                })
+                .or_insert_with(|| {
+                    (
+                        accepted.clone(),
+                        agent.as_ref().map(|agent| vec![agent.clone()]),
+                    )
+                });
+            let hosts = if let Some(agent) = &agent {
+                &mut document["agents"][agent]["hosts"]
+            } else {
+                &mut document["hosts"]
+            };
+            let hosts = hosts.as_table_like_mut().expect("referenced hosts");
             hosts.remove(&host);
             for entry in accepted["entries"]
                 .as_array()
@@ -563,7 +605,7 @@ impl RetainedPolicySnapshot {
         // rules retain the captured expansion compiled above.
         let native = policy.native.as_mut().expect("native assessment");
         native.authored = authored;
-        for (name, input) in resolved_lists {
+        for (name, (input, agents)) in resolved_lists {
             let managed = serde_json::from_value(input["managed"].clone())
                 .map_err(|_| invalid("captured managed list unavailable"))?;
             let hosts = serde_json::from_value(input["entries"].clone())
@@ -575,6 +617,7 @@ impl RetainedPolicySnapshot {
                     source: zeroize::Zeroizing::new(String::new()),
                     hosts,
                     managed,
+                    agents,
                 },
             );
         }

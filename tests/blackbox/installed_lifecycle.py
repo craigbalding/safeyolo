@@ -214,9 +214,10 @@ def stop_guest(cli: str, config_dir: Path, agent: str) -> None:
         )
 
 
-def start_guest(cli: str, config_dir: Path, agent: str) -> Path:
+def start_guest(cli: str, config_dir: Path, agent: str, *, python_tests: bool = True) -> Path:
     checked([cli, "agent", "start", agent, "--sandbox-only"], timeout=120)
-    prepare_guest_tests(cli, agent)
+    if python_tests:
+        prepare_guest_tests(cli, agent)
     listener = next(row for row in _agent_listeners(config_dir) if row["agent_id"] == agent)
     path = Path(listener["path"])
     assert path.is_socket(), f"restarted guest has no native listener: {path}"

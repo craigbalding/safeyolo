@@ -23,6 +23,7 @@ from pathlib import Path
 
 if __package__:
     from .selections import (
+        AUTHORITY_CONTROLS,
         BOUNDARY_SECTIONS,
         HOST_EXCLUSIONS,
         NATIVE_PHASES,
@@ -34,6 +35,7 @@ if __package__:
     )
 else:
     from selections import (
+        AUTHORITY_CONTROLS,
         BOUNDARY_SECTIONS,
         HOST_EXCLUSIONS,
         NATIVE_PHASES,
@@ -46,6 +48,19 @@ else:
 
 ROOT = Path(__file__).resolve().parents[2]
 MAX_REPORT_BYTES = 8 * 1024 * 1024
+
+
+def controller_identity(root: Path = ROOT) -> dict:
+    """Identify clean controller source; copied instruments remain unknown."""
+    try:
+        revision = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                           text=True, stderr=subprocess.DEVNULL).strip()
+        dirty = bool(subprocess.check_output(["git", "-C", str(root), "status", "--porcelain"],
+                                            text=True, stderr=subprocess.DEVNULL).strip())
+    except (OSError, subprocess.SubprocessError):
+        # A standalone copied instrument has no verifiable source revision.
+        return {"controller_revision": None, "controller_dirty": True}
+    return {"controller_revision": None if dirty else revision, "controller_dirty": dirty}
 
 
 def read_json(path: Path, *, sha256: str | None = None) -> dict:
@@ -189,6 +204,21 @@ class ProcedureReceipt:
         save(self.path, self.document)
 
 
+def procedure_problems(report: dict, phase: str) -> list[str]:
+    """Require the maintained checkpoints and their independent observations."""
+    problems = []
+    if (report.get("section") != phase or report.get("finished") is not True
+            or report.get("checkpoints") != list(PROCEDURES[phase][1])):
+        problems.append("missing/partial procedure checkpoints")
+    required = next((names for section, names in AUTHORITY_CONTROLS.values() if section == phase), ())
+    observations = report.get("observations", {})
+    for checkpoint in required:
+        if (not isinstance(observations, dict) or not isinstance(observations.get(checkpoint), dict)
+                or not observations[checkpoint]):
+            problems.append(f"missing independent observations: {checkpoint}")
+    return problems
+
+
 def section_execution(artifacts: Path, section: str, lane: str, run_id: str,
                       *, root: Path = ROOT, listener_restart: bool = False) -> dict:
     """Read each required report and retain explicit missing/partial outcomes."""
@@ -198,7 +228,7 @@ def section_execution(artifacts: Path, section: str, lane: str, run_id: str,
     rows = []
     context = None
     context_problem = None
-    if section not in ("continuity", *BOUNDARY_SECTIONS):
+    if section not in ("continuity", "tailnet", *BOUNDARY_SECTIONS):
         try:
             context = guest_context(read_json(artifacts / "platform.json"))
             if context["platform"] != lane:
@@ -240,16 +270,44 @@ def section_execution(artifacts: Path, section: str, lane: str, run_id: str,
             failed_stages = sorted({stage for steps in outcomes.values()
                                     for stage, outcome in steps.items() if outcome == "failed" and stage in {"setup", "call", "teardown"}})
         else:
-            if (report.get("section") != phase or report.get("finished") is not True
-                    or report.get("checkpoints") != list(PROCEDURES[phase][1])):
-                problems.append("missing/partial procedure checkpoints")
+            problems += procedure_problems(report, phase)
             excluded = {}
             failed_stages = []
         rows.append({"phase": phase, "complete": not problems, "problems": problems,
                      "exclusions": excluded, "failed_stages": failed_stages,
                      **({"expected_checkpoints": list(PROCEDURES[phase][1]),
-                         "checkpoints": report.get("checkpoints", [])} if phase in PROCEDURES else {})})
+                         "checkpoints": report.get("checkpoints", []),
+                         "observations": report.get("observations", {}),
+                         "guest": report.get("guest")} if phase in PROCEDURES else {})})
     return {"complete": bool(rows) and all(row["complete"] for row in rows), "phases": rows}
+
+
+def authority_controls(report: dict) -> dict:
+    """Project current installed execution, without borrowing historical proof."""
+    rows = {row["section"]: row for row in report["sections"]}
+    controls = {}
+    for control, (section, _) in AUTHORITY_CONTROLS.items():
+        selected = section is not None and section in report["selected_sections"]
+        row = rows.get(section)
+        complete = bool(selected and row and row["exit"] == 0 and row["result"] == "passed"
+                        and row["cleanup"] == "stopped"
+                        and row.get("execution", {}).get("complete") is True)
+        remaining = []
+        if control in {"BB-24", "BB-25"}:
+            remaining.append("Curated native process results are recorded separately by native_authority.py.")
+        if control == "BB-26":
+            remaining.append("The two-host installed_tailnet.py journey requires its protected venue and paired reports.")
+        if section and not selected:
+            remaining.append(f"Installed section {section} was not selected on this lane.")
+        controls[control] = {"section": section, "selected": selected, "executed": row is not None,
+                             "boundary": "two-host-tailnet" if control == "BB-26" else
+                             "native-process" if control == "BB-24" else "installed-guest",
+                             "execution_complete": complete,
+                             "artifacts": section,
+                             "result": row["result"] if row else "unexecuted",
+                             "execution": row.get("execution") if row else None,
+                             "remaining": remaining}
+    return controls
 
 
 class PytestReceipt:
@@ -341,9 +399,14 @@ def native_cases(phase: str, root: Path) -> list[tuple[str, str, list[str]]]:
     for target, module in NATIVE_PHASES[phase]:
         names = []
         for witness in witnesses:
-            if witness["kind"] == "cargo" and (witness["target"], witness["module"]) == (target, module):
+            # Rust's module filter also executes child modules. Include their
+            # separately maintained sources in the same expected result set.
+            if (witness["kind"] == "cargo" and witness["target"] == target
+                    and (witness["module"] == module
+                         or module and witness["module"].startswith(module + "::"))):
                 for reference in witness["paths"]:
-                    names += [node["node"] for node in resolve(witness, reference, root)]
+                    names += [node["node"] for node in resolve(witness, reference, root)
+                              if node["node"] not in witness.get("helpers", {})]
         if not names or len(names) != len(set(names)):
             raise ValueError(f"missing or duplicate native identities: {target}/{module}")
         groups.append((target, module, sorted(names)))
