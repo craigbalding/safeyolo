@@ -2798,7 +2798,7 @@ fn installed_unix_selected_endpoint_inspection() {
             "ipv6_only":family=="ipv6","reuse_address":false,"reuse_port":false})
     };
     let v4 = |port| candidate("tcp", "ipv4", Some("127.0.0.1"), None, port);
-    let choices = vec![
+    let mut choices = vec![
         json!({"candidates":[v4(occupied_port)]}),
         json!({"candidates":[v4(0)]}),
         json!({"candidates":[v4(occupied_port),v4(0)]}),
@@ -2810,6 +2810,14 @@ fn installed_unix_selected_endpoint_inspection() {
         json!({"candidates":[candidate("tcp","ipv4",Some("192.0.2.1"),Some(loopback),0)]}),
         json!({"candidates":[candidate("tcp","ipv4",Some("0.0.0.0"),None,0)]}),
     ];
+    let mut dual_stack = candidate("tcp", "ipv6", Some("::"), None, occupied_port);
+    dual_stack["ipv6_only"] = false.into();
+    choices.push(json!({"candidates":[dual_stack]}));
+    choices.push(json!({"candidates":[candidate("tcp","ipv6",Some("::"),None,occupied_port)]}));
+    let mut reuse = v4(0);
+    reuse["reuse_address"] = true.into();
+    reuse["reuse_port"] = true.into();
+    choices.push(json!({"candidates":[reuse]}));
     let mut operation = f.target.package.operations["observe"].clone();
     operation.description =
         "Inspect only the selected endpoint; release probes before returning.".into();
@@ -2958,7 +2966,9 @@ fn installed_unix_selected_endpoint_inspection() {
     drop(competitor);
     for (i, choice) in choices.iter().enumerate().skip(2) {
         let observed = invoke(&mut f, choice.clone()).0;
-        let expected = if [7, 8].contains(&i) {
+        let expected = if i == 10 {
+            EndpointStatus::Conflict
+        } else if [7, 8].contains(&i) {
             EndpointStatus::Unavailable
         } else {
             EndpointStatus::AvailableAtObservation
