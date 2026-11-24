@@ -191,6 +191,14 @@ static int mac_network_probe(const char *mode, const char *directory, int local_
 
 /* Prepared by the developer test, never by target discovery/qualification. */
 static int handoff_probe(const char *mode, const char *directory, int forbidden_port) {
+#ifdef __linux__
+    if (strstr(mode,"child")) {
+        pid_t child=fork();
+        if (child<0) return 119;
+        if (child) { alarm(4); for (;;) pause(); }
+        if (setsid()<0) return 120;
+    }
+#endif
     struct sockaddr_storage address;
     socklen_t size=sizeof(address);
     if (getsockname(3,(struct sockaddr *)&address,&size)) { perror("inherited listener"); return 110; }
@@ -222,6 +230,7 @@ static int handoff_probe(const char *mode, const char *directory, int forbidden_
     int peer=accept(3,NULL,NULL);
     if (peer<0 || write(peer,"service",7)!=7) { perror("inherited accept"); return 115; }
     close(peer);
+    if (strstr(mode,"child")) for (;;) pause();
     close(3);
     return 0;
 }

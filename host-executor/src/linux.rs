@@ -557,9 +557,6 @@ impl LinuxRuntime {
         if !service {
             native.arg("--unshare-pid");
         }
-        if listener.is_some() {
-            native.args(["--preserve-fds", "1"]);
-        }
         native.args([
             "--uid",
             &operation.execution.identity.principal,

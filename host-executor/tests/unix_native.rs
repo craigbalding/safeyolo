@@ -3648,6 +3648,7 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
         "missing-only",
         "collision-only",
         "cancel",
+        "descendant",
         "timeout",
         "restart",
     ] {
@@ -3655,7 +3656,9 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
         let e = &mut op.execution;
         e.filesystem.write = vec![work.to_str().unwrap().into()];
         e.argv = [
-            if ["cancel", "timeout", "restart"].contains(&mode) {
+            if mode == "descendant" {
+                "handoff-child".into()
+            } else if ["cancel", "timeout", "restart"].contains(&mode) {
                 "handoff-wait".into()
             } else {
                 "handoff".into()
@@ -3743,9 +3746,13 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
         "wildcard",
         "missing-fallback",
         "cancel",
+        "descendant",
         "timeout",
         "restart",
     ] {
+        if mode == "descendant" && cfg!(target_os = "macos") {
+            continue;
+        }
         let receipt = first.take().unwrap_or_else(|| f.invoke(mode).0);
         let deadline = Instant::now() + Duration::from_secs(3);
         let running = loop {
@@ -3778,7 +3785,15 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
         if connection.ip().is_unspecified() {
             connection.set_ip(v4);
         }
-        if mode == "cancel" {
+        if ["cancel", "descendant"].contains(&mode) {
+            if mode == "descendant" {
+                let mut peer =
+                    TcpStream::connect_timeout(&connection, Duration::from_secs(2)).unwrap();
+                peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut answer = [0; 7];
+                peer.read_exact(&mut answer).unwrap();
+                assert_eq!(&answer, b"service");
+            }
             assert!(matches!(
                 f.call(Action::Cancel {
                     job_id: running.job_id.clone(),
@@ -3799,7 +3814,7 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
         assert_eq!(
             result.state,
             match mode {
-                "cancel" => JobState::Cancelled,
+                "cancel" | "descendant" => JobState::Cancelled,
                 "timeout" => JobState::Failed,
                 "restart" => JobState::Uncertain,
                 _ => JobState::Completed,
