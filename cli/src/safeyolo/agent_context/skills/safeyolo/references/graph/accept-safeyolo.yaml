@@ -268,9 +268,9 @@ nodes:
         - path: tests/blackbox/host/job_network.py
           sha256: 007ab1317bc355bdaf2bffecb0fccf04055ee78ae4ec826c9e6c1bd7b341fbb3
         - path: proxy/Cargo.toml
-          sha256: 9b652cdef7c58dc2778a3f1d682ff26fcbbba3c829fd216e6da5a8be4a89be92
+          sha256: d7eeb74ad1750018fc8195f55468e37d49e8622f5b540891e43dcc79fda096f7
         - path: proxy/Cargo.lock
-          sha256: f917303d2a5b0f7be392aa9819c2df8d2a0ae151f35a14100537aa3280f9afb5
+          sha256: 09661b6cadf5306856fdb99956967e29c264971f60bb3fa848e710e7e43a0143
         - path: proxy/src/lib.rs
           sha256: 042d274c6bdcf88211befe837031f9df60c9085fc2791572b1d13a75e6ceae67
         - path: proxy/src/bin/safeyolo.rs
@@ -367,9 +367,9 @@ nodes:
         - path: tests/blackbox/host/job_network.py
           sha256: 007ab1317bc355bdaf2bffecb0fccf04055ee78ae4ec826c9e6c1bd7b341fbb3
         - path: proxy/Cargo.toml
-          sha256: 9b652cdef7c58dc2778a3f1d682ff26fcbbba3c829fd216e6da5a8be4a89be92
+          sha256: d7eeb74ad1750018fc8195f55468e37d49e8622f5b540891e43dcc79fda096f7
         - path: proxy/Cargo.lock
-          sha256: f917303d2a5b0f7be392aa9819c2df8d2a0ae151f35a14100537aa3280f9afb5
+          sha256: 09661b6cadf5306856fdb99956967e29c264971f60bb3fa848e710e7e43a0143
         - path: proxy/src/lib.rs
           sha256: 042d274c6bdcf88211befe837031f9df60c9085fc2791572b1d13a75e6ceae67
         - path: proxy/src/bin/safeyolo.rs

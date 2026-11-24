@@ -51,7 +51,7 @@ default = [
     "test-registry",
 ]
 hickory-dns = ["reqwest/hickory-dns"]
-image-config = ["dep:chrono"]
+image-config = ["dep:time"]
 native-tls = ["reqwest/native-tls"]
 rustls-tls = ["reqwest/rustls"]
 rustls-tls-no-provider = ["reqwest/rustls-no-provider"]
@@ -83,9 +83,9 @@ version = "0.22"
 [dependencies.bytes]
 version = "1"
 
-[dependencies.chrono]
-version = "0.4"
-features = ["serde"]
+[dependencies.time]
+version = "0.3.55"
+features = ["large-dates"]
 optional = true
 
 [dependencies.futures-util]
@@ -176,6 +176,7 @@ version = "3.21"
 
 [dev-dependencies.testcontainers]
 version = "0.28"
+path = "../testcontainers"
 
 [dev-dependencies.tokio]
 version = "1"
