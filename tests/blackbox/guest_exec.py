@@ -50,6 +50,8 @@ def prepare_guest_tests(cli: str, agent: str, *, env: dict[str, str] | None = No
         # Pass the guest path inside sudo; host environment variables do not
         # survive the native shell and guest sudo boundary automatically.
         command += " " + shlex.quote(inputs)
+    if environment.get("SAFEYOLO_BLACKBOX_DESKTOP") == "1":
+        command += " --desktop"
     try:
         subprocess.run(guest_command_args(cli, agent, command, guest_root=True, env=env),
                        env=env, check=True, timeout=300)
@@ -58,6 +60,34 @@ def prepare_guest_tests(cli: str, agent: str, *, env: dict[str, str] | None = No
         # failure exit, including when a peer/owner/restart calls us directly.
         print(f"Test guest dependencies could not be prepared: {error}", file=sys.stderr)
         raise SystemExit(2) from error
+
+
+def guest_http_request(cli, agent, method, url, body=None, headers=None, *, env=None):
+    """Use the shipped curl; keep the guest's Agent API token in header stdin."""
+    selected = {"Connection": "close", **(headers or {})}
+    internal = url.startswith("http://_safeyolo.proxy.internal/")
+    if internal:
+        selected = {name: value for name, value in selected.items() if name.lower() != "authorization"}
+    data = []
+    if body is not None:
+        selected["Content-Type"] = "application/json"
+        data = ["--data-binary", json.dumps(body)]
+    command = 'api_token=$(cat /app/agent_token) || exit; ' if internal else ""
+    command += "{ printf '%s\\n' " + shlex.join([name + ": " + value for name, value in selected.items()]) + "; "
+    if internal:
+        command += 'printf \'Authorization: Bearer %s\\n\' "$api_token"; '
+    command += "} | " + shlex.join([
+        "curl", "--silent", "--show-error", "--max-time", "15", "--max-filesize", "65536", "--header", "@-",
+        "--request", method, *data, "--write-out",
+        "\nBB_STATUS:%{http_code}\nBB_APPROVAL:%header{x-safeyolo-approval-id}\nBB_REQUEST:%header{x-safeyolo-request-id}", url])
+    result = subprocess.run(guest_command_args(cli, agent, command, env=env), env=env,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, f"guest HTTP transport failed with exit {result.returncode}: {result.stderr[-500:]}"
+    payload, status, approval, request = result.stdout.rstrip("\n").rsplit("\n", 3)
+    assert status.startswith("BB_STATUS:") and approval.startswith("BB_APPROVAL:") and request.startswith("BB_REQUEST:")
+    return {"body": payload, "status": int(status.removeprefix("BB_STATUS:")),
+            "approval_id": approval.removeprefix("BB_APPROVAL:") or None,
+            "request_id": request.removeprefix("BB_REQUEST:") or None}
 
 
 def run_guest_pytest(cli: str, agent: str, phase: str, lane: str, output: Path,

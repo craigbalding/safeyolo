@@ -36,6 +36,11 @@ Discovery is an early result, not a completed ingestion deployment. Later
 acquisition requires authorized media and required protection before the
 effect. Scanning and verified library import remain separate obligations.
 
+For the optional protected acquisition/import composition, discover the
+[versioned media recipe](../recipes/media-ingestion/v1/recipe.md). Its components,
+adoption boundary and installed evidence requirements remain separate from this
+discovery trial. The example files confer no service or library access.
+
 Record actual decisions, manual steps, interruptions and cold/warm time in
 the ordinary result. Label simulated operator actions, controlled catalogue
 fixtures and unavailable effort measurements. A fixture or conversation alone

@@ -66,6 +66,8 @@ do not force a conversation when complete authorized inputs already exist.
 For a worker configuration proposal, authorized Coord follow-up or temporary
 servicing, read [adoption and worker support](references/adoption.md). It connects
 those existing owners without granting the preferred agent administration.
+For supervised self-tasking, selected schedules, checked early stop and resumed
+work, read [worker lifecycle](references/lifecycle.md).
 
 ## Retain intent and reach the next useful result
 

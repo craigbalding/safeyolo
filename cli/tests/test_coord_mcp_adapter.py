@@ -90,6 +90,12 @@ def test_discovery_and_rpc_errors(adapter):
         "set_work_requirements", "select_work_review", "decide_work_acceptance", "read_work_actions", "receive_work_action",
         "import_github_work", "read_github_work",
         "support_grants", "support_operation", "read_support_operation",
+        "diagnostic_evidence", "request_diagnostic_access", "query_diagnostic_evidence",
+        "request_policy_snapshot", "read_policy_snapshot", "discover_policy_capabilities",
+        "validate_policy_capability", "observe_support_capability", "assess_policy",
+        "submit_policy_change", "read_policy_change",
+        "read_work_prerequisite", "resolve_work_prerequisite", "retry_work_prerequisite",
+        "read_lifecycle", "request_self_stop", "read_self_stop_request",
     }
     for name, required in {
         "request_room_access": ["room_name", "permissions", "operation_id"],
@@ -97,6 +103,9 @@ def test_discovery_and_rpc_errors(adapter):
         "list_approvals": [],
         "read_approval": ["approval_id"],
         "resolve_approval": ["approval_id", "decision", "delegation", "option"],
+        "read_lifecycle": [],
+        "request_self_stop": ["operation_id", "shutdown_work_id"],
+        "read_self_stop_request": ["operation_id"],
     }.items():
         schema = by_name[name]["inputSchema"]
         assert schema["type"] == "object" and schema["additionalProperties"] is False
@@ -108,6 +117,13 @@ def test_discovery_and_rpc_errors(adapter):
             optional = {"home"}
         assert set(schema["properties"]) == set(required) | optional
     assert by_name["resolve_approval"]["inputSchema"]["properties"]["decision"]["enum"] == ["approve", "reject", "defer"]
+    publication = by_name["publish_work_output"]
+    assert "64 lowercase hex digits" in publication["description"]
+    assert "omit artifact_base64" in publication["description"]
+    properties = publication["inputSchema"]["properties"]
+    assert "decoded bytes" in properties["target_ref"]["description"]
+    assert "Omit for an external reference" in properties["artifact_base64"]["description"]
+    assert "artifact_base64" not in publication["inputSchema"]["required"]
     assert by_name["request_room_access"]["inputSchema"]["properties"] == {
         "room_name": {"type": "string"},
         "permissions": {"type": "array", "items": {"type": "string", "enum": ["send", "receive", "page_operator"]}, "minItems": 1},
@@ -356,8 +372,11 @@ def test_whole_page_resolution_and_failure_hide_cursor(adapter):
     replies[f"/api/coord/attention/{IDS[1]}/object"] = (403, {"error": "membership revoked"})
     result = call("wait_for_coord", {"since_sequence": 7, "limit": 2, "timeout_seconds": 0})
     assert result["isError"] is True
-    assert "structuredContent" not in result
-    assert "next_cursor" not in result["content"][0]["text"]
+    failure = result["structuredContent"]
+    assert failure["response_received"] is True
+    assert failure["http_status"] == 403
+    assert failure["error_details"] == {"error": "membership revoked"}
+    assert "next_cursor" not in json.dumps(result)
     assert len(calls) == 6  # One read of each object per call, with no retry.
     assert all(method == "GET" for method, *_ in calls)  # Resolution creates no receipt.
 
@@ -368,10 +387,50 @@ def test_refused_unavailable_and_uncertain_sends_are_not_retried(adapter, status
     replies["/api/coord/rooms/backlog/send"] = status, value
     result = call("send", {"room_name": "backlog", "body": "marker"})
     assert result["isError"] is True
-    assert "structuredContent" not in result
+    failure = result["structuredContent"]
+    assert failure["response_received"] is True
+    assert failure["http_status"] == status
+    assert failure["error_details"] == value
+    assert failure["details_limited"] is False
+    assert failure["request_id"] is None
+    assert failure["correlation"] == "missing"
+    if status == 503:
+        diagnostic = failure["diagnostic"]
+        assert diagnostic["collection_state"] == "missing_correlation"
+        assert diagnostic["reads"] == []
+        assert diagnostic["evidence"] is None
+    else:
+        assert failure["diagnostic"] is None
     assert len(calls) == 1
     if value.get("send_outcome") == "unknown":
         assert "outcome unknown" in result["content"][0]["text"]
+
+
+def test_failed_send_diagnostics_redact_and_bound_the_response(adapter):
+    call, _, calls, replies, _ = adapter
+    replies["/api/coord/rooms/backlog/send"] = 503, {
+        "error": "receipt unavailable", "send_outcome": "unknown",
+        "password": "private-fixture-password", "reason": "fixture-token" + "x" * 4096,
+        "request_id": "req-" + "a" * 32,
+    }
+    result = call("send", {"room_name": "backlog", "body": "marker"})
+    assert result["isError"] is True
+    failure = result["structuredContent"]
+    assert failure["http_status"] == 503
+    assert failure["error_details"]["send_outcome"] == "unknown"
+    assert failure["error_details"]["password"] == "<redacted>"
+    assert failure["error_details"]["reason"].startswith("<redacted>")
+    assert len(failure["error_details"]["reason"]) <= 1027
+    assert failure["details_limited"] is True
+    # A body-supplied identifier cannot select another request's evidence.
+    assert failure["request_id"] is None
+    assert failure["diagnostic"]["collection_state"] == "missing_correlation"
+    assert failure["diagnostic"]["reads"] == []
+    serialized = json.dumps(result)
+    assert "private-fixture-password" not in serialized
+    assert "fixture-token" not in serialized
+    assert len(serialized) < 16 * 1024
+    assert len(calls) == 1  # No send retry or fabricated-correlation read.
 
 
 def test_new_collaboration_request_uses_local_canonical_approval_route(adapter):

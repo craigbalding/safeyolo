@@ -136,7 +136,8 @@ def fetch(url: str, *, github_api: bool = False) -> bytes:
         token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
         if token and ("\r" in token or "\n" in token):
             raise ValueError("GitHub API token must not contain line breaks")
-    for attempt in range(3):
+    attempt = 0
+    while True:
         # Give each attempt its own urllib redirect history.
         request = urllib.request.Request(url, headers={"User-Agent": "safeyolo-guest-builder"})
         if token:
@@ -151,7 +152,8 @@ def fetch(url: str, *, github_api: bool = False) -> bytes:
             if error.code not in {408, 429, 500, 502, 503, 504} or attempt == 2:
                 raise
             error.close()
-            time.sleep(attempt + 1)
+            attempt += 1
+            time.sleep(attempt)
 
 
 def sha256(data: bytes) -> str:

@@ -1,0 +1,29 @@
+[package]
+name = "safeyolo-host-executor"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+publish = false
+license-file = "../LICENSE"
+
+[[test]]
+name = "windows_native"
+path = "tests/windows_native.rs"
+harness = false
+
+[dependencies]
+base64 = "0.23"
+ring = "0.17"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+schemars = "1.2.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "raw_value"] }
+zeroize = "1"
+rusqlite = { version = "=0.41.0", default-features = false, features = ["bundled", "blob"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Services", "Win32_System_SystemServices"] }

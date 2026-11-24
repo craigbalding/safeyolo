@@ -37,6 +37,152 @@ fn db(root: &Path) -> Connection {
 fn count(root: &Path, sql: &str) -> i64 {
     db(root).query_row(sql, [], |r| r.get(0)).unwrap()
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pinned NATS; controlled run authority, not an installed sandbox witness"]
+async fn self_stop_api_refuses_scope_bypass_and_retains_original_request() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    assert!(host_cli(root, &["init"]).await.status.success());
+    fs::write(root.join("config.toml"),"admin_port=0\nflow_store_enabled=false\n[[listeners]]\nagent_id='alice'\nsocket_path='alice.sock'\n[[listeners]]\nagent_id='bob'\nsocket_path='bob.sock'\n").unwrap();
+    let lifecycle = json!({"mode":"on_demand","completion_room":"shared","completion_check":"done",
+        "completion_require":{"op":"finding","check":"done"}});
+    fs::write(root.join("policy.toml"),format!(
+        "[controls.network]\nenabled=false\n[agents.alice]\nagent_id='{ALICE}'\nlifecycle={{mode='on_demand',completion_room='shared',completion_check='done',completion_require={{op='finding',check='done'}}}}\n[agents.bob]\nagent_id='{BOB}'\n")).unwrap();
+    let binary = std::env::var("SAFEYOLO_COORD_NATS_BINARY").unwrap();
+    coord_json(root, &["start", "--binary", &binary]).await;
+    let _cleanup = NatsCleanup(root.into());
+    coord_json(root, &["room", "create", "shared"]).await;
+    for name in ["alice", "bob"] {
+        coord_json(root, &["grant", "shared", name]).await;
+    }
+    let generation = "7".repeat(32);
+    let _backend = controlled_runs::agent_run(root, "alice", ALICE, &generation);
+    let receipt = json!({"agent_id":ALICE,"name":"alice","run_id":generation,"activation_id":"activation-source-proof",
+        "initial_work_ids":[],"work_attention_at_activation":0,
+        "configuration_revision":"source-proof","configuration":lifecycle,"completion_room_id":db(root).query_row(
+            "SELECT room_id FROM rooms WHERE name='shared'",[],|r|r.get::<_,String>(0)).unwrap(),"phase":"active"});
+    db(root)
+        .execute(
+            "INSERT INTO coord_lifecycle(agent_id,document_json) VALUES(?1,?2)",
+            rusqlite::params![ALICE, receipt.to_string()],
+        )
+        .unwrap();
+    let proxy = stage0::start_proxy(root).await;
+    let alice = Client {
+        socket: Some(root.join("alice.sock")),
+        token_file: root.join("data/agent_token"),
+        home: None,
+    };
+    let bob = Client {
+        socket: Some(root.join("bob.sock")),
+        token_file: root.join("data/agent_token"),
+        home: None,
+    };
+    let current = alice.call("read_lifecycle", &json!({})).await.unwrap();
+    assert_eq!(current["receipt"]["run_id"], generation);
+    let make = |title: &str, reference: &str, op: &str| {
+        json!({"room_name":"shared","title":title,"external_ref":reference,
+        "assignee":{"kind":"agent","id":ALICE},"operation_id":op})
+    };
+    let task = alice
+        .call(
+            "create_work",
+            &make("Required task", "proof:required-task", "required"),
+        )
+        .await
+        .unwrap()["work"]
+        .clone();
+    let held = change(&alice, "claim", &task, "required-claim")
+        .await
+        .unwrap()["work"]
+        .clone();
+    let untyped = json!({"operation_id":"wrong-exclusion","shutdown_work_id":held["work_id"]});
+    let error = alice.call("request_self_stop", &untyped).await.unwrap_err();
+    assert!(error.to_string().contains("409"), "{error}");
+    let shutdown = alice
+        .call(
+            "create_work",
+            &make("Self-stop", "safeyolo:lifecycle/self-stop", "shutdown"),
+        )
+        .await
+        .unwrap()["work"]
+        .clone();
+    let shutdown = change(&alice, "claim", &shutdown, "shutdown-claim")
+        .await
+        .unwrap()["work"]
+        .clone();
+    let request = json!({"operation_id":"stop-original","shutdown_work_id":shutdown["work_id"]});
+    let error = bob.call("request_self_stop", &request).await.unwrap_err();
+    assert!(error.to_string().contains("403"), "{error}");
+    let mut injected = request.clone();
+    injected["agent_id"] = json!(BOB);
+    assert!(
+        alice
+            .request(
+                Method::POST,
+                "/lifecycle/stop",
+                injected,
+                Duration::from_secs(5)
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("400")
+    );
+    assert_eq!(
+        alice.call("request_self_stop", &request).await.unwrap()["status"],
+        "accepted"
+    );
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let result = alice
+                .call(
+                    "read_self_stop_request",
+                    &json!({"operation_id":"stop-original"}),
+                )
+                .await
+                .unwrap();
+            if result["status"] == "refused" {
+                break result;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        result["result"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("unfinished")
+    );
+    assert_eq!(
+        alice.call("request_self_stop", &request).await.unwrap(),
+        result,
+        "same operation must read its result, not retry"
+    );
+    let changed = json!({"operation_id":"stop-original","shutdown_work_id":held["work_id"]});
+    assert!(
+        alice
+            .call("request_self_stop", &changed)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("409")
+    );
+    assert_eq!(read(&alice, &held).await["state"], "claimed");
+    assert_eq!(read(&alice, &shutdown).await["state"], "claimed");
+    assert_eq!(
+        count(
+            root,
+            "SELECT count(*) FROM coord_operations WHERE operation_type='lifecycle_self_stop'"
+        ),
+        1
+    );
+    stage0::crash(proxy).await;
+}
 async fn baseline(root: &Path, source: &str) {
     safeyolo_proxy::native_client::admin(
         &root.join("config.toml"),

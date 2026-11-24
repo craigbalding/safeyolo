@@ -22,11 +22,10 @@ import tomlkit
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests/reference"))
 
-from tests.blackbox.execution_receipt import ProcedureReceipt, save
+from tests.blackbox.execution_receipt import ProcedureReceipt, controller_identity, save
 from tests.blackbox.host import job_network, job_sandbox
 from tests.blackbox.installed_host_smoke import _cli_identity, _sha256
 from tests.blackbox.installed_sections import cleanup_instance, copy_prepared_nats, prepare_native_instance
-from tests.blackbox.retained_inputs import controller_identity
 from tests.blackbox.selections import BOUNDARY_SECTIONS
 
 ROOT = Path(__file__).resolve().parents[2]

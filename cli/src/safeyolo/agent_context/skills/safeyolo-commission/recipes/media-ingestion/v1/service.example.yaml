@@ -1,0 +1,30 @@
+schema_version: 1
+name: media-ingestion
+description: Run one adopted media import; no job editing or arbitrary options
+default_host: rundeck.example.test
+auth:
+  type: api_key
+  header: X-Rundeck-Auth-Token
+capabilities:
+  import_selected_media:
+    description: Invoke the fixed, independently qualified import command
+    routes:
+      - methods: [POST]
+        path: /api/56/job/REPLACE-OWNED-JOB-ID/run
+    contract:
+      template: media-ingestion.v1
+      bindings: {}
+      operations:
+        - name: import_selected_media
+          request:
+            method: POST
+            path: /api/56/job/REPLACE-OWNED-JOB-ID/run
+            transport:
+              require_no_body: true
+              deny_ambiguous_encoding: true
+            query:
+              allow: {}
+              deny_unknown: true
+      enforcement:
+        request_shape: enforced
+        transport_hygiene: enforced

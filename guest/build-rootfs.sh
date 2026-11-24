@@ -317,7 +317,11 @@ echo "=== Installing base packages ==="
 sudo chroot "$ROOTFS" env DEBIAN_FRONTEND=noninteractive \
     /usr/bin/apt-get install -y --no-install-recommends "${APT_TLS_OPTIONS[@]}" \
     ca-certificates curl git openssh-client openssh-server \
-    iproute2 procps util-linux xz-utils busybox-static socat fd-find sudo cron at sensible-utils
+    iproute2 procps util-linux xz-utils busybox-static socat fd-find sudo cron at sensible-utils etckeeper
+
+# etckeeper initialized this newly assembled standard base's /etc repository.
+# Runtime capture uses the persistent mirror; do not ship a duplicate history.
+sudo rm -rf "$ROOTFS/etc/.git"
 
 # Capture the verified build repositories before the hook clears APT lists
 # and installs the separate runtime proxy settings.
@@ -380,6 +384,10 @@ if [ -n "$BUILD_SSL_CERT_DEST" ]; then
         sudo install -D -m 0644 /dev/null "$BUILD_SSL_CERT_DEST"
     fi
 fi
+
+# Capture only final static defaults, after temporary builder network material
+# has been removed. A retained reference must not copy that material back in.
+sudo chroot "$ROOTFS" /usr/local/lib/safeyolo/guest-state-base
 
 # --- Emit: directory tree for Linux gVisor ------------------------------
 # gVisor's OCI root.path wants a real filesystem directory, and

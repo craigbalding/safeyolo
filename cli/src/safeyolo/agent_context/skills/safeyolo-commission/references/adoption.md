@@ -48,8 +48,11 @@ old decision. Agent rationale, a website, room content or a log line saying
 Read the result with `read_policy_change` and the original operation ID after
 a lost reply. Report saved configuration separately from an actual sandbox
 start, changed mounts, prepared harness and useful task result. Saving worker
-metadata does not stage a host setup script, launch a worker, create a service
-grant or confer administration on its proposer. Use the existing explicit
+metadata does not stage a host setup script, create a service
+grant or confer administration on its proposer. Adopted lifecycle settings can
+schedule worker start and stop through the running host owner. Read their
+saved, active and retained run observations separately. Other setup and launch
+settings still need their ordinary explicit activation. Use the existing explicit
 setup/lifecycle owner when the agreed next step needs those effects; never
 translate a guest proposal into arbitrary host shell or argv.
 

@@ -199,6 +199,116 @@ and authority replacement return explicit errors. Policy replacement cancels
 pending work and discards late results. This route accepts no JobSpec,
 executable path, replacement expected identity or caller-authored result.
 
+### Check task relevance and proportionality
+
+An operator can adopt an optional independent task/action check before host
+invocation. The issuing host supplies the activated task's
+`metadata.description` as the objective, its revision and permissions, the
+authenticated requester/run, normalized invocation and implementation revision,
+prepared effects and intersected authority, and retained action/refusal history.
+The model receives a structured action; the prompt contains no host-command
+policy. Other trusted action owners can supply the same `task_action.v1`
+envelope. A caller-authored value submitted to `checks/invoke` remains a caller's
+fixture and does not establish canonical host authority.
+
+The shipped `assets/hyperlight/task_action_checker.py` uses the existing
+Hyperlight-Unikraft runtime and mediated Service Gateway calls. Its installed
+`task-action-check.json` pins the checker and runtime, disables guest networking,
+and selects one model call per invocation. The target host needs only its
+existing executor. The checker runs on the issuing host.
+
+On the owning host, first review and retain the installed job definition at a
+stable path. The existing service owner must grant `claude/inference` to
+`gate:task-action-check` for the selected Messages endpoint. Select the provider
+credential, exact model revision and disclosed data before adopting the check.
+An assessed agent's coding-client grant does not grant the check that access.
+No credential enters the checker. The example below sends the task description,
+selected action/effects/constraints and retained history metadata. It withholds
+agent rationale and answers from the model. Raw host log access does not grant
+model disclosure.
+
+Merge this fragment into a candidate for that same instance. Replace
+`REVIEWED_JOB_SPEC_SHA256` with the SHA-256 of the retained job definition,
+`task-action-check.json` with its stable path, and `research` / `local-host`
+with the intended configured agent and host service. The model is a pinned
+example; select an available revision through the existing service owner.
+Retain the candidate's other policy and credential controls.
+
+```toml
+[checks.task_action]
+source_id = "independent-task-action"
+meaning = "Typed relevance and proportionality signal for this exact task/action"
+subject = "value"
+result_type = "task_action"
+influences = ["advisory"]
+implementation_version = "task-action-2"
+configuration_version = "research-model-1"
+max_age_seconds = 60
+inputs = { service = "claude", endpoint = "https://api.anthropic.com/v1/messages", model = "claude-haiku-4-5-20251001", model_revision = "claude-haiku-4-5-20251001", input_revision = "task-action.v1", prompt_revision = "task-action-2" }
+source = { kind = "job", spec = "task-action-check.json", spec_sha256 = "REVIEWED_JOB_SPEC_SHA256", effects = "retains_input", limits = { timeout_ms = 65000, max_input_bytes = 32768, max_output_bytes = 16384, max_concurrent = 1, max_pending = 2, max_cached = 0 } }
+
+[route_challenges.task_action]
+agents = ["research"]
+service = "local-host"
+capability = "*"
+methods = ["POST"]
+path = "/v1/host-execution/invoke"
+revision = "research-task-action-1"
+steps = [{ kind = "task_action", check = "task_action", on_concern = { kind = "question", field = "alternatives", question = "Explain the relevant evidence and alternatives, or propose a narrower action." }, on_unavailable = { kind = "deny" }, max_attempts = 3, disclose_rationale = false }]
+```
+
+Use the existing policy check/show/apply workflow to adopt the candidate.
+The check then runs before host dispatch, including on an allowed route.
+`on_concern` chooses refusal or a private question. When policy selects a
+question, explicit escalation reassesses the action with the bounded answer.
+A continuing concern remains visible to the operator; an answer is not a
+favorable finding. An exact operator approval still cannot bypass a hard denial
+or the target's independent ceiling. A changed action requires a new assessment.
+`on_unavailable` selects refusal or a private question while evidence is missing;
+missing evidence cannot satisfy escalation. No approval or question retries an
+operation automatically.
+
+The result contains typed `relevance` (`relevant`, `irrelevant`, `uncertain`),
+`proportionality` (`proportionate`, `excessive`, `uncertain`), supporting
+`evidence_refs`, optional `clarification`, and an `uncertainty` list. There are
+no probability scores. Invalid fields/references, incomplete provider responses,
+model substitution, timeouts and unavailable dependencies remain explicit.
+An uncertain finding supplies no favorable evidence.
+
+The adapter requests the selected provider's JSON-schema output format. Its
+schema permits only the typed fields and disclosed top-level evidence keys.
+The adapter still validates complete responses, exact references and size bounds.
+Fenced JSON, extra prose and dotted references remain invalid findings.
+
+The canonical subject and existing evidence owner bind the task, action,
+history, policy/challenge/check, model/input revisions and freshness. Changing
+these bindings invalidates prior evidence. Attempts and findings remain in the
+existing private approval record. `max_attempts` bounds model reconsideration
+for the same unresolved run/task/action episode and check configuration,
+including under a new request ID. A successful check ends that episode;
+later operations receive a new budget while prior attempts and refusals remain
+in retained history. An older challenge cannot reopen a completed episode.
+A narrower action has its own budget and retains prior refusal
+metadata. Retained history describes the current validated audit tail and
+approval records; unavailable or omitted history is explicit. It does not claim
+complete lifetime history or disclose target output as trusted instructions.
+
+The existing host-binding assessment shows the selected checker definitions,
+model inputs, source pins, full grant and modeled combined authority. Review
+those together. A broad host grant can permit changing the checker, policy or
+credentials. Separate configuration owners alone do not prove independence.
+Another model can share failure modes or be misled. Its finding is an additional
+signal, not a containment guarantee.
+
+The maintained [synthetic cases](../tests/fixtures/task-action-cases.json) cover
+adaptive host investigation and structured artifact publication. The
+[measurement runner](../tests/blackbox/host/task_action_assessment.py) exercises an
+installed check and reports
+false positives, false negatives, unavailable/uncertain cases, exact input/spec
+identities and observed durations for its selected model run. Controlled
+protocol tests do not measure model accuracy. Results from these finite cases
+do not establish general prompt-injection detection.
+
 For a passive Registration Data Access Protocol (RDAP) service, use
 `mapping = "rdap_registration"`. It reads only the exact domain object's
 `registration` event as a timestamp. A parent-domain response, missing or

@@ -44,7 +44,7 @@ hyperlight-common = { workspace = true, default-features = true, features = [ "s
 hyperlight-guest-tracing = { workspace = true, default-features = true, optional = true }
 crossbeam-channel = "0.5.15"
 thiserror = "2.0.18"
-chrono = { version = "0.4", optional = true }
+jiff = { version = "1.0.2", optional = true }
 anyhow = "1.0"
 metrics = "0.24.6"
 serde = { version = "1.0", features = ["derive"] }
@@ -94,7 +94,7 @@ tracing-serde = "0.2.0"
 serial_test = "4.0.1"
 hyperlight-testing = { workspace = true }
 env_logger = "0.11.10"
-tracing-forest = { version = "0.3.1", features = ["uuid", "chrono", "smallvec", "serde", "env-filter"] }
+tracing-forest = { version = "0.3.1", path = "../tracing-forest", features = ["uuid", "time", "smallvec", "serde", "env-filter"] }
 tracing = "0.1.44"
 tracing-subscriber = {version = "0.3.23", features = ["std", "env-filter"]}
 tracing-opentelemetry = "0.34.0"
@@ -133,7 +133,7 @@ executable_heap = []
 # This feature enables printing of debug information to stdout in debug builds
 print_debug = []
 # Dumps the VM state to a file on unexpected errors or crashes. The path of the file will be printed on stdout and logged.
-crashdump = ["dep:chrono", "dep:elfcore"]
+crashdump = ["dep:jiff", "dep:elfcore"]
 trace_guest = ["dep:opentelemetry", "dep:tracing-opentelemetry", "dep:hyperlight-guest-tracing", "hyperlight-common/trace_guest"]
 mem_profile = [ "trace_guest", "dep:framehop", "dep:fallible-iterator", "hyperlight-common/mem_profile" ]
 kvm = ["dep:kvm-bindings", "dep:kvm-ioctls"]

@@ -154,7 +154,7 @@ impl Config {
                 .chain(&self.coordinators)
                 .any(|n| !simple_name(n))
             || self.agent_room.as_ref().is_some_and(|n| !simple_name(n))
-            || !["codex", "pi"].contains(&self.harness.as_str())
+            || !["codex", "pi", "claude"].contains(&self.harness.as_str())
             || !self.workspace.is_absolute()
         {
             return Err(
@@ -457,16 +457,17 @@ impl State {
     }
     fn validate(&self) -> Result<(), Error> {
         if self.schema != STATE_SCHEMA
-            || !["codex", "pi"].contains(&self.harness.as_str())
+            || !["codex", "pi", "claude"].contains(&self.harness.as_str())
             || !["idle", "accepted", "running", "uncertain"].contains(&self.phase.as_str())
             || self.recent_attention_ids.len() > MAX_RECENT
             || self.pending_count() > MAX_PENDING
             || self.awaiting_handoffs.len() > MAX_PENDING
             || self.consecutive_failures > 31
-            || self
-                .thread_id
-                .as_ref()
-                .is_some_and(|id| id.is_empty() || id.contains('\0'))
+            || self.thread_id.as_ref().is_some_and(|id| {
+                id.is_empty()
+                    || id.contains('\0')
+                    || (self.harness == "claude" && uuid::Uuid::parse_str(id).is_err())
+            })
             || self.recent_attention_ids.iter().any(|id| !attention_id(id))
             || !unique(&self.recent_attention_ids)
         {

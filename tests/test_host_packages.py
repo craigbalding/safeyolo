@@ -1062,7 +1062,7 @@ def hyperlight_runtime(package_inputs, tmp_path):
     runtime = tmp_path / "hyperlight"
     runtime.mkdir()
     shutil.copy2(package_inputs[1] / "safeyolo-proxy", runtime / "safeyolo-hyperlight")
-    for name in ("runtime.json", "python.cpio", "core.elf", "checker.py", "service_checker.py", "artifact_checker.py",
+    for name in ("runtime.json", "python.cpio", "core.elf", "checker.py", "service_checker.py", "artifact_checker.py", "template_probe.py",
                  "hyperlight.json", "hyperlight-unikraft.json", "hyperlight-service.json", "hyperlight-unikraft-service.json",
                  "hyperlight-artifact.json", "hyperlight-unikraft-artifact.json"):
         (runtime / name).write_text("controlled runtime fixture\n")
@@ -1155,6 +1155,14 @@ def test_native_bundle_metadata_records_guest_discovery_without_pinning_an_archi
     assert fields["guest_compatibility"] == "v1"
     assert fields["guest_repository"] == "ghcr.io/craigbalding/safeyolo-guest"
     assert fields["guest_discovery_tag"] == "compat-v1"
+    recipe = Path("assets/skills/safeyolo-commission/recipes/media-ingestion/v1")
+    source = REPO / "cli/src/safeyolo/agent_context/skills/safeyolo-commission/recipes/media-ingestion/v1"
+    checksums = (bundle / "SHA256SUMS").read_text()
+    for path in source.iterdir():
+        if path.is_file():
+            packaged = bundle / recipe / path.name
+            assert packaged.read_bytes() == path.read_bytes()
+            assert f"{builder.sha256(packaged)}  ./{recipe / path.name}\n" in checksums
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
@@ -1315,7 +1323,6 @@ def packaged_flow_token_recipe(package_inputs, tmp_path):
     for relative in ("references/agent-api.md", "references/graph/triage-credential-guard.yaml",
                      "references/graph/triage-request-failing.yaml"):
         assert (skill / relative).read_bytes() == (source / relative).read_bytes()
-    assert not list(skill.rglob("*.py"))
     assert not (skill / "scripts/render_skill_graph.py").exists()
     reference = (skill / "references/agent-api.md").read_text()
     provision = reference.split("### Provision a read-all flow token\n", 1)[1]

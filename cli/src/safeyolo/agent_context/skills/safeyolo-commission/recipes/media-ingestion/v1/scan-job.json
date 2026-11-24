@@ -1,0 +1,12 @@
+{
+  "gate_id": "media-malware-scan",
+  "engine": {"kind": "platform"},
+  "argv": ["/usr/bin/python3", "/input/check_media.py", "scan"],
+  "network": false,
+  "privilege": "unprivileged",
+  "timeout_seconds": 300,
+  "memory_mb": 2048,
+  "max_input_bytes": 2147483648,
+  "max_input_entries": 64,
+  "retain_bytes": 32768
+}

@@ -165,6 +165,36 @@ install_safeyolo_runtime_mount_targets() {
 }
 
 
+# Debian-only optional integration. Custom distributions keep their own package tools.
+install_safeyolo_guest_state() {
+    local rootfs="$1"
+    [ -x "$rootfs/usr/bin/dpkg-query" ] && [ -x "$rootfs/usr/bin/etckeeper" ] || return 0
+    install -d -m 0755 "$rootfs/usr/local/bin" "$rootfs/usr/local/lib/safeyolo" \
+        "$rootfs/usr/local/etc" "$rootfs/etc/apt/apt.conf.d" "$rootfs/etc/dpkg/dpkg.cfg.d"
+    install -m 0755 "$SAFEYOLO_GUEST_SRC_DIR/rootfs/safeyolo-guest-state" "$rootfs/usr/local/bin/safeyolo-guest-state"
+    for name in hook base; do
+        install -m 0755 "$SAFEYOLO_GUEST_SRC_DIR/rootfs/safeyolo-guest-state-$name" \
+            "$rootfs/usr/local/lib/safeyolo/guest-state-$name"
+    done
+    cat > "$rootfs/etc/apt/apt.conf.d/05etckeeper" <<'STATE_APT'
+// Persist planned actions without copying APT configuration (which may contain secrets).
+DPkg::Pre-Install-Pkgs { "/usr/local/lib/safeyolo/guest-state-hook apt-pre"; };
+DPkg::Post-Invoke { "/usr/local/lib/safeyolo/guest-state-hook apt-post"; };
+DPkg::Tools::Options::/usr/local/lib/safeyolo/guest-state-hook::Version "3";
+DPkg::Tools::Options::/usr/local/lib/safeyolo/guest-state-hook::InfoFD "0";
+STATE_APT
+    cat > "$rootfs/etc/dpkg/dpkg.cfg.d/99safeyolo-guest-state" <<'STATE_DPKG'
+pre-invoke=/usr/local/lib/safeyolo/guest-state-hook dpkg-pre
+post-invoke=/usr/local/lib/safeyolo/guest-state-hook dpkg-post
+status-logger=/usr/local/lib/safeyolo/guest-state-hook dpkg-status
+STATE_DPKG
+    # The native event recorder owns capture. Avoid a second daily scan/history.
+    if ! grep -qx 'AVOID_DAILY_AUTOCOMMITS=1' "$rootfs/etc/etckeeper/etckeeper.conf"; then
+        printf '\nAVOID_DAILY_AUTOCOMMITS=1\n' >> "$rootfs/etc/etckeeper/etckeeper.conf"
+    fi
+}
+
+
 install_safeyolo_fd_compat() {
     local rootfs="$1"
     local path dir fdfind_path fdfind_target

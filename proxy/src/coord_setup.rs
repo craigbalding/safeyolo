@@ -805,6 +805,10 @@ pub(crate) fn supervised_launcher_source(source: &str, harness: &str) -> Result<
             "exec \"$pi_bin\" \"${args[@]}\" \"$@\"\n",
             "export SAFEYOLO_PI_BIN=\"$pi_bin\"\nexec \"$HOME/.safeyolo/safeyolo-coord\" supervise \"${supervisor_args[@]}\" -- \"${args[@]}\" \"$@\"\n",
         ),
+        "claude" => (
+            "exec \"$HOME/.safeyolo/safeyolo-coord\" client-exec claude -- claude \"${args[@]}\" \"$@\"\n",
+            "exec \"$HOME/.safeyolo/safeyolo-coord\" supervise \"${supervisor_args[@]}\" -- \"${args[@]}\" \"$@\"\n",
+        ),
         _ => return Err("unknown supervised harness".into()),
     };
     if source.matches(anchor).count() != 1 {

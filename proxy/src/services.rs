@@ -37,7 +37,7 @@ fn bearer() -> String {
 fn basic_username() -> String {
     "x-access-token".into()
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AuthConfig {
     #[serde(rename = "type")]
     pub kind: String,
@@ -51,6 +51,28 @@ pub struct AuthConfig {
     pub refresh_on_401: bool,
     #[serde(default)]
     pub allow_http: bool,
+}
+
+/// Wrap a synthetic gateway token using the adopted service's authentication.
+/// Upstream credential resolution remains inside the proxy.
+pub(crate) fn gateway_token_header(auth: Option<&AuthConfig>, token: &str) -> (String, Secret) {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    let value = match auth {
+        Some(auth) if auth.kind == "basic" => {
+            format!(
+                "Basic {}",
+                STANDARD.encode(format!("{}:{token}", auth.username))
+            )
+        }
+        Some(auth) if auth.kind != "bearer" => token.to_owned(),
+        _ => format!("Bearer {token}"),
+    };
+    (
+        auth.map_or("Authorization", |auth| auth.header.as_str())
+            .to_owned(),
+        Secret::new(value),
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -305,6 +327,41 @@ pub struct Registry {
     order: Vec<String>,
 }
 impl Registry {
+    pub(crate) fn replace_host_catalogues(
+        &self,
+        catalogues: &[(String, Vec<Value>)],
+    ) -> Result<Self, Error> {
+        let mut next = self.clone();
+        let owned: Vec<_> = next
+            .source_by_service
+            .iter()
+            .filter(|(_, source)| source.starts_with("host-catalogue:"))
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in owned {
+            next.services.remove(&name);
+            next.source_by_service.remove(&name);
+            next.order.retain(|n| *n != name);
+        }
+        for (catalogue, definitions) in catalogues {
+            for definition in definitions {
+                let service = ServiceDefinition::from_value(definition.clone())?;
+                if next.services.contains_key(&service.name) {
+                    return Err(format!(
+                        "host catalogue would replace independently owned service {}",
+                        service.name
+                    )
+                    .into());
+                }
+                next.order.push(service.name.clone());
+                next.source_by_service
+                    .insert(service.name.clone(), format!("host-catalogue:{catalogue}"));
+                next.services.insert(service.name.clone(), service);
+            }
+        }
+        Ok(next)
+    }
+
     /// Construct one strict catalog candidate. Only top-level `*.yaml`
     /// entries participate; user definitions replace builtin definitions.
     pub fn from_directories(builtin: &Path, user: &Path) -> Result<Self, Error> {

@@ -8,6 +8,15 @@ description: Diagnose and resolve SafeYolo boundary failures and operate advance
 Treat SafeYolo as the outer security boundary. Diagnose through its agent-side
 interfaces; do not try to bypass or weaken it.
 
+## Keep task files durable
+
+Keep authored code and retained task data under the assigned workspace folder,
+including working scripts and their inputs and outputs. `/tmp` is ephemeral and
+may be RAM-backed, so it is not a recovery location for scripts, downloads,
+evidence or build artifacts.
+Persistent home remains appropriate for installed tools and runtime caches. See
+[what persists](references/guest-tools.md#know-what-persists) when choosing paths.
+
 ## Routine supervised factory fast path
 
 When injected developer instructions already contain the role's Coord and
@@ -71,6 +80,9 @@ for filters, pagination, retention and attribution limits.
 
 ## Select the needed reference
 
+- Read [Host operations](references/host-operations.md) for adopted standalone
+  target discovery, typed proposals, bounded invocation/evidence and private
+  missing-capability assessment through the current task-bound gateway.
 - Read [job authoring](../job-authoring/SKILL.md) to choose an execution engine,
   develop a check or action, and prepare the installed GitHub/factory example.
   Adoption belongs to the selected instance's existing operator authority.
@@ -103,7 +115,8 @@ for filters, pagination, retention and attribution limits.
   It covers ordinary curl syntax, the CONNECT response ID and linked evidence
   after a TLS failure. Address acquisition is separate from target selection.
 - Read [Guest tools and privilege](references/guest-tools.md) before installing
-  native packages, diagnosing `sudo`, using Linux `setpriv`, or deciding
+  native packages, restoring retained guest prerequisites, changing configuration
+  capture coverage, diagnosing `sudo`, using Linux `setpriv`, or deciding
   whether an operator root shell is actually necessary.
 - Read [Desktop and operator preview](references/desktop.md) before starting a
   graphical guest program, exposing the optional desktop to the operator, or

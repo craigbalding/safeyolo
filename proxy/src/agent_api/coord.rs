@@ -1320,13 +1320,7 @@ fn valid_attention_id(value: &str) -> bool {
 }
 
 pub(crate) fn valid_agent_id(value: &str) -> bool {
-    let Some(suffix) = value.strip_prefix("ag-") else {
-        return false;
-    };
-    !suffix.is_empty()
-        && suffix
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    safeyolo_host_executor::valid_agent_id(value)
 }
 
 fn parse_attention_manifest(
