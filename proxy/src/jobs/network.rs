@@ -276,6 +276,7 @@ pub(super) struct Client {
     pub(super) configuration_sha256: String,
     revoked: bool,
     cleanup_confirmed: bool,
+    confirmation_pending: bool,
 }
 
 impl Client {
@@ -385,6 +386,7 @@ impl Client {
                 configuration_sha256: session.configuration_sha256,
                 revoked: false,
                 cleanup_confirmed: false,
+                confirmation_pending: false,
             })
         })
         .await??;
@@ -436,8 +438,13 @@ impl Client {
         if self.revoked {
             return Err("job delegation revoked".into());
         }
+        // A deadline can cancel this future after its request was sent but
+        // before its reply was consumed. Keep that reply distinct from the
+        // listener's terminal cleanup acknowledgment in close().
+        self.confirmation_pending = true;
         self.stream.write_u8(1).await?;
         let reply = self.stream.read_u8().await?;
+        self.confirmation_pending = false;
         if reply != 1 {
             self.revoked = true;
             self.cleanup_confirmed = reply == 0;
@@ -471,7 +478,11 @@ impl Client {
         }
         tokio::time::timeout(TIMEOUT, async {
             self.stream.write_u8(0).await?;
-            if self.stream.read_u8().await? != 0 {
+            let mut reply = self.stream.read_u8().await?;
+            if self.confirmation_pending && reply == 1 {
+                reply = self.stream.read_u8().await?;
+            }
+            if reply != 0 {
                 return Err("job delegation cleanup acknowledgment is invalid".into());
             }
             Ok::<_, Error>(())
@@ -569,6 +580,36 @@ action = "warn"
             .unwrap()
             .unwrap();
         response
+    }
+
+    #[tokio::test]
+    async fn cancelled_authority_confirmation_still_waits_for_listener_cleanup() {
+        let root = tempfile::tempdir().unwrap();
+        let path = config(root.path(), 1);
+        let proxy = crate::Proxy::start(crate::native_config::read(&path).unwrap())
+            .await
+            .unwrap();
+        let delegation = Delegation {
+            gate_id: "proof".into(),
+            run_id: "a".repeat(32),
+            socket_path: root.path().join("cancelled-confirmation.sock"),
+            checks: Vec::new(),
+            bind_policy: true,
+        };
+        let mut client = Client::open(&path, &delegation).await.unwrap();
+        // Poll the real confirmation until it waits for its reply, then drop
+        // it like Hyperlight's outer deadline/select. The current-thread test
+        // keeps the proxy from answering within that first poll.
+        let mut confirmation = Box::pin(client.confirm_current());
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(confirmation.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(confirmation);
+        client.close().await.unwrap();
+        assert!(!delegation.socket_path.exists());
+        proxy.shutdown().await;
     }
 
     #[tokio::test]
