@@ -29,5 +29,7 @@ The standalone `Cargo.lock` is locally refreshed from the published archive.
 It selects libz-sys 1.1.33 and rustix 1.1.6 to address the patchable advisories
 in those selections. The source, license and notice remain those identified
 above. The optional and development chrono maintenance notice remains.
+It also selects url 2.5.9 and form_urlencoded 1.2.3 to address the nested
+`blob:` origin stack overflow in RUSTSEC-2026-0592.
 SafeYolo's helper dependencies use `jobs/hyperlight-host/Cargo.lock`, separately
 from this standalone lock.
