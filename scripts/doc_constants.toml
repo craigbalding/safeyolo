@@ -30,6 +30,20 @@ docs = ["docs/hyperlight-jobs.md"]
 must_contain = "{minutes} minutes"
 
 [[assertion]]
+name = "host-execution-protocol-version"
+source = "host-executor/src/lib.rs"
+pattern = 'VERSION: &str = "(?P<version>[^"]+)"'
+docs = ["docs/host-execution-contract.md"]
+must_contain = "`{version}`"
+
+[[assertion]]
+name = "host-executor-receipt-diagnostic-bytes"
+source = "host-executor/src/ledger.rs"
+pattern = 'DIAGNOSTIC_BYTES: usize = (?P<bytes>\d+)'
+docs = ["docs/host-execution-contract.md"]
+must_contain = "at most {bytes} UTF-8 bytes"
+
+[[assertion]]
 name = "hyperlight-guest-abi"
 source = "jobs/hyperlight-guest/Cargo.toml"
 pattern = 'hyperlight-guest-bin = "=(?P<version>[0-9.]+)"'

@@ -266,7 +266,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-policy-authoring-py).
 - [tests/proxy_contracts/test_native_policy_cli.py](../tests/proxy_contracts/test_native_policy_cli.py#L54) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-policy-cli-py).
-- [tests/proxy_contracts/test_service_effect_assessment.py](../tests/proxy_contracts/test_service_effect_assessment.py#L67) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_service_effect_assessment.py](../tests/proxy_contracts/test_service_effect_assessment.py#L36) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-service-effect-assessment-py).
 - [tests/blackbox/installed_ingress.py::main](../tests/blackbox/installed_ingress.py#L195) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: optional `systrap` section `ingress`; default `kvm` section `ingress`.
@@ -786,13 +786,13 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-coord-operator-py).
 - [tests/proxy_contracts/test_installed_coord_events.py](../tests/proxy_contracts/test_installed_coord_events.py#L24) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-installed-coord-events-py).
-- [tests/proxy_contracts/test_native_factory_cli.py](../tests/proxy_contracts/test_native_factory_cli.py#L146) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_native_factory_cli.py](../tests/proxy_contracts/test_native_factory_cli.py#L152) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-factory-cli-py).
 - [tests/proxy_contracts/test_native_harness_attention.py](../tests/proxy_contracts/test_native_harness_attention.py#L87) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-harness-attention-py).
 - [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L635) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `access`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `access`.
-- [tests/blackbox/native_authority.py::main](../tests/blackbox/native_authority.py#L96) — Curated native Coord cases on Linux with real NATS and isolated instance roots. Evidence: Per-control procedure receipts and exact executed cases; process evidence, without a real guest or live tailnet.
+- [tests/blackbox/native_authority.py::main](../tests/blackbox/native_authority.py#L149) — Curated Coord cases on Linux or explicitly selected installed host-executor cases on Unix. Evidence: Per-control procedure receipts and exact executed cases with separate test/product/probe identities; process evidence without whole-workflow or Windows acceptance.
   Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only); step matrix.os == 'ubuntu-latest'`).
 - [proxy/tests/native_coord/reviews.rs](../proxy/tests/native_coord/reviews.rs#L100) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real instances/NATS; controlled run adapters.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-reviews-rs).
@@ -847,7 +847,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/native_authority.py::main](../tests/blackbox/native_authority.py#L96) — Curated native Coord cases on Linux with real NATS and isolated instance roots. Evidence: Per-control procedure receipts and exact executed cases; process evidence, without a real guest or live tailnet.
+- [tests/blackbox/native_authority.py::main](../tests/blackbox/native_authority.py#L149) — Curated Coord cases on Linux or explicitly selected installed host-executor cases on Unix. Evidence: Per-control procedure receipts and exact executed cases with separate test/product/probe identities; process evidence without whole-workflow or Windows acceptance.
   Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only); step matrix.os == 'ubuntu-latest'`).
 - [tests/blackbox/installed_federation.py::main](../tests/blackbox/installed_federation.py#L188) — Two actual systrap guests and a separate destination instance on the same Linux host. Evidence: Real TLS/NATS, destination operator history, exact delivery, wrong principal/instance and trust revocation; no live Tailscale claim.
   Selection: default `systrap` section `federation`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections).
@@ -965,17 +965,17 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-policy-authoring-py).
 - [tests/proxy_contracts/test_native_policy_cli.py](../tests/proxy_contracts/test_native_policy_cli.py#L54) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-policy-cli-py).
-- [tests/proxy_contracts/test_service_effect_assessment.py](../tests/proxy_contracts/test_service_effect_assessment.py#L67) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_service_effect_assessment.py](../tests/proxy_contracts/test_service_effect_assessment.py#L36) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-service-effect-assessment-py).
 - [tests/proxy_contracts/test_control_updates.py](../tests/proxy_contracts/test_control_updates.py#L111) — Native signals process; optional prepared Linux sandbox jobs. Evidence: Signed native candidates, owned NATS and controlled route requests; real isolated checks require the selected installed host.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-control-updates-py).
 - [proxy/src/http/policy_checks/execution_tests.rs](../proxy/src/http/policy_checks/execution_tests.rs#L127) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real native request/gateway; owned assessment service and origin.
   Exact identities: [source inventory](#witness-proxy-src-http-policy-checks-execution-tests-rs).
-- [proxy/src/policy/checks.rs](../proxy/src/policy/checks.rs#L1542) — Native evaluator; process fixtures. Evidence: Composition, three-valued results, type/subject/version/freshness binding and offline preview; actual HTTP enforcement is separate.
+- [proxy/src/policy/checks.rs](../proxy/src/policy/checks.rs#L1551) — Native evaluator; process fixtures. Evidence: Composition, three-valued results, type/subject/version/freshness binding and offline preview; actual HTTP enforcement is separate.
   Exact identities: [source inventory](#witness-proxy-src-policy-checks-rs-policy-checks-tests).
-- [proxy/src/policy/checks.rs](../proxy/src/policy/checks.rs#L2152) — Native recorded-evidence and candidate preview; process fixtures. Evidence: Recorded allow/deny/unknown/expiry, effective native controls and no preview budget charge.
+- [proxy/src/policy/checks.rs](../proxy/src/policy/checks.rs#L2161) — Native recorded-evidence and candidate preview; process fixtures. Evidence: Recorded allow/deny/unknown/expiry, effective native controls and no preview budget charge.
   Exact identities: [source inventory](#witness-proxy-src-policy-checks-rs-policy-checks-fixture-tests).
-- [proxy/src/policy/checks.rs](../proxy/src/policy/checks.rs#L2245) — Native numeric composition; process fixture. Evidence: Non-finite aggregation cannot create a positive finding.
+- [proxy/src/policy/checks.rs](../proxy/src/policy/checks.rs#L2254) — Native numeric composition; process fixture. Evidence: Non-finite aggregation cannot create a positive finding.
   Exact identities: [source inventory](#witness-proxy-src-policy-checks-rs-policy-checks-composition-edge-tests).
 - [proxy/src/policy/checks/execution/tests.rs](../proxy/src/policy/checks/execution/tests.rs#L1) — Native typed-result and captured-input boundary; process fixtures. Evidence: Exact captured GitHub evidence, adopted input mapping and caller-supplied provenance refusal; no live engine.
   Exact identities: [source inventory](#witness-proxy-src-policy-checks-execution-tests-rs).
@@ -1008,7 +1008,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-policy-authoring-py).
 - [tests/proxy_contracts/test_native_policy_cli.py](../tests/proxy_contracts/test_native_policy_cli.py#L54) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-policy-cli-py).
-- [tests/proxy_contracts/test_service_effect_assessment.py](../tests/proxy_contracts/test_service_effect_assessment.py#L67) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_service_effect_assessment.py](../tests/proxy_contracts/test_service_effect_assessment.py#L36) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-service-effect-assessment-py).
 - [proxy/tests/native_policy_feeds.rs](../proxy/tests/native_policy_feeds.rs#L281) — Native CLI/proxy in an installed layout; owned feed server; no guest. Evidence: Real acquisition, refresh and request decisions with retained snapshot provenance and independent destination contact observations.
   Exact identities: [source inventory](#witness-proxy-tests-native-policy-feeds-rs).
@@ -1066,7 +1066,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-coord-operator-py).
 - [tests/proxy_contracts/test_installed_coord_events.py](../tests/proxy_contracts/test_installed_coord_events.py#L24) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-installed-coord-events-py).
-- [tests/proxy_contracts/test_native_factory_cli.py](../tests/proxy_contracts/test_native_factory_cli.py#L146) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_native_factory_cli.py](../tests/proxy_contracts/test_native_factory_cli.py#L152) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-factory-cli-py).
 - [tests/proxy_contracts/test_native_harness_attention.py](../tests/proxy_contracts/test_native_harness_attention.py#L87) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-harness-attention-py).
@@ -1210,11 +1210,126 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 **Current existence:** no maintained witness resolved. The owner above retains the missing control.
 
 
+### BB-38 — Host-operation authority and native execution
+
+**What and why:** Authenticated host operations retain exact scope and revision checks; native execution has observable bounds and cleanup.
+
+**Audit coverage:** Native protocol and installed Unix fixtures, including adaptive application reads, fixed-service control, retained configuration effects, quiet/reviewed updates and dependency swaps. The Windows fixture selects packaged starters, machine/workload-user registry views, path aliases/reparse points, inherited handles, signed API isolation, catalogue updates/withdrawal, executable swaps, revocation/expiry, native bounds, controller crash recovery and storage limits. It retains canonical output and independent Windows service, file-identity and Job Object observations; platform results remain separate.
+
+**Conformance / action:** Qualify all eight witness groups through installed interfaces. Independent acceptance at PR #1695/41b29878 covers useful progress and refused expansion, quiet updates and the selected fallback, measured cleanup/recovery, and real Windows starter categories, modes and advertised bounds. Complete native deployment/composition evidence and maintained coverage remain open.
+
+**Effort:** L. **Comments:** The separately installed executor and independent host observers retain actual source, operating system, account, mode and output limits. Accepted evidence joins a real Linux sandbox to its co-located Linux target and a standalone macOS target over HTTPS, plus native Python-free Windows foreground and Windows Service runs. Windows proves every documented starter category, service status/start/stop/restart, Job Object memory/process/output/deadline bounds, protected paths, registry views, encoding and inherited handles; it does not claim disk/network containment, containment of delegated service effects, another architecture or a full Windows host stack. Linux adds whole-API scope refusals, cancellation/descendants, duplicate/lost-reply and crash reconciliation, expiry/revocation, adaptive investigation and stored-binding repair. Reuse the accepted #1675 finite Hyperlight/model and real-gVisor required-check evidence at their recorded limits; no general provider/platform cross-product is implied. An installed approved-stale journey now refuses both the original revisions and a fresh preparation carrying the earlier exact approval, with no new native job. Private assessment retains an unresolved full grant when four fixture operations lack annotations; the isolated characterised service pair reports same-resource match and different-resource non-match. A fresh four-job Windows continuation observes actual service consumption after each restart: the same-service edit is consumed; the different-resource edit changes only the other file, while a new service PID consumes the unchanged application bytes. The original 66 native rows remain preserved in the 70-row ledger, and both owned services stop afterward. Prior persistent effects and the original missing middle observation remain identified rather than reconstructed. A co-located physical macOS proxy/VZ guest/target reaches authenticated discovery, proposal and admission, but its required Seatbelt child exits71 with sandbox_apply denied; useful native execution there remains incomplete. Keep that actual facility failure visible without changing the host profile or claiming containment. Preserve the original uncertain results, persistent effects and explicit platform exceptions. See [the criterion disposition](https://github.com/craigbalding/safeyolo/issues/1677#issuecomment-7099825211). Missing required facilities leave the affected run incomplete.
+
+**Owner / remaining work:** [#1677](https://github.com/craigbalding/safeyolo/issues/1677). [Audit source / evidence context](https://github.com/craigbalding/safeyolo/issues/1677).
+
+**Assurance decisions:** `authorization`, `other_sinks_and_launch`.
+
+**Current existence:** resolved witnesses listed below; no current run inferred.
+
+- [host-executor/tests/unix_native.rs](../host-executor/tests/unix_native.rs#L191) — Real Unix installed executor; local authenticated HTTP; explicit native prerequisites. Evidence: Independent file and socket observations plus canonical job/output and owned cgroup/service checks; ignored unless explicitly selected; no Windows or whole-workflow acceptance.
+  Exact identities: [source inventory](#witness-host-executor-tests-unix-native-rs).
+- [proxy/tests/host_execution.rs](../proxy/tests/host_execution.rs#L174) — Controlled authenticated protocol, signatures, ledger and HTTP fixtures. Evidence: Protocol/component evidence; simulated dispatch does not establish native containment.
+  Exact identities: [source inventory](#witness-proxy-tests-host-execution-rs).
+- [proxy/src/policy_adoption_tests.rs](../proxy/src/policy_adoption_tests.rs#L20) — Controlled saved/runtime catalogue and gateway binding adoption. Evidence: Exact binding snapshots, rejected announcement stability and policy transaction rollback; no native execution claim.
+  Exact identities: [source inventory](#witness-proxy-src-policy-adoption-tests-rs).
+- [proxy/src/host_execution/gateway/tests.rs](../proxy/src/host_execution/gateway/tests.rs#L402) — Controlled gateway authentication, scope, dispatch and reply-loss fixtures. Evidence: Real gateway request parsing and controlled upstream; not a deployed target or native boundary.
+  Exact identities: [source inventory](#witness-proxy-src-host-execution-gateway-tests-rs).
+- [proxy/src/host_execution/gateway/task_action_tests.rs](../proxy/src/host_execution/gateway/task_action_tests.rs#L89) — Configured task/action admission and bounded checker fixtures. Evidence: Controlled check results and upstream dispatch counts; model measurements remain separate supplementary evidence.
+  Exact identities: [source inventory](#witness-proxy-src-host-execution-gateway-task-action-tests-rs).
+- [tests/blackbox/native_authority.py::main](../tests/blackbox/native_authority.py#L149) — Curated Coord cases on Linux or explicitly selected installed host-executor cases on Unix. Evidence: Per-control procedure receipts and exact executed cases with separate test/product/probe identities; process evidence without whole-workflow or Windows acceptance.
+  Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only); step matrix.os == 'ubuntu-latest'`).
+
 ## Exact witness identities and maintained selection
 
 Python identities name pytest functions/methods; a phase receipt expands parameter IDs and records each case. Cargo identities name the target and exact Rust test name. Ignore and cfg attributes remain source constraints. CI selectors describe maintained execution, not a passing receipt on every host. No hardware deployment or installed result is inferred from these files.
 
 **Scheduled installed lanes resolved from automation:** `package`, `systrap`. Unlisted KVM/VZ venues remain with [#889](https://github.com/craigbalding/safeyolo/issues/889). A workflow selector describes intended cadence; it is not proof that a host deployment ran.
+
+<a id="witness-host-executor-tests-unix-native-rs"></a>
+### [`host-executor/tests/unix_native.rs`](../host-executor/tests/unix_native.rs)
+
+Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native host_receiver_positive_control_waits_for_readiness -- --exact`](../host-executor/tests/unix_native.rs#L191) — `#![cfg(unix)]`
+Selection: manual `native-authority --suite host-execution` (prepared installed executor, probe and owned service); ignored by default.
+
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L545) — `#![cfg(unix)]`; `#[ignore = "requires the existing native Unix fixture and prepared probe or C compiler"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authority -- --exact --ignored`](../host-executor/tests/unix_native.rs#L760) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_check_serve_and_reload_share_ledger_validation -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1033) — `#![cfg(unix)]`; `#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_unix_read_paths_resolve_without_sibling_contents -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1114) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_unix_bounds_lifecycle_reload_and_lost_reply -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1135) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_storage_exhaustion_preserves_output_replay_and_restart -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1354) — `#![cfg(unix)]`; `#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_user_service_profiles_and_channel_refusals -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1426) — `#![cfg(unix)]`; `#[ignore = "requires SAFEYOLO_HOST_EXECUTOR_SERVICE naming an operator-prepared owned user service"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1595) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_dependency_swaps_preserve_metadata_but_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1659) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_api_authentication_and_cross_principal_reads_cannot_change_authority -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1784) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_adaptive_investigation_and_retained_configuration_effects -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2251) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture, installed assessor CLI and owned user service"]`
+
+<a id="witness-proxy-tests-host-execution-rs"></a>
+### [`proxy/tests/host_execution.rs`](../proxy/tests/host_execution.rs)
+
+Selection: manual native phase `host-execution` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_admission_replay_restart_and_uncertain_process_reservation -- --exact`](../proxy/tests/host_execution.rs#L174)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_cancellation_output_limits_ownership_and_fresh_authority -- --exact`](../proxy/tests/host_execution.rs#L262)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_ledger_lock_target_and_capacity_refusals_leave_no_admission -- --exact`](../proxy/tests/host_execution.rs#L382)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_ledger_refuses_links_and_public_files -- --exact`](../proxy/tests/host_execution.rs#L412)
+Selection: child helper: Executed by durable_process_failure_after_committed_admission with its private child environment; no separate phase obligation..
+
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_crash_child -- --exact --ignored`](../proxy/tests/host_execution.rs#L430) — `#[ignore = "child process for durable_process_failure_after_committed_admission"]`
+Selection: manual native phase `host-execution` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_process_failure_after_committed_admission -- --exact`](../proxy/tests/host_execution.rs#L455)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_storage_failure_rolls_back_call_and_replay_reservations -- --exact`](../proxy/tests/host_execution.rs#L477)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_mutation_capacity_preserves_one_cancellation_per_active_job -- --exact`](../proxy/tests/host_execution.rs#L511)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_uncertain_concurrency_survives_a_new_grant_revision -- --exact`](../proxy/tests/host_execution.rs#L601)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution shared_negative_fixtures_cross_authenticated_validation -- --exact`](../proxy/tests/host_execution.rs#L656)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution signatures_rotation_expiry_and_fresh_authority_are_independent -- --exact`](../proxy/tests/host_execution.rs#L679)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution membership_scope_defaults_and_proposal_inputs_do_not_confer_authority -- --exact`](../proxy/tests/host_execution.rs#L792)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution one_package_binds_native_gateway_material_and_target_scope -- --exact`](../proxy/tests/host_execution.rs#L939)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution generated_gateway_contract_requires_bound_resource_and_exact_operation_payload -- --exact`](../proxy/tests/host_execution.rs#L987)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution invocation_cannot_replace_definitions_or_add_an_executable -- --exact`](../proxy/tests/host_execution.rs#L1038)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution same_authenticated_http_protocol_on_standalone_and_safeyolo_targets -- --exact`](../proxy/tests/host_execution.rs#L1315)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution issuer_namespaces_job_disclosure_and_terminal_states_are_explicit -- --exact`](../proxy/tests/host_execution.rs#L1508)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution command_words_preserve_fixed_implementation_and_never_evaluate_shell_text -- --exact`](../proxy/tests/host_execution.rs#L1632)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution local_action_ceiling_and_content_revisions_cannot_be_bypassed_by_labels -- --exact`](../proxy/tests/host_execution.rs#L1676)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution stale_preparation_refreshes_through_real_discovery_proposal_and_ledger_without_invoking -- --exact`](../proxy/tests/host_execution.rs#L1728)
+
+<a id="witness-proxy-src-policy-adoption-tests-rs"></a>
+### [`proxy/src/policy_adoption_tests.rs`](../proxy/src/policy_adoption_tests.rs)
+
+Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy_adoption_tests::catalogue_discovery_uses_actual_bytes_and_activates_coherent_gateway_definitions -- --exact`](../proxy/src/policy_adoption_tests.rs#L20)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy_adoption_tests::adoption_save_failure_preserves_saved_and_active_policy -- --exact`](../proxy/src/policy_adoption_tests.rs#L284)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy_adoption_tests::adoption_receipt_failure_rolls_back_actual_saved_and_active_policy -- --exact`](../proxy/src/policy_adoption_tests.rs#L332)
+
+<a id="witness-proxy-src-host-execution-gateway-tests-rs"></a>
+### [`proxy/src/host_execution/gateway/tests.rs`](../proxy/src/host_execution/gateway/tests.rs)
+
+Selection: manual native phase `host-execution` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::package_mismatch_discovery_reports_revisions_without_a_possible_job -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L402) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::lost_cancel_reply_retains_the_original_job_for_inspection -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L428) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::adaptive_operations_and_lost_reply_use_real_target_receipts_without_duplicate_dispatch -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L454) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::native_scopes_defaults_current_policy_and_cross_agent_objects_are_enforced -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L532) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::private_reconsideration_and_explicit_exact_escalation_reuse_the_approval_owner -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L702) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::revocation_task_switch_and_target_revision_changes_preserve_retained_jobs -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L797) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::an_allowed_host_route_still_requires_its_adopted_check_evidence -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L861)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::agent_input_cannot_substitute_authority_or_enrol_issuers_and_definitions -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L914)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::completed_task_action_checks_allow_new_operations_and_retain_refusals -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L972)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::task_action_check_binds_canonical_task_and_bounds_unavailable_reconsideration -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1050)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::https_target_identity_precedes_signed_dispatch_and_keeps_native_receipts -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1134)
+
+<a id="witness-proxy-src-host-execution-gateway-task-action-tests-rs"></a>
+### [`proxy/src/host_execution/gateway/task_action_tests.rs`](../proxy/src/host_execution/gateway/task_action_tests.rs)
+
+Selection: manual native phase `host-execution` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::configured_task_action::task_action_history_filters_before_selecting_the_bounded_tail -- --exact`](../proxy/src/host_execution/gateway/task_action_tests.rs#L89)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::configured_task_action::large_task_action_history_respects_the_adopted_input_limit -- --exact`](../proxy/src/host_execution/gateway/task_action_tests.rs#L161)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::configured_task_action::configured_task_action_dispatches_adaptive_operations_and_retains_refusals -- --exact`](../proxy/src/host_execution/gateway/task_action_tests.rs#L231)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::configured_task_action::configured_task_action_rejects_prior_findings_and_required_check_bypass -- --exact`](../proxy/src/host_execution/gateway/task_action_tests.rs#L310)
 
 <a id="witness-tests-proxy-contracts-test-local-api-authorization-py"></a>
 ### [`tests/proxy_contracts/test_local_api_authorization.py`](../tests/proxy_contracts/test_local_api_authorization.py)
@@ -1328,55 +1443,57 @@ Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.ym
 - [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_stop_cleanup_accepts_inactive_native_process_record`](../tests/proxy_contracts/test_native_policy_cli.py#L533)
 - [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_check_show_apply_and_scoped_enforcement`](../tests/proxy_contracts/test_native_policy_cli.py#L586)
 - [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_lab_stages_skills_without_the_optional_python_checker`](../tests/proxy_contracts/test_native_policy_cli.py#L636)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_fixture_removes_executables_after_startup_failure`](../tests/proxy_contracts/test_native_policy_cli.py#L673)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_credential_approval_keeps_destination_scope`](../tests/proxy_contracts/test_native_policy_cli.py#L743)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_custom_credential_negative_controls`](../tests/proxy_contracts/test_native_policy_cli.py#L811)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_unknown_bearers_keep_policy_approval_reload_and_audit`](../tests/proxy_contracts/test_native_policy_cli.py#L844)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_unknown_bearer_websocket_requires_exact_approval`](../tests/proxy_contracts/test_native_policy_cli.py#L1006)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_rejected_apply_preserves_allowed_denied_saved_live_and_recovers`](../tests/proxy_contracts/test_native_policy_cli.py#L1077)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_failed_activation_retains_live_generation_when_saved_policy_differs`](../tests/proxy_contracts/test_native_policy_cli.py#L1131)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_apply_with_service_store_uses_existing_transaction_without_deadlock`](../tests/proxy_contracts/test_native_policy_cli.py#L1175)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_new_service_capability_is_loaded_before_its_policy_is_applied`](../tests/proxy_contracts/test_native_policy_cli.py#L1203)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_apply_keeps_checked_list_file_scope_when_saved_under_another_root`](../tests/proxy_contracts/test_native_policy_cli.py#L1259)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_show_distinguishes_saved_list_inputs_from_active_compiled_scope`](../tests/proxy_contracts/test_native_policy_cli.py#L1279)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_native_check_rejects_replaced_policy_fields`](../tests/proxy_contracts/test_native_policy_cli.py#L1324)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_config_help_and_named_diagnostics`](../tests/proxy_contracts/test_native_policy_cli.py#L1333)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_native_listener_update_preserves_other_toml_settings`](../tests/proxy_contracts/test_native_policy_cli.py#L1360)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_unlisted_destination_effects`](../tests/proxy_contracts/test_native_policy_cli.py#L1438)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_agent_override_precedence`](../tests/proxy_contracts/test_native_policy_cli.py#L1452)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_policy_overrides_coexist_with_degraded_host_identity_and_attachment`](../tests/proxy_contracts/test_native_policy_cli.py#L1476)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_exact_host_precedes_wildcard`](../tests/proxy_contracts/test_native_policy_cli.py#L1545)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_port_precedence_and_other_port_fallthrough`](../tests/proxy_contracts/test_native_policy_cli.py#L1555)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_named_list_and_advanced_method_path`](../tests/proxy_contracts/test_native_policy_cli.py#L1564)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_small_request_budget_scope`](../tests/proxy_contracts/test_native_policy_cli.py#L1589)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_connect_budget_leaves_inner_request_budget_unspent`](../tests/proxy_contracts/test_native_policy_cli.py#L1604)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_scanner_block_warn_and_host_exception`](../tests/proxy_contracts/test_native_policy_cli.py#L1640)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_expiring_host_entry_observes_reload_boundary`](../tests/proxy_contracts/test_native_policy_cli.py#L1667)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_configured_circuit_threshold_reset_recovery`](../tests/proxy_contracts/test_native_policy_cli.py#L1684)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_context_formatter_atomic_watched_file`](../tests/proxy_contracts/test_native_policy_cli.py#L1708)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_context_invalid_input_keeps_previous_file`](../tests/proxy_contracts/test_native_policy_cli.py#L1750)
-- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_context_declare_injection_expiry_clear_and_evidence`](../tests/proxy_contracts/test_native_policy_cli.py#L1759)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_fixture_removes_executables_after_startup_failure`](../tests/proxy_contracts/test_native_policy_cli.py#L675)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_credential_approval_keeps_destination_scope`](../tests/proxy_contracts/test_native_policy_cli.py#L745)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_custom_credential_negative_controls`](../tests/proxy_contracts/test_native_policy_cli.py#L813)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_unknown_bearers_keep_policy_approval_reload_and_audit`](../tests/proxy_contracts/test_native_policy_cli.py#L846)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_unknown_bearer_websocket_requires_exact_approval`](../tests/proxy_contracts/test_native_policy_cli.py#L1008)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_rejected_apply_preserves_allowed_denied_saved_live_and_recovers`](../tests/proxy_contracts/test_native_policy_cli.py#L1079)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_failed_activation_retains_live_generation_when_saved_policy_differs`](../tests/proxy_contracts/test_native_policy_cli.py#L1133)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_apply_with_service_store_uses_existing_transaction_without_deadlock`](../tests/proxy_contracts/test_native_policy_cli.py#L1177)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_new_service_capability_is_loaded_before_its_policy_is_applied`](../tests/proxy_contracts/test_native_policy_cli.py#L1205)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_apply_keeps_checked_list_file_scope_when_saved_under_another_root`](../tests/proxy_contracts/test_native_policy_cli.py#L1261)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_show_distinguishes_saved_list_inputs_from_active_compiled_scope`](../tests/proxy_contracts/test_native_policy_cli.py#L1281)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_native_check_rejects_replaced_policy_fields`](../tests/proxy_contracts/test_native_policy_cli.py#L1326)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_config_help_and_named_diagnostics`](../tests/proxy_contracts/test_native_policy_cli.py#L1335)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_native_listener_update_preserves_other_toml_settings`](../tests/proxy_contracts/test_native_policy_cli.py#L1362)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_unlisted_destination_effects`](../tests/proxy_contracts/test_native_policy_cli.py#L1440)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_agent_override_precedence`](../tests/proxy_contracts/test_native_policy_cli.py#L1454)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_policy_overrides_coexist_with_degraded_host_identity_and_attachment`](../tests/proxy_contracts/test_native_policy_cli.py#L1478)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_exact_host_precedes_wildcard`](../tests/proxy_contracts/test_native_policy_cli.py#L1547)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_port_precedence_and_other_port_fallthrough`](../tests/proxy_contracts/test_native_policy_cli.py#L1557)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_named_list_and_advanced_method_path`](../tests/proxy_contracts/test_native_policy_cli.py#L1566)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_small_request_budget_scope`](../tests/proxy_contracts/test_native_policy_cli.py#L1591)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_connect_budget_leaves_inner_request_budget_unspent`](../tests/proxy_contracts/test_native_policy_cli.py#L1606)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_scanner_block_warn_and_host_exception`](../tests/proxy_contracts/test_native_policy_cli.py#L1642)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_expiring_host_entry_observes_reload_boundary`](../tests/proxy_contracts/test_native_policy_cli.py#L1669)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_configured_circuit_threshold_reset_recovery`](../tests/proxy_contracts/test_native_policy_cli.py#L1686)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_context_formatter_atomic_watched_file`](../tests/proxy_contracts/test_native_policy_cli.py#L1710)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_context_invalid_input_keeps_previous_file`](../tests/proxy_contracts/test_native_policy_cli.py#L1752)
+- [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_context_declare_injection_expiry_clear_and_evidence`](../tests/proxy_contracts/test_native_policy_cli.py#L1761)
 
 <a id="witness-tests-proxy-contracts-test-service-effect-assessment-py"></a>
 ### [`tests/proxy_contracts/test_service_effect_assessment.py`](../tests/proxy_contracts/test_service_effect_assessment.py)
 
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_normal_approval_interfaces_retain_canonical_effects_guidance_and_outcome`](../tests/proxy_contracts/test_service_effect_assessment.py#L67)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_combined_authority_is_prepared_before_operator_work_and_shared_by_approval`](../tests/proxy_contracts/test_service_effect_assessment.py#L104)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_policy_changes_expose_recomputed_assessment_and_supersede_old_consent`](../tests/proxy_contracts/test_service_effect_assessment.py#L141)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_alternative_recipe_needs_access_and_effect_denial_applies_to_other_endpoint`](../tests/proxy_contracts/test_service_effect_assessment.py#L161)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_prohibited_edit_does_not_deny_independent_inspection_or_recipe`](../tests/proxy_contracts/test_service_effect_assessment.py#L189)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_new_temporary_route_authority_invalidates_a_pending_assessment`](../tests/proxy_contracts/test_service_effect_assessment.py#L219)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_removed_temporary_execution_access_is_reassessed_without_asserting_upstream_state`](../tests/proxy_contracts/test_service_effect_assessment.py#L234)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_definition_changes_are_recomputed_before_approval`](../tests/proxy_contracts/test_service_effect_assessment.py#L255)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_unbounded_execution_scope_includes_the_job_except_where_policy_denies_it`](../tests/proxy_contracts/test_service_effect_assessment.py#L271)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_known_candidate_scope_establishes_overlap_through_native_selectors`](../tests/proxy_contracts/test_service_effect_assessment.py#L281)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_unresolved_alias_overlap_does_not_invent_an_effect_prohibition`](../tests/proxy_contracts/test_service_effect_assessment.py#L289)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_risk_only_grant_does_not_add_modeled_route_admission_authority`](../tests/proxy_contracts/test_service_effect_assessment.py#L301)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_actual_contract_binding_projects_enforced_cosmetic_constraints`](../tests/proxy_contracts/test_service_effect_assessment.py#L313)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_recipe_with_unspecified_binding_reports_the_prerequisite_and_full_effects`](../tests/proxy_contracts/test_service_effect_assessment.py#L343)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_existing_risk_approval_consumes_the_same_temporary_combined_authority`](../tests/proxy_contracts/test_service_effect_assessment.py#L359)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_host_assessment_cli_reports_full_proposal_current_ceiling_and_unavailable_authority`](../tests/proxy_contracts/test_service_effect_assessment.py#L36)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_host_package_guidance_is_shared_by_challenge_private_and_operator_review`](../tests/proxy_contracts/test_service_effect_assessment.py#L95)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_normal_approval_interfaces_retain_canonical_effects_guidance_and_outcome`](../tests/proxy_contracts/test_service_effect_assessment.py#L171)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_combined_authority_is_prepared_before_operator_work_and_shared_by_approval`](../tests/proxy_contracts/test_service_effect_assessment.py#L208)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_policy_changes_expose_recomputed_assessment_and_supersede_old_consent`](../tests/proxy_contracts/test_service_effect_assessment.py#L245)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_alternative_recipe_needs_access_and_effect_denial_applies_to_other_endpoint`](../tests/proxy_contracts/test_service_effect_assessment.py#L265)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_prohibited_edit_does_not_deny_independent_inspection_or_recipe`](../tests/proxy_contracts/test_service_effect_assessment.py#L293)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_new_temporary_route_authority_invalidates_a_pending_assessment`](../tests/proxy_contracts/test_service_effect_assessment.py#L323)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_removed_temporary_execution_access_is_reassessed_without_asserting_upstream_state`](../tests/proxy_contracts/test_service_effect_assessment.py#L338)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_definition_changes_are_recomputed_before_approval`](../tests/proxy_contracts/test_service_effect_assessment.py#L359)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_unbounded_execution_scope_includes_the_job_except_where_policy_denies_it`](../tests/proxy_contracts/test_service_effect_assessment.py#L375)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_known_candidate_scope_establishes_overlap_through_native_selectors`](../tests/proxy_contracts/test_service_effect_assessment.py#L385)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_unresolved_alias_overlap_does_not_invent_an_effect_prohibition`](../tests/proxy_contracts/test_service_effect_assessment.py#L393)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_risk_only_grant_does_not_add_modeled_route_admission_authority`](../tests/proxy_contracts/test_service_effect_assessment.py#L405)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_actual_contract_binding_projects_enforced_cosmetic_constraints`](../tests/proxy_contracts/test_service_effect_assessment.py#L417)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_recipe_with_unspecified_binding_reports_the_prerequisite_and_full_effects`](../tests/proxy_contracts/test_service_effect_assessment.py#L447)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_existing_risk_approval_consumes_the_same_temporary_combined_authority`](../tests/proxy_contracts/test_service_effect_assessment.py#L463)
 
 <a id="witness-tests-proxy-contracts-test-gateway-redirect-py"></a>
 ### [`tests/proxy_contracts/test_gateway_redirect.py`](../tests/proxy_contracts/test_gateway_redirect.py)
@@ -2008,38 +2125,51 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_setup_preview_keeps_exact_contract_and_approval_separate`](../tests/proxy_contracts/test_native_factory_cli.py#L146)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_setup_resumes_prepared_roles_without_reapplying_or_initializing_checkpoints`](../tests/proxy_contracts/test_native_factory_cli.py#L168)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_setup_keeps_valid_checkpoint_and_diagnoses_corrupt_checkpoint`](../tests/proxy_contracts/test_native_factory_cli.py#L187)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_setup_approval_and_workspace_requirements_do_not_launch_roles`](../tests/proxy_contracts/test_native_factory_cli.py#L208)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_setup_keeps_explicit_codex_adoption_before_runtime_start`](../tests/proxy_contracts/test_native_factory_cli.py#L224)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_setup_repairs_stopped_staging_and_explicitly_changed_workspace`](../tests/proxy_contracts/test_native_factory_cli.py#L238)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_setup_preview_keeps_exact_contract_and_approval_separate`](../tests/proxy_contracts/test_native_factory_cli.py#L152)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_setup_resumes_prepared_roles_without_reapplying_or_initializing_checkpoints`](../tests/proxy_contracts/test_native_factory_cli.py#L175)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_setup_keeps_valid_checkpoint_and_diagnoses_corrupt_checkpoint`](../tests/proxy_contracts/test_native_factory_cli.py#L195)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_setup_approval_and_workspace_requirements_do_not_launch_roles`](../tests/proxy_contracts/test_native_factory_cli.py#L226)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_setup_keeps_explicit_codex_adoption_before_runtime_start`](../tests/proxy_contracts/test_native_factory_cli.py#L242)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_setup_repairs_stopped_staging_and_explicitly_changed_workspace`](../tests/proxy_contracts/test_native_factory_cli.py#L256)
 Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants`](../tests/proxy_contracts/test_native_factory_cli.py#L257)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants`](../tests/proxy_contracts/test_native_factory_cli.py#L276)
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_repo_map_reads_working_tree_and_reports_guidance`](../tests/proxy_contracts/test_native_factory_cli.py#L336)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_doctor_checks_actual_direct_and_wrapped_role_commands`](../tests/proxy_contracts/test_native_factory_cli.py#L373)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_repo_map_reads_working_tree_and_reports_guidance`](../tests/proxy_contracts/test_native_factory_cli.py#L361)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_doctor_checks_actual_direct_and_wrapped_role_commands`](../tests/proxy_contracts/test_native_factory_cli.py#L399)
 Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_doctor_rejects_the_paused_exact_command_with_a_healthy_supervisor`](../tests/proxy_contracts/test_native_factory_cli.py#L447)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_doctor_rejects_failed_or_paused_command_with_a_healthy_runtime`](../tests/proxy_contracts/test_native_factory_cli.py#L475)
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_native_release_preserves_other_work_and_requires_canonical_audit`](../tests/proxy_contracts/test_native_factory_cli.py#L545)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_doctor_names_missing_role_executable_and_room_permission`](../tests/proxy_contracts/test_native_factory_cli.py#L583)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_stop_interprets_lifecycle_errors`](../tests/proxy_contracts/test_native_factory_cli.py#L626)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_does_not_boot_workers_without_coord`](../tests/proxy_contracts/test_native_factory_cli.py#L649)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_does_not_boot_workers_when_room_provisioning_fails`](../tests/proxy_contracts/test_native_factory_cli.py#L662)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_native_release_preserves_other_work_and_requires_canonical_audit`](../tests/proxy_contracts/test_native_factory_cli.py#L585)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_doctor_names_missing_role_executable_and_room_permission`](../tests/proxy_contracts/test_native_factory_cli.py#L624)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_stop_interprets_lifecycle_errors`](../tests/proxy_contracts/test_native_factory_cli.py#L667)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_does_not_boot_workers_without_coord`](../tests/proxy_contracts/test_native_factory_cli.py#L690)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_does_not_boot_workers_when_room_provisioning_fails`](../tests/proxy_contracts/test_native_factory_cli.py#L703)
 Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_requires_confirmation_before_any_role_starts`](../tests/proxy_contracts/test_native_factory_cli.py#L674)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_requires_confirmation_before_any_role_starts`](../tests/proxy_contracts/test_native_factory_cli.py#L715)
 Selection: optional: select `SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE` explicitly (Explicit disposable installed guided-setup acceptance root.); phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_setup_interruption_preserves_prepared_roles`](../tests/proxy_contracts/test_native_factory_cli.py#L701)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_setup_interruption_preserves_prepared_roles`](../tests/proxy_contracts/test_native_factory_cli.py#L742)
+Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_claude_direction_reads_exact_envelope`](../tests/proxy_contracts/test_native_factory_cli.py#L826)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_claude_direction_rejects_unmatched_envelope`](../tests/proxy_contracts/test_native_factory_cli.py#L848)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_claude_direction_native_readback`](../tests/proxy_contracts/test_native_factory_cli.py#L859)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_pending_claude_caller_refuses_replaying_started_work`](../tests/proxy_contracts/test_native_factory_cli.py#L1176)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_pending_claude_caller_observes_setup_recovery_and_scoped_grants`](../tests/proxy_contracts/test_native_factory_cli.py#L1203)
 Selection: optional: select `SAFEYOLO_FACTORY_ACCEPTANCE_ROOT` explicitly (Explicit disposable installed Factory acceptance root.); phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_executes_staged_worker_commands`](../tests/proxy_contracts/test_native_factory_cli.py#L743)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_pending_claude_work_survives_restart`](../tests/proxy_contracts/test_native_factory_cli.py#L1326)
+Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_pending_claude_case_preserves_other_factory_selections`](../tests/proxy_contracts/test_native_factory_cli.py#L1343)
+Selection: optional: select `SAFEYOLO_FACTORY_ACCEPTANCE_ROOT` explicitly (Explicit disposable installed Factory acceptance root.); phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_executes_staged_worker_commands`](../tests/proxy_contracts/test_native_factory_cli.py#L1366)
 
 <a id="witness-tests-proxy-contracts-test-native-harness-attention-py"></a>
 ### [`tests/proxy_contracts/test_native_harness_attention.py`](../tests/proxy_contracts/test_native_harness_attention.py)
@@ -2433,35 +2563,35 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 - [`tests/test_hyperlight_service_checker.py::test_provider_denial_and_limit_are_unavailable`](../tests/test_hyperlight_service_checker.py#L92)
 - [`tests/test_hyperlight_service_checker.py::test_bundle_keeps_patched_dependency_licenses`](../tests/test_hyperlight_service_checker.py#L102)
 - [`tests/test_hyperlight_service_checker.py::test_bundle_pins_both_service_checkers_without_changing_offline_examples`](../tests/test_hyperlight_service_checker.py#L132)
-- [`tests/test_hyperlight_service_checker.py::test_shared_author_and_autonomy_cases`](../tests/test_hyperlight_service_checker.py#L175)
-- [`tests/test_hyperlight_service_checker.py::test_shared_exact_artifact_cases`](../tests/test_hyperlight_service_checker.py#L189)
-- [`tests/test_hyperlight_service_checker.py::test_non_json_constants_in_artifact_subject_are_unavailable`](../tests/test_hyperlight_service_checker.py#L203)
-- [`tests/test_hyperlight_service_checker.py::test_resident_memory_reads_a_live_process_and_rejects_a_missing_one`](../tests/test_hyperlight_service_checker.py#L224)
-- [`tests/test_hyperlight_service_checker.py::test_process_memory_includes_descendants_and_excludes_unrelated_processes`](../tests/test_hyperlight_service_checker.py#L230)
-- [`tests/test_hyperlight_service_checker.py::test_darwin_memory_aggregates_descendants_counts_pids_and_grows_full_buffers`](../tests/test_hyperlight_service_checker.py#L270)
-- [`tests/test_hyperlight_service_checker.py::test_darwin_memory_omits_processes_that_disappear_during_sampling`](../tests/test_hyperlight_service_checker.py#L283)
-- [`tests/test_hyperlight_service_checker.py::test_darwin_memory_preserves_denied_or_incomplete_observations`](../tests/test_hyperlight_service_checker.py#L303)
-- [`tests/test_hyperlight_service_checker.py::test_darwin_process_enumeration_keeps_the_existing_five_second_bound`](../tests/test_hyperlight_service_checker.py#L322)
-- [`tests/test_hyperlight_service_checker.py::test_job_memory_retains_live_processes_and_samples_idle_after_reaping`](../tests/test_hyperlight_service_checker.py#L332)
-- [`tests/test_hyperlight_service_checker.py::test_job_memory_preserves_failed_observation_without_claiming_zero_memory`](../tests/test_hyperlight_service_checker.py#L345)
-- [`tests/test_hyperlight_service_checker.py::test_spin_observer_rejects_missing_or_other_invocation_entry`](../tests/test_hyperlight_service_checker.py#L358)
-- [`tests/test_hyperlight_service_checker.py::test_spin_observer_waits_for_the_current_live_marker`](../tests/test_hyperlight_service_checker.py#L378)
-- [`tests/test_hyperlight_service_checker.py::test_template_probe_compares_frozen_generator_state_before_drawing`](../tests/test_hyperlight_service_checker.py#L392)
-- [`tests/test_hyperlight_service_checker.py::test_warm_probe_rejects_replayed_runtime_randomness_and_preserves_samples`](../tests/test_hyperlight_service_checker.py#L416)
-- [`tests/test_hyperlight_service_checker.py::test_driver_preserves_job33_failure_before_decoding_stdout`](../tests/test_hyperlight_service_checker.py#L468)
-- [`tests/test_hyperlight_service_checker.py::test_driver_cannot_accept_json_from_a_failed_command`](../tests/test_hyperlight_service_checker.py#L502)
-- [`tests/test_hyperlight_service_checker.py::test_driver_accepts_only_the_explicit_retained_grant_denial`](../tests/test_hyperlight_service_checker.py#L537)
-- [`tests/test_hyperlight_service_checker.py::test_driver_matches_sibling_job_outcomes_and_cli_status`](../tests/test_hyperlight_service_checker.py#L557)
-- [`tests/test_hyperlight_service_checker.py::test_expected_negative_still_rejects_command_and_observation_failures`](../tests/test_hyperlight_service_checker.py#L576)
-- [`tests/test_hyperlight_service_checker.py::test_expected_negative_requires_a_retained_json_file`](../tests/test_hyperlight_service_checker.py#L584)
-- [`tests/test_hyperlight_service_checker.py::test_host_capture_retains_the_current_policy_and_configuration_identities`](../tests/test_hyperlight_service_checker.py#L609)
-- [`tests/test_hyperlight_service_checker.py::test_capture_observer_requires_the_selected_current_principal`](../tests/test_hyperlight_service_checker.py#L618)
-- [`tests/test_hyperlight_service_checker.py::test_engine_observer_matches_selected_engine_and_artifact_pins`](../tests/test_hyperlight_service_checker.py#L631)
-- [`tests/test_hyperlight_service_checker.py::test_host_capture_rejects_invalid_identity_or_time_binding`](../tests/test_hyperlight_service_checker.py#L652)
-- [`tests/test_hyperlight_service_checker.py::test_named_evidence_binds_the_raw_adopted_definition_digest`](../tests/test_hyperlight_service_checker.py#L658)
-- [`tests/test_hyperlight_service_checker.py::test_held_controls_keep_entry_triggers_late_release_and_fresh_runs`](../tests/test_hyperlight_service_checker.py#L679)
-- [`tests/test_hyperlight_service_checker.py::test_held_controls_reject_an_unreached_or_finished_call`](../tests/test_hyperlight_service_checker.py#L743)
-- [`tests/test_hyperlight_service_checker.py::test_remaining_window_skips_completed_phases_and_reports_its_actual_scope`](../tests/test_hyperlight_service_checker.py#L759)
+- [`tests/test_hyperlight_service_checker.py::test_shared_author_and_autonomy_cases`](../tests/test_hyperlight_service_checker.py#L184)
+- [`tests/test_hyperlight_service_checker.py::test_shared_exact_artifact_cases`](../tests/test_hyperlight_service_checker.py#L198)
+- [`tests/test_hyperlight_service_checker.py::test_non_json_constants_in_artifact_subject_are_unavailable`](../tests/test_hyperlight_service_checker.py#L212)
+- [`tests/test_hyperlight_service_checker.py::test_resident_memory_reads_a_live_process_and_rejects_a_missing_one`](../tests/test_hyperlight_service_checker.py#L233)
+- [`tests/test_hyperlight_service_checker.py::test_process_memory_includes_descendants_and_excludes_unrelated_processes`](../tests/test_hyperlight_service_checker.py#L239)
+- [`tests/test_hyperlight_service_checker.py::test_darwin_memory_aggregates_descendants_counts_pids_and_grows_full_buffers`](../tests/test_hyperlight_service_checker.py#L279)
+- [`tests/test_hyperlight_service_checker.py::test_darwin_memory_omits_processes_that_disappear_during_sampling`](../tests/test_hyperlight_service_checker.py#L292)
+- [`tests/test_hyperlight_service_checker.py::test_darwin_memory_preserves_denied_or_incomplete_observations`](../tests/test_hyperlight_service_checker.py#L312)
+- [`tests/test_hyperlight_service_checker.py::test_darwin_process_enumeration_keeps_the_existing_five_second_bound`](../tests/test_hyperlight_service_checker.py#L331)
+- [`tests/test_hyperlight_service_checker.py::test_job_memory_retains_live_processes_and_samples_idle_after_reaping`](../tests/test_hyperlight_service_checker.py#L341)
+- [`tests/test_hyperlight_service_checker.py::test_job_memory_preserves_failed_observation_without_claiming_zero_memory`](../tests/test_hyperlight_service_checker.py#L354)
+- [`tests/test_hyperlight_service_checker.py::test_spin_observer_rejects_missing_or_other_invocation_entry`](../tests/test_hyperlight_service_checker.py#L367)
+- [`tests/test_hyperlight_service_checker.py::test_spin_observer_waits_for_the_current_live_marker`](../tests/test_hyperlight_service_checker.py#L387)
+- [`tests/test_hyperlight_service_checker.py::test_template_probe_compares_frozen_generator_state_before_drawing`](../tests/test_hyperlight_service_checker.py#L401)
+- [`tests/test_hyperlight_service_checker.py::test_warm_probe_rejects_replayed_runtime_randomness_and_preserves_samples`](../tests/test_hyperlight_service_checker.py#L425)
+- [`tests/test_hyperlight_service_checker.py::test_driver_preserves_job33_failure_before_decoding_stdout`](../tests/test_hyperlight_service_checker.py#L477)
+- [`tests/test_hyperlight_service_checker.py::test_driver_cannot_accept_json_from_a_failed_command`](../tests/test_hyperlight_service_checker.py#L511)
+- [`tests/test_hyperlight_service_checker.py::test_driver_accepts_only_the_explicit_retained_grant_denial`](../tests/test_hyperlight_service_checker.py#L546)
+- [`tests/test_hyperlight_service_checker.py::test_driver_matches_sibling_job_outcomes_and_cli_status`](../tests/test_hyperlight_service_checker.py#L566)
+- [`tests/test_hyperlight_service_checker.py::test_expected_negative_still_rejects_command_and_observation_failures`](../tests/test_hyperlight_service_checker.py#L585)
+- [`tests/test_hyperlight_service_checker.py::test_expected_negative_requires_a_retained_json_file`](../tests/test_hyperlight_service_checker.py#L593)
+- [`tests/test_hyperlight_service_checker.py::test_host_capture_retains_the_current_policy_and_configuration_identities`](../tests/test_hyperlight_service_checker.py#L618)
+- [`tests/test_hyperlight_service_checker.py::test_capture_observer_requires_the_selected_current_principal`](../tests/test_hyperlight_service_checker.py#L627)
+- [`tests/test_hyperlight_service_checker.py::test_engine_observer_matches_selected_engine_and_artifact_pins`](../tests/test_hyperlight_service_checker.py#L640)
+- [`tests/test_hyperlight_service_checker.py::test_host_capture_rejects_invalid_identity_or_time_binding`](../tests/test_hyperlight_service_checker.py#L661)
+- [`tests/test_hyperlight_service_checker.py::test_named_evidence_binds_the_raw_adopted_definition_digest`](../tests/test_hyperlight_service_checker.py#L667)
+- [`tests/test_hyperlight_service_checker.py::test_held_controls_keep_entry_triggers_late_release_and_fresh_runs`](../tests/test_hyperlight_service_checker.py#L688)
+- [`tests/test_hyperlight_service_checker.py::test_held_controls_reject_an_unreached_or_finished_call`](../tests/test_hyperlight_service_checker.py#L752)
+- [`tests/test_hyperlight_service_checker.py::test_remaining_window_skips_completed_phases_and_reports_its_actual_scope`](../tests/test_hyperlight_service_checker.py#L768)
 
 <a id="witness-tests-test-job-authoring-py"></a>
 ### [`tests/test_job_authoring.py`](../tests/test_job_authoring.py)
@@ -2500,10 +2630,16 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 - [`tests/test_blackbox_catalogue.py::test_inline_rust_modules_keep_distinct_executable_identities`](../tests/test_blackbox_catalogue.py#L21)
 - [`tests/test_blackbox_catalogue.py::test_catalogue_rejects_structural_drift`](../tests/test_blackbox_catalogue.py#L90)
 - [`tests/test_blackbox_catalogue.py::test_current_catalogue_resolves_all_controls_and_external_families`](../tests/test_blackbox_catalogue.py#L126)
-- [`tests/test_blackbox_catalogue.py::test_procedure_workflow_selection_preserves_repository_and_module_paths`](../tests/test_blackbox_catalogue.py#L138)
-- [`tests/test_blackbox_catalogue.py::test_workflow_selection_agrees_with_real_pytest_exclusions`](../tests/test_blackbox_catalogue.py#L154)
-- [`tests/test_blackbox_catalogue.py::test_unresolved_shared_phase_operand_cannot_pass_generation`](../tests/test_blackbox_catalogue.py#L181)
-- [`tests/test_blackbox_catalogue.py::test_cargo_identity_requires_its_real_module_and_keeps_ignore_selection`](../tests/test_blackbox_catalogue.py#L193)
+- [`tests/test_blackbox_catalogue.py::test_cargo_commands_use_the_witness_manifest_and_proxy_default`](../tests/test_blackbox_catalogue.py#L133)
+- [`tests/test_blackbox_catalogue.py::test_host_protocol_selection_includes_nested_configured_checks_once`](../tests/test_blackbox_catalogue.py#L145)
+- [`tests/test_blackbox_catalogue.py::test_procedure_workflow_selection_preserves_repository_and_module_paths`](../tests/test_blackbox_catalogue.py#L160)
+- [`tests/test_blackbox_catalogue.py::test_workflow_selection_agrees_with_real_pytest_exclusions`](../tests/test_blackbox_catalogue.py#L176)
+- [`tests/test_blackbox_catalogue.py::test_unresolved_shared_phase_operand_cannot_pass_generation`](../tests/test_blackbox_catalogue.py#L203)
+- [`tests/test_blackbox_catalogue.py::test_cargo_identity_requires_its_real_module_and_keeps_ignore_selection`](../tests/test_blackbox_catalogue.py#L215)
+- [`tests/test_blackbox_catalogue.py::test_cargo_library_root_uses_its_real_module`](../tests/test_blackbox_catalogue.py#L246)
+- [`tests/test_blackbox_catalogue.py::test_native_host_selection_retains_partial_observations`](../tests/test_blackbox_catalogue.py#L269)
+- [`tests/test_blackbox_catalogue.py::test_native_host_missing_input_is_incomplete_without_dispatch`](../tests/test_blackbox_catalogue.py#L331)
+- [`tests/test_blackbox_catalogue.py::test_native_case_requires_one_executed_test_instead_of_target_pass_text`](../tests/test_blackbox_catalogue.py#L348)
 
 <a id="witness-tests-proxy-contracts-test-shared-authority-assurance-py"></a>
 ### [`tests/proxy_contracts/test_shared_authority_assurance.py`](../tests/proxy_contracts/test_shared_authority_assurance.py)
@@ -2953,43 +3089,44 @@ Selection: ignored by default.
 Selection: manual native phase `mediated-services` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
 - [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::mediated::tests::complete_large_evidence_is_chunked_and_off_scope_calls_are_denied -- --exact`](../proxy/src/jobs/mediated/tests.rs#L31)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::mediated::tests::policy_revocation_closes_a_held_response_and_discards_late_evidence -- --exact`](../proxy/src/jobs/mediated/tests.rs#L127)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::mediated::tests::shutdown_closes_a_held_response_and_discards_late_evidence -- --exact`](../proxy/src/jobs/mediated/tests.rs#L132)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::mediated::tests::adopted_limits_are_finite_and_message_sizes_fit_both_abis -- --exact`](../proxy/src/jobs/mediated/tests.rs#L243)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::mediated::tests::oversized_provider_evidence_is_unavailable_and_never_truncated -- --exact`](../proxy/src/jobs/mediated/tests.rs#L255)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::mediated::tests::interrupted_effect_retains_uncertainty_separately_from_findings -- --exact`](../proxy/src/jobs/mediated/tests.rs#L324)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::mediated::tests::adopted_authentication_reaches_the_gateway_without_guest_override_or_token_evidence -- --exact`](../proxy/src/jobs/mediated/tests.rs#L149)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::mediated::tests::policy_revocation_closes_a_held_response_and_discards_late_evidence -- --exact`](../proxy/src/jobs/mediated/tests.rs#L277)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::mediated::tests::shutdown_closes_a_held_response_and_discards_late_evidence -- --exact`](../proxy/src/jobs/mediated/tests.rs#L282)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::mediated::tests::adopted_limits_are_finite_and_message_sizes_fit_both_abis -- --exact`](../proxy/src/jobs/mediated/tests.rs#L393)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::mediated::tests::oversized_provider_evidence_is_unavailable_and_never_truncated -- --exact`](../proxy/src/jobs/mediated/tests.rs#L405)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::mediated::tests::interrupted_effect_retains_uncertainty_separately_from_findings -- --exact`](../proxy/src/jobs/mediated/tests.rs#L486)
 
 <a id="witness-proxy-src-policy-checks-rs-policy-checks-tests"></a>
 ### [`proxy/src/policy/checks.rs`](../proxy/src/policy/checks.rs)
 
 Selection: manual native phase `named-checks` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::scoped_ipv6_keeps_required_checks_and_normalization_failure_uses_fallback -- --exact`](../proxy/src/policy/checks.rs#L1542)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::validation_rejects_unknown_types_scales_stages_and_influence -- --exact`](../proxy/src/policy/checks.rs#L1616)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::hard_exclusion_dominates_host_agent_and_positive_advisory_allows -- --exact`](../proxy/src/policy/checks.rs#L1669)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::scoped_exception_only_overrides_its_named_advisory_rule -- --exact`](../proxy/src/policy/checks.rs#L1721)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::thresholds_aggregation_boolean_precedence_and_advisory_priority -- --exact`](../proxy/src/policy/checks.rs#L1769)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::no_match_missing_stale_and_failure_never_become_positive_under_negation -- --exact`](../proxy/src/policy/checks.rs#L1844)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::subject_input_version_type_source_time_and_validity_are_bound -- --exact`](../proxy/src/policy/checks.rs#L1898)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::registration_age_uses_decision_time_and_expires_at_the_transition -- --exact`](../proxy/src/policy/checks.rs#L1969)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::direct_ip_opaque_and_unsupported_stage_use_the_selected_fallback -- --exact`](../proxy/src/policy/checks.rs#L2017)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::unavailable_boolean_inputs_follow_three_valued_logic -- --exact`](../proxy/src/policy/checks.rs#L2080)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::recorded_replacement_and_missing_versions_are_observed_without_result_cache -- --exact`](../proxy/src/policy/checks.rs#L2102)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::scoped_ipv6_keeps_required_checks_and_normalization_failure_uses_fallback -- --exact`](../proxy/src/policy/checks.rs#L1551)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::validation_rejects_unknown_types_scales_stages_and_influence -- --exact`](../proxy/src/policy/checks.rs#L1625)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::hard_exclusion_dominates_host_agent_and_positive_advisory_allows -- --exact`](../proxy/src/policy/checks.rs#L1678)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::scoped_exception_only_overrides_its_named_advisory_rule -- --exact`](../proxy/src/policy/checks.rs#L1730)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::thresholds_aggregation_boolean_precedence_and_advisory_priority -- --exact`](../proxy/src/policy/checks.rs#L1778)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::no_match_missing_stale_and_failure_never_become_positive_under_negation -- --exact`](../proxy/src/policy/checks.rs#L1853)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::subject_input_version_type_source_time_and_validity_are_bound -- --exact`](../proxy/src/policy/checks.rs#L1907)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::registration_age_uses_decision_time_and_expires_at_the_transition -- --exact`](../proxy/src/policy/checks.rs#L1978)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::direct_ip_opaque_and_unsupported_stage_use_the_selected_fallback -- --exact`](../proxy/src/policy/checks.rs#L2026)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::unavailable_boolean_inputs_follow_three_valued_logic -- --exact`](../proxy/src/policy/checks.rs#L2089)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::tests::recorded_replacement_and_missing_versions_are_observed_without_result_cache -- --exact`](../proxy/src/policy/checks.rs#L2111)
 
 <a id="witness-proxy-src-policy-checks-rs-policy-checks-fixture-tests"></a>
 ### [`proxy/src/policy/checks.rs`](../proxy/src/policy/checks.rs)
 
 Selection: manual native phase `named-checks` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::fixture_tests::reusable_fixture_preserves_allow_deny_unknown_and_expiry -- --exact`](../proxy/src/policy/checks.rs#L2152)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::fixture_tests::preview_uses_native_warn_and_bypass_and_never_charges_network_budget -- --exact`](../proxy/src/policy/checks.rs#L2181)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::fixture_tests::reusable_fixture_preserves_allow_deny_unknown_and_expiry -- --exact`](../proxy/src/policy/checks.rs#L2161)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::fixture_tests::preview_uses_native_warn_and_bypass_and_never_charges_network_budget -- --exact`](../proxy/src/policy/checks.rs#L2190)
 
 <a id="witness-proxy-src-policy-checks-rs-policy-checks-composition-edge-tests"></a>
 ### [`proxy/src/policy/checks.rs`](../proxy/src/policy/checks.rs)
 
 Selection: manual native phase `named-checks` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::composition_edge_tests::non_finite_aggregate_cannot_assert_a_positive_condition -- --exact`](../proxy/src/policy/checks.rs#L2245)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy::checks::composition_edge_tests::non_finite_aggregate_cannot_assert_a_positive_condition -- --exact`](../proxy/src/policy/checks.rs#L2254)
 
 <a id="witness-proxy-src-policy-checks-execution-tests-rs"></a>
 ### [`proxy/src/policy/checks/execution/tests.rs`](../proxy/src/policy/checks/execution/tests.rs)

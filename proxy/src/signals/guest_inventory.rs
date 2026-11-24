@@ -484,6 +484,10 @@ mod tests {
             output()["stdout"]
                 .as_str()
                 .unwrap()
+                .replace("ID=debian", "ID=ubuntu\nID_LIKE=debian"),
+            output()["stdout"]
+                .as_str()
+                .unwrap()
                 .replace("8.0-1", "not-a-version"),
             "ID=debian\nVERSION_CODENAME=trixie\n\nSAFEYOLO_PACKAGES\nSAFEYOLO_INVENTORY_END\n"
                 .into(),
@@ -581,9 +585,16 @@ mod tests {
     }
     #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn command_and_bounded_capture_read_real_debian_package_state() {
-        // Exercises the collector inside this Debian test environment. The
-        // installed acceptance separately exercises target-guest transport.
+    async fn command_and_bounded_capture_preserve_real_host_distribution() {
+        // The command runs on the test host. Debian produces an inventory;
+        // Ubuntu remains explicitly unsupported, including ID_LIKE=debian.
+        // Installed acceptance separately exercises target-guest transport.
+        let release = std::fs::read_to_string("/etc/os-release").unwrap();
+        let distribution = release
+            .lines()
+            .find_map(|line| line.strip_prefix("ID="))
+            .unwrap()
+            .trim_matches(['\'', '"']);
         let child = tokio::process::Command::new("/bin/sh")
             .args(["-c", COMMAND])
             .stdout(std::process::Stdio::piped())
@@ -597,17 +608,32 @@ mod tests {
         )
         .await
         .unwrap();
-        let inventory = parse_output(&output, &run(), now()).unwrap();
-        assert!(inventory.packages.contains_key("dpkg"));
-        assert!(inventory.packages.contains_key("base-files"));
-        let actual = std::process::Command::new("/usr/bin/dpkg-query")
-            .args(["-W", "-f=${Version}", "dpkg"])
-            .output()
-            .unwrap();
-        assert!(actual.status.success());
-        assert_eq!(
-            inventory.packages["dpkg"],
-            String::from_utf8(actual.stdout).unwrap()
-        );
+        assert_eq!(output["state"], "completed");
+        assert_eq!(output["exit_code"], 0);
+        assert_eq!(output["stdout_truncated"], false);
+        assert_eq!(output["stderr_truncated"], false);
+        assert_eq!(output["stderr"], "");
+        let parsed = parse_output(&output, &run(), now());
+        match distribution {
+            "debian" => {
+                let inventory = parsed.unwrap();
+                assert!(inventory.packages.contains_key("dpkg"));
+                assert!(inventory.packages.contains_key("base-files"));
+                let actual = std::process::Command::new("/usr/bin/dpkg-query")
+                    .args(["-W", "-f=${Version}", "dpkg"])
+                    .output()
+                    .unwrap();
+                assert!(actual.status.success());
+                assert_eq!(
+                    inventory.packages["dpkg"],
+                    String::from_utf8(actual.stdout).unwrap()
+                );
+            }
+            "ubuntu" => assert_eq!(
+                parsed.err().expect("Ubuntu must be refused").to_string(),
+                "guest distribution is unsupported; only Debian package assessment is implemented"
+            ),
+            other => panic!("real collector fixture requires Debian or Ubuntu, found {other}"),
+        }
     }
 }

@@ -188,6 +188,8 @@ pub(crate) fn assess_materialized(
         result["alternatives"] = json!(narrower(&after));
         result["services"] = json!({"before":super::authority::whole_policy(&before,grants)?,
             "after":super::authority::whole_policy(&after,grants)?});
+        result["host_operations"] = json!({"before":crate::host_execution::gateway::assess(&before)?,
+            "after":crate::host_execution::gateway::assess(&after)?});
     } else {
         result["consequences"] = json!([
             "Effective assessment is incomplete because a list input needs trusted adoption. Structural changes remain available. No candidate reference was loaded."
@@ -245,7 +247,7 @@ pub(crate) fn assess_materialized(
     result["input_identity"] = json!({"candidate":result["candidate_revision"],
         "base":snapshot.metadata["saved_source_revision"],"captured_inputs":crate::policy::snapshot::assessment_inputs_revision(&snapshot.assessment_inputs),
         "temporary_grants":crate::approvals::pending::digest(&json!(relevant_grants)),"adopted_definitions":definitions,
-        "analysis":crate::approvals::pending::digest(&json!([result["effective"],result["network"],result["authority"],result["services"],result["dependencies"],result["configured_agents"]])),
+        "analysis":crate::approvals::pending::digest(&json!([result["effective"],result["network"],result["authority"],result["services"],result["host_operations"],result["dependencies"],result["configured_agents"]])),
         "definition_version":env!("SAFEYOLO_DEFINITION_VERSION")});
     result["assessment_id"] = json!(crate::approvals::pending::digest(&result["input_identity"]));
     result["summary"] = json!(format!(

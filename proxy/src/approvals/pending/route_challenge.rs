@@ -19,6 +19,10 @@ pub(crate) fn is_exception(record: &Record) -> bool {
         && record.authority.action["route_exception"] == true
 }
 
+pub(crate) fn is_challenge(record: &Record) -> bool {
+    is_exception(record) || record.authority.action["kind"] == "host_operation"
+}
+
 pub(crate) fn assessment(
     runtime: &Runtime,
     policy: &crate::policy::Policy,

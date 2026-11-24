@@ -1,7 +1,7 @@
 # Supervised factory workers
 
-The `@codex-coord` and `@pi-coord` host setups run factory roles under the same
-`safeyolo-coord supervise` command. The ordinary `@codex` and `@pi` setups stay
+The `@codex-coord`, `@pi-coord` and `@claude-coord` host setups run factory roles under the same
+`safeyolo-coord supervise` command. The ordinary `@codex`, `@pi` and `@claude` setups stay
 interactive and have no supervisor. A role's factory TOML selects its harness;
 that choice does not create another queue or state machine.
 
@@ -59,7 +59,7 @@ migration or automatic start-from-now operation.
 
 Each supervised setup uses its normal harness setup first and preserves that
 agent's own subscription login, SafeYolo instructions, proxy, and TLS
-environment. Codex uses the bundled Coord MCP adapter. Pi uses a small `send` and `read_room` extension. Neither setup imports a host credential.
+environment. Codex and Claude use the bundled Coord MCP adapter. Pi uses a small `send` and `read_room` extension. Supervised setups import no host credentials.
 The only changed boundary is the foreground command: the guest runs the common supervisor,
 which runs bounded JSON-mode harness turns.
 
@@ -485,7 +485,7 @@ the same declared role routes and exact task correlation.
 The host setup writes the private, non-secret configuration file
 `~/.safeyolo/coord-supervisor.json`. In factory mode that configuration
 also binds the immutable operator edge and handoff table from the approved
-snapshot. Its `harness` value is exactly the role's approved `codex` or `pi`
+snapshot. Its `harness` value is exactly the role's approved `codex`, `pi` or `claude`
 selection. It contains no inferred workflow state. The defaults are:
 
 | Setting | Default | Purpose |

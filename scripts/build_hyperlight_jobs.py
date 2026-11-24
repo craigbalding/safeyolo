@@ -174,6 +174,14 @@ def write_job_definitions(output: Path) -> None:
             artifact_spec["engine"]["checker"] = {"path": "artifact_checker.py",
                                                 "sha256": file_digest(output / "artifact_checker.py")}
         (output / f"{kind}-artifact.json").write_text(json.dumps(artifact_spec, indent=2) + "\n", encoding="utf-8")
+        if kind == "hyperlight-unikraft":
+            task_spec = {**spec, "gate_id": "task-action-check", "network": False,
+                         "timeout_seconds": 60, "max_input_bytes": 32768, "retain_bytes": 16384,
+                         "mediated_services": {"services": ["claude"], "max_calls": 1,
+                                               "max_request_bytes": 49152, "max_response_bytes": 32768},
+                         "engine": {**engine, "checker": {"path": "task_action_checker.py",
+                                    "sha256": file_digest(output / "task_action_checker.py")}}}
+            (output / "task-action-check.json").write_text(json.dumps(task_spec, indent=2) + "\n", encoding="utf-8")
 
 
 def bundle(repository: Path, output: Path, profile: str) -> None:
@@ -239,6 +247,7 @@ def bundle(repository: Path, output: Path, profile: str) -> None:
     )
     shutil.copyfile(repository / "jobs/checker.py", output / "checker.py")
     shutil.copyfile(repository / "jobs/service_checker.py", output / "service_checker.py")
+    shutil.copyfile(repository / "jobs/task_action_checker.py", output / "task_action_checker.py")
     shutil.copyfile(repository / "jobs/artifact_checker.py", output / "artifact_checker.py")
     shutil.copyfile(repository / "jobs/template_probe.py", output / "template_probe.py")
     source = rootfs(output, architecture)
