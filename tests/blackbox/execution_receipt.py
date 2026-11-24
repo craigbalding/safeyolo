@@ -261,6 +261,15 @@ def section_execution(artifacts: Path, section: str, lane: str, run_id: str,
                 problems.append("controller source is not a clean recorded revision")
         if phase in PYTEST_PHASES:
             problems += pytest_problems(report, phase, lane, root=root)
+            if phase in {"guest-agent", "guest-root"}:
+                try:
+                    observer = read_json(artifacts / f"containment-{phase}.json")
+                except (OSError, ValueError):
+                    problems.append("missing/unreadable independent containment observer")
+                else:
+                    if (observer.get("status") != "passed" or observer.get("run_id") != run_id
+                            or observer.get("phase") != phase or observer.get("guest") != context):
+                        problems.append("independent containment observer incomplete or from another phase/run/guest")
             valid_fields = "invalid pytest outcome fields" not in problems
             cases = report.get("collected", []) if valid_fields else []
             outcomes = report.get("tests", {}) if valid_fields else {}
@@ -342,6 +351,14 @@ class PytestReceipt:
     def pytest_runtest_logreport(self, report):
         node = self.nodes[report.nodeid]
         self.document["tests"].setdefault(node, {})[report.when] = report.outcome
+        if report.when == "call":
+            observations = []
+            for line in getattr(report, "capstdout", "").splitlines():
+                kind, separator, data = line.partition("=")
+                if separator and kind in {"CONTAINMENT_ATTEMPTS", "CONTAINMENT_RESOLVER", "HOST_CANARY_REFUSAL"}:
+                    observations.append({"kind": kind, "value": json.loads(data)})
+            if observations:
+                self.document.setdefault("containment_observations", {})[node] = observations
         save(self.path, self.document)
 
     def pytest_sessionfinish(self, exitstatus):

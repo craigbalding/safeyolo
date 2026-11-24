@@ -253,7 +253,8 @@ def selection(witness: dict, reference: str, node: dict, commands: list[dict], p
                 continue
             section = "ingress" if phase == "ingress-pair" else phase
             for lane, sections in SECTIONS.items():
-                if section in sections and not (section == "ingress" and phase == "ingress-pair"):
+                applicable = (lane == "systrap") if phase == "ingress-pair" else (lane != "systrap" if phase == "ingress" else True)
+                if section in sections and applicable:
                     selected.append(f"default `{lane}` section `{section}`")
                     for command in commands:
                         tokens = command["tokens"]
@@ -261,7 +262,7 @@ def selection(witness: dict, reference: str, node: dict, commands: list[dict], p
                                 and "--section" not in tokens
                                 and any(token.endswith("retained_inputs.py") for token in tokens)):
                             selected.append(f"[{command['job']}]({link(command['path'])}) ({command['cadence']}; default `{lane}` sections)")
-                elif section in OPTIONAL_SECTIONS[lane]:
+                elif section in OPTIONAL_SECTIONS[lane] and applicable:
                     selected.append(f"optional `{lane}` section `{section}`")
         matches = [command for command in commands if any(
             token.endswith(filename) or token == filename.removesuffix(".py").replace("/", ".")

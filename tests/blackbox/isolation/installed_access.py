@@ -18,6 +18,44 @@ CONTRACT_HOST = "httpbin.org"
 FLOW_HOST = "api.github.com"
 ROOM = "p3-owned-room"
 MAX_BODY = 1_000_000
+CRASH_TOKENS = Path("/home/agent/.p3-crash-tokens.json")
+
+
+def crash_tokens() -> dict:
+    """Retain only this disposable client's current gateway tokens locally."""
+    assert not CRASH_TOKENS.exists(), "stale crash fixture input"
+    CRASH_TOKENS.write_text(json.dumps({service: service_token(service) for service in ("p3_basic", "p3_contract")}))
+    CRASH_TOKENS.chmod(0o600)
+    return {"client_tokens_retained": True}
+
+
+def crash_attempt(*, recovered: bool) -> dict:
+    """Try revoked service access and the already consumed risky operation."""
+    tokens = json.loads(CRASH_TOKENS.read_text())
+    if recovered:
+        status, _, view = api("GET", "/gateway/services")
+        assert status == 200 and "p3_basic" not in view.get("authorized", {}), "revoked service was restored"
+        tokens["p3_contract"] = service_token("p3_contract")
+    result = {}
+    for service, method, target, payload in (
+        ("p3_basic", "GET", f"http://{BASIC_HOST}/p3/read", None),
+        ("p3_contract", "POST", f"http://{CONTRACT_HOST}/p3/write?ticket=T-1", {"project": "alpha"}),
+    ):
+        try:
+            status, headers, _ = exchange(method, target, payload=payload, bearer=tokens[service])
+        except (ConnectionError, TimeoutError, http.client.RemoteDisconnected) as error:
+            assert not recovered, f"recovered proxy transport failed: {type(error).__name__}"
+            result[service] = {"transport_error": type(error).__name__}
+        else:
+            if recovered:
+                assert status == (403 if service == "p3_basic" else 428), (service, status)
+                assert headers.get("x-blocked-by") == "service-gateway", (service, headers)
+            else:
+                assert status in (502, 503), (service, status)
+            result[service] = {"status": status, "blocked_by": headers.get("x-blocked-by")}
+    if recovered:
+        CRASH_TOKENS.unlink()
+    return result
 
 
 def exchange(
@@ -376,6 +414,12 @@ def main() -> None:
             result = contract_prompt()
         case "contract-effect":
             result = contract_effect()
+        case "crash-tokens":
+            result = crash_tokens()
+        case "crash-outage":
+            result = crash_attempt(recovered=False)
+        case "crash-recovered":
+            result = crash_attempt(recovered=True)
         case "context":
             result = context_and_evidence(args.agent, args.marker)
         case "flow-seed":

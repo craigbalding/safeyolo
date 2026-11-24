@@ -164,6 +164,7 @@ private disk-backed directories. Use `linux-arm64` for an ARM64 host.
 The first command downloads and freezes the selected inputs. The second command
 installs that exact host archive and guest index, then runs all maintained
 systrap sections with separate writable state and owned cleanup.
+The access section kills and restarts its own disposable proxy.
 
 ```sh
 .venv/bin/python scripts/select_blackbox_artifacts.py --platform linux-amd64 --output /owned/blackbox-inputs
@@ -489,12 +490,12 @@ still needs its usual prepared inputs or network access.
 
 | Lane | Default independent sections |
 |---|---|
-| `systrap` | isolation, workloads, access, peer support, deterministic shared approvals, provider sharing, federation, lifecycle, host continuity |
-| `kvm` | isolation, ingress, workloads |
-| `vz` | isolation, access, lifecycle, host continuity |
+| `systrap` | isolation, ingress, workloads, access, peer support, deterministic shared approvals, provider sharing, federation, lifecycle, host continuity, disposable jobs, job network authority, live mounts, nested Docker |
+| `kvm` | isolation, ingress, workloads, disposable jobs, job network authority, live mounts |
+| `vz` | isolation, access, lifecycle, host continuity, disposable jobs, job network authority, live mounts |
 
 `--section NAME` runs just that supported section; repeat it to select several.
-The additional systrap section names are `peer-support`, `shared-approvals`,
+The systrap peer and sharing section names are `peer-support`, `shared-approvals`,
 `provider` and `federation`. They reuse the prepared host/guest bytes in separate
 owned instances. The shared-approval and federation HTTP probes use the guest's
 shipped curl. The federation section uses real TLS and NATS on one host; the
@@ -809,7 +810,7 @@ they do not build on Tart during the nightly invocation.
 <!-- blackbox-cadence-contract:start -->
 | Lane | Where it runs | Coverage | Scheduled | Current cadence | Evidence |
 |---|---|---|---|---|---|
-| `systrap` | GitHub-hosted Ubuntu | Installed isolation, workloads, access and lifecycle | yes | Overnight and trusted manual dispatch | Sanitized GitHub Actions artifacts, including failures |
+| `systrap` | GitHub-hosted Ubuntu | Isolation, two-peer ingress/subscription, workloads, custody/access and abrupt/graceful lifecycle | yes | Overnight and trusted manual dispatch | Sanitized GitHub Actions artifacts, including failures |
 | `kvm` | Fresh libvirt guest through the acceptance harness | Actual KVM isolation, installed ingress and workloads | no | Manual/on-demand until #889 automation | Harness/operator exact-candidate result and cleanup |
 | `vz` | Physical Apple Silicon Mac | Actual VZ isolation, installed access and lifecycle | no | Manual/on-demand until #889 automation | Harness/operator exact-candidate result and cleanup |
 <!-- blackbox-cadence-contract:end -->
@@ -953,13 +954,6 @@ must match that checkout before setup. The installed executables, package metada
 are checked against the same selection. For pytest selections, pass arguments
 after `--`; the runner forwards argument boundaries without shell reinterpretation.
 
-The completed migration wrappers, frozen source defaults and comparator
-selectors are retired. Use the named sections above for current installed
-work. The
-[audited Stage A source](https://github.com/craigbalding/safeyolo/tree/e91f69ef85df55341db530bab421f67c4afb83f5)
-preserves historical executors; their accepted observations and the finite
-pruning scope remain in the
-[approved disposition](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5942642868).
 Lens's [physical replacement assessment](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5961923767)
 records the VZ isolation, access and lifecycle observations at their actual
 commits, including the five unexecuted isolation assertions. Fresh installation and direct recovery commands are in the
@@ -972,7 +966,7 @@ The **isolation** section selects host `native/`, `security/`, `identity/` and
 guest-root containment and private-key isolation. The three public-cert checks
 run as the ordinary user; private-key scans run under both identities.
 Root is intentional for package
-management and repair: Linux guest UID 0 maps to subordinate host UID 100000;
+management and repair: Linux guest UID 0 maps to a subordinate host UID;
 VZ root stays inside its microVM. Tests observe direct egress, a known-live host
 listener, protected host/config/key/device boundaries, real package/root
 capabilities, and the installed identity/lifecycle chain. Platform/fixture
@@ -980,16 +974,41 @@ skips are limitations, not passes. The generated
 [coverage inventory](../../docs/blackbox-coverage.md) distinguishes selected
 methods, repeated identities and procedural selections from execution receipts.
 
+On Linux, the isolation section uses owned IPv4/IPv6 TCP and UDP receivers.
+The host must have UDP port 53 available for the owned libc-resolver control.
+Unique payloads and host controls establish delivery independently of HTTP/TLS
+errors, DNS failures or missing replies. The guest temporarily selects that
+resolver and restores its original configuration. Live observations and host
+file/process canaries stay in the disposable instance's private data directory,
+outside the workspace. Reports are exported after guest cleanup.
+
+The observer selects existing non-loopback host addresses for each family.
+An owned venue can choose its assigned addresses explicitly with
+`SAFEYOLO_BLACKBOX_RECEIVER_IPV4` and `SAFEYOLO_BLACKBOX_RECEIVER_IPV6`.
+The receipt retains the host network namespace and guest interfaces/routes;
+a guest-local destination cannot stand for an external receiver.
+`SAFEYOLO_BLACKBOX_METADATA_ADDRESSES` accepts
+a JSON list of already assigned, owned metadata aliases; the observer binds
+TCP port 80 and does not create aliases. A missing family, metadata target or
+resolver fails its required probe and leaves coverage incomplete.
+VZ delivery-receiver exclusions remain explicit in the
+coverage inventory; host file/process checks still run there.
+
 The KVM **ingress** section binds a real guest's localhost forwarder to its
 mounted per-agent Unix domain socket (UDS), checks actual KVM runsc arguments,
 then correlates an exact allowed marker with the owned origin and a denied
 request with no origin delivery. Local management API boundaries remain checked.
 
-The optional systrap **ingress** section creates two agents in a fresh test
+The default systrap **ingress** section creates two agents in a fresh test
 instance. It checks listener-owned attribution despite forged peer metadata,
 own socket/home access and peer refusal as ordinary guest and guest root,
 then proxy replacement with both guest generations retained. It stops its
 agents and replacement proxy and verifies owned process and listener cleanup.
+The same two guests exercise explicit subscription import, two renewals through
+the controlled TLS provider, proxy restart, revocation and wrong-guest attempts.
+Synthetic client logins are deliberately provisioned; no paid subscription or
+operator login is used. Reports retain token fingerprints and exact provider
+effects. Named checkpoints require both the identity and subscription journeys.
 On the prepared disposable Linux host, run from this checkout:
 
 ```sh
@@ -1017,6 +1036,14 @@ Coord messages and resolved attention, collaboration approval/exchange/revocatio
 WebSocket peer effects, inspector filtering, transcript and export. Raw inspector
 exports may contain disposable gateway tokens and stay in private instance state;
 the workflow publishes selected reports instead of raw exports.
+Exact signing-key and synthetic vault canaries are checked as ordinary guest
+and guest root across relevant files, environment and scoped APIs, after
+authorized TLS and credential-injection controls. The section then uses SIGKILL
+against its verified owned proxy. Origin observations check outage non-delivery,
+no automatic replay, and refusal of revoked service access and a consumed risk
+grant after recovery. An allowed origin control must still succeed. These
+checks leave the separately selected graceful-drain and admitted-stream checks
+in the lifecycle section.
 
 **Lifecycle** keeps listener add/remove and primary-listener continuity, policy
 changes while SSE is admitted, and all five installed guest-default-trust TLS

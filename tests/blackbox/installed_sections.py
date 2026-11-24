@@ -1,8 +1,8 @@
 """Prepare one installed product and run sections with separate writable state.
 
-Use a disposable host from a clean checkout. systrap runs isolation, workloads,
-access, peer support, approvals, providers, federation, lifecycle and host
-continuity, with optional two-agent ingress.
+Use a disposable host from a clean checkout. systrap runs isolation, two-agent
+ingress with synthetic subscription renewal, workloads, access, peer support,
+approvals, providers, federation, lifecycle and host continuity.
 KVM runs isolation, guest ingress and workloads. Physical Apple Silicon VZ runs isolation, access, lifecycle and
 host continuity. All three also select disposable jobs, job network authority
 and live mounts. Systrap additionally selects nested Docker/gateway controls.
@@ -338,11 +338,24 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
         if error is not None:
             row["error"] = error
         if section != "claude":
+            if section == "isolation" and not failures:
+                # Observers and canaries remain outside the guest's mounts.
+                # Export their reports only after the owned guest has stopped.
+                for phase in ("guest-agent", "guest-root"):
+                    observation = instance / "data" / f"containment-{phase}.json"
+                    if observation.is_file():
+                        try:
+                            shutil.copy2(observation, section_artifacts / observation.name)
+                        except OSError as exc:
+                            section_exit = 2
+                            row.update(exit=2, result="preparation_failure", error=f"containment report export: {exc}")
             row["execution"] = section_execution(section_artifacts, section, lane, run_id,
                                                   listener_restart=listener_restart and section == "isolation")
             if section_exit == 0 and not row["execution"]["complete"]:
                 section_exit = 2
-                row.update(exit=2, result="incomplete")
+                row["exit"] = 2
+                if not failures:
+                    row["result"] = "incomplete"
             stages = {stage for phase in row["execution"]["phases"] for stage in phase.get("failed_stages", [])}
             if not failures and stages:
                 row["result"] = ("cleanup_failure" if "teardown" in stages else
