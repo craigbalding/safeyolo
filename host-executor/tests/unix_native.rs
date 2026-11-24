@@ -3755,16 +3755,22 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
         }
         let receipt = first.take().unwrap_or_else(|| f.invoke(mode).0);
         let deadline = Instant::now() + Duration::from_secs(3);
-        let running = loop {
-            let r = f.job(&receipt.job_id);
-            assert!(!r.state.terminal(), "listener did not become ready: {r:?}");
-            if r.listener_handoff.is_some() && r.output_bytes > 0 {
-                break r;
+        let observed = if mode == "timeout" {
+            // A short deadline can expire before the first observer read.
+            // Validate its retained bind/output and cleanup from the final receipt.
+            f.terminal(&receipt.job_id)
+        } else {
+            loop {
+                let r = f.job(&receipt.job_id);
+                assert!(!r.state.terminal(), "listener did not become ready: {r:?}");
+                if r.listener_handoff.is_some() && r.output_bytes > 0 {
+                    break r;
+                }
+                assert!(Instant::now() < deadline, "listener handoff missing: {r:?}");
+                std::thread::sleep(Duration::from_millis(10));
             }
-            assert!(Instant::now() < deadline, "listener handoff missing: {r:?}");
-            std::thread::sleep(Duration::from_millis(10));
         };
-        let observation = running.listener_handoff.as_ref().unwrap();
+        let observation = observed.listener_handoff.as_ref().unwrap();
         assert_eq!(observation.status, EndpointStatus::BoundForHandoff);
         assert!(
             observation.reservation
@@ -3774,10 +3780,12 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
         let bound = observation.binding.unwrap();
         assert_ne!(bound.port(), 0);
         assert_ne!(bound.port(), first_port);
-        assert!(
-            TcpListener::bind(bound).is_err(),
-            "handoff released before service use"
-        );
+        if mode != "timeout" {
+            assert!(
+                TcpListener::bind(bound).is_err(),
+                "handoff released before service use"
+            );
+        }
         if mode == "wildcard" {
             assert!(bound.ip().is_unspecified());
         }
@@ -3796,8 +3804,8 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
             }
             assert!(matches!(
                 f.call(Action::Cancel {
-                    job_id: running.job_id.clone(),
-                    expected_revision: running.revision
+                    job_id: observed.job_id.clone(),
+                    expected_revision: observed.revision
                 }),
                 Response::Job { .. }
             ));
@@ -3810,7 +3818,11 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
             peer.read_exact(&mut answer).unwrap();
             assert_eq!(&answer, b"service");
         }
-        let result = f.terminal(&receipt.job_id);
+        let result = if mode == "timeout" {
+            observed
+        } else {
+            f.terminal(&receipt.job_id)
+        };
         assert_eq!(
             result.state,
             match mode {
@@ -3837,6 +3849,23 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
             }
         } else {
             assert!(result.native.as_ref().unwrap().processes_stopped);
+        }
+        if mode == "timeout" {
+            assert_eq!(
+                result.native.as_ref().unwrap().termination_reason,
+                "timeout"
+            );
+            let Response::Output { data_base64, .. } = f.call(Action::Output {
+                job_id: receipt.job_id.clone(),
+                offset: 0,
+                max_bytes: 4096,
+            }) else {
+                panic!("retained timeout output")
+            };
+            assert_eq!(
+                STANDARD.decode(data_base64).unwrap(),
+                b"application ready to accept on inherited listener\n"
+            );
         }
         assert_eq!(
             f.job(&receipt.job_id)
