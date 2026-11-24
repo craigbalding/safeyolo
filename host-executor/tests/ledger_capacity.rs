@@ -24,6 +24,7 @@ impl Fixture {
         ));
         fs::create_dir(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let root = root.canonicalize().unwrap();
         let key = Ed25519KeyPair::from_seed_unchecked(&[81; 32]).unwrap();
         let mut package: Package = serde_json::from_str(include_str!(
             "../../proxy/tests/fixtures/host_execution/package.json"
