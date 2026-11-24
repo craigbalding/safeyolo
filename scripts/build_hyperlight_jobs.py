@@ -249,6 +249,7 @@ def bundle(repository: Path, output: Path, profile: str) -> None:
     shutil.copyfile(repository / "jobs/service_checker.py", output / "service_checker.py")
     shutil.copyfile(repository / "jobs/task_action_checker.py", output / "task_action_checker.py")
     shutil.copyfile(repository / "jobs/artifact_checker.py", output / "artifact_checker.py")
+    shutil.copyfile(repository / "jobs/template_probe.py", output / "template_probe.py")
     source = rootfs(output, architecture)
     copy_licenses(repository, output)
     manifest = {
