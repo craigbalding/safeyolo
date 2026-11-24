@@ -1657,7 +1657,7 @@ fn installed_macos_scoped_writes_and_retained_results() {
     } else {
         f.root.clone()
     };
-    for protected in [control, PathBuf::from(executor()).canonicalize().unwrap()] {
+    for protected in [control, executor().canonicalize().unwrap()] {
         let mut changed = settings.clone();
         let mut operations = changed.target.package.operations.clone();
         operations

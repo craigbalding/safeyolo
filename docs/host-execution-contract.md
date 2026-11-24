@@ -510,7 +510,8 @@ implemented by this profile.
 
 An adopted macOS operation can select existing files or directories in
 `execution.filesystem.write`. A directory permits creation, modification,
-replacement, rename and removal within that directory. Select the parent when
+replacement, rename and removal within that directory. Writable paths also
+permit reads there. Select the parent when
 creating a new path. A working directory alone grants no access. Empty write
 scopes retain the read-only default. The issuer grant and target ceiling bind
 the changed operation through the existing implementation digest.
