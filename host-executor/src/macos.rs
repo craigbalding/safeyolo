@@ -443,7 +443,7 @@ impl MacRuntime {
         }
         if !writes.is_empty() {
             result.enforcement[0] = "Seatbelt selected read/write paths, canonical ancestor metadata, no process fork, Mach lookup or Unix-socket bind/connect, pinned private executable snapshot and exact environment; selected IP sockets follow the separately reported network boundary".into();
-            result.dependencies.push(format!("selected host write paths {writes:?}; validation refuses existing hard links outside the writable scope and executor control/runtime aliases. Seatbelt follows resolved paths at access time; host replacement changes the selected path contents. New descendants and file replacement are allowed within selected directories. Files persist after completion, cancellation and restart. output_bytes bounds stdout/stderr, not file storage; Output does not retrieve these files."));
+            result.dependencies.push(format!("selected host read/write paths {writes:?}; validation refuses existing hard links outside the writable scope and executor control/runtime aliases. Seatbelt follows resolved paths at access time; host replacement changes the selected path contents. New descendants and file replacement are allowed within selected directories. Files persist after completion, cancellation and restart. Host services can consume written configuration outside this child's lifecycle; those indirect effects are not observed or rolled back. output_bytes bounds stdout/stderr, not file storage; Output does not retrieve these files."));
         }
         if !op.execution.network.destinations.is_empty()
             || !op.execution.network.listeners.is_empty()

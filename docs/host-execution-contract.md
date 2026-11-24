@@ -529,7 +529,9 @@ mounts: a trusted host replacement changes the contents selected by that path.
 Files remain at their selected host paths after completion, failure,
 cancellation and restart. Job cleanup does not delete them. As on Linux,
 `output_bytes` bounds stdout/stderr, not file storage. Output-file failure can
-leave partial files. The Output route returns the retained stream; selected-file
+leave partial files. Host services can consume written configuration outside
+the child's lifecycle; those indirect effects are not observed or rolled back.
+The Output route returns the retained stream; selected-file
 retrieval, automated retention and disk quotas remain unfinished under #1704.
 
 For IP sockets, add `network_ipc` to the operation's existing `execution.broader`
