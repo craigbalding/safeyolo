@@ -33,7 +33,7 @@ resolver = "2"
 [features]
 build-metadata = ["dep:built"]
 crashdump = [
-    "dep:chrono",
+    "dep:jiff",
     "dep:elfcore",
 ]
 default = [
@@ -160,8 +160,8 @@ features = ["derive"]
 [dependencies.cfg-if]
 version = "1.0.4"
 
-[dependencies.chrono]
-version = "0.4"
+[dependencies.jiff]
+version = "1.0.2"
 optional = true
 
 [dependencies.crossbeam-channel]
@@ -345,9 +345,10 @@ version = "0.7.2"
 
 [dev-dependencies.tracing-forest]
 version = "0.3.1"
+path = "../tracing-forest"
 features = [
     "uuid",
-    "chrono",
+    "time",
     "smallvec",
     "serde",
     "env-filter",

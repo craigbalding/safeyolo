@@ -5,7 +5,6 @@ use std::cmp::min;
 use std::io::Write;
 use std::path::PathBuf;
 
-use chrono;
 use elfcore::{
     ArchComponentState, ArchState, CoreDumpBuilder, CoreError, Elf64_Auxv, ProcessInfoSource,
     ReadProcessMemory, ThreadView, VaProtection, VaRegion,
@@ -295,9 +294,8 @@ pub(crate) fn generate_crashdump(
 /// Returns:
 /// * `PathBuf`: The file path for the core dump file.
 fn core_dump_file_path(dump_dir: Option<PathBuf>) -> PathBuf {
-    // Generate timestamp string for the filename using chrono
-    let timestamp = chrono::Local::now()
-        .format("%Y%m%d_T%H%M%S%.3f")
+    let timestamp = jiff::ZonedDateTime::now()
+        .strftime("%Y%m%d_T%H%M%S%.3f")
         .to_string();
 
     // Determine the output directory based on environment variable
@@ -404,6 +402,16 @@ mod test {
 
         // Check if the path is correct
         assert!(path.starts_with(&temp_dir));
+    }
+
+    #[test]
+    fn test_crashdump_filename_retains_local_millisecond_format() {
+        let path = core_dump_file_path(None);
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("hl_core_"));
+        assert!(name.ends_with(".elf"));
+        assert_eq!(name.len(), 32);
+        jiff::civil::DateTime::strptime("%Y%m%d_T%H%M%S%.3f", &name[8..28]).unwrap();
     }
 
     /// Test core is not created when the context is None
