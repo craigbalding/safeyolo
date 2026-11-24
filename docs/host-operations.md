@@ -25,9 +25,15 @@ proposals show the target's actual network boundary before invocation. The
 starter's ordinary narrow definitions remain disconnected. Its Unix
 `endpoint-inspect` operation uses a separate fixed native inspection helper,
 as described below.
-On macOS, resolving an adopted read path also permits
-metadata reads of its ancestor directories. It grants no sibling file contents
-or ancestor directory listing.
+On macOS, custom definitions can select [writable paths and broader IP socket
+authority](host-execution-contract.md#macos-writable-paths-and-broader-network-authority).
+The operator selects the actual write roots and assesses Seatbelt's loopback or
+all-address class at each permitted port. The existing issuer and target scopes
+bind that operation; covered invocations need no recurring human decision.
+The macOS adapter still denies fork to ordinary programs. Resolving an adopted
+read/write path permits metadata reads of its ancestors, with no sibling file
+contents or ancestor directory listing. File results remain at the selected
+host paths; the Output route returns stdout/stderr.
 
 ## Acquire and prepare the target
 
@@ -553,7 +559,7 @@ before another effect after a timeout.
 | Registry | No OS registry counterpart | Machine/workload-user hive, selected key/value and 32/64 view; value type; absent differs from denied. |
 | Processes, system, software, updates | Adapt a fixed installed tool, such as the hostctl `host-memory` or `host-cpu` recipe, to actual supported bounds | Process parent/start/resource observations; OS/hostname/uptime; bounded uninstall-registry and update inventories with source limits. |
 | Files | Native bounded directory/content evidence | Directory/metadata/hash/bounded-content commands, selected literal paths. |
-| Network | `endpoint-inspect` checks only adopted endpoint choices. Ordinary definitions remain disconnected. Custom Linux definitions can select the explicit broader TCP profile. macOS ordinary network scopes remain unavailable. | Interface/routes/listeners in `network-inspect`; separately granted destination/port probe in `network-diagnostics`. No reconfiguration. |
+| Network | `endpoint-inspect` checks only adopted endpoint choices. Starter workload definitions retain socket denial. Custom Linux definitions can select broader TCP authority. Custom macOS definitions can select broader TCP/UDP direction, port and loopback/all-address authority. | Interface/routes/listeners in `network-inspect`; separately granted destination/port probe in `network-diagnostics`. No reconfiguration. |
 | Scheduled tasks | No general scheduler authority in this starter | Enumerate/filter tasks; selected definitions/principal/actions/recent status. No execution, registration or modification. |
 | Fixed installed executable | The content-pinned executor's inspection commands; typed limits and exact environment | `fixed-executable` runs pinned `whoami.exe`; typed allowed argument, exact account/environment, native deadline/output/status. |
 

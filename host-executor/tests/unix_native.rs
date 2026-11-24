@@ -1535,6 +1535,478 @@ fn installed_linux_scoped_writes_children_and_retained_partial_results() {
     );
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires native macOS Seatbelt; prepared probe or C compiler"]
+fn installed_macos_scoped_writes_and_retained_results() {
+    let mut f = fixture(24, 128 * 1024);
+    let work = f.root.join("file-results");
+    fs::create_dir(&work).unwrap();
+    std::os::unix::fs::symlink(f.root.join("allowed"), work.join("escape")).unwrap();
+    let config = f.root.join("target.json");
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    let mut operations = f.target.package.operations.clone();
+    for mode in [
+        "write-single",
+        "write-single-partial",
+        "write-single-wait",
+        "write-single-flood",
+    ] {
+        let mut op = operations["observe"].clone();
+        op.execution.filesystem.write = vec![work.to_str().unwrap().into()];
+        let alias = PathBuf::from(format!("/System/Volumes/Data{}", work.display()));
+        if alias.is_dir() {
+            op.execution
+                .filesystem
+                .write
+                .push(alias.to_str().unwrap().into());
+        }
+        op.execution.argv = [
+            mode.into(),
+            work.to_str().unwrap().into(),
+            f.root.join("allowed").to_str().unwrap().into(),
+            "0".into(),
+        ]
+        .into_iter()
+        .map(|value| Word::Literal { value })
+        .collect();
+        operations.insert(mode.into(), op);
+    }
+    settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    f.target = settings.target.clone();
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    for (mode, expected) in [
+        ("write-single", JobState::Completed),
+        ("write-single-partial", JobState::Failed),
+        ("write-single-wait", JobState::Cancelled),
+        ("write-single-flood", JobState::Failed),
+    ] {
+        let (admitted, _) = f.invoke(mode);
+        if mode.ends_with("wait") {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if f.job(&admitted.job_id).output_bytes > 0 {
+                    break;
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let running = f.job(&admitted.job_id);
+            assert!(matches!(
+                f.call(Action::Cancel {
+                    job_id: admitted.job_id.clone(),
+                    expected_revision: running.revision
+                }),
+                Response::Job { .. }
+            ));
+        }
+        let result = f.terminal(&admitted.job_id);
+        assert_eq!(result.state, expected, "{result:?}");
+        let native = result.native.as_ref().unwrap();
+        assert!(native.processes_stopped);
+        assert_eq!(native.output_truncated, mode.ends_with("flood"));
+        assert_eq!(
+            fs::read(work.join("result")).unwrap(),
+            b"retained result\nmodified\n"
+        );
+        assert!(!work.join("new").exists());
+        assert!(!work.join("read-alias").exists());
+        let Response::Output { data_base64, .. } = f.call(Action::Output {
+            job_id: admitted.job_id.clone(),
+            offset: 0,
+            max_bytes: 4096,
+        }) else {
+            panic!("retained output");
+        };
+        assert!(
+            String::from_utf8_lossy(&STANDARD.decode(data_base64).unwrap())
+                .contains("outside write/link and fork denied")
+        );
+        f.restart();
+        assert_eq!(
+            fs::read(work.join("result")).unwrap(),
+            b"retained result\nmodified\n"
+        );
+        assert_eq!(f.job(&admitted.job_id).state, expected);
+        f.assert_no_side_effects();
+        eprintln!("{mode}: {native:?}; selected files and output retained after restart");
+    }
+    // A legitimate internal hard link is still usable. An external link would
+    // let a selected write modify an unselected file, so check and reload refuse.
+    fs::hard_link(work.join("result"), work.join("internal-alias")).unwrap();
+    let (admitted, _) = f.invoke("write-single");
+    assert_eq!(f.terminal(&admitted.job_id).state, JobState::Completed);
+    fs::hard_link(f.root.join("allowed"), work.join("outside-alias")).unwrap();
+    assert!(
+        matches!(f.call(Action::Discover), Response::Refused { refusal } if refusal.message.contains("hard link outside"))
+    );
+    let check = Command::new(executor())
+        .args(["check", "--config"])
+        .arg(&config)
+        .arg("--state")
+        .arg(f.root.join("state"))
+        .output()
+        .unwrap();
+    assert!(!check.status.success());
+    assert!(String::from_utf8_lossy(&check.stderr).contains("hard link outside"));
+    fs::remove_file(work.join("outside-alias")).unwrap();
+    let saved = fs::read(&config).unwrap();
+    let control_alias = PathBuf::from(format!("/System/Volumes/Data{}", f.root.display()));
+    let control = if control_alias.is_dir() {
+        control_alias
+    } else {
+        f.root.clone()
+    };
+    for protected in [control, executor().canonicalize().unwrap()] {
+        let mut changed = settings.clone();
+        let mut operations = changed.target.package.operations.clone();
+        operations
+            .get_mut("write-single")
+            .unwrap()
+            .execution
+            .filesystem
+            .write = vec![protected.to_str().unwrap().into()];
+        changed.target = common::target(f.target.target_id.clone(), operations, &f.key);
+        fs::write(&config, serde_json::to_vec(&changed).unwrap()).unwrap();
+        let check = Command::new(executor())
+            .args(["check", "--config"])
+            .arg(&config)
+            .arg("--state")
+            .arg(f.root.join("state"))
+            .output()
+            .unwrap();
+        assert!(!check.status.success());
+        assert!(String::from_utf8_lossy(&check.stderr).contains("executor"));
+    }
+    fs::write(&config, saved).unwrap();
+    // Replacing an existing result with a directory produces a real partial
+    // file outcome. The failed rename retains the new file and a failed job.
+    fs::remove_file(work.join("result")).unwrap();
+    fs::create_dir(work.join("result")).unwrap();
+    let (admitted, _) = f.invoke("write-single");
+    let failed = f.terminal(&admitted.job_id);
+    assert_eq!(failed.state, JobState::Failed);
+    assert_eq!(failed.native.unwrap().exit_code, Some(33));
+    assert_eq!(fs::read(work.join("new")).unwrap(), b"retained result\n");
+    // The original narrow operation still has no write or socket authority.
+    let (admitted, _) = f.invoke("observe");
+    assert_eq!(f.terminal(&admitted.job_id).state, JobState::Completed);
+    f.assert_no_side_effects();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires native macOS Seatbelt; prepared probe or C compiler"]
+fn installed_macos_broader_network_directions_and_ports() {
+    let mut f = fixture(32, 192 * 1024);
+    let work = f.root.join("network-results");
+    fs::create_dir(&work).unwrap();
+    let v4: std::net::IpAddr = std::net::Ipv4Addr::LOCALHOST.into();
+    let v6: std::net::IpAddr = std::net::Ipv6Addr::LOCALHOST.into();
+    let origins = [
+        TcpListener::bind((v4, 0)).unwrap(),
+        TcpListener::bind((v6, 0)).unwrap(),
+    ];
+    let service_ports = [v4, v6].map(|address| {
+        TcpListener::bind((address, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    });
+    let udp_origin = std::net::UdpSocket::bind((v4, 0)).unwrap();
+    let udp_port = std::net::UdpSocket::bind((v4, 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let config = f.root.join("target.json");
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    let mut operations = f.target.package.operations.clone();
+    let modes = [
+        "mac-net-connect4",
+        "mac-net-listen4",
+        "mac-net-both4",
+        "mac-net-connect6",
+        "mac-net-listen6",
+        "mac-net-udp-connect4",
+        "mac-net-udp-listen4",
+        "mac-net-wait4",
+    ];
+    for mode in modes {
+        let family = usize::from(mode.ends_with('6'));
+        let udp = mode.contains("udp");
+        let mut op = operations["observe"].clone();
+        let e = &mut op.execution;
+        e.broader.insert(BroaderBound::NetworkIpc);
+        e.filesystem.write = vec![work.to_str().unwrap().into()];
+        e.environment.insert(
+            "DENIED_TCP_PORT".into(),
+            Word::Literal {
+                value: f.network_listener.local_addr().unwrap().port().to_string(),
+            },
+        );
+        if mode.contains("connect") || mode.contains("both") {
+            e.network.destinations.push(NetworkDestination {
+                host: [v4, v6][family].to_string(),
+                port: if udp {
+                    udp_origin.local_addr().unwrap().port()
+                } else {
+                    origins[family].local_addr().unwrap().port()
+                },
+                transport: if udp {
+                    NetworkTransport::Udp
+                } else {
+                    NetworkTransport::Tcp
+                },
+            });
+            // A nonloopback declaration has explicitly broader all-address
+            // semantics at the selected port. Demonstrate this disclosure.
+            if mode == "mac-net-connect6" {
+                e.network.destinations[0].host = "192.0.2.1".into();
+            }
+        }
+        if !mode.contains("connect") {
+            e.network.listeners.push(NetworkListener {
+                address: [v4, v6][family],
+                port: if udp { udp_port } else { service_ports[family] },
+                transport: if udp {
+                    NetworkTransport::Udp
+                } else {
+                    NetworkTransport::Tcp
+                },
+            });
+        }
+        e.argv = [
+            mode.into(),
+            work.to_str().unwrap().into(),
+            if udp { udp_port } else { service_ports[family] }.to_string(),
+            if udp {
+                udp_origin.local_addr().unwrap().port()
+            } else {
+                origins[family].local_addr().unwrap().port()
+            }
+            .to_string(),
+        ]
+        .into_iter()
+        .map(|value| Word::Literal { value })
+        .collect();
+        operations.insert(mode.into(), op);
+    }
+    settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    f.target = settings.target.clone();
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    let check = Command::new(executor())
+        .args(["check", "--config"])
+        .arg(&config)
+        .arg("--state")
+        .arg(f.root.join("state"))
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let human = String::from_utf8(check.stdout).unwrap();
+    assert!(human.contains(&format!("target {}", f.target.target_id)));
+    assert!(human.contains("EXPLICIT BROADER NETWORK/IPC"));
+    assert!(human.contains("Exact IP/interface"));
+    eprintln!("check: selected target and actual socket authority displayed before invocation");
+    let Response::Discovery { discovery } = f.call(Action::Discover) else {
+        panic!("discovery");
+    };
+    assert!(
+        discovery
+            .operations
+            .iter()
+            .find(|o| o.operation_id == modes[0])
+            .unwrap()
+            .network_enforcement
+            .iter()
+            .any(|s| s.contains("Exact IP/interface"))
+    );
+    for mode in modes.into_iter().filter(|mode| !mode.contains("wait")) {
+        let family = usize::from(mode.ends_with('6'));
+        let udp = mode.contains("udp");
+        let outbound = mode.contains("connect") || mode.contains("both");
+        let origin = origins[family].try_clone().unwrap();
+        origin.set_nonblocking(true).unwrap();
+        let udp_receiver = udp_origin.try_clone().unwrap();
+        udp_receiver
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let receiver = std::thread::spawn(move || {
+            if outbound {
+                if udp {
+                    let mut request = [0; 7];
+                    let (n, peer) = udp_receiver.recv_from(&mut request).unwrap();
+                    assert_eq!((n, &request), (7, b"request"));
+                    udp_receiver.send_to(b"ok", peer).unwrap();
+                } else {
+                    let (mut peer, _) = accept_positive_connection(|| origin.accept());
+                    peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                    let mut request = [0; 7];
+                    peer.read_exact(&mut request).unwrap();
+                    assert_eq!(&request, b"request");
+                    peer.write_all(b"ok").unwrap();
+                }
+            }
+        });
+        let invocation = f.invocation(mode);
+        let Response::Proposal {
+            prepared,
+            network_enforcement,
+        } = f.call(Action::Propose { invocation })
+        else {
+            panic!("proposal");
+        };
+        assert!(
+            network_enforcement
+                .iter()
+                .any(|s| s.contains("EXPLICIT BROADER"))
+        );
+        let Response::Job { receipt } = f.call(Action::Invoke {
+            invocation: prepared.invocation,
+        }) else {
+            panic!("invoke");
+        };
+        if !mode.contains("connect") {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !work.join(mode).exists() {
+                assert!(
+                    Instant::now() < deadline,
+                    "listener did not bind: {:?}",
+                    f.job(&receipt.job_id)
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if udp {
+                udp_origin.send_to(b"request", (v4, udp_port)).unwrap();
+            } else {
+                let mut client = TcpStream::connect_timeout(
+                    &([v4, v6][family], service_ports[family]).into(),
+                    Duration::from_secs(2),
+                )
+                .unwrap();
+                client
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut answer = [0; 7];
+                client.read_exact(&mut answer).unwrap();
+                assert_eq!(&answer, b"service");
+            }
+        }
+        let result = f.terminal(&receipt.job_id);
+        let Response::Output { data_base64, .. } = f.call(Action::Output {
+            job_id: receipt.job_id.clone(),
+            offset: 0,
+            max_bytes: 4096,
+        }) else {
+            panic!("output");
+        };
+        let output = String::from_utf8(STANDARD.decode(data_base64).unwrap()).unwrap();
+        eprintln!(
+            "{mode}: state={:?}, exit={:?}\n{output}",
+            result.state,
+            result.native.as_ref().map(|n| n.exit_code)
+        );
+        receiver.join().unwrap();
+        assert_eq!(result.state, JobState::Completed, "{result:?}\n{output}");
+        assert!(result.native.as_ref().unwrap().processes_stopped);
+        assert!(output.contains("directions and ports enforced"), "{output}");
+        if !mode.contains("connect") {
+            assert_eq!(
+                fs::read(work.join(mode)).unwrap(),
+                b"retained network result\n"
+            );
+        }
+        f.assert_no_side_effects();
+        eprintln!("{mode}: {output}");
+    }
+    let collision = TcpListener::bind((v4, service_ports[0])).unwrap();
+    let (admitted, _) = f.invoke("mac-net-listen4");
+    let failed = f.terminal(&admitted.job_id);
+    assert_eq!(failed.state, JobState::Failed);
+    assert_eq!(failed.native.unwrap().exit_code, Some(98));
+    drop(collision);
+    for restart in [false, true] {
+        let (admitted, _) = f.invoke("mac-net-wait4");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !work.join("mac-net-wait4").exists() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(TcpStream::connect((v4, service_ports[0])).is_ok());
+        if restart {
+            f.restart();
+            let uncertain = f.job(&admitted.job_id);
+            assert_eq!(uncertain.state, JobState::Uncertain);
+            assert!(!uncertain.detail.contains("observed quiescence"));
+            // The wait program does not accept the first queued connection.
+            // A second connect would fill its one-entry backlog and wait for
+            // its own exit. Observe the occupied binding without adding a peer.
+            assert_eq!(
+                TcpListener::bind((v4, service_ports[0]))
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::AddrInUse
+            );
+            // The test-owned program self-terminates; this is not an executor
+            // guarantee. Wait for real bindability before confirming recovery.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Ok(released) = TcpListener::bind((v4, service_ports[0])) {
+                    drop(released);
+                    break;
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            f.restart();
+            assert!(
+                f.job(&admitted.job_id)
+                    .detail
+                    .contains("observed quiescence")
+            );
+        } else {
+            let running = f.job(&admitted.job_id);
+            assert!(matches!(
+                f.call(Action::Cancel {
+                    job_id: admitted.job_id.clone(),
+                    expected_revision: running.revision
+                }),
+                Response::Job { .. }
+            ));
+            assert_eq!(f.terminal(&admitted.job_id).state, JobState::Cancelled);
+            assert!(TcpListener::bind((v4, service_ports[0])).is_ok());
+        }
+        fs::remove_file(work.join("mac-net-wait4")).unwrap();
+        assert_eq!(
+            fs::read(work.join("mac-net-listen4")).unwrap(),
+            b"retained network result\n"
+        );
+    }
+    let mut changed = settings.clone();
+    changed
+        .target
+        .package
+        .operations
+        .get_mut("mac-net-connect4")
+        .unwrap()
+        .execution
+        .broader
+        .remove(&BroaderBound::NetworkIpc);
+    fs::write(&config, serde_json::to_vec(&changed).unwrap()).unwrap();
+    assert!(
+        matches!(f.call(Action::Discover), Response::Refused { refusal } if refusal.message.contains("broader network_ipc"))
+    );
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    let (admitted, _) = f.invoke("observe");
+    assert_eq!(f.terminal(&admitted.job_id).state, JobState::Completed);
+    f.assert_no_side_effects();
+}
+
 #[test]
 #[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]
 fn installed_unix_bounds_lifecycle_reload_and_lost_reply() {
