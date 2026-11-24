@@ -190,9 +190,35 @@ static int mac_network_probe(const char *mode, const char *directory, int local_
 #endif
 
 /* Prepared by the developer test, never by target discovery/qualification. */
+static int handoff_probe(const char *mode, const char *directory, int forbidden_port) {
+    struct sockaddr_storage address;
+    socklen_t size=sizeof(address);
+    if (getsockname(3,(struct sockaddr *)&address,&size)) { perror("inherited listener"); return 110; }
+    int extra=socket(AF_INET,SOCK_STREAM,0);
+    if (extra!=-1 || errno!=EPERM) { if (extra>=0) close(extra); return 111; }
+    struct sockaddr_in forbidden={ .sin_family=AF_INET, .sin_port=htons((unsigned short)forbidden_port),
+        .sin_addr.s_addr=htonl(INADDR_LOOPBACK) };
+    if (connect(3,(struct sockaddr *)&forbidden,sizeof(forbidden))!=-1) return 112;
+    char path[PATH_MAX];
+    if (snprintf(path,sizeof(path),"%s/result",directory)>=(int)sizeof(path)) return 113;
+    FILE *result=fopen(path,"w");
+    if (!result || fputs("service started with inherited listener\n",result)<0 || fclose(result)) return 114;
+    puts("application ready to accept on inherited listener");
+    /* Bound this development fixture after a controller-crash test. The
+       product does not infer an alarm or cleanup guarantee from this probe. */
+    alarm(4);
+    if (strstr(mode,"wait")) for (;;) pause();
+    int peer=accept(3,NULL,NULL);
+    if (peer<0 || write(peer,"service",7)!=7) { perror("inherited accept"); return 115; }
+    close(peer);
+    close(3);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc != 5) return 2;
     setbuf(stdout, NULL);
+    if (!strncmp(argv[1],"handoff",7)) return handoff_probe(argv[1],argv[2],atoi(argv[4]));
 #ifdef __linux__
     if (!strncmp(argv[1],"tcp-",4)) return tcp_probe(argv[1],argv[2],atoi(argv[3]),atoi(argv[4]));
 #endif

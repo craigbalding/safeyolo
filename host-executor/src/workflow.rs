@@ -439,7 +439,7 @@ fn add_inspection(
                 argv: vec![Word::Literal { value: "inspect".into() }, Word::Literal { value: "--root".into() }, Word::Literal { value: path.to_string_lossy().into_owned() },
                     Word::Literal { value: "--kind".into() }, Word::Literal { value: mode.into() }, Word::Literal { value: "--limit".into() }, Word::Argument { name: "limit".into() }],
                 environment: BTreeMap::new(), working_directory: settings.root.to_string_lossy().into_owned(), identity: identity.clone(),
-                filesystem: Filesystem { read, write: Vec::new() }, network: Network { listeners: Vec::new(), destinations: Vec::new(), ipc: Vec::new() },
+                filesystem: Filesystem { read, write: Vec::new() }, network: Network { listener_handoff: None, listeners: Vec::new(), destinations: Vec::new(), ipc: Vec::new() },
                 // Linux counts bubblewrap's monitor and PID-namespace init
                 // alongside the inspected program in the job cgroup.
                 resources: ExecutionLimits { timeout_seconds: 10, output_bytes: 65536, memory_bytes: 268435456, processes: if cfg!(target_os = "linux") { 3 } else { 1 } }, delegated_services: Vec::new() },

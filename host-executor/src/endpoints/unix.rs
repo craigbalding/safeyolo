@@ -171,10 +171,12 @@ fn option(fd: &OwnedFd, level: i32, name: i32, value: bool) -> io::Result<()> {
     }
 }
 
-fn probe(c: &EndpointCandidate) -> EndpointObservation {
+fn bind_candidate(
+    c: &EndpointCandidate,
+) -> Result<(OwnedFd, EndpointObservation), EndpointObservation> {
     let (binding, interface) = match resolve(c) {
         Ok(v) => v,
-        Err(e) => return *e,
+        Err(e) => return Err(*e),
     };
     let mut result = failure(
         c,
@@ -187,6 +189,8 @@ fn probe(c: &EndpointCandidate) -> EndpointObservation {
         NetworkTransport::Tcp => (libc::SOCK_STREAM, libc::IPPROTO_TCP),
         NetworkTransport::Udp => (libc::SOCK_DGRAM, libc::IPPROTO_UDP),
     };
+    #[cfg(target_os = "linux")]
+    let kind = kind | libc::SOCK_CLOEXEC;
     // SAFETY: socket returns a new descriptor; OwnedFd closes every probe path.
     let raw = unsafe {
         libc::socket(
@@ -200,10 +204,15 @@ fn probe(c: &EndpointCandidate) -> EndpointObservation {
         )
     };
     if raw < 0 {
-        return native_error(result, io::Error::last_os_error());
+        return Err(native_error(result, io::Error::last_os_error()));
     }
     let fd = unsafe { OwnedFd::from_raw_fd(raw) };
     let observe = (|| -> io::Result<SocketAddr> {
+        // macOS launch uses CLOEXEC_DEFAULT as well, so another native job
+        // cannot inherit this socket during the socket/fcntl interval.
+        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
         option(&fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, c.reuse_address)?;
         option(&fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, c.reuse_port)?;
         if binding.is_ipv6() {
@@ -286,27 +295,28 @@ fn probe(c: &EndpointCandidate) -> EndpointObservation {
         selected.set_port(port);
         Ok(selected)
     })();
-    // Release before recording success: the result never carries a reservation.
-    drop(fd);
     match observe {
         Ok(binding) => {
-            result.status = EndpointStatus::AvailableAtObservation;
+            result.status = EndpointStatus::BoundForHandoff;
             result.binding = Some(binding);
             result.observed_at = now();
-            result.reason = "selected endpoint bound successfully; probe released; the service's later bind remains authoritative".into();
-            result
+            result.reservation = true;
+            result.reason = "selected endpoint bound and retained before workload launch; descriptor 3 is for the selected job, not evidence of application readiness or audience reach".into();
+            Ok((fd, result))
         }
-        Err(error) => native_error(result, error),
+        Err(error) => Err(native_error(result, error)),
     }
 }
 
-fn inspect(selection: &EndpointSelection) -> EndpointObservation {
+pub(crate) fn bind(
+    selection: &EndpointSelection,
+) -> Result<(OwnedFd, EndpointObservation), EndpointObservation> {
     let mut failure = None;
     for candidate in &selection.candidates {
-        let observation = probe(candidate);
-        if observation.status == EndpointStatus::AvailableAtObservation {
-            return observation;
-        }
+        let observation = match bind_candidate(candidate) {
+            Ok(bound) => return Ok(bound),
+            Err(observation) => observation,
+        };
         // A conflict in one alternative cannot conceal an incomplete check.
         if failure
             .as_ref()
@@ -315,5 +325,18 @@ fn inspect(selection: &EndpointSelection) -> EndpointObservation {
             failure = Some(observation);
         }
     }
-    failure.expect("validated nonempty selection")
+    Err(failure.expect("validated nonempty selection"))
+}
+
+fn inspect(selection: &EndpointSelection) -> EndpointObservation {
+    match bind(selection) {
+        Ok((fd, mut observation)) => {
+            drop(fd);
+            observation.status = EndpointStatus::AvailableAtObservation;
+            observation.reservation = false;
+            observation.reason = "selected endpoint bound successfully; probe released; the service's later bind remains authoritative".into();
+            observation
+        }
+        Err(observation) => observation,
+    }
 }

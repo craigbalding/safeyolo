@@ -30,7 +30,7 @@ impl NativeRuntime {
         if crate::endpoints::validate(operation).unwrap_or(false) {
             return crate::endpoints::disclosure();
         }
-        match self {
+        let mut facts = match self {
             #[cfg(target_os = "linux")]
             Self::Linux(_) => crate::linux::network_enforcement(operation),
             #[cfg(target_os = "macos")]
@@ -40,7 +40,9 @@ impl NativeRuntime {
                 let _ = operation;
                 Vec::new()
             }
-        }
+        };
+        facts.extend(crate::endpoints::handoff_disclosure(operation));
+        facts
     }
 
     pub(crate) fn validate_command(&self, command: &Command) -> Result<(), Refusal> {
@@ -101,6 +103,22 @@ impl NativeRuntime {
             #[cfg(windows)]
             Self::Windows(runtime) => runtime.execute(target, ledger, id),
         }
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn launch_refused(backend: &str, error: impl std::fmt::Display) -> NativeObservation {
+    NativeObservation {
+        backend: backend.into(),
+        enforcement: vec![
+            "native validation or listener binding refused before workload launch".into(),
+        ],
+        dependencies: Vec::new(),
+        exit_code: None,
+        signal: None,
+        processes_stopped: true,
+        output_truncated: false,
+        termination_reason: format!("launch_refused: {error}"),
     }
 }
 

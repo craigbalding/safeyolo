@@ -35,6 +35,15 @@ read/write path permits metadata reads of its ancestors, with no sibling file
 contents or ancestor directory listing. File results remain at the selected
 host paths; the Output route returns stdout/stderr.
 
+A program that already supports an inherited listening socket can instead use
+[Unix listener handoff](host-execution-contract.md#retained-listener-handoff-on-unix).
+The adapter binds an adopted endpoint alternative at launch and passes the open
+socket as descriptor 3. Read the running job receipt for its actual address and
+port. The handoff avoids a check-to-bind race and requires no recurring approval
+within the existing operation grant. Application readiness and audience reach
+still need their own observations. Ordinary programs receive no additional
+socket-creation or outbound authority from the handoff.
+
 ## Acquire and prepare the target
 
 Download the standalone ZIP for the required OS/architecture and selected source
@@ -291,7 +300,9 @@ No system certificate or trust store is changed.
 `prepare` saves a candidate configuration and reports `activated: false`.
 `check` validates all adopted implementations and native dependencies without
 launching them. For Linux TCP operations, it also prints the selected directions
-and broader address/port exposure from the same target-generated disclosure
+and broader address/port exposure. For Unix listener handoffs, it prints the
+authorised alternatives, descriptor convention and observation limits. These
+come from the same target-generated disclosure
 used by discovery and proposals. `serve` prints the selected target and ready listener only after
 validation, ledger reconciliation and binding. A saved file is not evidence of
 running-target readiness.

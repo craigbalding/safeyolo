@@ -1309,3 +1309,58 @@ fn exact_issuer_scope_does_not_inherit_new_effect_understanding_for_the_same_exe
         RefusalCode::Stale
     );
 }
+
+#[test]
+fn listener_handoff_changes_authority_and_keeps_alternative_order() {
+    use safeyolo_host_executor::endpoints::EndpointSelection;
+    let (mut target, _, _) = fixture();
+    let before = target.package.operations["restart"].clone();
+    let selection: EndpointSelection = serde_json::from_value(serde_json::json!({"candidates":[
+        {"transport":"tcp","family":"ipv4","address":"127.0.0.1","interface":null,
+         "port":8000,"ipv6_only":false,"reuse_address":false,"reuse_port":false},
+        {"transport":"tcp","family":"ipv4","address":"0.0.0.0","interface":null,
+         "port":0,"ipv6_only":false,"reuse_address":false,"reuse_port":false}
+    ]}))
+    .unwrap();
+    target
+        .package
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .execution
+        .network
+        .listener_handoff = Some(selection);
+    target.package.validate().unwrap();
+    let after = target.package.operations["restart"].clone();
+    assert_ne!(before.authority_sha256(), after.authority_sha256());
+    assert!(!within_operation(&after, &before, true));
+    target
+        .package
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .execution
+        .network
+        .listener_handoff
+        .as_mut()
+        .unwrap()
+        .candidates
+        .reverse();
+    assert_ne!(
+        after.authority_sha256(),
+        target.package.operations["restart"].authority_sha256()
+    );
+    target
+        .package
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .execution
+        .network
+        .listener_handoff
+        .as_mut()
+        .unwrap()
+        .candidates[0]
+        .transport = NetworkTransport::Udp;
+    assert!(target.package.validate().is_err());
+}
