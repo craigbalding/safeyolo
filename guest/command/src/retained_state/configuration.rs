@@ -174,6 +174,65 @@ fn mirror_matches_record(copied: &Value, recorded: &Value) -> bool {
         })
 }
 
+fn inventory_difference_fields(actual: &Value, recorded: &Value, mirror: bool) -> String {
+    let (Some(actual), Some(recorded)) = (actual.as_object(), recorded.as_object()) else {
+        return "inventory format".into();
+    };
+    let mut fields = BTreeSet::new();
+    if actual.len() != recorded.len() || recorded.keys().any(|path| !actual.contains_key(path)) {
+        fields.insert("path set");
+    }
+    for (path, before) in recorded {
+        let Some(after) = actual.get(path) else {
+            continue;
+        };
+        for field in ["kind", "mode", "uid", "gid", "hash", "target"] {
+            if mirror
+                && field == "mode"
+                && before["kind"] == "symlink"
+                && after["kind"] == "symlink"
+            {
+                continue;
+            }
+            if after.get(field) != before.get(field) {
+                fields.insert(field);
+            }
+        }
+    }
+    // Only fixed field names leave this comparison; paths and values stay private.
+    fields.into_iter().collect::<Vec<_>>().join(", ")
+}
+
+fn verify_capture(copied: &Value, source: &Value, opening: &Value) -> Result<(), Error> {
+    let mut failures = Vec::new();
+    let mirror_matches = mirror_matches_record(copied, opening);
+    if !mirror_matches {
+        failures.push(format!(
+            "copied mirror versus opening source: {}",
+            inventory_difference_fields(copied, opening, true)
+        ));
+    }
+    if source != opening {
+        failures.push(format!(
+            "final source versus opening source: {}",
+            inventory_difference_fields(source, opening, false)
+        ));
+    }
+    if !failures.is_empty() {
+        let recovery = if mirror_matches {
+            "retry after writes settle"
+        } else {
+            "inspect the configuration copy before retrying"
+        };
+        return Err(format!(
+            "configuration capture refused: {}; no new configuration commit; {recovery}",
+            failures.join("; ")
+        )
+        .into());
+    }
+    Ok(())
+}
+
 struct AccountNames {
     users: Map<String, Value>,
     groups: Map<String, Value>,
@@ -408,11 +467,9 @@ pub(super) fn capture(store: &GuestState, value: &mut Value) -> Result<(), Error
             )?;
         }
     }
-    if !mirror_matches_record(&inventory(&mirror, &paths)?, &files)
-        || inventory(&store.root, &paths)? != files
-    {
-        return Err("configuration changed during capture; retry after writes settle".into());
-    }
+    let copied = inventory(&mirror, &paths)?;
+    let source = inventory(&store.root, &paths)?;
+    verify_capture(&copied, &source, &files)?;
     commit_history(&mirror)?;
     let names = account_names(&store.root)?;
     value["configuration_accounts"] = json!(
@@ -609,6 +666,60 @@ pub(super) fn restore(store: &GuestState, value: &mut Value, apply: bool) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_diagnostics_identify_fields_without_private_values() {
+        let opening = json!({
+            "/private-path-marker": {
+                "kind":"symlink", "target":"private-target-marker", "mode":0o777,
+                "uid":123456, "gid":234567, "hash":"private-hash-marker"
+            }
+        });
+        for (field, changed) in [
+            ("kind", json!("file")),
+            ("mode", json!(0o755)),
+            ("uid", json!(345678)),
+            ("gid", json!(456789)),
+            ("hash", json!("changed-private-hash-marker")),
+            ("target", json!("changed-private-target-marker")),
+        ] {
+            let mut changed_inventory = opening.clone();
+            changed_inventory["/private-path-marker"][field] = changed;
+            for mirror in [false, true] {
+                let result = if mirror {
+                    verify_capture(&changed_inventory, &opening, &opening)
+                } else {
+                    verify_capture(&opening, &changed_inventory, &opening)
+                };
+                if mirror && field == "mode" {
+                    assert!(result.is_ok());
+                    continue;
+                }
+                let message = result.unwrap_err().to_string();
+                let comparison = if mirror {
+                    "copied mirror"
+                } else {
+                    "final source"
+                };
+                assert!(message.contains(&format!("{comparison} versus opening source: {field}")));
+                for private in ["marker", "123456", "234567", "345678", "456789"] {
+                    assert!(!message.contains(private), "{message}");
+                }
+            }
+        }
+        for changed in [
+            json!({}),
+            json!({"/other-private-marker": opening["/private-path-marker"]}),
+        ] {
+            let message = verify_capture(&changed, &changed, &opening)
+                .unwrap_err()
+                .to_string();
+            assert!(message.contains("copied mirror versus opening source: path set"));
+            assert!(message.contains("final source versus opening source: path set"));
+            assert!(!message.contains("marker"));
+        }
+        assert!(verify_capture(&opening, &opening, &opening).is_ok());
+    }
 
     #[test]
     fn mirror_symlink_mode_does_not_hide_other_changes() {
