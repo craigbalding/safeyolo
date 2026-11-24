@@ -137,6 +137,11 @@ static int mac_network_probe(const char *mode, const char *directory, int local_
             if (connect(fd,(struct sockaddr *)&denied,sizeof(denied))!=-1 || errno!=EPERM) return 93;
             close(fd);
         }
+        fd=socket(AF_INET,SOCK_STREAM,0);
+        if (fd!=-1) {
+            if (bind(fd,(struct sockaddr *)&denied,sizeof(denied))!=-1 || errno!=EPERM) return 107;
+            close(fd);
+        }
     }
     v4.sin_port=htons((unsigned short)remote_port);
     v6.sin6_port=htons((unsigned short)remote_port);
