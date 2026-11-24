@@ -238,7 +238,7 @@ Do not substitute an agent-provided identity or explanation.
   "grant_id": "investigation-1",
   "principal": {"run": {"agent": "investigator", "agent_id": "ag-actual", "run_id": "actual-run"}, "task_id": "investigation"},
   "operations": "/home/hostop/scopes.json",
-  "verbs": ["discover", "propose", "invoke", "job", "output", "cancel"],
+  "verbs": ["discover", "propose", "invoke", "job", "output", "file", "cancel"],
   "not_before": 0,
   "expires_at": 1,
   "authority_valid_until": 1,
@@ -519,6 +519,34 @@ needs the original job inspection before any repeated effect.
 python3 "$HOST_CLIENT" job case --request-id metadata-status-1 --job JOB_ID
 python3 "$HOST_CLIENT" output case --request-id metadata-output-1 --job JOB_ID --offset 0 --bytes 65536
 ```
+
+For authorised file-producing Unix jobs, use the same helper's `file` command.
+The grant and target must explicitly permit `file`; `output` alone grants no
+file access. `prepared.file_roots` records the adopted writable paths. Select a
+regular file within both the admitted and current writable scope. Replace
+`/selected/result` with its actual target path and use the retained job ID:
+
+```sh
+python3 "$HOST_CLIENT" file case --request-id file-read-1 --job JOB_ID --path /selected/result --offset 0 --bytes 4096
+```
+
+The response reports base64 bytes, observed total length, a chunk SHA256,
+observation time and `file_revision`. For later chunks, pass that revision with
+`--file-revision REVISION` and advance by the decoded chunk length. Replacement
+or observed modification returns a stale result. Reads are live observations,
+not atomic snapshots or proof that the job produced every byte. Select writable
+roots and file paths without symlink components. Retrieval refuses symlinks at
+every component and refuses special files. Ordinary file/directory replacement
+through those paths remains supported. Missing or unreadable files are
+unavailable, including after host storage failure. Windows file retrieval is
+not implemented; its existing job/stream inspection remains available.
+
+Selected files stay at their host paths after completion, failure, cancellation
+and restart. The target operator controls their retention/removal. This route
+adds no artifact copy, lifetime extension, rollback or file-storage quota.
+Current file and operation/resource authority must still permit retrieval;
+revocation/expiry can remove agent access without deleting the files. Inspect
+partial files separately from job failure, stream truncation and termination.
 
 If the helper reports an uncertain invocation or cancellation, its error JSON preserves
 `possible_job_id`, the original request ID and selected target context. Use `job`

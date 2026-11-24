@@ -24,6 +24,7 @@ impl Fixture {
         ));
         fs::create_dir(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let root = root.canonicalize().unwrap();
         let key = Ed25519KeyPair::from_seed_unchecked(&[81; 32]).unwrap();
         let mut package: Package = serde_json::from_str(include_str!(
             "../../proxy/tests/fixtures/host_execution/package.json"
@@ -143,6 +144,221 @@ fn receipt(response: Response) -> Receipt {
         panic!("job expected")
     };
     *receipt
+}
+
+#[test]
+fn file_results_keep_original_and_current_scope_and_detect_replacement() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let mut f = Fixture::new();
+    let output = f.root.join("results");
+    fs::create_dir(&output).unwrap();
+    let result = output.join("result");
+    fs::create_dir(output.join("nested")).unwrap();
+    let alias = f.root.join("root-alias");
+    std::os::unix::fs::symlink(output.join("nested"), &alias).unwrap();
+    fs::write(&result, b"partial retained result").unwrap();
+    fs::write(f.root.join("private"), b"unrelated secret").unwrap();
+    std::os::unix::fs::symlink(f.root.join("private"), output.join("escape")).unwrap();
+    let mut operations = f.target.package.operations.clone();
+    operations
+        .get_mut("restart")
+        .unwrap()
+        .execution
+        .filesystem
+        .write = vec![
+        output.to_str().unwrap().into(),
+        output.join("nested").to_str().unwrap().into(),
+        alias.to_str().unwrap().into(),
+    ];
+    f.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    let mut ledger = f.open();
+    let invoke = f.invoke(&mut ledger, 0);
+    let job = receipt(
+        ledger
+            .handle(&f.target, Verb::Invoke.path(), &invoke, now())
+            .unwrap()
+            .response,
+    );
+    // File reads need no new retained artifact or ledger allocation, including
+    // when the existing database has reached its actual SQLite page ceiling.
+    f.fill_database();
+    let action = |path: &std::path::Path, offset, max_bytes, expected_file_revision| Action::File {
+        job_id: job.job_id.clone(),
+        path: path.to_str().unwrap().into(),
+        offset,
+        max_bytes,
+        expected_file_revision,
+    };
+    let read = |ledger: &mut Ledger, f: &Fixture, action: Action| {
+        let bytes = f.signed(action, "file-read", 0, now() + 300);
+        ledger
+            .handle(&f.target, Verb::File.path(), &bytes, now())
+            .map(|r| r.response)
+    };
+    let Response::File {
+        data_base64,
+        eof,
+        total_bytes,
+        file_revision,
+        ..
+    } = read(&mut ledger, &f, action(&result, 0, 7, None)).unwrap()
+    else {
+        panic!("file result required")
+    };
+    assert_eq!(STANDARD.decode(data_base64).unwrap(), b"partial");
+    assert!(!eof);
+    assert_eq!(total_bytes, 23);
+    drop(ledger);
+    let mut ledger = f.open();
+    let Response::File {
+        data_base64, eof, ..
+    } = read(
+        &mut ledger,
+        &f,
+        action(&result, 7, 100, Some(file_revision.clone())),
+    )
+    .unwrap()
+    else {
+        panic!("file result after restart")
+    };
+    assert_eq!(STANDARD.decode(data_base64).unwrap(), b" retained result");
+    assert!(eof);
+    fs::write(output.join("empty"), []).unwrap();
+    assert!(
+        matches!(read(&mut ledger, &f, action(&output.join("empty"), 0, 8, None)).unwrap(), Response::File { eof: true, total_bytes: 0, data_base64, .. } if data_base64.is_empty())
+    );
+    // Overlapping roots cannot promote a workload-created symlink to a new
+    // trusted root. Opening from the outer scope keeps it a denied descendant.
+    fs::remove_dir(output.join("nested")).unwrap();
+    std::os::unix::fs::symlink(&f.root, output.join("nested")).unwrap();
+    assert_eq!(
+        read(&mut ledger, &f, action(&alias.join("private"), 0, 8, None))
+            .unwrap_err()
+            .code,
+        RefusalCode::Unavailable
+    );
+    assert_eq!(
+        read(
+            &mut ledger,
+            &f,
+            action(&output.join("nested/private"), 0, 8, None)
+        )
+        .unwrap_err()
+        .code,
+        RefusalCode::Unavailable
+    );
+    fs::remove_file(output.join("nested")).unwrap();
+    fs::create_dir(output.join("nested")).unwrap();
+    fs::write(output.join("replacement"), b"replaced").unwrap();
+    fs::rename(output.join("replacement"), &result).unwrap();
+    assert_eq!(
+        read(&mut ledger, &f, action(&result, 0, 7, Some(file_revision)))
+            .unwrap_err()
+            .code,
+        RefusalCode::Stale
+    );
+    for (path, code) in [
+        (f.root.join("absent-private"), RefusalCode::Authority),
+        (output.join("../private"), RefusalCode::Arguments),
+        (output.join("escape"), RefusalCode::Unavailable),
+        (output.clone(), RefusalCode::Arguments),
+        (output.join("missing"), RefusalCode::Unavailable),
+    ] {
+        let error = read(&mut ledger, &f, action(&path, 0, 8, None)).unwrap_err();
+        assert_eq!(error.code, code, "{error:?}");
+        assert!(!error.message.contains("unrelated secret"));
+    }
+    for (offset, max_bytes) in [(0, 0), (0, 4097), (9, 1)] {
+        assert_eq!(
+            read(&mut ledger, &f, action(&result, offset, max_bytes, None))
+                .unwrap_err()
+                .code,
+            RefusalCode::Arguments
+        );
+    }
+    f.target.allowed_verbs.remove(&Verb::File);
+    assert_eq!(
+        read(&mut ledger, &f, action(&result, 0, 8, None))
+            .unwrap_err()
+            .code,
+        RefusalCode::Authority
+    );
+    f.target.allowed_verbs.insert(Verb::File);
+    f.target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant")
+        .unwrap()
+        .verbs
+        .remove(&Verb::File);
+    assert_eq!(
+        read(&mut ledger, &f, action(&result, 0, 8, None))
+            .unwrap_err()
+            .code,
+        RefusalCode::Authority
+    );
+    f.target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant")
+        .unwrap()
+        .verbs
+        .insert(Verb::File);
+    let own = f.target.clone();
+    f.target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant")
+        .unwrap()
+        .principal
+        .run
+        .run_id = "22222222222222222222222222222222".into();
+    assert_eq!(
+        read(&mut ledger, &f, action(&result, 0, 8, None))
+            .unwrap_err()
+            .code,
+        RefusalCode::Authority
+    );
+    f.target = own;
+    // A later authorised expansion cannot lend an old job new file roots.
+    let mut operations = f.target.package.operations.clone();
+    operations
+        .get_mut("restart")
+        .unwrap()
+        .execution
+        .filesystem
+        .write = vec![f.root.to_str().unwrap().into()];
+    f.target = common::target(f.target.target_id.clone(), operations.clone(), &f.key);
+    assert_eq!(
+        read(&mut ledger, &f, action(&f.root.join("private"), 0, 8, None))
+            .unwrap_err()
+            .code,
+        RefusalCode::Authority
+    );
+    // Narrowing current scope takes effect even though the receipt is retained.
+    operations
+        .get_mut("restart")
+        .unwrap()
+        .execution
+        .filesystem
+        .write
+        .clear();
+    f.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    assert_eq!(
+        read(&mut ledger, &f, action(&result, 0, 8, None))
+            .unwrap_err()
+            .code,
+        RefusalCode::Authority
+    );
 }
 
 #[test]

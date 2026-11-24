@@ -1149,6 +1149,12 @@ impl Witness {
                 prepared: Box::new(self.target.prepare(&auth, Usage::default())?),
                 network_enforcement: Vec::new(),
             },
+            Action::File { .. } => {
+                return Err(Refusal {
+                    code: RefusalCode::Unavailable,
+                    message: "file reads require the native executor".into(),
+                });
+            }
             Action::Invoke { invocation } => {
                 let key = (
                     req.issuer_id.clone(),
