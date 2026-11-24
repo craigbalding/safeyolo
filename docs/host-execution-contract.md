@@ -542,9 +542,10 @@ that create their own listeners continue to use the separate ordinary socket
 profile; they do not receive a handoff automatically. TCP handoff is supported;
 UDP handoff and native Windows socket transfer remain unavailable.
 
-With only a handoff, ordinary socket creation, additional bind/listen and
-outbound connect remain denied. The program can accept and respond on the
-inherited listener. Ordinary network declarations may separately grant their
+With only a handoff, additional bind/listen and outbound connect remain denied.
+Linux also denies socket creation. Seatbelt may permit an unconnected TCP
+descriptor; that descriptor grants no channel. The program can accept and
+respond on the inherited listener. Ordinary network declarations may separately grant their
 reported broader authority. On Linux, permitted descendants inherit the same
 socket, namespaces, seccomp rules and job cgroup. On macOS, the existing
 no-fork, polled-memory and controller-crash limits remain. A program must not

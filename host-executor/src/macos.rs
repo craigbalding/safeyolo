@@ -498,7 +498,7 @@ impl MacRuntime {
             result
                 .dependencies
                 .extend(crate::endpoints::handoff_disclosure(op));
-            result.enforcement.push("The trusted executor passes the selected listening TCP socket as descriptor 3. Additional socket creation, binding, outbound connections and fork remain denied unless separately granted by a supported ordinary profile.".into());
+            result.enforcement.push("The trusted executor passes the selected listening TCP socket as descriptor 3. Unconnected TCP descriptors grant no channel: additional binding, implicit listen, outbound connections and fork remain denied unless separately granted by a supported ordinary profile.".into());
         }
         Ok(result)
     }

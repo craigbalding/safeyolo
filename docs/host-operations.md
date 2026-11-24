@@ -41,8 +41,8 @@ The adapter binds an adopted endpoint alternative at launch and passes the open
 socket as descriptor 3. Read the running job receipt for its actual address and
 port. The handoff avoids a check-to-bind race and requires no recurring approval
 within the existing operation grant. Application readiness and audience reach
-still need their own observations. Ordinary programs receive no additional
-socket-creation or outbound authority from the handoff.
+still need their own observations. The handoff grants no additional binding or outbound authority. Seatbelt may
+permit unconnected descriptors, which grant no channel.
 
 ## Acquire and prepare the target
 

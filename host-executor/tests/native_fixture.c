@@ -195,9 +195,20 @@ static int handoff_probe(const char *mode, const char *directory, int forbidden_
     socklen_t size=sizeof(address);
     if (getsockname(3,(struct sockaddr *)&address,&size)) { perror("inherited listener"); return 110; }
     int extra=socket(AF_INET,SOCK_STREAM,0);
-    if (extra!=-1 || errno!=EPERM) { if (extra>=0) close(extra); return 111; }
     struct sockaddr_in forbidden={ .sin_family=AF_INET, .sin_port=htons((unsigned short)forbidden_port),
         .sin_addr.s_addr=htonl(INADDR_LOOPBACK) };
+    if (extra>=0) {
+#ifdef __linux__
+        close(extra); return 111;
+#else
+        /* Seatbelt permits an unconnected descriptor. It must not acquire an
+           undeclared channel through bind, connect or implicit listen. */
+        if (bind(extra,(struct sockaddr *)&forbidden,sizeof(forbidden))!=-1 || errno!=EPERM) return 116;
+        if (connect(extra,(struct sockaddr *)&forbidden,sizeof(forbidden))!=-1 || errno!=EPERM) return 117;
+        if (listen(extra,1)!=-1 || errno!=EPERM) return 118;
+        close(extra);
+#endif
+    } else if (errno!=EPERM) return 111;
     if (connect(3,(struct sockaddr *)&forbidden,sizeof(forbidden))!=-1) return 112;
     char path[PATH_MAX];
     if (snprintf(path,sizeof(path),"%s/result",directory)>=(int)sizeof(path)) return 113;
