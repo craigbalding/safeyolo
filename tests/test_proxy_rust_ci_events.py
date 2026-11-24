@@ -1071,6 +1071,68 @@ def test_general_python_workflow_uses_quick_pr_and_full_overnight_selections(eve
     assert eval(timeout, {"__builtins__": {}}, {}) == timeout_minutes
 
 
+@pytest.mark.parametrize("failure", ["none", "mirror", "update", "install", "target"])
+def test_windows_compiler_preparation_preserves_failure_before_contracts(tmp_path, failure):
+    job = rust_workflow()["jobs"]["host-executor"]
+    step = next(step for step in job["steps"] if step.get("name") == "Prepare the Windows cross compiler")
+    commands = tmp_path / "bin"
+    commands.mkdir()
+    sudo = commands / "sudo"
+    sudo.write_text(
+        '#!/bin/bash\nset -e\n[[ "$1" == -n ]]\nshift\n'
+        'printf "%s\\n" "$*" >> "$CALLS"\n'
+        'if [[ "$1" == tee ]]; then\n'
+        '  [[ "$2" == /etc/apt/apt-mirrors.txt ]]\n'
+        '  if [[ "$FAILURE" == mirror ]]; then exit 23; fi\n'
+        '  exec tee "$MIRRORS"\n'
+        'fi\n'
+        '[[ "$1" == apt-get ]]\n'
+        'if [[ "$2" == "$FAILURE" ]]; then echo "original apt error" >&2; exit 100; fi\n'
+    )
+    rustup = commands / "rustup"
+    rustup.write_text('#!/bin/bash\nprintf "rustup %s\\n" "$*" >> "$CALLS"\n'
+                      'if [[ "$FAILURE" == target ]]; then exit 31; fi\n')
+    sudo.chmod(0o755)
+    rustup.chmod(0o755)
+    calls = tmp_path / "calls"
+    mirrors = tmp_path / "mirrors"
+    mirrors.write_text("http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:1\n")
+    environment = tmp_path / "github-env"
+    # Actions' implicit Linux shell is Bash -e, without implicit pipefail.
+    result = subprocess.run(
+        ["bash", "-e", "-c", step["run"] + '\nprintf "contract step reached\\n"'],
+        capture_output=True, text=True, timeout=10,
+        env=dict(os.environ, BASH_ENV=os.devnull, PATH=f"{commands}:{os.environ['PATH']}",
+                 CALLS=str(calls), MIRRORS=str(mirrors), FAILURE=failure,
+                 EXECUTOR_TARGET="x86_64-pc-windows-gnu", GITHUB_ENV=str(environment)),
+    )
+    assert result.returncode == {"none": 0, "mirror": 23, "update": 100,
+                                 "install": 100, "target": 31}[failure], result.stderr
+    assert ("contract step reached" in result.stdout) == (failure == "none")
+    if failure == "mirror":
+        assert not environment.exists()
+        return
+    assert mirrors.read_text().splitlines() == [
+        "https://archive.ubuntu.com/ubuntu/\tpriority:1", "https://security.ubuntu.com/ubuntu/\tpriority:2",
+    ]
+    if failure == "update":
+        assert calls.read_text().splitlines() == ["tee /etc/apt/apt-mirrors.txt", "apt-get update -qq"]
+        assert not environment.exists()
+        return
+    assert "apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64-win32" in calls.read_text().splitlines()
+    assert ("original apt error" in result.stderr) == (failure == "install")
+    if failure != "none":
+        assert not environment.exists()
+        return
+    exported = dict(line.split("=", 1) for line in environment.read_text().splitlines())
+    assert exported == {
+        "CC_x86_64_pc_windows_gnu": "x86_64-w64-mingw32-gcc-win32",
+        "AR_x86_64_pc_windows_gnu": "x86_64-w64-mingw32-ar",
+        "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER": "x86_64-w64-mingw32-gcc-win32",
+        "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS": "-C target-feature=+crt-static -C link-arg=-static",
+    }
+
+
 @pytest.mark.parametrize("failure,diagnostic_status", [
     ("none", 0), ("update", 0), ("update", 23), ("update", 124),
     ("install", 0), ("install", 23), ("install", 124),
