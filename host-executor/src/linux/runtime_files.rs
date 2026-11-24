@@ -123,6 +123,22 @@ fn elf(data: &[u8]) -> Result<(u16, Vec<PathBuf>), Refusal> {
     Ok((machine, required))
 }
 
+fn native_library(data: &[u8], machine: u16) -> Result<bool, Refusal> {
+    let header = bytes(data, 0, 20)?;
+    require(
+        header.starts_with(b"\x7fELF") && matches!(header[4], 1 | 2) && matches!(header[5], 1 | 2),
+        RefusalCode::Unavailable,
+        "invalid ELF runtime dependency header",
+    )?;
+    // A multilib loader cache may contain the same soname for several ABIs.
+    // Only a matching candidate can supply this helper's dependencies.
+    if header[4] != 2 || header[5] != 1 || elf_u16(header, 18)? != machine {
+        return Ok(false);
+    }
+    elf(data)?;
+    Ok(true)
+}
+
 pub(super) fn dependencies(helper: &Path) -> Result<Vec<PathBuf>, Refusal> {
     let mut protected = Vec::new();
     for path in [
@@ -181,7 +197,8 @@ pub(super) fn dependencies(helper: &Path) -> Result<Vec<PathBuf>, Refusal> {
         if !visited.insert(path.clone()) {
             continue;
         }
-        let (_, mut names) = elf(&fs::read(&path).map_err(unavailable)?)?;
+        let (_, mut names) = elf(&fs::read(&path).map_err(unavailable)?)
+            .map_err(|error| unavailable(format!("{}: {}", path.display(), error.message)))?;
         names.append(&mut preload);
         protected.push(path);
         for name in names {
@@ -216,7 +233,9 @@ pub(super) fn dependencies(helper: &Path) -> Result<Vec<PathBuf>, Refusal> {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                     Err(error) => return Err(unavailable(error)),
                 };
-                if elf(&data)?.0 == machine {
+                if native_library(&data, machine).map_err(|error| {
+                    unavailable(format!("{}: {}", candidate.display(), error.message))
+                })? {
                     pending.push(candidate);
                     found = true;
                 }
@@ -238,6 +257,27 @@ mod tests {
     fn malformed_elf_does_not_establish_runtime_trust() {
         assert!(elf(b"not ELF").is_err());
         assert!(elf(b"\x7fELF\x02\x01").is_err());
+    }
+    #[test]
+    fn foreign_library_candidates_do_not_block_native_dependencies() {
+        let data = fs::read(std::env::current_exe().unwrap()).unwrap();
+        let (machine, _) = elf(&data).unwrap();
+        assert!(native_library(&data, machine).unwrap());
+        for (class, endian, architecture) in [(1, 1, machine), (2, 2, machine), (2, 1, machine ^ 1)]
+        {
+            let mut foreign = data[..20].to_vec();
+            foreign[4] = class;
+            foreign[5] = endian;
+            foreign[18..20].copy_from_slice(&architecture.to_le_bytes());
+            assert!(!native_library(&foreign, machine).unwrap());
+            assert!(elf(&foreign).is_err());
+        }
+        // A matching candidate must still qualify in full.
+        assert!(native_library(&data[..20], machine).is_err());
+        assert!(native_library(b"this is not an ELF library", machine).is_err());
+        let mut invalid = data;
+        invalid[4] = 0;
+        assert!(native_library(&invalid, machine).is_err());
     }
     #[test]
     fn native_loader_dependencies_include_the_executable_and_controls() {
