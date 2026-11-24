@@ -137,7 +137,7 @@ static int mac_network_probe(const char *mode, const char *directory, int local_
             if (connect(fd,(struct sockaddr *)&denied,sizeof(denied))!=-1 || errno!=EPERM) return 93;
             close(fd);
         }
-        fd=socket(AF_INET,SOCK_STREAM,0);
+        fd=socket(AF_INET,type,0);
         if (fd!=-1) {
             if (bind(fd,(struct sockaddr *)&denied,sizeof(denied))!=-1 || errno!=EPERM) return 107;
             close(fd);
