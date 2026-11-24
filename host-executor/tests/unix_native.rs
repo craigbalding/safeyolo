@@ -3691,9 +3691,9 @@ fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
         }
         e.network.listener_handoff = Some(EndpointSelection { candidates });
         if mode == "timeout" {
-            // Exercise a started service timing out, with margin for native
-            // qualification/launch and whole-second deadline rounding.
-            e.resources.timeout_seconds = 5;
+            // Leave launch/rounding margin, but expire before the probe's
+            // four-second controller-crash cleanup alarm.
+            e.resources.timeout_seconds = 3;
         }
         operations.insert(mode.into(), op);
     }
