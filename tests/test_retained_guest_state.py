@@ -175,6 +175,66 @@ def test_direct_dpkg_selections_and_adopted_constraints(guest, tmp_path):
     assert (root / "usr/share/retention-fixture/version").read_text() == "1.0"
 
 
+@pytest.mark.parametrize("recorder,package_exit", [
+    ("healthy", 0), ("changed-base", 0), ("reconcile", 0),
+    ("unavailable-state", 0), ("missing-helper", 0), ("restore-active", 0),
+    ("changed-base", 17),
+])
+def test_dpkg_logger_failure_preserves_package_outcome(guest, tmp_path, recorder, package_exit):
+    root, state, command = guest
+    before = saved(state)
+    if recorder == "changed-base":
+        (root / "usr/share/safeyolo/guest-base/packages.tsv").write_text("new base\n")
+    elif recorder == "reconcile":
+        run(*command, "start")
+    if recorder == "unavailable-state":
+        unavailable = tmp_path / "not-a-directory"
+        unavailable.write_text("unavailable recorder storage\n")
+        command = [*command[:-1], str(unavailable / "state")]
+
+    # Run the shipped shell boundary, including its skipped and missing-helper
+    # paths. Only rebind the executable and state to this disposable fixture.
+    wrapper = tmp_path / "guest-state-hook"
+    source = Path(__file__).resolve().parents[1] / "guest/rootfs/safeyolo-guest-state-hook"
+    text = source.read_text().replace('retained-state "$@"', shlex.join(command[1:]) + ' "$@"')
+    helper = str(HELPER) if recorder != "missing-helper" else str(tmp_path / "absent-helper")
+    text = text.replace("/run/safeyolo/safeyolo-guest", helper).replace("/safeyolo/safeyolo-guest", helper)
+    wrapper.write_text(text)
+    wrapper.chmod(0o755)
+    archive = make_deb(tmp_path, "1.0")
+    postinst = tmp_path / "package-1.0/DEBIAN/postinst"
+    # Force dpkg to emit its final status after a failed logger has exited.
+    postinst.write_text(f"#!/bin/sh\nsleep 0.2\nexit {package_exit}\n")
+    postinst.chmod(0o755)
+    run("dpkg-deb", "--root-owner-group", "--build", str(postinst.parents[1]), str(archive))
+    hooks = ["--" + setting + "=" + shlex.join([str(wrapper), event]) for setting, event in (
+        ("pre-invoke", "dpkg-pre"), ("post-invoke", "dpkg-post"), ("status-logger", "dpkg-status"))]
+    env = {**os.environ, "SAFEYOLO_RESTORE_ACTIVE": "1" if recorder == "restore-active" else "0"}
+    result = run("dpkg", "--root=" + str(root), "--force-not-root", "--force-script-chrootless",
+                 "--log=" + str(root / "var/log/dpkg.log"),
+                 *hooks, "--install", str(archive), env=env, check=False)
+    observed = run("dpkg-query", "--admindir=" + str(root / "var/lib/dpkg"), "--show",
+                   "--showformat=${Status}\t${Version}", "sy-retention-fixture", check=False)
+    assert result.returncode == (1 if package_exit else 0), (result, observed)
+    assert observed.returncode == 0, observed.stderr
+    assert observed.stdout == f"install ok {'half-configured' if package_exit else 'installed'}\t1.0"
+    assert (root / "usr/share/retention-fixture/version").read_text() == "1.0"
+    after = saved(state)
+    assert after["configuration"] == before["configuration"]
+    assert after["last_completed_capture"] == before["last_completed_capture"]
+    if recorder in ("changed-base", "reconcile", "unavailable-state"):
+        assert "SafeYolo guest state capture failed" in result.stderr
+    if recorder in ("changed-base", "reconcile"):
+        assert after["capture_error"]
+        assert after["status"] == "needs_attention"
+    elif recorder == "healthy":
+        assert after["packages"]["sy-retention-fixture"]["version"] == "1.0"
+        assert any(tx.get("last_processing") for tx in after["transactions"].values())
+        assert all(tx["outcome"] != "succeeded" for tx in after["transactions"].values())
+    else:
+        assert after == before
+
+
 def test_changed_base_does_not_erase_saved_configuration(guest):
     root, state, command = guest
     (root / "etc/fixture.conf").write_text("local change\n")
@@ -388,8 +448,11 @@ def test_interrupted_dpkg_and_capture_failure_remain_visible(guest, tmp_path):
         assert "unsupported configuration file type" in saved(state)["capture_error"]
 
 
-@pytest.mark.parametrize("package_request", ["archive", "version", "release"])
-def test_apt_choices_survive_real_nested_dpkg_hooks(guest, tmp_path, package_request):
+@pytest.mark.parametrize("package_request,recorder", [
+    ("archive", "healthy"), ("version", "healthy"), ("release", "healthy"),
+    ("archive", "restore-active"), ("archive", "unavailable-state"),
+])
+def test_apt_choices_survive_real_nested_dpkg_hooks(guest, tmp_path, package_request, recorder):
     root, state, command = guest
     archive = make_deb(tmp_path, "1.0")
     (root / "usr/bin").mkdir(parents=True)
@@ -403,6 +466,11 @@ def test_apt_choices_survive_real_nested_dpkg_hooks(guest, tmp_path, package_req
     wrapper = root / "usr/local/lib/safeyolo/guest-state-hook"
     wrapper.write_text(wrapper.read_text().replace("/run/safeyolo/safeyolo-guest", str(HELPER))
                        .replace('retained-state "$@"', shlex.join(command[1:]) + ' "$@"'))
+    before = saved(state)
+    if recorder == "unavailable-state":
+        unavailable = tmp_path / "not-a-directory"
+        unavailable.write_text("unavailable recorder storage\n")
+        wrapper.write_text(wrapper.read_text().replace(str(state), str(unavailable / "state")))
     apt_hook = root / "etc/apt/apt.conf.d/05etckeeper"
     apt_hook.write_text(apt_hook.read_text().replace("/usr/local/lib/safeyolo/guest-state-hook", str(wrapper)))
     assert "AVOID_DAILY_AUTOCOMMITS=1" in (root / "etc/etckeeper/etckeeper.conf").read_text()
@@ -436,8 +504,17 @@ def test_apt_choices_survive_real_nested_dpkg_hooks(guest, tmp_path, package_req
         options += ["-o", "Dir::Etc::sourcelist=" + str(sources)]
         run("apt-get", *options, "update", env={**os.environ, "APT_CONFIG": str(config)})
         operand = "sy-retention-fixture" + ("=1.0" if package_request == "version" else "/fixture-release")
-    run("apt-get", *options, "-y", "--no-install-recommends", "install", operand,
-        env={**os.environ, "APT_CONFIG": str(config)})
+    result = run("apt-get", *options, "-y", "--no-install-recommends", "install", operand,
+                 env={**os.environ, "APT_CONFIG": str(config),
+                      "SAFEYOLO_RESTORE_ACTIVE": "1" if recorder == "restore-active" else "0"})
+    if recorder != "healthy":
+        assert (root / "usr/share/retention-fixture/version").read_text() == "1.0"
+        assert run("dpkg-query", "--admindir=" + str(root / "var/lib/dpkg"), "--show",
+                   "--showformat=${Status}", "sy-retention-fixture").stdout == "install ok installed"
+        assert saved(state) == before
+        if recorder == "unavailable-state":
+            assert "SafeYolo guest state capture failed" in result.stderr
+        return
     run(*command, "capture")
     record = saved(state)
     plans = [tx["plan"] for tx in record["transactions"].values() if "plan" in tx]
