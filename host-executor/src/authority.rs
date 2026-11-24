@@ -50,12 +50,27 @@ pub struct OperationScope {
 #[serde(deny_unknown_fields)]
 pub struct Grant {
     pub principal: Principal,
+    /// Explicit standing authority for later host-observed runs of this same
+    /// durable agent and task. It changes neither expiry nor budget ownership.
+    #[serde(default)]
+    pub allow_run_refresh: bool,
     pub not_before: u64,
     pub expires_at: u64,
     pub verbs: BTreeSet<Verb>,
     pub operations: BTreeMap<String, OperationScope>,
     #[serde(default)]
     pub families: Vec<OperationFamily>,
+}
+
+impl Grant {
+    pub fn allows_principal(&self, principal: &Principal) -> bool {
+        self.principal == *principal
+            || self.allow_run_refresh
+                && self.principal.task_id.is_some()
+                && self.principal.task_id == principal.task_id
+                && self.principal.run.agent_id == principal.run.agent_id
+                && self.principal.run.agent == principal.run.agent
+    }
 }
 
 /// A verified, fresh projection from the issuer's existing policy owners.
@@ -130,6 +145,61 @@ impl Authorized<'_> {
         &self.request
     }
 
+    /// Authorise code intake separately from invocation and publisher updates.
+    /// The target still qualifies native inputs before committing the catalogue.
+    pub fn agent_code_package(&self) -> Result<Package, Refusal> {
+        let Action::Adopt {
+            operation_id,
+            operation,
+            base_package_sha256,
+            package_sha256,
+            ..
+        } = &self.request.action
+        else {
+            return Err(crate::native::unavailable("code adoption request required"));
+        };
+        require(
+            *base_package_sha256 == revision(&self.target.package),
+            RefusalCode::Stale,
+            "code adoption was prepared against another package; inspect the original adoption before preparing again",
+        )?;
+        for (scopes, families) in [
+            (&self.grant.operations, &self.grant.families),
+            (&self.target.ceiling, &self.target.families),
+        ] {
+            let selected = self
+                .target
+                .scope(operation_id, operation, scopes, families)
+                .ok_or_else(|| Refusal {
+                    code: RefusalCode::Authority,
+                    message: "agent code is outside the issuer or target's adopted operation class"
+                        .into(),
+                })?;
+            let rule = if let Some(exact) = scopes.get(operation_id) {
+                exact.updates.as_ref()
+            } else {
+                families
+                    .iter()
+                    .find(|family| family.contains(operation_id, operation))
+                    .map(|family| &family.rule)
+            };
+            require(
+                rule.is_some_and(|rule| rule.allows_agent_code(operation))
+                    && operation.resources.is_subset(&selected.scope.resources)
+                    && operation.required_checks.is_subset(&selected.scope.checks),
+                RefusalCode::Authority,
+                "agent code needs an explicitly adopted code class at both owners; publisher update trust is insufficient",
+            )?;
+        }
+        let package = self.target.revised_package(operation_id, operation)?;
+        require(
+            *package_sha256 == revision(&package),
+            RefusalCode::Stale,
+            "code adoption differs from the issuer's exact resulting package",
+        )?;
+        Ok(package)
+    }
+
     /// Unrelated issuer snapshot changes must not reset this grant's usage.
     pub fn grant_revision(&self) -> String {
         revision(self.grant)
@@ -167,6 +237,29 @@ impl Authorized<'_> {
 }
 
 impl Target {
+    /// Pure authoring: construct the exact next package without running code,
+    /// modifying adoption or granting access.
+    pub fn revised_package(
+        &self,
+        operation_id: &str,
+        operation: &Operation,
+    ) -> Result<Package, Refusal> {
+        require(
+            selector(operation_id),
+            RefusalCode::Selector,
+            "code adoption needs a literal operation selector",
+        )?;
+        let mut package = self.package.clone();
+        package.version = package.version.checked_add(1).ok_or_else(|| Refusal {
+            code: RefusalCode::Conflict,
+            message: "package revision is exhausted".into(),
+        })?;
+        package
+            .operations
+            .insert(operation_id.to_owned(), operation.clone());
+        package.validate().map_err(crate::native::unavailable)?;
+        Ok(package)
+    }
     /// Project represented current authority for read-only assessment. Use the
     /// same exact/family selection and update trust as execution. Ledger usage
     /// and fresh admission remain execution-time inputs.
@@ -291,6 +384,7 @@ impl Target {
                 grant.map(|g| {
                     (
                         &g.principal,
+                        g.allow_run_refresh,
                         g.not_before,
                         g.expires_at,
                         &g.verbs,
@@ -483,7 +577,7 @@ impl Target {
             message: "grant is absent or revoked".into(),
         })?;
         require(
-            grant.principal == *principal,
+            grant.allows_principal(principal),
             RefusalCode::Principal,
             "authenticated issuer grant belongs to another principal, run or task",
         )?;
@@ -560,6 +654,8 @@ impl Target {
                 #[cfg(unix)]
                 Verb::File,
                 Verb::Cancel,
+                Verb::Adopt,
+                Verb::Adoption,
             ]
             .into_iter()
             .map(|v| (v, v.path().into()))
@@ -747,7 +843,7 @@ impl Target {
             authorized.request.action.job_id() == Some(receipt.job_id.as_str())
                 && receipt.target_id == self.target_id
                 && receipt.issuer_id == authorized.request.issuer_id
-                && receipt.principal == authorized.request.principal
+                && authorized.grant.allows_principal(&receipt.principal)
                 && receipt.grant_id == authorized.request.grant_id,
             RefusalCode::Authority,
             "job/output belongs to another target, issuer, principal or grant",

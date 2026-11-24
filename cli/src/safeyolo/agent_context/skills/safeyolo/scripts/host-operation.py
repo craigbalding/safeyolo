@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import http.client
 import json
+import shlex
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -51,8 +54,8 @@ def request(path: str, value: dict[str, Any] | None = None) -> dict[str, Any]:
             result = json.load(response)
     except (http.client.HTTPException, urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
         failure = {
-            "error": str(error), "request_id": None if value is None else value.get("request_id"),
-            "execution_outcome": "uncertain" if value and value["action"]["kind"] in {"invoke", "cancel"} else "unavailable",
+            "error": str(error), "request_id": None if value is None else value.get("request_id", value.get("operation_id")),
+            "execution_outcome": "uncertain" if value and (value.get("action", {}).get("kind") in {"invoke", "cancel", "adopt"} or path == "/gateway/host-setup" or path.endswith("/resume")) else "unavailable",
             "next_action": "Inspect the original request/job through this binding or ask its target operator; no request was retried.",
         }
         if http_status is not None:
@@ -96,13 +99,98 @@ def invoke(args: argparse.Namespace) -> dict[str, Any]:
         raise
 
 
+def adopt_code(args: argparse.Namespace, script: str | None = None) -> dict[str, Any]:
+    bindings = request("/gateway/host")["host_bindings"]
+    binding = next((item for item in bindings if item["binding"] == args.binding), None)
+    if binding is None or not binding.get("task_active", True):
+        raise RequestFailed({"error": "Binding requires its eligible active task", "host_binding": args.binding,
+                             "next_action": "Read the binding, then resume its adopted task when permitted; no code was sent."})
+    discovery = call(args.binding, args.request_id + "-discovery", {"kind": "discover"})["discovery"]
+    if getattr(args, "definition", None):
+        operation = json.loads(Path(args.definition).read_text())
+    else:
+        family = next((item for item in binding.get("agent_code_classes", [])
+                       if args.operation.startswith(item["prefix"]) and args.operation not in item["excluded"]), None)
+        if family is None:
+            raise RequestFailed({"error": "No standing agent-code class covers this operation", "operation": args.operation,
+                                 "next_action": "Prepare the specific authority expansion through private policy assessment and existing review."})
+        operation = copy.deepcopy(family["rule"]["ceiling"])
+        if operation["execution"]["argv"][:1] != [{"kind": "literal", "value": "-c"}]:
+            raise ValueError("The selected class uses another command recipe; supply its complete --definition")
+        if script is None:
+            script = Path(args.script).read_text()
+        operation["execution"]["argv"] = [{"kind": "literal", "value": "-c"}, {"kind": "literal", "value": script}]
+        if getattr(args, "dependencies", None):
+            operation["execution"]["dependencies"] = json.loads(Path(args.dependencies).read_text())
+    try:
+        return call(args.binding, args.request_id, {"kind": "adopt", "operation_id": args.operation,
+                    "operation": operation, "base_package_sha256": discovery["package_sha256"]}, discovery["revisions"])
+    except RequestFailed as error:
+        if error.value.get("execution_outcome") == "uncertain":
+            error.value.setdefault("host_binding", args.binding)
+            error.value.setdefault("target_id", binding["target_id"])
+            error.value["next_action"] = "Read adoption --original-request-id with this original request ID. No program was invoked or request retried."
+        raise
+
+
+def stage(args: argparse.Namespace) -> dict[str, Any]:
+    # POSIX printf avoids a target-side decoder dependency and carries NUL and
+    # non-UTF-8 bytes without putting either into an argv string.
+    encoded = "".join(f"\\0{byte:03o}" for byte in Path(args.file).read_bytes())
+    script = "printf '%b' " + shlex.quote(encoded) + " > " + shlex.quote(args.path)
+    adoption_args = copy.copy(args)
+    adoption_args.operation = "task:stage"
+    adoption_args.request_id += "-adopt"
+    adoption = adopt_code(adoption_args, script)
+    discovery = call(args.binding, args.request_id + "-discovery", {"kind": "discover"})["discovery"]
+    operation = next(item for item in discovery["operations"] if item["operation_id"] == "task:stage")
+    preparation = call(args.binding, args.request_id + "-propose", {"kind": "propose", "invocation": {
+        "operation_id": "task:stage", "resource_id": "task:workspace", "operation_sha256": operation["operation_sha256"],
+        "implementation_sha256": operation["implementation_sha256"], "arguments": {}, "expected_assessment_sha256": None,
+    }}, operation["revisions"])["prepared"]
+    try:
+        result = call(args.binding, args.request_id + "-invoke", {"kind": "invoke", "invocation": preparation["invocation"]}, preparation["revisions"])
+    except RequestFailed as error:
+        if error.value.get("execution_outcome") == "uncertain":
+            error.value.setdefault("host_binding", args.binding)
+            original = adoption["original"]["request"]
+            identity = [original["target_id"], original["issuer_id"], args.request_id + "-invoke"]
+            error.value.setdefault("possible_job_id", "job-" + hashlib.sha256(json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest())
+            error.value.setdefault("target_id", original["target_id"])
+            error.value["next_action"] = "Inspect the original stage invocation's target job before any retry. The file may already exist."
+        raise
+    return {"request_id": args.request_id, "adoption": adoption, "target_result": result,
+            "file_state": "inspect the target job and selected file; admission alone does not establish a completed write"}
+
+
+def setup(args: argparse.Namespace) -> dict[str, Any]:
+    if args.command == "setup":
+        return request("/gateway/host-setup", {"kind": "prepare", "operation_id": args.request_id,
+                       "plan": json.loads(Path(args.plan).read_text())})
+    if args.command == "submit-setup":
+        return request("/gateway/host-setup", {"kind": "submit", "operation_id": args.request_id,
+                       "enrolment": json.loads(Path(args.enrolment).read_text())})
+    return request("/gateway/host-setup/" + urllib.parse.quote(args.original_request_id, safe=""))
+
+
+def resume(args: argparse.Namespace) -> dict[str, Any]:
+    return request("/gateway/host/" + urllib.parse.quote(args.binding, safe=":") + "/resume", {"request_id": args.request_id})
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    handler = {"setup": setup, "submit-setup": setup, "setup-status": setup, "resume": resume, "adopt": adopt_code, "stage": stage}.get(args.command)
+    if handler is not None:
+        return handler(args)
     if args.command == "bindings":
         return request("/gateway/host")
     if args.command == "discover":
         return call(args.binding, args.request_id, {"kind": "discover"})
     if args.command == "invoke":
         return invoke(args)
+    if args.command == "adoption":
+        # Recovery must work when the target committed code but the issuer
+        # still has its old package. Discovery deliberately refuses that split.
+        return call(args.binding, args.request_id, {"kind": "adoption", "request_id": args.original_request_id})
     discovery = call(args.binding, args.request_id + "-discovery", {"kind": "discover"})["discovery"]
     if args.command == "propose":
         operation = next((op for op in discovery["operations"] if op["operation_id"] == args.operation), None)
@@ -137,16 +225,33 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("bindings", help="Current bindings for this trusted run and active task")
-    for command in ("discover", "propose", "invoke", "job", "output", "file", "cancel"):
+    for command in ("setup", "submit-setup"):
+        sub = commands.add_parser(command)
+        sub.add_argument("--request-id", default="req-" + uuid.uuid4().hex)
+        sub.add_argument("--plan" if command == "setup" else "--enrolment", required=True)
+    sub = commands.add_parser("setup-status")
+    sub.add_argument("--original-request-id", required=True)
+    for command in ("discover", "propose", "invoke", "job", "output", "file", "cancel", "resume", "adopt", "adoption", "stage"):
         sub = commands.add_parser(command)
         sub.add_argument("binding")
-        sub.add_argument("--request-id", required=True, help="Retain this exact ID with the original result")
+        sub.add_argument("--request-id", default="req-" + uuid.uuid4().hex, help="Generated when absent; retain the exact ID with the original result")
         if command == "propose":
             sub.add_argument("--operation", required=True)
             sub.add_argument("--resource", required=True)
             sub.add_argument("--arguments", help="JSON object; literal typed values, never script text")
         elif command == "invoke":
             sub.add_argument("--prepared", required=True, help="Unchanged successful proposal JSON")
+        elif command == "adopt":
+            sub.add_argument("--operation", required=True)
+            source = sub.add_mutually_exclusive_group(required=True)
+            source.add_argument("--script", help="Task script for the adopted shell class")
+            source.add_argument("--definition", help="Complete typed operation inside the adopted code class")
+            sub.add_argument("--dependencies", help="Selected target dependency paths and exact SHA256/byte pins")
+        elif command == "adoption":
+            sub.add_argument("--original-request-id", required=True)
+        elif command == "stage":
+            sub.add_argument("--file", required=True)
+            sub.add_argument("--path", required=True)
         elif command in ("job", "output", "file", "cancel"):
             sub.add_argument("--job", required=True)
             if command in {"output", "file"}:

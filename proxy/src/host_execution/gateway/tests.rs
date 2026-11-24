@@ -114,6 +114,7 @@ impl Fixture {
         ]
         .into();
         let grant = Grant {
+            allow_run_refresh: false,
             principal: Principal {
                 run: run.clone(),
                 task_id: Some("approved-task".into()),
@@ -168,6 +169,8 @@ impl Fixture {
         let task = json!({"metadata":{"description":"Diagnose the synthetic demo service and restart it when needed."},"permissions":[]});
         let socket = root.path().join("executor.sock");
         let binding = Binding {
+            resume_task: false,
+            intent: None,
             target: target.clone(),
             issuer_id: "issuer".into(),
             grant_id: "approved".into(),
@@ -401,6 +404,184 @@ impl Fixture {
         crate::apply_native_policy(&self.proxy.runtime, &source).unwrap();
         self.source = source;
     }
+}
+
+fn task_plan(f: &Fixture) -> Value {
+    let execution = &f.binding.target.package.operations["restart"].execution;
+    json!({
+        "intent":{"outcome":"Investigate and repair the selected task configuration", "service_function":null,
+            "audience":null,"data_and_functions":null,"authentication":null,"lifetime":"One bounded task"},
+        "hostname":"new-target.invalid","control_listen":"127.0.0.1:18443","root":"/selected/task",
+        "read_paths":[],"network":execution.network,"broader":[],"execution_limits":execution.resources,
+        "budgets":{"calls":10,"concurrent":1,"timeout_seconds":20,"output_bytes":1024},
+        "duration_seconds":300,"allow_agent_code":true,"allow_run_refresh":true,
+        "executable_bytes":16777216,"dependency_bytes":16777216
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_trust_preparation_retains_one_private_key_and_original_public_request() {
+    let f = Fixture::new("").await;
+    let mut private = f
+        .proxy
+        .runtime
+        .read()
+        .unwrap()
+        .tasks
+        .active()
+        .unwrap()
+        .unwrap()
+        .1
+        .document()
+        .clone();
+    private["private_note"] = json!("private-task-value-must-stay-private");
+    assert!(crate::register_task(&f.proxy.runtime, "approved-task", private).is_ok());
+    assert!(crate::activate_registered_task(&f.proxy.runtime, "approved-task").is_ok());
+    let plan = task_plan(&f);
+    let input = json!({"kind":"prepare","operation_id":"req-new-host","plan":plan});
+    let first = f.api("/gateway/host-setup", "POST", input.clone()).await;
+    assert_eq!(first.status, 200, "{}", first.value);
+    assert!(
+        first.value["enrolment_request"]["public_key"]
+            .as_str()
+            .is_some()
+    );
+    assert!(!first.value.to_string().contains("pkcs8"));
+    assert!(
+        !first
+            .value
+            .to_string()
+            .contains("private-task-value-must-stay-private")
+    );
+    assert!(
+        first.value["enrolment_request"]
+            .get("task_document")
+            .is_none()
+    );
+    let again = f.api("/gateway/host-setup", "POST", input.clone()).await;
+    assert_eq!(again.status, 200, "{}", again.value);
+    assert_eq!(
+        first.value["enrolment_request"],
+        again.value["enrolment_request"]
+    );
+    let recovered = f
+        .api("/gateway/host-setup/req-new-host", "GET", Value::Null)
+        .await;
+    assert_eq!(recovered.status, 200, "{}", recovered.value);
+    assert_eq!(
+        recovered.value["enrolment_request"],
+        first.value["enrolment_request"]
+    );
+    assert_eq!(recovered.value["permission_granted"], false);
+    assert_eq!(
+        f.api_for(
+            "bob",
+            "/gateway/host-setup/req-new-host",
+            "GET",
+            Value::Null
+        )
+        .await
+        .status,
+        404
+    );
+    let mut changed = input;
+    changed["plan"]["duration_seconds"] = json!(600);
+    assert_eq!(
+        f.api("/gateway/host-setup", "POST", changed).await.status,
+        409
+    );
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    f.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resumed_task_uses_only_the_exact_adopted_document() {
+    let mut f = Fixture::new("").await;
+    let document = f
+        .proxy
+        .runtime
+        .read()
+        .unwrap()
+        .tasks
+        .active()
+        .unwrap()
+        .unwrap()
+        .1
+        .document()
+        .clone();
+    let mut plan = task_plan(&f);
+    plan["allow_run_refresh"] = json!(false);
+    let prepared = f
+        .api(
+            "/gateway/host-setup",
+            "POST",
+            json!({"kind":"prepare","operation_id":"req-resume-prepare","plan":plan}),
+        )
+        .await;
+    assert_eq!(prepared.status, 200, "{}", prepared.value);
+    let public = &prepared.value["enrolment_request"];
+    f.binding.resume_task = true;
+    f.binding.target.target_id = public["target_id"].as_str().unwrap().into();
+    f.binding.credential = format!(
+        "host-task-{}",
+        revision(&("issuer", &f.run.agent_id, "req-resume-prepare"))
+    );
+    let old: Binding = bindings(&crate::policy::parse_toml_document(&f.source).unwrap())
+        .unwrap()
+        .remove("local")
+        .unwrap();
+    let source = f.source.replace(
+        &serde_json::to_string(&serde_json::to_string(&old).unwrap()).unwrap(),
+        &serde_json::to_string(&serde_json::to_string(&f.binding).unwrap()).unwrap(),
+    );
+    f.install(source);
+    assert!(crate::clear_registered_task(&f.proxy.runtime, "approved-task").is_ok());
+    let visible = f.api("/gateway/host", "GET", Value::Null).await;
+    assert_eq!(visible.value["host_bindings"][0]["task_active"], false);
+    assert_eq!(
+        f.api_for(
+            "bob",
+            "/gateway/host/local/resume",
+            "POST",
+            json!({"request_id":"req-other"})
+        )
+        .await
+        .status,
+        403
+    );
+    assert_eq!(
+        f.api(
+            "/gateway/host/local/resume",
+            "POST",
+            json!({"request_id":"req-resume","task_document":{}})
+        )
+        .await
+        .status,
+        400
+    );
+    let resumed = f
+        .api(
+            "/gateway/host/local/resume",
+            "POST",
+            json!({"request_id":"req-resume"}),
+        )
+        .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.value);
+    assert_eq!(
+        f.proxy
+            .runtime
+            .read()
+            .unwrap()
+            .tasks
+            .active()
+            .unwrap()
+            .unwrap()
+            .1
+            .document(),
+        &document
+    );
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    f.stop().await;
 }
 
 #[cfg(target_os = "linux")]

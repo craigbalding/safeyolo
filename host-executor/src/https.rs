@@ -251,12 +251,17 @@ pub(crate) fn command(args: &[String]) -> Result<bool, Refusal> {
         "tls-create --name DNS_NAME --directory PRIVATE_DIRECTORY",
     )?;
     let directory = Path::new(&args[4]);
+    println!("{}", create(&args[2], directory)?);
+    Ok(true)
+}
+
+pub(crate) fn create(name: &str, directory: &Path) -> Result<serde_json::Value, Refusal> {
     #[cfg(unix)]
     server::protected(directory, true)?;
     #[cfg(windows)]
     crate::windows::security::protected(directory, true)?;
     let generated =
-        rcgen::generate_simple_self_signed(vec![args[2].clone()]).map_err(unavailable)?;
+        rcgen::generate_simple_self_signed(vec![name.to_owned()]).map_err(unavailable)?;
     let certificate = directory.join("target.pem");
     let private_key = directory.join("target-key.pem");
     require(
@@ -269,13 +274,11 @@ pub(crate) fn command(args: &[String]) -> Result<bool, Refusal> {
     private_file(&private_key, secret.as_bytes())?;
     private_file(&certificate, generated.cert.pem().as_bytes())?;
     let fingerprint = ring::digest::digest(&ring::digest::SHA256, generated.cert.der());
-    println!(
-        "{}",
+    Ok(
         serde_json::json!({"certificate":certificate,"private_key":private_key,
         "certificate_sha256":fingerprint.as_ref().iter().map(|b|format!("{b:02x}")).collect::<String>(),
-        "name":args[2],"permission_granted":false})
-    );
-    Ok(true)
+        "name":name,"permission_granted":false}),
+    )
 }
 
 #[cfg(test)]

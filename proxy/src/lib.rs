@@ -542,9 +542,13 @@ impl Runtime {
         if let Some(bound) = capture_address {
             admin_shield.protect_capture_endpoint(bound);
         }
-        let tasks = previous
-            .map(|runtime| runtime.tasks.clone())
-            .unwrap_or_default();
+        let tasks = if let Some(runtime) = previous {
+            runtime.tasks.clone()
+        } else if config.native_product {
+            tasks::Registry::open(&config.data_dir().join("tasks.json"))?
+        } else {
+            tasks::Registry::default()
+        };
         let service_mutations = previous
             .map(|runtime| runtime.service_mutations.clone())
             .unwrap_or_default();
@@ -1416,6 +1420,34 @@ pub(crate) fn activate_registered_task(
         .unwrap_or(0);
     *current = runtime;
     Ok(permission_count)
+}
+
+/// Resume only an exact task selected by a trusted authority owner. Keep its
+/// identity check, compilation, durable registry and runtime publication under
+/// the same state lock as ordinary task activation.
+pub(crate) fn resume_host_task(
+    state: &RuntimeState,
+    select: impl FnOnce(&Runtime) -> Result<(String, Value), Error>,
+) -> Result<(), Error> {
+    let mut current = state.write().map_err(|_| "runtime unavailable")?;
+    let (task_id, document) = select(&current)?;
+    let policy = current.policy.as_ref().ok_or("policy unavailable")?;
+    let mut candidate = policy.with_task_document(&document)?;
+    candidate.bind_registered_task(&task_id);
+    let (credential_guard, _) = current
+        .credential_guard
+        .as_ref()
+        .ok_or("credential guard unavailable")?
+        .prepare_policy(&candidate)?;
+    let runtime = Arc::new(Runtime {
+        policy: Some(Arc::new(candidate)),
+        credential_guard: Some(credential_guard),
+        ..current.as_ref().clone()
+    });
+    runtime.configure_declarations()?;
+    current.tasks.install_active(&task_id, document)?;
+    *current = runtime;
+    Ok(())
 }
 
 /// Clear a registered task. When that task is active, prepare the baseline

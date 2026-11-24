@@ -17,6 +17,8 @@ pub enum Verb {
     Output,
     File,
     Cancel,
+    Adopt,
+    Adoption,
 }
 
 impl Verb {
@@ -29,6 +31,8 @@ impl Verb {
             Self::Output => "/v1/host-execution/output",
             Self::File => "/v1/host-execution/file",
             Self::Cancel => "/v1/host-execution/cancel",
+            Self::Adopt => "/v1/host-execution/adopt",
+            Self::Adoption => "/v1/host-execution/adoption",
         }
     }
 }
@@ -64,6 +68,19 @@ pub struct Invocation {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     Discover,
+    Adopt {
+        operation_id: String,
+        operation: Box<Operation>,
+        base_package_sha256: String,
+        /// Derived by the trusted issuer from its complete adopted package.
+        #[serde(default)]
+        package_sha256: String,
+        #[serde(default)]
+        observed_at: u64,
+    },
+    Adoption {
+        request_id: String,
+    },
     Propose {
         invocation: Invocation,
     },
@@ -101,6 +118,8 @@ impl Action {
             Self::Output { .. } => Verb::Output,
             Self::File { .. } => Verb::File,
             Self::Cancel { .. } => Verb::Cancel,
+            Self::Adopt { .. } => Verb::Adopt,
+            Self::Adoption { .. } => Verb::Adoption,
         }
     }
     pub fn job_id(&self) -> Option<&str> {
@@ -445,6 +464,11 @@ impl Receipt {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Response {
+    Adoption {
+        original: Box<SignedRequest>,
+        package_sha256: String,
+        operation_sha256: String,
+    },
     Discovery {
         discovery: Box<Discovery>,
     },

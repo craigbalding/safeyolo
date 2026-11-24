@@ -1,12 +1,14 @@
-//! Process-local uploaded task policies, separate from the active task overlay.
+//! Uploaded task policies and the exact selected task overlay.
 //!
 //! The operator facade owns authentication. Registration validates the shared
 //! policy schema and retains the supplied document; it does not compile,
-//! activate, persist, or add canonical defaults to that document.
+//! activate or add canonical defaults to that document. The native instance
+//! retains registration and activation across restarts in its private data.
 
 use std::{
     collections::HashMap,
     fmt,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -70,19 +72,90 @@ impl Drop for RawTask {
 }
 
 /// One shared registry per proxy process. Clones share registration state.
-/// A fresh default registry is empty and has no persistence; activation is explicit.
+/// Tests can use an ephemeral default; the native instance opens its own file.
 #[derive(Clone, Default)]
 pub struct Registry {
     state: Arc<Mutex<RegistryState>>,
+    path: Option<PathBuf>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct RegistryState {
     entries: HashMap<String, Arc<RawTask>>,
     active: Option<(String, Arc<RawTask>)>,
 }
 
 impl Registry {
+    pub(crate) fn install_active(&self, task_id: &str, document: Value) -> Result<(), Error> {
+        crate::policy::validate_task_id(task_id).map_err(|_| Error::InvalidId)?;
+        crate::policy::validate_task_document(&document).map_err(|_| Error::InvalidPolicy)?;
+        let task = Arc::new(RawTask { document });
+        let mut state = self.state.lock().map_err(|_| Error::Poisoned)?;
+        let mut candidate = state.clone();
+        candidate.entries.insert(task_id.to_owned(), task.clone());
+        candidate.active = Some((task_id.to_owned(), task));
+        self.save(&candidate)?;
+        *state = candidate;
+        Ok(())
+    }
+    pub(crate) fn open(path: &Path) -> Result<Self, Error> {
+        let registry = Self {
+            path: Some(path.to_owned()),
+            ..Self::default()
+        };
+        let Some(document) = crate::guest_commands::read_state_bounded(path, u64::MAX)
+            .map_err(|_| Error::Poisoned)?
+        else {
+            return Ok(registry);
+        };
+        let raw = RawTask { document };
+        let document = raw.document();
+        let mut restored = RegistryState::default();
+        for (id, task) in document["entries"]
+            .as_object()
+            .ok_or(Error::InvalidPolicy)?
+        {
+            crate::policy::validate_task_id(id).map_err(|_| Error::InvalidId)?;
+            crate::policy::validate_task_document(task).map_err(|_| Error::InvalidPolicy)?;
+            restored.entries.insert(
+                id.clone(),
+                Arc::new(RawTask {
+                    document: task.clone(),
+                }),
+            );
+        }
+        if !document["active"].is_null() {
+            let id = document["active"]["id"].as_str().ok_or(Error::InvalidId)?;
+            crate::policy::validate_task_id(id).map_err(|_| Error::InvalidId)?;
+            let task = &document["active"]["document"];
+            crate::policy::validate_task_document(task).map_err(|_| Error::InvalidPolicy)?;
+            if !restored.entries.contains_key(id) {
+                return Err(Error::InvalidId);
+            }
+            restored.active = Some((
+                id.to_owned(),
+                Arc::new(RawTask {
+                    document: task.clone(),
+                }),
+            ));
+        }
+        *registry.state.lock().map_err(|_| Error::Poisoned)? = restored;
+        Ok(registry)
+    }
+
+    fn save(&self, state: &RegistryState) -> Result<(), Error> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        let mut document = serde_json::json!({
+            "entries": state.entries.iter().map(|(id, task)| (id.clone(), task.document().clone())).collect::<serde_json::Map<_,_>>(),
+            "active": state.active.as_ref().map(|(id, task)| serde_json::json!({"id":id,"document":task.document()}))
+        });
+        let saved = crate::guest_commands::write_json(path, &document).map_err(|_| Error::Poisoned);
+        crate::credentials::wipe_json(&mut document);
+        saved
+    }
+
     /// Validate then replace one entry atomically. Every error preserves the
     /// previous entry; even rejected input stays in a wiping owner throughout.
     pub fn upsert(&self, task_id: &str, document: Value) -> Result<Upsert, Error> {
@@ -91,7 +164,10 @@ impl Registry {
         let mut state = self.state.lock().map_err(|_| Error::Poisoned)?;
         let permission_count = crate::policy::validate_task_document(raw.document())
             .map_err(|_| Error::InvalidPolicy)?;
-        state.entries.insert(task_id.to_owned(), Arc::new(raw));
+        let mut candidate = state.clone();
+        candidate.entries.insert(task_id.to_owned(), Arc::new(raw));
+        self.save(&candidate)?;
+        *state = candidate;
         Ok(Upsert { permission_count })
     }
 
@@ -101,7 +177,10 @@ impl Registry {
         crate::policy::validate_task_id(task_id).map_err(|_| Error::InvalidId)?;
         let mut state = self.state.lock().map_err(|_| Error::Poisoned)?;
         let task = state.entries.get(task_id).cloned().ok_or(Error::NotFound)?;
-        state.active = Some((task_id.to_owned(), task.clone()));
+        let mut candidate = state.clone();
+        candidate.active = Some((task_id.to_owned(), task.clone()));
+        self.save(&candidate)?;
+        *state = candidate;
         Ok(task)
     }
 
@@ -110,15 +189,18 @@ impl Registry {
     pub(crate) fn clear(&self, task_id: &str) -> Result<bool, Error> {
         crate::policy::validate_task_id(task_id).map_err(|_| Error::InvalidId)?;
         let mut state = self.state.lock().map_err(|_| Error::Poisoned)?;
-        let removed = state.entries.remove(task_id).is_some();
+        let mut candidate = state.clone();
+        let removed = candidate.entries.remove(task_id).is_some();
         if removed
             && state
                 .active
                 .as_ref()
                 .is_some_and(|(active_id, _)| active_id == task_id)
         {
-            state.active = None;
+            candidate.active = None;
         }
+        self.save(&candidate)?;
+        *state = candidate;
         Ok(removed)
     }
 
@@ -151,6 +233,48 @@ impl Registry {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn restart_retains_exact_activation_and_explicit_clear() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tasks.json");
+        let original = json!({"permissions":[{"action":"network:request","resource":"original.invalid/*","effect":"deny"}]});
+        let pending = json!({"permissions":[]});
+        let registry = Registry::open(&path).unwrap();
+        registry.upsert("task", original.clone()).unwrap();
+        registry.activate("task").unwrap();
+        registry.upsert("task", pending.clone()).unwrap();
+        drop(registry);
+        let registry = Registry::open(&path).unwrap();
+        assert_eq!(registry.get("task").unwrap().unwrap().document(), &pending);
+        assert_eq!(registry.active().unwrap().unwrap().1.document(), &original);
+        registry.clear("task").unwrap();
+        drop(registry);
+        let registry = Registry::open(&path).unwrap();
+        assert_eq!(registry.count().unwrap(), 0);
+        assert!(registry.active().unwrap().is_none());
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn failed_persistence_preserves_the_active_and_registered_task() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tasks.json");
+        let registry = Registry::open(&path).unwrap();
+        let original = json!({"permissions":[]});
+        registry.upsert("task", original.clone()).unwrap();
+        registry.activate("task").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(registry.upsert("task", json!({})), Err(Error::Poisoned));
+        assert_eq!(registry.clear("task"), Err(Error::Poisoned));
+        assert_eq!(registry.get("task").unwrap().unwrap().document(), &original);
+        assert_eq!(registry.active().unwrap().unwrap().1.document(), &original);
+    }
 
     #[test]
     fn replacement_waits_for_activation_and_clear_drops_selected_snapshot() {

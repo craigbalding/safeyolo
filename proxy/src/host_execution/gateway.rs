@@ -22,6 +22,12 @@ pub(crate) struct Binding {
     pub service: String,
     pub endpoint: Endpoint,
     pub task_revision: String,
+    /// Permit activation of the exact task retained with the vault-held key.
+    /// Raw task documents never enter public preparation or encoded bindings.
+    #[serde(default)]
+    pub resume_task: bool,
+    #[serde(default)]
+    pub intent: Option<safeyolo_host_executor::enrolment::TaskIntent>,
     pub timeout_ms: u64,
     pub request_bytes: usize,
     pub response_bytes: usize,
@@ -159,6 +165,29 @@ impl Binding {
         runtime: &Runtime,
         run: &AgentRun,
     ) -> Result<Principal, Refusal> {
+        let principal = self.eligible_run(runtime, run)?;
+        let grant = self.grant()?;
+        let active = runtime
+            .tasks
+            .active()
+            .map_err(|_| refused(RefusalCode::Unavailable, "task registry unavailable"))?;
+        if active.as_ref().is_none_or(|(id, task)| {
+            Some(id) != grant.principal.task_id.as_ref()
+                || revision(task.document()) != self.task_revision
+        }) {
+            return Err(refused(
+                RefusalCode::Principal,
+                "host binding requires its activated operator task revision; resume this binding when its standing authority permits it",
+            ));
+        }
+        Ok(principal)
+    }
+
+    pub(crate) fn eligible_run(
+        &self,
+        runtime: &Runtime,
+        run: &AgentRun,
+    ) -> Result<Principal, Refusal> {
         let policy = runtime
             .policy
             .as_ref()
@@ -170,10 +199,6 @@ impl Binding {
             ));
         }
         let grant = self.grant()?;
-        let active = runtime
-            .tasks
-            .active()
-            .map_err(|_| refused(RefusalCode::Unavailable, "task registry unavailable"))?;
         let authority = &self.target.issuers[&self.issuer_id].authority;
         if now() < grant.not_before
             || now() >= grant.expires_at
@@ -186,19 +211,17 @@ impl Binding {
                 "host grant or authority freshness expired",
             ));
         }
-        if !run.current(policy)
-            || grant.principal.run != *run
-            || active.as_ref().is_none_or(|(id, task)| {
-                Some(id) != grant.principal.task_id.as_ref()
-                    || revision(task.document()) != self.task_revision
-            })
-        {
+        let principal = Principal {
+            run: run.clone(),
+            task_id: grant.principal.task_id.clone(),
+        };
+        if !run.current(policy) || !grant.allows_principal(&principal) {
             return Err(refused(
                 RefusalCode::Principal,
                 "host binding requires its trusted current run and activated operator task revision",
             ));
         }
-        Ok(grant.principal.clone())
+        Ok(principal)
     }
 
     fn request(&self, principal: Principal, input: &Input) -> Result<Request, Refusal> {
@@ -215,6 +238,42 @@ impl Binding {
                     .saturating_add(self.target.max_authority_age_seconds),
             )
             .min(self.grant()?.expires_at);
+        let mut action = input.action.clone();
+        if let Action::Adopt {
+            operation_id,
+            operation,
+            base_package_sha256,
+            package_sha256,
+            observed_at,
+        } = &mut action
+        {
+            if *base_package_sha256 != revision(&self.target.package) {
+                return Err(refused(
+                    RefusalCode::Stale,
+                    "code proposal has another base package; inspect the original adoption before preparing again",
+                ));
+            }
+            let next = revision(&self.target.revised_package(operation_id, operation)?);
+            if !package_sha256.is_empty() && *package_sha256 != next {
+                return Err(refused(
+                    RefusalCode::Stale,
+                    "code proposal's resulting package differs from the trusted issuer",
+                ));
+            }
+            *package_sha256 = next;
+            *observed_at = issuer.authority.observed_at;
+        }
+        // A recovery read must work after a target commit even when the
+        // issuer still has its old package. Carry trusted authority pins;
+        // discovery's exact-package check deliberately refuses that split.
+        let expected = if input.expected.is_none() && matches!(action, Action::Adoption { .. }) {
+            Some(
+                self.target
+                    .request_revisions(&self.issuer_id, &self.grant_id, &action)?,
+            )
+        } else {
+            input.expected.clone()
+        };
         Ok(Request {
             version: VERSION.into(),
             required_features: FEATURES.iter().map(|s| s.to_string()).collect(),
@@ -224,8 +283,8 @@ impl Binding {
             grant_id: self.grant_id.clone(),
             principal,
             expires_at,
-            expected: input.expected.clone(),
-            action: input.action.clone(),
+            expected,
+            action,
             untrusted_rationale: input.untrusted_rationale.clone(),
         })
     }
@@ -248,6 +307,76 @@ impl Binding {
         }
         Ok(())
     }
+}
+
+pub(crate) async fn resume(
+    state: &RuntimeState,
+    run: &AgentRun,
+    name: &str,
+) -> Result<Value, Error> {
+    let runtime = state
+        .read()
+        .map_err(|_| "host runtime unavailable")?
+        .clone();
+    let before = binding(
+        runtime.policy.as_ref().ok_or("host policy unavailable")?,
+        name,
+    )?;
+    before.eligible_run(&runtime, run)?;
+    if !before.resume_task {
+        return Err("this binding has no operator-adopted task continuation".into());
+    }
+    let loaded = runtime
+        .gateway_vault
+        .load_async()
+        .await?
+        .ok_or("host task credential store unavailable")?;
+    loaded.vault.reload_if_changed()?;
+    let snapshot = loaded
+        .vault
+        .snapshot(&before.credential)?
+        .ok_or("retained host task unavailable")?;
+    if snapshot
+        .credential()
+        .is_expired(time::OffsetDateTime::now_utc())?
+    {
+        return Err("host task credential expired".into());
+    }
+    let saved = super::setup::read_key(snapshot.credential())?;
+    crate::resume_host_task(state, |runtime| {
+        let policy = runtime.policy.as_ref().ok_or("host policy unavailable")?;
+        let binding = binding(policy, name)?;
+        let principal = binding.eligible_run(runtime, run)?;
+        super::setup::owner(&saved.request, runtime, run)?;
+        if !loaded.vault.is_current(&snapshot)? {
+            return Err("host task credential changed; inspect the selected setup".into());
+        }
+        if revision(&binding) != revision(&before)
+            || saved.request.target_id != binding.target.target_id
+            || saved.request.issuer_id != binding.issuer_id
+            || saved.request.task_revision != binding.task_revision
+            || revision(&saved.task_document) != binding.task_revision
+            || saved.request.principal.task_id != principal.task_id
+        {
+            return Err("retained host task or binding changed; inspect the selected setup".into());
+        }
+        let task_id = principal.task_id.ok_or("host task identity unavailable")?;
+        if runtime
+            .tasks
+            .active()?
+            .as_ref()
+            .is_some_and(|(id, active)| {
+                id != &task_id || revision(active.document()) != binding.task_revision
+            })
+        {
+            return Err(
+                "another task is active; select the intended task through its existing owner"
+                    .into(),
+            );
+        }
+        Ok((task_id, saved.task_document.clone()))
+    })?;
+    Ok(json!({"binding":name,"status":"task_active","run":run,"target_execution":"not_started"}))
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -336,7 +465,7 @@ pub(crate) fn approval_revision(policy: &Policy, action: &Value) -> Option<Strin
     let request: Request = serde_json::from_value(action["request"].clone()).ok()?;
     let grant = binding.grant().ok()?;
     if !binding.issuer_current(policy)
-        || request.principal != grant.principal
+        || !grant.allows_principal(&request.principal)
         || !request.principal.run.current(policy)
         || action["binding_revision"] != revision(&binding)
         || action["policy_revision"] != policy.host_gateway_revision()
@@ -452,8 +581,7 @@ async fn dispatch(
         .as_ref()
         .ok_or("credential guard unavailable")?;
     let credential_binding = guard.approval_binding(credential.credential());
-    let bytes =
-        zeroize::Zeroizing::new(STANDARD.decode(credential.credential().value.expose_secret())?);
+    let bytes = super::setup::signing_bytes(credential.credential())?;
     let key = Ed25519KeyPair::from_pkcs8(&bytes)
         .map_err(|_| "host signing credential is not Ed25519 PKCS#8")?;
     if STANDARD.encode(key.public_key().as_ref())
@@ -471,6 +599,11 @@ async fn dispatch(
         binding
             .target
             .authenticate("POST", request.action.verb().path(), &bytes, now())?;
+    if matches!(request.action, Action::Adopt { .. }) {
+        let package = authorized.agent_code_package()?;
+        let observed = SignedCatalogue::from_agent_request(signed.clone(), package)?;
+        super::check_agent_catalogue(policy, &observed)?;
+    }
     if matches!(
         request.action,
         Action::Propose { .. } | Action::Invoke { .. }
@@ -591,6 +724,40 @@ async fn dispatch(
                     });
                 }
             }
+            if let Response::Adoption { original, .. } = &response {
+                let Action::Adopt {
+                    operation_id,
+                    operation,
+                    base_package_sha256,
+                    package_sha256,
+                    ..
+                } = &original.request.action
+                else {
+                    return Err(refused(
+                        RefusalCode::Protocol,
+                        "target adoption has no code request",
+                    )
+                    .into());
+                };
+                if revision(&binding.target.package) != *package_sha256 {
+                    if revision(&binding.target.package) != *base_package_sha256 {
+                        return Ok(Reply {
+                            status: 409,
+                            value: json!({"error":"HOST_ADOPTION_BASE_CHANGED","target_result":response,
+                            "next_action":"The target retained this adoption, but the issuer has another base package. Reconcile the original target and issuer catalogue before another revision; no program was invoked."}),
+                        });
+                    }
+                    let package = binding.target.revised_package(operation_id, operation)?;
+                    let observed = SignedCatalogue::from_agent_request(*original.clone(), package)?;
+                    if let Err(error) = super::reconcile_agent_catalogue(state, &observed) {
+                        return Ok(Reply {
+                            status: 503,
+                            value: json!({"error":"HOST_ADOPTION_ISSUER_PENDING","target_result":response,"detail":error.to_string(),
+                            "next_action":"Read the original adoption through this binding to reconcile the committed target and issuer. No code was executed or request retried."}),
+                        });
+                    }
+                }
+            }
             let mut event = crate::audit::Event::new(
                 "gateway.host_result",
                 crate::audit::Kind::Gateway,
@@ -635,7 +802,10 @@ async fn unavailable_result(
     job_id: &str,
     code: &str,
 ) -> Reply {
-    let uncertain = matches!(input.action, Action::Invoke { .. } | Action::Cancel { .. });
+    let uncertain = matches!(
+        input.action,
+        Action::Invoke { .. } | Action::Cancel { .. } | Action::Adopt { .. }
+    );
     let outcome = if uncertain {
         "uncertain"
     } else {
@@ -701,6 +871,10 @@ pub(crate) fn assess(policy: &Policy) -> Result<Value, Error> {
             "grant_id":binding.grant_id,"principal":grant.principal,"full_grant":grant,"target_ceiling":binding.target.ceiling,
             "target_families":binding.target.families,"binding_revision":revision(&binding),"task_revision":binding.task_revision,
             "credential_custody":"Signing material remains in the existing encrypted vault. The binding contains only its reference.",
+            "agent_interpretation_of_intent":binding.intent,
+            "target_transport":binding.endpoint,
+            "service_readiness_and_reach":{"binding":"unobserved","application":"unobserved","audience_reach":"unverified",
+                "authentication":"not inferred from control-channel TLS","limits":"Intent is caller-supplied context. The full grant and target ceiling above describe authority; only actual workload observations can establish application binding, readiness, publication or reach."},
             "enforcement_and_effects":model,"limitations":["Issuer-adopted input, not a current target or running-job observation. Gateway policy and action checks still apply.",
                 "A grant ending does not undo persistent effects or stop an admitted job. Target execution deadlines and explicit cancellation govern running work."],
             "independent_task_action_checks":{"adopted":checkers,
@@ -717,6 +891,47 @@ fn validate_response(
     response: &Response,
 ) -> Result<(), Refusal> {
     let valid = match (response, &request.action) {
+        (
+            Response::Adoption {
+                original,
+                package_sha256,
+                operation_sha256,
+            },
+            Action::Adopt { .. } | Action::Adoption { .. },
+        ) => {
+            let Action::Adopt {
+                operation_id,
+                operation,
+                package_sha256: signed_package,
+                ..
+            } = &original.request.action
+            else {
+                return Err(refused(
+                    RefusalCode::Protocol,
+                    "target adoption has no code request",
+                ));
+            };
+            original.request.target_id == request.target_id
+                && original.request.issuer_id == request.issuer_id
+                && original.request.grant_id == request.grant_id
+                && binding
+                    .grant()?
+                    .allows_principal(&original.request.principal)
+                && original.key_id == binding.key_id
+                && package_sha256 == signed_package
+                && *operation_sha256 == {
+                    let mut package = binding.target.package.clone();
+                    package
+                        .operations
+                        .insert(operation_id.clone(), *operation.clone());
+                    package.operation_sha256(operation_id)?
+                }
+                && match &request.action {
+                    Action::Adopt { .. } => revision(&original.request) == revision(request),
+                    Action::Adoption { request_id } => original.request.request_id == *request_id,
+                    _ => false,
+                }
+        }
         (Response::Refused { .. }, _) => true,
         (Response::Discovery { discovery }, Action::Discover) => {
             discovery.target_id == binding.target.target_id
@@ -745,7 +960,11 @@ fn validate_response(
             receipt.target_id == request.target_id
                 && receipt.issuer_id == request.issuer_id
                 && receipt.grant_id == request.grant_id
-                && receipt.principal == request.principal
+                && if matches!(request.action, Action::Invoke { .. }) {
+                    receipt.principal == request.principal
+                } else {
+                    binding.grant()?.allows_principal(&receipt.principal)
+                }
                 && if matches!(request.action, Action::Invoke { .. }) {
                     receipt.request_id == request.request_id
                         && receipt.request_sha256 == revision(request)

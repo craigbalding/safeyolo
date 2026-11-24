@@ -629,6 +629,8 @@ fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
         ceiling: config.target.package.operations["observe"].clone(),
         allow_narrower: true,
         allow_implementation_updates: true,
+        allow_agent_code: false,
+        agent_dependency_bytes: 0,
     };
     config.target.ceiling.get_mut("observe").unwrap().updates = Some(rule.clone());
     config
@@ -663,6 +665,7 @@ fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
     fs::write(&observed, serde_json::to_vec(&active).unwrap()).unwrap();
     config.catalogue = Some(CatalogueAdoption {
         policy: CataloguePolicy {
+            agent_code_keys: BTreeMap::new(),
             publisher: "publisher".into(),
             public_key: STANDARD.encode(f.key.public_key().as_ref()),
             package_name: config.target.package.name.clone(),
@@ -848,6 +851,8 @@ fn installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authori
         ceiling: op.clone(),
         allow_narrower: true,
         allow_implementation_updates: true,
+        allow_agent_code: false,
+        agent_dependency_bytes: 0,
     };
     for scope in [
         config.target.ceiling.get_mut("observe").unwrap(),
@@ -885,6 +890,7 @@ fn installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authori
     fs::write(&observed, serde_json::to_vec(&active).unwrap()).unwrap();
     config.catalogue = Some(CatalogueAdoption {
         policy: CataloguePolicy {
+            agent_code_keys: BTreeMap::new(),
             publisher: "publisher".into(),
             public_key: STANDARD.encode(f.key.public_key().as_ref()),
             package_name: config.target.package.name.clone(),

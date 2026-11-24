@@ -1246,11 +1246,11 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 - [host-executor/tests/unix_native.rs](../host-executor/tests/unix_native.rs#L263) — Real Unix installed executor; local authenticated HTTP; explicit native prerequisites. Evidence: Independent file and socket observations plus canonical job/output and owned cgroup/service checks; ignored unless explicitly selected; no Windows or whole-workflow acceptance.
   Exact identities: [source inventory](#witness-host-executor-tests-unix-native-rs).
-- [proxy/tests/host_execution.rs](../proxy/tests/host_execution.rs#L174) — Controlled authenticated protocol, signatures, ledger and HTTP fixtures. Evidence: Protocol/component evidence; simulated dispatch does not establish native containment.
+- [proxy/tests/host_execution.rs](../proxy/tests/host_execution.rs#L175) — Controlled authenticated protocol, signatures, ledger and HTTP fixtures. Evidence: Protocol/component evidence; simulated dispatch does not establish native containment.
   Exact identities: [source inventory](#witness-proxy-tests-host-execution-rs).
 - [proxy/src/policy_adoption_tests.rs](../proxy/src/policy_adoption_tests.rs#L20) — Controlled saved/runtime catalogue and gateway binding adoption. Evidence: Exact binding snapshots, rejected announcement stability and policy transaction rollback; no native execution claim.
   Exact identities: [source inventory](#witness-proxy-src-policy-adoption-tests-rs).
-- [proxy/src/host_execution/gateway/tests.rs](../proxy/src/host_execution/gateway/tests.rs#L404) — Controlled gateway authentication, scope, dispatch and reply-loss fixtures. Evidence: Real gateway request parsing and controlled upstream; not a deployed target or native boundary.
+- [proxy/src/host_execution/gateway/tests.rs](../proxy/src/host_execution/gateway/tests.rs#L420) — Controlled gateway authentication, scope, dispatch and reply-loss fixtures. Evidence: Real gateway request parsing and controlled upstream; not a deployed target or native boundary.
   Exact identities: [source inventory](#witness-proxy-src-host-execution-gateway-tests-rs).
 - [proxy/src/host_execution/gateway/task_action_tests.rs](../proxy/src/host_execution/gateway/task_action_tests.rs#L89) — Configured task/action admission and bounded checker fixtures. Evidence: Controlled check results and upstream dispatch counts; model measurements remain separate supplementary evidence.
   Exact identities: [source inventory](#witness-proxy-src-host-execution-gateway-task-action-tests-rs).
@@ -1272,57 +1272,57 @@ Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; c
 Selection: manual `native-authority --suite host-execution` (prepared installed executor, probe and owned service); ignored by default.
 
 - [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L618) — `#![cfg(unix)]`; `#[ignore = "requires the existing native Unix fixture and prepared probe or C compiler"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authority -- --exact --ignored`](../host-executor/tests/unix_native.rs#L833) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_check_serve_and_reload_share_ledger_validation -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1106) — `#![cfg(unix)]`; `#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_unix_read_paths_resolve_without_sibling_contents -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1187) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authority -- --exact --ignored`](../host-executor/tests/unix_native.rs#L836) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_check_serve_and_reload_share_ledger_validation -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1112) — `#![cfg(unix)]`; `#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_unix_read_paths_resolve_without_sibling_contents -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1193) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]`
 Selection: ignored by default.
 
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_linux_broader_tcp_directions_and_descendants -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1208) — `#![cfg(unix)]`; `#[cfg(target_os = "linux")]`; `#[ignore = "requires the native Linux fixture with bubblewrap and delegated cgroup v2"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_linux_scoped_writes_children_and_retained_partial_results -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1510) — `#![cfg(unix)]`; `#[cfg(target_os = "linux")]`; `#[ignore = "requires the native Linux fixture with bubblewrap and delegated cgroup v2"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_macos_scoped_writes_and_retained_results -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1614) — `#![cfg(unix)]`; `#[cfg(target_os = "macos")]`; `#[ignore = "requires native macOS Seatbelt; prepared probe or C compiler"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_macos_broader_network_directions_and_ports -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1780) — `#![cfg(unix)]`; `#[cfg(target_os = "macos")]`; `#[ignore = "requires native macOS Seatbelt; prepared probe or C compiler"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_linux_broader_tcp_directions_and_descendants -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1214) — `#![cfg(unix)]`; `#[cfg(target_os = "linux")]`; `#[ignore = "requires the native Linux fixture with bubblewrap and delegated cgroup v2"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_linux_scoped_writes_children_and_retained_partial_results -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1516) — `#![cfg(unix)]`; `#[cfg(target_os = "linux")]`; `#[ignore = "requires the native Linux fixture with bubblewrap and delegated cgroup v2"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_macos_scoped_writes_and_retained_results -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1620) — `#![cfg(unix)]`; `#[cfg(target_os = "macos")]`; `#[ignore = "requires native macOS Seatbelt; prepared probe or C compiler"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_macos_broader_network_directions_and_ports -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1786) — `#![cfg(unix)]`; `#[cfg(target_os = "macos")]`; `#[ignore = "requires native macOS Seatbelt; prepared probe or C compiler"]`
 Selection: manual `native-authority --suite host-execution` (prepared installed executor, probe and owned service); ignored by default.
 
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_unix_bounds_lifecycle_reload_and_lost_reply -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2093) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_storage_exhaustion_preserves_output_replay_and_restart -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2312) — `#![cfg(unix)]`; `#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_user_service_profiles_and_channel_refusals -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2384) — `#![cfg(unix)]`; `#[ignore = "requires SAFEYOLO_HOST_EXECUTOR_SERVICE naming an operator-prepared owned user service"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2553) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_dependency_swaps_preserve_metadata_but_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2617) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_api_authentication_and_cross_principal_reads_cannot_change_authority -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2742) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_adaptive_investigation_and_retained_configuration_effects -- --exact --ignored`](../host-executor/tests/unix_native.rs#L3209) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture, installed assessor CLI and owned user service"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_unix_bounds_lifecycle_reload_and_lost_reply -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2099) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_storage_exhaustion_preserves_output_replay_and_restart -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2318) — `#![cfg(unix)]`; `#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_user_service_profiles_and_channel_refusals -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2390) — `#![cfg(unix)]`; `#[ignore = "requires SAFEYOLO_HOST_EXECUTOR_SERVICE naming an operator-prepared owned user service"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2559) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_dependency_swaps_preserve_metadata_but_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2623) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_api_authentication_and_cross_principal_reads_cannot_change_authority -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2748) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_adaptive_investigation_and_retained_configuration_effects -- --exact --ignored`](../host-executor/tests/unix_native.rs#L3215) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture, installed assessor CLI and owned user service"]`
 Selection: ignored by default.
 
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_unix_selected_endpoint_inspection -- --exact --ignored`](../host-executor/tests/unix_native.rs#L3330) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; Linux also needs bubblewrap and delegated cgroup v2"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_unix_selected_endpoint_inspection -- --exact --ignored`](../host-executor/tests/unix_native.rs#L3336) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; Linux also needs bubblewrap and delegated cgroup v2"]`
 
 <a id="witness-proxy-tests-host-execution-rs"></a>
 ### [`proxy/tests/host_execution.rs`](../proxy/tests/host_execution.rs)
 
 Selection: manual native phase `host-execution` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_admission_replay_restart_and_uncertain_process_reservation -- --exact`](../proxy/tests/host_execution.rs#L174)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_cancellation_output_limits_ownership_and_fresh_authority -- --exact`](../proxy/tests/host_execution.rs#L262)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_ledger_lock_target_and_capacity_refusals_leave_no_admission -- --exact`](../proxy/tests/host_execution.rs#L382)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_ledger_refuses_links_and_public_files -- --exact`](../proxy/tests/host_execution.rs#L412)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_admission_replay_restart_and_uncertain_process_reservation -- --exact`](../proxy/tests/host_execution.rs#L175)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_cancellation_output_limits_ownership_and_fresh_authority -- --exact`](../proxy/tests/host_execution.rs#L263)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_ledger_lock_target_and_capacity_refusals_leave_no_admission -- --exact`](../proxy/tests/host_execution.rs#L383)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_ledger_refuses_links_and_public_files -- --exact`](../proxy/tests/host_execution.rs#L413)
 Selection: child helper: Executed by durable_process_failure_after_committed_admission with its private child environment; no separate phase obligation..
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_crash_child -- --exact --ignored`](../proxy/tests/host_execution.rs#L430) — `#[ignore = "child process for durable_process_failure_after_committed_admission"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_crash_child -- --exact --ignored`](../proxy/tests/host_execution.rs#L431) — `#[ignore = "child process for durable_process_failure_after_committed_admission"]`
 Selection: manual native phase `host-execution` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_process_failure_after_committed_admission -- --exact`](../proxy/tests/host_execution.rs#L455)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_storage_failure_rolls_back_call_and_replay_reservations -- --exact`](../proxy/tests/host_execution.rs#L477)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_mutation_capacity_preserves_one_cancellation_per_active_job -- --exact`](../proxy/tests/host_execution.rs#L511)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_uncertain_concurrency_survives_a_new_grant_revision -- --exact`](../proxy/tests/host_execution.rs#L601)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution shared_negative_fixtures_cross_authenticated_validation -- --exact`](../proxy/tests/host_execution.rs#L656)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution signatures_rotation_expiry_and_fresh_authority_are_independent -- --exact`](../proxy/tests/host_execution.rs#L679)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution membership_scope_defaults_and_proposal_inputs_do_not_confer_authority -- --exact`](../proxy/tests/host_execution.rs#L792)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution one_package_binds_native_gateway_material_and_target_scope -- --exact`](../proxy/tests/host_execution.rs#L939)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution generated_gateway_contract_requires_bound_resource_and_exact_operation_payload -- --exact`](../proxy/tests/host_execution.rs#L987)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution invocation_cannot_replace_definitions_or_add_an_executable -- --exact`](../proxy/tests/host_execution.rs#L1038)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution same_authenticated_http_protocol_on_standalone_and_safeyolo_targets -- --exact`](../proxy/tests/host_execution.rs#L1322)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution issuer_namespaces_job_disclosure_and_terminal_states_are_explicit -- --exact`](../proxy/tests/host_execution.rs#L1515)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution command_words_preserve_fixed_implementation_and_never_evaluate_shell_text -- --exact`](../proxy/tests/host_execution.rs#L1640)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution local_action_ceiling_and_content_revisions_cannot_be_bypassed_by_labels -- --exact`](../proxy/tests/host_execution.rs#L1684)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution stale_preparation_refreshes_through_real_discovery_proposal_and_ledger_without_invoking -- --exact`](../proxy/tests/host_execution.rs#L1736)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_process_failure_after_committed_admission -- --exact`](../proxy/tests/host_execution.rs#L456)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_storage_failure_rolls_back_call_and_replay_reservations -- --exact`](../proxy/tests/host_execution.rs#L478)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_mutation_capacity_preserves_one_cancellation_per_active_job -- --exact`](../proxy/tests/host_execution.rs#L512)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution durable_uncertain_concurrency_survives_a_new_grant_revision -- --exact`](../proxy/tests/host_execution.rs#L602)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution shared_negative_fixtures_cross_authenticated_validation -- --exact`](../proxy/tests/host_execution.rs#L657)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution signatures_rotation_expiry_and_fresh_authority_are_independent -- --exact`](../proxy/tests/host_execution.rs#L680)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution membership_scope_defaults_and_proposal_inputs_do_not_confer_authority -- --exact`](../proxy/tests/host_execution.rs#L793)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution one_package_binds_native_gateway_material_and_target_scope -- --exact`](../proxy/tests/host_execution.rs#L940)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution generated_gateway_contract_requires_bound_resource_and_exact_operation_payload -- --exact`](../proxy/tests/host_execution.rs#L988)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution invocation_cannot_replace_definitions_or_add_an_executable -- --exact`](../proxy/tests/host_execution.rs#L1039)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution same_authenticated_http_protocol_on_standalone_and_safeyolo_targets -- --exact`](../proxy/tests/host_execution.rs#L1326)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution issuer_namespaces_job_disclosure_and_terminal_states_are_explicit -- --exact`](../proxy/tests/host_execution.rs#L1519)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution command_words_preserve_fixed_implementation_and_never_evaluate_shell_text -- --exact`](../proxy/tests/host_execution.rs#L1644)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution local_action_ceiling_and_content_revisions_cannot_be_bypassed_by_labels -- --exact`](../proxy/tests/host_execution.rs#L1688)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution stale_preparation_refreshes_through_real_discovery_proposal_and_ledger_without_invoking -- --exact`](../proxy/tests/host_execution.rs#L1740)
 
 <a id="witness-proxy-src-policy-adoption-tests-rs"></a>
 ### [`proxy/src/policy_adoption_tests.rs`](../proxy/src/policy_adoption_tests.rs)
@@ -1330,26 +1330,28 @@ Selection: manual native phase `host-execution` (named execution receipt; ignore
 Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
 - [`cargo test --manifest-path proxy/Cargo.toml --lib policy_adoption_tests::catalogue_discovery_uses_actual_bytes_and_activates_coherent_gateway_definitions -- --exact`](../proxy/src/policy_adoption_tests.rs#L20)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy_adoption_tests::adoption_save_failure_preserves_saved_and_active_policy -- --exact`](../proxy/src/policy_adoption_tests.rs#L284)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib policy_adoption_tests::adoption_receipt_failure_rolls_back_actual_saved_and_active_policy -- --exact`](../proxy/src/policy_adoption_tests.rs#L332)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy_adoption_tests::adoption_save_failure_preserves_saved_and_active_policy -- --exact`](../proxy/src/policy_adoption_tests.rs#L287)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib policy_adoption_tests::adoption_receipt_failure_rolls_back_actual_saved_and_active_policy -- --exact`](../proxy/src/policy_adoption_tests.rs#L335)
 
 <a id="witness-proxy-src-host-execution-gateway-tests-rs"></a>
 ### [`proxy/src/host_execution/gateway/tests.rs`](../proxy/src/host_execution/gateway/tests.rs)
 
 Selection: manual native phase `host-execution` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::file_replies_bind_the_job_path_range_and_observed_revision -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L404) — `#[cfg(target_os = "linux")]`
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::package_mismatch_discovery_reports_revisions_without_a_possible_job -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L465) — `#[cfg(target_os = "linux")]`
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::lost_cancel_reply_retains_the_original_job_for_inspection -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L491) — `#[cfg(target_os = "linux")]`
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::adaptive_operations_and_lost_reply_use_real_target_receipts_without_duplicate_dispatch -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L517) — `#[cfg(target_os = "linux")]`
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::native_scopes_defaults_current_policy_and_cross_agent_objects_are_enforced -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L595) — `#[cfg(target_os = "linux")]`
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::private_reconsideration_and_explicit_exact_escalation_reuse_the_approval_owner -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L772) — `#[cfg(target_os = "linux")]`
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::revocation_task_switch_and_target_revision_changes_preserve_retained_jobs -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L867) — `#[cfg(target_os = "linux")]`
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::an_allowed_host_route_still_requires_its_adopted_check_evidence -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L931)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::agent_input_cannot_substitute_authority_or_enrol_issuers_and_definitions -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L984)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::completed_task_action_checks_allow_new_operations_and_retain_refusals -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1042)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::task_action_check_binds_canonical_task_and_bounds_unavailable_reconsideration -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1120)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::https_target_identity_precedes_signed_dispatch_and_keeps_native_receipts -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1204)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::first_trust_preparation_retains_one_private_key_and_original_public_request -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L420)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::resumed_task_uses_only_the_exact_adopted_document -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L495)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::file_replies_bind_the_job_path_range_and_observed_revision -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L585) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::package_mismatch_discovery_reports_revisions_without_a_possible_job -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L646) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::lost_cancel_reply_retains_the_original_job_for_inspection -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L672) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::adaptive_operations_and_lost_reply_use_real_target_receipts_without_duplicate_dispatch -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L698) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::native_scopes_defaults_current_policy_and_cross_agent_objects_are_enforced -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L776) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::private_reconsideration_and_explicit_exact_escalation_reuse_the_approval_owner -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L953) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::revocation_task_switch_and_target_revision_changes_preserve_retained_jobs -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1048) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::an_allowed_host_route_still_requires_its_adopted_check_evidence -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1112)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::agent_input_cannot_substitute_authority_or_enrol_issuers_and_definitions -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1165)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::completed_task_action_checks_allow_new_operations_and_retain_refusals -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1223)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::task_action_check_binds_canonical_task_and_bounds_unavailable_reconsideration -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1301)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::https_target_identity_precedes_signed_dispatch_and_keeps_native_receipts -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1385)
 
 <a id="witness-proxy-src-host-execution-gateway-task-action-tests-rs"></a>
 ### [`proxy/src/host_execution/gateway/task_action_tests.rs`](../proxy/src/host_execution/gateway/task_action_tests.rs)

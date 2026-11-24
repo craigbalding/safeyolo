@@ -1,13 +1,76 @@
-# Use an adopted host target
+# Commission and use a host task
 
-The operator enrols a target and adopts a binding for your current run and active
-task. Installation, operation discovery and proposals grant no authority.
+Use an existing binding when one is suitable. For a new Unix target, prepare
+first trust through the existing vault and human policy-change owners.
+Installation, operation discovery and proposals grant no authority.
 Use the ordinary Agent API and its existing bearer, not a target signing key.
 
 Resolve this skill's `scripts/host-operation.py` path and set `HOST_CLIENT` to
 that path. The helper requires Python 3 inside the agent sandbox. It adds no
 target-side Python dependency or daemon. Keep successful and failed JSON results
 with their original request IDs in the existing task evidence.
+
+## Prepare a new target
+
+Recover the selected host, actual account/access route, intent and material limits.
+For a service, recover its function, audience, data/functions, authentication and
+lifetime. Use the existing scoped endpoint-inspection operations to resolve
+permitted addresses and candidate ports. Compare the concrete proposed exposure
+with intent through private deterministic assessment. Ask only about missing
+material choices. Do not change the audience, kill a port occupant or require
+broad process/socket inventory to work around a collision.
+
+`GET /gateway/host-setup` exposes the current plan and enrolment schemas without
+an effect. Prepare `plan.json` from that schema; the agent writes it. Select the
+target hostname/control listener, task root, readable paths, native network and
+resource bounds, executable/dependency byte ceilings, finite duration/call budget and the explicit `allow_agent_code`
+and `allow_run_refresh` choices. The intent fields are the agent's interpretation;
+they do not confer authority. The human reviews derived concrete authority.
+No account, application catalogue or loopback-only policy is imposed by setup.
+
+Inside the authorised issuing agent, with that complete plan, run:
+
+```sh
+python3 "$HOST_CLIENT" setup --plan plan.json > preparation.json
+```
+
+The result retains one original operation, a public enrolment request and the
+small target bootstrap action. The signing key stays in the issuer vault.
+If credential storage is unavailable, resume through its existing owner; do not
+copy signing secrets into the sandbox or choose another store automatically.
+
+The selected target's existing trusted install/transfer owner acquires the
+matching prebuilt executor and carries the public request to its `enrol`
+command. The command creates private control/TLS state, derives the actual
+account and executable pins, qualifies native bounds and can serve the protocol.
+Linux also needs bubblewrap and a delegated cgroup v2 memory/pids scope.
+Unsupported guarantees remain refused. This bootstrap executes no task program.
+Its returned `enrolment.json` comes back through the same trusted transfer route;
+the human does not assemble keys, identity documents, scopes or bindings.
+Automatic `enrol` is implemented for Linux and macOS. Windows retains the
+explicit native preparation/installation path in the operator guide.
+
+Inside the issuing agent, after the trusted owner returns that original file, run:
+
+```sh
+python3 "$HOST_CLIENT" submit-setup --enrolment enrolment.json > submitted.json
+```
+
+The existing policy-change request presents the exact candidate for human review
+in `safeyolo watch` or the explicit approvals interface. Read its canonical
+status and current effective access. A notification or saved target receipt is
+not permission or current readiness. The setup result identifies the binding.
+After adoption, use `resume BINDING` and authenticated discovery. Resume can
+activate only the exact task document selected in that binding; it accepts no
+caller replacement policy. A conflicting active task must be resolved explicitly.
+
+After a lost setup reply, use `setup-status --original-request-id ORIGINAL_ID`
+and the original policy-change request before another effect. On the target,
+inspect the original private directory and `enrolment.json`. Reusing the same
+bootstrap request recovers its protected preparation; changed content conflicts.
+A prepared receipt does not establish that the listener is currently serving.
+
+## Discover, adapt and execute
 
 ```sh
 python3 "$HOST_CLIENT" bindings
@@ -16,11 +79,36 @@ python3 "$HOST_CLIENT" discover case --request-id case-discovery-1
 
 Replace `case` with the returned binding. The listing identifies the target,
 trusted principal and service; it contains only bindings available to this
-current run/task. An empty successful list does not prove that a target has no
+current eligible run, including resumable bindings whose task is inactive.
+Read `task_active` and `resume_available` before use. An empty successful list does not prove that a target has no
 other operations or grants. Discovery returns current package/authority
 revisions, supported features, definitions, bounds and scope indicators.
 Unavailable binding, expired authority, unsupported guarantee and denied
 invocation are different from an empty result.
+
+For an explicitly adopted agent-code class, author a task script and use
+`adopt BINDING --operation task:NAME --script SCRIPT`. The helper carries the
+ceiling and current package/revision pins; a typed `--definition` supports other
+approved recipes. `--dependencies` supplies exact target path/hash/byte pins.
+This permission is separate from trusted-publisher maintenance. The target
+qualifies code and dependencies under its actual native boundary before adoption.
+Preparation does not execute that code. Changes outside the class need private
+assessment and the existing material authority decision, not an in-scope hash approval.
+
+Use `stage BINDING --file SOURCE --path ABSOLUTE_TARGET_PATH` to carry selected
+bytes through the same code-adoption/propose/invoke path. Inspect the returned
+job and file before treating the write as complete. The selected root and
+current native scope still apply; control files, TLS/signing keys and adoption
+authority remain outside workload permissions. Staging adds no target decoder,
+Python runtime or transfer daemon. Large inputs must fit the existing request,
+program-argument and resource limits; this helper does not stream them.
+
+If a code-adoption reply is lost, read `adoption BINDING
+--original-request-id ORIGINAL_ID`. The target retains the signed original
+request. Its protected catalogue recovers a commit interrupted before ledger
+publication. The issuer reconciles the same exact package through its existing
+catalogue transaction. Another current base needs owner reconciliation; do not
+resubmit or invoke from an uncertain mixed target/issuer state.
 
 Select a listed literal operation and resource. Typed arguments go in a JSON
 object, passed with `--arguments FILE`; omitted arguments use the operation's
@@ -115,3 +203,12 @@ observed and active catalogue status distinct. Routine permitted execution and
 authorized catalogue updates remain quiet. Use the packaged platform index and
 operator guide for actual installation, account exposure and source/dependency
 limits; target metadata alone cannot prove containment.
+
+Native task registration and the separately activated document survive issuer
+restart. If the grant explicitly selects run refresh, a later host-observed run
+of the same durable agent and task can use the binding and retained jobs.
+Refresh does not reset expiry, revocation or ledger budgets. Another agent with
+the same name cannot inherit access. Without this standing choice, exact-run
+binding remains required. Task notes retain intent and result locations; they
+grant no authority. Clearing a task deactivates it; revoking the grant removes
+the standing ability to resume it. Neither action reverses prior effects.

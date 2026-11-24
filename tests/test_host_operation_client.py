@@ -5,6 +5,7 @@ import argparse
 import importlib.util
 import io
 import json
+import subprocess
 import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -97,7 +98,7 @@ def test_file_cli_keeps_target_path_revision_and_read_failure(transport, monkeyp
     assert len(calls) == 4  # Each explicit attempt does discovery and one read.
 
 
-@pytest.mark.parametrize("kind", ["invoke", "cancel"])
+@pytest.mark.parametrize("kind", ["invoke", "cancel", "adopt"])
 def test_lost_mutation_reply_is_uncertain_and_is_not_retried(transport, kind):
     calls, responses = transport
     responses.append(TimeoutError("lost reply"))
@@ -106,6 +107,93 @@ def test_lost_mutation_reply_is_uncertain_and_is_not_retried(transport, kind):
     assert len(calls) == 1
     assert caught.value.value["execution_outcome"] == "uncertain"
     assert caught.value.value["request_id"] == "original-id"
+
+
+def test_code_adoption_uses_a_separate_class_and_never_invokes(tmp_path, transport):
+    calls, responses = transport
+    script = tmp_path / "task.sh"
+    script.write_text("printf 'selected task'\n")
+    ceiling = {"execution": {"argv": [{"kind": "literal", "value": "-c"}, {"kind": "literal", "value": "pwd"}],
+                             "filesystem": {"write": ["/selected"]}, "dependencies": {}}}
+    responses.extend([
+        {"host_bindings": [{"binding": "case", "task_active": True, "agent_code_classes": [
+            {"prefix": "task:", "excluded": [], "rule": {"ceiling": ceiling}}]}]},
+        {"discovery": {"package_sha256": "exact-base", "revisions": {"authority": "current"}}},
+        {"kind": "adoption", "package_sha256": "new-package"},
+    ])
+    result = client.run(argparse.Namespace(command="adopt", binding="case", request_id="req-code", operation="task:run",
+                                          definition=None, dependencies=None, script=str(script)))
+    assert result["kind"] == "adoption"
+    posted = json.loads(calls[-1].data)
+    assert posted["expected"] == {"authority": "current"}
+    assert posted["action"]["base_package_sha256"] == "exact-base"
+    assert posted["action"]["operation"]["execution"]["filesystem"] == {"write": ["/selected"]}
+    assert posted["action"]["operation"]["execution"]["argv"][1]["value"] == script.read_text()
+    assert [json.loads(call.data)["action"]["kind"] for call in calls if call.data] == ["discover", "adopt"]
+
+
+@pytest.mark.parametrize("path,value", [
+    ("/gateway/host-setup", {"kind": "prepare", "operation_id": "req-setup"}),
+    ("/gateway/host-setup", {"kind": "submit", "operation_id": "req-setup"}),
+    ("/gateway/host/case/resume", {"request_id": "req-resume"}),
+])
+def test_setup_and_resume_lost_replies_preserve_uncertainty(transport, path, value):
+    calls, responses = transport
+    responses.append(TimeoutError("original reply lost"))
+    with pytest.raises(client.RequestFailed) as caught:
+        client.request(path, value)
+    assert len(calls) == 1
+    assert caught.value.value["execution_outcome"] == "uncertain"
+    assert caught.value.value["request_id"] == value.get("request_id", value.get("operation_id"))
+
+
+def test_setup_recovery_is_an_original_read_with_no_creation(transport):
+    calls, responses = transport
+    responses.append({"operation_id": "req-original", "status": "prepared", "permission_granted": False})
+    result = client.run(argparse.Namespace(command="setup-status", original_request_id="req-original"))
+    assert result["permission_granted"] is False
+    assert calls[0].full_url.endswith("/gateway/host-setup/req-original")
+    assert calls[0].data is None
+
+
+def test_adoption_recovery_does_not_require_matching_discovery(transport):
+    calls, responses = transport
+    responses.append({"kind": "adoption", "package_sha256": "committed-target-package"})
+    result = client.run(argparse.Namespace(command="adoption", binding="case", request_id="req-read",
+                                          original_request_id="req-original"))
+    assert result["package_sha256"] == "committed-target-package"
+    assert len(calls) == 1
+    assert json.loads(calls[0].data) == {"request_id": "req-read", "expected": None,
+                                       "action": {"kind": "adoption", "request_id": "req-original"}}
+
+
+def test_staging_preserves_binary_bytes_and_quotes_the_selected_path(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.write_bytes(bytes(range(256)))
+    target = tmp_path / "result; $(touch accidental) ' quoted"
+    scripts = []
+
+    def adopt(_args, script):
+        scripts.append(script)
+        return {"original": {"request": {"target_id": "target", "issuer_id": "issuer"}}}
+
+    def call(_binding, _request_id, action, _expected=None):
+        if action["kind"] == "discover":
+            return {"discovery": {"operations": [{"operation_id": "task:stage", "operation_sha256": "operation",
+                    "implementation_sha256": "implementation", "revisions": {}}]}}
+        if action["kind"] == "propose":
+            return {"prepared": {"invocation": action["invocation"], "revisions": {}}}
+        assert action["kind"] == "invoke"
+        return {"receipt": {"job_id": "original-stage"}}
+
+    monkeypatch.setattr(client, "adopt_code", adopt)
+    monkeypatch.setattr(client, "call", call)
+    result = client.stage(argparse.Namespace(binding="case", request_id="req-stage", file=str(source), path=str(target)))
+    assert result["target_result"]["receipt"]["job_id"] == "original-stage"
+    # Check the emitted POSIX bytes/quoting locally; this is not native containment proof.
+    subprocess.run(["/bin/sh", "-c", scripts[0]], cwd=tmp_path, check=True)
+    assert target.read_bytes() == source.read_bytes()
+    assert not (tmp_path / "accidental").exists()
 
 
 @pytest.mark.parametrize("gateway_reply", [False, True])

@@ -88,6 +88,8 @@ without changing the routes:
 | `job` | `/v1/host-execution/job` | Current lifecycle receipt for the selected job. |
 | `output` | `/v1/host-execution/output` | Offset, base64 bytes, end indicator and retained-output digest. |
 | `cancel` | `/v1/host-execution/cancel` | Current receipt with cancellation requested. |
+| `adopt` | `/v1/host-execution/adopt` | Qualified exact agent-code adoption; no program dispatch. |
+| `adoption` | `/v1/host-execution/adoption` | Retained original signed adoption and resulting package/operation identities. |
 
 Timestamps are UTC Unix seconds. Time budgets are seconds, byte budgets are
 bytes, and concurrency/process limits are counts. Output offsets count bytes
@@ -110,12 +112,17 @@ grant, key ID, vault credential reference, service name, an authenticated
 endpoint and finite request/response/deadline limits. A `unix` endpoint selects a canonical absolute socket and executor UID.
 An `https` endpoint selects a host, port and adopted certificate PEM. Endpoint
 name and certificate validation precede signed-request dispatch. The
-credential value is base64 Ed25519 PKCS#8 in the existing encrypted store.
+credential contains Ed25519 PKCS#8 signing material in the existing encrypted store.
+Host-task preparation also retains its original public request in that encrypted
+credential. Neither representation changes signing-key custody.
 Neither the value nor a signed request is returned to the agent.
 
 The issuer ID must match the selected instance's durable identity. The native
-grant's principal selects the agent, run and task. The operator registers and
-activates that task through the existing task owner. `task_revision` is the
+grant's principal selects the durable agent, run and task. By default it requires
+that exact run. Explicit `allow_run_refresh` also permits a later host-observed
+current run of the same durable agent and task. It does not renew expiry, restore
+a revoked grant, reset budgets or permit a replacement agent by name.
+The existing task owner activates the selected task. `task_revision` is the
 shared canonical JSON digest of its registered document. A different task ID,
 changed active document, stopped run or changed durable agent identity cannot
 reuse the binding. The service must also have current `gateway:request` policy
@@ -140,12 +147,33 @@ The agent uses its ordinary Agent API bearer through
 
 Inputs contain only `request_id`, `expected`, `action`, optional
 `untrusted_rationale` and optional `challenge_id`. The gateway supplies target,
-issuer, grant, principal and expiry from the approved binding. Unknown fields,
-definition-management actions and issuer enrolment are refused. Discovery
+issuer, grant, principal and expiry from the approved binding. Unknown fields
+and caller-supplied authority are refused. Agent code uses the separate `adopt`
+action under an explicit code class. Discovery
 filters operations and catalogue changes to the selected grant. Proposals have
 no separate retained object or cross-agent readback route. The exposed API has
-no job-listing or definition-management route. Job, output and cancellation
-always require the target's exact issuer, principal and grant ownership.
+no job-listing route. Job, output and cancellation retain issuer, durable
+principal/task and grant ownership, including only explicitly selected run refresh.
+
+`GET /gateway/host-setup` exposes preparation schemas without an effect.
+`POST` prepares a public enrolment request with a vault-held signing key, or
+submits the target's returned preparation to the existing human policy-change
+owner. The Unix target's trusted bootstrap owner uses native `enrol`; this does
+not run task code. The issuer derives the exact binding and concrete authority
+review. It never gives the agent Admin credentials or adoption authority.
+`GET /gateway/host-setup/{operation_id}` recovers the original public preparation.
+The setup operation and subsequent policy-change operation remain distinct;
+retain both results. A notification cannot select either effect for replay.
+
+An adopted binding can select `resume_task` and a separately labelled agent
+interpretation of intent. The exact task document remains private in the vault;
+public preparations and encoded bindings carry its revision only.
+`POST /gateway/host/{binding}/resume` rechecks
+current run/grant eligibility and activates only that document through the
+existing task registry. It accepts only a request ID. A conflicting active task
+is refused. Native task registration and the separately selected document
+survive issuer restart. Clearing deactivates the task; grant revocation removes
+standing permission to resume. Neither action reverses prior external effects.
 
 The existing `route_challenges` owner can select native invocations by agent,
 binding service, operation ID as `capability`, method `POST` and path
@@ -283,6 +311,29 @@ the relevant disclosure. Host-held service credentials remain with their existin
 the package's delegated service references do not contain those credential values.
 
 ## Catalogue adoption and revision changes
+
+`allow_agent_code` is explicit authority distinct from publisher maintenance.
+Its operation ceiling bounds identity, files, native network/services, effects,
+checks and resources while allowing untrusted recipes and new executable bytes.
+`agent_dependency_bytes` bounds the aggregate pinned dependency bytes; native
+qualification checks their actual target paths and control-file separation.
+Catalogue `agent_code_keys` selects eligible issuer keys separately from the
+publisher key. Signatures authenticate origin and exact resulting package;
+they do not prove confinement or program equivalence.
+
+The signed `adopt` request binds the original request ID, base package, exact
+new operation and resulting package. Both issuer and target code classes must
+cover it. The target's existing catalogue owner qualifies the complete native
+candidate before saving it. The issuer advances the same package and bindings
+through its existing atomic policy transaction. No candidate program executes
+during preparation or catalogue qualification. `adoption` reads the original
+result after a lost reply; protected catalogue state repairs a commit interrupted
+before ledger publication without repeating the configuration effect.
+If the issuer cannot reconcile that target result, it reports the retained
+target adoption and exact remaining action. Another current base is a conflict.
+Agent-code intake requires direct observation; a catalogue following an external
+publisher file must have its owner select the intended observation source first.
+Invocation still requires its separate current proposal and native admission.
 
 `CatalogueAdoption` records publisher trust, an active signed catalogue, its
 previous signed revision, observed candidate input and standing update bounds.

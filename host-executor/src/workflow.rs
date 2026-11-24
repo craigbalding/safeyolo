@@ -18,7 +18,7 @@ fn failure(error: impl std::fmt::Display) -> Refusal {
 fn read<T: serde::de::DeserializeOwned>(path: &str) -> Result<T, Refusal> {
     serde_json::from_reader(fs::File::open(path).map_err(failure)?).map_err(failure)
 }
-fn hash(path: &Path) -> Result<String, Refusal> {
+pub(crate) fn hash(path: &Path) -> Result<String, Refusal> {
     let mut file = fs::File::open(path).map_err(failure)?;
     let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
     let mut buffer = [0; 65536];
@@ -50,7 +50,7 @@ fn private_directory(path: &Path) -> Result<(), Refusal> {
     Ok(())
 }
 
-fn identity(credential: Option<&str>) -> Result<ExecutionIdentity, Refusal> {
+pub(crate) fn identity(credential: Option<&str>) -> Result<ExecutionIdentity, Refusal> {
     #[cfg(windows)]
     {
         let credential = credential.ok_or_else(|| {
@@ -670,6 +670,7 @@ pub(crate) fn command(args: &[String]) -> Result<bool, Refusal> {
                 serde_json::from_reader(fs::File::open(plan.operations).map_err(failure)?)
                     .map_err(failure)?;
             let grant = Grant {
+                allow_run_refresh: false,
                 principal: plan.principal,
                 not_before: plan.not_before,
                 expires_at: plan.expires_at,
