@@ -53,7 +53,7 @@ def execute(command: list[str], directory: Path, output: Path, timeout: float,
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
-                pass
+                pass  # The owned process group already exited; still reap its leader.
             process.wait()
     return process.returncode
 
