@@ -1147,6 +1147,7 @@ impl Witness {
             },
             Action::Propose { .. } => Response::Proposal {
                 prepared: Box::new(self.target.prepare(&auth, Usage::default())?),
+                network_enforcement: Vec::new(),
             },
             Action::Invoke { invocation } => {
                 let key = (
@@ -1346,7 +1347,7 @@ async fn same_authenticated_http_protocol_on_standalone_and_safeyolo_targets() {
             .operation_sha256
             .clone();
         inv.implementation_sha256 = discovery.operations[0].implementation_sha256.clone();
-        let Response::Proposal { prepared } = call(
+        let Response::Proposal { prepared, .. } = call(
             addr,
             &request(Action::Propose { invocation: inv }, "propose"),
         )
@@ -1600,7 +1601,8 @@ fn issuer_namespaces_job_disclosure_and_terminal_states_are_explicit() {
     let mut inv = invocation(&witness.target);
     inv.expected_assessment_sha256 = None;
     proposed.action = Action::Propose { invocation: inv };
-    let Response::Proposal { prepared } = witness.handle(Verb::Propose.path(), &signed(proposed))
+    let Response::Proposal { prepared, .. } =
+        witness.handle(Verb::Propose.path(), &signed(proposed))
     else {
         panic!("other proposal")
     };

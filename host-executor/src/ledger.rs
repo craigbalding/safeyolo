@@ -437,9 +437,18 @@ impl Ledger {
         let mut dispatch = false;
         let mut reserved_cancellation = None;
         let response = match &req.action {
-            Action::Discover => Response::Discovery {
-                discovery: Box::new(target.discover(&auth)?),
-            },
+            Action::Discover => {
+                let mut discovery = target.discover(&auth)?;
+                if let Some(runtime) = runtime {
+                    for operation in &mut discovery.operations {
+                        operation.network_enforcement =
+                            runtime.network_enforcement(&operation.definition);
+                    }
+                }
+                Response::Discovery {
+                    discovery: Box::new(discovery),
+                }
+            }
             Action::Propose { invocation } => {
                 let prepared = target.prepare(
                     &auth,
@@ -453,6 +462,13 @@ impl Ledger {
                 }
                 Response::Proposal {
                     prepared: Box::new(prepared),
+                    network_enforcement: runtime
+                        .map(|runtime| {
+                            runtime.network_enforcement(
+                                &target.package.operations[&invocation.operation_id],
+                            )
+                        })
+                        .unwrap_or_default(),
                 }
             }
             Action::Invoke { invocation } => {

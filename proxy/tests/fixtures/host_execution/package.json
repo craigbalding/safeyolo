@@ -19,7 +19,7 @@
         "working_directory": "/var/empty",
         "identity": {"principal": "uid:1000", "groups": ["gid:1000"]},
         "filesystem": {"read": ["/usr/bin/fixed-demo-restart"], "write": []},
-        "network": {"destinations": [], "ipc": [{"kind":"unix_socket","path":"/run/demo-control.sock"}]},
+        "network": {"listeners": [], "destinations": [], "ipc": [{"kind":"unix_socket","path":"/run/demo-control.sock"}]},
         "resources": {"timeout_seconds": 20, "output_bytes": 1024, "memory_bytes": 33554432, "processes": 2},
         "delegated_services": []
       },

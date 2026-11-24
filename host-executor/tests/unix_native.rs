@@ -136,7 +136,7 @@ impl Fixture {
     fn invoke(&mut self, mode: &str) -> (Receipt, Vec<u8>) {
         let invocation = self.invocation(mode);
         let response = self.call(Action::Propose { invocation });
-        let Response::Proposal { prepared } = response else {
+        let Response::Proposal { prepared, .. } = response else {
             panic!("{mode} proposal refused: {response:?}")
         };
         let bytes = self.signed(Action::Invoke {
@@ -383,6 +383,7 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
                     write: vec![],
                 },
                 network: Network {
+                    listeners: Vec::new(),
                     destinations: vec![],
                     ipc: vec![],
                 },
@@ -608,7 +609,7 @@ fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
     });
     fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
     f.target = config.target.clone();
-    let Response::Proposal { prepared } = f.call(Action::Propose {
+    let Response::Proposal { prepared, .. } = f.call(Action::Propose {
         invocation: f.invocation("observe"),
     }) else {
         panic!("original preparation")
@@ -1137,6 +1138,308 @@ fn installed_unix_read_paths_resolve_without_sibling_contents() {
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires the native Linux fixture with bubblewrap and delegated cgroup v2"]
+fn installed_linux_broader_tcp_directions_and_descendants() {
+    let mut f = fixture(24, 128 * 1024);
+    let work = f.root.join("tcp-results");
+    fs::create_dir(&work).unwrap();
+    let v4 = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+    let v6 = std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
+    let origins = [
+        TcpListener::bind((v4, 0)).unwrap(),
+        TcpListener::bind((v6, 0)).unwrap(),
+    ];
+    // The later product bind wins. These selected ports are observations only.
+    let service_ports = [v4, v6].map(|address| {
+        TcpListener::bind((address, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    });
+    let config = f.root.join("target.json");
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    let mut operations = f.target.package.operations.clone();
+    for mode in [
+        "tcp-connect4",
+        "tcp-listen4",
+        "tcp-both4",
+        "tcp-connect6",
+        "tcp-listen6",
+        "tcp-wait4",
+    ] {
+        let family = usize::from(mode.ends_with('6'));
+        let mut op = operations["observe"].clone();
+        let e = &mut op.execution;
+        e.broader.insert(BroaderBound::NetworkIpc);
+        e.filesystem.write = vec![work.to_str().unwrap().into()];
+        if mode.contains("connect") || mode.contains("both") {
+            e.network.destinations.push(NetworkDestination {
+                host: [v4, v6][family].to_string(),
+                port: origins[family].local_addr().unwrap().port(),
+                transport: NetworkTransport::Tcp,
+            });
+            if mode == "tcp-connect6" {
+                // This is deliberately outside the declared endpoint. The
+                // explicit broader profile must disclose that it permits it.
+                e.network.destinations[0].host = "192.0.2.1".into();
+                e.network.destinations[0].port = 1;
+            }
+        }
+        if !mode.contains("connect") {
+            e.network.listeners.push(NetworkListener {
+                address: [v4, v6][family],
+                port: service_ports[family],
+                transport: NetworkTransport::Tcp,
+            });
+        }
+        e.argv = [
+            mode.into(),
+            work.to_str().unwrap().into(),
+            service_ports[family].to_string(),
+            origins[family].local_addr().unwrap().port().to_string(),
+        ]
+        .into_iter()
+        .map(|value| Word::Literal { value })
+        .collect();
+        operations.insert(mode.into(), op);
+    }
+    settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    f.target = settings.target.clone();
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    let Response::Discovery { discovery } = f.call(Action::Discover) else {
+        panic!("discovery");
+    };
+    let network = discovery
+        .operations
+        .iter()
+        .find(|op| op.operation_id == "tcp-connect4")
+        .unwrap();
+    assert!(
+        network
+            .network_enforcement
+            .iter()
+            .any(|s| s.contains("does not enforce those address or port restrictions"))
+    );
+    assert!(
+        network
+            .network_enforcement
+            .iter()
+            .any(|s| s.contains("listen/accept=false"))
+    );
+    assert!(
+        discovery
+            .operations
+            .iter()
+            .find(|op| op.operation_id == "observe")
+            .unwrap()
+            .network_enforcement[0]
+            .contains("disconnected")
+    );
+    for mode in [
+        "tcp-connect4",
+        "tcp-listen4",
+        "tcp-both4",
+        "tcp-connect6",
+        "tcp-listen6",
+    ] {
+        let family = usize::from(mode.ends_with('6'));
+        let origin = origins[family].try_clone().unwrap();
+        origin.set_nonblocking(true).unwrap();
+        let outbound = mode.contains("connect") || mode.contains("both");
+        let receiver = std::thread::spawn(move || {
+            if outbound {
+                for _ in 0..2 {
+                    let (mut peer, _) = accept_positive_connection(|| origin.accept());
+                    peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                    let mut request = [0; 7];
+                    peer.read_exact(&mut request).unwrap();
+                    assert_eq!(&request, b"request");
+                    peer.write_all(b"ok").unwrap();
+                }
+            }
+        });
+        let invocation = f.invocation(mode);
+        let Response::Proposal {
+            prepared,
+            network_enforcement,
+        } = f.call(Action::Propose { invocation })
+        else {
+            panic!("proposal");
+        };
+        assert!(
+            network_enforcement
+                .iter()
+                .any(|s| s.contains("EXPLICIT BROADER"))
+        );
+        let Response::Job { receipt } = f.call(Action::Invoke {
+            invocation: prepared.invocation,
+        }) else {
+            panic!("invoke");
+        };
+        if !mode.contains("connect") {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                let Response::Output { data_base64, .. } = f.call(Action::Output {
+                    job_id: receipt.job_id.clone(),
+                    offset: 0,
+                    max_bytes: 4096,
+                }) else {
+                    panic!("output");
+                };
+                if String::from_utf8_lossy(&STANDARD.decode(data_base64).unwrap())
+                    .contains("bound=")
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "listener did not bind: {:?}",
+                    f.job(&receipt.job_id)
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let mut client = TcpStream::connect_timeout(
+                &([v4, v6][family], service_ports[family]).into(),
+                Duration::from_secs(2),
+            )
+            .unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut answer = [0; 7];
+            client.read_exact(&mut answer).unwrap();
+            assert_eq!(&answer, b"service");
+            client.shutdown(std::net::Shutdown::Both).unwrap();
+        }
+        let result = f.terminal(&receipt.job_id);
+        receiver.join().unwrap();
+        assert_eq!(result.state, JobState::Completed, "{result:?}");
+        assert!(result.native.as_ref().unwrap().processes_stopped);
+        assert!(
+            result
+                .native
+                .unwrap()
+                .dependencies
+                .iter()
+                .any(|s| s.contains("EXPLICIT BROADER NETWORK/IPC"))
+        );
+        assert_eq!(fs::read(work.join(mode)).unwrap(), b"retained TCP result\n");
+        origins[family].set_nonblocking(true).unwrap();
+        assert_eq!(
+            origins[family].accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "undeclared connect reached live receiver"
+        );
+        let _released = TcpListener::bind(([v4, v6][family], service_ports[family])).unwrap();
+        eprintln!(
+            "{mode}: request/listener and opposite-direction denial observed; result retained"
+        );
+    }
+    // A competing bind is a real failed launch, not an availability success.
+    let collision = TcpListener::bind((v4, service_ports[0])).unwrap();
+    let (admitted, _) = f.invoke("tcp-listen4");
+    let result = f.terminal(&admitted.job_id);
+    assert_eq!(result.state, JobState::Failed);
+    assert_eq!(result.native.unwrap().exit_code, Some(75));
+    drop(collision);
+    for restart in [false, true] {
+        let (admitted, _) = f.invoke("tcp-wait4");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let running = loop {
+            let current = f.job(&admitted.job_id);
+            let Response::Output { data_base64, .. } = f.call(Action::Output {
+                job_id: admitted.job_id.clone(),
+                offset: 0,
+                max_bytes: 4096,
+            }) else {
+                panic!("output");
+            };
+            if String::from_utf8_lossy(&STANDARD.decode(data_base64).unwrap())
+                .contains("listening descendant ready")
+            {
+                break current;
+            }
+            assert!(Instant::now() < deadline, "{current:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(TcpStream::connect((v4, service_ports[0])).is_ok());
+        if restart {
+            f.restart();
+        } else {
+            assert!(matches!(
+                f.call(Action::Cancel {
+                    job_id: admitted.job_id.clone(),
+                    expected_revision: running.revision
+                }),
+                Response::Job { .. }
+            ));
+        }
+        let stopped = f.terminal(&admitted.job_id);
+        assert_eq!(
+            stopped.state,
+            if restart {
+                JobState::Uncertain
+            } else {
+                JobState::Cancelled
+            }
+        );
+        assert!(!f.cgroup.join(&admitted.job_id).exists());
+        let _released = TcpListener::bind((v4, service_ports[0])).unwrap();
+        assert_eq!(
+            fs::read(work.join("tcp-connect4")).unwrap(),
+            b"retained TCP result\n"
+        );
+    }
+    // The old narrow operation still denies sockets after network work/restart.
+    let (admitted, _) = f.invoke("observe");
+    assert_eq!(f.terminal(&admitted.job_id).state, JobState::Completed);
+    f.assert_no_side_effects();
+    let original = fs::read(&config).unwrap();
+    for invalid in ["broader", "udp", "ipc"] {
+        let mut changed: Configuration = serde_json::from_slice(&original).unwrap();
+        let e = &mut changed
+            .target
+            .package
+            .operations
+            .get_mut("tcp-connect4")
+            .unwrap()
+            .execution;
+        match invalid {
+            "broader" => e.broader.clear(),
+            "udp" => e.network.destinations[0].transport = NetworkTransport::Udp,
+            "ipc" => e.network.ipc.push(IpcEndpoint::UnixSocket {
+                path: f.root.join("forbidden.socket").to_str().unwrap().into(),
+            }),
+            _ => unreachable!(),
+        }
+        fs::write(&config, serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert!(matches!(
+            f.call(Action::Discover),
+            Response::Refused {
+                refusal: Refusal {
+                    code: RefusalCode::Unavailable,
+                    ..
+                }
+            }
+        ));
+        assert!(
+            !Command::new(executor())
+                .arg("check")
+                .arg("--config")
+                .arg(&config)
+                .arg("--state")
+                .arg(f.root.join("state"))
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    fs::write(config, original).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires the native Linux fixture with bubblewrap and delegated cgroup v2"]
 fn installed_linux_scoped_writes_children_and_retained_partial_results() {
     let mut f = fixture(16, 64 * 1024);
     let output = f.root.join("work");
@@ -1469,7 +1772,7 @@ fn installed_storage_exhaustion_preserves_output_replay_and_restart() {
         }
         f.restart();
         let invocation = f.invocation("observe");
-        let Response::Proposal { prepared } = f.call(Action::Propose { invocation }) else {
+        let Response::Proposal { prepared, .. } = f.call(Action::Propose { invocation }) else {
             panic!("storage capacity must not disable proposal qualification")
         };
         let response = f.call(Action::Invoke {
@@ -1702,7 +2005,7 @@ fn installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch() {
     let mut changed = original.clone();
     *changed.last_mut().unwrap() ^= 1;
     for alias in [false, true] {
-        let Response::Proposal { prepared } = f.call(Action::Propose {
+        let Response::Proposal { prepared, .. } = f.call(Action::Propose {
             invocation: f.invocation("observe"),
         }) else {
             panic!("valid original preparation");
@@ -1800,7 +2103,7 @@ fn installed_dependency_swaps_preserve_metadata_but_cannot_launch() {
         let mut changed = original.clone();
         *changed.last_mut().unwrap() ^= 1;
         for alias in [false, true] {
-            let Response::Proposal { prepared } = f.call(Action::Propose {
+            let Response::Proposal { prepared, .. } = f.call(Action::Propose {
                 invocation: f.invocation("observe"),
             }) else {
                 panic!("valid pinned dependency proposal")
@@ -2019,7 +2322,7 @@ fn installed_api_authentication_and_cross_principal_reads_cannot_change_authorit
         }
     }
     assert_eq!(retained_job_count(&f), 1);
-    let Response::Proposal { prepared } = call_as(
+    let Response::Proposal { prepared, .. } = call_as(
         "second-issuer",
         "grant",
         &other_key,
@@ -2191,7 +2494,7 @@ fn application_operations(f: &mut Fixture) {
 fn application_result(f: &mut Fixture, operation: &str, resource: &str) -> (Receipt, String) {
     let mut invocation = f.invocation(operation);
     invocation.resource_id = format!("application:{resource}");
-    let Response::Proposal { prepared } = f.call(Action::Propose { invocation }) else {
+    let Response::Proposal { prepared, .. } = f.call(Action::Propose { invocation }) else {
         panic!("application proposal refused: {operation}")
     };
     let Response::Job { receipt } = f.call(Action::Invoke {

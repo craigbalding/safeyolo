@@ -66,8 +66,10 @@ For an already enrolled issuer and adopted target, the client uses these steps:
    authenticated disclosure, not permission to execute.
 2. Select a literal operation/resource ID and typed arguments. Carry the
    discovered operation, implementation and authority revisions into a proposal.
-3. Inspect the proposal's normalized arguments, effective budgets, expiry and
-   assessment digest. A proposal reserves no budget and grants no approval.
+3. Inspect the proposal's normalized arguments, effective budgets, expiry,
+   assessment digest and target-generated `network_enforcement` disclosure.
+   An empty disclosure means no native network assessment was supplied. A
+   proposal reserves no budget and grants no approval.
 4. Invoke using that exact assessment digest and the same validity inputs.
    The target rechecks authority and budgets at admission. Changed inputs need
    another proposal. Retain the returned job and original request ID.
@@ -404,7 +406,7 @@ reports `commit=unknown`; this is not a release identity.
 
 | Target | Required runtime components and current native profile |
 |---|---|
-| Linux x86-64 / ARM64 | Compatible C runtime; a pinned bubblewrap with the options used by the backend, including `--bind-fd`; kernel user namespaces, seccomp and delegated cgroup v2 memory/pids controls. The executor must run where it can migrate its own jobs into that delegation. Ordinary programs receive selected read/write paths and may execute descendants inside those namespaces and the same cgroup. Ordinary network/IPC remains unavailable. The fixed service profile below separately admits its trusted OS client. |
+| Linux x86-64 / ARM64 | Compatible C runtime; a pinned bubblewrap with the options used by the backend, including `--bind-fd`; kernel user namespaces, seccomp and delegated cgroup v2 memory/pids controls. The executor must run where it can migrate its own jobs into that delegation. Ordinary programs receive selected read/write paths and may execute descendants inside those namespaces and the same cgroup. The explicit broader TCP profile below shares the target network namespace and separates connect from listen/accept permission. Direct IPC remains unavailable. The fixed service profile separately admits its trusted OS client. |
 | macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive no fork, writes, sockets or Mach access. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
 | Windows x86-64 | Native Windows security, Credential Manager, local named pipes, Job Objects, the Service Control Manager and the Universal C Runtime supplied by current Windows. The GNU package statically links its compiler runtime. Its remaining imports are Windows system DLLs. No MinGW installation is required on the target. |
 
@@ -453,6 +455,54 @@ does not imply that its earlier writes were rolled back. The existing Output
 route retrieves stdout/stderr, not arbitrary selected files. File retrieval
 and automated file-retention selection remain separate work under the general
 host-execution correction.
+
+### Linux broader TCP authority
+
+Empty `execution.network.destinations` and `listeners` retain disconnected
+execution. A destination declares a host, nonzero port and transport. A
+listener separately declares a numeric IPv4/IPv6 `address`, nonzero `port` and
+`transport`. Adding either direction changes the operation digest and needs
+matching issuer and target authority. Catalogue update ceilings compare
+listeners separately from destinations.
+
+The current Linux TCP profile requires `network_ipc` in `execution.broader`.
+This is an explicit exception to address and port containment. It shares the
+target executor's network namespace, while retaining filesystem namespaces,
+the sealed executable, private process/IPC namespaces and cgroup limits. A
+declared destination permits TCP connections to **any address and port**
+available to the target account. A declared listener permits TCP bind,
+listen and accept on **any local address and port** available to that account.
+The declared endpoints describe the selected action; they do not narrow this
+profile's network authority. Explicit source binding is permitted for clients.
+No recurring approval is added within the adopted scope.
+
+Destination permission alone denies `listen`, including implicit autobinding,
+and both accept syscalls. Listener permission alone denies `connect` and TCP
+Fast Open connection initiation through send syscalls. The filter permits
+only IPv4/IPv6 TCP stream sockets with normal close-on-exec/nonblocking flags.
+UDP, raw sockets, other protocols and Unix sockets remain unavailable for
+ordinary workloads. DNS configurations requiring UDP therefore do not work
+through this profile. A TCP declaration without the explicit broader
+exception refuses qualification; it is not silently widened.
+
+Discovery and proposals return the target-generated `network_enforcement`
+disclosure separately from authored effects and agent rationale. Native
+receipts retain the reached enforcement and dependencies. The target account's
+routing, firewall, VPN and service permissions remain effective. TCP is not
+automatically mediated by the issuing SafeYolo instance's proxy. Reaching a
+host-local TCP service can exercise that service's authority, which can exceed
+the job's filesystem/process bounds. A declaration or successful process start
+does not prove binding, application readiness, publication, authentication,
+TLS or audience reachability. Unobserved forwarding and arbitrary program
+behavior remain unknown.
+
+This profile makes explicitly broader TCP work executable. Exact endpoint/peer
+containment, scoped live endpoint resolution/availability, authorised port
+alternatives and reach assessment remain unfinished under #1704. A real
+competing bind fails in the program and its output/exit result; a declaration
+does not reserve the endpoint. Ordinary job completion, cancellation and
+restart use the same cgroup descendant cleanup. Intentional persistence is not
+implemented by this profile.
 
 The native proxy workflow retains an executor archive for each target below,
 named `host-executor-TARGET-COMMIT`. Download the archive for the selected source
@@ -524,8 +574,9 @@ disclosure and the complete execution specification:
   label is an adoption input, not proof that the runtime uses that identity.
 - Target-native filesystem read/write paths. Empty lists permit no application
   access in that category. Required runtime files must be included by adoption.
-- Explicit network hosts, ports and TCP/UDP transport; Unix sockets or named
-  pipes; finite time, output, memory and process limits.
+- Explicit outbound network hosts, ports and TCP/UDP transport; separate local
+  listener addresses, ports and transport; Unix sockets or named pipes; finite
+  time, output, memory and process limits.
 - Named delegated service capabilities/resources, using the existing service
   owners' semantics. A declaration creates no credential, route or service
   grant. Those owners must recheck current access during execution.
@@ -555,8 +606,9 @@ claiming a hard kernel memory cap. The `executor_restart` exception permits a
 process to remain running beyond its deadline if the controller crashes. Restart
 retains uncertain cleanup and concurrency until the recorded process birth is
 absent; it does not signal a recovered PID. The macOS backend requires both
-exceptions. An enforcement label cannot select either exception. The Linux and
-macOS adapters refuse unsupported filesystem, network and IPC profiles.
+exceptions. An enforcement label cannot select either exception. Adapters
+refuse required guarantees they cannot apply. Linux supports the explicitly
+broader TCP profile above; macOS still refuses ordinary network scopes.
 An ordinary adopted program cannot receive a service-manager channel: under
 the executor account that channel could launch code outside the sandbox and
 modify executor inputs. A service name or executable digest alone does not

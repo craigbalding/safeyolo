@@ -93,7 +93,7 @@ impl Fixture {
             0,
             now() + 300,
         );
-        let Response::Proposal { prepared } = ledger
+        let Response::Proposal { prepared, .. } = ledger
             .handle(&self.target, Verb::Propose.path(), &proposal, now())
             .unwrap()
             .response

@@ -1,6 +1,6 @@
 //! Linux execution with a private cgroup and bubblewrap namespaces. This path
 //! supports selected file reads and writes under the executor's identity.
-//! Ordinary operations remain disconnected until a network scope is supported.
+//! TCP uses explicitly broader address/port authority with separate direction gates.
 //! Only the pinned native service client receives its fixed manager channel.
 use crate::*;
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,41 @@ use std::{
 
 mod runtime_files;
 mod writes;
+
+#[derive(Clone, Copy, Default)]
+struct TcpAccess {
+    connect: bool,
+    listen: bool,
+}
+
+impl TcpAccess {
+    fn selected(operation: &Operation) -> Self {
+        Self {
+            connect: !operation.execution.network.destinations.is_empty(),
+            listen: !operation.execution.network.listeners.is_empty(),
+        }
+    }
+
+    fn enabled(self) -> bool {
+        self.connect || self.listen
+    }
+}
+
+pub(crate) fn network_enforcement(operation: &Operation) -> Vec<String> {
+    let tcp = TcpAccess::selected(operation);
+    if !tcp.enabled() {
+        return vec![if operation.execution.delegated_services.is_empty() {
+            "Network namespace is disconnected; socket creation is denied.".into()
+        } else {
+            "Disconnected network namespace; only the fixed trusted OS client's Unix service channel is permitted.".into()
+        }];
+    }
+    vec![
+        format!("TCP connect={}, listen/accept={}; IPv4/IPv6 stream sockets only. Destinations do not confer listen/accept permission, and listeners do not confer connect permission.", tcp.connect, tcp.listen),
+        "EXPLICIT BROADER NETWORK/IPC: the workload shares the target executor's network namespace. Declared hosts, local addresses and ports describe the selected action; this profile does not enforce those address or port restrictions. Each permitted direction reaches any TCP endpoint accessible to the target account, including host-local services. Binding a local source address is permitted. Other socket families, UDP and raw sockets remain denied.".into(),
+        "Target routing, firewall, VPN, proxy and service permissions remain effective. The executor does not mediate workload TCP through the issuing instance's proxy, infer application authentication/TLS, or prove binding, readiness, publication or audience reachability. Program behavior and unobserved forwarding remain unknown.".into(),
+    ]
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -248,10 +283,34 @@ impl LinuxRuntime {
     ) -> Result<(), Refusal> {
         let execution = &operation.execution;
         let service = crate::unix_services::validate(operation)?;
+        let tcp = TcpAccess::selected(operation);
         require(
-            service || execution.broader.is_empty(),
+            service
+                || execution
+                    .broader
+                    .iter()
+                    .all(|b| *b == BroaderBound::NetworkIpc),
             RefusalCode::Unavailable,
-            "this Linux profile enforces selected filesystem and disconnected network bounds; broader profiles are not silently substituted",
+            "this Linux profile supports selected filesystem/process bounds and explicit broader TCP network authority; other broader profiles are unavailable",
+        )?;
+        require(
+            !tcp.enabled() || execution.broader.contains(&BroaderBound::NetworkIpc),
+            RefusalCode::Unavailable,
+            "Linux TCP requires explicit broader network_ipc authority: direction is enforced, declared address/port restrictions are not; adopt matching issuer and target scopes or retain disconnected execution",
+        )?;
+        require(
+            execution
+                .network
+                .destinations
+                .iter()
+                .all(|d| matches!(d.transport, NetworkTransport::Tcp))
+                && execution
+                    .network
+                    .listeners
+                    .iter()
+                    .all(|l| matches!(l.transport, NetworkTransport::Tcp)),
+            RefusalCode::Unavailable,
+            "this Linux network profile supports TCP; UDP scope enforcement is unavailable",
         )?;
         // SAFETY: these identity accessors have no pointer arguments. getgroups
         // is given a vector sized by its immediately preceding count query.
@@ -284,11 +343,10 @@ impl LinuxRuntime {
             "this backend retains this executor host UID and all its supplementary host GIDs; identity cannot select another account or a group subset",
         )?;
         require(
-            execution.network.destinations.is_empty()
-                && (service || execution.network.ipc.is_empty())
+            (service || execution.network.ipc.is_empty())
                 && (service || execution.delegated_services.is_empty()),
             RefusalCode::Unavailable,
-            "direct network/IPC are unavailable; the service channel requires the fixed native OS client profile",
+            "Unix IPC requires the fixed native OS service client profile; direct TCP does not grant IPC or service-manager authority",
         )?;
         let mut protected = protected.to_vec();
         protected.push(self.cgroup.clone());
@@ -397,13 +455,17 @@ impl LinuxRuntime {
     ) -> Result<NativeObservation, Refusal> {
         // Pin and check the actual writable referents before creating a job.
         // The bind mounts use these descriptors, never a second path lookup.
-        let writes = match self.write_mounts(&operation.execution.filesystem.write, protected) {
+        let writes = match self
+            .validate_operation(operation, protected)
+            .and_then(|()| self.write_mounts(&operation.execution.filesystem.write, protected))
+        {
             Ok(writes) => writes,
             Err(error) => {
                 return Ok(NativeObservation {
                     backend: "linux-bubblewrap-cgroup-v2".into(),
                     enforcement: vec![
-                        "write validation refused before cgroup creation or workload launch".into(),
+                        "native scope validation refused before cgroup creation or workload launch"
+                            .into(),
                     ],
                     dependencies: Vec::new(),
                     exit_code: None,
@@ -445,7 +507,8 @@ impl LinuxRuntime {
             self.executable_bytes,
         )?;
         let service = crate::unix_services::validate(operation)?;
-        let seccomp = socket_filter(service)?;
+        let tcp = TcpAccess::selected(operation);
+        let seccomp = socket_filter(service, tcp)?;
         let command = operation.command(&receipt.prepared.invocation.arguments)?;
         let mut native = ProcessCommand::new(format!("/proc/self/fd/{}", helper.as_raw_fd()));
         native
@@ -455,7 +518,6 @@ impl LinuxRuntime {
             .stderr(Stdio::piped());
         native.args([
             "--unshare-user",
-            "--unshare-net",
             "--unshare-ipc",
             "--unshare-uts",
             "--disable-userns",
@@ -466,6 +528,9 @@ impl LinuxRuntime {
             "ALL",
             "--clearenv",
         ]);
+        if !tcp.enabled() {
+            native.arg("--unshare-net");
+        }
         if !service {
             native.arg("--unshare-pid");
         }
@@ -721,6 +786,10 @@ impl LinuxRuntime {
             result.dependencies.push("EXPLICIT BROADER PROCESS VISIBILITY: the trusted OS client shares the host PID namespace so the service owner has a visible peer PID for SO_PEERCRED authentication. Host /proc is not mounted. The cgroup still bounds and terminates the helper and its descendants".into());
             result.dependencies.push(crate::unix_services::disclosure());
         }
+        if tcp.enabled() {
+            result.enforcement[1] = "separate user/PID/IPC/UTS namespaces; shared target network namespace; seccomp permits TCP IPv4/IPv6 with separately declared connect and listen/accept directions; no other sockets or nested namespaces".into();
+            result.dependencies.extend(network_enforcement(operation));
+        }
         if quiescent {
             fs::remove_dir(&group.path).map_err(unavailable)?;
         }
@@ -874,7 +943,7 @@ impl Drop for JobCgroup {
     }
 }
 
-fn socket_filter(service: bool) -> Result<File, Refusal> {
+fn socket_filter(service: bool, tcp: TcpAccess) -> Result<File, Refusal> {
     #[cfg(target_arch = "x86_64")]
     const ARCH: u32 = 0xc000003e;
     #[cfg(target_arch = "aarch64")]
@@ -908,6 +977,28 @@ fn socket_filter(service: bool) -> Result<File, Refusal> {
         },
         stmt(0x06, 0x00050000 | libc::EPERM as u32),
     ];
+    if tcp.enabled() {
+        // seccomp_data.args are 64-bit words on both supported little-endian
+        // ABIs. Accept only native IPv4/IPv6 TCP streams, including normal
+        // CLOEXEC/NONBLOCK flags. MPTCP, datagrams and raw sockets are not TCP
+        // direction guarantees supplied by this profile.
+        filter.extend([
+            jump(libc::SYS_socket as u32, 0, 13),
+            stmt(0x20, 16),
+            jump(libc::AF_INET as u32, 2, 0),
+            jump(libc::AF_INET6 as u32, 1, 0),
+            stmt(0x06, 0x00050000 | libc::EPERM as u32),
+            stmt(0x20, 24),
+            stmt(0x54, !(libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK) as u32),
+            jump(libc::SOCK_STREAM as u32, 1, 0),
+            stmt(0x06, 0x00050000 | libc::EPERM as u32),
+            stmt(0x20, 32),
+            jump(0, 2, 0),
+            jump(libc::IPPROTO_TCP as u32, 1, 0),
+            stmt(0x06, 0x00050000 | libc::EPERM as u32),
+            stmt(0x06, 0x7fff0000),
+        ]);
+    }
     for syscall in [libc::SYS_socket, libc::SYS_socketpair] {
         if service {
             filter.extend([
@@ -922,6 +1013,42 @@ fn socket_filter(service: bool) -> Result<File, Refusal> {
                 jump(syscall as u32, 0, 1),
                 stmt(0x06, 0x00050000 | libc::EPERM as u32),
             ]);
+        }
+    }
+    if tcp.enabled() {
+        if !tcp.connect {
+            filter.extend([
+                jump(libc::SYS_connect as u32, 0, 1),
+                stmt(0x06, 0x00050000 | libc::EPERM as u32),
+            ]);
+            // TCP Fast Open can initiate a connection through sendto/sendmsg
+            // without connect(). Reject that flag, including batched sends.
+            for (syscall, flags) in [
+                (libc::SYS_sendto, 40),
+                (libc::SYS_sendmsg, 32),
+                (libc::SYS_sendmmsg, 40),
+            ] {
+                filter.extend([
+                    jump(syscall as u32, 0, 4),
+                    stmt(0x20, flags),
+                    libc::sock_filter {
+                        code: 0x45,
+                        jt: 0,
+                        jf: 1,
+                        k: libc::MSG_FASTOPEN as u32,
+                    },
+                    stmt(0x06, 0x00050000 | libc::EPERM as u32),
+                    stmt(0x20, 0),
+                ]);
+            }
+        }
+        if !tcp.listen {
+            for syscall in [libc::SYS_listen, libc::SYS_accept, libc::SYS_accept4] {
+                filter.extend([
+                    jump(syscall as u32, 0, 1),
+                    stmt(0x06, 0x00050000 | libc::EPERM as u32),
+                ]);
+            }
         }
     }
     if service {
@@ -1012,7 +1139,7 @@ mod tests {
     #[test]
     #[ignore = "requires native Linux kernel seccomp; run with the installed contract fixtures"]
     fn service_filter_allows_unix_ipc_and_denies_host_process_control() {
-        let mut file = socket_filter(true).unwrap();
+        let mut file = socket_filter(true, TcpAccess::default()).unwrap();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
         let parent = unsafe { libc::getpid() };

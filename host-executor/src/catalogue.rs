@@ -51,6 +51,7 @@ pub(crate) fn canonical_operation(op: &Operation) -> Value {
         "/execution/filesystem/read",
         "/execution/filesystem/write",
         "/execution/network/destinations",
+        "/execution/network/listeners",
         "/execution/network/ipc",
         "/execution/broader",
         "/enforcement/enforced",
@@ -106,6 +107,7 @@ pub fn within_operation(op: &Operation, ceiling: &Operation, allow_code: bool) -
         "/execution/filesystem/read",
         "/execution/filesystem/write",
         "/execution/network/destinations",
+        "/execution/network/listeners",
         "/execution/network/ipc",
         "/execution/broader",
     ] {

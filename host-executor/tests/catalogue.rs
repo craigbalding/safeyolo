@@ -175,7 +175,7 @@ impl Store {
             .response
     }
     fn prepared(&mut self, target: &Target, id: &str, key: &Ed25519KeyPair) -> Prepared {
-        let Response::Proposal { prepared } = self.call(
+        let Response::Proposal { prepared, .. } = self.call(
             target,
             Action::Propose {
                 invocation: invocation(target, "restart"),
@@ -266,6 +266,10 @@ fn expansions_defaults_identity_effects_and_missing_enforcement_cannot_inherit_a
             serde_json::json!(["service:demo", "service:other"]),
         ),
         ("/execution/identity/principal", serde_json::json!("root")),
+        (
+            "/execution/network/listeners",
+            serde_json::json!([{"address":"127.0.0.1","port":12345,"transport":"tcp"}]),
+        ),
         (
             "/execution/environment/LANG",
             serde_json::json!({"kind":"literal","value":"other"}),
@@ -707,7 +711,7 @@ fn family_call_budget_counts_distinct_operation_selectors_together() {
     adoption.observed = signed_catalogue(&package, &key, false, None);
     let current = activate(&target, &adoption);
     let mut store = Store::new(&current);
-    let Response::Proposal { prepared } = store.call(
+    let Response::Proposal { prepared, .. } = store.call(
         &current,
         Action::Propose {
             invocation: invocation(&current, "diagnose:first"),
@@ -851,14 +855,17 @@ fn independent_budget_scopes(concurrent: bool) {
         let mut store = Store::new(&current);
         let mut prepared = Vec::new();
         for id in ["diagnose:sub:first", "diagnose:sub:second"] {
-            let Response::Proposal { prepared: proposal } = store.call(
+            let Response::Proposal {
+                prepared: proposal, ..
+            } = store.call(
                 &current,
                 Action::Propose {
                     invocation: invocation(&current, id),
                 },
                 id,
                 &key,
-            ) else {
+            )
+            else {
                 panic!("proposal");
             };
             prepared.push(proposal);
@@ -994,7 +1001,7 @@ fn target_budget_is_shared_across_issuers_and_grants() {
                     .insert("other".into(), original.authority.grants["grant"].clone());
             }
             let mut store = Store::new(&target);
-            let Response::Proposal { prepared } = store.call(
+            let Response::Proposal { prepared, .. } = store.call(
                 &target,
                 Action::Propose {
                     invocation: invocation(&target, "diagnose:sub:first"),
@@ -1096,7 +1103,7 @@ fn pending_dispatch_excludes_only_its_own_grant_revision_reservation() {
                 .budgets
                 .calls += 1;
         }
-        let Response::Proposal { prepared } = store.call(
+        let Response::Proposal { prepared, .. } = store.call(
             &target,
             Action::Propose {
                 invocation: invocation(&target, id),
