@@ -47,7 +47,7 @@ pub(crate) fn network_enforcement(operation: &Operation) -> Vec<String> {
     if !tcp.enabled() {
         return vec![if operation.execution.delegated_services.is_empty() {
             if operation.execution.network.listener_handoff.is_some() {
-                "Socket creation and outbound connects are denied. The workload can accept connections on its inherited listener; the target network namespace remains shared.".into()
+                "Socket creation and outbound connects are denied. The workload can accept connections on its inherited listener, which retains the target network context; its own network namespace remains separate.".into()
             } else {
                 "Network namespace is disconnected; socket creation is denied.".into()
             }
@@ -551,7 +551,7 @@ impl LinuxRuntime {
             "ALL",
             "--clearenv",
         ]);
-        if !tcp.enabled() && !endpoint && listener.is_none() {
+        if !tcp.enabled() && !endpoint {
             native.arg("--unshare-net");
         }
         if !service {
@@ -843,7 +843,7 @@ impl LinuxRuntime {
         }
         if operation.execution.network.listener_handoff.is_some() {
             if !tcp.enabled() {
-                result.enforcement[1] = "separate user/PID/IPC/UTS namespaces; shared target network namespace for the inherited listener; socket creation, bind/listen and outbound connect are denied; accept uses the inherited socket".into();
+                result.enforcement[1] = "separate user/PID/network/IPC/UTS namespaces; the inherited listener retains the target network context; socket creation, bind/listen and outbound connect are denied; accept uses the inherited socket".into();
             }
             result
                 .dependencies
