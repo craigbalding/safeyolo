@@ -199,7 +199,7 @@ pub(crate) fn bind_for_job(
     };
     let (socket, observation) = match bind(selection) {
         Ok((socket, observation)) => (Some(socket), observation),
-        Err(observation) => (None, observation),
+        Err(observation) => (None, *observation),
     };
     ledger
         .lock()

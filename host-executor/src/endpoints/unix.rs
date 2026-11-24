@@ -173,11 +173,8 @@ fn option(fd: &OwnedFd, level: i32, name: i32, value: bool) -> io::Result<()> {
 
 fn bind_candidate(
     c: &EndpointCandidate,
-) -> Result<(OwnedFd, EndpointObservation), EndpointObservation> {
-    let (binding, interface) = match resolve(c) {
-        Ok(v) => v,
-        Err(e) => return Err(*e),
-    };
+) -> Result<(OwnedFd, EndpointObservation), Box<EndpointObservation>> {
+    let (binding, interface) = resolve(c)?;
     let mut result = failure(
         c,
         EndpointStatus::Unknown,
@@ -204,7 +201,7 @@ fn bind_candidate(
         )
     };
     if raw < 0 {
-        return Err(native_error(result, io::Error::last_os_error()));
+        return Err(Box::new(native_error(result, io::Error::last_os_error())));
     }
     let fd = unsafe { OwnedFd::from_raw_fd(raw) };
     let observe = (|| -> io::Result<SocketAddr> {
@@ -304,14 +301,14 @@ fn bind_candidate(
             result.reason = "selected endpoint bound and retained before workload launch; descriptor 3 is for the selected job, not evidence of application readiness or audience reach".into();
             Ok((fd, result))
         }
-        Err(error) => Err(native_error(result, error)),
+        Err(error) => Err(Box::new(native_error(result, error))),
     }
 }
 
 pub(crate) fn bind(
     selection: &EndpointSelection,
-) -> Result<(OwnedFd, EndpointObservation), EndpointObservation> {
-    let mut failure = None;
+) -> Result<(OwnedFd, EndpointObservation), Box<EndpointObservation>> {
+    let mut failure: Option<Box<EndpointObservation>> = None;
     for candidate in &selection.candidates {
         let observation = match bind_candidate(candidate) {
             Ok(bound) => return Ok(bound),
@@ -320,7 +317,7 @@ pub(crate) fn bind(
         // A conflict in one alternative cannot conceal an incomplete check.
         if failure
             .as_ref()
-            .is_none_or(|prior: &EndpointObservation| prior.status == EndpointStatus::Conflict)
+            .is_none_or(|prior| prior.status == EndpointStatus::Conflict)
         {
             failure = Some(observation);
         }
@@ -337,6 +334,6 @@ fn inspect(selection: &EndpointSelection) -> EndpointObservation {
             observation.reason = "selected endpoint bound successfully; probe released; the service's later bind remains authoritative".into();
             observation
         }
-        Err(observation) => observation,
+        Err(observation) => *observation,
     }
 }
