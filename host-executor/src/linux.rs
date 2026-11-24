@@ -283,7 +283,7 @@ impl LinuxRuntime {
     ) -> Result<(), Refusal> {
         let execution = &operation.execution;
         let service = crate::unix_services::validate(operation)?;
-        crate::endpoints::validate(operation)?;
+        let endpoint = crate::endpoints::validate(operation)?;
         let tcp = TcpAccess::selected(operation);
         require(
             service
@@ -374,7 +374,11 @@ impl LinuxRuntime {
             )?;
             validate_read_mounts(path, &protected, &mounts)?;
         }
-        for path in &execution.filesystem.read {
+        let mut read_paths = execution.filesystem.read.clone();
+        if endpoint {
+            read_paths.extend(crate::endpoints::runtime_reads());
+        }
+        for path in &read_paths {
             let path = Path::new(path);
             require(
                 absolute(path),
@@ -542,7 +546,11 @@ impl LinuxRuntime {
             &unsafe { libc::getegid() }.to_string(),
         ]);
         let mut reads = Vec::new();
-        for path in &operation.execution.filesystem.read {
+        let mut read_paths = operation.execution.filesystem.read.clone();
+        if endpoint {
+            read_paths.extend(crate::endpoints::runtime_reads());
+        }
+        for path in &read_paths {
             let file = File::open(path).map_err(unavailable)?;
             native.args(["--ro-bind-fd", &file.as_raw_fd().to_string(), path]);
             reads.push(file);

@@ -115,7 +115,7 @@ impl MacRuntime {
         for op in target.package.operations.values() {
             let e = &op.execution;
             let service = crate::unix_services::validate(op)?;
-            crate::endpoints::validate(op)?;
+            let endpoint = crate::endpoints::validate(op)?;
             let mut declared = e.identity.groups.clone();
             declared.sort();
             declared.dedup();
@@ -141,7 +141,11 @@ impl MacRuntime {
                 RefusalCode::Unavailable,
                 "this macOS profile supports read-only files, no socket or Mach access and no delegated services; service effects require an independently protected executor identity or enforced service boundary",
             )?;
-            for path in e.filesystem.read.iter().chain([&e.executable]) {
+            let mut read_paths = e.filesystem.read.clone();
+            if endpoint {
+                read_paths.extend(crate::endpoints::runtime_reads());
+            }
+            for path in read_paths.iter().chain([&e.executable]) {
                 let path = Path::new(path);
                 require(
                     path.is_absolute(),
@@ -395,7 +399,7 @@ impl MacRuntime {
         }
         let mut result = NativeObservation { backend: "macos-seatbelt-no-fork".into(), enforcement: vec!["Seatbelt adopted read paths and ancestor directory metadata, no file writes, no direct socket connections or Mach lookups, no process fork, pinned private executable snapshot and exact environment".into(), "single process; observed waitpid termination; bounded retained output and wall deadline while the executor remains live".into()], dependencies: vec!["EXPLICIT BROADER MEMORY: resident memory is polled; transient allocations and kernel pressure are not hard-capped".into(), "EXPLICIT BROADER EXECUTOR RESTART: a controller crash may leave the process running beyond its deadline; restart retains unknown cleanup and concurrency until the recorded process birth is absent. macOS Seatbelt, baseline sysctl reads and host-owned libraries are required".into()], exit_code: status.and_then(|s| std::process::ExitStatus::from_raw(s).code()), signal: status.and_then(|s| std::process::ExitStatus::from_raw(s).signal()), processes_stopped: stopped, output_truncated: truncated, termination_reason: reason.into() };
         if endpoint {
-            result.enforcement[0] = "Seatbelt denies files, Mach lookups and fork; only the pinned trusted endpoint helper receives sockets. Its native implementation filters the authorised typed selector before output.".into();
+            result.enforcement[0] = "Seatbelt permits host system libraries, denies workload file scopes, Mach lookups and fork; only the pinned trusted endpoint helper receives sockets. Its native implementation filters the authorised typed selector before output.".into();
             result.enforcement.extend(crate::endpoints::disclosure());
         }
         if service {

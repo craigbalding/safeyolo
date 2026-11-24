@@ -519,7 +519,8 @@ for the selector fields and commands.
 The common native validation path requires the current executor's executable
 path and digest, the fixed helper command, valid selector choices, an empty
 environment and no workload file, network, IPC or delegated-service scopes.
-The helper receives the target's native socket facilities to resolve only the
+The helper receives read access to host system libraries and the target's native
+socket facilities to resolve only the
 selected interface and briefly probe the selected endpoints. Its trusted
 implementation filters host facts before output. Arbitrary adopted programs
 receive no socket exception. Linux retains its filesystem/PID/IPC namespaces

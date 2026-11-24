@@ -97,6 +97,23 @@ pub fn disclosure() -> Vec<String> {
 }
 
 #[cfg(unix)]
+pub(crate) fn runtime_reads() -> Vec<String> {
+    #[cfg(target_os = "linux")]
+    let paths = ["/usr/lib", "/lib", "/lib64"];
+    #[cfg(target_os = "macos")]
+    let paths = [
+        "/usr/lib",
+        "/System/Library",
+        "/Library/Apple/System/Library",
+    ];
+    paths
+        .into_iter()
+        .filter(|path| std::path::Path::new(path).exists())
+        .map(String::from)
+        .collect()
+}
+
+#[cfg(unix)]
 pub(crate) fn validate(operation: &Operation) -> Result<bool, Refusal> {
     use std::{fs, path::Path};
     let e = &operation.execution;
