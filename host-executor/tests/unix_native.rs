@@ -224,6 +224,27 @@ impl Fixture {
             path.display()
         );
     }
+    fn check_file_results(&self) {
+        let check = Command::new(executor())
+            .arg("check")
+            .arg("--config")
+            .arg(self.root.join("target.json"))
+            .arg("--state")
+            .arg(self.root.join("state"))
+            .output()
+            .unwrap();
+        assert!(
+            check.status.success(),
+            "{}",
+            String::from_utf8_lossy(&check.stderr)
+        );
+        let text = String::from_utf8(check.stdout).unwrap();
+        assert!(
+            text.contains("file retrieval paths")
+                && text.contains("requires the issuer's file verb")
+        );
+        eprintln!("human target check: {text}");
+    }
 }
 
 fn accept_positive_connection<T>(mut accept: impl FnMut() -> std::io::Result<T>) -> T {
@@ -1516,6 +1537,7 @@ fn installed_linux_scoped_writes_children_and_retained_partial_results() {
     settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
     f.target = settings.target.clone();
     fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    f.check_file_results();
     // The existing read operation still has no write authority.
     let (read, _) = f.invoke("observe");
     assert_eq!(f.terminal(&read.job_id).state, JobState::Completed);
@@ -1631,6 +1653,7 @@ fn installed_macos_scoped_writes_and_retained_results() {
     settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
     f.target = settings.target.clone();
     fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    f.check_file_results();
     for (mode, expected) in [
         ("write-single", JobState::Completed),
         ("write-single-partial", JobState::Failed),
