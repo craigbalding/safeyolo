@@ -6,17 +6,22 @@ The published archive SHA-256 is
 `ddc7848d781053285280fcd35aab24c9c0a677e26db4aa4209bd5db57467de0f`.
 The upstream license, library, tests, examples and fixtures are retained.
 
-The `image-config` feature enables the existing typed configuration module,
-its `ConfigFile` conversions and its chrono dependency. It is enabled by
-default. The enabled date types, parsing and serialization are unchanged.
+The default-on `image-config` feature enables the typed configuration module
+and its `ConfigFile` conversions. Its two date fields use a UTC `ImageTimestamp`
+backed by maintained `time` calendar arithmetic. The adapter retains explicit
+leap seconds, extended years, nanosecond precision and UTC normalization.
+The parser also retains relaxed forms with unpadded components, whitespace,
+`UTC` and offsets without a colon. Absent and null dates remain optional;
+invalid dates are refused.
 Callers that disable default features can use the raw registry APIs and
-`client::Config::oci_v1` without chrono through this dependency.
+`client::Config::oci_v1` without the typed date dependency.
 SafeYolo selects `rustls-tls-no-provider` without `image-config`; its existing
 digest, platform and raw configuration validation remain in SafeYolo.
 
-The source patch changes the two manifests, `src/lib.rs` and `src/client.rs`.
-The added configuration tests exercise absent/null dates, precise timestamps,
-offset normalization and typed conversions. The copied upstream manifests and
+The source patch changes the two manifests, the typed configuration and its
+conversions. Configuration tests exercise absent/null dates, precise timestamps,
+offset normalization, leap seconds, extended years and typed conversions.
+The copied upstream manifests and
 lockfile also describe optional and development dependencies. Their presence
 does not establish that a native production build selects those dependencies.
 
@@ -28,6 +33,9 @@ selections, including the bundled emSign trust defect in RUSTSEC-2026-0383.
 It also selects url 2.5.9 and form_urlencoded 1.2.3 to address the nested
 `blob:` origin stack overflow in RUSTSEC-2026-0592.
 The source and license remain those identified above. The standalone lock
-still contains the chrono and astral-tokio-tar maintenance notices.
+uses the local `testcontainers` consumer patch in `../testcontainers` for
+maintained streaming archives and the optional properties conversion.
+The current date and archive consumers do not require chrono or
+astral-tokio-tar.
 SafeYolo's product dependencies use `proxy/Cargo.lock`, separately from this
 standalone lock.
