@@ -1302,11 +1302,11 @@ Selection: manual native phase `host-execution` (named execution receipt; ignore
 - [`cargo test --manifest-path proxy/Cargo.toml --test host_execution one_package_binds_native_gateway_material_and_target_scope -- --exact`](../proxy/tests/host_execution.rs#L939)
 - [`cargo test --manifest-path proxy/Cargo.toml --test host_execution generated_gateway_contract_requires_bound_resource_and_exact_operation_payload -- --exact`](../proxy/tests/host_execution.rs#L987)
 - [`cargo test --manifest-path proxy/Cargo.toml --test host_execution invocation_cannot_replace_definitions_or_add_an_executable -- --exact`](../proxy/tests/host_execution.rs#L1038)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution same_authenticated_http_protocol_on_standalone_and_safeyolo_targets -- --exact`](../proxy/tests/host_execution.rs#L1316)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution issuer_namespaces_job_disclosure_and_terminal_states_are_explicit -- --exact`](../proxy/tests/host_execution.rs#L1509)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution command_words_preserve_fixed_implementation_and_never_evaluate_shell_text -- --exact`](../proxy/tests/host_execution.rs#L1634)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution local_action_ceiling_and_content_revisions_cannot_be_bypassed_by_labels -- --exact`](../proxy/tests/host_execution.rs#L1678)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution stale_preparation_refreshes_through_real_discovery_proposal_and_ledger_without_invoking -- --exact`](../proxy/tests/host_execution.rs#L1730)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution same_authenticated_http_protocol_on_standalone_and_safeyolo_targets -- --exact`](../proxy/tests/host_execution.rs#L1322)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution issuer_namespaces_job_disclosure_and_terminal_states_are_explicit -- --exact`](../proxy/tests/host_execution.rs#L1515)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution command_words_preserve_fixed_implementation_and_never_evaluate_shell_text -- --exact`](../proxy/tests/host_execution.rs#L1640)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution local_action_ceiling_and_content_revisions_cannot_be_bypassed_by_labels -- --exact`](../proxy/tests/host_execution.rs#L1684)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution stale_preparation_refreshes_through_real_discovery_proposal_and_ledger_without_invoking -- --exact`](../proxy/tests/host_execution.rs#L1736)
 
 <a id="witness-proxy-src-policy-adoption-tests-rs"></a>
 ### [`proxy/src/policy_adoption_tests.rs`](../proxy/src/policy_adoption_tests.rs)
