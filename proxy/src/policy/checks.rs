@@ -15,6 +15,7 @@ use std::{
 use tokio::io::AsyncReadExt;
 pub mod challenges;
 pub(crate) mod execution;
+pub mod task_action;
 pub(crate) mod work;
 
 pub fn content_digest(bytes: &[u8]) -> String {
@@ -134,6 +135,7 @@ impl Subject {
 #[serde(rename_all = "snake_case")]
 pub enum ResultType {
     Finding,
+    TaskAction,
     Score,
     Timestamp,
     Fact,
@@ -159,6 +161,9 @@ pub enum ScoreDirection {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Finding {
+    TaskAction {
+        assessment: task_action::Assessment,
+    },
     Finding {
         positive: bool,
     },
@@ -215,6 +220,7 @@ where
 impl Finding {
     fn result_type(&self) -> Option<ResultType> {
         match self {
+            Self::TaskAction { .. } => Some(ResultType::TaskAction),
             Self::Finding { .. } => Some(ResultType::Finding),
             Self::Score { .. } => Some(ResultType::Score),
             Self::Timestamp { .. } => Some(ResultType::Timestamp),
@@ -1199,6 +1205,9 @@ pub(crate) fn validate_evidence(check: &Check, entry: &mut Evidence, now: u64) {
         Some("incompatible evidence result type")
     } else {
         match &record.finding {
+            Finding::TaskAction { assessment } if !assessment.valid(&record.subject) => {
+                Some("invalid task/action assessment or evidence references")
+            }
             Finding::Score { value, confidence }
                 if !value.is_finite()
                     || confidence.is_some_and(|value| !value.is_finite())

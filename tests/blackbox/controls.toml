@@ -446,6 +446,70 @@ owner = "#889"
 decisions = []
 
 
+[[controls]]
+id = "BB-38"
+control = "Host-operation authority and native execution"
+source = "https://github.com/craigbalding/safeyolo/issues/1677"
+what = "Authenticated host operations retain exact scope and revision checks; native execution has observable bounds and cleanup."
+existing = "Native protocol and installed Unix fixtures, including adaptive application reads, fixed-service control, retained configuration effects, quiet/reviewed updates and dependency swaps. The Windows fixture selects packaged starters, machine/workload-user registry views, path aliases/reparse points, inherited handles, signed API isolation, catalogue updates/withdrawal, executable swaps, revocation/expiry, native bounds, controller crash recovery and storage limits. It retains canonical output and independent Windows service, file-identity and Job Object observations; platform results remain separate."
+conformance = "Qualify all eight witness groups through installed interfaces. Independent acceptance at PR #1695/41b29878 covers useful progress and refused expansion, quiet updates and the selected fallback, measured cleanup/recovery, and real Windows starter categories, modes and advertised bounds. Complete native deployment/composition evidence and maintained coverage remain open."
+effort = "L"
+comments = "The separately installed executor and independent host observers retain actual source, operating system, account, mode and output limits. Accepted evidence joins a real Linux sandbox to its co-located Linux target and a standalone macOS target over HTTPS, plus native Python-free Windows foreground and Windows Service runs. Windows proves every documented starter category, service status/start/stop/restart, Job Object memory/process/output/deadline bounds, protected paths, registry views, encoding and inherited handles; it does not claim disk/network containment, containment of delegated service effects, another architecture or a full Windows host stack. Linux adds whole-API scope refusals, cancellation/descendants, duplicate/lost-reply and crash reconciliation, expiry/revocation, adaptive investigation and stored-binding repair. Reuse the accepted #1675 finite Hyperlight/model and real-gVisor required-check evidence at their recorded limits; no general provider/platform cross-product is implied. An installed approved-stale journey now refuses both the original revisions and a fresh preparation carrying the earlier exact approval, with no new native job. Private assessment retains an unresolved full grant when four fixture operations lack annotations; the isolated characterised service pair reports same-resource match and different-resource non-match. A fresh four-job Windows continuation observes actual service consumption after each restart: the same-service edit is consumed; the different-resource edit changes only the other file, while a new service PID consumes the unchanged application bytes. The original 66 native rows remain preserved in the 70-row ledger, and both owned services stop afterward. Prior persistent effects and the original missing middle observation remain identified rather than reconstructed. A co-located physical macOS proxy/VZ guest/target reaches authenticated discovery, proposal and admission, but its required Seatbelt child exits71 with sandbox_apply denied; useful native execution there remains incomplete. Keep that actual facility failure visible without changing the host profile or claiming containment. Preserve the original uncertain results, persistent effects and explicit platform exceptions. See [the criterion disposition](https://github.com/craigbalding/safeyolo/issues/1677#issuecomment-7099825211). Missing required facilities leave the affected run incomplete."
+owner = "#1677"
+decisions = ["authorization", "other_sinks_and_launch"]
+
+[[witnesses]]
+paths = ["host-executor/tests/unix_native.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+manifest = "host-executor/Cargo.toml"
+target = "unix_native"
+module = ""
+owner = "host-executor/tests/unix_native.rs"
+scope = "Real Unix installed executor; local authenticated HTTP; explicit native prerequisites"
+adapter = "Independent file and socket observations plus canonical job/output and owned cgroup/service checks; ignored unless explicitly selected; no Windows or whole-workflow acceptance"
+
+[[witnesses]]
+paths = ["proxy/tests/host_execution.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+target = "host_execution"
+module = ""
+owner = "proxy/tests/host_execution.rs"
+helpers = { durable_crash_child = "Executed by durable_process_failure_after_committed_admission with its private child environment; no separate phase obligation." }
+scope = "Controlled authenticated protocol, signatures, ledger and HTTP fixtures"
+adapter = "Protocol/component evidence; simulated dispatch does not establish native containment"
+
+[[witnesses]]
+paths = ["proxy/src/policy_adoption_tests.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+target = "lib"
+module = "policy_adoption_tests"
+owner = "proxy/src/lib.rs"
+scope = "Controlled saved/runtime catalogue and gateway binding adoption"
+adapter = "Exact binding snapshots, rejected announcement stability and policy transaction rollback; no native execution claim"
+
+[[witnesses]]
+paths = ["proxy/src/host_execution/gateway/tests.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+target = "lib"
+module = "host_execution::gateway::tests"
+owner = "proxy/src/host_execution/gateway.rs"
+scope = "Controlled gateway authentication, scope, dispatch and reply-loss fixtures"
+adapter = "Real gateway request parsing and controlled upstream; not a deployed target or native boundary"
+
+[[witnesses]]
+paths = ["proxy/src/host_execution/gateway/task_action_tests.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+target = "lib"
+module = "host_execution::gateway::tests::configured_task_action"
+owner = "proxy/src/host_execution/gateway/tests.rs"
+scope = "Configured task/action admission and bounded checker fixtures"
+adapter = "Controlled check results and upstream dispatch counts; model measurements remain separate supplementary evidence"
+
 [[witnesses]]
 paths = ["tests/proxy_contracts/test_local_api_authorization.py", "tests/proxy_contracts/test_agent_api_contract.py", "tests/proxy_contracts/test_agent_egress_scope.py", "tests/proxy_contracts/test_agent_api_test_context.py"]
 controls = ["BB-04", "BB-05"]
@@ -473,6 +537,13 @@ controls = ["BB-08", "BB-19"]
 kind = "pytest"
 scope = "Native process; Linux/macOS; host identity"
 adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_media_recipe_gateway.py"]
+controls = ["BB-08"]
+kind = "pytest"
+scope = "Native process; owned loopback dispatch origin"
+adapter = "Shipped recipe service/policy; no installed library or job proof"
 
 [[witnesses]]
 paths = ["tests/proxy_contracts/test_control_updates.py"]
@@ -753,10 +824,10 @@ adapter = "The actual deterministic controller, typed decisions and independentl
 
 [[witnesses]]
 paths = ["tests/blackbox/native_authority.py::main"]
-controls = ["BB-24", "BB-25"]
+controls = ["BB-24", "BB-25", "BB-38"]
 kind = "procedure"
-scope = "Curated native Coord cases on Linux with real NATS and isolated instance roots"
-adapter = "Per-control procedure receipts and exact executed cases; process evidence, without a real guest or live tailnet"
+scope = "Curated Coord cases on Linux or explicitly selected installed host-executor cases on Unix"
+adapter = "Per-control procedure receipts and exact executed cases with separate test/product/probe identities; process evidence without whole-workflow or Windows acceptance"
 
 [[witnesses]]
 paths = ["tests/blackbox/installed_federation.py::main"]

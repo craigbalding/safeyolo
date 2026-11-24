@@ -117,6 +117,13 @@ def test_discovery_and_rpc_errors(adapter):
             optional = {"home"}
         assert set(schema["properties"]) == set(required) | optional
     assert by_name["resolve_approval"]["inputSchema"]["properties"]["decision"]["enum"] == ["approve", "reject", "defer"]
+    publication = by_name["publish_work_output"]
+    assert "64 lowercase hex digits" in publication["description"]
+    assert "omit artifact_base64" in publication["description"]
+    properties = publication["inputSchema"]["properties"]
+    assert "decoded bytes" in properties["target_ref"]["description"]
+    assert "Omit for an external reference" in properties["artifact_base64"]["description"]
+    assert "artifact_base64" not in publication["inputSchema"]["required"]
     assert by_name["request_room_access"]["inputSchema"]["properties"] == {
         "room_name": {"type": "string"},
         "permissions": {"type": "array", "items": {"type": "string", "enum": ["send", "receive", "page_operator"]}, "minItems": 1},

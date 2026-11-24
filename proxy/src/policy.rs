@@ -464,6 +464,7 @@ impl fmt::Debug for Policy {
 
 #[derive(Clone)]
 struct TaskPolicy {
+    id: Option<String>,
     baseline: Arc<Baseline>,
     rules: Vec<Rule>,
     global_budget: Option<u64>,
@@ -507,6 +508,21 @@ pub(crate) fn validate_task_id(task: &str) -> Result<()> {
 }
 
 impl Policy {
+    pub(crate) fn bind_registered_task(&mut self, task_id: &str) {
+        if let Some(task) = &mut self.task {
+            task.id = Some(task_id.into());
+        }
+    }
+
+    pub(crate) fn host_gateway_revision(&self) -> String {
+        crate::host_execution::revision(&(
+            self.work_authority_digest(),
+            self.task
+                .as_ref()
+                .map(|task| (&task.id, &task.baseline.value)),
+        ))
+    }
+
     /// An initialized local engine without a configured baseline defaults to
     /// denial while the baseline API reports null.
     pub fn unconfigured() -> Self {
@@ -638,6 +654,7 @@ impl Policy {
         let task = Self::from_document(parsed, None, None, true, None)?;
         let mut replacement = self.clone();
         replacement.task = Some(TaskPolicy {
+            id: None,
             baseline: task.baseline.expect("loaded task has a canonical model"),
             rules: task.rules,
             global_budget: task.global_budget,
@@ -958,8 +975,9 @@ impl Policy {
         Ok(policy)
     }
 
-    /// Borrow the canonical baseline for an authorized API response. This value
-    /// may contain gateway tokens and must not enter diagnostics or event logs.
+    /// Borrow the internal canonical baseline. This value may contain gateway
+    /// tokens and must not enter diagnostics or event logs. Agent responses
+    /// must exclude credential-bearing fields.
     pub(crate) fn baseline(
         &self,
     ) -> std::result::Result<Option<&Value>, BaselineSerializationError> {

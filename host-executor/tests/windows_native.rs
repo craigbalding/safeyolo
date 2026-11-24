@@ -1,0 +1,41 @@
+//! Explicit native Windows component fixture and its prebuilt workload probe.
+//! Run --prepare ROOT CREDENTIAL, then --native ROOT [--service]. The test host
+//! supplies an ordinary workload account, private control/state ACLs, a readable
+//! programs directory and writable work directory. No compiler/Python is used.
+//! --recover ROOT ATTEMPT and --storage ROOT ATTEMPT run focused checks using the
+//! retained prepared account, catalogue and ledger; they do not repeat starters.
+//! --bounds ROOT ATTEMPT [--service] uses that same native catalogue for identity,
+//! memory/process/output/deadline/cancellation checks, with canonical output and
+//! independent Job limits/process handles. It does not run service mutations.
+//! --registry ROOT ATTEMPT [--service] queries both allowed machine registry views
+//! from the prepared starter catalogue; the controller owns its expected data.
+//! --registry-user selects the workload hive instead; its profile must be loaded
+//! explicitly by the test controller. An unloaded hive must report unavailable.
+//! --paths ROOT checks local aliases and executable/ancestor reparse points.
+//! --handles ROOT ATTEMPT [--service] requires a newly prepared native catalogue
+//! containing the handles probe. It compares inherited-file identity against a
+//! positive Win32 inheritance control, then checks an actual executor child.
+//! --authority ROOT ATTEMPT [--service] adopts explicit synthetic second-actor
+//! grants, exercises signed API requests and restores the original configuration.
+//! --updates checks signed cosmetic/narrower/implementation announcements, refused
+//! expansions and explicit retain-on-withdrawal policy on the real target.
+//! --updates-resume starts at the unexecuted byte update after inspecting a
+//! retained narrower announcement; the controller supplies control/updates-original.json.
+//! --lifecycle checks revocation, expiry and unavailable configuration while
+//! independently observing that prior file effects and retained output remain.
+//! --swaps checks a same-size/mtime byte swap after proposal, then observes
+//! executable/ancestor replacement refusal during an actual running Job.
+//! --guards ROOT ATTEMPT resumes only that running-Job observation after a
+//! retained swap result, without repeating its completed invocation.
+//! --dummy-service [CONFIG OBSERVATION] optionally consumes the owned application
+//! configuration at startup and records its bytes/hash and actual service PID.
+#[cfg(windows)]
+mod common;
+#[cfg(windows)]
+mod windows_component;
+fn main() {
+    #[cfg(windows)]
+    windows_component::main();
+    #[cfg(not(windows))]
+    println!("Windows native fixture requires Windows and explicitly prepared inputs; skipped");
+}

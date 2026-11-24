@@ -374,7 +374,21 @@ fn from_rendered(label: &'static str, text: String) -> Option<(&'static str, Str
 fn render_event(display: &Display, e: &Value) -> Option<(&'static str, String)> {
     let kind = e["type"].as_str().unwrap_or_default();
     match kind {
-        "safeyolo.codex.stderr" | "safeyolo.pi.stderr" => return Some(("!", get(e, "text", ""))),
+        "safeyolo.codex.stderr" | "safeyolo.pi.stderr" | "safeyolo.claude.stderr" => {
+            return Some(("!", get(e, "text", "")));
+        }
+        "system" | "assistant" | "user" | "result" => {
+            return event(e, display.show_unknown).map(|(label, text)| {
+                (
+                    match label {
+                        "ERROR" | "TOOLERR" => "!",
+                        "TOOL" => "@",
+                        _ => "#",
+                    },
+                    text,
+                )
+            });
+        }
         "safeyolo.supervisor" => {
             let (_, text) = event(e, display.show_unknown)?;
             return Some((

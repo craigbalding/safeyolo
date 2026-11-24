@@ -695,6 +695,8 @@ def test_logical_index_native_verification_and_actual_extraction(tmp_path, guest
     (False, True, "unshare", True), (True, True, "aa-exec", True),
     (False, False, None, False), (True, False, None, False),
     (False, False, "collision-uid", True), (False, False, "collision-gid", True),
+    (False, True, "display-install", True),
+    (False, True, "missing-Xvfb", True), (False, True, "missing-xdpyinfo", True),
 ])
 def test_shared_host_preparation_keeps_mapping_trust_and_namespace_failures(tmp_path, restricted, existing, failure, fixed):
     scripts = tmp_path / "tests/blackbox"
@@ -731,7 +733,9 @@ with Path(os.environ['COMMANDS']).open('a') as output:
 if name == 'sudo':
     assert args.pop(0) == '-n'
     operation = args.pop(0)
-    if operation == os.environ.get('FAILURE') or (os.environ.get('FAILURE') == 'runsc' and 'runsc' in args):
+    if (operation == os.environ.get('FAILURE')
+        or (os.environ.get('FAILURE') == 'runsc' and 'runsc' in args)
+        or (os.environ.get('FAILURE') == 'display-install' and 'xvfb' in args)):
         sys.exit(9)
     if operation == 'usermod':
         path = Path(os.environ['RUNNER_TEMP']) / ('subuid' if args[0] == '--add-subuids' else 'subgid')
@@ -753,9 +757,13 @@ elif name == 'getsubids':
             print(f'{index}: {owner} {start} {count}')
 ''')
     command.chmod(0o755)
-    for name in ("sudo", "curl", "dpkg", "runsc", "tmux", "newuidmap", "newgidmap", "getsubids", "setfacl", "unshare", "aa-exec"):
-        (tools / name).symlink_to(command)
-    env = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}", "RUNNER_TEMP": str(tmp_path),
+    for name in ("sudo", "curl", "dpkg", "runsc", "tmux", "newuidmap", "newgidmap", "getsubids", "setfacl", "unshare", "aa-exec", "Xvfb", "xdpyinfo"):
+        if failure != f"missing-{name}":
+            (tools / name).symlink_to(command)
+    # Keep real host display tools from satisfying a missing-command control.
+    for name in ("bash", "dirname", "id", "awk", "cat", "ls", "sed"):
+        (tools / name).symlink_to(shutil.which(name))
+    env = {**os.environ, "PATH": str(tools), "RUNNER_TEMP": str(tmp_path),
            "USER": "fixture", "COMMANDS": str(tmp_path / "commands"), "FAILURE": failure or ""}
     result = subprocess.run(["bash", str(helper), *(["--fixed-rootfs-ids"] if fixed else [])],
                             env=env, text=True, capture_output=True, timeout=10)
@@ -772,6 +780,11 @@ elif name == 'getsubids':
     if not fixed:
         assert (tmp_path / "subuid").read_text() == (tmp_path / "subgid").read_text() == allocations
     if failure is None:
+        assert ["sudo", "-n", "apt-get", "install", "-y", "-qq", "--no-install-recommends",
+                "openssh-server", "uidmap", "acl", "util-linux", "iproute2", "tmux", "curl", "gnupg",
+                "ca-certificates", "xvfb", "x11-utils"] in calls
+        for name in ("Xvfb", "xdpyinfo"):
+            assert str(tools / name) in result.stdout
         assert ["curl", "-fsSL", "https://gvisor.dev/archive.key"] in calls
         assert ["sudo", "-n", "gpg", "--dearmor", "--yes", "-o", "/usr/share/keyrings/gvisor-archive-keyring.gpg"] in calls
         assert ["sudo", "-n", "apt-get", "install", "-y", "-qq", "--no-install-recommends", "runsc"] in calls

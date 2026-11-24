@@ -395,9 +395,9 @@ def test_rust_workflow_exposes_production_inputs_and_restores_their_dependency_f
     teardown = workflow.index("- name: Stop the native Coord fixture")
     assert compile_production < compile_tests < setup < test < teardown
     assert "build --release --locked --bins" in workflow[compile_production:compile_tests]
-    assert "test --release --locked --no-run" in workflow[compile_tests:setup]
+    assert "${{ matrix.os == 'macos-latest' && '--config profile.release.package.safeyolo-proxy.opt-level=1' || '' }} test --release --locked --no-run" in workflow[compile_tests:setup]
     test_block = workflow[test:teardown]
-    assert test_block.index("cargo_with_space.sh test --release --locked") < test_block.index("cargo_with_space.sh build --release --locked --bins")
+    assert test_block.index("${{ matrix.os == 'macos-latest' && '--config profile.release.package.safeyolo-proxy.opt-level=1' || '' }} test --release --locked") < test_block.index("cargo_with_space.sh build --release --locked --bins")
     production_block = workflow[compile_production:compile_tests]
     binary = production_block.index('rust_proxy="$GITHUB_WORKSPACE/proxy/target/release/safeyolo-proxy"')
     export = production_block.index('printf \'SAFEYOLO_RUST_PROXY=%s\\n\' "$rust_proxy" >> "$GITHUB_ENV"')

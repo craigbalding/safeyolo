@@ -19,6 +19,17 @@ def _load_module():
 mod = _load_module()
 
 
+def test_empty_substitutions_do_not_abort_scanning_or_hide_a_later_token_read():
+    for empty in ("$()", "``"):
+        text = f'''empty={empty}
+token=$(cat /app/agent_token)
+curl --header "Authorization: Bearer $token" http://_safeyolo.proxy.internal/health
+'''
+        findings = mod.find_unsafe_token_argv(text)
+        assert len(findings) == 1
+        assert findings[0][0] == 3
+
+
 def test_rejects_direct_agent_token_command_substitution():
     text = """```sh
 curl -sS http://_safeyolo.proxy.internal/health \\

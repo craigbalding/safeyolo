@@ -61,10 +61,22 @@ impl Policy {
         }
         let lists = lists_max_mtime(path)?;
         let feeds = modified(&path.with_file_name("policy-feeds.toml")).unwrap_or(0.);
+        let catalogue_changed = if let Some(native) = &self.native {
+            let registry = self.gateway().and_then(|g| g.registry());
+            crate::host_execution::catalogues_changed(
+                &native.authored,
+                registry.as_deref(),
+                crate::host_execution::now(),
+            )
+            .map_err(|error| invalid(format!("host catalogue discovery: {error}")))?
+        } else {
+            false
+        };
         Ok(changed
             || lists > previous.lists
             || feeds != previous.feeds
-            || !self.named_checks().feeds_current())
+            || !self.named_checks().feeds_current()
+            || catalogue_changed)
     }
 
     /// Capture the watermark before reading source content. A later write must

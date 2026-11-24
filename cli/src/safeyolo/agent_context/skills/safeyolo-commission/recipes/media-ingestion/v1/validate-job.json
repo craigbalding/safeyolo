@@ -1,0 +1,12 @@
+{
+  "gate_id": "media-validation",
+  "engine": {"kind": "platform"},
+  "argv": ["/usr/bin/python3", "/input/check_media.py", "validate"],
+  "network": false,
+  "privilege": "unprivileged",
+  "timeout_seconds": 120,
+  "memory_mb": 1024,
+  "max_input_bytes": 2147483648,
+  "max_input_entries": 64,
+  "retain_bytes": 32768
+}
