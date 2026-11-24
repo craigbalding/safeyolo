@@ -132,7 +132,7 @@ fn operation(
             argv: argv.into_iter().map(|value| Word::Literal { value }).collect(),
             environment: BTreeMap::from([("FIXTURE".into(), literal("native")), ("SystemRoot".into(), literal("C:\\Windows"))]),
             working_directory: root.join("work").to_str().unwrap().into(), identity: identity.clone(),
-            filesystem: Filesystem { read: vec![], write: vec![] }, network: Network { destinations: vec![], ipc: vec![] },
+            filesystem: Filesystem { read: vec![], write: vec![] }, network: Network { listeners: Vec::new(), destinations: vec![], ipc: vec![] },
             resources: ExecutionLimits { timeout_seconds: 30, output_bytes: 64 * 1024, memory_bytes: 128 * 1024 * 1024, processes: 12 },
             delegated_services: vec![],
         }, effects: BTreeMap::new(),
@@ -501,7 +501,7 @@ impl Fixture {
             expected_assessment_sha256: None,
         };
         let response = self.call(Action::Propose { invocation });
-        let Response::Proposal { prepared } = response else {
+        let Response::Proposal { prepared, .. } = response else {
             panic!("proposal {name} refused: {response:?}");
         };
         let bytes = self.signed(Action::Invoke {
@@ -1843,7 +1843,7 @@ fn executable_swaps(fixture: &mut Fixture) {
         arguments: BTreeMap::new(),
         expected_assessment_sha256: None,
     };
-    let Response::Proposal { prepared } = fixture.call(Action::Propose { invocation }) else {
+    let Response::Proposal { prepared, .. } = fixture.call(Action::Propose { invocation }) else {
         panic!("original proposal refused")
     };
     let signed = fixture.signed(Action::Invoke {
@@ -2077,7 +2077,8 @@ fn storage_exhaustion(fixture: &mut Fixture) {
             arguments: BTreeMap::new(),
             expected_assessment_sha256: None,
         };
-        let Response::Proposal { prepared } = fixture.call(Action::Propose { invocation }) else {
+        let Response::Proposal { prepared, .. } = fixture.call(Action::Propose { invocation })
+        else {
             panic!("storage exhaustion disabled proposal")
         };
         assert!(

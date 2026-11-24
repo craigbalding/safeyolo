@@ -25,6 +25,18 @@ pub enum NativeRuntime {
     Windows(crate::windows::WindowsRuntime),
 }
 impl NativeRuntime {
+    pub(crate) fn network_enforcement(&self, operation: &Operation) -> Vec<String> {
+        match self {
+            #[cfg(target_os = "linux")]
+            Self::Linux(_) => crate::linux::network_enforcement(operation),
+            #[cfg(not(target_os = "linux"))]
+            _ => {
+                let _ = operation;
+                Vec::new()
+            }
+        }
+    }
+
     pub(crate) fn validate_command(&self, command: &Command) -> Result<(), Refusal> {
         #[cfg(windows)]
         match self {

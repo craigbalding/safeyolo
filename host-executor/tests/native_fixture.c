@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <errno.h>
 #include <limits.h>
 #include <netinet/in.h>
@@ -11,10 +12,103 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef __linux__
+static int tcp_probe(const char *mode, const char *directory, int local_port, int remote_port) {
+    int outbound = strstr(mode,"connect") || strstr(mode,"both");
+    int listener = strstr(mode,"listen") || strstr(mode,"both") || strstr(mode,"wait");
+    int ipv6 = mode[strlen(mode)-1]=='6';
+    int family = ipv6 ? AF_INET6 : AF_INET;
+    struct sockaddr_in v4 = { .sin_family=AF_INET, .sin_addr.s_addr=htonl(INADDR_LOOPBACK) };
+    struct sockaddr_in6 v6 = { .sin6_family=AF_INET6, .sin6_addr=IN6ADDR_LOOPBACK_INIT };
+    struct sockaddr *address = ipv6 ? (struct sockaddr *)&v6 : (struct sockaddr *)&v4;
+    socklen_t length = ipv6 ? sizeof(v6) : sizeof(v4);
+    v4.sin_port=htons((unsigned short)remote_port);
+    v6.sin6_port=htons((unsigned short)remote_port);
+    if (socket(AF_UNIX,SOCK_STREAM,0)!=-1 || errno!=EPERM) return 60;
+    if (socket(family,SOCK_DGRAM,0)!=-1 || errno!=EPERM) return 61;
+    if (socket(family,SOCK_STREAM,IPPROTO_MPTCP)!=-1 || errno!=EPERM) return 62;
+    if (outbound) {
+        pid_t child=fork();
+        if (child<0) return 63;
+        int fd=socket(family,SOCK_STREAM|SOCK_CLOEXEC,IPPROTO_TCP);
+        char answer[2];
+        if (fd<0 || connect(fd,address,length) || write(fd,"request",7)!=7
+            || recv(fd,answer,2,MSG_WAITALL)!=2 || memcmp(answer,"ok",2)) {
+            if (!child) _exit(64);
+            return 64;
+        }
+        close(fd);
+        if (!child) _exit(0);
+        int status;
+        if (waitpid(child,&status,0)!=child || !WIFEXITED(status) || WEXITSTATUS(status)) return 65;
+        puts("outbound request and descendant request completed");
+    } else {
+        int fd=socket(family,SOCK_STREAM,0);
+        if (fd<0) return 66;
+        if (connect(fd,address,length)!=-1 || errno!=EPERM) return 67;
+#ifdef __linux__
+        char data='x';
+        struct iovec iov = { .iov_base=&data, .iov_len=1 };
+        struct msghdr message = { .msg_name=address, .msg_namelen=length, .msg_iov=&iov, .msg_iovlen=1 };
+        struct mmsghdr messages = { .msg_hdr=message };
+        if (sendto(fd,&data,1,MSG_FASTOPEN,address,length)!=-1 || errno!=EPERM) return 68;
+        if (sendmsg(fd,&message,MSG_FASTOPEN)!=-1 || errno!=EPERM) return 69;
+        if (sendmmsg(fd,&messages,1,MSG_FASTOPEN)!=-1 || errno!=EPERM) return 70;
+#endif
+        close(fd);
+        puts("connect and TCP Fast Open denied");
+    }
+    int fd=socket(family,SOCK_STREAM|SOCK_CLOEXEC,0);
+    if (fd<0) return 71;
+    if (!listener) {
+        /* Also covers implicit listen autobinding without bind(). */
+        if (listen(fd,1)!=-1 || errno!=EPERM) return 72;
+        if (accept(fd,NULL,NULL)!=-1 || errno!=EPERM) return 73;
+#ifdef __linux__
+        if (accept4(fd,NULL,NULL,SOCK_CLOEXEC)!=-1 || errno!=EPERM) return 74;
+#endif
+        puts("listen and accept denied");
+    } else {
+        v4.sin_port=htons((unsigned short)local_port);
+        v6.sin6_port=htons((unsigned short)local_port);
+        if (bind(fd,address,length)) { printf("bind_failed_errno=%d\n",errno); return 75; }
+        if (listen(fd,1)) return 76;
+        printf("bound=%d family=%d\n",local_port,ipv6 ? 6 : 4);
+        if (strstr(mode,"wait")) {
+            pid_t child=fork();
+            if (child<0) return 77;
+            if (!child) {
+                if (setsid()<0) _exit(78);
+                puts("listening descendant ready");
+                for (;;) pause();
+            }
+            close(fd);
+            for (;;) pause();
+        }
+        struct timeval timeout = { .tv_sec=3 };
+        if (setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout))) return 79;
+        int client=accept(fd,NULL,NULL);
+        if (client<0 || write(client,"service",7)!=7) return 80;
+        char byte;
+        if (read(client,&byte,1)!=0) return 83;
+        close(client);
+    }
+    close(fd);
+    char path[PATH_MAX];
+    if (snprintf(path,sizeof(path),"%s/%s",directory,mode)>=(int)sizeof(path)) return 81;
+    FILE *file=fopen(path,"w");
+    if (!file || fputs("retained TCP result\n",file)<0 || fclose(file)) return 82;
+    return 0;
+}
+#endif
+
 /* Prepared by the developer test, never by target discovery/qualification. */
 int main(int argc, char **argv) {
     if (argc != 5) return 2;
     setbuf(stdout, NULL);
+#ifdef __linux__
+    if (!strncmp(argv[1],"tcp-",4)) return tcp_probe(argv[1],argv[2],atoi(argv[3]),atoi(argv[4]));
+#endif
     if (!strncmp(argv[1], "write-", 6)) {
         char path[PATH_MAX], replacement[PATH_MAX];
         if (snprintf(path,sizeof(path),"%s/new",argv[2]) >= (int)sizeof(path)

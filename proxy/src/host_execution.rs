@@ -432,7 +432,7 @@ pub fn refresh_preparation(
     request.expected = Some(operation.revisions.clone());
     request.action = Action::Propose { invocation };
     let prepared = match propose(SignedRequest::sign(request.clone(), key_id.into(), key))? {
-        Response::Proposal { prepared } => prepared,
+        Response::Proposal { prepared, .. } => prepared,
         Response::Refused { refusal } => return Err(refusal),
         _ => {
             return Err(invalid(

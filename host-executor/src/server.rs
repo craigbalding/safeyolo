@@ -212,6 +212,15 @@ pub fn command(args: Vec<String>) -> Result<(), Refusal> {
             "target {}: complete catalogue validated; no command launched",
             settings.target.target_id
         );
+        for (id, operation) in &settings.target.package.operations {
+            if !operation.execution.network.destinations.is_empty()
+                || !operation.execution.network.listeners.is_empty()
+            {
+                for fact in settings.native.network_enforcement(operation) {
+                    println!("operation {id}: {fact}");
+                }
+            }
+        }
         if let Some(status) = &settings.target.catalogue {
             let saved: Configuration =
                 serde_json::from_slice(&std::fs::read(&config).map_err(unavailable)?)

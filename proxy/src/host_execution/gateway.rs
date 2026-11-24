@@ -721,7 +721,7 @@ fn validate_response(
             discovery.target_id == binding.target.target_id
                 && discovery.package_sha256 == revision(&binding.target.package)
         }
-        (Response::Proposal { prepared }, Action::Propose { invocation }) => {
+        (Response::Proposal { prepared, .. }, Action::Propose { invocation }) => {
             prepared.invocation.operation_id == invocation.operation_id
                 && prepared.invocation.resource_id == invocation.resource_id
                 && prepared.invocation.operation_sha256 == invocation.operation_sha256

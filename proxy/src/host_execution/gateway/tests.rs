@@ -342,7 +342,8 @@ impl Fixture {
             ))
             .await;
         assert_eq!(reply.status, 200, "{}", reply.value);
-        let Response::Proposal { prepared } = serde_json::from_value(reply.value).unwrap() else {
+        let Response::Proposal { prepared, .. } = serde_json::from_value(reply.value).unwrap()
+        else {
             panic!()
         };
         self.input(
@@ -645,7 +646,7 @@ async fn native_scopes_defaults_current_policy_and_cross_agent_objects_are_enfor
             now(),
         )
         .unwrap();
-    let Response::Proposal { prepared } = prepared.response else {
+    let Response::Proposal { prepared, .. } = prepared.response else {
         panic!()
     };
     input.request_id = "foreign-invoke".into();

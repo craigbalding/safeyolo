@@ -600,6 +600,7 @@ impl Target {
                         )
                         .expect("authenticated issuer"),
                     definition: op.clone(),
+                    network_enforcement: Vec::new(),
                     has_invocation_scope: authorized.grant.verbs.contains(&Verb::Invoke)
                         && self
                             .scope(

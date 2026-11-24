@@ -18,6 +18,11 @@ inspection program. Adopted Linux commands can also use selected
 [`filesystem.write` paths](host-execution-contract.md#linux-writable-paths)
 and descendants under the same authority. File results stay at those host
 paths after job cleanup; the Output route returns stdout/stderr only.
+For TCP clients or listeners, an adopted Linux operation can select
+[broader TCP authority](host-execution-contract.md#linux-broader-tcp-authority).
+The operator must assess its account-wide address/port exposure. Discovery and
+proposals show the target's actual network boundary before invocation. The
+starter's narrow definitions remain disconnected.
 On macOS, resolving an adopted read path also permits
 metadata reads of its ancestor directories. It grants no sibling file contents
 or ancestor directory listing.
@@ -277,7 +282,9 @@ No system certificate or trust store is changed.
 
 `prepare` saves a candidate configuration and reports `activated: false`.
 `check` validates all adopted implementations and native dependencies without
-launching them. `serve` prints the selected target and ready listener only after
+launching them. For Linux TCP operations, it also prints the selected directions
+and broader address/port exposure from the same target-generated disclosure
+used by discovery and proposals. `serve` prints the selected target and ready listener only after
 validation, ledger reconciliation and binding. A saved file is not evidence of
 running-target readiness.
 
@@ -544,7 +551,7 @@ before another effect after a timeout.
 | Registry | No OS registry counterpart | Machine/workload-user hive, selected key/value and 32/64 view; value type; absent differs from denied. |
 | Processes, system, software, updates | Adapt a fixed installed tool, such as the hostctl `host-memory` or `host-cpu` recipe, to actual supported bounds | Process parent/start/resource observations; OS/hostname/uptime; bounded uninstall-registry and update inventories with source limits. |
 | Files | Native bounded directory/content evidence | Directory/metadata/hash/bounded-content commands, selected literal paths. |
-| Network | The current Unix executor profile denies direct probes; no implicit counterpart | Interface/routes/listeners in `network-inspect`; separately granted destination/port probe in `network-diagnostics`. No reconfiguration. |
+| Network | Starter definitions remain disconnected. Custom Linux definitions can select the explicit broader TCP profile; scoped endpoint inspection remains unfinished. macOS ordinary network scopes remain unavailable. | Interface/routes/listeners in `network-inspect`; separately granted destination/port probe in `network-diagnostics`. No reconfiguration. |
 | Scheduled tasks | No general scheduler authority in this starter | Enumerate/filter tasks; selected definitions/principal/actions/recent status. No execution, registration or modification. |
 | Fixed installed executable | The content-pinned executor's inspection commands; typed limits and exact environment | `fixed-executable` runs pinned `whoami.exe`; typed allowed argument, exact account/environment, native deadline/output/status. |
 

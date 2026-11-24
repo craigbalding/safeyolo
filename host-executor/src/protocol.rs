@@ -191,6 +191,8 @@ pub struct OperationDiscovery {
     pub definition: Operation,
     /// Membership is not authority. Concrete arguments/resources still need proposal.
     pub has_invocation_scope: bool,
+    /// Target-generated facts. Empty when no native target assessment is supplied.
+    pub network_enforcement: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -435,6 +437,8 @@ pub enum Response {
     },
     Proposal {
         prepared: Box<Prepared>,
+        /// Target-generated facts, separate from authored effects and rationale.
+        network_enforcement: Vec<String>,
     },
     Job {
         receipt: Box<Receipt>,

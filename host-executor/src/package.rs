@@ -148,7 +148,18 @@ pub struct Filesystem {
 #[serde(deny_unknown_fields)]
 pub struct Network {
     pub destinations: Vec<NetworkDestination>,
+    pub listeners: Vec<NetworkListener>,
     pub ipc: Vec<IpcEndpoint>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkListener {
+    /// The selected local binding, not an assertion of observed reachability.
+    pub address: std::net::IpAddr,
+    /// Zero selects kernel allocation; it does not reserve or report a port.
+    pub port: u16,
+    pub transport: NetworkTransport,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -393,7 +404,7 @@ impl Package {
                 .any(|d| d.host.is_empty() || d.port == 0)
             {
                 return Err(
-                    "network destinations need an explicit host, port and transport".into(),
+                    "network destinations need an explicit host, nonzero port and transport".into(),
                 );
             }
             for word in e.argv.iter().chain(e.environment.values()) {

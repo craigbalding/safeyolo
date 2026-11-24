@@ -134,6 +134,7 @@ impl MacRuntime {
             require(
                 e.filesystem.write.is_empty()
                     && e.network.destinations.is_empty()
+                    && e.network.listeners.is_empty()
                     && e.network.ipc.is_empty()
                     && (service || e.delegated_services.is_empty()),
                 RefusalCode::Unavailable,
