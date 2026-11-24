@@ -381,9 +381,17 @@ impl Response<'_> {
         if let ResponseBody::Circuit(text) = &self.body {
             return bytes::Bytes::from_owner(Zeroizing::new(text.as_bytes().to_vec()));
         }
+        let diagnostic;
         let (value, wrapped) = match &self.body {
             ResponseBody::Json(value) => (value, false),
-            ResponseBody::Policy(value) => (value.unwrap_or(&Value::Null), true),
+            ResponseBody::Policy(value) => {
+                // Reuse the JSON owner's Drop to wipe copied policy fields.
+                diagnostic = ResponseBody::Json(policy_diagnostics(value.unwrap_or(&Value::Null)));
+                let ResponseBody::Json(value) = &diagnostic else {
+                    unreachable!("policy diagnostics are JSON")
+                };
+                (value, true)
+            }
             ResponseBody::Circuit(_) => unreachable!("typed circuit response handled above"),
         };
         let overhead = if wrapped { "{\"policy\": }".len() } else { 0 };
@@ -400,6 +408,35 @@ impl Response<'_> {
         }
         bytes::Bytes::from_owner(Zeroizing::new(std::mem::take(&mut *output).into_bytes()))
     }
+}
+
+/// The enforcement baseline retains gateway credentials. Copy only diagnostic
+/// fields, excluding both bearer-keyed bindings and per-agent provisioning.
+fn policy_diagnostics(baseline: &Value) -> Value {
+    let Some(fields) = baseline.as_object() else {
+        return Value::Null;
+    };
+    Value::Object(
+        fields
+            .iter()
+            .map(|(name, value)| {
+                let value = if name == "gateway" {
+                    Value::Object(
+                        value
+                            .as_object()
+                            .expect("canonical gateway object")
+                            .iter()
+                            .filter(|(name, _)| !matches!(name.as_str(), "token_map" | "agent_env"))
+                            .map(|(name, value)| (name.clone(), value.clone()))
+                            .collect(),
+                    )
+                } else {
+                    value.clone()
+                };
+                (name.clone(), value)
+            })
+            .collect(),
+    )
 }
 
 /// Every outcome is a local terminal response, including compatibility failure.
@@ -1223,6 +1260,106 @@ fn parse_port(source: &str) -> Result<u16, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn policy_response_excludes_gateway_credentials_from_every_caller() {
+        let directory = tempfile::tempdir().unwrap();
+        let token_file = directory.path().join("agent_token");
+        std::fs::write(&token_file, b"synthetic-policy-api-token").unwrap();
+        let supplied = json!({"gateway":{
+            "token_map":{
+                "synthetic-alice-bearer":{"agent":"alice","service":"first","token":"synthetic-provider-reference"},
+                "synthetic-bob-bearer":{"agent":"bob","service":"second"}},
+            "agent_env":{"alice":{"first":"synthetic-alice-environment"},"bob":{"second":"synthetic-bob-environment"}},
+            "host_map":{"first.invalid":"first","second.invalid":"second"},
+            "grant_ttl_seconds":31}});
+        let host_source = r#"
+[hosts.'first.invalid']
+service='first'
+[hosts.'second.invalid']
+service='second'
+[agents.alice.services.first]
+capability='reader'
+token='synthetic-provider-reference'
+[agents.bob.services.second]
+capability='reader'
+token='synthetic-other-reference'
+[gateway]
+grant_ttl_seconds=31
+"#;
+        let path = directory.path().join("policy.toml");
+        std::fs::write(&path, host_source).unwrap();
+        let policies = [
+            Policy::parse_at(&supplied.to_string(), crate::policy::Format::Json, 0.).unwrap(),
+            Policy::parse_at(host_source, crate::policy::Format::Toml, 0.).unwrap(),
+            Policy::from_native_path(&path).unwrap(),
+        ];
+        let tasks = crate::tasks::Registry::default();
+        for policy in policies {
+            let policy = Arc::new(policy);
+            let baseline = policy.baseline().unwrap().unwrap();
+            let gateway = &baseline["gateway"];
+            assert_eq!(gateway["token_map"].as_object().unwrap().len(), 2);
+            let mut markers: Vec<_> = gateway["token_map"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            for environment in gateway["agent_env"].as_object().unwrap().values() {
+                markers.extend(
+                    environment
+                        .as_object()
+                        .unwrap()
+                        .values()
+                        .map(|value| value.as_str().unwrap().to_owned()),
+                );
+            }
+            markers.push("synthetic-provider-reference".into());
+            for caller in ["alice", "bob"] {
+                let outcome = respond_read(
+                    Request {
+                        method: "GET",
+                        path_and_query: "/policy?agent=forged",
+                        authorization: Some(b"Bearer synthetic-policy-api-token"),
+                        identity: Identity::Resolved(caller),
+                        client_ip: None,
+                        request_id: "req-policy-fixture",
+                    },
+                    &token_file,
+                    PolicyState::Ready(&policy),
+                    &tasks,
+                    0.,
+                )
+                .await;
+                assert_eq!(outcome.response.status, 200);
+                let bytes = outcome.response.body_bytes();
+                assert!(
+                    !markers.iter().any(|marker| bytes
+                        .windows(marker.len())
+                        .any(|window| window == marker.as_bytes())),
+                    "gateway credential reached policy response"
+                );
+                let view: Value = serde_json::from_slice(&bytes).unwrap();
+                let visible = view["policy"]["gateway"].as_object().unwrap();
+                assert!(!visible.contains_key("token_map") && !visible.contains_key("agent_env"));
+                assert_eq!(visible["host_map"], gateway["host_map"]);
+                assert_eq!(visible["grant_ttl_seconds"], 31);
+                assert!(view["policy"]["permissions"].is_array());
+            }
+            // The diagnostic read must not strip the live gateway owner's data.
+            assert!(policy.gateway().unwrap().canonical_gateway() == gateway);
+            for caller in ["alice", "bob"] {
+                let provisioned = policy
+                    .gateway()
+                    .unwrap()
+                    .agent_environment_json(caller)
+                    .unwrap();
+                let provisioned: Value = serde_json::from_str(provisioned.expose_secret()).unwrap();
+                assert!(provisioned == gateway["agent_env"][caller]);
+            }
+        }
+    }
 
     #[cfg(unix)]
     #[tokio::test]
