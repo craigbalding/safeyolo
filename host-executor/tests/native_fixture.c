@@ -229,6 +229,10 @@ static int handoff_probe(const char *mode, const char *directory, int forbidden_
     if (strstr(mode,"wait")) for (;;) pause();
     int peer=accept(3,NULL,NULL);
     if (peer<0 || write(peer,"service",7)!=7) { perror("inherited accept"); return 115; }
+    /* Let the client close first, so a Linux TIME_WAIT connection is not
+       mistaken for a retained listening socket by the cleanup observer. */
+    char byte;
+    if (read(peer,&byte,1)!=0) return 121;
     close(peer);
     if (strstr(mode,"child")) for (;;) pause();
     close(3);
