@@ -931,9 +931,10 @@ async fn session(
             && let Some((id, view)) = fixture.pending_approval(&demo.agent).await?
         {
             println!(
-                "Observation: SafeYolo requires approval; the fixture has received zero requests.\n{}\nDemo removes this fixture permission during cleanup.",
-                serde_json::to_string_pretty(&view)?
+                "Observation: SafeYolo requires approval; the fixture has received zero requests."
             );
+            operator_commands::show_approval(&view)?;
+            println!("Demo removes this fixture permission during cleanup.");
             match operator_commands::flow(&host_platform::config_dir(), &id, Some(name)).await {
                 Ok(flow) if flow["status"].as_u64().is_some() => println!(
                     "Observation: traffic request {} returned HTTP {}.",
@@ -1015,16 +1016,28 @@ async fn session(
         {
             app_code(&demo.workspace)?;
             println!(
-                "Observation: independently read the running guest app: {}\nObservation: owned fixture delivery: {}\nInterpretation: the app's real JSON request continued after normal approval.",
-                serde_json::to_string(&app)?,
-                serde_json::to_string(&fixture.delivered()?)?
+                "Observation: the running guest app returned {} tasks totaling {} minutes.\nObservation: the owned fixture received {} requests; the app's fixture marker matches.\nInterpretation: the app's real JSON request continued after normal approval.",
+                app["count"],
+                app["total_minutes"],
+                fixture.delivered()?.len()
             );
             // Observe the model command's actual outcome as supporting evidence.
             // The app response and origin delivery establish the useful result.
             if let Some(status) = exit {
                 println!("Codex command exit: {status}");
             }
-            let choice = prompt(input, "Result is ready. Type preview to request the app's desktop preview, Enter to finish, or cancel: ").await?;
+            let choice = loop {
+                let choice = prompt(input, "Result is ready. Type evidence for full app/fixture records, preview for the app's desktop, Enter to finish, or cancel: ").await?;
+                if choice == "evidence" {
+                    println!(
+                        "App evidence: {}\nFixture evidence: {}",
+                        serde_json::to_string_pretty(&app)?,
+                        serde_json::to_string_pretty(&fixture.delivered()?)?
+                    );
+                } else {
+                    break choice;
+                }
+            };
             if choice == "cancel" {
                 return Err("Demo cancelled after the app result".into());
             }

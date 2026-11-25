@@ -71,7 +71,9 @@ pub fn record_proxy(root: &Path) -> Result<(), Error> {
 
 pub const WEB_HELP: &str = "safeyolo agent publish NAME --port PORT --audience local|tailnet [--tailnet-port PORT] [--ttl SECONDS] [--json]\nsafeyolo agent publications NAME [--json]\nsafeyolo agent unpublish NAME --port PORT --audience local|tailnet [--tailnet-port PORT] [--json]\n\nPublish this running agent's HTTP app without starting a desktop. Local URLs are\nreachable on the SafeYolo host; tailnet URLs use that host's existing Tailscale\nServe authority. Open the URL on your device and enter the separate unlock code.\nApp login and cookies remain the app's responsibility. Publication grants no\nnetwork, credential or peer-support access. Default lifetime: 900 seconds.\nStop and expiry disconnect only this publication and remove its foreground Serve\nmapping. Unrelated mappings remain. The same agent, guest port, audience and\noptional tailnet port select unpublish.\nExample: safeyolo agent publish builder --port 3000 --audience tailnet";
 
-fn print(value: &Value) -> Result<(), Error> {
+pub const AGENT_LIFECYCLE_HELP: &str = host_lifecycle::scheduled::HELP;
+
+pub(crate) fn print(value: &Value) -> Result<(), Error> {
     use crate::operator_output::{field, json, json_requested, rows, text};
     if json_requested() {
         return json(value);

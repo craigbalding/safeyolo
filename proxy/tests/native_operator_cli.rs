@@ -2837,7 +2837,7 @@ responses = ["DONE", "BLOCKED", "FAILED"]
         let mut child=std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
             .arg("--instance-dir").arg(path).args(["inspect","--factory","operator"])
             .stdin(slave.try_clone().unwrap()).stdout(slave.try_clone().unwrap()).stderr(slave).spawn().unwrap();
-        terminal.write_all(b"select worker\nstate\npending\nlogs\nattach\nback\nselect helper\npending\nquit\n").unwrap();
+        terminal.write_all(b"select worker\nstate\ndiagnostics\ntraffic\npending\nlogs\ndiagnose\nattach\nback\nselect helper\npending\nquit\n").unwrap();
         // The owned child has a bounded external timeout in the test command.
         let mut output=Vec::new();
         loop {let mut buffer=[0;4096];match terminal.read(&mut buffer){Ok(0)=>break,Ok(n)=>output.extend_from_slice(&buffer[..n]),Err(error) if error.raw_os_error()==Some(libc::EIO)=>break,Err(error)=>panic!("pty read: {error}")}}
@@ -2848,6 +2848,20 @@ responses = ["DONE", "BLOCKED", "FAILED"]
     assert!(output.contains("Workflow: operator | Agent: worker"));
     assert!(output.contains("Returned to workflow operator; selected agent retained."));
     assert!(output.contains("Workflow: operator | Agent: helper"));
+    assert!(
+        output.contains("Review and decide directly: safeyolo watch"),
+        "{output}"
+    );
+    for internal in [
+        "\"approval_id\":",
+        "\"runtime_state\":",
+        "\"policy_generation\":",
+    ] {
+        assert!(
+            !output.contains(internal),
+            "interactive output bypassed its human renderer: {output}"
+        );
+    }
     assert!(
         output.contains("Unavailable:"),
         "fixture has no installed host terminal owner"

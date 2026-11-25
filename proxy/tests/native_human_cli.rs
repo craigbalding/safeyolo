@@ -75,6 +75,104 @@ fn discovery_precedes_instance_access_and_does_not_create_state() {
 }
 
 #[test]
+fn scoped_help_keeps_required_syntax_and_reaches_its_owners_without_configuration() {
+    let scratch = tempfile::tempdir().unwrap();
+    let absent = scratch.path().join("missing instance");
+    for (arguments, required) in [
+        (
+            vec!["agent", "lifecycle", "--help"],
+            "lifecycle NAME configure FILE.json",
+        ),
+        (
+            vec!["instance", "run", "--help"],
+            "instance run --ephemeral",
+        ),
+        (vec!["coord", "start", "--help"], "--client-port PORT"),
+        (vec!["coord", "stop", "--help"], "coord stop|status"),
+        (vec!["coord", "room", "--help"], "coord room create NAME"),
+        (vec!["coord", "status", "--help"], "ROOM"),
+        (vec!["signals"], "signals status"),
+        (vec!["codex", "--help"], "codex prefetch DIRECTORY"),
+    ] {
+        let output = stdout(cli(&absent, &arguments));
+        assert!(output.contains(required), "{arguments:?}: {output}");
+        assert!(!absent.exists(), "help created state: {arguments:?}");
+    }
+    for group in ["approvals", "traffic", "support"] {
+        let output = stdout(cli(&absent, &[group, "--help"]));
+        assert!(output.contains("--help"));
+        assert!(!output.contains("safeyolo inspect"), "{group}: {output}");
+        assert!(output.lines().count() < 30, "{group}: {output}");
+    }
+    let run = stdout(cli(&absent, &["instance", "run", "--help"]));
+    assert!(run.contains("-- COMMAND [ARGUMENTS...]"));
+    assert!(run.contains("Example: safeyolo instance run --ephemeral -- safeyolo status"));
+    let approvals = stdout(cli(&absent, &["approvals", "approve", "--help"]))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        approvals.contains("--option ID") && approvals.contains("Persistent credential approval")
+    );
+    assert!(!approvals.contains("Logs connection/request"));
+}
+
+#[test]
+fn forwarded_program_help_reaches_agent_lookup_instead_of_cli_help() {
+    let scratch = tempfile::tempdir().unwrap();
+    stdout(cli(scratch.path(), &["init"]));
+    for flag in ["--help", "-h", "--version"] {
+        let output = cli(
+            scratch.path(),
+            &["agent", "start", "missing-agent", "--", flag],
+        );
+        assert!(!output.status.success(), "forwarded {flag} was intercepted");
+        let error = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            error.contains("agent not found: missing-agent"),
+            "{flag}: {error}"
+        );
+    }
+}
+
+#[test]
+fn factory_preview_has_human_results_and_explicit_full_contracts() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path();
+    stdout(cli(root, &["init"]));
+    let contract =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/factories/backlog-native/backlog.toml");
+    let human = stdout(cli(
+        root,
+        &["factory", "setup", contract.to_str().unwrap(), "--preview"],
+    ));
+    assert!(human.contains("Instance:") && human.contains("AUTHENTICATION"));
+    assert!(human.contains("Contract change:") && human.contains("--preview --json"));
+    assert!(!human.contains("selected_contract") && !human.contains("contract_text"));
+    assert!(human.lines().count() < 90, "{human}");
+    let full: Value = serde_json::from_str(&stdout(cli(
+        root,
+        &[
+            "factory",
+            "setup",
+            contract.to_str().unwrap(),
+            "--preview",
+            "--json",
+        ],
+    )))
+    .unwrap();
+    assert!(
+        full["selected_contract"]["roles"]["owner"]["contract_text"]
+            .as_str()
+            .unwrap()
+            .len()
+            > 1000
+    );
+    assert_eq!(full["status"], "preview");
+    assert!(!root.join("factories/backlog/approved").exists());
+}
+
+#[test]
 fn empty_inventory_and_redirected_status_are_human_and_json_is_explicit() {
     let scratch = tempfile::tempdir().unwrap();
     let root = scratch.path().join("selected instance");

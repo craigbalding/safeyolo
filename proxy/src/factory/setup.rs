@@ -64,8 +64,127 @@ fn resume(root: &Path, file: &Path, choices: &Preparation, extra: &[&str]) -> St
 }
 
 fn report(value: &Value) -> Result<(), Error> {
-    println!("{}", serde_json::to_string_pretty(value)?);
+    if crate::operator_output::json_requested() {
+        return crate::operator_output::json(value);
+    }
+    use crate::operator_output::{field, rows};
+    for (label, key) in [
+        ("Instance", "root"),
+        ("Factory", "factory"),
+        ("Room", "room"),
+        ("Source", "source"),
+        ("Snapshot", "snapshot"),
+        ("Status", "status"),
+        ("Approved", "approved"),
+        ("Fresh identities confirmed", "confirm_fresh_identity"),
+        ("Allow unowned workspaces", "dangerously_allow_unowned"),
+    ] {
+        field(label, &value[key]);
+    }
+    if let Some(roles) = value["roles"].as_array() {
+        rows(
+            roles,
+            &[
+                ("ROLE", "role"),
+                ("AGENT", "agent"),
+                ("RUNTIME", "/runtime/runtime_state"),
+                ("PREPARED", "prepared"),
+                ("AUTHENTICATION", "authentication"),
+            ],
+        );
+        for role in roles {
+            if let Some(workspace) = role["workspace"].as_str() {
+                println!(
+                    "Workspace for {}: {}",
+                    crate::operator_output::text(&role["role"]),
+                    visible(workspace)
+                );
+            }
+            if role["previous_workspace"] != role["workspace"] {
+                field("  Previous workspace", &role["previous_workspace"]);
+            }
+            field("  Staging issue", &role["staging_error"]);
+            field("  Preparation issue", &role["preparation_error"]);
+        }
+    }
+    if let Some(roles) = value["login_roles"].as_array() {
+        println!(
+            "Authenticate roles: {}",
+            if roles.is_empty() {
+                "none selected".to_owned()
+            } else {
+                roles
+                    .iter()
+                    .map(crate::operator_output::text)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        );
+    }
+    if let Some(selected) = value["selected_contract"].as_object() {
+        let previous = &value["previous_contract"];
+        for (key, selected) in selected {
+            if previous[key] != *selected {
+                println!("Contract change: {key}");
+                if key == "roles" {
+                    for (role, old) in previous["roles"].as_object().into_iter().flatten() {
+                        if selected.get(role).is_none() {
+                            println!(
+                                "  Removed role {role} (agent {})",
+                                crate::operator_output::text(&old["agent"])
+                            );
+                        }
+                    }
+                    for (role, selected) in selected.as_object().into_iter().flatten() {
+                        for (field, selected) in selected.as_object().into_iter().flatten() {
+                            if field != "contract_text"
+                                && previous["roles"][role][field] != *selected
+                            {
+                                println!("  {role} {field}: {}", visible(&selected.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println!(
+            "Exact previous/selected contracts: repeat setup with --preview --json, or type details before approval."
+        );
+    }
+    for (label, key) in [
+        ("Effects", "effects"),
+        ("Error", "error"),
+        ("Next action", "next"),
+        ("Resume", "resume"),
+    ] {
+        if let Some(text) = value[key].as_str() {
+            println!("{label}: {}", visible(text));
+        }
+    }
+    if value["readiness"].is_object() {
+        show_report(&value["readiness"])?;
+    }
     Ok(())
+}
+
+fn visible(text: &str) -> String {
+    crate::network_guard::sanitize_with_limit(text, usize::MAX)
+}
+
+fn confirm_contract(value: &Value) -> Result<(), Error> {
+    loop {
+        print!("Approve this exact Factory contract? [y/N/details] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        match input.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Ok(()),
+            "details" => crate::operator_output::json(
+                &json!({"previous_contract":value["previous_contract"],"selected_contract":value["selected_contract"]}),
+            )?,
+            _ => return Err("Factory operation cancelled".into()),
+        }
+    }
 }
 
 fn pending(value: &mut Value, state: &str, next: String, error: &str) -> Result<(), Error> {
@@ -252,7 +371,7 @@ pub(super) async fn run(root: &Path, file: &Path, options: &[String]) -> Result<
             "prepared":agent.map(|a| prepared(root,&snapshot,name,role,a,&choices)).transpose()?.unwrap_or(false),
             "staging_error":staging_error,"authentication":"unverified"}));
     }
-    let mut value = json!({"root":root,"source":file,"factory":snapshot.name,"snapshot":id,
+    let mut value = json!({"root":root,"source":file,"factory":snapshot.name,"room":snapshot.room,"snapshot":id,
         "approved":same,"status":"preview","roles":roles,"resume":resume(root,&file,&choices,&[]),
         "login_roles":logins,"confirm_fresh_identity":fresh,"dangerously_allow_unowned":choices.allow_unowned,
         "previous_contract":if same {None} else {previous.as_ref()},
@@ -262,8 +381,8 @@ pub(super) async fn run(root: &Path, file: &Path, options: &[String]) -> Result<
         return report(&value);
     }
 
-    // Preview exact old/new contract bytes and the workspace choices before
-    // the existing approval decision. Approval selects future instructions;
+    // Show contract changes and workspace choices, with exact old/new contract
+    // bytes on request before the existing approval. Approval selects instructions;
     // prepare_roles retains the existing refusal to replace live staging.
     report(&value)?;
     if !same {
@@ -283,7 +402,7 @@ pub(super) async fn run(root: &Path, file: &Path, options: &[String]) -> Result<
                     "the selected exact snapshot has not been approved",
                 );
             }
-            confirm("Approve this exact Factory contract? [y/N] ")?;
+            confirm_contract(&value)?;
         }
         approve(root, &snapshot)?;
         value["approved"] = json!(true);

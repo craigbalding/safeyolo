@@ -52,9 +52,51 @@ async fn native_room_status_current_authority_restart_and_cli() {
         fs::create_dir_all(root.join(directory)).unwrap();
     }
     fs::write(root.join("services/rundeck.yaml"),"schema_version: 1\nname: rundeck\nauth: {type: bearer}\ncapabilities:\n  acceptance_runner:\n    routes: []\n").unwrap();
-    coord_json(root, &["start", "--binary", &nats]).await;
+    let reservations: Vec<_> = (0..2)
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    let ports: Vec<_> = reservations
+        .iter()
+        .map(|listener| listener.local_addr().unwrap().port().to_string())
+        .collect();
+    let start = [
+        "start",
+        "--binary",
+        &nats,
+        "--client-port",
+        &ports[0],
+        "--monitor-port",
+        &ports[1],
+    ];
+    drop(reservations);
+    coord_json(root, &start).await;
     let _cleanup = NatsCleanup(root.into());
     coord_json(root, &["room", "create", "shared"]).await;
+    for (action, outcome) in [
+        ("advertise-resource", "saved"),
+        ("unadvertise-resource", "removed"),
+    ] {
+        let output = coord_cli(
+            root,
+            &[
+                "inventory",
+                action,
+                "shared",
+                "test-provider",
+                "test-machine",
+            ],
+        )
+        .await;
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            text.contains(outcome)
+                && text.contains("test-provider")
+                && text.contains("test-machine"),
+            "{text}"
+        );
+        assert!(text.contains("Operation:") && !text.trim_start().starts_with('{'));
+    }
     for name in ["alice", "bob", "carol"] {
         coord_json(root, &["grant", "shared", name]).await;
     }
@@ -145,6 +187,12 @@ async fn native_room_status_current_authority_restart_and_cli() {
     let from_cli = coord_json(root, &["status", "shared", "--json"]).await;
     assert_eq!(from_cli, projected);
     let output = coord_cli(root, &["status", "shared"]).await;
+    let state_output = coord_cli(root, &["state", "shared"]).await;
+    assert!(state_output.status.success());
+    assert_eq!(
+        state_output.stdout, output.stdout,
+        "state must retain the canonical room sections"
+    );
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout).unwrap();
     for value in [
@@ -177,10 +225,9 @@ async fn native_room_status_current_authority_restart_and_cli() {
     );
     for args in [
         &["status", "shared", "--unknown"][..],
-        &["status", "--json"][..],
         &["status", "missing", "--json"][..],
     ] {
-        assert!(!coord_cli(root, args).await.status.success());
+        assert!(!coord_cli(root, args).await.status.success(), "{args:?}");
     }
     admin(
         root,
@@ -224,7 +271,7 @@ async fn native_room_status_current_authority_restart_and_cli() {
     proxy.kill().await.unwrap();
     proxy.wait().await.unwrap();
     coord_json(root, &["stop"]).await;
-    coord_json(root, &["start", "--binary", &nats]).await;
+    coord_json(root, &start).await;
     proxy = stage0::start_proxy(root).await;
     assert_eq!(state(&alice).await, current);
     let mut wrong = alice.clone();

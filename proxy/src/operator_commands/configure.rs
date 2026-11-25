@@ -1077,7 +1077,22 @@ async fn revoke(root: &Path, name: &str, approvals: bool) -> Result<(), Error> {
         .await
         {
             Ok(value) => {
-                print_json(&value)?;
+                println!(
+                    "Revoked {} {}.",
+                    if approvals {
+                        "approval delegation"
+                    } else {
+                        "support grant"
+                    },
+                    safe(name)
+                );
+                for (label, key) in [
+                    ("Status", "status"),
+                    ("Previous revision", "previous_revision"),
+                    ("Remaining access", "residual_access"),
+                ] {
+                    crate::operator_output::field(label, &value[key]);
+                }
                 return Ok(());
             }
             Err(error)

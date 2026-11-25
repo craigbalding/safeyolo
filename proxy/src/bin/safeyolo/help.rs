@@ -104,7 +104,8 @@ Select --json for complete records. apply changes effective policy; check does n
 
 const COORD: &str = "Coord — collaboration and canonical work
 
-  start / stop / status     Control or inspect this instance's managed NATS
+  start / stop              Control this instance's managed NATS
+  status [ROOM]             Inspect NATS or a selected room's observations
   room create NAME / list   Manage rooms
   grant / revoke            Set agent room permissions
   send / chat / history     Read and send messages
@@ -114,7 +115,6 @@ const COORD: &str = "Coord — collaboration and canonical work
   state ROOM               Read room inventory
   inventory --help          Advertise capabilities and resources
   catch-up --help           Summarize retained room activity
-  room-status --help        Inspect room observations
   federation --help         Configure inter-instance collaboration
   completion-notes --help   Inspect retained completion candidates
   proposals --help          Review verified factory proposals
@@ -129,6 +129,7 @@ Custom NATS ports are selected on coord start; repeat them after stopping NATS."
 pub fn show(arguments: &[OsString]) -> bool {
     let mut words: Vec<_> = arguments
         .iter()
+        .take_while(|v| *v != "--")
         .map(|v| v.to_string_lossy().into_owned())
         .collect();
     let explicit = words.iter().any(|v| v == "--help" || v == "-h")
@@ -156,6 +157,10 @@ pub fn show(arguments: &[OsString]) -> bool {
                 | "support"
                 | "helpers"
                 | "tls"
+                | "signals"
+                | "codex"
+                | "instance"
+                | "factory"
         );
     if !explicit && !bare_group {
         return false;
@@ -185,6 +190,13 @@ pub fn show(arguments: &[OsString]) -> bool {
         "agent" if words.get(1).is_some_and(|word| word == "auth") => {
             sy::host_commands::AGENT_AUTH_HELP
         }
+        "agent" if words.get(1).is_some_and(|word| word == "lifecycle") => {
+            println!(
+                "{}\nExample: safeyolo agent lifecycle builder status",
+                sy::host_commands::AGENT_LIFECYCLE_HELP
+            );
+            return true;
+        }
         "agent" => sy::host_commands::AGENT_HELP,
         "policy" if words.len() == 1 => {
             println!("{POLICY}");
@@ -202,7 +214,17 @@ pub fn show(arguments: &[OsString]) -> bool {
             println!("{COORD}");
             return true;
         }
-        // Nested Coord references remain owned by their native command parsers.
+        "coord"
+            if words.get(1).is_some_and(|word| {
+                matches!(
+                    word.as_str(),
+                    "start" | "stop" | "status" | "state" | "room" | "grant" | "revoke"
+                )
+            }) =>
+        {
+            sy::coord_rooms::LIFECYCLE_HELP
+        }
+        // Remaining nested Coord references are owned by their native parsers.
         "coord" => return false,
         "credentials" => super::credential_commands::CREDENTIAL_HELP,
         "services" => super::credential_commands::SERVICE_HELP,
@@ -212,12 +234,33 @@ pub fn show(arguments: &[OsString]) -> bool {
         "job" => sy::jobs::HELP,
         "lab" => sy::lab::HELP,
         "demo" => sy::demo::HELP,
-        "instance" => sy::instance::HELP,
+        "instance" => {
+            println!(
+                "{}\nExample: safeyolo instance run --ephemeral -- safeyolo status",
+                sy::instance::HELP
+            );
+            return true;
+        }
         "signals" => sy::signals::HELP,
         "configure" => return false,
-        "approvals" | "traffic" | "logs" | "diagnose" | "observations" | "support" | "inspect" => {
-            sy::operator_commands::HELP
+        "approvals" | "traffic" | "support" | "logs" if words.len() == 1 => {
+            println!(
+                "{}",
+                match group {
+                    "logs" =>
+                        "Logs — read retained audit events and recorded links\n\n  logs [--agent NAME]        Read recent events\n  list                      Discover retained namespaces and pivots\n  connection ID             Follow a recorded connection\n  request ID                Follow a recorded request\n\nSelect --file PATH for offline input, --lines NUMBER for retention, or --json for complete records.\nUse logs ACTION --help for required instance/runtime selection and evidence limits. Reads enable no capture.",
+                    "approvals" =>
+                        "Approvals — review and decide requested access\n\n  list                      List pending requests\n  show ID                   Read the permission and offered options\n  explain ID                Explain the selected option without deciding\n  approve / reject ID       Decide through the existing resolver\n  ask / context ID          Request or read agent context\n  review --agent NAME       Review a selected agent's requests\n  delegations               Inspect saved reviewers\n  delegation --help         Check, apply or revoke a named delegation\n  share ID --helper NAME    Share selected diagnostic/approval reads\n  narrow-diagnostics --help Narrow a diagnostic disclosure proposal\n\nUse approvals ACTION --help for syntax and effects. Decide directly: safeyolo watch",
+                    "traffic" =>
+                        "Traffic — inspect retained requests and responses\n\n  list                      List matching flows\n  show ID                   Read one flow\n  body ID request|response  Read a retained body\n  websocket ID              Read WebSocket metadata\n  message ID NUMBER         Read a retained message\n  export ID FORMAT FILE     Save selected evidence\n\nUse traffic ACTION --help for syntax and evidence limits. No capture is enabled by reading.",
+                    _ =>
+                        "Support — inspect scoped grants and retained operations\n\n  grants                    Inspect saved support access\n  verify GRANT TARGET       Verify current access as the selected supporter\n  notices                   Read support notices\n  result OPERATION_ID       Read a retained support result\n  receipts                  List operation receipts\n  receipt / recover ID      Read a receipt or compare current state\n  preview / apply NAME      Review or apply an authored proposal\n  revoke / report NAME      Revoke or inspect named access\n\nUse support ACTION --help for required agent/owner selection and authority limits.",
+                }
+            );
+            return true;
         }
+        "approvals" | "traffic" | "logs" | "diagnose" | "observations" | "support" | "inspect"
+        | "helper" => sy::operator_commands::help(group),
         "mount" => {
             "safeyolo mount list [--json]\nsafeyolo mount protect PATH\nsafeyolo mount unprotect PATH\nProtect a path and descendants against writable extra mounts. Existing shares and workspaces stay unchanged. Explicit :ro permits a protected source.\nExample: safeyolo mount protect ~/private"
         }
@@ -246,6 +289,7 @@ pub fn show(arguments: &[OsString]) -> bool {
         }
         "host" => sy::linux_host::HELP,
         "host-package" => sy::host_package::HELP,
+        "codex" => sy::codex_package::HELP,
         "ssh-proxy" => sy::ssh_proxy::HELP,
         "dispatch" => sy::dispatch::HELP,
         _ => return false,
@@ -273,7 +317,10 @@ pub fn show(arguments: &[OsString]) -> bool {
             "agent create" | "agent configure" => " builder --workspace ./project",
             "agent status" | "agent stop" | "agent start" | "agent diagnostics" | "agent auth"
             | "agent attach" | "agent shell" | "agent retire" => " builder",
-            _ => "",
+            "coord room" => " list",
+            "coord start" | "coord stop" | "coord status" => "",
+            "coord state" => " team",
+            _ => return true,
         }
     );
     true

@@ -194,7 +194,23 @@ pub fn coord(value: &Value) -> Result<(), Error> {
     if json_requested() {
         return json(value);
     }
-    if let Some(items) = value["items"].as_array() {
+    if let Some(advertised) = value["advertised"].as_bool() {
+        println!(
+            "{} advertisement {}.",
+            text(&value["kind"]),
+            if advertised { "saved" } else { "removed" }
+        );
+        for (label, key) in [
+            ("Room", "room_id"),
+            ("Agent", "agent_id"),
+            ("Provider", "provider"),
+            ("Label", "label"),
+            ("Operation", "operation_id"),
+            ("Changed at", "changed_at"),
+        ] {
+            field(label, &value[key]);
+        }
+    } else if let Some(items) = value["items"].as_array() {
         if items.is_empty() {
             println!("No records in this selection.");
         } else if items[0].get("work_id").is_some() {

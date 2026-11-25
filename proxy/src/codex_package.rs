@@ -238,11 +238,19 @@ pub async fn prefetch(output: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+pub const HELP: &str = "safeyolo codex prefetch DIRECTORY\nsafeyolo codex import DIRECTORY AGENT_HOME\nPrefetch verifies a complete native Codex package for this source and guest platform. Import moves that prepared payload into an unused agent-home path after setup consent; it does not copy authentication.\nExample: safeyolo codex prefetch ./codex-package";
+
 pub async fn run(arguments: &[String]) -> Result<(), Error> {
     match arguments {
+        [help] if help == "--help" => {
+            println!("{HELP}");
+            Ok(())
+        }
         [command, output] if command == "prefetch" => prefetch(Path::new(output)).await,
-        [command, package, home] if command == "import" => stage(Path::new(package), Path::new(home)),
-        _ => Err("Codex installer helpers: safeyolo codex prefetch DIRECTORY; safeyolo codex import DIRECTORY AGENT_HOME".into()),
+        [command, package, home] if command == "import" => {
+            stage(Path::new(package), Path::new(home))
+        }
+        _ => Err(HELP.into()),
     }
 }
 
