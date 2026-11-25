@@ -1,5 +1,5 @@
-//! Selected endpoint observations. The pinned native helper filters host facts
-//! before producing output; it never lists listeners or accepts connections.
+//! Selected endpoint observations and retained job listeners. Trusted native
+//! code filters host facts before output and binds only adopted alternatives.
 use crate::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -59,6 +59,7 @@ impl EndpointSelection {
 #[serde(rename_all = "snake_case")]
 pub enum EndpointStatus {
     AvailableAtObservation,
+    BoundForHandoff,
     Conflict,
     Denied,
     Unavailable,
@@ -88,11 +89,75 @@ pub struct EndpointObservation {
     pub reachable_audience: Option<String>,
 }
 
+/// Build the fixed inspection recipe from an already selected native helper.
+/// It discloses only the exact authorised selector, with no workload scope.
+pub(crate) fn inspection_operation(
+    mut operation: Operation,
+    selection: EndpointSelection,
+) -> Operation {
+    operation.description = "Resolve and check only the selected endpoint alternatives on this target. Probe sockets are released; this grants no service start, replacement or publication authority.".into();
+    operation.resources = ["endpoint:selected".into()].into();
+    operation.arguments = std::collections::BTreeMap::from([(
+        "endpoint".into(),
+        Argument {
+            kind: ArgumentType::Enum,
+            required: true,
+            default: None,
+            options: vec![serde_json::to_value(selection).expect("typed endpoint selection")],
+        },
+    )]);
+    let e = &mut operation.execution;
+    e.argv = vec![
+        Word::Literal {
+            value: INSPECT_COMMAND.into(),
+        },
+        Word::Argument {
+            name: "endpoint".into(),
+        },
+    ];
+    e.environment.clear();
+    e.dependencies.clear();
+    e.filesystem = Filesystem {
+        read: Vec::new(),
+        write: Vec::new(),
+    };
+    e.working_directory = "/".into();
+    e.network = Network {
+        destinations: Vec::new(),
+        listeners: Vec::new(),
+        listener_handoff: None,
+        ipc: Vec::new(),
+    };
+    e.delegated_services.clear();
+    e.broader
+        .retain(|bound| matches!(bound, BroaderBound::Memory | BroaderBound::ExecutorRestart));
+    operation.effects = std::collections::BTreeMap::from([("endpoint_observation".into(), NamedEffect {
+        description: "Disclose the selected target address/interface and bind observation; unrelated host inventory is not returned.".into(),
+        persists_after_access: true, evidence: vec!["package".into()],
+    })]);
+    operation.enforcement.enforced = disclosure();
+    operation.enforcement.adopted = vec!["The exact native helper and complete typed selector choices, intersected with current issuer and target authority.".into()];
+    operation.enforcement.adopted.push("A successful check is not a reservation. Application readiness, forwarding, authentication/TLS and audience reach remain unobserved.".into());
+    operation.enforcement.unresolved.clear();
+    operation.semantics = None;
+    operation
+}
+
 pub fn disclosure() -> Vec<String> {
     vec![
         "Selected endpoint inspection runs the pinned native executor helper with a typed, authorised selector. Only that selector's address/interface, bind result and observation time leave the trusted helper; unrelated listeners, ports, processes, routes and interfaces are not returned.".into(),
         "The helper observes the target executor's network context and briefly binds each authorised candidate until one works. TCP also tests listen; UDP tests bind. Selected address family, IPv6-only and reuse options are applied. An interface selects the source of a concrete address; it does not enforce an ingress device restriction. Probe sockets close before the result is returned. This is an observation, never a reservation or permission to start, replace or stop a service.".into(),
         "Configured binding is separate from application readiness, publication and reachable audience. Firewall, forwarding, application authentication/TLS and VPN/tunnel protection are unobserved. The eventual service must revalidate its binding; a competing bind can win. Only explicit alternatives are tried, in their supplied order.".into(),
+    ]
+}
+
+pub(crate) fn handoff_disclosure(operation: &Operation) -> Vec<String> {
+    let Some(selection) = &operation.execution.network.listener_handoff else {
+        return Vec::new();
+    };
+    vec![
+        format!("Job-owned TCP listener handoff, authorised alternatives in order: {selection:?}. At launch the trusted executor resolves the selected interface/address and performs the real bind/listen. It tries only these alternatives and passes the retained socket as descriptor 3; there is no probe-to-bind gap."),
+        "The workload must support descriptor 3. The running job receipt records the actual binding, including a kernel-selected port, and observation time before workload launch. Binding is not process-start, application-readiness, publication or audience-reach evidence. A recorded reservation describes that observation, not current ownership after completion or restart. Application authentication/TLS, VPN/tunnel protection, forwarding and arbitrary program behaviour remain unobserved. Ordinary socket authority is reported separately. The listener follows the native job/descendant lifetime; no detached service or new service-stop authority is conferred.".into(),
     ]
 }
 
@@ -160,6 +225,7 @@ pub(crate) fn validate(operation: &Operation) -> Result<bool, Refusal> {
             && e.dependencies.is_empty()
             && e.network.destinations.is_empty()
             && e.network.listeners.is_empty()
+            && e.network.listener_handoff.is_none()
             && e.network.ipc.is_empty()
             && e.delegated_services.is_empty()
             && e.working_directory == "/",
@@ -172,4 +238,34 @@ pub(crate) fn validate(operation: &Operation) -> Result<bool, Refusal> {
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
+pub(crate) use unix::bind;
+#[cfg(unix)]
 pub use unix::command;
+
+#[cfg(unix)]
+pub(crate) fn bind_for_job(
+    selection: Option<&EndpointSelection>,
+    ledger: &std::sync::Arc<std::sync::Mutex<Ledger>>,
+    job_id: &str,
+) -> Result<Option<std::os::fd::OwnedFd>, Refusal> {
+    let Some(selection) = selection else {
+        return Ok(None);
+    };
+    let (socket, observation) = match bind(selection) {
+        Ok((socket, observation)) => (Some(socket), observation),
+        Err(observation) => (None, *observation),
+    };
+    ledger
+        .lock()
+        .map_err(crate::native::unavailable)?
+        .attach_listener(job_id, observation.clone())?;
+    require(
+        socket.is_some(),
+        RefusalCode::Unavailable,
+        &format!(
+            "listener handoff refused before workload launch: {}",
+            serde_json::to_string(&observation).map_err(crate::native::unavailable)?
+        ),
+    )?;
+    Ok(socket)
+}

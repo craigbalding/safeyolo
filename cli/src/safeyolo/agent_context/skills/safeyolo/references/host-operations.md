@@ -5,6 +5,14 @@ first trust through the existing vault and human policy-change owners.
 Installation, operation discovery and proposals grant no authority.
 Use the ordinary Agent API and its existing bearer, not a target signing key.
 
+For a service plan, the selected listener entries become the fixed
+`endpoint-inspect` operation's ordered probe choices. If the application consumes
+an inherited socket, select `network.listener_handoff` with the exact alternatives;
+that same selector supplies inspection, and the native adapter passes descriptor 3
+at launch. Ordinary programs can retain their adopted broader TCP mode without
+socket inheritance. Byte staging uses a disconnected operation and reserves no
+service listener. No task code can replace the fixed inspection helper.
+
 Resolve this skill's `scripts/host-operation.py` path and set `HOST_CLIENT` to
 that path. The helper requires Python 3 inside the agent sandbox. It adds no
 target-side Python dependency or daemon. Keep successful and failed JSON results
@@ -27,6 +35,11 @@ resource bounds, executable/dependency byte ceilings, finite duration/call budge
 and `allow_run_refresh` choices. The intent fields are the agent's interpretation;
 they do not confer authority. The human reviews derived concrete authority.
 No account, application catalogue or loopback-only policy is imposed by setup.
+The target receipt includes its native network-enforcement report and observation
+time. Normal approval review shows this recorded report, the concrete grant and
+its code class separately from the agent's intent. In particular, explicit
+broader TCP modes do not gain address/port isolation from a selected endpoint.
+Current discovery and job observations still establish the reached runtime state.
 
 Inside the authorised issuing agent, with that complete plan, run:
 

@@ -132,7 +132,7 @@ fn operation(
             argv: argv.into_iter().map(|value| Word::Literal { value }).collect(),
             environment: BTreeMap::from([("FIXTURE".into(), literal("native")), ("SystemRoot".into(), literal("C:\\Windows"))]),
             working_directory: root.join("work").to_str().unwrap().into(), identity: identity.clone(),
-            filesystem: Filesystem { read: vec![], write: vec![] }, network: Network { listeners: Vec::new(), destinations: vec![], ipc: vec![] },
+            filesystem: Filesystem { read: vec![], write: vec![] }, network: Network { listener_handoff: None, listeners: Vec::new(), destinations: vec![], ipc: vec![] },
             resources: ExecutionLimits { timeout_seconds: 30, output_bytes: 64 * 1024, memory_bytes: 128 * 1024 * 1024, processes: 12 },
             delegated_services: vec![],
         }, effects: BTreeMap::new(),

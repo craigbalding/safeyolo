@@ -335,7 +335,7 @@ fn installed_linux_enrolment_qualifies_a_fresh_cgroup_and_recovers_preparation()
             "audience":null,"data_and_functions":null,"authentication":null,"lifetime":"Five minutes"},
             "hostname":"127.0.0.1","control_listen":"127.0.0.1:18444","root":root.join("workload"),
             "read_paths":["/usr","/bin","/lib","/lib64","/etc/ld.so.cache"],
-            "network":{"destinations":[],"listeners":[],"ipc":[]},"broader":[],
+            "network":{"destinations":[],"listeners":[{"address":"127.0.0.1","port":0,"transport":"tcp"}],"ipc":[]},"broader":["network_ipc"],
             "execution_limits":{"timeout_seconds":10,"output_bytes":1024,"memory_bytes":67108864,"processes":8},
             "budgets":{"calls":10,"concurrent":1,"timeout_seconds":10,"output_bytes":1024},
             "duration_seconds":301,"allow_agent_code":true,"allow_run_refresh":true,
@@ -359,7 +359,40 @@ fn installed_linux_enrolment_qualifies_a_fresh_cgroup_and_recovers_preparation()
     );
     let enrolled: enrolment::Enrolment = serde_json::from_slice(&first.stdout).unwrap();
     enrolled.validate().unwrap();
-    let settings = server::load(&enrolled.configuration, &enrolled.state).unwrap();
+    let checked = Command::new(executor())
+        .args(["check", "--config"])
+        .arg(&enrolled.configuration)
+        .arg("--state")
+        .arg(&enrolled.state)
+        .output()
+        .unwrap();
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    let settings: server::Configuration =
+        serde_json::from_slice(&fs::read(&enrolled.configuration).unwrap()).unwrap();
+    let helper = &enrolled.target.package.operations["endpoint-inspect"];
+    assert!(
+        helper.execution.filesystem.read.is_empty() && helper.execution.filesystem.write.is_empty()
+    );
+    assert!(helper.execution.network.listener_handoff.is_none());
+    assert!(
+        enrolled.target.ceiling["endpoint-inspect"]
+            .updates
+            .is_none()
+    );
+    assert!(
+        enrolled.network_enforcement["task:inspect"]
+            .iter()
+            .any(|fact| fact.contains("EXPLICIT BROADER"))
+    );
+    assert!(
+        enrolled.network_enforcement["endpoint-inspect"]
+            .iter()
+            .any(|fact| fact.contains("typed"))
+    );
     let NativeRuntime::Linux(runtime) = settings.native;
     let controllers = fs::read_to_string(runtime.cgroup.join("cgroup.subtree_control")).unwrap();
     assert!(controllers.split_whitespace().any(|name| name == "memory"));
@@ -531,6 +564,7 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
                     write: vec![],
                 },
                 network: Network {
+                    listener_handoff: None,
                     listeners: Vec::new(),
                     destinations: vec![],
                     ipc: vec![],
@@ -3686,5 +3720,352 @@ fn installed_unix_selected_endpoint_inspection() {
     f.assert_no_side_effects();
     eprintln!(
         "scoped endpoint: TCP/UDP IPv4/IPv6, concrete/wildcard/interface resolution, missing/changed address, conflict, approved alternative, competing bind, denial and restart-retained observation verified; unrelated receivers unchanged"
+    );
+}
+
+#[test]
+#[ignore = "requires native Unix containment and the installed executor"]
+fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
+    use safeyolo_host_executor::endpoints::{
+        AddressFamily, EndpointCandidate, EndpointSelection, EndpointStatus,
+    };
+    let mut f = fixture(64, 512 * 1024);
+    let work = f.root.join("work");
+    fs::create_dir(&work).unwrap();
+    let config = f.root.join("target.json");
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    let mut operations = settings.target.package.operations.clone();
+    let v4: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+    let v6: std::net::IpAddr = "::1".parse().unwrap();
+    let port_probe = TcpListener::bind((v4, 0)).unwrap();
+    let first_port = port_probe.local_addr().unwrap().port();
+    drop(port_probe);
+    let candidate = |address, port| EndpointCandidate {
+        transport: NetworkTransport::Tcp,
+        family: if address == v6 {
+            AddressFamily::Ipv6
+        } else {
+            AddressFamily::Ipv4
+        },
+        address: Some(address),
+        interface: None,
+        port,
+        ipv6_only: address == v6,
+        reuse_address: false,
+        reuse_port: false,
+    };
+    for mode in [
+        "direct4",
+        "direct6",
+        "wildcard",
+        "fallback",
+        "missing-fallback",
+        "missing-only",
+        "collision-only",
+        "cancel",
+        "descendant",
+        "timeout",
+        "restart",
+    ] {
+        let mut op = operations["observe"].clone();
+        let e = &mut op.execution;
+        e.filesystem.write = vec![work.to_str().unwrap().into()];
+        e.argv = [
+            if mode == "descendant" {
+                "handoff-child".into()
+            } else if ["cancel", "timeout", "restart"].contains(&mode) {
+                "handoff-wait".into()
+            } else {
+                "handoff".into()
+            },
+            work.to_str().unwrap().into(),
+            "unused".into(),
+            f.network_listener.local_addr().unwrap().port().to_string(),
+        ]
+        .into_iter()
+        .map(|value| Word::Literal { value })
+        .collect();
+        let mut chosen = candidate(
+            if mode == "direct6" { v6 } else { v4 },
+            if ["fallback", "collision-only"].contains(&mode) {
+                first_port
+            } else {
+                0
+            },
+        );
+        if mode == "wildcard" {
+            chosen.address = Some("0.0.0.0".parse().unwrap());
+        }
+        if mode.starts_with("missing") {
+            chosen.interface = Some("sy-missing-interface".into());
+            chosen.address = None;
+        }
+        let mut candidates = vec![chosen];
+        if ["fallback", "missing-fallback"].contains(&mode) {
+            candidates.push(candidate(v4, 0));
+        }
+        e.network.listener_handoff = Some(EndpointSelection { candidates });
+        if mode == "timeout" {
+            // Leave launch/rounding margin, but expire before the probe's
+            // four-second controller-crash cleanup alarm.
+            e.resources.timeout_seconds = 3;
+        }
+        operations.insert(mode.into(), op);
+    }
+    settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    f.target = settings.target.clone();
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    let check = Command::new(executor())
+        .args(["check", "--config"])
+        .arg(&config)
+        .arg("--state")
+        .arg(f.root.join("state"))
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let human = String::from_utf8(check.stdout).unwrap();
+    assert!(human.contains("descriptor 3") && human.contains("authorised alternatives"));
+    eprintln!("human check exposes socket handoff, alternatives and observation limits");
+    let Response::Discovery { discovery } = f.call(Action::Discover) else {
+        panic!("discovery")
+    };
+    assert!(
+        discovery
+            .operations
+            .iter()
+            .find(|op| op.operation_id == "fallback")
+            .unwrap()
+            .network_enforcement
+            .iter()
+            .any(|fact| fact.contains("no probe-to-bind gap"))
+    );
+    // The port was free at proposal. A competitor takes it before invoke;
+    // only an adopted alternative may be used by the real launch bind.
+    let invocation = f.invocation("fallback");
+    let Response::Proposal { prepared, .. } = f.call(Action::Propose { invocation }) else {
+        panic!("proposal")
+    };
+    let occupied = TcpListener::bind((v4, first_port)).unwrap();
+    let Response::Job { receipt } = f.call(Action::Invoke {
+        invocation: prepared.invocation,
+    }) else {
+        panic!("invoke")
+    };
+    let mut first = Some(*receipt);
+    let mut started_timeout = false;
+    for mode in [
+        "fallback",
+        "direct4",
+        "direct6",
+        "wildcard",
+        "missing-fallback",
+        "cancel",
+        "descendant",
+        "timeout",
+        "restart",
+    ] {
+        if mode == "descendant" && cfg!(target_os = "macos") {
+            continue;
+        }
+        let receipt = first.take().unwrap_or_else(|| f.invoke(mode).0);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let observed = if mode == "timeout" {
+            // A terminal timeout may precede observation. Its receipt must
+            // establish whether any process or socket was actually started.
+            f.terminal(&receipt.job_id)
+        } else {
+            loop {
+                let r = f.job(&receipt.job_id);
+                assert!(!r.state.terminal(), "listener did not become ready: {r:?}");
+                if r.listener_handoff.is_some() && r.output_bytes > 0 {
+                    break r;
+                }
+                assert!(Instant::now() < deadline, "listener handoff missing: {r:?}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        if mode == "timeout" && observed.listener_handoff.is_none() {
+            assert_eq!(observed.state, JobState::Failed, "{observed:?}");
+            assert!(
+                observed.native.is_none() && observed.process.is_none(),
+                "{observed:?}"
+            );
+            assert_eq!(observed.output_bytes, 0, "{observed:?}");
+            assert!(
+                observed.updated_at >= observed.deadline
+                    && observed.detail.contains("deadline expired before start"),
+                "{observed:?}"
+            );
+            eprintln!(
+                "timeout: valid expiry before native launch; started-service proof is missing: {observed:?}"
+            );
+            // Still exercise the remaining lifecycle/refusal rows. This legal
+            // expiry does not count as a started-service timeout pass below.
+            continue;
+        }
+        let observation = observed.listener_handoff.as_ref().unwrap();
+        assert_eq!(observation.status, EndpointStatus::BoundForHandoff);
+        assert!(
+            observation.reservation
+                && observation.application_ready.is_none()
+                && observation.reachable_audience.is_none()
+        );
+        let bound = observation.binding.unwrap();
+        assert_ne!(bound.port(), 0);
+        assert_ne!(bound.port(), first_port);
+        if mode != "timeout" {
+            assert!(
+                TcpListener::bind(bound).is_err(),
+                "handoff released before service use"
+            );
+        }
+        if mode == "wildcard" {
+            assert!(bound.ip().is_unspecified());
+        }
+        let mut connection = bound;
+        if connection.ip().is_unspecified() {
+            connection.set_ip(v4);
+        }
+        if ["cancel", "descendant"].contains(&mode) {
+            if mode == "descendant" {
+                let mut peer =
+                    TcpStream::connect_timeout(&connection, Duration::from_secs(2)).unwrap();
+                peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut answer = [0; 7];
+                peer.read_exact(&mut answer).unwrap();
+                assert_eq!(&answer, b"service");
+            }
+            assert!(matches!(
+                f.call(Action::Cancel {
+                    job_id: observed.job_id.clone(),
+                    expected_revision: observed.revision
+                }),
+                Response::Job { .. }
+            ));
+        } else if mode == "restart" {
+            f.restart();
+        } else if mode != "timeout" {
+            let mut peer = TcpStream::connect_timeout(&connection, Duration::from_secs(2)).unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut answer = [0; 7];
+            peer.read_exact(&mut answer).unwrap();
+            assert_eq!(&answer, b"service");
+        }
+        let result = if mode == "timeout" {
+            observed
+        } else {
+            f.terminal(&receipt.job_id)
+        };
+        assert_eq!(
+            result.state,
+            match mode {
+                "cancel" | "descendant" => JobState::Cancelled,
+                "timeout" => JobState::Failed,
+                "restart" => JobState::Uncertain,
+                _ => JobState::Completed,
+            },
+            "{result:?}"
+        );
+        if mode == "restart" {
+            #[cfg(target_os = "macos")]
+            {
+                // Only the fixture alarm guarantees eventual exit here.
+                assert!(!result.detail.contains("observed quiescence"));
+                assert!(TcpListener::bind(bound).is_err());
+                std::thread::sleep(Duration::from_secs(5));
+                f.restart();
+                assert!(
+                    f.job(&receipt.job_id)
+                        .detail
+                        .contains("observed quiescence")
+                );
+            }
+        } else {
+            assert!(result.native.as_ref().unwrap().processes_stopped);
+        }
+        if mode == "timeout" {
+            assert_eq!(
+                result.native.as_ref().unwrap().termination_reason,
+                "timeout"
+            );
+            let Response::Output { data_base64, .. } = f.call(Action::Output {
+                job_id: receipt.job_id.clone(),
+                offset: 0,
+                max_bytes: 4096,
+            }) else {
+                panic!("retained timeout output")
+            };
+            assert_eq!(
+                STANDARD.decode(data_base64).unwrap(),
+                b"application ready to accept on inherited listener\n"
+            );
+            started_timeout = true;
+        }
+        assert_eq!(
+            f.job(&receipt.job_id)
+                .listener_handoff
+                .as_ref()
+                .unwrap()
+                .binding,
+            Some(bound)
+        );
+        assert_eq!(
+            fs::read(work.join("result")).unwrap(),
+            b"service started with inherited listener\n"
+        );
+        let _released = TcpListener::bind(bound).unwrap();
+        eprintln!(
+            "{mode}: kernel-selected endpoint {bound}; independent service/cleanup observation; historical binding retained"
+        );
+    }
+    for (mode, status) in [
+        ("missing-only", EndpointStatus::Unavailable),
+        ("collision-only", EndpointStatus::Conflict),
+    ] {
+        let (receipt, _) = f.invoke(mode);
+        let result = f.terminal(&receipt.job_id);
+        assert_eq!(result.state, JobState::Failed, "{result:?}");
+        assert!(result.native.as_ref().unwrap().processes_stopped);
+        assert_eq!(result.listener_handoff.unwrap().status, status);
+    }
+    assert_eq!(occupied.local_addr().unwrap().port(), first_port);
+    // Changing the handoff contract without both current scope pins cannot
+    // observe or bind the newly selected endpoint.
+    settings
+        .target
+        .package
+        .operations
+        .get_mut("direct4")
+        .unwrap()
+        .execution
+        .network
+        .listener_handoff
+        .as_mut()
+        .unwrap()
+        .candidates[0]
+        .port = first_port;
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    let invocation = f.invocation("direct4");
+    assert!(matches!(
+        f.call(Action::Propose { invocation }),
+        Response::Refused { .. }
+    ));
+    fs::write(
+        &config,
+        serde_json::to_vec(&Configuration {
+            target: f.target.clone(),
+            ..settings
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    f.assert_no_side_effects();
+    assert!(
+        started_timeout,
+        "started-service timeout was not established; remaining lifecycle/refusal rows completed"
     );
 }

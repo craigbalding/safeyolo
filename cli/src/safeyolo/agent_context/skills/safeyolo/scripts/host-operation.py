@@ -120,6 +120,12 @@ def adopt_code(args: argparse.Namespace, script: str | None = None) -> dict[str,
         if script is None:
             script = Path(args.script).read_text()
         operation["execution"]["argv"] = [{"kind": "literal", "value": "-c"}, {"kind": "literal", "value": script}]
+        if args.command == "stage":
+            # A byte-staging job has no service to start. Do not inherit a
+            # listening socket or reserve the service's candidate ports.
+            operation["execution"]["network"] = {"destinations": [], "listeners": [], "ipc": []}
+            if "broader" in operation["execution"]:
+                operation["execution"]["broader"] = [bound for bound in operation["execution"]["broader"] if bound != "network_ipc"]
         if getattr(args, "dependencies", None):
             operation["execution"]["dependencies"] = json.loads(Path(args.dependencies).read_text())
     try:
@@ -140,6 +146,7 @@ def stage(args: argparse.Namespace) -> dict[str, Any]:
     script = "printf '%b' " + shlex.quote(encoded) + " > " + shlex.quote(args.path)
     adoption_args = copy.copy(args)
     adoption_args.operation = "task:stage"
+    adoption_args.command = "stage"
     adoption_args.request_id += "-adopt"
     adoption = adopt_code(adoption_args, script)
     original = adoption["original"]["request"]

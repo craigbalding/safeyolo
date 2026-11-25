@@ -70,6 +70,8 @@ pub struct Enrolment {
     pub configuration: PathBuf,
     pub state: PathBuf,
     pub qualified: bool,
+    pub enrolled_at: u64,
+    pub network_enforcement: BTreeMap<String, Vec<String>>,
 }
 
 fn failure(error: impl std::fmt::Display) -> Refusal {
@@ -102,6 +104,58 @@ impl EnrolmentRequest {
     }
 }
 
+fn selected_endpoints(plan: &TaskPlan) -> Option<crate::endpoints::EndpointSelection> {
+    plan.network.listener_handoff.clone().or_else(|| {
+        (!plan.network.listeners.is_empty()).then(|| crate::endpoints::EndpointSelection {
+            candidates: plan
+                .network
+                .listeners
+                .iter()
+                .map(|listener| crate::endpoints::EndpointCandidate {
+                    transport: listener.transport,
+                    family: if listener.address.is_ipv4() {
+                        crate::endpoints::AddressFamily::Ipv4
+                    } else {
+                        crate::endpoints::AddressFamily::Ipv6
+                    },
+                    address: Some(listener.address),
+                    interface: None,
+                    port: listener.port,
+                    ipv6_only: false,
+                    reuse_address: false,
+                    reuse_port: false,
+                })
+                .collect(),
+        })
+    })
+}
+
+fn endpoint_rule_and_scope(
+    request: &EnrolmentRequest,
+    operation: &Operation,
+) -> (UpdateRule, OperationScope) {
+    let rule = UpdateRule {
+        ceiling: operation.clone(),
+        allow_narrower: false,
+        allow_implementation_updates: false,
+        allow_agent_code: false,
+        agent_dependency_bytes: 0,
+    };
+    let scope = OperationScope {
+        implementation_sha256: operation.implementation_sha256(),
+        resources: operation.resources.clone(),
+        arguments: operation
+            .arguments
+            .iter()
+            .map(|(name, argument)| (name.clone(), argument.options.clone()))
+            .collect(),
+        budgets: request.plan.budgets.clone(),
+        updates: None,
+        checks: BTreeSet::new(),
+    };
+    (rule, scope)
+}
+
 impl Enrolment {
     /// Check the returned preparation against its retained material choices.
     /// This validates a receipt; current transport and running state still need
@@ -124,7 +178,6 @@ impl Enrolment {
         )?;
         require(
             revision(operation) == revision(&expected)
-                && self.target.package.operations.len() == 1
                 && self.target.package.name == request.target_id
                 && self.target.target_id == request.target_id
                 && self.hostname == request.plan.hostname
@@ -162,6 +215,34 @@ impl Enrolment {
             updates: Some(rule.clone()),
             checks: BTreeSet::new(),
         };
+        let mut expected_operations: BTreeMap<String, Operation> =
+            BTreeMap::from([("task:inspect".into(), expected.clone())]);
+        let mut expected_ceiling: BTreeMap<String, OperationScope> =
+            BTreeMap::from([("task:inspect".into(), expected_scope.clone())]);
+        let mut expected_rules: BTreeMap<String, UpdateRule> =
+            BTreeMap::from([("task:inspect".into(), rule.clone())]);
+        if let Some(selection) = selected_endpoints(&request.plan) {
+            let received = self
+                .target
+                .package
+                .operations
+                .get("endpoint-inspect")
+                .ok_or_else(|| failure("selected endpoint inspection is absent"))?;
+            let mut helper = expected.clone();
+            helper.execution.executable = received.execution.executable.clone();
+            helper.execution.executable_sha256 = received.execution.executable_sha256.clone();
+            let helper = crate::endpoints::inspection_operation(helper, selection);
+            let (rule, scope) = endpoint_rule_and_scope(request, &helper);
+            expected_rules.insert("endpoint-inspect".into(), rule);
+            expected_ceiling.insert("endpoint-inspect".into(), scope);
+            expected_operations.insert("endpoint-inspect".into(), helper);
+        }
+        require(
+            revision(&self.target.package.operations) == revision(&expected_operations)
+                && revision(&self.target.ceiling) == revision(&expected_ceiling),
+            RefusalCode::Target,
+            "returned task or fixed endpoint inspection differs from the selected plan",
+        )?;
         let expected_family = OperationFamily {
             prefix: "task:".into(),
             excluded: BTreeSet::new(),
@@ -196,7 +277,6 @@ impl Enrolment {
                 && self.target.max_authority_age_seconds == request.plan.duration_seconds
                 && self.target.allowed_verbs == verbs
                 && grant.verbs == verbs
-                && self.target.ceiling.len() == 1
                 && revision(scope) == revision(&expected_scope)
                 && revision(&self.target.families) == revision(&vec![expected_family])
                 && trust.revision == revision(&trust.public_keys)
@@ -218,9 +298,17 @@ impl Enrolment {
             self.qualified
                 && revision(&plan.package) == revision(&self.target.package)
                 && self.catalogue.observed_file.is_none()
-                && self.catalogue.policy.operations.len() == 1
-                && revision(&self.catalogue.policy.operations.get("task:inspect"))
-                    == revision(&Some(&rule))
+                && revision(&self.catalogue.policy.operations) == revision(&expected_rules)
+                && self.enrolled_at >= request.not_before
+                && self.enrolled_at <= now()
+                && self
+                    .network_enforcement
+                    .keys()
+                    .eq(expected_operations.keys())
+                && self
+                    .network_enforcement
+                    .values()
+                    .all(|facts| !facts.is_empty())
                 && revision(&self.catalogue.policy.families) == revision(&self.target.families)
                 && self
                     .catalogue
@@ -337,6 +425,23 @@ pub fn prepare(
         rule: rule.clone(),
         scope: scope.clone(),
     };
+    let mut operations = BTreeMap::from([("task:inspect".into(), operation)]);
+    let mut ceiling = BTreeMap::from([("task:inspect".into(), scope.clone())]);
+    let mut rules = BTreeMap::from([("task:inspect".into(), rule)]);
+    if let Some(selection) = selected_endpoints(&request.plan) {
+        let mut helper = operations["task:inspect"].clone();
+        let executable = std::env::current_exe()
+            .map_err(failure)?
+            .canonicalize()
+            .map_err(failure)?;
+        helper.execution.executable = executable.to_string_lossy().into_owned();
+        helper.execution.executable_sha256 = crate::workflow::hash(&executable)?;
+        let helper = crate::endpoints::inspection_operation(helper, selection);
+        let (rule, scope) = endpoint_rule_and_scope(&request, &helper);
+        operations.insert("endpoint-inspect".into(), helper);
+        ceiling.insert("endpoint-inspect".into(), scope);
+        rules.insert("endpoint-inspect".into(), rule);
+    }
     let package = Package {
         format: VERSION.into(),
         name: request.target_id.clone(),
@@ -345,7 +450,7 @@ pub fn prepare(
             location: "Operator-selected host task enrolment".into(),
             version: "1".into(),
         },
-        operations: BTreeMap::from([("task:inspect".into(), operation)]),
+        operations,
         semantics: None,
     };
     let key = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).map_err(failure)?;
@@ -369,7 +474,7 @@ pub fn prepare(
             public_key: STANDARD.encode(key.public_key().as_ref()),
             agent_code_keys: BTreeMap::from([(request.issuer_id.clone(), public_keys.clone())]),
             package_name: package.name.clone(),
-            operations: BTreeMap::from([("task:inspect".into(), rule)]),
+            operations: rules,
             families: vec![family.clone()],
             on_withdraw: Withdrawal::Retain,
         },
@@ -399,7 +504,7 @@ pub fn prepare(
             not_before: request.not_before,
             expires_at: request.expires_at,
             verbs,
-            operations: BTreeMap::from([("task:inspect".into(), scope.clone())]),
+            operations: ceiling.clone(),
             families: vec![family.clone()],
         },
     )]);
@@ -421,7 +526,7 @@ pub fn prepare(
         allowed_verbs: grants_verbs(&trust),
         max_authority_age_seconds: request.expires_at - request.not_before,
         issuers: BTreeMap::from([(request.issuer_id.clone(), trust)]),
-        ceiling: BTreeMap::from([("task:inspect".into(), scope)]),
+        ceiling,
         package,
         families: vec![family],
         catalogue: Some(plan.status),
@@ -544,6 +649,14 @@ fn finish(
         configuration: directory.join("target.json"),
         state,
         qualified: true,
+        enrolled_at: now(),
+        network_enforcement: settings
+            .target
+            .package
+            .operations
+            .iter()
+            .map(|(name, operation)| (name.clone(), settings.native.network_enforcement(operation)))
+            .collect(),
     };
     result.validate()?;
     crate::https::private_file(

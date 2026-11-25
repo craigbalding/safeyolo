@@ -461,3 +461,28 @@ def test_undecodable_read_error_is_unavailable(transport, action):
     assert caught.value.value["http_status"] == 503
     assert "possible_job_id" not in caught.value.value
     assert len(calls) == 1
+
+
+def test_stage_does_not_reserve_the_service_listener(tmp_path, transport):
+    calls, responses = transport
+    source = tmp_path / "selected"
+    source.write_bytes(b"selected bytes")
+    network = {"destinations": [], "listeners": [{"address": "0.0.0.0", "port": 8080, "transport": "tcp"}],
+               "listener_handoff": {"candidates": [{"address": "0.0.0.0", "port": 8080}]}, "ipc": []}
+    ceiling = {"execution": {"argv": [{"kind": "literal", "value": "-c"}, {"kind": "literal", "value": "pwd"}],
+                             "network": network, "broader": ["network_ipc"], "dependencies": {}}}
+    responses.extend([
+        {"host_bindings": [{"binding": "case", "agent_code_classes": [
+            {"prefix": "task:", "excluded": [], "rule": {"ceiling": ceiling}}]}]},
+        {"discovery": {"package_sha256": "base", "revisions": {}}},
+        {"operation_sha256": "own", "original": {"request": {"target_id": "target", "issuer_id": "issuer"}}},
+        {"discovery": {"target_id": "target", "operations": [{"operation_id": "task:stage", "operation_sha256": "own",
+            "implementation_sha256": "implementation", "revisions": {}}]}},
+        {"prepared": {"invocation": {}, "revisions": {}}},
+        {"receipt": {"job_id": "staging"}},
+    ])
+    client.stage(argparse.Namespace(binding="case", request_id="req-stage", file=str(source), path="/selected/input"))
+    execution = json.loads(calls[2].data)["action"]["operation"]["execution"]
+    assert execution["network"] == {"destinations": [], "listeners": [], "ipc": []}
+    assert execution["broader"] == []
+    assert ceiling["execution"]["network"] == network

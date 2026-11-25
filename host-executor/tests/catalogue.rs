@@ -1574,3 +1574,94 @@ fn standing_run_authority_preserves_jobs_and_does_not_reset_call_budgets() {
         RefusalCode::Principal
     );
 }
+
+#[test]
+fn listener_handoff_changes_authority_and_keeps_alternative_order() {
+    use safeyolo_host_executor::endpoints::EndpointSelection;
+    let (mut target, _, _) = fixture();
+    let before = target.package.operations["restart"].clone();
+    let selection: EndpointSelection = serde_json::from_value(serde_json::json!({"candidates":[
+        {"transport":"tcp","family":"ipv4","address":"127.0.0.1","interface":null,
+         "port":8000,"ipv6_only":false,"reuse_address":false,"reuse_port":false},
+        {"transport":"tcp","family":"ipv4","address":"0.0.0.0","interface":null,
+         "port":0,"ipv6_only":false,"reuse_address":false,"reuse_port":false}
+    ]}))
+    .unwrap();
+    target
+        .package
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .execution
+        .network
+        .listener_handoff = Some(selection);
+    target.package.validate().unwrap();
+    let after = target.package.operations["restart"].clone();
+    assert_ne!(before.authority_sha256(), after.authority_sha256());
+    assert!(!within_operation(&after, &before, true));
+    target
+        .package
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .execution
+        .network
+        .listener_handoff
+        .as_mut()
+        .unwrap()
+        .candidates
+        .reverse();
+    assert_ne!(
+        after.authority_sha256(),
+        target.package.operations["restart"].authority_sha256()
+    );
+    target
+        .package
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .execution
+        .network
+        .listener_handoff
+        .as_mut()
+        .unwrap()
+        .candidates[0]
+        .transport = NetworkTransport::Udp;
+    assert!(target.package.validate().is_err());
+}
+
+#[test]
+fn standing_service_code_can_stage_without_a_listener_reservation() {
+    let (target, _, _) = fixture();
+    let mut ceiling = target.package.operations["restart"].clone();
+    ceiling.execution.network.listener_handoff = Some(
+        serde_json::from_value(serde_json::json!({"candidates":[{
+            "transport":"tcp","family":"ipv4","address":"127.0.0.1","interface":null,
+            "port":8080,"ipv6_only":false,"reuse_address":false,"reuse_port":false
+        }]}))
+        .unwrap(),
+    );
+    ceiling.execution.network.listeners.push(NetworkListener {
+        address: "127.0.0.1".parse().unwrap(),
+        port: 8080,
+        transport: NetworkTransport::Tcp,
+    });
+    ceiling.execution.broader.insert(BroaderBound::NetworkIpc);
+    let mut rule = UpdateRule {
+        ceiling: ceiling.clone(),
+        allow_narrower: true,
+        allow_implementation_updates: false,
+        allow_agent_code: true,
+        agent_dependency_bytes: 0,
+    };
+    let mut staging = ceiling.clone();
+    staging.execution.network.listener_handoff = None;
+    staging.execution.network.listeners.clear();
+    staging.execution.network.destinations.clear();
+    staging.execution.broader.remove(&BroaderBound::NetworkIpc);
+    assert!(rule.allows_agent_code(&staging));
+    staging.execution.filesystem.write.push("/outside".into());
+    assert!(!rule.allows_agent_code(&staging));
+    rule.ceiling.execution.network.listener_handoff = None;
+    assert!(!rule.allows_agent_code(&ceiling));
+}

@@ -171,6 +171,8 @@ impl Fixture {
         let binding = Binding {
             resume_task: false,
             intent: None,
+            target_enrolled_at: None,
+            target_network_enforcement: BTreeMap::new(),
             target: target.clone(),
             issuer_id: "issuer".into(),
             grant_id: "approved".into(),

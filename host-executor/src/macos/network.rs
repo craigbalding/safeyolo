@@ -82,7 +82,11 @@ pub(super) fn profile(e: &Execution) -> String {
 pub(crate) fn disclosure(operation: &Operation) -> Vec<String> {
     let e = &operation.execution;
     if e.network.destinations.is_empty() && e.network.listeners.is_empty() {
-        return vec!["Seatbelt denies ordinary workload sockets and Mach lookups; only a separately validated fixed native helper can receive its named exception.".into()];
+        return vec![if e.network.listener_handoff.is_some() {
+            "Seatbelt permits unconnected TCP descriptors but denies additional binding, implicit listen, outbound connections and Mach lookups. The workload may accept connections on the trusted executor's inherited selected listener.".into()
+        } else {
+            "Seatbelt denies ordinary workload sockets and Mach lookups; only a separately validated fixed native helper can receive its named exception.".into()
+        }];
     }
     vec![
         format!("Seatbelt TCP/UDP outbound selectors {:?}; bind/inbound selectors {:?}. Connecting does not confer listener authority; a listener does not confer arbitrary outbound authority.", e.network.destinations, e.network.listeners),

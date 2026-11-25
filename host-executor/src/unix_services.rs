@@ -141,6 +141,7 @@ pub(crate) fn validate(operation: &Operation) -> Result<bool, Refusal> {
         e.filesystem.write.is_empty()
             && e.network.destinations.is_empty()
             && e.network.listeners.is_empty()
+            && e.network.listener_handoff.is_none()
             && matching_ipc,
         RefusalCode::Unavailable,
         "service helper permits no writes or direct network; its manager channel is fixed",

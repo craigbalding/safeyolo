@@ -294,6 +294,9 @@ pub struct Receipt {
     pub output_sha256: Option<String>,
     pub native: Option<NativeObservation>,
     pub process: Option<NativeProcess>,
+    /// Historical bind observation recorded before workload launch. Readiness
+    /// and current reachability require their own observations.
+    pub listener_handoff: Option<crate::endpoints::EndpointObservation>,
     pub detail: String,
 }
 
@@ -359,6 +362,7 @@ impl Receipt {
             output_sha256: None,
             native: None,
             process: None,
+            listener_handoff: None,
             detail: "admitted; execution has not started".into(),
         })
     }

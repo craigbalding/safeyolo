@@ -117,6 +117,20 @@ pub fn within_operation(op: &Operation, ceiling: &Operation, allow_code: bool) -
         *a.pointer_mut(path).unwrap() = Value::Null;
         *b.pointer_mut(path).unwrap() = Value::Null;
     }
+    // Omitting an optional inherited socket removes that capability. It is
+    // useful for staging/diagnostics within a service code class: those jobs
+    // must not reserve the service's listener. Any remaining socket-creation
+    // directions still have to fit the explicit network/broader subsets above.
+    if op.execution.network.listener_handoff.is_none() {
+        a["execution"]["network"]
+            .as_object_mut()
+            .unwrap()
+            .remove("listener_handoff");
+        b["execution"]["network"]
+            .as_object_mut()
+            .unwrap()
+            .remove("listener_handoff");
+    }
     // Free-text enforcement disclosures are assessment inputs, not a proof
     // that a claimed new guarantee is implemented by the selected backend.
     if !subset(&b["required_checks"], &a["required_checks"]) {

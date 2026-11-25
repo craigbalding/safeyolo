@@ -28,6 +28,11 @@ pub(crate) struct Binding {
     pub resume_task: bool,
     #[serde(default)]
     pub intent: Option<safeyolo_host_executor::enrolment::TaskIntent>,
+    /// Target-reported bootstrap observation, not current application reach.
+    #[serde(default)]
+    pub target_enrolled_at: Option<u64>,
+    #[serde(default)]
+    pub target_network_enforcement: BTreeMap<String, Vec<String>>,
     pub timeout_ms: u64,
     pub request_bytes: usize,
     pub response_bytes: usize,
@@ -872,6 +877,9 @@ pub(crate) fn assess(policy: &Policy) -> Result<Value, Error> {
             "target_families":binding.target.families,"binding_revision":revision(&binding),"task_revision":binding.task_revision,
             "credential_custody":"Signing material remains in the existing encrypted vault. The binding contains only its reference.",
             "agent_interpretation_of_intent":binding.intent,
+            "recorded_target_network_enforcement":{"enrolled_at":binding.target_enrolled_at,
+                "operations":binding.target_network_enforcement,
+                "source":"Target bootstrap's native qualification. This is a recorded target report, not current runtime, application readiness or audience reach."},
             "target_transport":binding.endpoint,
             "service_readiness_and_reach":{"binding":"unobserved","application":"unobserved","audience_reach":"unverified",
                 "authentication":"not inferred from control-channel TLS","limits":"Intent is caller-supplied context. The full grant and target ceiling above describe authority; only actual workload observations can establish application binding, readiness, publication or reach."},

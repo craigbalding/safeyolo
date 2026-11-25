@@ -245,6 +245,8 @@ pub(crate) async fn submit(
         task_revision: saved.request.task_revision.clone(),
         resume_task: true,
         intent: Some(saved.request.plan.intent.clone()),
+        target_enrolled_at: Some(enrolment.enrolled_at),
+        target_network_enforcement: enrolment.network_enforcement.clone(),
         timeout_ms: 30000,
         request_bytes: 1024 * 1024,
         response_bytes: 2 * 1024 * 1024,

@@ -557,6 +557,80 @@ does not reserve the endpoint. Ordinary job completion, cancellation and
 restart use the same cgroup descendant cleanup. Intentional persistence is not
 implemented by this profile.
 
+### Retained listener handoff on Unix
+
+Task enrolment derives a fixed endpoint-inspection operation from the selected
+listener choices (or the complete handoff selector). It is separate from the
+agent-code class and has no file, outbound or listening workload permissions.
+The target records its native network-enforcement report with enrolment time;
+issuer policy review labels this as recorded target evidence, separately from
+intent, current readiness and observed audience reach. Covered staging and
+diagnostics can omit the optional inherited socket and use narrower disconnected
+scope without reserving the application's listener.
+
+
+For a program that accepts a listening socket as descriptor 3, set
+`execution.network.listener_handoff` to an endpoint selection. The existing
+issuer scope and target ceiling bind the complete ordered selection through
+the implementation digest. Loading this configuration grants no invocation
+permission. The alternatives are authorised bindings, not an exposure ranking.
+An explicitly selected wildcard or public address is valid under matching
+operation authority.
+
+For example, an adopted native program on Linux or macOS can receive one
+IPv4 loopback listener on a kernel-selected port with this network definition:
+
+```json
+{
+  "destinations": [],
+  "listeners": [],
+  "listener_handoff": {
+    "candidates": [{
+      "transport": "tcp", "family": "ipv4", "address": "127.0.0.1",
+      "interface": null, "port": 0, "ipv6_only": false,
+      "reuse_address": false, "reuse_port": false
+    }]
+  },
+  "ipc": []
+}
+```
+
+The trusted native adapter resolves the selected interface and address again
+at launch. It performs the real bind/listen and tries only the adopted
+alternatives, in order. It passes the still-open socket as descriptor 3 to the
+workload. This avoids a released probe followed by a second bind. Programs
+that create their own listeners continue to use the separate ordinary socket
+profile; they do not receive a handoff automatically. TCP handoff is supported;
+UDP handoff and native Windows socket transfer remain unavailable.
+
+With only a handoff, additional bind/listen and outbound connect remain denied.
+Linux also denies socket creation. Seatbelt may permit an unconnected TCP
+descriptor; that descriptor grants no channel. The program can accept and
+respond on the inherited listener. Ordinary network declarations may separately grant their
+reported broader authority. On Linux, permitted descendants inherit the same
+socket, namespaces, seccomp rules and job cgroup. On macOS, the existing
+no-fork, polled-memory and controller-crash limits remain. A program must not
+close or repurpose descriptor 3 before using the handoff.
+
+Read the running job's `listener_handoff` field to obtain the actual binding,
+including an allocated port, chosen interface and observation time. A successful
+bind has status `bound_for_handoff`. An exhausted alternative list records the
+selected failure before any workload starts. No occupying process is stopped.
+Missing or changed interfaces cannot trigger an invented wildcard fallback.
+A named interface supplies a concrete address; it does not constrain the
+incoming device or prove an audience boundary. Explicit reuse options can
+permit sharing according to the target kernel's semantics.
+
+The receipt retains the bind observation after completion and restart.
+`reservation: true` describes the socket at that observation, before workload
+launch. It does not prove successful launch or continued ownership after exit.
+Application readiness and reachable audience stay unknown until independently
+observed. Publication, firewall/forwarding, application authentication, application
+TLS and VPN/tunnel protection are separate facts. Neither a port check nor the
+handoff grants publication, firewall, service-replacement or termination authority.
+The socket follows the existing native job and descendant lifecycle. It adds no
+detached service owner, reservation service or promise of macOS crash cleanup.
+
 ### macOS writable paths and broader network authority
 
 An adopted macOS operation can select existing files or directories in
@@ -582,8 +656,9 @@ cancellation and restart. Job cleanup does not delete them. As on Linux,
 `output_bytes` bounds stdout/stderr, not file storage. Output-file failure can
 leave partial files. Host services can consume written configuration outside
 the child's lifecycle; those indirect effects are not observed or rolled back.
-The Output route returns the retained stream; selected-file
-retrieval, automated retention and disk quotas remain unfinished under #1704.
+The Output route returns the retained stream. The signed File route retrieves
+selected files under the admitted/current scope intersection described below.
+Retrieval adds no copy, retention scheduler or disk quota.
 
 For IP sockets, add `network_ipc` to the operation's existing `execution.broader`
 set and adopt matching issuer and target authority. Destinations and listeners

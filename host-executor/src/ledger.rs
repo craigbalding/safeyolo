@@ -828,6 +828,30 @@ impl Ledger {
         &self.root
     }
 
+    /// Retain the selected endpoint before launch, so running jobs expose the
+    /// actual kernel-selected port without treating a probe as a reservation.
+    #[cfg(unix)]
+    pub(crate) fn attach_listener(
+        &mut self,
+        job_id: &str,
+        observation: crate::endpoints::EndpointObservation,
+    ) -> Result<(), Refusal> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(unavailable)?;
+        let mut retained = receipt(&transaction, job_id)?;
+        require(
+            retained.state == JobState::Running && retained.listener_handoff.is_none(),
+            RefusalCode::Conflict,
+            "listener handoff requires a running job without a prior listener",
+        )?;
+        retained.listener_handoff = Some(observation);
+        retained.revision += 1;
+        save_receipt(&transaction, &retained)?;
+        transaction.commit().map_err(unavailable)
+    }
+
     /// Save the identity of a suspended native process before it can perform
     /// workload effects. Failed capture must not be treated as absent execution.
     #[cfg(target_os = "macos")]
