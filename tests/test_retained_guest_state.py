@@ -11,7 +11,9 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
+import sys
 import time
 from contextlib import chdir
 from pathlib import Path
@@ -20,6 +22,7 @@ import pytest
 
 HELPER = os.environ.get("SAFEYOLO_RETAINED_STATE_HELPER")
 pytestmark = pytest.mark.skipif(not HELPER or not shutil.which("etckeeper"), reason="candidate helper and etckeeper required")
+guest_root_required = pytest.mark.skipif(getattr(os, "geteuid", lambda: -1)() != 0, reason="maintenance verifies protected guest process mappings with guest sudo")
 
 
 def run(*args, check=True, **kwargs):
@@ -129,16 +132,263 @@ def test_idle_watcher_does_not_wake_itself_on_recorder_lock_closes(guest):
             watch.wait(timeout=5)
 
 
-def make_deb(directory, version):
+def make_deb(directory, version, *, conffile=False):
     package = directory / f"package-{version}"
     (package / "DEBIAN").mkdir(parents=True)
     (package / "DEBIAN/control").write_text(
         f"Package: sy-retention-fixture\nVersion: {version}\nArchitecture: all\nMaintainer: Test <test@localhost>\nDescription: isolated retained-state fixture\n")
     (package / "usr/share/retention-fixture").mkdir(parents=True)
     (package / "usr/share/retention-fixture/version").write_text(version)
+    payload = package / "usr/share/retention-fixture/version"
+    checksums = (hashlib.md5(payload.read_bytes(), usedforsecurity=False).hexdigest()
+                 + "  usr/share/retention-fixture/version\n")
+    if conffile:
+        (package / "etc").mkdir()
+        config = package / "etc/retention-fixture.conf"
+        config.write_text("vendor configuration\n")
+        (package / "DEBIAN/conffiles").write_text("/etc/retention-fixture.conf\n")
+        checksums += (hashlib.md5(config.read_bytes(), usedforsecurity=False).hexdigest()
+                      + "  etc/retention-fixture.conf\n")
+    (package / "DEBIAN/md5sums").write_text(checksums)
     archive = directory / f"fixture-{version}.deb"
     run("dpkg-deb", "--root-owner-group", "--build", str(package), str(archive))
     return archive
+
+
+def maintenance_request(guest, tmp_path, operation="req-maintenance1", *, conffile=False):
+    root, _, command = guest
+    old = make_deb(tmp_path, "1.0", conffile=conffile)
+    fixed = make_deb(tmp_path, "2.0", conffile=conffile)
+    run("dpkg", "--root=" + str(root), "--log=" + str(root / "var/log/dpkg.log"), "--force-not-root", "--force-script-chrootless", "--install", str(old))
+    if conffile:
+        (root / "etc/retention-fixture.conf").write_text("retained configuration\n")
+    run(*command, "capture")
+    checkpoint = ('r=$SAFEYOLO_GUEST_ROOT; d=$SAFEYOLO_MAINTENANCE_DIRECTORY; '
+                  'cp -a "$r/var/lib/dpkg" "$d/dpkg"; cp -a "$r/etc" "$d/etc"; '
+                  'cp -a "$r/usr/share/retention-fixture" "$d/payload"')
+    patch = ('r=$SAFEYOLO_GUEST_ROOT; '
+             'v=$(dpkg-query --admindir="$r/var/lib/dpkg" -W -f=\'${Version}\' sy-retention-fixture); '
+             'if ! dpkg --compare-versions "$v" ge 2.0; then '
+             f'dpkg --root="$r" --log="$r/var/log/dpkg.log" --force-not-root --force-script-chrootless --install {shlex.quote(str(fixed))}; '
+             'printf applied\\n >> "$r/applied"; fi')
+    recovery = ('r=$SAFEYOLO_GUEST_ROOT; d=$SAFEYOLO_MAINTENANCE_DIRECTORY; '
+                'rm -rf "$r/var/lib/dpkg" "$r/etc" "$r/usr/share/retention-fixture"; '
+                'cp -a "$d/dpkg" "$r/var/lib/dpkg"; cp -a "$d/etc" "$r/etc"; '
+                'cp -a "$d/payload" "$r/usr/share/retention-fixture"')
+    return {"operation_id": operation, "requirements": [{"package": "sy-retention-fixture", "version": "2.0",
+            "distribution": "debian:trixie", "advisory": "unchanged/advisory"}],
+            "checkpoint_command": checkpoint, "patch_command": patch, "restart_command": None,
+            "health_command": 'test -s "$SAFEYOLO_GUEST_ROOT/usr/share/retention-fixture/version"',
+            "recover_command": recovery}
+
+
+def maintain(command, request):
+    return json.loads(run(*command, "maintain", input=json.dumps(request)).stdout)
+
+
+@guest_root_required
+def test_maintenance_real_patch_retained_requirement_recreation_and_satisfactory_base(guest, tmp_path):
+    root, state, command = guest
+    request = maintenance_request(guest, tmp_path)
+    receipt = maintain(command, request)
+    assert receipt["outcome"] == "verified"
+    assert (root / "usr/share/retention-fixture/version").read_text() == "2.0"
+    assert saved(state)["requirements"]["sy-retention-fixture"]["advisory"] == "unchanged/advisory"
+    assert saved(state)["desired_packages"].get("sy-retention-fixture", {}).get("version") is None
+    # A repeated operation reads the same receipt without applying or checkpointing again.
+    assert maintain(command, request)["started_at"] == receipt["started_at"]
+    assert (root / "applied").read_text().count("applied") == 1
+    # Emulate a recreated older root while preserving #1614 state. This is a
+    # real dpkg/helper control, not installed gVisor/VZ recreation evidence.
+    old = tmp_path / "fixture-1.0.deb"
+    run("dpkg", "--root=" + str(root), "--log=" + str(root / "var/log/dpkg.log"), "--force-not-root", "--force-script-chrootless", "--install", str(old))
+    request["operation_id"] = "req-restoration"
+    request["requirements"] = []
+    assert maintain(command, request)["outcome"] == "verified"
+    assert (root / "applied").read_text().count("applied") == 2
+    # A later already-fixed root uses its working payload, with no redundant install.
+    request["operation_id"] = "req-fixedbase"
+    assert maintain(command, request)["outcome"] == "verified"
+    assert (root / "applied").read_text().count("applied") == 2
+    assert saved(state)["requirements"]["sy-retention-fixture"]["version"] == "2.0"
+
+
+@guest_root_required
+@pytest.mark.parametrize("conffile", [False, True])
+def test_maintenance_health_failure_recovers_actual_mutable_state_and_keeps_requirement(guest, tmp_path, conffile):
+    root, state, command = guest
+    request = maintenance_request(guest, tmp_path, conffile=conffile)
+    request["health_command"] = 'test "$(cat "$SAFEYOLO_GUEST_ROOT/usr/share/retention-fixture/version")" = 1.0'
+    receipt = maintain(command, request)
+    assert receipt["outcome"] == "recovered"
+    assert (root / "usr/share/retention-fixture/version").read_text() == "1.0"
+    assert saved(state)["requirements"]["sy-retention-fixture"]["version"] == "2.0"
+    record = json.loads(Path(receipt["record_path"]).read_text())
+    assert record["before"] == record["recovered_state"]
+    assert record["commands"]["health_command"]["exit_code"] != 0
+    assert record["commands"]["recovery_health_command"]["exit_code"] == 0
+    assert record["recovery_package_files"]["packages"] == ["sy-retention-fixture"]
+    if conffile:
+        assert (root / "etc/retention-fixture.conf").read_text() == "retained configuration\n"
+        assert record["recovery_package_files"]["modified_configuration"] == ["/etc/retention-fixture.conf"]
+    assert "health_command failed" in record["diagnostic"]
+
+
+@guest_root_required
+@pytest.mark.parametrize("payload_state", ["patched", "missing", "unverifiable"])
+def test_maintenance_recovery_verifies_restored_package_payload(guest, tmp_path, payload_state):
+    root, _, command = guest
+    request = maintenance_request(guest, tmp_path)
+    request["health_command"] = ('d=$SAFEYOLO_MAINTENANCE_DIRECTORY; '
+                                'if test -f "$d/health-checked"; then exit 0; fi; '
+                                'touch "$d/health-checked"; exit 4')
+    request["recover_command"] = (
+        'r=$SAFEYOLO_GUEST_ROOT; d=$SAFEYOLO_MAINTENANCE_DIRECTORY; '
+        'rm -rf "$r/var/lib/dpkg" "$r/etc"; '
+        'cp -a "$d/dpkg" "$r/var/lib/dpkg"; cp -a "$d/etc" "$r/etc"')
+    payload = root / "usr/share/retention-fixture/version"
+    if payload_state == "missing":
+        request["recover_command"] += '; rm "$r/usr/share/retention-fixture/version"'
+    elif payload_state == "unverifiable":
+        request["recover_command"] += (
+            '; cp -a "$d/payload/version" "$r/usr/share/retention-fixture/version"; '
+            'rm "$r/var/lib/dpkg/info/sy-retention-fixture.md5sums"')
+    receipt = maintain(command, request)
+    # The database is restored even though the corresponding payload proof is not.
+    assert run("dpkg-query", "--admindir=" + str(root / "var/lib/dpkg"),
+               "-W", "-f=${Version}", "sy-retention-fixture").stdout == "1.0"
+    verification = run("dpkg", "--root=" + str(root), "--verify", "sy-retention-fixture", check=False)
+    if payload_state == "unverifiable":
+        # dpkg --verify alone silently succeeds without the vendor checksums.
+        assert not verification.stdout and not verification.stderr
+        audit = run("dpkg", "--root=" + str(root), "--audit", "sy-retention-fixture",
+                    env=dict(os.environ, LC_ALL="C"))
+        assert "missing the md5sums control file" in audit.stdout
+    else:
+        assert verification.stdout or verification.stderr
+    if payload_state == "missing":
+        assert not payload.exists()
+    else:
+        assert payload.read_text() == ("2.0" if payload_state == "patched" else "1.0")
+    assert receipt["outcome"] == "recovery_failed"
+    record = json.loads(Path(receipt["record_path"]).read_text())
+    assert record["before"] == record["recovered_state"]
+    assert record["commands"]["recover_command"]["exit_code"] == 0
+    assert "health_command failed" in record["diagnostic"]
+    assert "effective package" in record["recovery_diagnostic"]
+    assert maintain(command, request)["started_at"] == receipt["started_at"]
+
+
+@guest_root_required
+def test_maintenance_recovery_failure_and_masked_payload_cannot_claim_repair(guest, tmp_path):
+    root, _, command = guest
+    request = maintenance_request(guest, tmp_path)
+    request["health_command"] = "exit 4"
+    request["recover_command"] = "exit 5"
+    receipt = maintain(command, request)
+    assert receipt["outcome"] == "recovery_failed"
+    assert receipt["commands"]["recover_command"]["exit_code"] == 5
+    # Metadata still says 2.0, while an older copied-up payload masks the fix.
+    (root / "usr/share/retention-fixture/version").write_text("1.0")
+    run(*command, "paths", "add", "/usr/share/retention-fixture/version")
+    request["operation_id"] = "req-masked"
+    request["health_command"] = "true"
+    receipt = maintain(command, request)
+    assert receipt["outcome"] == "failed"
+    assert "effective package file differs" in receipt["diagnostic"]
+
+
+@guest_root_required
+def test_interrupted_maintenance_same_operation_is_inspection_not_retry(guest, tmp_path):
+    root, state, command = guest
+    request = maintenance_request(guest, tmp_path)
+    request["patch_command"] = ('printf "%s\\n" "$$" > "$SAFEYOLO_MAINTENANCE_DIRECTORY/patch.pid"; '
+                                'sleep 60; ' + request["patch_command"])
+    process = subprocess.Popen([*command, "maintain"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, start_new_session=True)
+    patch_group = None
+    try:
+        process.stdin.write(json.dumps(request))
+        process.stdin.close()
+        operation_dir = state / "maintenance" / request["operation_id"]
+        eventually(lambda: (operation_dir / "patch.pid").exists())
+        patch_pid = int((operation_dir / "patch.pid").read_text())
+        patch_group = os.getpgid(patch_pid)
+        # A lost transport can kill the helper while its guest child continues.
+        process.kill()
+        process.wait(timeout=5)
+        receipt = maintain(command, request)
+        assert receipt["outcome"] == "uncertain"
+        assert receipt["owner_alive"] is False
+        assert receipt["phase"] == "patch_command"
+        assert not (root / "applied").exists()
+        assert (root / "usr/share/retention-fixture/version").read_text() == "1.0"
+        changed = dict(request, operation_id="req-cannot-replay")
+        result = run(*command, "maintain", input=json.dumps(changed), check=False)
+        assert result.returncode
+        assert "original maintenance" in result.stderr
+        recovery = run(*command, "maintenance-recover", request["operation_id"], check=False)
+        assert recovery.returncode, "recovery ran while the original package command was still active"
+        os.killpg(patch_group, signal.SIGKILL)
+        patch_group = None
+        eventually(lambda: json.loads(run(*command, "maintenance-status", request["operation_id"]).stdout)
+                   .get("command_activity", {}).get("state") == "quiescent")
+        recovered = json.loads(run(*command, "maintenance-recover", request["operation_id"]).stdout)
+        assert recovered["outcome"] == "recovered"
+        assert run(*command, "maintenance-recover", request["operation_id"], check=False).returncode
+    finally:
+        if patch_group is not None:
+            try:
+                os.killpg(patch_group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def test_startup_gate_preserves_manual_mode_and_binds_current_generation(guest):
+    root, _, command = guest
+    run(*command, "startup-allowed")
+    share = root / "safeyolo"
+    share.mkdir()
+    (share / "host-launch-context.json").write_text(json.dumps({"generation": "current"}))
+    gate = share / "startup-maintenance.json"
+    for value in ({"allowed": False, "run_id": "current"}, {"allowed": True, "run_id": "previous"}):
+        gate.write_text(json.dumps(value))
+        assert run(*command, "startup-allowed", check=False).returncode
+    gate.write_text(json.dumps({"allowed": True, "run_id": "current"}))
+    run(*command, "startup-allowed")
+
+
+@guest_root_required
+@pytest.mark.parametrize("failed_health", [False, True])
+def test_maintenance_reports_old_mapped_payload_until_its_consumer_exits(guest, tmp_path, failed_health):
+    root, _, command = guest
+    request = maintenance_request(guest, tmp_path)
+    if failed_health:
+        request["health_command"] = 'test "$(cat "$SAFEYOLO_GUEST_ROOT/usr/share/retention-fixture/version")" = 1.0'
+    payload = root / "usr/share/retention-fixture/version"
+    holder = subprocess.Popen([sys.executable, "-u", "-c",
+        "import mmap,sys,time; f=open(sys.argv[1],'rb'); m=mmap.mmap(f.fileno(),0,access=mmap.ACCESS_READ); print('mapped',flush=True); time.sleep(60)",
+        str(payload)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "mapped"
+        receipt = maintain(command, request)
+        if failed_health:
+            assert receipt["outcome"] == "recovery_failed"
+            assert any(str(holder.pid) in mapping for mapping in receipt["recovery_deleted_package_mappings"])
+            assert (root / "usr/share/retention-fixture/version").read_text() == "1.0"
+        else:
+            assert receipt["outcome"] == "pending_restart"
+            assert any(str(holder.pid) in mapping for mapping in receipt["deleted_package_mappings"])
+            assert (root / "usr/share/retention-fixture/version").read_text() == "2.0"
+    finally:
+        holder.terminate()
+        holder.wait(timeout=5)
+    request["operation_id"] = "req-after-restart"
+    request["health_command"] = "true"
+    assert maintain(command, request)["outcome"] == "verified"
 
 
 def test_direct_dpkg_selections_and_adopted_constraints(guest, tmp_path):
@@ -331,8 +581,6 @@ def test_configuration_copy_without_timestamp_permission(guest, tmp_path, monkey
 
 @pytest.mark.parametrize("change", ["contents", "mode", "link_target"])
 def test_configuration_change_after_copy_does_not_complete_capture(guest, tmp_path, monkeypatch, change):
-    import sys
-
     root, state, command = guest
     config = root / "etc/concurrent-setting"
     if change == "link_target":
@@ -378,8 +626,6 @@ def test_configuration_change_after_copy_does_not_complete_capture(guest, tmp_pa
 
 @pytest.mark.parametrize("change", ["contents", "mode", "path_set", "both"])
 def test_capture_reports_copy_difference_without_committing(guest, tmp_path, monkeypatch, change):
-    import sys
-
     root, state, command = guest
     config = root / "etc/private-path-marker"
     config.write_text("private-content-marker\n")

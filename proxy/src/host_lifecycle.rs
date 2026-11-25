@@ -1691,6 +1691,8 @@ pub(super) async fn start_inner(
             return Err(error.into());
         }
     }
+    crate::signals::before_work(&crate::host_platform::config_dir(), &agent.name).await?;
+    check()?;
     if operation == "sandbox-start" {
         return runtime(agent).await;
     }
