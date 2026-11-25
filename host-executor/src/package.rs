@@ -122,6 +122,8 @@ pub struct Dependency {
 #[serde(rename_all = "snake_case")]
 pub enum BroaderBound {
     Memory,
+    /// macOS: original-group polling and stopping, without a hard process cap
+    /// or proof of escaped descendant cleanup.
     Processes,
     ExecutorRestart,
     Filesystem,

@@ -25,6 +25,8 @@ use std::{
 mod filesystem;
 mod network;
 mod processes;
+// <spawn.h>; the pinned libc omits this macOS flag.
+const POSIX_SPAWN_SETSID: i16 = 0x0400;
 const DESCENDANT_LIMIT: &str = "EXPLICIT BROADER PROCESSES: fork/exec and posix_spawn children inherit Seatbelt and can change groups or sessions. Only the original group is counted, memory-polled and stopped on cancellation or deadline; escaped descendants may outlive either. Group quiescence and output EOF do not prove tree cleanup. Multi-process jobs finish Uncertain with processes_stopped=false and retain their concurrency reservation, including after restart. This backend cannot establish complete descendant ownership or stop an escaped tree.";
 pub(crate) fn network_enforcement(operation: &Operation) -> Vec<String> {
     let mut facts = network::disclosure(operation);
@@ -599,8 +601,8 @@ struct MacChild {
 impl MacChild {
     fn exited(&self) -> Result<bool, Refusal> {
         let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
-        // WNOWAIT keeps the leader's PID/group reserved until its descendants
-        // are gone, even if a background launcher has already exited.
+        // WNOWAIT keeps the leader's PID/group reserved until its original
+        // group is quiescent, even if a background launcher has exited.
         let result = unsafe {
             libc::waitid(
                 libc::P_PID,
@@ -778,7 +780,7 @@ fn spawn_suspended(
                     &mut attrs,
                     (libc::POSIX_SPAWN_START_SUSPENDED
                         | libc::POSIX_SPAWN_CLOEXEC_DEFAULT
-                        | libc::POSIX_SPAWN_SETSID) as i16,
+                        | POSIX_SPAWN_SETSID as i32) as i16,
                 ))?;
                 let mut pid = 0;
                 check(libc::posix_spawn(
