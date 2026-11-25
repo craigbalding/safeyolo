@@ -439,7 +439,7 @@ fn add_inspection(
                 argv: vec![Word::Literal { value: "inspect".into() }, Word::Literal { value: "--root".into() }, Word::Literal { value: path.to_string_lossy().into_owned() },
                     Word::Literal { value: "--kind".into() }, Word::Literal { value: mode.into() }, Word::Literal { value: "--limit".into() }, Word::Argument { name: "limit".into() }],
                 environment: BTreeMap::new(), working_directory: settings.root.to_string_lossy().into_owned(), identity: identity.clone(),
-                filesystem: Filesystem { read, write: Vec::new() }, network: Network { destinations: Vec::new(), ipc: Vec::new() },
+                filesystem: Filesystem { read, write: Vec::new() }, network: Network { listener_handoff: None, listeners: Vec::new(), destinations: Vec::new(), ipc: Vec::new() },
                 // Linux counts bubblewrap's monitor and PID-namespace init
                 // alongside the inspected program in the job cgroup.
                 resources: ExecutionLimits { timeout_seconds: 10, output_bytes: 65536, memory_bytes: 268435456, processes: if cfg!(target_os = "linux") { 3 } else { 1 } }, delegated_services: Vec::new() },
@@ -450,6 +450,40 @@ fn add_inspection(
             semantics: None, required_checks: BTreeSet::new(),
         };
         package.operations.insert(name.into(), operation);
+    }
+    #[cfg(unix)]
+    {
+        let mut operation = package.operations["bundle-metadata"].clone();
+        operation.description = "Resolve and check an explicitly selected endpoint on this target. Probe sockets are released; the observation grants no service-start, replacement or publication authority. The loopback example can be replaced with authorised interface/address/port choices.".into();
+        operation.resources = ["endpoint:selected".into()].into();
+        operation.arguments = BTreeMap::from([(
+            "endpoint".into(),
+            Argument {
+                kind: ArgumentType::Enum,
+                required: true,
+                default: None,
+                options: vec![json!({"candidates":[{
+                    "transport":"tcp", "family":"ipv4", "address":"127.0.0.1", "interface":null,
+                    "port":0, "ipv6_only":false, "reuse_address":false, "reuse_port":false
+                }]})],
+            },
+        )]);
+        operation.execution.argv = vec![
+            Word::Literal {
+                value: crate::endpoints::INSPECT_COMMAND.into(),
+            },
+            Word::Argument {
+                name: "endpoint".into(),
+            },
+        ];
+        operation.execution.filesystem.read.clear();
+        operation.execution.working_directory = "/".into();
+        operation.enforcement.enforced = crate::endpoints::disclosure();
+        operation.enforcement.adopted = vec!["The exact native helper and complete typed selector choices, intersected with current issuer and target authority.".into()];
+        operation.enforcement.unresolved = vec!["A successful check is not a reservation. Application readiness, forwarding, authentication/TLS and audience reach remain unobserved.".into()];
+        package
+            .operations
+            .insert("endpoint-inspect".into(), operation);
     }
     Ok(())
 }

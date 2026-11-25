@@ -136,7 +136,7 @@ impl Fixture {
     fn invoke(&mut self, mode: &str) -> (Receipt, Vec<u8>) {
         let invocation = self.invocation(mode);
         let response = self.call(Action::Propose { invocation });
-        let Response::Proposal { prepared } = response else {
+        let Response::Proposal { prepared, .. } = response else {
             panic!("{mode} proposal refused: {response:?}")
         };
         let bytes = self.signed(Action::Invoke {
@@ -172,6 +172,78 @@ impl Fixture {
         self.server.kill().unwrap();
         self.server.wait().unwrap();
         self.server = start(&self.root);
+    }
+    fn assert_file_result(&mut self, job_id: &str, path: &Path, expected: &[u8]) {
+        let request = |offset, max_bytes, expected_file_revision| Action::File {
+            job_id: job_id.into(),
+            path: path.to_str().unwrap().into(),
+            offset,
+            max_bytes,
+            expected_file_revision,
+        };
+        let Response::File {
+            data_base64,
+            file_revision,
+            total_bytes,
+            eof,
+            ..
+        } = self.call(request(0, 7, None))
+        else {
+            panic!("selected file result")
+        };
+        assert_eq!(STANDARD.decode(data_base64).unwrap(), expected[..7]);
+        assert_eq!(total_bytes, expected.len() as u64);
+        assert!(!eof);
+        self.restart();
+        let Response::File {
+            data_base64, eof, ..
+        } = self.call(request(7, 4096, Some(file_revision.clone())))
+        else {
+            panic!("file result after restart")
+        };
+        assert_eq!(STANDARD.decode(data_base64).unwrap(), expected[7..]);
+        assert!(eof);
+        assert!(
+            matches!(self.call(request(0, 4096, Some("stale".into()))), Response::Refused { refusal } if refusal.code == RefusalCode::Stale)
+        );
+        for denied in [
+            self.root.join("forbidden"),
+            path.parent().unwrap().join("escape"),
+        ] {
+            let response = self.call(Action::File {
+                job_id: job_id.into(),
+                path: denied.to_str().unwrap().into(),
+                offset: 0,
+                max_bytes: 4096,
+                expected_file_revision: None,
+            });
+            assert!(matches!(response, Response::Refused { .. }), "{response:?}");
+        }
+        eprintln!(
+            "selected file {} read in two signed chunks across restart; stale cursor, outside path and symlink refused",
+            path.display()
+        );
+    }
+    fn check_file_results(&self) {
+        let check = Command::new(executor())
+            .arg("check")
+            .arg("--config")
+            .arg(self.root.join("target.json"))
+            .arg("--state")
+            .arg(self.root.join("state"))
+            .output()
+            .unwrap();
+        assert!(
+            check.status.success(),
+            "{}",
+            String::from_utf8_lossy(&check.stderr)
+        );
+        let text = String::from_utf8(check.stdout).unwrap();
+        assert!(
+            text.contains("file retrieval paths")
+                && text.contains("requires the issuer's file verb")
+        );
+        eprintln!("human target check: {text}");
     }
 }
 
@@ -383,6 +455,8 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
                     write: vec![],
                 },
                 network: Network {
+                    listener_handoff: None,
+                    listeners: Vec::new(),
                     destinations: vec![],
                     ipc: vec![],
                 },
@@ -608,7 +682,7 @@ fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
     });
     fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
     f.target = config.target.clone();
-    let Response::Proposal { prepared } = f.call(Action::Propose {
+    let Response::Proposal { prepared, .. } = f.call(Action::Propose {
         invocation: f.invocation("observe"),
     }) else {
         panic!("original preparation")
@@ -1134,6 +1208,891 @@ fn installed_unix_read_paths_resolve_without_sibling_contents() {
     f.assert_no_side_effects();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires the native Linux fixture with bubblewrap and delegated cgroup v2"]
+fn installed_linux_broader_tcp_directions_and_descendants() {
+    let mut f = fixture(24, 128 * 1024);
+    let work = f.root.join("tcp-results");
+    fs::create_dir(&work).unwrap();
+    let v4 = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+    let v6 = std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
+    let origins = [
+        TcpListener::bind((v4, 0)).unwrap(),
+        TcpListener::bind((v6, 0)).unwrap(),
+    ];
+    // The later product bind wins. These selected ports are observations only.
+    let service_ports = [v4, v6].map(|address| {
+        TcpListener::bind((address, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    });
+    let config = f.root.join("target.json");
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    let mut operations = f.target.package.operations.clone();
+    for mode in [
+        "tcp-connect4",
+        "tcp-listen4",
+        "tcp-both4",
+        "tcp-connect6",
+        "tcp-listen6",
+        "tcp-wait4",
+    ] {
+        let family = usize::from(mode.ends_with('6'));
+        let mut op = operations["observe"].clone();
+        let e = &mut op.execution;
+        e.broader.insert(BroaderBound::NetworkIpc);
+        e.filesystem.write = vec![work.to_str().unwrap().into()];
+        if mode.contains("connect") || mode.contains("both") {
+            e.network.destinations.push(NetworkDestination {
+                host: [v4, v6][family].to_string(),
+                port: origins[family].local_addr().unwrap().port(),
+                transport: NetworkTransport::Tcp,
+            });
+            if mode == "tcp-connect6" {
+                // This is deliberately outside the declared endpoint. The
+                // explicit broader profile must disclose that it permits it.
+                e.network.destinations[0].host = "192.0.2.1".into();
+                e.network.destinations[0].port = 1;
+            }
+        }
+        if !mode.contains("connect") {
+            e.network.listeners.push(NetworkListener {
+                address: [v4, v6][family],
+                port: service_ports[family],
+                transport: NetworkTransport::Tcp,
+            });
+        }
+        e.argv = [
+            mode.into(),
+            work.to_str().unwrap().into(),
+            service_ports[family].to_string(),
+            origins[family].local_addr().unwrap().port().to_string(),
+        ]
+        .into_iter()
+        .map(|value| Word::Literal { value })
+        .collect();
+        operations.insert(mode.into(), op);
+    }
+    settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    f.target = settings.target.clone();
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    let Response::Discovery { discovery } = f.call(Action::Discover) else {
+        panic!("discovery");
+    };
+    let network = discovery
+        .operations
+        .iter()
+        .find(|op| op.operation_id == "tcp-connect4")
+        .unwrap();
+    assert!(
+        network
+            .network_enforcement
+            .iter()
+            .any(|s| s.contains("does not enforce those address or port restrictions"))
+    );
+    assert!(
+        network
+            .network_enforcement
+            .iter()
+            .any(|s| s.contains("listen/accept=false"))
+    );
+    assert!(
+        discovery
+            .operations
+            .iter()
+            .find(|op| op.operation_id == "observe")
+            .unwrap()
+            .network_enforcement[0]
+            .contains("disconnected")
+    );
+    for mode in [
+        "tcp-connect4",
+        "tcp-listen4",
+        "tcp-both4",
+        "tcp-connect6",
+        "tcp-listen6",
+    ] {
+        let family = usize::from(mode.ends_with('6'));
+        let origin = origins[family].try_clone().unwrap();
+        origin.set_nonblocking(true).unwrap();
+        let outbound = mode.contains("connect") || mode.contains("both");
+        let receiver = std::thread::spawn(move || {
+            if outbound {
+                for _ in 0..2 {
+                    let (mut peer, _) = accept_positive_connection(|| origin.accept());
+                    peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                    let mut request = [0; 7];
+                    peer.read_exact(&mut request).unwrap();
+                    assert_eq!(&request, b"request");
+                    peer.write_all(b"ok").unwrap();
+                }
+            }
+        });
+        let invocation = f.invocation(mode);
+        let Response::Proposal {
+            prepared,
+            network_enforcement,
+        } = f.call(Action::Propose { invocation })
+        else {
+            panic!("proposal");
+        };
+        assert!(
+            network_enforcement
+                .iter()
+                .any(|s| s.contains("EXPLICIT BROADER"))
+        );
+        let Response::Job { receipt } = f.call(Action::Invoke {
+            invocation: prepared.invocation,
+        }) else {
+            panic!("invoke");
+        };
+        if !mode.contains("connect") {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                let Response::Output { data_base64, .. } = f.call(Action::Output {
+                    job_id: receipt.job_id.clone(),
+                    offset: 0,
+                    max_bytes: 4096,
+                }) else {
+                    panic!("output");
+                };
+                if String::from_utf8_lossy(&STANDARD.decode(data_base64).unwrap())
+                    .contains("bound=")
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "listener did not bind: {:?}",
+                    f.job(&receipt.job_id)
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let mut client = TcpStream::connect_timeout(
+                &([v4, v6][family], service_ports[family]).into(),
+                Duration::from_secs(2),
+            )
+            .unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut answer = [0; 7];
+            client.read_exact(&mut answer).unwrap();
+            assert_eq!(&answer, b"service");
+            client.shutdown(std::net::Shutdown::Both).unwrap();
+        }
+        let result = f.terminal(&receipt.job_id);
+        receiver.join().unwrap();
+        assert_eq!(result.state, JobState::Completed, "{result:?}");
+        assert!(result.native.as_ref().unwrap().processes_stopped);
+        assert!(
+            result
+                .native
+                .unwrap()
+                .dependencies
+                .iter()
+                .any(|s| s.contains("EXPLICIT BROADER NETWORK/IPC"))
+        );
+        assert_eq!(fs::read(work.join(mode)).unwrap(), b"retained TCP result\n");
+        origins[family].set_nonblocking(true).unwrap();
+        assert_eq!(
+            origins[family].accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "undeclared connect reached live receiver"
+        );
+        let _released = TcpListener::bind(([v4, v6][family], service_ports[family])).unwrap();
+        eprintln!(
+            "{mode}: request/listener and opposite-direction denial observed; result retained"
+        );
+    }
+    // A competing bind is a real failed launch, not an availability success.
+    let collision = TcpListener::bind((v4, service_ports[0])).unwrap();
+    let (admitted, _) = f.invoke("tcp-listen4");
+    let result = f.terminal(&admitted.job_id);
+    assert_eq!(result.state, JobState::Failed);
+    assert_eq!(result.native.unwrap().exit_code, Some(75));
+    drop(collision);
+    for restart in [false, true] {
+        let (admitted, _) = f.invoke("tcp-wait4");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let running = loop {
+            let current = f.job(&admitted.job_id);
+            let Response::Output { data_base64, .. } = f.call(Action::Output {
+                job_id: admitted.job_id.clone(),
+                offset: 0,
+                max_bytes: 4096,
+            }) else {
+                panic!("output");
+            };
+            if String::from_utf8_lossy(&STANDARD.decode(data_base64).unwrap())
+                .contains("listening descendant ready")
+            {
+                // Read the revision after observing the final ready output;
+                // output appends can advance it between the two API reads.
+                break f.job(&admitted.job_id);
+            }
+            assert!(Instant::now() < deadline, "{current:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(TcpStream::connect((v4, service_ports[0])).is_ok());
+        if restart {
+            f.restart();
+        } else {
+            let response = f.call(Action::Cancel {
+                job_id: admitted.job_id.clone(),
+                expected_revision: running.revision,
+            });
+            assert!(matches!(response, Response::Job { .. }), "{response:?}");
+        }
+        let stopped = f.terminal(&admitted.job_id);
+        assert_eq!(
+            stopped.state,
+            if restart {
+                JobState::Uncertain
+            } else {
+                JobState::Cancelled
+            }
+        );
+        assert!(!f.cgroup.join(&admitted.job_id).exists());
+        let _released = TcpListener::bind((v4, service_ports[0])).unwrap();
+        assert_eq!(
+            fs::read(work.join("tcp-connect4")).unwrap(),
+            b"retained TCP result\n"
+        );
+    }
+    // The old narrow operation still denies sockets after network work/restart.
+    let (admitted, _) = f.invoke("observe");
+    assert_eq!(f.terminal(&admitted.job_id).state, JobState::Completed);
+    f.assert_no_side_effects();
+    let original = fs::read(&config).unwrap();
+    for invalid in ["broader", "udp", "ipc"] {
+        let mut changed: Configuration = serde_json::from_slice(&original).unwrap();
+        let e = &mut changed
+            .target
+            .package
+            .operations
+            .get_mut("tcp-connect4")
+            .unwrap()
+            .execution;
+        match invalid {
+            "broader" => e.broader.clear(),
+            "udp" => e.network.destinations[0].transport = NetworkTransport::Udp,
+            "ipc" => e.network.ipc.push(IpcEndpoint::UnixSocket {
+                path: f.root.join("forbidden.socket").to_str().unwrap().into(),
+            }),
+            _ => unreachable!(),
+        }
+        fs::write(&config, serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert!(matches!(
+            f.call(Action::Discover),
+            Response::Refused {
+                refusal: Refusal {
+                    code: RefusalCode::Unavailable,
+                    ..
+                }
+            }
+        ));
+        assert!(
+            !Command::new(executor())
+                .arg("check")
+                .arg("--config")
+                .arg(&config)
+                .arg("--state")
+                .arg(f.root.join("state"))
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    fs::write(config, original).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires the native Linux fixture with bubblewrap and delegated cgroup v2"]
+fn installed_linux_scoped_writes_children_and_retained_partial_results() {
+    let mut f = fixture(16, 64 * 1024);
+    let output = f.root.join("work");
+    fs::create_dir(&output).unwrap();
+    std::os::unix::fs::symlink(f.root.join("allowed"), output.join("escape")).unwrap();
+    let config = f.root.join("target.json");
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    let mut operations = f.target.package.operations.clone();
+    for mode in ["write-files", "write-partial", "write-wait"] {
+        let mut operation = operations["observe"].clone();
+        operation.execution.filesystem.write = vec![output.to_str().unwrap().into()];
+        operation.execution.argv = [
+            mode.into(),
+            output.to_str().unwrap().into(),
+            f.root.join("allowed").to_str().unwrap().into(),
+            "0".into(),
+        ]
+        .into_iter()
+        .map(|value| Word::Literal { value })
+        .collect();
+        operations.insert(mode.into(), operation);
+    }
+    settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    f.target = settings.target.clone();
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    f.check_file_results();
+    // The existing read operation still has no write authority.
+    let (read, _) = f.invoke("observe");
+    assert_eq!(f.terminal(&read.job_id).state, JobState::Completed);
+    for (mode, expected) in [
+        ("write-files", JobState::Completed),
+        ("write-partial", JobState::Failed),
+        ("write-wait", JobState::Cancelled),
+    ] {
+        let (admitted, _) = f.invoke(mode);
+        if mode == "write-wait" {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let running = loop {
+                let running = f.job(&admitted.job_id);
+                if output.join("background").exists() && running.output_bytes > 0 {
+                    break running;
+                }
+                assert!(Instant::now() < deadline, "background child did not start");
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            assert!(matches!(
+                f.call(Action::Cancel {
+                    job_id: admitted.job_id.clone(),
+                    expected_revision: running.revision,
+                }),
+                Response::Job { .. }
+            ));
+        }
+        let result = f.terminal(&admitted.job_id);
+        assert_eq!(result.state, expected, "{result:?}");
+        assert!(result.native.as_ref().unwrap().processes_stopped);
+        assert!(!f.cgroup.join(&admitted.job_id).exists());
+        assert_eq!(
+            fs::read(output.join("result")).unwrap(),
+            b"retained result\nmodified\n"
+        );
+        assert!(!output.join("new").exists());
+        assert!(!output.join("read-alias").exists());
+        let Response::Output { data_base64, .. } = f.call(Action::Output {
+            job_id: admitted.job_id.clone(),
+            offset: 0,
+            max_bytes: 4096,
+        }) else {
+            panic!("output unavailable");
+        };
+        let bytes = STANDARD.decode(data_base64).unwrap();
+        assert!(
+            String::from_utf8_lossy(&bytes).contains(if mode == "write-wait" {
+                "started"
+            } else {
+                "child executed"
+            })
+        );
+        f.restart();
+        assert_eq!(
+            fs::read(output.join("result")).unwrap(),
+            b"retained result\nmodified\n"
+        );
+        f.assert_no_side_effects();
+        f.assert_file_result(
+            &admitted.job_id,
+            &output.join("result"),
+            b"retained result\nmodified\n",
+        );
+        eprintln!(
+            "{mode}: {:?}; {:?}; scoped output retained after executor restart",
+            result.state, result.native
+        );
+    }
+    // A new hard-link alias must be refused by check/reload before admission.
+    fs::hard_link(f.root.join("allowed"), output.join("outside-alias")).unwrap();
+    assert!(
+        matches!(f.call(Action::Discover), Response::Refused { refusal } if refusal.message.contains("hard link outside"))
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires native macOS Seatbelt; prepared probe or C compiler"]
+fn installed_macos_scoped_writes_and_retained_results() {
+    let mut f = fixture(24, 128 * 1024);
+    let work = f.root.join("file-results");
+    fs::create_dir(&work).unwrap();
+    std::os::unix::fs::symlink(f.root.join("allowed"), work.join("escape")).unwrap();
+    let config = f.root.join("target.json");
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    let mut operations = f.target.package.operations.clone();
+    for mode in [
+        "write-single",
+        "write-single-partial",
+        "write-single-wait",
+        "write-single-flood",
+    ] {
+        let mut op = operations["observe"].clone();
+        op.execution.filesystem.write = vec![work.to_str().unwrap().into()];
+        let alias = PathBuf::from(format!("/System/Volumes/Data{}", work.display()));
+        if alias.is_dir() {
+            op.execution
+                .filesystem
+                .write
+                .push(alias.to_str().unwrap().into());
+        }
+        op.execution.argv = [
+            mode.into(),
+            work.to_str().unwrap().into(),
+            f.root.join("allowed").to_str().unwrap().into(),
+            "0".into(),
+        ]
+        .into_iter()
+        .map(|value| Word::Literal { value })
+        .collect();
+        operations.insert(mode.into(), op);
+    }
+    settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    f.target = settings.target.clone();
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    f.check_file_results();
+    for (mode, expected) in [
+        ("write-single", JobState::Completed),
+        ("write-single-partial", JobState::Failed),
+        ("write-single-wait", JobState::Cancelled),
+        ("write-single-flood", JobState::Failed),
+    ] {
+        let (admitted, _) = f.invoke(mode);
+        if mode.ends_with("wait") {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if f.job(&admitted.job_id).output_bytes > 0 {
+                    break;
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let running = f.job(&admitted.job_id);
+            assert!(matches!(
+                f.call(Action::Cancel {
+                    job_id: admitted.job_id.clone(),
+                    expected_revision: running.revision
+                }),
+                Response::Job { .. }
+            ));
+        }
+        let result = f.terminal(&admitted.job_id);
+        assert_eq!(result.state, expected, "{result:?}");
+        let native = result.native.as_ref().unwrap();
+        assert!(native.processes_stopped);
+        assert_eq!(native.output_truncated, mode.ends_with("flood"));
+        assert_eq!(
+            fs::read(work.join("result")).unwrap(),
+            b"retained result\nmodified\n"
+        );
+        assert!(!work.join("new").exists());
+        assert!(!work.join("read-alias").exists());
+        let Response::Output { data_base64, .. } = f.call(Action::Output {
+            job_id: admitted.job_id.clone(),
+            offset: 0,
+            max_bytes: 4096,
+        }) else {
+            panic!("retained output");
+        };
+        assert!(
+            String::from_utf8_lossy(&STANDARD.decode(data_base64).unwrap())
+                .contains("outside write/link and fork denied")
+        );
+        f.restart();
+        assert_eq!(
+            fs::read(work.join("result")).unwrap(),
+            b"retained result\nmodified\n"
+        );
+        assert_eq!(f.job(&admitted.job_id).state, expected);
+        f.assert_no_side_effects();
+        f.assert_file_result(
+            &admitted.job_id,
+            &work.join("result"),
+            b"retained result\nmodified\n",
+        );
+        eprintln!("{mode}: {native:?}; selected files and output retained after restart");
+    }
+    // A legitimate internal hard link is still usable. An external link would
+    // let a selected write modify an unselected file, so check and reload refuse.
+    fs::hard_link(work.join("result"), work.join("internal-alias")).unwrap();
+    let (admitted, _) = f.invoke("write-single");
+    assert_eq!(f.terminal(&admitted.job_id).state, JobState::Completed);
+    fs::hard_link(f.root.join("allowed"), work.join("outside-alias")).unwrap();
+    assert!(
+        matches!(f.call(Action::Discover), Response::Refused { refusal } if refusal.message.contains("hard link outside"))
+    );
+    let check = Command::new(executor())
+        .args(["check", "--config"])
+        .arg(&config)
+        .arg("--state")
+        .arg(f.root.join("state"))
+        .output()
+        .unwrap();
+    assert!(!check.status.success());
+    assert!(String::from_utf8_lossy(&check.stderr).contains("hard link outside"));
+    fs::remove_file(work.join("outside-alias")).unwrap();
+    let saved = fs::read(&config).unwrap();
+    let control_alias = PathBuf::from(format!("/System/Volumes/Data{}", f.root.display()));
+    let control = if control_alias.is_dir() {
+        control_alias
+    } else {
+        f.root.clone()
+    };
+    for protected in [control, executor().canonicalize().unwrap()] {
+        let mut changed = settings.clone();
+        let mut operations = changed.target.package.operations.clone();
+        operations
+            .get_mut("write-single")
+            .unwrap()
+            .execution
+            .filesystem
+            .write = vec![protected.to_str().unwrap().into()];
+        changed.target = common::target(f.target.target_id.clone(), operations, &f.key);
+        fs::write(&config, serde_json::to_vec(&changed).unwrap()).unwrap();
+        let check = Command::new(executor())
+            .args(["check", "--config"])
+            .arg(&config)
+            .arg("--state")
+            .arg(f.root.join("state"))
+            .output()
+            .unwrap();
+        assert!(!check.status.success());
+        assert!(String::from_utf8_lossy(&check.stderr).contains("executor"));
+    }
+    fs::write(&config, saved).unwrap();
+    // Replacing an existing result with a directory produces a real partial
+    // file outcome. The failed rename retains the new file and a failed job.
+    fs::remove_file(work.join("result")).unwrap();
+    fs::create_dir(work.join("result")).unwrap();
+    let (admitted, _) = f.invoke("write-single");
+    let failed = f.terminal(&admitted.job_id);
+    assert_eq!(failed.state, JobState::Failed);
+    assert_eq!(failed.native.unwrap().exit_code, Some(33));
+    assert_eq!(fs::read(work.join("new")).unwrap(), b"retained result\n");
+    f.assert_file_result(&admitted.job_id, &work.join("new"), b"retained result\n");
+    // The original narrow operation still has no write or socket authority.
+    let (admitted, _) = f.invoke("observe");
+    assert_eq!(f.terminal(&admitted.job_id).state, JobState::Completed);
+    f.assert_no_side_effects();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires native macOS Seatbelt; prepared probe or C compiler"]
+fn installed_macos_broader_network_directions_and_ports() {
+    let mut f = fixture(32, 192 * 1024);
+    let work = f.root.join("network-results");
+    fs::create_dir(&work).unwrap();
+    let v4: std::net::IpAddr = std::net::Ipv4Addr::LOCALHOST.into();
+    let v6: std::net::IpAddr = std::net::Ipv6Addr::LOCALHOST.into();
+    let origins = [
+        TcpListener::bind((v4, 0)).unwrap(),
+        TcpListener::bind((v6, 0)).unwrap(),
+    ];
+    let service_ports = [v4, v6].map(|address| {
+        TcpListener::bind((address, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    });
+    let udp_origin = std::net::UdpSocket::bind((v4, 0)).unwrap();
+    let udp_port = std::net::UdpSocket::bind((v4, 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let config = f.root.join("target.json");
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    let mut operations = f.target.package.operations.clone();
+    let modes = [
+        "mac-net-connect4",
+        "mac-net-listen4",
+        "mac-net-both4",
+        "mac-net-connect6",
+        "mac-net-listen6",
+        "mac-net-udp-connect4",
+        "mac-net-udp-listen4",
+        "mac-net-wait4",
+    ];
+    for mode in modes {
+        let family = usize::from(mode.ends_with('6'));
+        let udp = mode.contains("udp");
+        let mut op = operations["observe"].clone();
+        let e = &mut op.execution;
+        e.broader.insert(BroaderBound::NetworkIpc);
+        e.filesystem.write = vec![work.to_str().unwrap().into()];
+        e.environment.insert(
+            "DENIED_TCP_PORT".into(),
+            Word::Literal {
+                value: f.network_listener.local_addr().unwrap().port().to_string(),
+            },
+        );
+        if mode.contains("connect") || mode.contains("both") {
+            e.network.destinations.push(NetworkDestination {
+                host: [v4, v6][family].to_string(),
+                port: if udp {
+                    udp_origin.local_addr().unwrap().port()
+                } else {
+                    origins[family].local_addr().unwrap().port()
+                },
+                transport: if udp {
+                    NetworkTransport::Udp
+                } else {
+                    NetworkTransport::Tcp
+                },
+            });
+            // A nonloopback declaration has explicitly broader all-address
+            // semantics at the selected port. Demonstrate this disclosure.
+            if mode == "mac-net-connect6" {
+                e.network.destinations[0].host = "192.0.2.1".into();
+            }
+        }
+        if !mode.contains("connect") {
+            e.network.listeners.push(NetworkListener {
+                address: [v4, v6][family],
+                port: if udp { udp_port } else { service_ports[family] },
+                transport: if udp {
+                    NetworkTransport::Udp
+                } else {
+                    NetworkTransport::Tcp
+                },
+            });
+        }
+        e.argv = [
+            mode.into(),
+            work.to_str().unwrap().into(),
+            if udp { udp_port } else { service_ports[family] }.to_string(),
+            if udp {
+                udp_origin.local_addr().unwrap().port()
+            } else {
+                origins[family].local_addr().unwrap().port()
+            }
+            .to_string(),
+        ]
+        .into_iter()
+        .map(|value| Word::Literal { value })
+        .collect();
+        operations.insert(mode.into(), op);
+    }
+    settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    f.target = settings.target.clone();
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    let check = Command::new(executor())
+        .args(["check", "--config"])
+        .arg(&config)
+        .arg("--state")
+        .arg(f.root.join("state"))
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let human = String::from_utf8(check.stdout).unwrap();
+    assert!(human.contains(&format!("target {}", f.target.target_id)));
+    assert!(human.contains("EXPLICIT BROADER NETWORK/IPC"));
+    assert!(human.contains("Exact IP/interface"));
+    eprintln!("check: selected target and actual socket authority displayed before invocation");
+    let Response::Discovery { discovery } = f.call(Action::Discover) else {
+        panic!("discovery");
+    };
+    assert!(
+        discovery
+            .operations
+            .iter()
+            .find(|o| o.operation_id == modes[0])
+            .unwrap()
+            .network_enforcement
+            .iter()
+            .any(|s| s.contains("Exact IP/interface"))
+    );
+    for mode in modes.into_iter().filter(|mode| !mode.contains("wait")) {
+        let family = usize::from(mode.ends_with('6'));
+        let udp = mode.contains("udp");
+        let outbound = mode.contains("connect") || mode.contains("both");
+        let origin = origins[family].try_clone().unwrap();
+        origin.set_nonblocking(true).unwrap();
+        let udp_receiver = udp_origin.try_clone().unwrap();
+        udp_receiver
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let receiver = std::thread::spawn(move || {
+            if outbound {
+                if udp {
+                    let mut request = [0; 7];
+                    let (n, peer) = udp_receiver.recv_from(&mut request).unwrap();
+                    assert_eq!((n, &request), (7, b"request"));
+                    udp_receiver.send_to(b"ok", peer).unwrap();
+                } else {
+                    let (mut peer, _) = accept_positive_connection(|| origin.accept());
+                    peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                    let mut request = [0; 7];
+                    peer.read_exact(&mut request).unwrap();
+                    assert_eq!(&request, b"request");
+                    peer.write_all(b"ok").unwrap();
+                }
+            }
+        });
+        let invocation = f.invocation(mode);
+        let Response::Proposal {
+            prepared,
+            network_enforcement,
+        } = f.call(Action::Propose { invocation })
+        else {
+            panic!("proposal");
+        };
+        assert!(
+            network_enforcement
+                .iter()
+                .any(|s| s.contains("EXPLICIT BROADER"))
+        );
+        let Response::Job { receipt } = f.call(Action::Invoke {
+            invocation: prepared.invocation,
+        }) else {
+            panic!("invoke");
+        };
+        if !mode.contains("connect") {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !work.join(mode).exists() {
+                assert!(
+                    Instant::now() < deadline,
+                    "listener did not bind: {:?}",
+                    f.job(&receipt.job_id)
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if udp {
+                udp_origin.send_to(b"request", (v4, udp_port)).unwrap();
+            } else {
+                let mut client = TcpStream::connect_timeout(
+                    &([v4, v6][family], service_ports[family]).into(),
+                    Duration::from_secs(2),
+                )
+                .unwrap();
+                client
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut answer = [0; 7];
+                client.read_exact(&mut answer).unwrap();
+                assert_eq!(&answer, b"service");
+            }
+        }
+        let result = f.terminal(&receipt.job_id);
+        let Response::Output { data_base64, .. } = f.call(Action::Output {
+            job_id: receipt.job_id.clone(),
+            offset: 0,
+            max_bytes: 4096,
+        }) else {
+            panic!("output");
+        };
+        let output = String::from_utf8(STANDARD.decode(data_base64).unwrap()).unwrap();
+        eprintln!(
+            "{mode}: state={:?}, exit={:?}\n{output}",
+            result.state,
+            result.native.as_ref().map(|n| n.exit_code)
+        );
+        receiver.join().unwrap();
+        assert_eq!(result.state, JobState::Completed, "{result:?}\n{output}");
+        assert!(result.native.as_ref().unwrap().processes_stopped);
+        assert!(output.contains("directions and ports enforced"), "{output}");
+        if !mode.contains("connect") {
+            assert_eq!(
+                fs::read(work.join(mode)).unwrap(),
+                b"retained network result\n"
+            );
+        }
+        f.assert_no_side_effects();
+        eprintln!("{mode}: {output}");
+    }
+    let collision = TcpListener::bind((v4, service_ports[0])).unwrap();
+    let (admitted, _) = f.invoke("mac-net-listen4");
+    let failed = f.terminal(&admitted.job_id);
+    assert_eq!(failed.state, JobState::Failed);
+    assert_eq!(failed.native.unwrap().exit_code, Some(98));
+    drop(collision);
+    for restart in [false, true] {
+        let (admitted, _) = f.invoke("mac-net-wait4");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !work.join("mac-net-wait4").exists() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(TcpStream::connect((v4, service_ports[0])).is_ok());
+        if restart {
+            f.restart();
+            let uncertain = f.job(&admitted.job_id);
+            assert_eq!(uncertain.state, JobState::Uncertain);
+            assert!(!uncertain.detail.contains("observed quiescence"));
+            // The wait program does not accept the first queued connection.
+            // A second connect would fill its one-entry backlog and wait for
+            // its own exit. Observe the occupied binding without adding a peer.
+            assert_eq!(
+                TcpListener::bind((v4, service_ports[0]))
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::AddrInUse
+            );
+            // The test-owned program self-terminates; this is not an executor
+            // guarantee. Wait for real bindability before confirming recovery.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Ok(released) = TcpListener::bind((v4, service_ports[0])) {
+                    drop(released);
+                    break;
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            f.restart();
+            assert!(
+                f.job(&admitted.job_id)
+                    .detail
+                    .contains("observed quiescence")
+            );
+        } else {
+            let running = f.job(&admitted.job_id);
+            assert!(matches!(
+                f.call(Action::Cancel {
+                    job_id: admitted.job_id.clone(),
+                    expected_revision: running.revision
+                }),
+                Response::Job { .. }
+            ));
+            assert_eq!(f.terminal(&admitted.job_id).state, JobState::Cancelled);
+            assert!(TcpListener::bind((v4, service_ports[0])).is_ok());
+        }
+        fs::remove_file(work.join("mac-net-wait4")).unwrap();
+        assert_eq!(
+            fs::read(work.join("mac-net-listen4")).unwrap(),
+            b"retained network result\n"
+        );
+    }
+    let mut changed = settings.clone();
+    changed
+        .target
+        .package
+        .operations
+        .get_mut("mac-net-connect4")
+        .unwrap()
+        .execution
+        .broader
+        .remove(&BroaderBound::NetworkIpc);
+    fs::write(&config, serde_json::to_vec(&changed).unwrap()).unwrap();
+    assert!(
+        matches!(f.call(Action::Discover), Response::Refused { refusal } if refusal.message.contains("broader network_ipc"))
+    );
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    let (admitted, _) = f.invoke("observe");
+    assert_eq!(f.terminal(&admitted.job_id).state, JobState::Completed);
+    f.assert_no_side_effects();
+}
+
 #[test]
 #[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]
 fn installed_unix_bounds_lifecycle_reload_and_lost_reply() {
@@ -1281,7 +2240,7 @@ fn installed_unix_bounds_lifecycle_reload_and_lost_reply() {
     assert_eq!(f.job(&admitted.job_id).revision, uncertain.revision);
     let config = f.root.join("target.json");
     let original = fs::read(&config).unwrap();
-    for invalid in ["network", "ipc", "service", "write", "broader"] {
+    for invalid in ["network", "ipc", "service", "protected_write", "broader"] {
         let mut changed: Configuration = serde_json::from_slice(&original).unwrap();
         let execution = &mut changed
             .target
@@ -1311,7 +2270,7 @@ fn installed_unix_bounds_lifecycle_reload_and_lost_reply() {
                 capability: "control".into(),
                 resources: vec!["fixture".into()],
             }),
-            "write" => execution
+            "protected_write" => execution
                 .filesystem
                 .write
                 .push(f.root.to_str().unwrap().into()),
@@ -1371,7 +2330,7 @@ fn installed_storage_exhaustion_preserves_output_replay_and_restart() {
         }
         f.restart();
         let invocation = f.invocation("observe");
-        let Response::Proposal { prepared } = f.call(Action::Propose { invocation }) else {
+        let Response::Proposal { prepared, .. } = f.call(Action::Propose { invocation }) else {
             panic!("storage capacity must not disable proposal qualification")
         };
         let response = f.call(Action::Invoke {
@@ -1604,7 +2563,7 @@ fn installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch() {
     let mut changed = original.clone();
     *changed.last_mut().unwrap() ^= 1;
     for alias in [false, true] {
-        let Response::Proposal { prepared } = f.call(Action::Propose {
+        let Response::Proposal { prepared, .. } = f.call(Action::Propose {
             invocation: f.invocation("observe"),
         }) else {
             panic!("valid original preparation");
@@ -1702,7 +2661,7 @@ fn installed_dependency_swaps_preserve_metadata_but_cannot_launch() {
         let mut changed = original.clone();
         *changed.last_mut().unwrap() ^= 1;
         for alias in [false, true] {
-            let Response::Proposal { prepared } = f.call(Action::Propose {
+            let Response::Proposal { prepared, .. } = f.call(Action::Propose {
                 invocation: f.invocation("observe"),
             }) else {
                 panic!("valid pinned dependency proposal")
@@ -1921,7 +2880,7 @@ fn installed_api_authentication_and_cross_principal_reads_cannot_change_authorit
         }
     }
     assert_eq!(retained_job_count(&f), 1);
-    let Response::Proposal { prepared } = call_as(
+    let Response::Proposal { prepared, .. } = call_as(
         "second-issuer",
         "grant",
         &other_key,
@@ -2093,7 +3052,7 @@ fn application_operations(f: &mut Fixture) {
 fn application_result(f: &mut Fixture, operation: &str, resource: &str) -> (Receipt, String) {
     let mut invocation = f.invocation(operation);
     invocation.resource_id = format!("application:{resource}");
-    let Response::Proposal { prepared } = f.call(Action::Propose { invocation }) else {
+    let Response::Proposal { prepared, .. } = f.call(Action::Propose { invocation }) else {
         panic!("application proposal refused: {operation}")
     };
     let Response::Job { receipt } = f.call(Action::Invoke {
@@ -2350,7 +3309,7 @@ fn installed_adaptive_investigation_and_retained_configuration_effects() {
         b"disabled\n"
     );
     eprintln!(
-        "independent configuration observer: host edit retained on target={}, selected={}; other resource and target unchanged; native writes unavailable",
+        "independent configuration observer: host edit retained on target={}, selected={}; other resource and target unchanged; this fixture has no native write grant",
         first.target.target_id, resource
     );
     let (started, _) = first.invoke("service-start");
@@ -2368,5 +3327,630 @@ fn installed_adaptive_investigation_and_retained_configuration_effects() {
     second.assert_no_side_effects();
     eprintln!(
         "installed useful work: diagnostic selected from prior output, fixed-service start/stop observed; retained-host-edit assessment and actual configuration reads distinguish targets/resources; no per-invocation approval"
+    );
+}
+
+#[test]
+#[ignore = "requires native Unix host; Linux also needs bubblewrap and delegated cgroup v2"]
+fn installed_unix_selected_endpoint_inspection() {
+    use endpoints::{EndpointObservation, EndpointStatus};
+    use serde_json::json;
+    let mut f = fixture(40, 1024 * 1024);
+    let config = f.root.join("target.json");
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    let occupied = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let occupied_port = occupied.local_addr().unwrap().port();
+    let unrelated = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let unrelated_port = unrelated.local_addr().unwrap().port();
+    let loopback = if cfg!(target_os = "macos") {
+        "lo0"
+    } else {
+        "lo"
+    };
+    let candidate = |transport: &str,
+                     family: &str,
+                     address: Option<&str>,
+                     interface: Option<&str>,
+                     port: u16| {
+        json!({"transport":transport,"family":family,"address":address,"interface":interface,"port":port,
+            "ipv6_only":family=="ipv6","reuse_address":false,"reuse_port":false})
+    };
+    let v4 = |port| candidate("tcp", "ipv4", Some("127.0.0.1"), None, port);
+    let mut choices = vec![
+        json!({"candidates":[v4(occupied_port)]}),
+        json!({"candidates":[v4(0)]}),
+        json!({"candidates":[v4(occupied_port),v4(0)]}),
+        json!({"candidates":[candidate("udp","ipv4",Some("127.0.0.1"),None,0)]}),
+        json!({"candidates":[candidate("tcp","ipv6",Some("::1"),Some(loopback),0)]}),
+        json!({"candidates":[candidate("udp","ipv6",Some("::1"),None,0)]}),
+        json!({"candidates":[candidate("tcp","ipv4",None,Some(loopback),0)]}),
+        json!({"candidates":[candidate("tcp","ipv4",None,Some("safeyolo-interface-absent"),0)]}),
+        json!({"candidates":[candidate("tcp","ipv4",Some("192.0.2.1"),Some(loopback),0)]}),
+        json!({"candidates":[candidate("tcp","ipv4",Some("0.0.0.0"),None,0)]}),
+    ];
+    let mut dual_stack = candidate("tcp", "ipv6", Some("::"), None, occupied_port);
+    dual_stack["ipv6_only"] = false.into();
+    choices.push(json!({"candidates":[dual_stack]}));
+    choices.push(json!({"candidates":[candidate("tcp","ipv6",Some("::"),None,occupied_port)]}));
+    let mut reuse = v4(0);
+    reuse["reuse_address"] = true.into();
+    reuse["reuse_port"] = true.into();
+    choices.push(json!({"candidates":[reuse]}));
+    let mut operation = f.target.package.operations["observe"].clone();
+    operation.description =
+        "Inspect only the selected endpoint; release probes before returning.".into();
+    operation.arguments = BTreeMap::from([(
+        "endpoint".into(),
+        Argument {
+            kind: ArgumentType::Enum,
+            required: true,
+            default: None,
+            options: choices.clone(),
+        },
+    )]);
+    operation.execution.executable = executor().to_str().unwrap().into();
+    operation.execution.executable_sha256 = hash(&executor());
+    operation.execution.argv = vec![
+        Word::Literal {
+            value: endpoints::INSPECT_COMMAND.into(),
+        },
+        Word::Argument {
+            name: "endpoint".into(),
+        },
+    ];
+    operation.execution.environment.clear();
+    operation.execution.filesystem.read.clear();
+    operation.execution.resources.memory_bytes = 128 * 1024 * 1024;
+    let mut operations = f.target.package.operations.clone();
+    operations.insert("endpoint".into(), operation);
+    settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    settings
+        .target
+        .ceiling
+        .get_mut("endpoint")
+        .unwrap()
+        .arguments
+        .insert("endpoint".into(), choices.clone());
+    settings
+        .target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant")
+        .unwrap()
+        .operations
+        .get_mut("endpoint")
+        .unwrap()
+        .arguments
+        .insert("endpoint".into(), choices.clone());
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    f.target = settings.target;
+    let Response::Discovery { discovery } = f.call(Action::Discover) else {
+        panic!("discovery")
+    };
+    assert!(
+        discovery
+            .operations
+            .iter()
+            .find(|o| o.operation_id == "endpoint")
+            .unwrap()
+            .network_enforcement
+            .iter()
+            .any(|s| s.contains("trusted helper"))
+    );
+    let invoke = |f: &mut Fixture, selection: serde_json::Value| {
+        let mut invocation = f.invocation("endpoint");
+        invocation.arguments.insert("endpoint".into(), selection);
+        let Response::Proposal { prepared, .. } = f.call(Action::Propose { invocation }) else {
+            panic!("endpoint proposal")
+        };
+        let Response::Job { receipt } = f.call(Action::Invoke {
+            invocation: prepared.invocation,
+        }) else {
+            panic!("endpoint invoke")
+        };
+        let result = f.terminal(&receipt.job_id);
+        assert_eq!(result.state, JobState::Completed, "{result:?}");
+        let Response::Output { data_base64, .. } = f.call(Action::Output {
+            job_id: receipt.job_id.clone(),
+            offset: 0,
+            max_bytes: 4096,
+        }) else {
+            panic!("endpoint output")
+        };
+        let bytes = STANDARD.decode(data_base64).unwrap();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(!text.contains(&format!("\"port\":{unrelated_port}")));
+        let observed: EndpointObservation = serde_json::from_slice(&bytes).unwrap();
+        assert!(!observed.reservation);
+        assert!(observed.application_ready.is_none() && observed.reachable_audience.is_none());
+        assert!(observed.observed_at >= receipt.admitted_at);
+        (observed, receipt.job_id.clone(), bytes)
+    };
+    assert_eq!(
+        invoke(&mut f, choices[0].clone()).0.status,
+        EndpointStatus::Conflict
+    );
+    let (available, retained_id, retained_bytes) = invoke(&mut f, choices[1].clone());
+    assert_eq!(available.status, EndpointStatus::AvailableAtObservation);
+    // Probe resources were released. A competing real bind can win immediately.
+    let binding = available.binding.unwrap();
+    let competitor = TcpListener::bind(binding).unwrap();
+    let collision = json!({"candidates":[v4(binding.port())]});
+    // Add only this exact newly chosen endpoint to both current authority owners.
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    settings
+        .target
+        .package
+        .operations
+        .get_mut("endpoint")
+        .unwrap()
+        .arguments
+        .get_mut("endpoint")
+        .unwrap()
+        .options
+        .push(collision.clone());
+    let digest = settings.target.package.operations["endpoint"].implementation_sha256();
+    let scope = settings.target.ceiling.get_mut("endpoint").unwrap();
+    scope.implementation_sha256 = digest.clone();
+    scope
+        .arguments
+        .get_mut("endpoint")
+        .unwrap()
+        .push(collision.clone());
+    let scope = settings
+        .target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant")
+        .unwrap()
+        .operations
+        .get_mut("endpoint")
+        .unwrap();
+    scope.implementation_sha256 = digest;
+    scope
+        .arguments
+        .get_mut("endpoint")
+        .unwrap()
+        .push(collision.clone());
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    f.target = settings.target;
+    assert_eq!(invoke(&mut f, collision).0.status, EndpointStatus::Conflict);
+    drop(competitor);
+    for (i, choice) in choices.iter().enumerate().skip(2) {
+        let observed = invoke(&mut f, choice.clone()).0;
+        let expected = if i == 10 {
+            EndpointStatus::Conflict
+        } else if [7, 8].contains(&i) {
+            EndpointStatus::Unavailable
+        } else {
+            EndpointStatus::AvailableAtObservation
+        };
+        assert_eq!(observed.status, expected, "case {i}: {observed:?}");
+        if i == 2 {
+            assert_ne!(observed.binding.unwrap().port(), occupied_port);
+        }
+        if i == 4 || i == 6 {
+            assert_eq!(observed.interface.unwrap().name, loopback);
+        }
+    }
+    // A request cannot append an unadopted selector or gain inventory/start authority.
+    let mut invocation = f.invocation("endpoint");
+    invocation.arguments.insert(
+        "endpoint".into(),
+        json!({"candidates":[v4(unrelated_port)]}),
+    );
+    assert!(matches!(
+        f.call(Action::Propose { invocation }),
+        Response::Refused { .. }
+    ));
+    // Malformed typed choices fail the same check/reload validation before observation.
+    let original = fs::read(&config).unwrap();
+    for invalid in ["environment", "selector", "executable"] {
+        let mut changed: Configuration = serde_json::from_slice(&original).unwrap();
+        let op = changed
+            .target
+            .package
+            .operations
+            .get_mut("endpoint")
+            .unwrap();
+        match invalid {
+            "environment" => {
+                op.execution.environment.insert(
+                    "LD_PRELOAD".into(),
+                    Word::Literal {
+                        value: "untrusted".into(),
+                    },
+                );
+            }
+            "selector" => op
+                .arguments
+                .get_mut("endpoint")
+                .unwrap()
+                .options
+                .push(json!({"candidates":[]})),
+            "executable" => op.execution.executable_sha256 = "0".repeat(64),
+            _ => unreachable!(),
+        }
+        fs::write(&config, serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert!(matches!(f.call(Action::Discover), Response::Refused { .. }));
+    }
+    fs::write(&config, &original).unwrap();
+    f.restart();
+    let Response::Output { data_base64, .. } = f.call(Action::Output {
+        job_id: retained_id,
+        offset: 0,
+        max_bytes: 4096,
+    }) else {
+        panic!("retained observation")
+    };
+    assert_eq!(STANDARD.decode(data_base64).unwrap(), retained_bytes);
+    unrelated.set_nonblocking(true).unwrap();
+    occupied.set_nonblocking(true).unwrap();
+    assert_eq!(
+        unrelated.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        occupied.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    let (admitted, _) = f.invoke("observe");
+    assert_eq!(f.terminal(&admitted.job_id).state, JobState::Completed);
+    f.assert_no_side_effects();
+    eprintln!(
+        "scoped endpoint: TCP/UDP IPv4/IPv6, concrete/wildcard/interface resolution, missing/changed address, conflict, approved alternative, competing bind, denial and restart-retained observation verified; unrelated receivers unchanged"
+    );
+}
+
+#[test]
+#[ignore = "requires native Unix containment and the installed executor"]
+fn installed_unix_listener_handoff_revalidates_and_retains_socket() {
+    use safeyolo_host_executor::endpoints::{
+        AddressFamily, EndpointCandidate, EndpointSelection, EndpointStatus,
+    };
+    let mut f = fixture(64, 512 * 1024);
+    let work = f.root.join("work");
+    fs::create_dir(&work).unwrap();
+    let config = f.root.join("target.json");
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    let mut operations = settings.target.package.operations.clone();
+    let v4: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+    let v6: std::net::IpAddr = "::1".parse().unwrap();
+    let port_probe = TcpListener::bind((v4, 0)).unwrap();
+    let first_port = port_probe.local_addr().unwrap().port();
+    drop(port_probe);
+    let candidate = |address, port| EndpointCandidate {
+        transport: NetworkTransport::Tcp,
+        family: if address == v6 {
+            AddressFamily::Ipv6
+        } else {
+            AddressFamily::Ipv4
+        },
+        address: Some(address),
+        interface: None,
+        port,
+        ipv6_only: address == v6,
+        reuse_address: false,
+        reuse_port: false,
+    };
+    for mode in [
+        "direct4",
+        "direct6",
+        "wildcard",
+        "fallback",
+        "missing-fallback",
+        "missing-only",
+        "collision-only",
+        "cancel",
+        "descendant",
+        "timeout",
+        "restart",
+    ] {
+        let mut op = operations["observe"].clone();
+        let e = &mut op.execution;
+        e.filesystem.write = vec![work.to_str().unwrap().into()];
+        e.argv = [
+            if mode == "descendant" {
+                "handoff-child".into()
+            } else if ["cancel", "timeout", "restart"].contains(&mode) {
+                "handoff-wait".into()
+            } else {
+                "handoff".into()
+            },
+            work.to_str().unwrap().into(),
+            "unused".into(),
+            f.network_listener.local_addr().unwrap().port().to_string(),
+        ]
+        .into_iter()
+        .map(|value| Word::Literal { value })
+        .collect();
+        let mut chosen = candidate(
+            if mode == "direct6" { v6 } else { v4 },
+            if ["fallback", "collision-only"].contains(&mode) {
+                first_port
+            } else {
+                0
+            },
+        );
+        if mode == "wildcard" {
+            chosen.address = Some("0.0.0.0".parse().unwrap());
+        }
+        if mode.starts_with("missing") {
+            chosen.interface = Some("sy-missing-interface".into());
+            chosen.address = None;
+        }
+        let mut candidates = vec![chosen];
+        if ["fallback", "missing-fallback"].contains(&mode) {
+            candidates.push(candidate(v4, 0));
+        }
+        e.network.listener_handoff = Some(EndpointSelection { candidates });
+        if mode == "timeout" {
+            // Leave launch/rounding margin, but expire before the probe's
+            // four-second controller-crash cleanup alarm.
+            e.resources.timeout_seconds = 3;
+        }
+        operations.insert(mode.into(), op);
+    }
+    settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    f.target = settings.target.clone();
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    let check = Command::new(executor())
+        .args(["check", "--config"])
+        .arg(&config)
+        .arg("--state")
+        .arg(f.root.join("state"))
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let human = String::from_utf8(check.stdout).unwrap();
+    assert!(human.contains("descriptor 3") && human.contains("authorised alternatives"));
+    eprintln!("human check exposes socket handoff, alternatives and observation limits");
+    let Response::Discovery { discovery } = f.call(Action::Discover) else {
+        panic!("discovery")
+    };
+    assert!(
+        discovery
+            .operations
+            .iter()
+            .find(|op| op.operation_id == "fallback")
+            .unwrap()
+            .network_enforcement
+            .iter()
+            .any(|fact| fact.contains("no probe-to-bind gap"))
+    );
+    // The port was free at proposal. A competitor takes it before invoke;
+    // only an adopted alternative may be used by the real launch bind.
+    let invocation = f.invocation("fallback");
+    let Response::Proposal { prepared, .. } = f.call(Action::Propose { invocation }) else {
+        panic!("proposal")
+    };
+    let occupied = TcpListener::bind((v4, first_port)).unwrap();
+    let Response::Job { receipt } = f.call(Action::Invoke {
+        invocation: prepared.invocation,
+    }) else {
+        panic!("invoke")
+    };
+    let mut first = Some(*receipt);
+    let mut started_timeout = false;
+    for mode in [
+        "fallback",
+        "direct4",
+        "direct6",
+        "wildcard",
+        "missing-fallback",
+        "cancel",
+        "descendant",
+        "timeout",
+        "restart",
+    ] {
+        if mode == "descendant" && cfg!(target_os = "macos") {
+            continue;
+        }
+        let receipt = first.take().unwrap_or_else(|| f.invoke(mode).0);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let observed = if mode == "timeout" {
+            // A terminal timeout may precede observation. Its receipt must
+            // establish whether any process or socket was actually started.
+            f.terminal(&receipt.job_id)
+        } else {
+            loop {
+                let r = f.job(&receipt.job_id);
+                assert!(!r.state.terminal(), "listener did not become ready: {r:?}");
+                if r.listener_handoff.is_some() && r.output_bytes > 0 {
+                    break r;
+                }
+                assert!(Instant::now() < deadline, "listener handoff missing: {r:?}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        if mode == "timeout" && observed.listener_handoff.is_none() {
+            assert_eq!(observed.state, JobState::Failed, "{observed:?}");
+            assert!(
+                observed.native.is_none() && observed.process.is_none(),
+                "{observed:?}"
+            );
+            assert_eq!(observed.output_bytes, 0, "{observed:?}");
+            assert!(
+                observed.updated_at >= observed.deadline
+                    && observed.detail.contains("deadline expired before start"),
+                "{observed:?}"
+            );
+            eprintln!(
+                "timeout: valid expiry before native launch; started-service proof is missing: {observed:?}"
+            );
+            // Still exercise the remaining lifecycle/refusal rows. This legal
+            // expiry does not count as a started-service timeout pass below.
+            continue;
+        }
+        let observation = observed.listener_handoff.as_ref().unwrap();
+        assert_eq!(observation.status, EndpointStatus::BoundForHandoff);
+        assert!(
+            observation.reservation
+                && observation.application_ready.is_none()
+                && observation.reachable_audience.is_none()
+        );
+        let bound = observation.binding.unwrap();
+        assert_ne!(bound.port(), 0);
+        assert_ne!(bound.port(), first_port);
+        if mode != "timeout" {
+            assert!(
+                TcpListener::bind(bound).is_err(),
+                "handoff released before service use"
+            );
+        }
+        if mode == "wildcard" {
+            assert!(bound.ip().is_unspecified());
+        }
+        let mut connection = bound;
+        if connection.ip().is_unspecified() {
+            connection.set_ip(v4);
+        }
+        if ["cancel", "descendant"].contains(&mode) {
+            if mode == "descendant" {
+                let mut peer =
+                    TcpStream::connect_timeout(&connection, Duration::from_secs(2)).unwrap();
+                peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut answer = [0; 7];
+                peer.read_exact(&mut answer).unwrap();
+                assert_eq!(&answer, b"service");
+            }
+            assert!(matches!(
+                f.call(Action::Cancel {
+                    job_id: observed.job_id.clone(),
+                    expected_revision: observed.revision
+                }),
+                Response::Job { .. }
+            ));
+        } else if mode == "restart" {
+            f.restart();
+        } else if mode != "timeout" {
+            let mut peer = TcpStream::connect_timeout(&connection, Duration::from_secs(2)).unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut answer = [0; 7];
+            peer.read_exact(&mut answer).unwrap();
+            assert_eq!(&answer, b"service");
+        }
+        let result = if mode == "timeout" {
+            observed
+        } else {
+            f.terminal(&receipt.job_id)
+        };
+        assert_eq!(
+            result.state,
+            match mode {
+                "cancel" | "descendant" => JobState::Cancelled,
+                "timeout" => JobState::Failed,
+                "restart" => JobState::Uncertain,
+                _ => JobState::Completed,
+            },
+            "{result:?}"
+        );
+        if mode == "restart" {
+            #[cfg(target_os = "macos")]
+            {
+                // Only the fixture alarm guarantees eventual exit here.
+                assert!(!result.detail.contains("observed quiescence"));
+                assert!(TcpListener::bind(bound).is_err());
+                std::thread::sleep(Duration::from_secs(5));
+                f.restart();
+                assert!(
+                    f.job(&receipt.job_id)
+                        .detail
+                        .contains("observed quiescence")
+                );
+            }
+        } else {
+            assert!(result.native.as_ref().unwrap().processes_stopped);
+        }
+        if mode == "timeout" {
+            assert_eq!(
+                result.native.as_ref().unwrap().termination_reason,
+                "timeout"
+            );
+            let Response::Output { data_base64, .. } = f.call(Action::Output {
+                job_id: receipt.job_id.clone(),
+                offset: 0,
+                max_bytes: 4096,
+            }) else {
+                panic!("retained timeout output")
+            };
+            assert_eq!(
+                STANDARD.decode(data_base64).unwrap(),
+                b"application ready to accept on inherited listener\n"
+            );
+            started_timeout = true;
+        }
+        assert_eq!(
+            f.job(&receipt.job_id)
+                .listener_handoff
+                .as_ref()
+                .unwrap()
+                .binding,
+            Some(bound)
+        );
+        assert_eq!(
+            fs::read(work.join("result")).unwrap(),
+            b"service started with inherited listener\n"
+        );
+        let _released = TcpListener::bind(bound).unwrap();
+        eprintln!(
+            "{mode}: kernel-selected endpoint {bound}; independent service/cleanup observation; historical binding retained"
+        );
+    }
+    for (mode, status) in [
+        ("missing-only", EndpointStatus::Unavailable),
+        ("collision-only", EndpointStatus::Conflict),
+    ] {
+        let (receipt, _) = f.invoke(mode);
+        let result = f.terminal(&receipt.job_id);
+        assert_eq!(result.state, JobState::Failed, "{result:?}");
+        assert!(result.native.as_ref().unwrap().processes_stopped);
+        assert_eq!(result.listener_handoff.unwrap().status, status);
+    }
+    assert_eq!(occupied.local_addr().unwrap().port(), first_port);
+    // Changing the handoff contract without both current scope pins cannot
+    // observe or bind the newly selected endpoint.
+    settings
+        .target
+        .package
+        .operations
+        .get_mut("direct4")
+        .unwrap()
+        .execution
+        .network
+        .listener_handoff
+        .as_mut()
+        .unwrap()
+        .candidates[0]
+        .port = first_port;
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    let invocation = f.invocation("direct4");
+    assert!(matches!(
+        f.call(Action::Propose { invocation }),
+        Response::Refused { .. }
+    ));
+    fs::write(
+        &config,
+        serde_json::to_vec(&Configuration {
+            target: f.target.clone(),
+            ..settings
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    f.assert_no_side_effects();
+    assert!(
+        started_timeout,
+        "started-service timeout was not established; remaining lifecycle/refusal rows completed"
     );
 }

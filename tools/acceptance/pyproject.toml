@@ -25,7 +25,11 @@ package = false
 # OpenTelemetry constraints select the older family. Override them together:
 # the SDK, exporter and instrumentation require matching family versions.
 # The dependency controls exercise Semgrep tracing and the propagation parser.
+# Semgrep's wcmatch ~=8.3 constraint excludes the ReDoS repair in 11.2.
+# This repository-owned override is covered by actual scanner/path controls;
+# wcmatch selects its required bracex version through the resolver.
 override-dependencies = [
+    "wcmatch==11.2",
     "mcp==1.30.0",
     "opentelemetry-api==1.45.2",
     "opentelemetry-sdk==1.45.2",

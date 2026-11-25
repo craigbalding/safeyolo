@@ -25,6 +25,26 @@ pub enum NativeRuntime {
     Windows(crate::windows::WindowsRuntime),
 }
 impl NativeRuntime {
+    pub(crate) fn network_enforcement(&self, operation: &Operation) -> Vec<String> {
+        #[cfg(unix)]
+        if crate::endpoints::validate(operation).unwrap_or(false) {
+            return crate::endpoints::disclosure();
+        }
+        let mut facts = match self {
+            #[cfg(target_os = "linux")]
+            Self::Linux(_) => crate::linux::network_enforcement(operation),
+            #[cfg(target_os = "macos")]
+            Self::Macos(_) => crate::macos::network_enforcement(operation),
+            #[cfg(windows)]
+            _ => {
+                let _ = operation;
+                Vec::new()
+            }
+        };
+        facts.extend(crate::endpoints::handoff_disclosure(operation));
+        facts
+    }
+
     pub(crate) fn validate_command(&self, command: &Command) -> Result<(), Refusal> {
         #[cfg(windows)]
         match self {
@@ -71,15 +91,34 @@ impl NativeRuntime {
         target: &Target,
         ledger: Arc<Mutex<Ledger>>,
         id: &str,
+        protected: &[PathBuf],
     ) -> Result<(), Refusal> {
+        #[cfg(windows)]
+        let _ = protected;
         match self {
             #[cfg(target_os = "linux")]
-            Self::Linux(runtime) => runtime.execute(target, ledger, id),
+            Self::Linux(runtime) => runtime.execute(target, ledger, id, protected),
             #[cfg(target_os = "macos")]
-            Self::Macos(runtime) => runtime.execute(target, ledger, id),
+            Self::Macos(runtime) => runtime.execute(target, ledger, id, protected),
             #[cfg(windows)]
             Self::Windows(runtime) => runtime.execute(target, ledger, id),
         }
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn launch_refused(backend: &str, error: impl std::fmt::Display) -> NativeObservation {
+    NativeObservation {
+        backend: backend.into(),
+        enforcement: vec![
+            "native validation or listener binding refused before workload launch".into(),
+        ],
+        dependencies: Vec::new(),
+        exit_code: None,
+        signal: None,
+        processes_stopped: true,
+        output_truncated: false,
+        termination_reason: format!("launch_refused: {error}"),
     }
 }
 

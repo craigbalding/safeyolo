@@ -25,7 +25,7 @@ version = "0.18.0"
 maintenance = { status = "actively-developed" }
 
 [features]
-image-config = ["dep:chrono"]
+image-config = ["dep:time"]
 default = ["image-config", "rustls-tls", "test-registry"]
 native-tls = ["reqwest/native-tls"]
 rustls-tls = ["reqwest/rustls"]
@@ -40,7 +40,7 @@ test-registry = []
 [dependencies]
 base64 = "0.22"
 bytes = "1"
-chrono = { version = "0.4", features = ["serde"], optional = true }
+time = { version = "0.3.55", features = ["large-dates"], optional = true }
 futures-util = "0.3"
 hex = "0.4"
 http = "1.3"
@@ -74,6 +74,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3.21"
 # This should stay pinned here until testcontainers makes sure all of its deps using rustls are
 # using the ring feature. Otherwise this fails to compile on Windows
-testcontainers = "0.28"
+testcontainers = { version = "0.28", path = "../testcontainers" }
 tokio = { version = "1", features = ["macros", "fs", "rt-multi-thread"] }
 tokio-util = { version = "0.7", features = ["compat"] }

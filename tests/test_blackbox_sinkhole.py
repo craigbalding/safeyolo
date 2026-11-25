@@ -68,6 +68,35 @@ def test_sinkhole_bind_does_not_perform_reverse_dns():
         server.server_close()
 
 
+def test_owned_subscription_provider_rotates_only_valid_synthetic_pairs():
+    server_module = _load_sinkhole_server()
+    server = server_module.NoReverseDNSThreadingHTTPServer(("127.0.0.1", 0), server_module.SinkholeHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    nonce = "a" * 32
+    try:
+        for index, client_id, expected in ((0, "app_EMoamEEZ73f0CkXaXp7hrann", 200),
+                                            (1, "app_EMoamEEZ73f0CkXaXp7hrann", 200), (2, "other-client", 400)):
+            client = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+            try:
+                body = {"grant_type": "refresh_token", "client_id": client_id,
+                        "refresh_token": f"bbsubscription-refresh-{nonce}-{index}"}
+                client.request("POST", "/oauth/token", json.dumps(body),
+                               {"Host": "auth.openai.com", "Content-Type": "application/json"})
+                response = client.getresponse()
+                value = json.loads(response.read())
+                assert response.status == expected
+                if expected == 200:
+                    assert value == {"access_token": f"bbsubscription-access-{nonce}-{index + 1}",
+                                     "refresh_token": f"bbsubscription-refresh-{nonce}-{index + 1}"}
+            finally:
+                client.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
 def test_sinkhole_receiver_readiness_probe_gates_clean_observations():
     from tests.blackbox.host.sinkhole_client import SinkholeClient
 

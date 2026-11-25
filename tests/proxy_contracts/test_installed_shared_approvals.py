@@ -282,6 +282,12 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
         if arguments[0] != "controlled-guest":
             return run_command(arguments, **kwargs)
         name = arguments[1]
+        if crashing and instance.process.poll() == -9:
+            # Guest transport is controlled, but the owned native process was
+            # really killed. Confirm its UDS refuses the attempted request.
+            with pytest.raises((ConnectionError, FileNotFoundError)):
+                http_request(instance.paths[name], "http://owned-outage.test/")
+            return subprocess.CompletedProcess(arguments, 1, "", "owned proxy unavailable\n")
         directory = root / "agents" / name
         current = json.loads((directory / "runtime.json").read_text())
         context = json.loads((directory / "config-share/host-launch-context.json").read_text())
@@ -450,6 +456,7 @@ def test_helper_consumer_failed_model_keeps_native_approval_and_owned_cleanup(he
                 assert before["policy_receipt"] == after["policy_receipt"]
                 assert before["network_grant"] == after["network_grant"]
                 assert before["origin_hits"] == after["origin_hits"] == []
+                assert recovery["outage"] == {"client_exit": 1, "origin_before": 0, "origin_after": 0}
                 assert len(recovery["explicit_retry"]["origin_hits"]) == 1
                 assert "replacement_agent_id" not in result and "stale_context" not in result
             elif lifecycle:

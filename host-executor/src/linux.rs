@@ -1,5 +1,6 @@
 //! Linux execution with a private cgroup and bubblewrap namespaces. This path
-//! supports read-only, disconnected operations under the executor's identity.
+//! supports selected file reads and writes under the executor's identity.
+//! TCP uses explicitly broader address/port authority with separate direction gates.
 //! Only the pinned native service client receives its fixed manager channel.
 use crate::*;
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,48 @@ use std::{
     sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
+
+mod runtime_files;
+mod writes;
+
+#[derive(Clone, Copy, Default)]
+struct TcpAccess {
+    connect: bool,
+    listen: bool,
+}
+
+impl TcpAccess {
+    fn selected(operation: &Operation) -> Self {
+        Self {
+            connect: !operation.execution.network.destinations.is_empty(),
+            listen: !operation.execution.network.listeners.is_empty(),
+        }
+    }
+
+    fn enabled(self) -> bool {
+        self.connect || self.listen
+    }
+}
+
+pub(crate) fn network_enforcement(operation: &Operation) -> Vec<String> {
+    let tcp = TcpAccess::selected(operation);
+    if !tcp.enabled() {
+        return vec![if operation.execution.delegated_services.is_empty() {
+            if operation.execution.network.listener_handoff.is_some() {
+                "Socket creation and outbound connects are denied. The workload can accept connections on its inherited listener, which retains the target network context; its own network namespace remains separate.".into()
+            } else {
+                "Network namespace is disconnected; socket creation is denied.".into()
+            }
+        } else {
+            "Disconnected network namespace; only the fixed trusted OS client's Unix service channel is permitted.".into()
+        }];
+    }
+    vec![
+        format!("TCP connect={}, listen/accept={}; IPv4/IPv6 stream sockets only. Destinations do not confer listen/accept permission, and listeners do not confer connect permission.", tcp.connect, tcp.listen),
+        "EXPLICIT BROADER NETWORK/IPC: the workload shares the target executor's network namespace. Declared hosts, local addresses and ports describe the selected action; this profile does not enforce those address or port restrictions. Each permitted direction reaches any TCP endpoint accessible to the target account, including host-local services. Binding a local source address is permitted. Other socket families, UDP and raw sockets remain denied.".into(),
+        "Target routing, firewall, VPN, proxy and service permissions remain effective. The executor does not mediate workload TCP through the issuing instance's proxy, infer application authentication/TLS, or prove binding, readiness, publication or audience reachability. Program behavior and unobserved forwarding remain unknown.".into(),
+    ]
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -139,6 +182,21 @@ fn dependency_snapshot(
 }
 
 impl LinuxRuntime {
+    fn write_mounts(
+        &self,
+        paths: &[String],
+        protected: &[PathBuf],
+    ) -> Result<Vec<writes::WriteMount>, Refusal> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut protected = protected.to_vec();
+        protected.push(self.cgroup.clone());
+        protected.push(self.bubblewrap.canonicalize().map_err(unavailable)?);
+        protected.extend(runtime_files::dependencies(&self.bubblewrap)?);
+        writes::open(paths, &protected)
+    }
+
     /// Pure filesystem validation: never run an adopted command for discovery,
     /// qualification, startup or reload. Every entry uses the same validation.
     pub fn validate(&self, target: &Target, protected: &[PathBuf]) -> Result<(), Refusal> {
@@ -229,10 +287,35 @@ impl LinuxRuntime {
     ) -> Result<(), Refusal> {
         let execution = &operation.execution;
         let service = crate::unix_services::validate(operation)?;
+        let endpoint = crate::endpoints::validate(operation)?;
+        let tcp = TcpAccess::selected(operation);
         require(
-            service || execution.broader.is_empty(),
+            service
+                || execution
+                    .broader
+                    .iter()
+                    .all(|b| *b == BroaderBound::NetworkIpc),
             RefusalCode::Unavailable,
-            "this Linux profile enforces required read-only/disconnected bounds; broader profiles are not silently substituted",
+            "this Linux profile supports selected filesystem/process bounds and explicit broader TCP network authority; other broader profiles are unavailable",
+        )?;
+        require(
+            !tcp.enabled() || execution.broader.contains(&BroaderBound::NetworkIpc),
+            RefusalCode::Unavailable,
+            "Linux TCP requires explicit broader network_ipc authority: direction is enforced, declared address/port restrictions are not; adopt matching issuer and target scopes or retain disconnected execution",
+        )?;
+        require(
+            execution
+                .network
+                .destinations
+                .iter()
+                .all(|d| matches!(d.transport, NetworkTransport::Tcp))
+                && execution
+                    .network
+                    .listeners
+                    .iter()
+                    .all(|l| matches!(l.transport, NetworkTransport::Tcp)),
+            RefusalCode::Unavailable,
+            "this Linux network profile supports TCP; UDP scope enforcement is unavailable",
         )?;
         // SAFETY: these identity accessors have no pointer arguments. getgroups
         // is given a vector sized by its immediately preceding count query.
@@ -265,15 +348,13 @@ impl LinuxRuntime {
             "this backend retains this executor host UID and all its supplementary host GIDs; identity cannot select another account or a group subset",
         )?;
         require(
-            execution.filesystem.write.is_empty()
-                && execution.network.destinations.is_empty()
-                && (service || execution.network.ipc.is_empty())
-                && (service || execution.delegated_services.is_empty()),
+            service || execution.network.ipc.is_empty() && execution.delegated_services.is_empty(),
             RefusalCode::Unavailable,
-            "writable storage and direct network/IPC are unavailable; the service channel requires the fixed native OS client profile",
+            "Unix IPC requires the fixed native OS service client profile; direct TCP does not grant IPC or service-manager authority",
         )?;
         let mut protected = protected.to_vec();
         protected.push(self.cgroup.clone());
+        self.write_mounts(&execution.filesystem.write, &protected)?;
         let mounts = mounts()?;
         for endpoint in &execution.network.ipc {
             let IpcEndpoint::UnixSocket { path } = endpoint else {
@@ -297,7 +378,11 @@ impl LinuxRuntime {
             )?;
             validate_read_mounts(path, &protected, &mounts)?;
         }
-        for path in &execution.filesystem.read {
+        let mut read_paths = execution.filesystem.read.clone();
+        if endpoint {
+            read_paths.extend(crate::endpoints::runtime_reads());
+        }
+        for path in &read_paths {
             let path = Path::new(path);
             require(
                 absolute(path),
@@ -362,9 +447,10 @@ impl LinuxRuntime {
         target: &Target,
         ledger: Arc<Mutex<Ledger>>,
         job_id: &str,
+        protected: &[PathBuf],
     ) -> Result<(), Refusal> {
         crate::native::execute_job(target, ledger, job_id, |op, receipt, ledger| {
-            self.run(op, receipt, ledger)
+            self.run(op, receipt, ledger, protected)
         })
     }
 
@@ -373,7 +459,45 @@ impl LinuxRuntime {
         operation: &Operation,
         receipt: &Receipt,
         ledger: &Arc<Mutex<Ledger>>,
+        protected: &[PathBuf],
     ) -> Result<NativeObservation, Refusal> {
+        // Keep descriptor 3 occupied while opening the adapter's other inputs.
+        // Only the selected listener is duplicated into 3 in the child.
+        let descriptor_three = operation
+            .execution
+            .network
+            .listener_handoff
+            .as_ref()
+            .map(|_| File::open("/dev/null"))
+            .transpose()
+            .map_err(unavailable)?;
+        // Pin and check the actual writable referents before creating a job.
+        // The bind mounts use these descriptors, never a second path lookup.
+        let writes = match self
+            .validate_operation(operation, protected)
+            .and_then(|()| self.write_mounts(&operation.execution.filesystem.write, protected))
+        {
+            Ok(writes) => writes,
+            Err(error) => {
+                return Ok(crate::native::launch_refused(
+                    "linux-bubblewrap-cgroup-v2",
+                    error,
+                ));
+            }
+        };
+        let listener = match crate::endpoints::bind_for_job(
+            operation.execution.network.listener_handoff.as_ref(),
+            ledger,
+            &receipt.job_id,
+        ) {
+            Ok(listener) => listener,
+            Err(error) => {
+                return Ok(crate::native::launch_refused(
+                    "linux-bubblewrap-cgroup-v2",
+                    error,
+                ));
+            }
+        };
         let path = self.cgroup.join(&receipt.job_id);
         fs::create_dir(&path).map_err(unavailable)?;
         let mut group = JobCgroup { path, child: None };
@@ -405,7 +529,9 @@ impl LinuxRuntime {
             self.executable_bytes,
         )?;
         let service = crate::unix_services::validate(operation)?;
-        let seccomp = socket_filter(service)?;
+        let endpoint = crate::endpoints::validate(operation)?;
+        let tcp = TcpAccess::selected(operation);
+        let seccomp = socket_filter(service, tcp, endpoint, listener.is_some())?;
         let command = operation.command(&receipt.prepared.invocation.arguments)?;
         let mut native = ProcessCommand::new(format!("/proc/self/fd/{}", helper.as_raw_fd()));
         native
@@ -415,7 +541,6 @@ impl LinuxRuntime {
             .stderr(Stdio::piped());
         native.args([
             "--unshare-user",
-            "--unshare-net",
             "--unshare-ipc",
             "--unshare-uts",
             "--disable-userns",
@@ -426,6 +551,9 @@ impl LinuxRuntime {
             "ALL",
             "--clearenv",
         ]);
+        if !tcp.enabled() && !endpoint {
+            native.arg("--unshare-net");
+        }
         if !service {
             native.arg("--unshare-pid");
         }
@@ -436,10 +564,21 @@ impl LinuxRuntime {
             &unsafe { libc::getegid() }.to_string(),
         ]);
         let mut reads = Vec::new();
-        for path in &operation.execution.filesystem.read {
+        let mut read_paths = operation.execution.filesystem.read.clone();
+        if endpoint {
+            read_paths.extend(crate::endpoints::runtime_reads());
+        }
+        for path in &read_paths {
             let file = File::open(path).map_err(unavailable)?;
             native.args(["--ro-bind-fd", &file.as_raw_fd().to_string(), path]);
             reads.push(file);
+        }
+        for mount in &writes {
+            native.args([
+                "--bind-fd",
+                &mount.file.as_raw_fd().to_string(),
+                &mount.path,
+            ]);
         }
         for (path, dependency) in &operation.execution.dependencies {
             let file = dependency_snapshot(operation, path, dependency)?;
@@ -498,10 +637,17 @@ impl LinuxRuntime {
             .args(&command.argv);
         let fds: Vec<i32> = reads
             .iter()
+            .chain(writes.iter().map(|mount| &mount.file))
             .chain([&binary, &helper, &seccomp])
             .map(|f| f.as_raw_fd())
             .collect();
         let attach_fd = attach.as_raw_fd();
+        let listener_fd = listener.as_ref().map(AsRawFd::as_raw_fd);
+        require(
+            listener_fd.is_none() || !fds.contains(&3),
+            RefusalCode::Unavailable,
+            "listener descriptor conflicts with a native launch input",
+        )?;
         let parent = unsafe { libc::getpid() };
         // SAFETY: pre_exec uses only async-signal-safe syscalls and preallocated
         // values. Every workload starts in its cgroup before bwrap executes.
@@ -527,13 +673,29 @@ impl LinuxRuntime {
                         return Err(std::io::Error::last_os_error());
                     }
                 }
+                if let Some(fd) = listener_fd
+                    // dup2(fd, fd) preserves FD_CLOEXEC. Clear it even when
+                    // a concurrently closed parent descriptor freed slot 3.
+                    && (libc::dup2(fd, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0)
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
                 Ok(())
             });
         }
         group.child = Some(native.spawn().map_err(|error| {
             unavailable(format!("place and launch the cgroup workload: {error}"))
         })?);
-        drop((binary, helper, seccomp, reads, attach));
+        drop((
+            binary,
+            helper,
+            seccomp,
+            reads,
+            writes,
+            attach,
+            listener,
+            descriptor_three,
+        ));
         let child = group.child.as_mut().expect("spawned child");
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
@@ -659,16 +821,35 @@ impl LinuxRuntime {
         }
         let mut result = NativeObservation {
             backend: "linux-bubblewrap-cgroup-v2".into(),
-            enforcement: vec!["read-only opened filesystem mounts; sealed executable snapshot".into(), "separate user/PID/network/IPC/UTS namespaces; no sockets or nested namespaces".into(), "cgroup memory.max, memory.swap.max=0 and pids.max include runtime overhead".into(), "bounded retained merged output, deadline and descendant termination".into()],
+            enforcement: vec!["opened read-only mounts and selected descriptor-pinned writable roots; sealed executable snapshot".into(), "separate user/PID/network/IPC/UTS namespaces; no sockets or nested namespaces".into(), "cgroup memory.max, memory.swap.max=0 and pids.max include runtime overhead".into(), "bounded retained merged output, deadline and descendant termination".into()],
             dependencies: vec![format!("host UID {} and supplementary host GIDs {:?}; the user namespace maps the primary GID, while supplementary GIDs are retained for host ACL checks and appear as the kernel overflow GID inside it", operation.execution.identity.principal, operation.execution.identity.groups), "pinned bubblewrap; kernel user namespaces, seccomp and delegated cgroup v2".into(), "adopted read paths include mutable host-owned runtime dependencies; their content is not pinned".into()],
             exit_code: status.and_then(|s| s.code()), signal: status.and_then(|s| s.signal()),
             processes_stopped: quiescent, output_truncated: truncated || output_open,
             termination_reason: reason.into(),
         };
+        if endpoint {
+            result.enforcement[1] = "Pinned trusted endpoint helper in the target network context; no workload-selected code, environment, files or service channel. Native helper filters interface facts and probes only the authorised typed selector.".into();
+            result.enforcement.extend(crate::endpoints::disclosure());
+        }
+        if !operation.execution.filesystem.write.is_empty() {
+            result.dependencies.push(format!("selected host write roots {:?}; files persist after job cleanup, cancellation and restart; output_bytes bounds stdout/stderr, not file storage; the Output route does not retrieve selected files", operation.execution.filesystem.write));
+        }
         if service {
             result.enforcement[1] = "separate user/network/IPC/UTS namespaces; only AF_UNIX sockets and the fixed systemd user channel; host process signalling and cross-process memory/FD access are denied".into();
             result.dependencies.push("EXPLICIT BROADER PROCESS VISIBILITY: the trusted OS client shares the host PID namespace so the service owner has a visible peer PID for SO_PEERCRED authentication. Host /proc is not mounted. The cgroup still bounds and terminates the helper and its descendants".into());
             result.dependencies.push(crate::unix_services::disclosure());
+        }
+        if tcp.enabled() {
+            result.enforcement[1] = "separate user/PID/IPC/UTS namespaces; shared target network namespace; seccomp permits TCP IPv4/IPv6 with separately declared connect and listen/accept directions; no other sockets or nested namespaces".into();
+            result.dependencies.extend(network_enforcement(operation));
+        }
+        if operation.execution.network.listener_handoff.is_some() {
+            if !tcp.enabled() {
+                result.enforcement[1] = "separate user/PID/network/IPC/UTS namespaces; the inherited listener retains the target network context; socket creation, bind/listen and outbound connect are denied; accept uses the inherited socket".into();
+            }
+            result
+                .dependencies
+                .extend(crate::endpoints::handoff_disclosure(operation));
         }
         if quiescent {
             fs::remove_dir(&group.path).map_err(unavailable)?;
@@ -823,7 +1004,12 @@ impl Drop for JobCgroup {
     }
 }
 
-fn socket_filter(service: bool) -> Result<File, Refusal> {
+fn socket_filter(
+    service: bool,
+    tcp: TcpAccess,
+    endpoint: bool,
+    handoff: bool,
+) -> Result<File, Refusal> {
     #[cfg(target_arch = "x86_64")]
     const ARCH: u32 = 0xc000003e;
     #[cfg(target_arch = "aarch64")]
@@ -857,7 +1043,32 @@ fn socket_filter(service: bool) -> Result<File, Refusal> {
         },
         stmt(0x06, 0x00050000 | libc::EPERM as u32),
     ];
-    for syscall in [libc::SYS_socket, libc::SYS_socketpair] {
+    if tcp.enabled() {
+        // seccomp_data.args are 64-bit words on both supported little-endian
+        // ABIs. Accept only native IPv4/IPv6 TCP streams, including normal
+        // CLOEXEC/NONBLOCK flags. MPTCP, datagrams and raw sockets are not TCP
+        // direction guarantees supplied by this profile.
+        filter.extend([
+            jump(libc::SYS_socket as u32, 0, 13),
+            stmt(0x20, 16),
+            jump(libc::AF_INET as u32, 2, 0),
+            jump(libc::AF_INET6 as u32, 1, 0),
+            stmt(0x06, 0x00050000 | libc::EPERM as u32),
+            stmt(0x20, 24),
+            stmt(0x54, !(libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK) as u32),
+            jump(libc::SOCK_STREAM as u32, 1, 0),
+            stmt(0x06, 0x00050000 | libc::EPERM as u32),
+            stmt(0x20, 32),
+            jump(0, 2, 0),
+            jump(libc::IPPROTO_TCP as u32, 1, 0),
+            stmt(0x06, 0x00050000 | libc::EPERM as u32),
+            stmt(0x06, 0x7fff0000),
+        ]);
+    }
+    for syscall in [libc::SYS_socket, libc::SYS_socketpair]
+        .into_iter()
+        .filter(|_| !endpoint)
+    {
         if service {
             filter.extend([
                 jump(syscall as u32, 0, 4),
@@ -871,6 +1082,52 @@ fn socket_filter(service: bool) -> Result<File, Refusal> {
                 jump(syscall as u32, 0, 1),
                 stmt(0x06, 0x00050000 | libc::EPERM as u32),
             ]);
+        }
+    }
+    if tcp.enabled() || handoff {
+        if handoff && !tcp.enabled() {
+            filter.extend([
+                jump(libc::SYS_bind as u32, 0, 1),
+                stmt(0x06, 0x00050000 | libc::EPERM as u32),
+            ]);
+        }
+        if !tcp.connect {
+            filter.extend([
+                jump(libc::SYS_connect as u32, 0, 1),
+                stmt(0x06, 0x00050000 | libc::EPERM as u32),
+            ]);
+            // TCP Fast Open can initiate a connection through sendto/sendmsg
+            // without connect(). Reject that flag, including batched sends.
+            for (syscall, flags) in [
+                (libc::SYS_sendto, 40),
+                (libc::SYS_sendmsg, 32),
+                (libc::SYS_sendmmsg, 40),
+            ] {
+                filter.extend([
+                    jump(syscall as u32, 0, 4),
+                    stmt(0x20, flags),
+                    libc::sock_filter {
+                        code: 0x45,
+                        jt: 0,
+                        jf: 1,
+                        k: libc::MSG_FASTOPEN as u32,
+                    },
+                    stmt(0x06, 0x00050000 | libc::EPERM as u32),
+                    stmt(0x20, 0),
+                ]);
+            }
+        }
+        if !tcp.listen {
+            for syscall in [libc::SYS_listen].into_iter().chain(
+                [libc::SYS_accept, libc::SYS_accept4]
+                    .into_iter()
+                    .filter(|_| !handoff),
+            ) {
+                filter.extend([
+                    jump(syscall as u32, 0, 1),
+                    stmt(0x06, 0x00050000 | libc::EPERM as u32),
+                ]);
+            }
         }
     }
     if service {
@@ -961,7 +1218,7 @@ mod tests {
     #[test]
     #[ignore = "requires native Linux kernel seccomp; run with the installed contract fixtures"]
     fn service_filter_allows_unix_ipc_and_denies_host_process_control() {
-        let mut file = socket_filter(true).unwrap();
+        let mut file = socket_filter(true, TcpAccess::default(), false, false).unwrap();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
         let parent = unsafe { libc::getpid() };

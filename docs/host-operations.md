@@ -14,9 +14,35 @@ enrol an issuer.
 
 On Linux, the operation's process limit includes bubblewrap's monitor and
 namespace init; the Unix starter reserves three processes for its native
-inspection program. On macOS, resolving an adopted read path also permits
-metadata reads of its ancestor directories. It grants no sibling file contents
-or ancestor directory listing.
+inspection program. Adopted Linux commands can also use selected
+[`filesystem.write` paths](host-execution-contract.md#linux-writable-paths)
+and descendants under the same authority. File results stay at those host
+paths after job cleanup; the Output route returns stdout/stderr only.
+For TCP clients or listeners, an adopted Linux operation can select
+[broader TCP authority](host-execution-contract.md#linux-broader-tcp-authority).
+The operator must assess its account-wide address/port exposure. Discovery and
+proposals show the target's actual network boundary before invocation. The
+starter's ordinary narrow definitions remain disconnected. Its Unix
+`endpoint-inspect` operation uses a separate fixed native inspection helper,
+as described below.
+On macOS, custom definitions can select [writable paths and broader IP socket
+authority](host-execution-contract.md#macos-writable-paths-and-broader-network-authority).
+The operator selects the actual write roots and assesses Seatbelt's loopback or
+all-address class at each permitted port. The existing issuer and target scopes
+bind that operation; covered invocations need no recurring human decision.
+The macOS adapter still denies fork to ordinary programs. Resolving an adopted
+read/write path permits metadata reads of its ancestors, with no sibling file
+contents or ancestor directory listing. File results remain at the selected
+host paths; the Output route returns stdout/stderr.
+
+A program that already supports an inherited listening socket can instead use
+[Unix listener handoff](host-execution-contract.md#retained-listener-handoff-on-unix).
+The adapter binds an adopted endpoint alternative at launch and passes the open
+socket as descriptor 3. Read the running job receipt for its actual address and
+port. The handoff avoids a check-to-bind race and requires no recurring approval
+within the existing operation grant. Application readiness and audience reach
+still need their own observations. The handoff grants no additional binding or outbound authority. Seatbelt may
+permit unconnected descriptors, which grant no channel.
 
 ## Acquire and prepare the target
 
@@ -221,7 +247,7 @@ Do not substitute an agent-provided identity or explanation.
   "grant_id": "investigation-1",
   "principal": {"run": {"agent": "investigator", "agent_id": "ag-actual", "run_id": "actual-run"}, "task_id": "investigation"},
   "operations": "/home/hostop/scopes.json",
-  "verbs": ["discover", "propose", "invoke", "job", "output", "cancel"],
+  "verbs": ["discover", "propose", "invoke", "job", "output", "file", "cancel"],
   "not_before": 0,
   "expires_at": 1,
   "authority_valid_until": 1,
@@ -273,7 +299,11 @@ No system certificate or trust store is changed.
 
 `prepare` saves a candidate configuration and reports `activated: false`.
 `check` validates all adopted implementations and native dependencies without
-launching them. `serve` prints the selected target and ready listener only after
+launching them. For Linux TCP operations, it also prints the selected directions
+and broader address/port exposure. For Unix listener handoffs, it prints the
+authorised alternatives, descriptor convention and observation limits. These
+come from the same target-generated disclosure
+used by discovery and proposals. `serve` prints the selected target and ready listener only after
 validation, ledger reconciliation and binding. A saved file is not evidence of
 running-target readiness.
 
@@ -501,6 +531,34 @@ python3 "$HOST_CLIENT" job case --request-id metadata-status-1 --job JOB_ID
 python3 "$HOST_CLIENT" output case --request-id metadata-output-1 --job JOB_ID --offset 0 --bytes 65536
 ```
 
+For authorised file-producing Unix jobs, use the same helper's `file` command.
+The grant and target must explicitly permit `file`; `output` alone grants no
+file access. `prepared.file_roots` records the adopted writable paths. Select a
+regular file within both the admitted and current writable scope. Replace
+`/selected/result` with its actual target path and use the retained job ID:
+
+```sh
+python3 "$HOST_CLIENT" file case --request-id file-read-1 --job JOB_ID --path /selected/result --offset 0 --bytes 4096
+```
+
+The response reports base64 bytes, observed total length, a chunk SHA256,
+observation time and `file_revision`. For later chunks, pass that revision with
+`--file-revision REVISION` and advance by the decoded chunk length. Replacement
+or observed modification returns a stale result. Reads are live observations,
+not atomic snapshots or proof that the job produced every byte. Select writable
+roots and file paths without symlink components. Retrieval refuses symlinks at
+every component and refuses special files. Ordinary file/directory replacement
+through those paths remains supported. Missing or unreadable files are
+unavailable, including after host storage failure. Windows file retrieval is
+not implemented; its existing job/stream inspection remains available.
+
+Selected files stay at their host paths after completion, failure, cancellation
+and restart. The target operator controls their retention/removal. This route
+adds no artifact copy, lifetime extension, rollback or file-storage quota.
+Current file and operation/resource authority must still permit retrieval;
+revocation/expiry can remove agent access without deleting the files. Inspect
+partial files separately from job failure, stream truncation and termination.
+
 If the helper reports an uncertain invocation or cancellation, its error JSON preserves
 `possible_job_id`, the original request ID and selected target context. Use `job`
 with that possible job ID before another invocation. A possible ID does not
@@ -540,7 +598,7 @@ before another effect after a timeout.
 | Registry | No OS registry counterpart | Machine/workload-user hive, selected key/value and 32/64 view; value type; absent differs from denied. |
 | Processes, system, software, updates | Adapt a fixed installed tool, such as the hostctl `host-memory` or `host-cpu` recipe, to actual supported bounds | Process parent/start/resource observations; OS/hostname/uptime; bounded uninstall-registry and update inventories with source limits. |
 | Files | Native bounded directory/content evidence | Directory/metadata/hash/bounded-content commands, selected literal paths. |
-| Network | The current Unix executor profile denies direct probes; no implicit counterpart | Interface/routes/listeners in `network-inspect`; separately granted destination/port probe in `network-diagnostics`. No reconfiguration. |
+| Network | `endpoint-inspect` checks only adopted endpoint choices. Starter workload definitions retain socket denial. Custom Linux definitions can select broader TCP authority. Custom macOS definitions can select broader TCP/UDP direction, port and loopback/all-address authority. | Interface/routes/listeners in `network-inspect`; separately granted destination/port probe in `network-diagnostics`. No reconfiguration. |
 | Scheduled tasks | No general scheduler authority in this starter | Enumerate/filter tasks; selected definitions/principal/actions/recent status. No execution, registration or modification. |
 | Fixed installed executable | The content-pinned executor's inspection commands; typed limits and exact environment | `fixed-executable` runs pinned `whoami.exe`; typed allowed argument, exact account/environment, native deadline/output/status. |
 
@@ -573,6 +631,83 @@ code behavior or make agent-writable service dependencies trustworthy.
 The Windows source also contains separately governed write/transmit/reviewer
 composition examples. They have no implicit grant from query access. Select
 only the operations and scope intended for the current task.
+
+## Inspect a selected endpoint on Unix
+
+On the target, `starter` includes `endpoint-inspect`, with resource
+`endpoint:selected`. The example selects TCP IPv4 loopback and a kernel-chosen
+port. That example is not a product restriction. Before adoption, replace or
+extend `arguments.endpoint.options` with the complete choices required by the
+task. Select the same choices in the existing issuer grant and target ceiling
+through `scopes`. Loading a definition grants no access.
+
+Each choice is a typed JSON object. `candidates` contains the permitted
+alternatives in the order to try. Each candidate declares `transport` (`tcp`
+or `udp`), `family` (`ipv4` or `ipv6`), `address`, `interface`, `port`,
+`ipv6_only`, `reuse_address` and `reuse_port`. For example:
+
+```json
+{"candidates":[{"transport":"tcp","family":"ipv4","address":"127.0.0.1","interface":null,"port":8080,"ipv6_only":false,"reuse_address":false,"reuse_port":false}]}
+```
+
+An explicit address must match its family. To resolve a current address on a
+selected interface, set `address` to `null` and supply that target's interface
+name. With both fields supplied, the helper verifies that the address belongs
+to that interface. It returns only the selected interface and address, without
+other inventory. An interface identifies the source of the address; it is not
+an enforced ingress device restriction. A wildcard address with an interface
+selector is unsupported because this helper does not enforce device binding.
+An explicit wildcard with `interface: null` remains a valid choice. IPv6
+link-local resolution carries the interface index. IPv4 requires
+`ipv6_only: false`.
+
+Inside the authorised agent sandbox, propose `endpoint-inspect` using resource
+`endpoint:selected` and the chosen object as the `endpoint` argument. Use the
+same proposal, invocation, job and output commands described above. The normal
+signature, run/task, revision, argument, ceiling and budget checks apply before
+the helper observes the target. No recurring confirmation is added.
+
+For the example above, save `{"endpoint": CHOICE}` as `endpoint-arguments.json`,
+replacing `CHOICE` with the complete object. With the same `HOST_CLIENT` and
+authorised `case` binding used above, prepare the inspection:
+
+```sh
+python3 "$HOST_CLIENT" propose case --request-id endpoint-proposal-1 --operation endpoint-inspect --resource endpoint:selected --arguments endpoint-arguments.json > endpoint-prepared.json
+python3 "$HOST_CLIENT" invoke case --request-id endpoint-invoke-1 --prepared endpoint-prepared.json > endpoint-admission.json
+```
+
+Expected: a proposal followed by an admitted job. Read that job and its retained
+output through the same `job` and `output` commands. A completed inspection job
+can report a conflict or denial; completion means the observation completed,
+not that the endpoint is available.
+
+The retained output is an `EndpointObservation` JSON object. It reports
+`available_at_observation`, `conflict`, `denied`, `unavailable` or `unknown`,
+with the observation time, selected candidate, concrete binding, selected
+interface when requested, and a scoped reason. Native permission failures and
+incomplete observations do not report availability. The trusted native helper
+filters host facts before output; it returns no unrelated listener, port,
+process, route or interface inventory. Its exact executable and empty
+environment are validated before launch. Arbitrary adopted programs receive
+no inspection exception.
+
+The helper tests a real bind with the selected reuse and IPv6-only options.
+TCP also tests listen; UDP tests bind. All probe sockets close before the
+result returns. Port zero returns the endpoint allocated for that observation.
+With `reuse_port`, a TCP probe can briefly share an existing listener and receive
+queued connections; the helper does not accept them. Select reuse options only
+when that observation matches the intended service operation.
+Only explicitly authorised alternatives are tried. A check is not a
+reservation: a later competing bind can win, and the service's actual bind
+remains authoritative. A probe does not grant service start, replacement,
+termination, firewall or publication authority.
+
+Binding, application readiness and audience reachability are separate facts.
+`reservation` is false; `application_ready` and `reachable_audience` remain
+null. The helper does not observe forwarding, firewall, authentication,
+application TLS or VPN/tunnel protection. The operator's intended audience
+and the agent's rationale do not become observations. Broader standing grants
+still require assessment through the existing effect and policy owners.
 
 ## Update, recover, revoke and uninstall
 

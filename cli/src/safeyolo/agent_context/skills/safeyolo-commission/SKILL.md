@@ -129,6 +129,20 @@ disclosure, scope or expired grant needs the existing authority owner's
 decision only when current authority does not cover it. An unavailable read
 holds the affected operation without erasing reusable work.
 
+When no relevant condition changed, do not repeat optional suggestions, request
+another approval or create a new signal. State whether a new action is needed;
+existing Work and its unfinished obligations can remain. Distinguish no new
+Work from no existing Work. Do not suppress a new failure by calling it
+unchanged, or turn absent observations into a success report.
+
+For feedback, fixed behavior, source selection or adding a cooperating worker,
+read [evolve the retained task](references/evolution.md). It connects those
+changes to the existing proposal, policy and Coord owners while preserving the
+original worker. Read [operational receipts and assurance](references/operations.md)
+when explaining deployed behavior, an incomplete result or changed protection.
+Use the existing task, configuration and evidence records; these references
+add no task store or assurance service.
+
 Keep concise setup intent alongside the task note. Guest restoration uses the
 installed package/configuration capture guidance when available; discover its
 actual capture status. Do not invent a second collector or claim missing

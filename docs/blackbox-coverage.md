@@ -81,7 +81,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Audit coverage:** Guest BB; nightly.
 
-**Conformance / action:** Repair uncontrolled endpoints and curl-exit-code oracles: use live owned receivers and prove zero unauthorized delivery.
+**Conformance / action:** Host TCP receivers compare delivered bytes with independent before/after controls. Assigned non-loopback destinations and actual network context are retained. User/root IPv4/IPv6 and owned metadata delivery checks have [independent Linux systrap acceptance at 91f805e0](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7141516865). KVM/VZ delivery remains unproved.
 
 **Effort:** M. **Comments:** Exercise ordinary agent and guest root.
 
@@ -91,7 +91,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/isolation/test_vm_isolation.py](../tests/blackbox/isolation/test_vm_isolation.py#L84) — Linux guest; gVisor systrap/KVM or VZ; ordinary user and setpriv subprocesses. Evidence: Real guest; audited uncontrolled network endpoints remain under #1560.
+- [tests/blackbox/isolation/test_vm_isolation.py](../tests/blackbox/isolation/test_vm_isolation.py#L83) — Linux guest; gVisor systrap/KVM or VZ; ordinary user and setpriv subprocesses. Evidence: Host-owned Linux delivery observers and live host canaries; named VZ delivery exclusions and metadata limits remain explicit.
   Exact identities: [source inventory](#witness-tests-blackbox-isolation-test-vm-isolation-py).
 - [tests/blackbox/isolation/test_runtime_capabilities.py](../tests/blackbox/isolation/test_runtime_capabilities.py#L18) — Guest; gVisor systrap/KVM or VZ; ordinary user. Evidence: Real guest; dependency and SSH limitations remain visible in outcomes.
   Exact identities: [source inventory](#witness-tests-blackbox-isolation-test-runtime-capabilities-py).
@@ -107,6 +107,8 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-blackbox-host-lifecycle-test-host-listener-py).
 - [tests/proxy_contracts/test_outbound_effects.py](../tests/proxy_contracts/test_outbound_effects.py#L83) — Native process; Linux; host tracer selection. Evidence: Independent syscall/DNS observation; tracer unavailable remains a required skip unless explicitly excluded.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-outbound-effects-py).
+- [tests/test_blackbox_containment.py](../tests/test_blackbox_containment.py#L19) — Isolated checker sensitivity; host identity; no installed-guest claim. Evidence: Live TCP/UDP receivers, exposed canaries and controlled syscall returns; source checks do not establish deployed cadence.
+  Exact identities: [source inventory](#witness-tests-test-blackbox-containment-py).
 
 ### BB-02 — DNS/UDP egress
 
@@ -114,7 +116,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Audit coverage:** Guest BB; nightly.
 
-**Conformance / action:** Repair NXDOMAIN/gaierror/no-reply oracles with owned receivers, unique markers and positive controls.
+**Conformance / action:** Owned UDP/TCP receivers record unique DNS payloads independently of replies. The disposable guest selects the owned libc resolver temporarily and restores the prior file state. Raw datagram observations retain their 91f805e0 scope. The corrected libc resolver has [independent Linux systrap acceptance at cd86f5d7](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7142642432). KVM/VZ delivery remains unproved.
 
 **Effort:** M. **Comments:** Share receiver infrastructure with BB-01.
 
@@ -124,18 +126,20 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/isolation/test_vm_isolation.py](../tests/blackbox/isolation/test_vm_isolation.py#L84) — Linux guest; gVisor systrap/KVM or VZ; ordinary user and setpriv subprocesses. Evidence: Real guest; audited uncontrolled network endpoints remain under #1560.
+- [tests/blackbox/isolation/test_vm_isolation.py](../tests/blackbox/isolation/test_vm_isolation.py#L83) — Linux guest; gVisor systrap/KVM or VZ; ordinary user and setpriv subprocesses. Evidence: Host-owned Linux delivery observers and live host canaries; named VZ delivery exclusions and metadata limits remain explicit.
   Exact identities: [source inventory](#witness-tests-blackbox-isolation-test-vm-isolation-py).
 - [tests/proxy_contracts/test_outbound_effects.py](../tests/proxy_contracts/test_outbound_effects.py#L83) — Native process; Linux; host tracer selection. Evidence: Independent syscall/DNS observation; tracer unavailable remains a required skip unless explicitly excluded.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-outbound-effects-py).
+- [tests/test_blackbox_containment.py](../tests/test_blackbox_containment.py#L19) — Isolated checker sensitivity; host identity; no installed-guest claim. Evidence: Live TCP/UDP receivers, exposed canaries and controlled syscall returns; source checks do not establish deployed cadence.
+  Exact identities: [source inventory](#witness-tests-test-blackbox-containment-py).
 
 ### BB-03 — Guest-root containment
 
 **What and why:** Guest administration cannot modify host configuration or access host processes/devices.
 
-**Audit coverage:** Guest BB; nightly; partly conformant.
+**Audit coverage:** Guest BB; nightly.
 
-**Conformance / action:** Retain live UID mapping/read-only checks; replace invalid syscall arguments and host-PID-1-name assumptions with valid probes and host canaries.
+**Conformance / action:** UID mapping/read-only checks remain. Host file/process canaries replace PID-name and null-pointer inferences. BPF uses valid architecture-specific attributes and nonnegative-FD semantics; device creation and use are distinct. The corrected elevated device/canary probe has [independent Linux systrap acceptance at cd86f5d7](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7142642432). KVM/VZ containment remains unproved.
 
 **Effort:** M. **Comments:** Guest root is intentionally allowed; device-node creation and device use are different claims.
 
@@ -145,9 +149,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/isolation/test_vm_isolation.py](../tests/blackbox/isolation/test_vm_isolation.py#L84) — Linux guest; gVisor systrap/KVM or VZ; ordinary user and setpriv subprocesses. Evidence: Real guest; audited uncontrolled network endpoints remain under #1560.
+- [tests/blackbox/isolation/test_vm_isolation.py](../tests/blackbox/isolation/test_vm_isolation.py#L83) — Linux guest; gVisor systrap/KVM or VZ; ordinary user and setpriv subprocesses. Evidence: Host-owned Linux delivery observers and live host canaries; named VZ delivery exclusions and metadata limits remain explicit.
   Exact identities: [source inventory](#witness-tests-blackbox-isolation-test-vm-isolation-py).
-- [tests/blackbox/isolation/test_root_containment.py](../tests/blackbox/isolation/test_root_containment.py#L50) — Linux guest; gVisor systrap/KVM or VZ; guest root. Evidence: Real guest root with host-prepared controls.
+- [tests/blackbox/isolation/test_root_containment.py](../tests/blackbox/isolation/test_root_containment.py#L51) — Linux guest; gVisor systrap/KVM or VZ; guest root. Evidence: Real guest root with host-prepared controls.
   Exact identities: [source inventory](#witness-tests-blackbox-isolation-test-root-containment-py).
 - [tests/blackbox/isolation/test_runtime_capabilities.py](../tests/blackbox/isolation/test_runtime_capabilities.py#L18) — Guest; gVisor systrap/KVM or VZ; ordinary user. Evidence: Real guest; dependency and SSH limitations remain visible in outcomes.
   Exact identities: [source inventory](#witness-tests-blackbox-isolation-test-runtime-capabilities-py).
@@ -155,14 +159,16 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-blackbox-isolation-test-guest-ssh-py).
 - [tests/blackbox/host/security/test_firewall_structural.py](../tests/blackbox/host/security/test_firewall_structural.py#L28) — Installed host and guest configuration; Linux/macOS; host identity. Evidence: Structural checks; no independent delivery oracle.
   Exact identities: [source inventory](#witness-tests-blackbox-host-security-test-firewall-structural-py).
+- [tests/test_blackbox_containment.py](../tests/test_blackbox_containment.py#L19) — Isolated checker sensitivity; host identity; no installed-guest claim. Evidence: Live TCP/UDP receivers, exposed canaries and controlled syscall returns; source checks do not establish deployed cadence.
+  Exact identities: [source inventory](#witness-tests-test-blackbox-containment-py).
 
 ### BB-04 — Agent identity / peer isolation
 
 **What and why:** Forged claims cannot select another agent; peer sockets/private files remain inaccessible as user and root.
 
-**Audit coverage:** Strong two-guest BB exists but is optional; basic peer checks run by default.
+**Audit coverage:** Two real peers are selected by the default systrap ingress section.
 
-**Conformance / action:** Wire the existing ingress-pair witness into nightly selection; retire guessed-neighbour probes and SSH checks accepting either outcome.
+**Conformance / action:** Default systrap selects the pair, forged claims, authorized peer context, user/root private-file/socket refusals and restart. The extended journey has [independent Linux systrap acceptance at 91f805e0](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7141516865). This does not establish KVM/VZ coverage.
 
 **Effort:** S. **Comments:** Existing pair covers guest root and proxy restart; retain its actual platform scope.
 
@@ -180,7 +186,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-agent-egress-scope-py).
 - [tests/proxy_contracts/test_agent_api_test_context.py](../tests/proxy_contracts/test_agent_api_test_context.py#L175) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-agent-api-test-context-py).
-- [tests/blackbox/isolation/test_vm_isolation.py](../tests/blackbox/isolation/test_vm_isolation.py#L84) — Linux guest; gVisor systrap/KVM or VZ; ordinary user and setpriv subprocesses. Evidence: Real guest; audited uncontrolled network endpoints remain under #1560.
+- [tests/blackbox/isolation/test_vm_isolation.py](../tests/blackbox/isolation/test_vm_isolation.py#L83) — Linux guest; gVisor systrap/KVM or VZ; ordinary user and setpriv subprocesses. Evidence: Host-owned Linux delivery observers and live host canaries; named VZ delivery exclusions and metadata limits remain explicit.
   Exact identities: [source inventory](#witness-tests-blackbox-isolation-test-vm-isolation-py).
 - [tests/blackbox/isolation/test_agent_api_scope.py](../tests/blackbox/isolation/test_agent_api_scope.py#L84) — Guest; gVisor systrap/KVM or VZ; ordinary user. Evidence: Real Agent API; no host Admin credential.
   Exact identities: [source inventory](#witness-tests-blackbox-isolation-test-agent-api-scope-py).
@@ -193,9 +199,11 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 - [tests/blackbox/host/lifecycle/test_host_listener.py](../tests/blackbox/host/lifecycle/test_host_listener.py#L29) — Installed host with real guest; Linux/macOS; user/root parameter cases. Evidence: Real guest; owned live listener where selected.
   Exact identities: [source inventory](#witness-tests-blackbox-host-lifecycle-test-host-listener-py).
 - [tests/blackbox/installed_ingress.py::main](../tests/blackbox/installed_ingress.py#L195) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: optional `systrap` section `ingress`; default `kvm` section `ingress`.
-- [tests/blackbox/installed_ingress_pair.py::main](../tests/blackbox/installed_ingress_pair.py#L112) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: optional `systrap` section `ingress`.
+  Selection: default `kvm` section `ingress`.
+- [tests/blackbox/installed_ingress_pair.py::main](../tests/blackbox/installed_ingress_pair.py#L115) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+  Selection: default `systrap` section `ingress`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections).
+- [tests/test_blackbox_containment.py](../tests/test_blackbox_containment.py#L19) — Isolated checker sensitivity; host identity; no installed-guest claim. Evidence: Live TCP/UDP receivers, exposed canaries and controlled syscall returns; source checks do not establish deployed cadence.
+  Exact identities: [source inventory](#witness-tests-test-blackbox-containment-py).
 
 ### BB-05 — Agent/Admin API authorization
 
@@ -269,7 +277,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 - [tests/proxy_contracts/test_service_effect_assessment.py](../tests/proxy_contracts/test_service_effect_assessment.py#L36) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-service-effect-assessment-py).
 - [tests/blackbox/installed_ingress.py::main](../tests/blackbox/installed_ingress.py#L195) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: optional `systrap` section `ingress`; default `kvm` section `ingress`.
+  Selection: default `kvm` section `ingress`.
 - [tests/proxy_contracts/test_agent_api_config.py](../tests/proxy_contracts/test_agent_api_config.py#L64) — Native process; Linux/macOS; host identity. Evidence: Real native policy and scoped API requests.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-agent-api-config-py).
 - [tests/proxy_contracts/test_agent_api_status.py](../tests/proxy_contracts/test_agent_api_status.py#L33) — Native process; Linux/macOS; host identity. Evidence: Real native policy and scoped API requests.
@@ -352,7 +360,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-media-recipe-gateway-py).
 - [tests/proxy_contracts/test_control_updates.py](../tests/proxy_contracts/test_control_updates.py#L111) — Native signals process; optional prepared Linux sandbox jobs. Evidence: Signed native candidates, owned NATS and controlled route requests; real isolated checks require the selected installed host.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-control-updates-py).
-- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L635) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L704) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `access`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `access`.
 - [proxy/tests/credential_http/boundary.rs](../proxy/tests/credential_http/boundary.rs#L55) — Native HTTP; host process; controlled credentials and upstream origins. Evidence: Real proxy wire with controlled credential/provider adapters.
   Exact identities: [source inventory](#witness-proxy-tests-credential-http-boundary-rs).
@@ -363,7 +371,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Audit coverage:** Scans and injection checks exist; partial.
 
-**Conformance / action:** Extend with unique synthetic secret canaries across relevant guest files, environment and scoped APIs.
+**Conformance / action:** Installed access fingerprints its unique signing key and synthetic encrypted-store credential. User/root scans cover relevant files, environment and scoped APIs after authorized TLS/injection; unauthorized origins must not receive the value. Custody has [independent Linux systrap acceptance at 91f805e0](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7141516865); KVM/VZ remains unproved.
 
 **Effort:** M. **Comments:** Preserve deliberately provisioned client credentials and authorized operator views.
 
@@ -373,8 +381,12 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/isolation/test_key_isolation.py](../tests/blackbox/isolation/test_key_isolation.py#L72) — Linux guest; gVisor systrap/KVM or VZ; user and private-key root selection. Evidence: Real guest scans; synthetic canary extension remains #1560.
+- [tests/blackbox/isolation/test_key_isolation.py](../tests/blackbox/isolation/test_key_isolation.py#L125) — Linux guest; gVisor systrap/KVM or VZ; user and private-key root selection. Evidence: Generic scans retain existing scope; exact CA/vault canaries run through the installed access driver.
   Exact identities: [source inventory](#witness-tests-blackbox-isolation-test-key-isolation-py).
+- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L704) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+  Selection: default `systrap` section `access`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `access`.
+- [tests/test_blackbox_containment.py](../tests/test_blackbox_containment.py#L19) — Isolated checker sensitivity; host identity; no installed-guest claim. Evidence: Live TCP/UDP receivers, exposed canaries and controlled syscall returns; source checks do not establish deployed cadence.
+  Exact identities: [source inventory](#witness-tests-test-blackbox-containment-py).
 
 ### BB-10 — Subscription credential adoption / renewal
 
@@ -382,7 +394,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Audit coverage:** Strong native HTTP tests; run-lifetime backend is synthetic.
 
-**Conformance / action:** Extend with one real guest and controlled provider: adoption, refresh, restart, revocation and wrong guest.
+**Conformance / action:** Default systrap pair composes explicit run-scoped import, two controlled-provider renewals, proxy restart, revocation and wrong-guest attempts. Exact provider effects and sanitized fingerprints have [independent Linux systrap acceptance at 91f805e0](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7141516865). This does not establish KVM/VZ coverage.
 
 **Effort:** M. **Comments:** No paid model service needed; retain existing native cases.
 
@@ -402,6 +414,8 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-onepassword-cli-py).
 - [tests/proxy_contracts/test_codex_approval_fallback.py](../tests/proxy_contracts/test_codex_approval_fallback.py#L132) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-codex-approval-fallback-py).
+- [tests/blackbox/installed_ingress_pair.py::main](../tests/blackbox/installed_ingress_pair.py#L115) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+  Selection: default `systrap` section `ingress`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections).
 - [tests/blackbox/installed_state_transition.py::main](../tests/blackbox/installed_state_transition.py#L503) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `continuity`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `continuity`.
 - [tests/blackbox/claude_smoke.py::run](../tests/blackbox/claude_smoke.py#L258) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
@@ -429,11 +443,11 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-https-contract-py).
 - [tests/proxy_contracts/test_https_trust_continuity.py](../tests/proxy_contracts/test_https_trust_continuity.py#L152) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-https-trust-continuity-py).
-- [tests/blackbox/isolation/test_root_containment.py](../tests/blackbox/isolation/test_root_containment.py#L50) — Linux guest; gVisor systrap/KVM or VZ; guest root. Evidence: Real guest root with host-prepared controls.
+- [tests/blackbox/isolation/test_root_containment.py](../tests/blackbox/isolation/test_root_containment.py#L51) — Linux guest; gVisor systrap/KVM or VZ; guest root. Evidence: Real guest root with host-prepared controls.
   Exact identities: [source inventory](#witness-tests-blackbox-isolation-test-root-containment-py).
 - [tests/blackbox/installed_workloads.py::main](../tests/blackbox/installed_workloads.py#L286) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `workloads`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `kvm` section `workloads`.
-- [tests/blackbox/installed_lifecycle.py::main](../tests/blackbox/installed_lifecycle.py#L395) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_lifecycle.py::main](../tests/blackbox/installed_lifecycle.py#L411) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `lifecycle`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `lifecycle`.
 
 ### BB-12 — HTTP framing / authority / transitions
@@ -551,9 +565,9 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **What and why:** Outages cannot bypass enforcement, revive authority or replay effects.
 
-**Audit coverage:** Orderly guest lifecycle nightly; SIGKILL witness on demand.
+**Audit coverage:** Graceful lifecycle stays selected; installed access also selects the shared owned-process SIGKILL witness.
 
-**Conformance / action:** Wire and extend abrupt failure: guest non-delivery during outage; consumed/revoked authority stays unusable after recovery.
+**Conformance / action:** Access checks outage non-delivery, no automatic replay, revoked service and consumed risk-grant refusal after recovery, then an allowed origin control. This journey has [independent Linux systrap acceptance at 91f805e0](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7141516865). KVM/VZ and deployed cadence remain unproved.
 
 **Effort:** M. **Comments:** Preserve graceful drain and admitted-stream semantics.
 
@@ -577,13 +591,15 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-blackbox-host-lifecycle-test-token-lifecycle-py).
 - [tests/blackbox/host/lifecycle/test_host_listener.py](../tests/blackbox/host/lifecycle/test_host_listener.py#L29) — Installed host with real guest; Linux/macOS; user/root parameter cases. Evidence: Real guest; owned live listener where selected.
   Exact identities: [source inventory](#witness-tests-blackbox-host-lifecycle-test-host-listener-py).
-- [tests/blackbox/installed_ingress_pair.py::main](../tests/blackbox/installed_ingress_pair.py#L112) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: optional `systrap` section `ingress`.
-- [tests/blackbox/installed_lifecycle.py::main](../tests/blackbox/installed_lifecycle.py#L395) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_ingress_pair.py::main](../tests/blackbox/installed_ingress_pair.py#L115) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+  Selection: default `systrap` section `ingress`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections).
+- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L704) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+  Selection: default `systrap` section `access`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `access`.
+- [tests/blackbox/installed_lifecycle.py::main](../tests/blackbox/installed_lifecycle.py#L411) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `lifecycle`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `lifecycle`.
 - [tests/blackbox/installed_state_transition.py::main](../tests/blackbox/installed_state_transition.py#L503) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `continuity`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `continuity`.
-- [tests/blackbox/installed_shared_approvals.py::main](../tests/blackbox/installed_shared_approvals.py#L1471) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_shared_approvals.py::main](../tests/blackbox/installed_shared_approvals.py#L1468) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
 
 ### BB-16 — Disposable-job isolation
@@ -675,11 +691,11 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-guard-approval-audit-py).
 - [tests/proxy_contracts/test_control_updates.py](../tests/proxy_contracts/test_control_updates.py#L111) — Native signals process; optional prepared Linux sandbox jobs. Evidence: Signed native candidates, owned NATS and controlled route requests; real isolated checks require the selected installed host.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-control-updates-py).
-- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L635) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L704) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `access`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `access`.
-- [tests/blackbox/installed_shared_approvals.py::main](../tests/blackbox/installed_shared_approvals.py#L1471) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_shared_approvals.py::main](../tests/blackbox/installed_shared_approvals.py#L1468) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
-- [tests/blackbox/installed_shared_approvals.py::deterministic_exchange](../tests/blackbox/installed_shared_approvals.py#L353) — Two actual Linux/systrap guests; deterministic typed decisions. Evidence: Worker and helper requests, exact network/gateway effects, wrong principal/route, expiry/revocation and run turnover; no model or human decision.
+- [tests/blackbox/installed_shared_approvals.py::deterministic_exchange](../tests/blackbox/installed_shared_approvals.py#L348) — Two actual Linux/systrap guests; deterministic typed decisions. Evidence: Worker and helper requests, exact network/gateway effects, wrong principal/route, expiry/revocation and run turnover; no model or human decision.
   Selection: default `systrap` section `shared-approvals`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections).
 - [tests/proxy_contracts/test_shared_authority_assurance.py](../tests/proxy_contracts/test_shared_authority_assurance.py#L28) — Native proxy processes; controlled backend births and guest transport. Evidence: The actual deterministic controller, typed decisions and independently served origin effects; no real-guest claim.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-shared-authority-assurance-py).
@@ -765,7 +781,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 - [tests/proxy_contracts/test_desktop_waiting_page.py](../tests/proxy_contracts/test_desktop_waiting_page.py#L128) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-desktop-waiting-page-py).
-- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L635) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L704) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `access`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `access`.
 
 ### BB-24 — Coord ownership / review / output authority
@@ -792,7 +808,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-factory-cli-py).
 - [tests/proxy_contracts/test_native_harness_attention.py](../tests/proxy_contracts/test_native_harness_attention.py#L87) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-harness-attention-py).
-- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L635) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L704) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `access`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `access`.
 - [tests/blackbox/native_authority.py::main](../tests/blackbox/native_authority.py#L149) — Curated Coord cases on Linux or explicitly selected installed host-executor cases on Unix. Evidence: Per-control procedure receipts and exact executed cases with separate test/product/probe identities; process evidence without whole-workflow or Windows acceptance.
   Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only); step matrix.os == 'ubuntu-latest'`).
@@ -1170,7 +1186,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 - [tests/blackbox/host/native/test_installed_native.py](../tests/blackbox/host/native/test_installed_native.py#L38) — Installed host proxy; Linux/macOS; host identity. Evidence: Real selected native executable and owned origin.
   Exact identities: [source inventory](#witness-tests-blackbox-host-native-test-installed-native-py).
 - [tests/blackbox/installed_ingress.py::main](../tests/blackbox/installed_ingress.py#L195) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
-  Selection: optional `systrap` section `ingress`; default `kvm` section `ingress`.
+  Selection: default `kvm` section `ingress`.
 - [tests/blackbox/installed_host_smoke.py::main](../tests/blackbox/installed_host_smoke.py#L995) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
 - [tests/proxy_contracts/test_public_arm_install_workflow.py](../tests/proxy_contracts/test_public_arm_install_workflow.py#L40) — Workflow/report fixtures; controlled installer adapters. Evidence: Controlled acquisition/report consumers; not a fresh installed native identity pass.
@@ -1190,7 +1206,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/test_blackbox_execution_receipt.py](../tests/test_blackbox_execution_receipt.py#L21) — Receipt/catalogue fixtures; host identity. Evidence: Controlled reports and real fixture pytest; not product containment.
+- [tests/test_blackbox_execution_receipt.py](../tests/test_blackbox_execution_receipt.py#L22) — Receipt/catalogue fixtures; host identity. Evidence: Controlled reports and real fixture pytest; not product containment.
   Exact identities: [source inventory](#witness-tests-test-blackbox-execution-receipt-py).
 - [tests/test_blackbox_catalogue.py](../tests/test_blackbox_catalogue.py#L21) — Receipt/catalogue fixtures; host identity. Evidence: Controlled reports and real fixture pytest; not product containment.
   Exact identities: [source inventory](#witness-tests-test-blackbox-catalogue-py).
@@ -1228,13 +1244,13 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [host-executor/tests/unix_native.rs](../host-executor/tests/unix_native.rs#L191) — Real Unix installed executor; local authenticated HTTP; explicit native prerequisites. Evidence: Independent file and socket observations plus canonical job/output and owned cgroup/service checks; ignored unless explicitly selected; no Windows or whole-workflow acceptance.
+- [host-executor/tests/unix_native.rs](../host-executor/tests/unix_native.rs#L263) — Real Unix installed executor; local authenticated HTTP; explicit native prerequisites. Evidence: Independent file and socket observations plus canonical job/output and owned cgroup/service checks; ignored unless explicitly selected; no Windows or whole-workflow acceptance.
   Exact identities: [source inventory](#witness-host-executor-tests-unix-native-rs).
 - [proxy/tests/host_execution.rs](../proxy/tests/host_execution.rs#L174) — Controlled authenticated protocol, signatures, ledger and HTTP fixtures. Evidence: Protocol/component evidence; simulated dispatch does not establish native containment.
   Exact identities: [source inventory](#witness-proxy-tests-host-execution-rs).
 - [proxy/src/policy_adoption_tests.rs](../proxy/src/policy_adoption_tests.rs#L20) — Controlled saved/runtime catalogue and gateway binding adoption. Evidence: Exact binding snapshots, rejected announcement stability and policy transaction rollback; no native execution claim.
   Exact identities: [source inventory](#witness-proxy-src-policy-adoption-tests-rs).
-- [proxy/src/host_execution/gateway/tests.rs](../proxy/src/host_execution/gateway/tests.rs#L402) — Controlled gateway authentication, scope, dispatch and reply-loss fixtures. Evidence: Real gateway request parsing and controlled upstream; not a deployed target or native boundary.
+- [proxy/src/host_execution/gateway/tests.rs](../proxy/src/host_execution/gateway/tests.rs#L404) — Controlled gateway authentication, scope, dispatch and reply-loss fixtures. Evidence: Real gateway request parsing and controlled upstream; not a deployed target or native boundary.
   Exact identities: [source inventory](#witness-proxy-src-host-execution-gateway-tests-rs).
 - [proxy/src/host_execution/gateway/task_action_tests.rs](../proxy/src/host_execution/gateway/task_action_tests.rs#L89) — Configured task/action admission and bounded checker fixtures. Evidence: Controlled check results and upstream dispatch counts; model measurements remain separate supplementary evidence.
   Exact identities: [source inventory](#witness-proxy-src-host-execution-gateway-task-action-tests-rs).
@@ -1252,20 +1268,32 @@ Python identities name pytest functions/methods; a phase receipt expands paramet
 
 Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native host_receiver_positive_control_waits_for_readiness -- --exact`](../host-executor/tests/unix_native.rs#L191) — `#![cfg(unix)]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native host_receiver_positive_control_waits_for_readiness -- --exact`](../host-executor/tests/unix_native.rs#L263) — `#![cfg(unix)]`
 Selection: manual `native-authority --suite host-execution` (prepared installed executor, probe and owned service); ignored by default.
 
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L545) — `#![cfg(unix)]`; `#[ignore = "requires the existing native Unix fixture and prepared probe or C compiler"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authority -- --exact --ignored`](../host-executor/tests/unix_native.rs#L760) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_check_serve_and_reload_share_ledger_validation -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1033) — `#![cfg(unix)]`; `#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_unix_read_paths_resolve_without_sibling_contents -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1114) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_unix_bounds_lifecycle_reload_and_lost_reply -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1135) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_storage_exhaustion_preserves_output_replay_and_restart -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1354) — `#![cfg(unix)]`; `#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_user_service_profiles_and_channel_refusals -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1426) — `#![cfg(unix)]`; `#[ignore = "requires SAFEYOLO_HOST_EXECUTOR_SERVICE naming an operator-prepared owned user service"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1595) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_dependency_swaps_preserve_metadata_but_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1659) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_api_authentication_and_cross_principal_reads_cannot_change_authority -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1784) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
-- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_adaptive_investigation_and_retained_configuration_effects -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2251) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture, installed assessor CLI and owned user service"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L619) — `#![cfg(unix)]`; `#[ignore = "requires the existing native Unix fixture and prepared probe or C compiler"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authority -- --exact --ignored`](../host-executor/tests/unix_native.rs#L834) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_check_serve_and_reload_share_ledger_validation -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1107) — `#![cfg(unix)]`; `#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_unix_read_paths_resolve_without_sibling_contents -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1188) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]`
+Selection: ignored by default.
+
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_linux_broader_tcp_directions_and_descendants -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1209) — `#![cfg(unix)]`; `#[cfg(target_os = "linux")]`; `#[ignore = "requires the native Linux fixture with bubblewrap and delegated cgroup v2"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_linux_scoped_writes_children_and_retained_partial_results -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1511) — `#![cfg(unix)]`; `#[cfg(target_os = "linux")]`; `#[ignore = "requires the native Linux fixture with bubblewrap and delegated cgroup v2"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_macos_scoped_writes_and_retained_results -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1615) — `#![cfg(unix)]`; `#[cfg(target_os = "macos")]`; `#[ignore = "requires native macOS Seatbelt; prepared probe or C compiler"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_macos_broader_network_directions_and_ports -- --exact --ignored`](../host-executor/tests/unix_native.rs#L1781) — `#![cfg(unix)]`; `#[cfg(target_os = "macos")]`; `#[ignore = "requires native macOS Seatbelt; prepared probe or C compiler"]`
+Selection: manual `native-authority --suite host-execution` (prepared installed executor, probe and owned service); ignored by default.
+
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_unix_bounds_lifecycle_reload_and_lost_reply -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2094) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; prepared probe or C compiler; Linux also needs bubblewrap and delegated cgroup v2"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_storage_exhaustion_preserves_output_replay_and_restart -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2313) — `#![cfg(unix)]`; `#[ignore = "requires the same installed native Unix fixture as the lifecycle test"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_user_service_profiles_and_channel_refusals -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2385) — `#![cfg(unix)]`; `#[ignore = "requires SAFEYOLO_HOST_EXECUTOR_SERVICE naming an operator-prepared owned user service"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2554) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_dependency_swaps_preserve_metadata_but_cannot_launch -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2618) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_api_authentication_and_cross_principal_reads_cannot_change_authority -- --exact --ignored`](../host-executor/tests/unix_native.rs#L2743) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_adaptive_investigation_and_retained_configuration_effects -- --exact --ignored`](../host-executor/tests/unix_native.rs#L3210) — `#![cfg(unix)]`; `#[ignore = "requires the prepared native Unix fixture, installed assessor CLI and owned user service"]`
+Selection: ignored by default.
+
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_unix_selected_endpoint_inspection -- --exact --ignored`](../host-executor/tests/unix_native.rs#L3331) — `#![cfg(unix)]`; `#[ignore = "requires native Unix host; Linux also needs bubblewrap and delegated cgroup v2"]`
+- [`cargo test --manifest-path host-executor/Cargo.toml --test unix_native installed_unix_listener_handoff_revalidates_and_retains_socket -- --exact --ignored`](../host-executor/tests/unix_native.rs#L3609) — `#![cfg(unix)]`; `#[ignore = "requires native Unix containment and the installed executor"]`
 
 <a id="witness-proxy-tests-host-execution-rs"></a>
 ### [`proxy/tests/host_execution.rs`](../proxy/tests/host_execution.rs)
@@ -1291,11 +1319,11 @@ Selection: manual native phase `host-execution` (named execution receipt; ignore
 - [`cargo test --manifest-path proxy/Cargo.toml --test host_execution one_package_binds_native_gateway_material_and_target_scope -- --exact`](../proxy/tests/host_execution.rs#L939)
 - [`cargo test --manifest-path proxy/Cargo.toml --test host_execution generated_gateway_contract_requires_bound_resource_and_exact_operation_payload -- --exact`](../proxy/tests/host_execution.rs#L987)
 - [`cargo test --manifest-path proxy/Cargo.toml --test host_execution invocation_cannot_replace_definitions_or_add_an_executable -- --exact`](../proxy/tests/host_execution.rs#L1038)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution same_authenticated_http_protocol_on_standalone_and_safeyolo_targets -- --exact`](../proxy/tests/host_execution.rs#L1315)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution issuer_namespaces_job_disclosure_and_terminal_states_are_explicit -- --exact`](../proxy/tests/host_execution.rs#L1508)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution command_words_preserve_fixed_implementation_and_never_evaluate_shell_text -- --exact`](../proxy/tests/host_execution.rs#L1632)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution local_action_ceiling_and_content_revisions_cannot_be_bypassed_by_labels -- --exact`](../proxy/tests/host_execution.rs#L1676)
-- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution stale_preparation_refreshes_through_real_discovery_proposal_and_ledger_without_invoking -- --exact`](../proxy/tests/host_execution.rs#L1728)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution same_authenticated_http_protocol_on_standalone_and_safeyolo_targets -- --exact`](../proxy/tests/host_execution.rs#L1322)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution issuer_namespaces_job_disclosure_and_terminal_states_are_explicit -- --exact`](../proxy/tests/host_execution.rs#L1515)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution command_words_preserve_fixed_implementation_and_never_evaluate_shell_text -- --exact`](../proxy/tests/host_execution.rs#L1640)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution local_action_ceiling_and_content_revisions_cannot_be_bypassed_by_labels -- --exact`](../proxy/tests/host_execution.rs#L1684)
+- [`cargo test --manifest-path proxy/Cargo.toml --test host_execution stale_preparation_refreshes_through_real_discovery_proposal_and_ledger_without_invoking -- --exact`](../proxy/tests/host_execution.rs#L1736)
 
 <a id="witness-proxy-src-policy-adoption-tests-rs"></a>
 ### [`proxy/src/policy_adoption_tests.rs`](../proxy/src/policy_adoption_tests.rs)
@@ -1311,17 +1339,18 @@ Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; c
 
 Selection: manual native phase `host-execution` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::package_mismatch_discovery_reports_revisions_without_a_possible_job -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L402) — `#[cfg(target_os = "linux")]`
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::lost_cancel_reply_retains_the_original_job_for_inspection -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L428) — `#[cfg(target_os = "linux")]`
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::adaptive_operations_and_lost_reply_use_real_target_receipts_without_duplicate_dispatch -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L454) — `#[cfg(target_os = "linux")]`
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::native_scopes_defaults_current_policy_and_cross_agent_objects_are_enforced -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L532) — `#[cfg(target_os = "linux")]`
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::private_reconsideration_and_explicit_exact_escalation_reuse_the_approval_owner -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L702) — `#[cfg(target_os = "linux")]`
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::revocation_task_switch_and_target_revision_changes_preserve_retained_jobs -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L797) — `#[cfg(target_os = "linux")]`
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::an_allowed_host_route_still_requires_its_adopted_check_evidence -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L861)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::agent_input_cannot_substitute_authority_or_enrol_issuers_and_definitions -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L914)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::completed_task_action_checks_allow_new_operations_and_retain_refusals -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L972)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::task_action_check_binds_canonical_task_and_bounds_unavailable_reconsideration -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1050)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::https_target_identity_precedes_signed_dispatch_and_keeps_native_receipts -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1134)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::file_replies_bind_the_job_path_range_and_observed_revision -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L404) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::package_mismatch_discovery_reports_revisions_without_a_possible_job -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L465) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::lost_cancel_reply_retains_the_original_job_for_inspection -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L491) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::adaptive_operations_and_lost_reply_use_real_target_receipts_without_duplicate_dispatch -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L517) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::native_scopes_defaults_current_policy_and_cross_agent_objects_are_enforced -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L595) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::private_reconsideration_and_explicit_exact_escalation_reuse_the_approval_owner -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L772) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::revocation_task_switch_and_target_revision_changes_preserve_retained_jobs -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L867) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::an_allowed_host_route_still_requires_its_adopted_check_evidence -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L931)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::agent_input_cannot_substitute_authority_or_enrol_issuers_and_definitions -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L984)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::completed_task_action_checks_allow_new_operations_and_retain_refusals -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1042)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::task_action_check_binds_canonical_task_and_bounds_unavailable_reconsideration -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1120)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::https_target_identity_precedes_signed_dispatch_and_keeps_native_receipts -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1204)
 
 <a id="witness-proxy-src-host-execution-gateway-task-action-tests-rs"></a>
 ### [`proxy/src/host_execution/gateway/task_action_tests.rs`](../proxy/src/host_execution/gateway/task_action_tests.rs)
@@ -2240,74 +2269,70 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 
 Selection: phase `guest-agent` (guest-agent).
 
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_direct_http_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L84)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_direct_https_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L98)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_dns_udp_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L113)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_raw_socket_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L140)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_direct_alt_port_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L158)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_libc_resolver_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L179)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_non_icmp_raw_protocols_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L197)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_ipv6_egress_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L219)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_metadata_ips_unreachable`](../tests/blackbox/isolation/test_vm_isolation.py#L251)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_af_packet_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L271)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_dns_tunnel_subdomain_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L287)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_host_header_mismatch_routes_by_url`](../tests/blackbox/isolation/test_vm_isolation.py#L314)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_direct_http_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L83)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_direct_https_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L92)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_dns_udp_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L101)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_raw_socket_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L110)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_direct_alt_port_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L123)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_libc_resolver_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L132)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_non_icmp_raw_protocols_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L141)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_ipv6_egress_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L155)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_metadata_ips_unreachable`](../tests/blackbox/isolation/test_vm_isolation.py#L164)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_af_packet_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L173)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_dns_tunnel_subdomain_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L186)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_host_header_mismatch_routes_by_url`](../tests/blackbox/isolation/test_vm_isolation.py#L196)
 Selection: phase `guest-agent` (guest-agent); phase `listener-ordinary` (guest-agent); phase `listener-sandbox-root` (guest-agent).
 
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_proxy_reachable`](../tests/blackbox/isolation/test_vm_isolation.py#L349)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestNetworkEscape::test_proxy_reachable`](../tests/blackbox/isolation/test_vm_isolation.py#L231)
 Selection: phase `guest-agent` (guest-agent).
 
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestHostAdjacentReachability::test_admin_api_unreachable`](../tests/blackbox/isolation/test_vm_isolation.py#L421)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestHostAdjacentReachability::test_host_ssh_unreachable`](../tests/blackbox/isolation/test_vm_isolation.py#L438)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestHostAdjacentReachability::test_admin_api_unreachable`](../tests/blackbox/isolation/test_vm_isolation.py#L303)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestHostAdjacentReachability::test_host_ssh_unreachable`](../tests/blackbox/isolation/test_vm_isolation.py#L320)
 Selection: phase `guest-agent` (guest-agent); phase `listener-ordinary` (guest-agent).
 
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestHostAdjacentReachability::test_host_listener_unreachable`](../tests/blackbox/isolation/test_vm_isolation.py#L465)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestHostAdjacentReachability::test_host_listener_unreachable`](../tests/blackbox/isolation/test_vm_isolation.py#L347)
 Selection: phase `guest-agent` (guest-agent).
 
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestHostAdjacentReachability::test_arbitrary_host_port_unreachable`](../tests/blackbox/isolation/test_vm_isolation.py#L479)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestHostAdjacentReachability::test_cross_agent_ip_unreachable`](../tests/blackbox/isolation/test_vm_isolation.py#L492)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestHostAdjacentReachability::test_sinkhole_direct_unreachable`](../tests/blackbox/isolation/test_vm_isolation.py#L536)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestGuestPrivilegeBoundary::test_expected_uid`](../tests/blackbox/isolation/test_vm_isolation.py#L566)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestGuestPrivilegeBoundary::test_privilege_transition_matches_platform_contract`](../tests/blackbox/isolation/test_vm_isolation.py#L577)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestGuestPrivilegeBoundary::test_sudo_reaches_guest_root`](../tests/blackbox/isolation/test_vm_isolation.py#L599)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestGuestPrivilegeBoundary::test_kernel_modules_disabled`](../tests/blackbox/isolation/test_vm_isolation.py#L618)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestGuestPrivilegeBoundary::test_no_dev_mem`](../tests/blackbox/isolation/test_vm_isolation.py#L643)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestGuestPrivilegeBoundary::test_no_dev_kmem`](../tests/blackbox/isolation/test_vm_isolation.py#L653)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestGuestPrivilegeBoundary::test_ebpf_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L663)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxRootContainment::test_config_share_stays_readonly_as_sandbox_root`](../tests/blackbox/isolation/test_vm_isolation.py#L695)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestHostAdjacentReachability::test_sinkhole_direct_unreachable`](../tests/blackbox/isolation/test_vm_isolation.py#L361)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestGuestPrivilegeBoundary::test_expected_uid`](../tests/blackbox/isolation/test_vm_isolation.py#L391)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestGuestPrivilegeBoundary::test_privilege_transition_matches_platform_contract`](../tests/blackbox/isolation/test_vm_isolation.py#L402)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestGuestPrivilegeBoundary::test_sudo_reaches_guest_root`](../tests/blackbox/isolation/test_vm_isolation.py#L424)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestGuestPrivilegeBoundary::test_no_dev_mem`](../tests/blackbox/isolation/test_vm_isolation.py#L443)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestGuestPrivilegeBoundary::test_no_dev_kmem`](../tests/blackbox/isolation/test_vm_isolation.py#L453)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestGuestPrivilegeBoundary::test_ebpf_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L463)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxRootContainment::test_config_share_stays_readonly_as_sandbox_root`](../tests/blackbox/isolation/test_vm_isolation.py#L485)
 Selection: phase `guest-agent` (guest-agent); phase `listener-sandbox-root` (guest-agent).
 
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxRootContainment::test_host_listener_stays_unreachable_as_sandbox_root`](../tests/blackbox/isolation/test_vm_isolation.py#L716)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxRootContainment::test_host_listener_stays_unreachable_as_sandbox_root`](../tests/blackbox/isolation/test_vm_isolation.py#L506)
 Selection: phase `guest-agent` (guest-agent).
 
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxRootContainment::test_host_kernel_surfaces_stay_absent_as_sandbox_root`](../tests/blackbox/isolation/test_vm_isolation.py#L736)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestFilesystemIsolation::test_config_share_readonly`](../tests/blackbox/isolation/test_vm_isolation.py#L778)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestFilesystemIsolation::test_no_private_key_in_config_share`](../tests/blackbox/isolation/test_vm_isolation.py#L792)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxExposure::test_dev_whitelist`](../tests/blackbox/isolation/test_vm_isolation.py#L833)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxExposure::test_proc_kcore_unreadable`](../tests/blackbox/isolation/test_vm_isolation.py#L945)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxExposure::test_proc_kallsyms_redacted`](../tests/blackbox/isolation/test_vm_isolation.py#L960)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxExposure::test_sys_kernel_debug_inaccessible`](../tests/blackbox/isolation/test_vm_isolation.py#L985)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxExposure::test_pid_namespace_isolated`](../tests/blackbox/isolation/test_vm_isolation.py#L1004)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxExposure::test_firewall_rules_not_readable`](../tests/blackbox/isolation/test_vm_isolation.py#L1029)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxExposure::test_host_ssh_not_reachable_via_sandbox_sshd`](../tests/blackbox/isolation/test_vm_isolation.py#L1055)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestFilesystemBoundary::test_workspace_symlink_traversal`](../tests/blackbox/isolation/test_vm_isolation.py#L1088)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestFilesystemBoundary::test_workspace_no_mknod`](../tests/blackbox/isolation/test_vm_isolation.py#L1130)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestSyscallSeccompEquivalents::test_keyctl_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L1207)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestSyscallSeccompEquivalents::test_add_key_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L1220)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestSyscallSeccompEquivalents::test_pivot_root_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L1234)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestSyscallSeccompEquivalents::test_unshare_user_ns_contained`](../tests/blackbox/isolation/test_vm_isolation.py#L1248)
-- [`tests/blackbox/isolation/test_vm_isolation.py::TestSyscallSeccompEquivalents::test_ptrace_init_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L1306)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxRootContainment::test_host_kernel_surfaces_stay_absent_as_sandbox_root`](../tests/blackbox/isolation/test_vm_isolation.py#L526)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestFilesystemIsolation::test_config_share_readonly`](../tests/blackbox/isolation/test_vm_isolation.py#L558)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestFilesystemIsolation::test_no_private_key_in_config_share`](../tests/blackbox/isolation/test_vm_isolation.py#L572)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxExposure::test_dev_whitelist`](../tests/blackbox/isolation/test_vm_isolation.py#L613)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxExposure::test_proc_kcore_unreadable`](../tests/blackbox/isolation/test_vm_isolation.py#L725)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxExposure::test_proc_kallsyms_redacted`](../tests/blackbox/isolation/test_vm_isolation.py#L740)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxExposure::test_sys_kernel_debug_inaccessible`](../tests/blackbox/isolation/test_vm_isolation.py#L765)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxExposure::test_host_process_canary_absent`](../tests/blackbox/isolation/test_vm_isolation.py#L784)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxExposure::test_firewall_rules_not_readable`](../tests/blackbox/isolation/test_vm_isolation.py#L793)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestSandboxExposure::test_host_ssh_not_reachable_via_sandbox_sshd`](../tests/blackbox/isolation/test_vm_isolation.py#L819)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestFilesystemBoundary::test_workspace_symlink_traversal`](../tests/blackbox/isolation/test_vm_isolation.py#L852)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestFilesystemBoundary::test_workspace_no_mknod`](../tests/blackbox/isolation/test_vm_isolation.py#L894)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestSyscallSeccompEquivalents::test_keyctl_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L957)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestSyscallSeccompEquivalents::test_add_key_blocked`](../tests/blackbox/isolation/test_vm_isolation.py#L970)
+- [`tests/blackbox/isolation/test_vm_isolation.py::TestSyscallSeccompEquivalents::test_unshare_user_ns_contained`](../tests/blackbox/isolation/test_vm_isolation.py#L984)
 
 <a id="witness-tests-blackbox-isolation-test-root-containment-py"></a>
 ### [`tests/blackbox/isolation/test_root_containment.py`](../tests/blackbox/isolation/test_root_containment.py)
 
 Selection: phase `guest-root` (guest-root).
 
-- [`tests/blackbox/isolation/test_root_containment.py::TestGuestRootCapability::test_root_shell_has_uid_zero`](../tests/blackbox/isolation/test_root_containment.py#L50)
-- [`tests/blackbox/isolation/test_root_containment.py::TestGuestRootCapability::test_root_shell_and_pid1_have_nofile_limit`](../tests/blackbox/isolation/test_root_containment.py#L62)
-- [`tests/blackbox/isolation/test_root_containment.py::TestGuestRootCapability::test_root_can_install_local_apt_package`](../tests/blackbox/isolation/test_root_containment.py#L83)
-- [`tests/blackbox/isolation/test_root_containment.py::TestGuestRootTrustIsolation::test_guest_ca_change_does_not_change_proxy_validation`](../tests/blackbox/isolation/test_root_containment.py#L164)
-- [`tests/blackbox/isolation/test_root_containment.py::TestGuestRootContainment::test_root_direct_egress_blocked`](../tests/blackbox/isolation/test_root_containment.py#L264)
+- [`tests/blackbox/isolation/test_root_containment.py::TestGuestRootCapability::test_root_shell_has_uid_zero`](../tests/blackbox/isolation/test_root_containment.py#L51)
+- [`tests/blackbox/isolation/test_root_containment.py::TestGuestRootCapability::test_root_shell_and_pid1_have_nofile_limit`](../tests/blackbox/isolation/test_root_containment.py#L63)
+- [`tests/blackbox/isolation/test_root_containment.py::TestGuestRootCapability::test_root_can_install_local_apt_package`](../tests/blackbox/isolation/test_root_containment.py#L84)
+- [`tests/blackbox/isolation/test_root_containment.py::TestGuestRootTrustIsolation::test_guest_ca_change_does_not_change_proxy_validation`](../tests/blackbox/isolation/test_root_containment.py#L165)
+- [`tests/blackbox/isolation/test_root_containment.py::TestGuestRootContainment::test_root_direct_egress_blocked`](../tests/blackbox/isolation/test_root_containment.py#L265)
+- [`tests/blackbox/isolation/test_root_containment.py::TestGuestRootContainment::test_root_cannot_read_live_host_canaries`](../tests/blackbox/isolation/test_root_containment.py#L279)
 Selection: phase `guest-root` (guest-root); phase `listener-guest-root` (guest-root).
 
 - [`tests/blackbox/isolation/test_root_containment.py::TestGuestRootContainment::test_root_proxy_path_works`](../tests/blackbox/isolation/test_root_containment.py#L290)
@@ -2322,15 +2347,15 @@ Selection: phase `guest-root` (guest-root).
 
 Selection: phase `guest-agent` (guest-agent).
 
-- [`tests/blackbox/isolation/test_key_isolation.py::TestPublicCertPresent::test_public_cert_exists`](../tests/blackbox/isolation/test_key_isolation.py#L72)
-- [`tests/blackbox/isolation/test_key_isolation.py::TestPublicCertPresent::test_public_cert_readable`](../tests/blackbox/isolation/test_key_isolation.py#L83)
-- [`tests/blackbox/isolation/test_key_isolation.py::TestPublicCertPresent::test_public_cert_has_no_private_key`](../tests/blackbox/isolation/test_key_isolation.py#L97)
+- [`tests/blackbox/isolation/test_key_isolation.py::TestPublicCertPresent::test_public_cert_exists`](../tests/blackbox/isolation/test_key_isolation.py#L125)
+- [`tests/blackbox/isolation/test_key_isolation.py::TestPublicCertPresent::test_public_cert_readable`](../tests/blackbox/isolation/test_key_isolation.py#L136)
+- [`tests/blackbox/isolation/test_key_isolation.py::TestPublicCertPresent::test_public_cert_has_no_private_key`](../tests/blackbox/isolation/test_key_isolation.py#L150)
 Selection: phase `guest-agent` (guest-agent); phase `guest-root` (guest-root).
 
-- [`tests/blackbox/isolation/test_key_isolation.py::TestPrivateKeyAbsent::test_no_key_files_in_cert_store`](../tests/blackbox/isolation/test_key_isolation.py#L124)
-- [`tests/blackbox/isolation/test_key_isolation.py::TestPrivateKeyAbsent::test_no_key_files_in_config_share`](../tests/blackbox/isolation/test_key_isolation.py#L140)
-- [`tests/blackbox/isolation/test_key_isolation.py::TestPrivateKeyAbsent::test_no_private_key_content_in_pem_files`](../tests/blackbox/isolation/test_key_isolation.py#L157)
-- [`tests/blackbox/isolation/test_key_isolation.py::TestPrivateKeyAbsent::test_full_filesystem_scan_for_private_keys`](../tests/blackbox/isolation/test_key_isolation.py#L191)
+- [`tests/blackbox/isolation/test_key_isolation.py::TestPrivateKeyAbsent::test_no_key_files_in_cert_store`](../tests/blackbox/isolation/test_key_isolation.py#L177)
+- [`tests/blackbox/isolation/test_key_isolation.py::TestPrivateKeyAbsent::test_no_key_files_in_config_share`](../tests/blackbox/isolation/test_key_isolation.py#L193)
+- [`tests/blackbox/isolation/test_key_isolation.py::TestPrivateKeyAbsent::test_no_private_key_content_in_pem_files`](../tests/blackbox/isolation/test_key_isolation.py#L210)
+- [`tests/blackbox/isolation/test_key_isolation.py::TestPrivateKeyAbsent::test_full_filesystem_scan_for_private_keys`](../tests/blackbox/isolation/test_key_isolation.py#L244)
 
 <a id="witness-tests-blackbox-isolation-test-agent-api-scope-py"></a>
 ### [`tests/blackbox/isolation/test_agent_api_scope.py`](../tests/blackbox/isolation/test_agent_api_scope.py)
@@ -2618,17 +2643,19 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'`); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`).
 
-- [`tests/test_blackbox_execution_receipt.py::test_authority_receipts_keep_observations_and_refuse_incomplete_execution`](../tests/test_blackbox_execution_receipt.py#L21)
-- [`tests/test_blackbox_execution_receipt.py::test_authority_selection_and_successful_process_exit_are_not_executed_coverage`](../tests/test_blackbox_execution_receipt.py#L59)
-- [`tests/test_blackbox_execution_receipt.py::test_native_selector_observes_real_libtest_and_refuses_incomplete_results`](../tests/test_blackbox_execution_receipt.py#L74)
-- [`tests/test_blackbox_execution_receipt.py::test_native_phases_resolve_current_catalogue_and_keep_the_prepared_job_required`](../tests/test_blackbox_execution_receipt.py#L136)
-- [`tests/test_blackbox_execution_receipt.py::test_two_engine_receipt_requires_both_engines_and_owned_cleanup`](../tests/test_blackbox_execution_receipt.py#L145)
-- [`tests/test_blackbox_execution_receipt.py::test_focused_shell_caller_cannot_pass_from_collection_only`](../tests/test_blackbox_execution_receipt.py#L156)
-- [`tests/test_blackbox_execution_receipt.py::test_real_pytest_retains_parameter_cases_and_rejects_partial_execution`](../tests/test_blackbox_execution_receipt.py#L169)
-- [`tests/test_blackbox_execution_receipt.py::test_named_platform_exclusion_does_not_excuse_other_skips`](../tests/test_blackbox_execution_receipt.py#L205)
-- [`tests/test_blackbox_execution_receipt.py::test_procedure_requires_every_named_checkpoint_from_this_run`](../tests/test_blackbox_execution_receipt.py#L224)
-- [`tests/test_blackbox_execution_receipt.py::test_guest_user_and_root_are_not_interchangeable`](../tests/test_blackbox_execution_receipt.py#L249)
-- [`tests/test_blackbox_execution_receipt.py::test_explicit_optional_selection_makes_its_skipped_case_required`](../tests/test_blackbox_execution_receipt.py#L255)
+- [`tests/test_blackbox_execution_receipt.py::test_authority_receipts_keep_observations_and_refuse_incomplete_execution`](../tests/test_blackbox_execution_receipt.py#L22)
+- [`tests/test_blackbox_execution_receipt.py::test_authority_selection_and_successful_process_exit_are_not_executed_coverage`](../tests/test_blackbox_execution_receipt.py#L60)
+- [`tests/test_blackbox_execution_receipt.py::test_native_selector_observes_real_libtest_and_refuses_incomplete_results`](../tests/test_blackbox_execution_receipt.py#L75)
+- [`tests/test_blackbox_execution_receipt.py::test_native_phases_resolve_current_catalogue_and_keep_the_prepared_job_required`](../tests/test_blackbox_execution_receipt.py#L137)
+- [`tests/test_blackbox_execution_receipt.py::test_two_engine_receipt_requires_both_engines_and_owned_cleanup`](../tests/test_blackbox_execution_receipt.py#L146)
+- [`tests/test_blackbox_execution_receipt.py::test_focused_shell_caller_cannot_pass_from_collection_only`](../tests/test_blackbox_execution_receipt.py#L157)
+- [`tests/test_blackbox_execution_receipt.py::test_real_pytest_retains_parameter_cases_and_rejects_partial_execution`](../tests/test_blackbox_execution_receipt.py#L170)
+- [`tests/test_blackbox_execution_receipt.py::test_named_platform_exclusion_does_not_excuse_other_skips`](../tests/test_blackbox_execution_receipt.py#L206)
+- [`tests/test_blackbox_execution_receipt.py::test_procedure_requires_every_named_checkpoint_from_this_run`](../tests/test_blackbox_execution_receipt.py#L225)
+- [`tests/test_blackbox_execution_receipt.py::test_guest_user_and_root_are_not_interchangeable`](../tests/test_blackbox_execution_receipt.py#L250)
+- [`tests/test_blackbox_execution_receipt.py::test_guest_phase_needs_its_independent_host_observer`](../tests/test_blackbox_execution_receipt.py#L257)
+- [`tests/test_blackbox_execution_receipt.py::test_guest_destination_observations_are_retained_in_the_phase_receipt`](../tests/test_blackbox_execution_receipt.py#L279)
+- [`tests/test_blackbox_execution_receipt.py::test_explicit_optional_selection_makes_its_skipped_case_required`](../tests/test_blackbox_execution_receipt.py#L291)
 
 <a id="witness-tests-test-blackbox-catalogue-py"></a>
 ### [`tests/test_blackbox_catalogue.py`](../tests/test_blackbox_catalogue.py)
@@ -3104,6 +3131,28 @@ Selection: manual native phase `mediated-services` (named execution receipt; ign
 - [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::mediated::tests::oversized_provider_evidence_is_unavailable_and_never_truncated -- --exact`](../proxy/src/jobs/mediated/tests.rs#L405)
 - [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::mediated::tests::interrupted_effect_retains_uncertainty_separately_from_findings -- --exact`](../proxy/src/jobs/mediated/tests.rs#L486)
 
+<a id="witness-tests-test-blackbox-containment-py"></a>
+### [`tests/test_blackbox_containment.py`](../tests/test_blackbox_containment.py)
+
+Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'`); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`).
+
+- [`tests/test_blackbox_containment.py::test_receiver_selection_uses_assigned_nonloopback_addresses`](../tests/test_blackbox_containment.py#L19)
+- [`tests/test_blackbox_containment.py::test_missing_owned_target_is_incomplete_not_success`](../tests/test_blackbox_containment.py#L29)
+- [`tests/test_blackbox_containment.py::test_receiver_local_to_guest_is_not_an_external_route`](../tests/test_blackbox_containment.py#L35)
+- [`tests/test_blackbox_containment.py::test_resolver_lookup_restores_prior_state_and_reports_failures`](../tests/test_blackbox_containment.py#L49)
+- [`tests/test_blackbox_containment.py::test_elevated_device_canary_code_executes_and_rejects_exposure`](../tests/test_blackbox_containment.py#L109)
+- [`tests/test_blackbox_containment.py::test_tcp_delivery_followed_by_protocol_failure_is_not_containment`](../tests/test_blackbox_containment.py#L145)
+- [`tests/test_blackbox_containment.py::test_delivered_dns_without_a_reply_is_not_containment`](../tests/test_blackbox_containment.py#L161)
+- [`tests/test_blackbox_containment.py::test_allowed_receiver_controls_and_missing_observer`](../tests/test_blackbox_containment.py#L178)
+- [`tests/test_blackbox_containment.py::test_refusal_rejects_invalid_input_and_nonnegative_descriptors`](../tests/test_blackbox_containment.py#L192)
+- [`tests/test_blackbox_containment.py::test_bpf_uses_valid_attributes_and_only_the_actual_architecture`](../tests/test_blackbox_containment.py#L201)
+- [`tests/test_blackbox_containment.py::test_actual_bpf_checker_closes_and_rejects_a_successful_descriptor`](../tests/test_blackbox_containment.py#L223)
+- [`tests/test_blackbox_containment.py::test_exposed_host_file_and_process_canaries_fail_but_pid_collision_is_allowed`](../tests/test_blackbox_containment.py#L239)
+- [`tests/test_blackbox_containment.py::test_peer_checker_rejects_exposed_live_peer`](../tests/test_blackbox_containment.py#L258)
+- [`tests/test_blackbox_containment.py::test_exact_secret_canaries_fail_without_forbidding_provisioned_credentials`](../tests/test_blackbox_containment.py#L278)
+- [`tests/test_blackbox_containment.py::test_installed_custody_scans_real_files_environment_and_scoped_api`](../tests/test_blackbox_containment.py#L296)
+- [`tests/test_blackbox_containment.py::test_host_canary_and_live_observer_output_stay_outside_guest_workspace`](../tests/test_blackbox_containment.py#L320)
+
 <a id="witness-proxy-src-policy-checks-rs-policy-checks-tests"></a>
 ### [`proxy/src/policy/checks.rs`](../proxy/src/policy/checks.rs)
 
@@ -3219,7 +3268,7 @@ Guest artifact publication, preparation, scheduling and supporting contracts; no
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**84 distinct pytest methods across 25 threat categories.**
+**80 distinct pytest methods across 25 threat categories.**
 
 This is a source inventory, not a passing execution receipt. The ordinary guest selection excludes root containment; the root selection runs root containment and private-key isolation. Private-key scans run under both identities; public-cert checks run as the ordinary user. Parameterization and platform/fixture skips affect executed nodes. The retired host/proxy selection is excluded.
 
@@ -3229,7 +3278,7 @@ This is a source inventory, not a passing execution receipt. The ordinary guest 
 
 | Actual lane | Selected sections |
 |---|---|
-| `systrap` | isolation, workloads, access, peer-support, shared-approvals, provider, federation, lifecycle, continuity, job-sandbox, job-network, mounts, docker |
+| `systrap` | isolation, ingress, workloads, access, peer-support, shared-approvals, provider, federation, lifecycle, continuity, job-sandbox, job-network, mounts, docker |
 | `kvm` | isolation, ingress, workloads, job-sandbox, job-network, mounts |
 | `vz` | isolation, access, lifecycle, continuity, job-sandbox, job-network, mounts |
 
@@ -3241,7 +3290,8 @@ Retain service and contract binding/risk approvals, exact credential injection
 and live peer denial, populated owner-positive/peer-negative guest flow search
 and detail, test-context/trace evidence, real NATS Coord and attention, operator
 collaboration approval/exchange/revocation, WebSocket peer effects and traffic-inspector
-filter/transcript/export. These observations stay in one installed composition.
+filter/transcript/export, exact host-secret custody and abrupt proxy recovery.
+These observations stay in one installed composition.
 The fixture prepares guest desktop packages and an owned host opener. Headless
 Linux runs also own a host Xvfb display for the typed action's display check.
 Viewer checks observe VNC bytes, session binding and cessation on revocation,
@@ -3868,11 +3918,14 @@ trust changed the proxy's host-side certificate validation boundary.
 unable to bypass proxy-only egress, reach host listeners, modify the
 host-backed SafeYolo share, or access a host virtualization device.
 
-- **`test_root_direct_egress_blocked`** — Guest root cannot bypass the proxy with a direct connection.
-  - *Probe:* Use curl with all proxy handling disabled against a public IP
-and require the connection to fail.
-  - *Consequence if unasserted:* Package-management privilege must not also grant an unobserved
-network path around SafeYolo's policy and credential controls.
+- **`test_root_direct_egress_blocked`** — Guest root cannot deliver bytes outside the proxy.
+  - *Probe:* Send marked TCP, TLS and DNS/UDP probes to live owned IPv4/IPv6
+receivers. The host checks delivery independently of guest exceptions.
+  - *Consequence if unasserted:* Guest-root package management must not create an unobserved path.
+- **`test_root_cannot_read_live_host_canaries`** — Guest root cannot read the live host process and private file.
+  - *Probe:* Probe the exact host canaries independently verified by the host.
+  - *Consequence if unasserted:* Guest PID names and guest-root permissions cannot identify access
+to the real host namespace or its private files.
 - **`test_root_proxy_path_works`** — Guest root retains the authorised proxy egress path.
   - *Probe:* Send an HTTP request through HTTP_PROXY to the allowlisted test
 host and require a 200 response.
@@ -3921,76 +3974,53 @@ IPv6, DNS, cloud metadata IPs — must be unreachable. A gap here
 means data exfiltrates outside the credential/network guards
 entirely, and the agent operates with no policy enforcement.
 
-- **`test_direct_http_blocked`** — Direct HTTP to an external IP (bypassing proxy) fails.
-  - *Probe:* curl --noproxy to http://1.1.1.1; assert non-zero exit.
-  - *Consequence if unasserted:* The most basic egress escape — if the agent can just
-curl any IP directly, the proxy is decorative.
-- **`test_direct_https_blocked`** — Direct HTTPS to an external IP (bypassing proxy) fails.
-  - *Probe:* curl -k --noproxy to https://8.8.8.8; assert non-zero exit.
-  - *Consequence if unasserted:* A firewall that only blocks port 80 would let port 443
-traffic through. TLS at the IP layer bypasses URL-based
-inspection entirely.
-- **`test_dns_udp_blocked`** — Raw UDP to 8.8.8.8:53 fails.
-  - *Probe:* Craft a DNS query, sendto() a UDP socket pointed at
-8.8.8.8:53; assert the receive times out.
-  - *Consequence if unasserted:* DNS is a classic covert-channel egress. If UDP/53 is
-open, an agent can stream data via DNS tunnelling, which
-never touches the HTTP proxy.
-- **`test_raw_socket_blocked`** — AF_INET raw socket creation fails (no CAP_NET_RAW in sandbox).
-  - *Probe:* socket(AF_INET, SOCK_RAW, IPPROTO_ICMP) then sendto a
-crafted ICMP echo to 1.1.1.1; assert PermissionError/OSError.
-  - *Consequence if unasserted:* ICMP tunnelling and ping-based exfiltration rely on raw
-sockets. Without CAP_NET_RAW the syscall fails at creation.
-- **`test_direct_alt_port_blocked`** — Direct TCP to 1.1.1.1 on 8443, 22, 6667, 25 all fail.
-  - *Probe:* curl --noproxy to 1.1.1.1 on each non-standard port;
-assert non-zero exit for every port.
-  - *Consequence if unasserted:* A firewall that only blocked :80 and :443 would leave
-every other port open. Alt-HTTPS (:8443), SSH (:22), IRC
-(:6667, historical C2), SMTP (:25) are all realistic C2/
-exfil channels the agent might attempt.
-- **`test_libc_resolver_blocked`** — getaddrinfo() on an external name raises gaierror.
-  - *Probe:* socket.getaddrinfo("blackbox-probe-should-not-resolve.
-example", 80, ...); assert gaierror.
-  - *Consequence if unasserted:* Raw UDP/53 blocking alone doesn't cover the libc
-resolver path. If /etc/resolv.conf points at a reachable
-nameserver, getaddrinfo quietly succeeds — agents using
-the system resolver bypass the proxy for lookups and can
-DNS-tunnel data.
-- **`test_non_icmp_raw_protocols_blocked`** — Raw sockets for SCTP/GRE/IPIP also fail.
-  - *Probe:* socket(AF_INET, SOCK_RAW, proto) for proto in
-[132=SCTP, 47=GRE, 4=IPIP]; assert PermissionError/OSError
-for each.
-  - *Consequence if unasserted:* If the sandbox filter scopes raw sockets only by
-IPPROTO_ICMP, tunnelling protocols (GRE, IPIP, SCTP) leak
-through and provide alternate exfil paths invisible to
-TCP/UDP observers.
-- **`test_ipv6_egress_blocked`** — IPv6 egress via curl -6 and AF_INET6 socket both fail.
-  - *Probe:* curl -6 to a literal v6 address; AF_INET6 socket
-connect to the same; both must fail/timeout.
-  - *Consequence if unasserted:* mitmproxy binds to IPv4 only. If the sandbox has v6
-connectivity, the agent can reach any v6-capable destination
-outside the proxy's view entirely — a complete bypass.
-- **`test_metadata_ips_unreachable`** — Cloud metadata IPs (169.254.169.254, 169.254.170.2) are unreachable.
-  - *Probe:* curl --noproxy to each metadata IP; assert non-zero exit.
-  - *Consequence if unasserted:* On a cloud VM host, link-local metadata endpoints expose
-instance IAM credentials and user-data. A sandbox that can
-reach them SSRFs the host's IAM role — often full access to
-the cloud account.
-- **`test_af_packet_blocked`** — AF_PACKET socket creation fails.
-  - *Probe:* socket(17 /* AF_PACKET */, SOCK_RAW, 0); assert
-PermissionError/OSError.
-  - *Consequence if unasserted:* AF_PACKET lets the process craft Ethernet frames
-directly. With it, an agent can ARP-spoof, forge source
-IPs (bypassing L3 firewall rules by appearing to be the
-host), or probe the L2 neighbourhood.
-- **`test_dns_tunnel_subdomain_blocked`** — Arbitrary subdomain under a real TLD does not resolve.
-  - *Probe:* getaddrinfo("exfil-data-here.tunnel-probe.httpbin.org",
-...); assert gaierror. If it resolves, fail.
-  - *Consequence if unasserted:* DNS tunnelling encodes data in subdomain labels
-(<base64>.exfil.attacker.com) — every query leaks ~60 bytes
-to a nameserver the attacker controls. The proxy never sees
-it because it's DNS, not HTTP. The only safe posture is no
-external name resolution at all.
+- **`test_direct_http_blocked`** — Direct TCP bytes cannot bypass the proxy.
+  - *Probe:* Send a unique payload toward the host's live owned receiver.
+  - *Consequence if unasserted:* The host observer must record zero guest delivery, even when the
+receiver sends no reply or the client cannot parse the response.
+- **`test_direct_https_blocked`** — Direct TLS bytes cannot bypass the proxy.
+  - *Probe:* Send a unique payload toward the host's live owned receiver.
+  - *Consequence if unasserted:* The host observer must record zero guest delivery, even when the
+receiver sends no reply or the client cannot parse the response.
+- **`test_dns_udp_blocked`** — An unanswered DNS query must not leave the guest.
+  - *Probe:* Send a unique payload toward the host's live owned receiver.
+  - *Consequence if unasserted:* The host observer must record zero guest delivery, even when the
+receiver sends no reply or the client cannot parse the response.
+- **`test_raw_socket_blocked`** — Ordinary guest raw ICMP socket creation is refused.
+  - *Probe:* Make a valid socket creation request and require permission or
+protocol-unavailable refusal. Close any unexpectedly returned socket.
+  - *Consequence if unasserted:* The ordinary guest has no CAP_NET_RAW. A later send failure cannot
+prove socket creation was refused; no public destination is contacted.
+- **`test_direct_alt_port_blocked`** — An owned dynamic TCP port cannot bypass the proxy.
+  - *Probe:* Send a unique payload toward the host's live owned receiver.
+  - *Consequence if unasserted:* The host observer must record zero guest delivery, even when the
+receiver sends no reply or the client cannot parse the response.
+- **`test_libc_resolver_blocked`** — The selected libc resolver emits no query to its owned observer.
+  - *Probe:* Send a unique payload toward the host's live owned receiver.
+  - *Consequence if unasserted:* The host observer must record zero guest delivery, even when the
+receiver sends no reply or the client cannot parse the response.
+- **`test_non_icmp_raw_protocols_blocked`** — Ordinary guest SCTP/GRE/IPIP raw socket creation is refused.
+  - *Probe:* Make a valid socket creation request and require permission or
+protocol-unavailable refusal. Close any unexpectedly returned socket.
+  - *Consequence if unasserted:* The ordinary guest has no CAP_NET_RAW. A later send failure cannot
+prove socket creation was refused; no public destination is contacted.
+- **`test_ipv6_egress_blocked`** — Owned IPv6 TCP receivers observe no guest delivery.
+  - *Probe:* Send a unique payload toward the host's live owned receiver.
+  - *Consequence if unasserted:* The host observer must record zero guest delivery, even when the
+receiver sends no reply or the client cannot parse the response.
+- **`test_metadata_ips_unreachable`** — Applicable owned metadata routes observe no guest delivery.
+  - *Probe:* Send a unique payload toward the host's live owned receiver.
+  - *Consequence if unasserted:* The host observer must record zero guest delivery, even when the
+receiver sends no reply or the client cannot parse the response.
+- **`test_af_packet_blocked`** — Ordinary guest packet socket creation is refused.
+  - *Probe:* Make a valid socket creation request and require permission or
+protocol-unavailable refusal. Close any unexpectedly returned socket.
+  - *Consequence if unasserted:* The ordinary guest has no CAP_NET_RAW. A later send failure cannot
+prove socket creation was refused; no public destination is contacted.
+- **`test_dns_tunnel_subdomain_blocked`** — DNS over TCP and IPv6 UDP cannot transmit unique labels.
+  - *Probe:* Send a unique payload toward the host's live owned receiver.
+  - *Consequence if unasserted:* The host observer must record zero guest delivery, even when the
+receiver sends no reply or the client cannot parse the response.
 - **`test_host_header_mismatch_routes_by_url`** — Host-header mismatch with URL routes by URL (200, not 4xx).
   - *Probe:* Send a proxy'd GET with URL=httpbin.org and
 Host=evil.com; assert 200 (URL is authoritative; Host is
@@ -4043,22 +4073,6 @@ listening." The listener test guards against future
 implementation changes — a regression that gave the sandbox
 routable paths to the host would silently break isolation
 but pass the arbitrary-port test.
-- **`test_arbitrary_host_port_unreachable`** — An unused port (44444) on the host is unreachable.
-  - *Probe:* TCP connect to host:44444; assert fail.
-  - *Consequence if unasserted:* Together with test_host_listener_unreachable, confirms
-block-by-default — an arbitrary port nothing listens on
-should still be unreachable (not just refused by the
-kernel because no service is bound). Complements the
-live-listener test for full coverage.
-- **`test_cross_agent_ip_unreachable`** — Adjacent agents' attribution IPs are unreachable.
-  - *Probe:* Derive this agent's attribution IP (10.200.x.y) from
-loopback; probe TCP on the neighbouring ±1 offsets; assert
-both unreachable.
-  - *Consequence if unasserted:* Each agent runs in an isolated netns with its own
-loopback. If one agent could reach another's attribution
-IP, cross-agent lateral movement would be possible — an
-agent compromised by the user's content could pivot to a
-neighbouring agent's workspace.
 - **`test_sinkhole_direct_unreachable`** — The live sinkhole HTTP, HTTPS, and control paths are unreachable.
   - *Probe:* TCP connect to each harness origin and control path. On VZ,
 HTTP and control share one listener; both probes use that port.
@@ -4095,13 +4109,6 @@ hardware microVM the distro's normal sudo transition applies.
   - *Consequence if unasserted:* Agents need a familiar, non-operator-mediated way to
 install native packages without confusing host root with
 sandbox or VM root.
-- **`test_kernel_modules_disabled`** — init_module(2) syscall returns non-success.
-  - *Probe:* Direct syscall to init_module with null args; assert
-return value is -1 and errno non-zero.
-  - *Consequence if unasserted:* Loading a kernel module is immediate, total compromise
-— the module runs in ring 0. Blocked either by
-CONFIG_MODULES=n in the guest kernel, or by gVisor's
-user-space kernel rejecting the syscall.
 - **`test_no_dev_mem`** — /dev/mem does not exist in the sandbox.
   - *Probe:* os.path.exists("/dev/mem") is False.
   - *Consequence if unasserted:* /dev/mem is a direct view of physical RAM. If present
@@ -4112,13 +4119,12 @@ potentially extract secrets from other processes.
   - *Consequence if unasserted:* /dev/kmem exposes kernel virtual memory directly —
 easier to parse than /dev/mem and equally dangerous for
 secret extraction.
-- **`test_ebpf_blocked`** — bpf(2) syscall fails.
-  - *Probe:* Invoke syscall numbers 321 (x86_64) and 280 (aarch64)
-for SYS_bpf with zero args; if any returns 0, fail.
-  - *Consequence if unasserted:* eBPF programs run in kernel context with wide access —
-network introspection, kprobe instrumentation, cgroup
-hooks. Even with verifier constraints, eBPF has been a
-recurring privilege-escalation vector.
+- **`test_ebpf_blocked`** — A valid BPF map request remains refused or guest contained.
+  - *Probe:* Use this architecture's BPF_MAP_CREATE after a getpid control.
+Require a narrow refusal on gVisor. Close a successful VZ guest-kernel
+descriptor and check that the host canaries remain inaccessible.
+  - *Consequence if unasserted:* EINVAL and bad pointers cannot establish refusal. Any nonnegative
+descriptor is success; a VZ guest kernel remains separate from its host.
 
 #### TestSandboxRootContainment — Linux namespace-root cannot cross SafeYolo's host boundary.
 
@@ -4141,13 +4147,11 @@ and attempt a direct TCP connection to
 the harness's known-live host listener; require failure.
   - *Consequence if unasserted:* Guest root must not turn the loopback-only network
 namespace into a path to host services or the admin API.
-- **`test_host_kernel_surfaces_stay_absent_as_sandbox_root`** — Sandbox root sees neither host devices nor the host PID 1.
-  - *Probe:* Elevate with setpriv, assert /dev/kvm, /dev/mem and
-/dev/kmem are absent, then assert PID 1's command line is not
-a host init such as systemd or launchd.
-  - *Consequence if unasserted:* Exposing a host device or process namespace to guest root
-would convert an intentionally useful guest capability into a
-direct host-compromise primitive.
+- **`test_host_kernel_surfaces_stay_absent_as_sandbox_root`** — Sandbox root sees no host devices, private file or process canary.
+  - *Probe:* Elevate with setpriv, check meaningful host device paths and the
+host's independently verified live process/file canaries.
+  - *Consequence if unasserted:* Guest administration must remain inside its kernel and namespace.
+A guest PID-1 command name does not identify the host process boundary.
 
 #### TestFilesystemIsolation — Config share mount is read-only and holds no private keys.
 
@@ -4208,13 +4212,10 @@ os.listdir() under pytest.raises(PermissionError/OSError).
 tracers, module lists). A listable /sys/kernel/debug is a
 broad surface for kernel introspection and — via tracefs —
 a privilege-escalation vector.
-- **`test_pid_namespace_isolated`** — PID 1's cmdline is the sandbox init, not the host's.
-  - *Probe:* Read /proc/1/cmdline; assert it does NOT contain
-'systemd', '/sbin/init', or 'launchd'.
-  - *Consequence if unasserted:* If PID 1 is the host's init, the PID namespace is
-leaking through and the agent can read the full host
-process table — every running service's cmdline, including
-argv secrets and parent hierarchies.
+- **`test_host_process_canary_absent`** — The identifiable live host process and private file are absent.
+  - *Probe:* Read the supplied host paths and reject the unique marker if
+visible. The host verifies both canaries before and after this phase.
+  - *Consequence if unasserted:* A PID-1 name or a colliding guest PID cannot prove host isolation.
 - **`test_firewall_rules_not_readable`** — iptables/pfctl don't emit rules from inside the sandbox.
   - *Probe:* Run `iptables -L`, `iptables-save`, `pfctl` if present;
 fail if any exits 0 with non-empty output.
@@ -4248,23 +4249,16 @@ traversal within the sandbox rootfs. A bug that followed
 symlinks on the host side would let the agent read any host
 file the mount process can see — /etc/shadow, SSH keys,
 cloud credentials.
-- **`test_workspace_no_mknod`** — mknod on /workspace fails with PermissionError/OSError.
-  - *Probe:* os.mknod('/workspace/.../testdev', S_IFCHR, makedev(1,3));
-assert the call fails.
-  - *Consequence if unasserted:* /workspace should be mounted `nodev` and the sandbox
-should lack CAP_MKNOD. Device nodes on a shared mount let
-the agent access arbitrary devices (raw block devices like
-/dev/sda, tty, etc.) once the host views the file.
+- **`test_workspace_no_mknod`** — A shared workspace cannot provide usable device nodes.
+  - *Probe:* Try to create a harmless null device in an owned directory. If
+creation succeeds, distinguish that from opening and using the node.
+  - *Consequence if unasserted:* nodev controls device use; mknod failure alone does not test nodev.
 
-#### TestSyscallSeccompEquivalents — Dangerous syscalls (keyring, pivot_root, unshare, ptrace) are blocked or contained.
+#### TestSyscallSeccompEquivalents — Valid keyring and namespace requests remain contained.
 
-**Threat:** A conservative container seccomp baseline drops ~44
-syscalls that are rarely legitimate and historically exploited
-— kernel keyring injection (CVE-2017-6074), pivot_root
-filesystem escape, user-namespace creation as escalation
-vehicle, ptrace process introspection. Blackbox checks confirm
-the same
-exposures are closed on the current runtime (gVisor or VZ).
+**Threat:** Invalid arguments cannot prove refusal. A namespace operation may
+succeed inside the guest while host canaries and read-only shares remain
+isolated. Guest capabilities do not imply host-kernel capabilities.
 
 - **`test_keyctl_blocked`** — A valid keyctl request is unavailable or permission denied.
   - *Probe:* Request this thread's keyring with creation enabled. Require
@@ -4277,27 +4271,8 @@ not establish refusal of access to the kernel keyring.
 Require ENOSYS, EPERM or EACCES after a successful getpid control.
   - *Consequence if unasserted:* Keep add_key distinct from keyctl and reject bad pointers as
 proof that the sandbox refuses key creation.
-- **`test_pivot_root_blocked`** — pivot_root(2) returns -1 with non-zero errno.
-  - *Probe:* Call SYS_pivot_root with zero args; assert ret == -1
-and errno != 0.
-  - *Consequence if unasserted:* pivot_root moves the root filesystem — combined with
-a mount from an attacker-controlled directory, it's a
-classic container escape. Must not be callable from the
-sandbox.
-- **`test_unshare_user_ns_contained`** — unshare(CLONE_NEWUSER) grants no new access even if it succeeds.
-  - *Probe:* Call unshare with CLONE_NEWUSER. If it fails, pass
-(strongest outcome). If it succeeds, verify /etc/shadow is
-still unreadable, PID 1's cmdline still doesn't reveal host
-init, and /safeyolo is still read-only.
-  - *Consequence if unasserted:* gVisor's sentry emulates namespaces, and VZ microVMs
-run real kernels — both allow the syscall. The property
-that matters is that the new namespace doesn't grant
-privileges the agent didn't already have. Tests the
-escape, not the syscall.
-- **`test_ptrace_init_blocked`** — ptrace(PTRACE_ATTACH, 1, ...) returns -1.
-  - *Probe:* Call SYS_ptrace with PTRACE_ATTACH on pid 1; assert
-ret == -1 and errno != 0.
-  - *Consequence if unasserted:* Attaching to init lets the agent read memory (keys,
-tokens) from the most privileged process in the sandbox
-and potentially inject code. Conservative container seccomp
-baselines drop ptrace entirely.
+- **`test_unshare_user_ns_contained`** — A valid user-namespace request grants no host access.
+  - *Probe:* Run unshare(CLONE_NEWUSER) in a child. Accept only a narrow
+refusal or check the live host canaries and read-only share afterwards.
+  - *Consequence if unasserted:* Supported guest namespace operations may succeed. Their success
+cannot be interpreted as host escape or alter the pytest process.

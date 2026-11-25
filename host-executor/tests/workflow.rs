@@ -81,9 +81,24 @@ fn standalone_preparation_keeps_saved_authority_activation_and_observation_disti
         "application-log",
         "system-log",
         "snapshot-list",
+        "endpoint-inspect",
     ] {
         assert!(document["operations"][name].is_object(), "{name}");
     }
+    let endpoint = &annotated.operations["endpoint-inspect"];
+    let selection = endpoint.arguments["endpoint"].options[0].clone();
+    let command = endpoint
+        .command(&std::collections::BTreeMap::from([(
+            "endpoint".into(),
+            selection.clone(),
+        )]))
+        .unwrap();
+    assert_eq!(command.argv[0], "inspect-endpoint");
+    assert_eq!(
+        serde_json::from_str::<Value>(&command.argv[1]).unwrap(),
+        selection
+    );
+    assert!(endpoint.execution.filesystem.read.is_empty());
     let selection = root.join("selection.json");
     save(
         &selection,

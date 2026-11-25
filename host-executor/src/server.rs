@@ -212,6 +212,25 @@ pub fn command(args: Vec<String>) -> Result<(), Refusal> {
             "target {}: complete catalogue validated; no command launched",
             settings.target.target_id
         );
+        for (id, operation) in &settings.target.package.operations {
+            #[cfg(unix)]
+            if settings.target.allowed_verbs.contains(&Verb::File)
+                && !operation.execution.filesystem.write.is_empty()
+            {
+                println!(
+                    "operation {id}: file retrieval paths {:?}; requires the issuer's file verb and current operation/resource scope, intersected with the job's admitted paths. Reads are bounded live observations, not atomic snapshots or proof of file authorship. Every path component must be symlink-free. Host files retain their operator-selected lifetime; retrieval adds no copy, rollback or file-storage quota.",
+                    operation.execution.filesystem.write
+                );
+            }
+            if !operation.execution.network.destinations.is_empty()
+                || !operation.execution.network.listeners.is_empty()
+                || operation.execution.network.listener_handoff.is_some()
+            {
+                for fact in settings.native.network_enforcement(operation) {
+                    println!("operation {id}: {fact}");
+                }
+            }
+        }
         if let Some(status) = &settings.target.catalogue {
             let saved: Configuration =
                 serde_json::from_slice(&std::fs::read(&config).map_err(unavailable)?)
@@ -370,7 +389,15 @@ pub(crate) fn connection(
                 // begin reauthenticates the retained original request.
                 match load_selected(&config, &state, &original) {
                     Ok(current) => {
-                        if let Err(error) = current.native.execute(&current.target, ledger, &job_id)
+                        let mut protected = vec![config, state];
+                        if let Some(https) = &current.https {
+                            protected
+                                .extend([https.certificate.clone(), https.private_key.clone()]);
+                        }
+                        if let Err(error) =
+                            current
+                                .native
+                                .execute(&current.target, ledger, &job_id, &protected)
                         {
                             eprintln!("{job_id}: {error}");
                         }

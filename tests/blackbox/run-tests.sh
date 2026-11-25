@@ -1305,7 +1305,9 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo "=== VM Isolation Tests (in-VM) ==="
     echo ""
     set +e
-    python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" --pytest-phase guest-agent \
+    python3 "$SCRIPT_DIR/harness/containment.py" --share "$CONFIG_SHARE" --phase guest-agent \
+        --output "$SAFEYOLO_CONFIG_DIR/data/containment-guest-agent.json" -- \
+        python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" --pytest-phase guest-agent \
         --lane "$EXPECTED_PLATFORM" --output "$ARTIFACTS_DIR/pytest-guest-agent.json" "$AGENT_NAME" -- \
         "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" -v -rs --tb=short --timeout=60
     ISOLATION_RESULT=$?
@@ -1315,7 +1317,9 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo "=== Guest-Root Capability and Containment Tests (in-VM) ==="
     echo ""
     set +e
-    python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" --pytest-phase guest-root \
+    python3 "$SCRIPT_DIR/harness/containment.py" --share "$CONFIG_SHARE" --phase guest-root \
+        --output "$SAFEYOLO_CONFIG_DIR/data/containment-guest-root.json" -- \
+        python3 "$SCRIPT_DIR/guest_exec.py" --cli "$INSTALLED_CLI" --pytest-phase guest-root \
         --lane "$EXPECTED_PLATFORM" --output "$ARTIFACTS_DIR/pytest-guest-root.json" "$AGENT_NAME" -- \
         "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" -v -rs --tb=short --timeout=60
     ROOT_ISOLATION_RESULT=$?

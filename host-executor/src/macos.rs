@@ -22,6 +22,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod filesystem;
+mod network;
+pub(crate) use network::disclosure as network_enforcement;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MacRuntime {
@@ -115,6 +119,7 @@ impl MacRuntime {
         for op in target.package.operations.values() {
             let e = &op.execution;
             let service = crate::unix_services::validate(op)?;
+            let endpoint = crate::endpoints::validate(op)?;
             let mut declared = e.identity.groups.clone();
             declared.sort();
             declared.dedup();
@@ -127,19 +132,31 @@ impl MacRuntime {
             )?;
             require(
                 service
-                    || e.broader == [BroaderBound::Memory, BroaderBound::ExecutorRestart].into(),
+                    || e.broader.contains(&BroaderBound::Memory)
+                        && e.broader.contains(&BroaderBound::ExecutorRestart)
+                        && e.broader.iter().all(|b| {
+                            matches!(
+                                b,
+                                BroaderBound::Memory
+                                    | BroaderBound::ExecutorRestart
+                                    | BroaderBound::NetworkIpc
+                            )
+                        }),
                 RefusalCode::Unavailable,
                 "macOS requires explicit broader memory and executor_restart authority: memory is polled and a controller crash can leave an orphan; restart preserves unknown cleanup and its reservation",
             )?;
             require(
-                e.filesystem.write.is_empty()
-                    && e.network.destinations.is_empty()
-                    && e.network.ipc.is_empty()
-                    && (service || e.delegated_services.is_empty()),
+                e.network.ipc.is_empty() && (service || e.delegated_services.is_empty()),
                 RefusalCode::Unavailable,
-                "this macOS profile supports read-only files, no socket or Mach access and no delegated services; service effects require an independently protected executor identity or enforced service boundary",
+                "ordinary macOS programs cannot bind/connect Unix sockets, look up Mach services or delegate service control; service effects require the validated fixed OS client or an independently enforced service boundary",
             )?;
-            for path in e.filesystem.read.iter().chain([&e.executable]) {
+            network::validate(e)?;
+            filesystem::validate(&e.filesystem.write, protected)?;
+            let mut read_paths = e.filesystem.read.clone();
+            if endpoint {
+                read_paths.extend(crate::endpoints::runtime_reads());
+            }
+            for path in read_paths.iter().chain([&e.executable]) {
                 let path = Path::new(path);
                 require(
                     path.is_absolute(),
@@ -212,9 +229,10 @@ impl MacRuntime {
         target: &Target,
         ledger: Arc<Mutex<Ledger>>,
         id: &str,
+        protected: &[PathBuf],
     ) -> Result<(), Refusal> {
         execute_job(target, ledger, id, |op, receipt, ledger| {
-            self.run(op, receipt, ledger)
+            self.run(op, receipt, ledger, protected)
         })
     }
 
@@ -223,9 +241,26 @@ impl MacRuntime {
         op: &Operation,
         receipt: &Receipt,
         ledger: &Arc<Mutex<Ledger>>,
+        protected: &[PathBuf],
     ) -> Result<NativeObservation, Refusal> {
         let command = op.command(&receipt.prepared.invocation.arguments)?;
         let service = crate::unix_services::validate(op)?;
+        let endpoint = crate::endpoints::validate(op)?;
+        network::validate(&op.execution)?;
+        let writes = filesystem::validate(&op.execution.filesystem.write, protected)?;
+        let listener = match crate::endpoints::bind_for_job(
+            op.execution.network.listener_handoff.as_ref(),
+            ledger,
+            &receipt.job_id,
+        ) {
+            Ok(listener) => listener,
+            Err(error) => {
+                return Ok(crate::native::launch_refused(
+                    "macos-seatbelt-no-fork",
+                    error,
+                ));
+            }
+        };
         let root = ledger
             .lock()
             .map_err(unavailable)?
@@ -262,6 +297,13 @@ impl MacRuntime {
             ),
             quoted(snapshot.to_str().unwrap())
         );
+        if endpoint {
+            // Only this executable's fixed native helper receives socket
+            // access. Its typed selector and filtering are trusted executor
+            // code; no arbitrary adopted program receives this exception.
+            profile.push_str("(allow network*)");
+            profile.push_str("(allow file-read* (subpath \"/usr/lib\") (subpath \"/System/Library\") (subpath \"/Library/Apple/System/Library\"))");
+        }
         if service {
             profile.push_str("(allow mach-lookup)");
             if matches!(
@@ -274,8 +316,49 @@ impl MacRuntime {
                 profile.push_str("(allow signal)");
             }
         }
-        for path in &op.execution.filesystem.read {
-            let real = Path::new(path).canonicalize().map_err(unavailable)?;
+        profile.push_str(&network::profile(&op.execution));
+        if listener.is_some() {
+            let observation = ledger
+                .lock()
+                .map_err(unavailable)?
+                .observe(&receipt.job_id)?
+                .listener_handoff
+                .ok_or_else(|| unavailable("listener bind observation missing"))?;
+            let binding = observation
+                .binding
+                .ok_or_else(|| unavailable("bound listener address missing"))?;
+            // Creation and bind remain denied unless separately declared. This
+            // rule permits accept on the already-bound inherited TCP socket.
+            let address_class = if binding.ip().is_loopback() {
+                "localhost"
+            } else {
+                "*"
+            };
+            profile.push_str(&format!(
+                "(allow network-inbound (require-all (local tcp \"{}:{}\") (socket-type SOCK_STREAM)))",
+                address_class, binding.port(),
+            ));
+        }
+        for path in &writes {
+            // Source and destination link/rename checks still pass through
+            // Seatbelt. Resolving an inner symlink grants no outside access.
+            profile.push_str(&format!(
+                "(allow file-read* file-write* (subpath {}))",
+                quoted(
+                    path.to_str()
+                        .ok_or_else(|| unavailable("write path is not UTF-8"))?
+                )
+            ));
+        }
+        for path in op
+            .execution
+            .filesystem
+            .read
+            .iter()
+            .map(Path::new)
+            .chain(writes.iter().map(PathBuf::as_path))
+        {
+            let real = path.canonicalize().map_err(unavailable)?;
             // realpath resolves each parent before opening the adopted path.
             // Parent metadata grants no sibling content or directory listing.
             for parent in real.ancestors().skip(1) {
@@ -306,7 +389,13 @@ impl MacRuntime {
             command.argv,
         ]
         .concat();
-        let child = spawn_suspended(&args, &command.environment, &command.working_directory)?;
+        let child = spawn_suspended(
+            &args,
+            &command.environment,
+            &command.working_directory,
+            listener.as_ref().map(AsRawFd::as_raw_fd),
+        )?;
+        drop(listener);
         let mut child = child;
         let process = birth(child.pid)?
             .ok_or_else(|| unavailable("suspended process identity unavailable"))?;
@@ -384,10 +473,32 @@ impl MacRuntime {
             child.reaped = true;
         }
         let mut result = NativeObservation { backend: "macos-seatbelt-no-fork".into(), enforcement: vec!["Seatbelt adopted read paths and ancestor directory metadata, no file writes, no direct socket connections or Mach lookups, no process fork, pinned private executable snapshot and exact environment".into(), "single process; observed waitpid termination; bounded retained output and wall deadline while the executor remains live".into()], dependencies: vec!["EXPLICIT BROADER MEMORY: resident memory is polled; transient allocations and kernel pressure are not hard-capped".into(), "EXPLICIT BROADER EXECUTOR RESTART: a controller crash may leave the process running beyond its deadline; restart retains unknown cleanup and concurrency until the recorded process birth is absent. macOS Seatbelt, baseline sysctl reads and host-owned libraries are required".into()], exit_code: status.and_then(|s| std::process::ExitStatus::from_raw(s).code()), signal: status.and_then(|s| std::process::ExitStatus::from_raw(s).signal()), processes_stopped: stopped, output_truncated: truncated, termination_reason: reason.into() };
+        if endpoint {
+            result.enforcement[0] = "Seatbelt permits host system libraries, denies workload file scopes, Mach lookups and fork; only the pinned trusted endpoint helper receives sockets. Its native implementation filters the authorised typed selector before output.".into();
+            result.enforcement.extend(crate::endpoints::disclosure());
+        }
         if service {
             result.enforcement[0] = "Seatbelt adopted read paths and ancestor directory metadata, no file writes, no direct sockets or fork; the pinned trusted launchctl client receives Mach lookup and, for stop/restart, native signal permission, with fixed adopted action/resource and exact environment".into();
             result.dependencies.push("EXPLICIT BROADER NETWORK/IPC: Mach lookup scope is not per-service isolation; the OS client and its system libraries are trusted executor code".into());
             result.dependencies.push(crate::unix_services::disclosure());
+        }
+        if !writes.is_empty() {
+            result.enforcement[0] = "Seatbelt selected read/write paths, canonical ancestor metadata, no process fork, Mach lookup or Unix-socket bind/connect, pinned private executable snapshot and exact environment; selected IP sockets follow the separately reported network boundary".into();
+            result.dependencies.push(format!("selected host read/write paths {writes:?}; validation refuses existing hard links outside the writable scope and executor control/runtime aliases. Seatbelt follows resolved paths at access time; host replacement changes the selected path contents. New descendants and file replacement are allowed within selected directories. Files persist after completion, cancellation and restart. Host services can consume written configuration outside this child's lifecycle; those indirect effects are not observed or rolled back. output_bytes bounds stdout/stderr, not file storage; Output does not retrieve these files."));
+        }
+        if !op.execution.network.destinations.is_empty()
+            || !op.execution.network.listeners.is_empty()
+        {
+            result.dependencies.extend(network_enforcement(op));
+            if writes.is_empty() {
+                result.enforcement[0] = "Seatbelt selected read paths, no writes, fork, Mach lookup or Unix-socket bind/connect, pinned private executable snapshot and exact environment; IP sockets follow the separately reported network boundary".into();
+            }
+        }
+        if op.execution.network.listener_handoff.is_some() {
+            result
+                .dependencies
+                .extend(crate::endpoints::handoff_disclosure(op));
+            result.enforcement.push("The trusted executor passes the selected listening TCP socket as descriptor 3. Unconnected TCP descriptors grant no channel: additional binding, implicit listen, outbound connections and fork remain denied unless separately granted by a supported ordinary profile.".into());
         }
         Ok(result)
     }
@@ -492,6 +603,7 @@ fn spawn_suspended(
     args: &[String],
     environment: &std::collections::BTreeMap<String, String>,
     cwd: &str,
+    listener: Option<i32>,
 ) -> Result<MacChild, Refusal> {
     // All allocation happens before posix_spawn. The kernel creates a suspended
     // child, with only the explicit standard descriptors, before durable capture.
@@ -549,6 +661,13 @@ fn spawn_suspended(
                         &mut actions,
                         write.as_raw_fd(),
                         n as i32 + 1,
+                    ))?;
+                }
+                if let Some(listener) = listener {
+                    check(libc::posix_spawn_file_actions_adddup2(
+                        &mut actions,
+                        listener,
+                        3,
                     ))?;
                 }
                 check(posix_spawn_file_actions_addchdir_np(

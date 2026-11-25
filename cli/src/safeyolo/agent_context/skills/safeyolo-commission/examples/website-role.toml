@@ -1,0 +1,8 @@
+# Proposed addition to the selected Factory TOML, not a complete Factory.
+# Choose an available agent name and the authorized supported harness.
+# Copy website-role.md beside the complete Factory candidate before checking it.
+# Preserve the original roles, room, work policy and operator-input selection.
+[roles.website]
+agent = "proposed-movie-website"
+harness = "codex"
+contract = "website-role.md"

@@ -20,17 +20,21 @@ case "$phase" in
 prepare)
     [ ! -e "$probe/work.txt" ] || { echo 'Preparation already exists; inspect it before selecting another operation.' >&2; exit 1; }
     [ ! -e "$config" ] && [ ! -e "$outside" ] || { echo 'Fixture configuration already exists.' >&2; exit 1; }
-    install -d -m 0700 "$probe/package/DEBIAN" "$probe/package/usr/local/bin"
-    cat > "$probe/package/DEBIAN/control" <<'CONTROL'
+    install -d -m 0700 "$probe"
+    (
+        umask 022
+        install -d -m 0755 "$probe/package/DEBIAN" "$probe/package/usr/local/bin"
+        cat > "$probe/package/DEBIAN/control" <<'CONTROL'
 Package: sy-retention-fixture
 Version: 2.0
 Architecture: all
 Maintainer: SafeYolo probe <probe@localhost>
 Description: owned guest-restoration acceptance fixture
 CONTROL
-    printf '#!/bin/sh\nprintf "retained prerequisite 2.0\\n"\n' > "$probe/package/usr/local/bin/sy-retention-fixture"
-    chmod 0755 "$probe/package/usr/local/bin/sy-retention-fixture"
-    dpkg-deb --root-owner-group --build "$probe/package" "$probe/prerequisite.deb"
+        printf '#!/bin/sh\nprintf "retained prerequisite 2.0\\n"\n' > "$probe/package/usr/local/bin/sy-retention-fixture"
+        chmod 0755 "$probe/package/usr/local/bin/sy-retention-fixture"
+        dpkg-deb --root-owner-group --build "$probe/package" "$probe/prerequisite.deb"
+    )
     safeyolo-guest-state restore --apply
     sudo -n dpkg --install "$probe/prerequisite.deb"
     # The fixture's constraint is explicit recovery input, not vulnerability assurance.

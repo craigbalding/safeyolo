@@ -175,7 +175,7 @@ impl Store {
             .response
     }
     fn prepared(&mut self, target: &Target, id: &str, key: &Ed25519KeyPair) -> Prepared {
-        let Response::Proposal { prepared } = self.call(
+        let Response::Proposal { prepared, .. } = self.call(
             target,
             Action::Propose {
                 invocation: invocation(target, "restart"),
@@ -267,6 +267,10 @@ fn expansions_defaults_identity_effects_and_missing_enforcement_cannot_inherit_a
         ),
         ("/execution/identity/principal", serde_json::json!("root")),
         (
+            "/execution/network/listeners",
+            serde_json::json!([{"address":"127.0.0.1","port":12345,"transport":"tcp"}]),
+        ),
+        (
             "/execution/environment/LANG",
             serde_json::json!({"kind":"literal","value":"other"}),
         ),
@@ -324,6 +328,37 @@ fn expansions_defaults_identity_effects_and_missing_enforcement_cannot_inherit_a
     let mut attempt = adoption;
     attempt.observed = signed_catalogue(&candidate, &key, false, None);
     assert_eq!(attempt.plan(now()).unwrap().status.state, "awaiting_review");
+}
+
+#[test]
+fn listeners_accept_kernel_allocation_without_becoming_destination_authority() {
+    let (mut target, _, _) = fixture();
+    let before = target.package.operations["restart"].clone();
+    let listener = NetworkListener {
+        address: "::".parse().unwrap(),
+        port: 0,
+        transport: NetworkTransport::Tcp,
+    };
+    target
+        .package
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .execution
+        .network
+        .listeners
+        .push(listener);
+    target.package.validate().unwrap();
+    let after = &target.package.operations["restart"];
+    assert!(after.execution.network.destinations.is_empty());
+    assert_ne!(before.authority_sha256(), after.authority_sha256());
+    assert!(!within_operation(after, &before, true));
+    assert!(
+        serde_json::from_value::<NetworkListener>(
+            serde_json::json!({"address":"not-an-address","port":0,"transport":"tcp"})
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -707,7 +742,7 @@ fn family_call_budget_counts_distinct_operation_selectors_together() {
     adoption.observed = signed_catalogue(&package, &key, false, None);
     let current = activate(&target, &adoption);
     let mut store = Store::new(&current);
-    let Response::Proposal { prepared } = store.call(
+    let Response::Proposal { prepared, .. } = store.call(
         &current,
         Action::Propose {
             invocation: invocation(&current, "diagnose:first"),
@@ -851,14 +886,17 @@ fn independent_budget_scopes(concurrent: bool) {
         let mut store = Store::new(&current);
         let mut prepared = Vec::new();
         for id in ["diagnose:sub:first", "diagnose:sub:second"] {
-            let Response::Proposal { prepared: proposal } = store.call(
+            let Response::Proposal {
+                prepared: proposal, ..
+            } = store.call(
                 &current,
                 Action::Propose {
                     invocation: invocation(&current, id),
                 },
                 id,
                 &key,
-            ) else {
+            )
+            else {
                 panic!("proposal");
             };
             prepared.push(proposal);
@@ -994,7 +1032,7 @@ fn target_budget_is_shared_across_issuers_and_grants() {
                     .insert("other".into(), original.authority.grants["grant"].clone());
             }
             let mut store = Store::new(&target);
-            let Response::Proposal { prepared } = store.call(
+            let Response::Proposal { prepared, .. } = store.call(
                 &target,
                 Action::Propose {
                     invocation: invocation(&target, "diagnose:sub:first"),
@@ -1096,7 +1134,7 @@ fn pending_dispatch_excludes_only_its_own_grant_revision_reservation() {
                 .budgets
                 .calls += 1;
         }
-        let Response::Proposal { prepared } = store.call(
+        let Response::Proposal { prepared, .. } = store.call(
             &target,
             Action::Propose {
                 invocation: invocation(&target, id),
@@ -1270,4 +1308,59 @@ fn exact_issuer_scope_does_not_inherit_new_effect_understanding_for_the_same_exe
             .code,
         RefusalCode::Stale
     );
+}
+
+#[test]
+fn listener_handoff_changes_authority_and_keeps_alternative_order() {
+    use safeyolo_host_executor::endpoints::EndpointSelection;
+    let (mut target, _, _) = fixture();
+    let before = target.package.operations["restart"].clone();
+    let selection: EndpointSelection = serde_json::from_value(serde_json::json!({"candidates":[
+        {"transport":"tcp","family":"ipv4","address":"127.0.0.1","interface":null,
+         "port":8000,"ipv6_only":false,"reuse_address":false,"reuse_port":false},
+        {"transport":"tcp","family":"ipv4","address":"0.0.0.0","interface":null,
+         "port":0,"ipv6_only":false,"reuse_address":false,"reuse_port":false}
+    ]}))
+    .unwrap();
+    target
+        .package
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .execution
+        .network
+        .listener_handoff = Some(selection);
+    target.package.validate().unwrap();
+    let after = target.package.operations["restart"].clone();
+    assert_ne!(before.authority_sha256(), after.authority_sha256());
+    assert!(!within_operation(&after, &before, true));
+    target
+        .package
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .execution
+        .network
+        .listener_handoff
+        .as_mut()
+        .unwrap()
+        .candidates
+        .reverse();
+    assert_ne!(
+        after.authority_sha256(),
+        target.package.operations["restart"].authority_sha256()
+    );
+    target
+        .package
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .execution
+        .network
+        .listener_handoff
+        .as_mut()
+        .unwrap()
+        .candidates[0]
+        .transport = NetworkTransport::Udp;
+    assert!(target.package.validate().is_err());
 }

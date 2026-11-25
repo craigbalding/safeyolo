@@ -93,6 +93,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -242,6 +243,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -414,6 +416,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -586,6 +589,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -739,6 +743,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -976,6 +981,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -1170,6 +1176,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -1390,6 +1397,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -1581,6 +1589,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -1715,6 +1724,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -1877,6 +1887,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -2026,6 +2037,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -2201,6 +2213,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -2372,6 +2385,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -2538,6 +2552,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -2654,6 +2669,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -2823,6 +2839,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -2964,6 +2981,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -3098,6 +3116,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -3232,6 +3251,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -3380,6 +3400,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -3549,6 +3570,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -3710,6 +3732,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },
@@ -3869,6 +3892,7 @@
           "write": []
         },
         "network": {
+          "listeners": [],
           "destinations": [],
           "ipc": []
         },

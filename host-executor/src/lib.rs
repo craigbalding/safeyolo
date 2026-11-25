@@ -4,6 +4,8 @@
 mod authority;
 mod catalogue;
 pub mod effects;
+pub mod endpoints;
+mod files;
 pub mod https;
 mod ledger;
 #[cfg(target_os = "linux")]

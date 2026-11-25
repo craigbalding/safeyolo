@@ -437,9 +437,18 @@ impl Ledger {
         let mut dispatch = false;
         let mut reserved_cancellation = None;
         let response = match &req.action {
-            Action::Discover => Response::Discovery {
-                discovery: Box::new(target.discover(&auth)?),
-            },
+            Action::Discover => {
+                let mut discovery = target.discover(&auth)?;
+                if let Some(runtime) = runtime {
+                    for operation in &mut discovery.operations {
+                        operation.network_enforcement =
+                            runtime.network_enforcement(&operation.definition);
+                    }
+                }
+                Response::Discovery {
+                    discovery: Box::new(discovery),
+                }
+            }
             Action::Propose { invocation } => {
                 let prepared = target.prepare(
                     &auth,
@@ -453,6 +462,13 @@ impl Ledger {
                 }
                 Response::Proposal {
                     prepared: Box::new(prepared),
+                    network_enforcement: runtime
+                        .map(|runtime| {
+                            runtime.network_enforcement(
+                                &target.package.operations[&invocation.operation_id],
+                            )
+                        })
+                        .unwrap_or_default(),
                 }
             }
             Action::Invoke { invocation } => {
@@ -516,10 +532,15 @@ impl Ledger {
             }
             Action::Job { job_id }
             | Action::Output { job_id, .. }
+            | Action::File { job_id, .. }
             | Action::Cancel { job_id, .. } => {
                 let mut retained = receipt(&transaction, job_id)?;
                 target.authorize_job(&auth, &retained)?;
                 match req.action {
+                    Action::File { max_bytes, .. } => {
+                        let roots = target.file_result_roots(&auth, &retained, max_bytes)?;
+                        crate::files::read(&retained, &req.action, roots, now)?
+                    }
                     Action::Cancel {
                         expected_revision, ..
                     } => {
@@ -716,6 +737,30 @@ impl Ledger {
     #[cfg(target_os = "macos")]
     pub(crate) fn artifact_root(&self) -> &Path {
         &self.root
+    }
+
+    /// Retain the selected endpoint before launch, so running jobs expose the
+    /// actual kernel-selected port without treating a probe as a reservation.
+    #[cfg(unix)]
+    pub(crate) fn attach_listener(
+        &mut self,
+        job_id: &str,
+        observation: crate::endpoints::EndpointObservation,
+    ) -> Result<(), Refusal> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(unavailable)?;
+        let mut retained = receipt(&transaction, job_id)?;
+        require(
+            retained.state == JobState::Running && retained.listener_handoff.is_none(),
+            RefusalCode::Conflict,
+            "listener handoff requires a running job without a prior listener",
+        )?;
+        retained.listener_handoff = Some(observation);
+        retained.revision += 1;
+        save_receipt(&transaction, &retained)?;
+        transaction.commit().map_err(unavailable)
     }
 
     /// Save the identity of a suspended native process before it can perform

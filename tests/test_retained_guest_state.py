@@ -579,6 +579,91 @@ def test_configuration_copy_without_timestamp_permission(guest, tmp_path, monkey
     assert "synthetic copy failure" in saved(state)["capture_error"]
 
 
+@pytest.mark.parametrize("change", ["contents", "mode", "link_target"])
+def test_configuration_change_after_copy_does_not_complete_capture(guest, tmp_path, monkeypatch, change):
+    root, state, command = guest
+    config = root / "etc/concurrent-setting"
+    if change == "link_target":
+        config.symlink_to("fixture.conf")
+        mutation = "p.unlink(); p.symlink_to('different.conf')"
+    else:
+        config.write_text("before copy\n")
+        config.chmod(0o644)
+        mutation = "p.write_text('after copy\\n')" if change == "contents" else "p.chmod(0o600)"
+    before = saved(state)
+    tools = tmp_path / "copy-tools"
+    tools.mkdir()
+    copier = tools / "cp"
+    # Change the live input only after a successful copy. The mirror alone
+    # still matches the opening snapshot, so capture must recheck the source.
+    copier.write_text(
+        '#!/bin/sh\n' + shlex.quote(shutil.which("cp")) + ' "$@" || exit "$?"\n'
+        + 'if [ "$3" = ' + shlex.quote(str(config)) + ' ]; then\n'
+        + shlex.join([sys.executable, "-c", f"from pathlib import Path; p = Path({str(config)!r}); {mutation}"])
+        + '\nfi\n'
+    )
+    copier.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ["PATH"])
+    result = run(*command, "capture", check=False)
+    if change == "contents":
+        assert config.read_text() == "after copy\n"
+    elif change == "mode":
+        assert config.stat().st_mode & 0o7777 == 0o600
+    else:
+        assert config.readlink() == Path("different.conf")
+    assert result.returncode
+    record = saved(state)
+    field = {"contents": "hash", "mode": "mode", "link_target": "target"}[change]
+    assert f"final source versus opening source: {field}" in record["capture_error"]
+    assert "copied mirror versus" not in record["capture_error"]
+    assert "retry after writes settle" in record["capture_error"]
+    assert record["capture_error"] in result.stderr
+    assert str(config) not in record["capture_error"]
+    # The existing JSON float timestamp can round by one ULP when Rust rereads it.
+    assert record["last_completed_capture"] == pytest.approx(before["last_completed_capture"], rel=0, abs=1e-6)
+    assert record["configuration_commit"] == before["configuration_commit"]
+
+
+@pytest.mark.parametrize("change", ["contents", "mode", "path_set", "both"])
+def test_capture_reports_copy_difference_without_committing(guest, tmp_path, monkeypatch, change):
+    root, state, command = guest
+    config = root / "etc/private-path-marker"
+    config.write_text("private-content-marker\n")
+    before = saved(state)
+    target = state / "configuration/etc/private-path-marker"
+    mutation = {
+        "contents": "p.write_text('corrupted-private-content-marker\\n')",
+        "mode": "p.parent.chmod(0o700)",
+        "path_set": "p.with_name('extra-private-path-marker').write_text('private-content-marker\\n')",
+        "both": f"p.write_text('corrupted-private-content-marker\\n'); Path({str(config)!r}).write_text('source-private-content-marker\\n')",
+    }[change]
+    tools = tmp_path / "copy-tools"
+    tools.mkdir()
+    copier = tools / "cp"
+    copier.write_text(
+        '#!/bin/sh\n' + shlex.quote(shutil.which("cp")) + ' "$@" || exit "$?"\n'
+        + 'if [ "$3" = ' + shlex.quote(str(config)) + ' ]; then\n'
+        + shlex.join([sys.executable, "-c", f"from pathlib import Path; p = Path({str(target)!r}); {mutation}"])
+        + '\nfi\n'
+    )
+    copier.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ["PATH"])
+    result = run(*command, "capture", check=False)
+    assert result.returncode
+    record = saved(state)
+    error = record["capture_error"]
+    field = {"contents": "hash", "mode": "mode", "path_set": "path set", "both": "hash"}[change]
+    assert f"copied mirror versus opening source: {field}" in error
+    assert ("final source versus opening source: hash" in error) == (change == "both")
+    assert "marker" not in error
+    assert "inspect the configuration copy before retrying" in error
+    assert error in result.stderr
+    assert record["status"] == "needs_attention"
+    assert record["last_completed_capture"] == pytest.approx(before["last_completed_capture"], rel=0, abs=1e-6)
+    assert record["configuration_commit"] == before["configuration_commit"]
+    assert run("git", "-C", str(state / "configuration"), "rev-parse", "HEAD").stdout.strip() == before["configuration_commit"]
+
+
 def test_interrupted_dpkg_and_capture_failure_remain_visible(guest, tmp_path):
     import signal
     import socket

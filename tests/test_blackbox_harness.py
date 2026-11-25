@@ -469,8 +469,9 @@ def test_lifecycle_late_failure_keeps_completed_observations_and_cleanup(tmp_pat
             emitted_before_failure.extend(json.loads(line) for line in capsys.readouterr().out.splitlines())
             assert [row["phase"] for row in emitted_before_failure] == ["proxy_crash_before"]
         monkeypatch.setattr(installed_shared_approvals.os, "kill", kill)
-        monkeypatch.setattr(installed_shared_approvals, "_pid_alive", lambda _pid: False)
-        monkeypatch.setattr(installed_shared_approvals, "_process_start_token", lambda _pid: "controlled")
+        monkeypatch.setattr(lifecycle, "_runtime_observation", installed_shared_approvals._runtime_observation)
+        monkeypatch.setattr(lifecycle, "_pid_alive", lambda _pid: False)
+        monkeypatch.setattr(lifecycle, "_process_start_token", lambda _pid: "controlled")
     args = SimpleNamespace(config_dir=root, native_cli=cli, native_proxy=proxy, transport_cli=str(cli),
         worker="worker", helper="helper", commit=commit, interfaces=False, real_helper=False, model_unavailable=False,
         shared_room=None, delegated_lifecycle=True, delegated_lifecycle_remainder=not crash_mode,
@@ -2145,6 +2146,8 @@ VERBOSE=
 PYTEST_FORWARD_ARGS=()
 EXPECTED_PLATFORM=systrap
 ARTIFACTS_DIR="$SCRIPT_DIR/reports"
+CONFIG_SHARE="$SCRIPT_DIR/controlled-share"
+SAFEYOLO_CONFIG_DIR="$SCRIPT_DIR/controlled-instance"
 
 fixture_suite_exit() {
     printf '%s\n' "$1" >> "$SCRIPT_DIR/suites.log"
@@ -2163,6 +2166,15 @@ run_pytest_phase() {
 }
 
 python3() {
+    if [[ "$1" == */harness/containment.py ]]; then
+        # This fixture controls process exits, not delivery observations.
+        # Unwrap the host observer and retain its actual guest command.
+        while [[ "$1" != -- ]]; do shift; done
+        shift
+        shift
+        python3 "$@"
+        return
+    fi
     if [[ "$1" != */guest_exec.py ]]; then
         command python3 "$@"
         return
@@ -2847,6 +2859,9 @@ for phase in phases:
                       finished=True, exit=0, collected=nodes, selected=nodes,
                       tests={node: dict.fromkeys(('setup','call','teardown'),'passed') for node in nodes})
         name = 'pytest-' + phase + '.json'
+        if phase in {'guest-agent', 'guest-root'}:
+            observer = {'status':'passed', 'phase':phase, 'guest':context, 'run_id':report['run_id']}
+            (root / 'data' / ('containment-' + phase + '.json')).write_text(json.dumps(observer))
     else:
         required = next((names for section, names in AUTHORITY_CONTROLS.values() if section == phase), ())
         report.update(section=phase, finished=True, checkpoints=list(PROCEDURES[phase][1]),

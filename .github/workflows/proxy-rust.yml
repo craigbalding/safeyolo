@@ -99,12 +99,17 @@ jobs:
       - name: Prepare the Windows cross compiler
         if: matrix.target == 'x86_64-pc-windows-gnu'
         run: |
+          # The runner's regional mirror is too slow for this lane. Keep its
+          # existing Ubuntu upstreams and signed repository configuration.
+          printf '%s\tpriority:%s\n' 'https://archive.ubuntu.com/ubuntu/' 1 'https://security.ubuntu.com/ubuntu/' 2 | \
+            sudo -n tee /etc/apt/apt-mirrors.txt
           sudo -n apt-get update -qq
-          sudo -n apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+          # The metapackage also installs the unused POSIX thread variant.
+          sudo -n apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64-win32
           rustup target add "$EXECUTOR_TARGET"
-          printf '%s\n' 'CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc' \
+          printf '%s\n' 'CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc-win32' \
             'AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar' \
-            'CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc' \
+            'CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc-win32' \
             'CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS=-C target-feature=+crt-static -C link-arg=-static' >> "$GITHUB_ENV"
       - name: Restore executor build dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

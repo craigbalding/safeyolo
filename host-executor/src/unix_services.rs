@@ -138,7 +138,11 @@ pub(crate) fn validate(operation: &Operation) -> Result<bool, Refusal> {
         None => e.network.ipc.is_empty(),
     };
     require(
-        e.filesystem.write.is_empty() && e.network.destinations.is_empty() && matching_ipc,
+        e.filesystem.write.is_empty()
+            && e.network.destinations.is_empty()
+            && e.network.listeners.is_empty()
+            && e.network.listener_handoff.is_none()
+            && matching_ipc,
         RefusalCode::Unavailable,
         "service helper permits no writes or direct network; its manager channel is fixed",
     )?;
