@@ -368,7 +368,11 @@ fn starter(settings: &Starter, identity: ExecutionIdentity) -> Result<Package, R
                 })
                 .collect(),
             prerequisites: operation.enforcement.adopted.clone(),
-            limitations: operation.enforcement.unresolved.clone(),
+            limitations: if name == "endpoint-inspect" {
+                vec![crate::endpoints::INSPECTION_LIMITATION.into()]
+            } else {
+                operation.enforcement.unresolved.clone()
+            },
             evidence: vec!["package".into()],
         });
     }

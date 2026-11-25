@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr};
 
 pub const INSPECT_COMMAND: &str = "inspect-endpoint";
+pub(crate) const INSPECTION_LIMITATION: &str = "A successful check is not a reservation. Application readiness, forwarding, authentication/TLS and audience reach remain unobserved.";
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -137,7 +138,10 @@ pub(crate) fn inspection_operation(
     })]);
     operation.enforcement.enforced = disclosure();
     operation.enforcement.adopted = vec!["The exact native helper and complete typed selector choices, intersected with current issuer and target authority.".into()];
-    operation.enforcement.adopted.push("A successful check is not a reservation. Application readiness, forwarding, authentication/TLS and audience reach remain unobserved.".into());
+    operation
+        .enforcement
+        .adopted
+        .push(INSPECTION_LIMITATION.into());
     operation.enforcement.unresolved.clear();
     operation.semantics = None;
     operation
