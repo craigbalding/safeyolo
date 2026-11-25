@@ -491,6 +491,11 @@ impl MacRuntime {
                     RefusalCode::Unavailable,
                     "process group did not become quiescent after SIGKILL; cleanup is unconfirmed",
                 )?;
+                // A fork already in progress can publish a new group member
+                // after the first group-directed signal. Our unreaped leader
+                // still reserves this group ID, so close that race by signalling
+                // again until native observation confirms quiescence.
+                child.kill_group()?;
                 truncated |= child.output(ledger, &receipt.job_id, false)?.0;
                 std::thread::sleep(Duration::from_millis(10));
             }
