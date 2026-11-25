@@ -15,6 +15,66 @@ use crate::{
 
 pub use crate::credentials::SubscriptionClient as Client;
 
+/// Inspect only the explicitly selected local file. Never expose its tokens,
+/// infer provider validity, or modify a source while building a login menu.
+pub(crate) fn inspect(path: &std::path::Path, client: Client) -> Value {
+    use std::{fs, io::Read, os::unix::fs::OpenOptionsExt};
+    let result = (|| -> Result<Value, Error> {
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() > 1024 * 1024 {
+            return Ok(
+                serde_json::json!({"state":"unsupported","reason":"expected a bounded ordinary login file"}),
+            );
+        }
+        let mut bytes = Zeroizing::new(Vec::new());
+        file.by_ref()
+            .take(1024 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > 1024 * 1024 {
+            return Err("login file changed while reading".into());
+        }
+        let mut document: Value = match serde_json::from_slice(&bytes) {
+            Ok(value) => value,
+            Err(_) => {
+                return Ok(
+                    serde_json::json!({"state":"unsupported","reason":"not supported login JSON"}),
+                );
+            }
+        };
+        let api_key = client == Client::Codex
+            && document["OPENAI_API_KEY"]
+                .as_str()
+                .is_some_and(|key| !key.is_empty());
+        wipe_json(&mut document);
+        if api_key {
+            return Ok(
+                serde_json::json!({"state":"found","kind":"API key","provider_validity":"unknown"}),
+            );
+        }
+        // Reuse the real subscription parser, then retain safe metadata only.
+        match import_login(client, "inspection", bytes.as_slice()) {
+            Ok(record) => Ok(
+                serde_json::json!({"state":"found","kind":"subscription","account_id":record.chatgpt_account_id,
+                "expires_at":record.expires_at,"provider_validity":"unknown"}),
+            ),
+            Err(_) => Ok(
+                serde_json::json!({"state":"unsupported","reason":"no supported subscription login or client API key"}),
+            ),
+        }
+    })();
+    match result {
+        Ok(value) => value,
+        Err(_) => {
+            serde_json::json!({"state":if matches!(fs::symlink_metadata(path),Err(error) if error.kind()==std::io::ErrorKind::NotFound) {"missing"} else {"unreadable"},
+            "provider_validity":"unknown"})
+        }
+    }
+}
+
 pub fn import_login(client: Client, name: &str, mut input: impl Read) -> Result<Credential, Error> {
     let mut bytes = Zeroizing::new(Vec::new());
     input.read_to_end(&mut bytes)?;
@@ -33,6 +93,38 @@ fn required<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
         .as_str()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "subscription login is missing a required token".into())
+}
+
+#[cfg(test)]
+mod inspection_tests {
+    use super::*;
+
+    #[test]
+    fn inspection_distinguishes_sources_and_never_returns_authentication_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("auth.json");
+        assert_eq!(inspect(&path, Client::Codex)["state"], "missing");
+        std::fs::write(&path, "invalid JSON").unwrap();
+        assert_eq!(inspect(&path, Client::Codex)["state"], "unsupported");
+        std::fs::write(&path, r#"{"OPENAI_API_KEY":"synthetic-private-key"}"#).unwrap();
+        let inspected = inspect(&path, Client::Codex);
+        assert_eq!(inspected["state"], "found");
+        assert_eq!(inspected["kind"], "API key");
+        assert_eq!(inspected["provider_validity"], "unknown");
+        assert!(!inspected.to_string().contains("synthetic-private-key"));
+        std::fs::write(&path, r#"{"claudeAiOauth":{"accessToken":"synthetic-access","refreshToken":"synthetic-refresh","expiresAt":2000000000000,"scopes":["user:inference"]}}"#).unwrap();
+        let inspected = inspect(&path, Client::Claude);
+        assert_eq!(inspected["state"], "found");
+        assert_eq!(inspected["kind"], "subscription");
+        assert!(!inspected.to_string().contains("synthetic-access"));
+        let linked = directory.path().join("linked");
+        std::os::unix::fs::symlink(&path, &linked).unwrap();
+        assert_eq!(inspect(&linked, Client::Claude)["state"], "unreadable");
+        assert_eq!(
+            inspect(directory.path(), Client::Claude)["state"],
+            "unsupported"
+        );
+    }
 }
 
 fn expiry(timestamp: i64) -> Result<String, Error> {

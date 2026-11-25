@@ -24,7 +24,7 @@ const WEEKDAYS: [&str; 7] = [
     "sunday",
 ];
 
-pub const HELP: &str = "safeyolo [--root ROOT] coord dispatch-trigger ROOM --date YYYY-MM-DD [--weekly-on monday|tuesday|wednesday|thursday|friday|saturday|sunday] [--publication-mode manual|automatic]\n\nPost one operator-authored Dispatch request. The date is required; manual publication is the default. Retry the same command to reconcile the durable message. An unknown attempted publication is never automatically resent.";
+pub const HELP: &str = "safeyolo [--instance-dir PATH] coord dispatch-trigger ROOM --date YYYY-MM-DD [--weekly-on monday|tuesday|wednesday|thursday|friday|saturday|sunday] [--publication-mode manual|automatic]\n\nPost one operator-authored Dispatch request. The date is required; manual publication is the default. Retry the same command to reconcile the durable message. An unknown attempted publication is never automatically resent.";
 
 pub fn render_task(day: Date, weekly_on: &str, mode: &str) -> Result<(String, String), Error> {
     let weekday = WEEKDAYS

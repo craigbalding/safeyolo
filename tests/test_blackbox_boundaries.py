@@ -72,7 +72,7 @@ def job_observer_cli(tmp_path):
 import json, pathlib, shutil, signal, subprocess, sys, time
 sys.path.insert(0, {str(ROOT)!r})
 from tests.blackbox.harness.process_identity import process_start_token
-root = pathlib.Path(sys.argv[sys.argv.index("--root") + 1])
+root = pathlib.Path(sys.argv[sys.argv.index("--instance-dir") + 1])
 directory = root / "data/job-observer"
 directory.mkdir()
 (directory / "config.toml").symlink_to(root / "config.toml")
@@ -147,7 +147,7 @@ def test_job_network_caller_keeps_backend_readiness_and_failure_evidence(job_obs
 def test_job_observer_waits_for_verified_live_backend(job_observer_cli, monkeypatch, mode, interrupt):
     cli, root = job_observer_cli(mode)
     monkeypatch.setenv("SAFEYOLO_BLACKBOX_LANE", "systrap")
-    result, records, observed = job_sandbox.interrupt_request([str(cli), "--root", str(root)], root, interrupt)
+    result, records, observed = job_sandbox.interrupt_request([str(cli), "--instance-dir", str(root)], root, interrupt)
     assert result.returncode == (0 if interrupt is None else 128 + interrupt), result.stderr
     assert len(records) == len(observed) == 1
     backend = observed[0]
@@ -169,7 +169,7 @@ def test_job_observer_waits_for_verified_live_backend(job_observer_cli, monkeypa
 def test_job_observer_rejects_invalid_live_identity_after_starting(job_observer_cli, monkeypatch, mode, error):
     cli, root = job_observer_cli(mode)
     monkeypatch.setenv("SAFEYOLO_BLACKBOX_LANE", "kvm" if mode == "wrong-lane" else "systrap")
-    result, records, observed = job_sandbox.interrupt_request([str(cli), "--root", str(root)], root, None)
+    result, records, observed = job_sandbox.interrupt_request([str(cli), "--instance-dir", str(root)], root, None)
     assert result.returncode == 128 + signal.SIGTERM
     assert len(records) == 1 and observed == [{"error": error}]
     assert b"published live\n" in result.stderr and b"owned cleanup\n" in result.stderr
@@ -182,7 +182,7 @@ def test_job_observer_keeps_starting_within_existing_deadline(job_observer_cli, 
     monotonic = job_sandbox.time.monotonic
     monkeypatch.setattr(job_sandbox.time, "monotonic", lambda: monotonic() + (181 if record.exists() else 0))
     with pytest.raises(subprocess.TimeoutExpired) as timeout:
-        job_sandbox.interrupt_request([str(cli), "--root", str(root)], root, signal.SIGINT)
+        job_sandbox.interrupt_request([str(cli), "--instance-dir", str(root)], root, signal.SIGINT)
     assert b"published starting\n" in timeout.value.stderr and b"owned cleanup\n" in timeout.value.stderr
     assert b"published live\n" not in timeout.value.stderr and b"caller signal 2\n" not in timeout.value.stderr
     assert job_sandbox.job_directories(root) == set()
@@ -447,13 +447,13 @@ def test_installed_mounts_select_guest_holder_before_starting_services(tmp_path,
     ready = probe == "supplied" or (lane == "systrap" and probe is None)
     if ready:
         assert boundaries.run(args) == 0
-        coord = [str(base / "bin/safeyolo"), "--root", str(args.root), "coord", "start"]
+        coord = [str(base / "bin/safeyolo"), "--instance-dir", str(args.root), "coord", "start"]
         if explicit_ports:
             coord += ["--client-port", "46375", "--monitor-port", "46378"]
         elif lane == "vz":
             coord += ["--client-port", "46370", "--monitor-port", "46372"]
         assert calls[0] == ("admin", 46374 if explicit_ports else 46371 if lane == "vz" else 43123)
-        assert calls[1:] == ["nats", coord, [str(base / "bin/safeyolo"), "--root", str(args.root), "start"], "mounts"]
+        assert calls[1:] == ["nats", coord, [str(base / "bin/safeyolo"), "--instance-dir", str(args.root), "start"], "mounts"]
     else:
         with pytest.raises((ValueError, FileNotFoundError)):
             boundaries.run(args)
@@ -506,7 +506,7 @@ def test_boundary_port_options_reach_job_and_docker_consumers(tmp_path, monkeypa
     monkeypatch.setattr(job_network, "run", network)
     monkeypatch.setattr(docker, "recurring_journey", nested_docker)
     arguments = ["boundary", "--section", section, "--lane", lane, "--prepared-config", str(base),
-                 "--root", str(root), "--output", str(output), "--revision", revision]
+                 "--instance-dir", str(root), "--output", str(output), "--revision", revision]
     if explicit_ports:
         arguments += ["--admin-port", "46374", "--upstream-port", "46372"]
     monkeypatch.setattr(sys, "argv", arguments)
@@ -544,7 +544,7 @@ def test_explicit_boundary_receiver_binds_or_fails_without_complete_coverage(tmp
         if not busy:
             foreign.close()
         monkeypatch.setattr(sys, "argv", ["boundary", "--section", "job-sandbox", "--lane", "systrap",
-                                         "--prepared-config", str(base), "--root", str(root), "--output", str(output),
+                                         "--prepared-config", str(base), "--instance-dir", str(root), "--output", str(output),
                                          "--revision", revision, "--upstream-port", str(port)])
         assert boundaries.main() == (2 if busy else 0)
         if busy:

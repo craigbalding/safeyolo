@@ -23,7 +23,7 @@ For different hosts, first run this on the source host. The new file contains
 public instance and agent identities, with no credentials:
 
 ```sh
-safeyolo --root SOURCE_ROOT configure identity source-identity.json
+safeyolo --instance-dir SOURCE_ROOT configure identity source-identity.json
 ```
 
 Transfer that file to the destination operator through your authenticated
@@ -33,7 +33,7 @@ export and select the source root directly in the next step.
 On the destination owner, open connection setup:
 
 ```sh
-safeyolo --root OWNER_ROOT configure connection
+safeyolo --instance-dir OWNER_ROOT configure connection
 ```
 
 Select `broker`, then the source root or received identity file. Check both
@@ -66,7 +66,7 @@ or reverse route.
 On the source host, import the received private handoff:
 
 ```sh
-safeyolo --root SOURCE_ROOT configure connection
+safeyolo --instance-dir SOURCE_ROOT configure connection
 ```
 
 Select `import`, the handoff directory and the route name `primary`. Review the
@@ -78,7 +78,7 @@ different source instance. The route applies to the next request.
 On the destination owner, create the named support grant `incident`:
 
 ```sh
-safeyolo --root OWNER_ROOT configure support incident
+safeyolo --instance-dir OWNER_ROOT configure support incident
 ```
 
 Select the same source root or public identity file, its `support` agent, and
@@ -103,7 +103,7 @@ it does not need a running coding harness. This command starts no coding
 command or launch hooks:
 
 ```sh
-safeyolo --root SOURCE_ROOT agent start support --sandbox-only
+safeyolo --instance-dir SOURCE_ROOT agent start support --sandbox-only
 ```
 
 With that agent in its current run, execute this on the source host. The
@@ -112,7 +112,7 @@ It performs an inspection and records its receipt. It runs no guest command
 or lifecycle action:
 
 ```sh
-safeyolo --root SOURCE_ROOT support verify incident worker --agent support --home primary
+safeyolo --instance-dir SOURCE_ROOT support verify incident worker --agent support --home primary
 ```
 
 A successful result includes these representative fields among the connection,
@@ -142,7 +142,7 @@ before considering another operation. On the same source host, replace
 `OPERATION_ID` with that original ID:
 
 ```sh
-safeyolo --root SOURCE_ROOT support result OPERATION_ID --agent support --home primary
+safeyolo --instance-dir SOURCE_ROOT support result OPERATION_ID --agent support --home primary
 ```
 
 This reads the original receipt through current support authority. If the route
@@ -151,7 +151,7 @@ An unknown outcome remains unknown; reading current target state does not prove
 what the earlier operation did. For support within one instance, omit `--home`.
 
 For a failed verification, follow the printed next action on the named host.
-Use the same `safeyolo --root SOURCE_ROOT` or `safeyolo --root OWNER_ROOT`
+Use the same `safeyolo --instance-dir SOURCE_ROOT` or `safeyolo --instance-dir OWNER_ROOT`
 prefix as the earlier commands for that host:
 
 | Reported failure | Where to return | What to check |
@@ -178,8 +178,8 @@ For each owner below, replace `INSTANCE_ROOT` with that instance's root.
 If live events are disabled, edit this owner's `config.toml` on its host.
 In its `[command_centre]` table, set `enabled = true` and select an unused
 `events_port`. Each root on the same host needs a distinct event port.
-Then run `safeyolo --root INSTANCE_ROOT stop` and
-`safeyolo --root INSTANCE_ROOT start` with that owner's root to apply the change.
+Then run `safeyolo --instance-dir INSTANCE_ROOT stop` and
+`safeyolo --instance-dir INSTANCE_ROOT start` with that owner's root to apply the change.
 This interrupts requests and feeds; existing guests remain. Export below
 refuses disabled live events and identifies the selected owner to correct.
 
@@ -189,7 +189,7 @@ contains the full operator Admin credential for that owner. Keep the file
 private and transfer it only through your authenticated administrative channel:
 
 ```sh
-safeyolo --root INSTANCE_ROOT configure command-centre operator-connection.json
+safeyolo --instance-dir INSTANCE_ROOT configure command-centre operator-connection.json
 ```
 
 The command authenticates the running owner and displays its durable identity,
@@ -231,7 +231,7 @@ Return to the same named configuration command on the destination to edit
 Revoke the selected grant on its owner with:
 
 ```sh
-safeyolo --root OWNER_ROOT configure revoke-support incident
+safeyolo --instance-dir OWNER_ROOT configure revoke-support incident
 ```
 
 Review the exact current authority and remaining paths before confirming.
@@ -246,9 +246,9 @@ access after support revocation. Replace `OPERATION_ID` with the original ID
 from verification or the receipt list:
 
 ```sh
-safeyolo --root OWNER_ROOT support receipts
-safeyolo --root OWNER_ROOT support receipt OPERATION_ID
-safeyolo --root OWNER_ROOT support recover OPERATION_ID
+safeyolo --instance-dir OWNER_ROOT support receipts
+safeyolo --instance-dir OWNER_ROOT support receipt OPERATION_ID
+safeyolo --instance-dir OWNER_ROOT support recover OPERATION_ID
 ```
 
 The list excludes guest output. `recover` reads the original receipt, then
@@ -283,7 +283,7 @@ without granting room history or resolving the signal. On the source, read one
 retained notice page through the same support identity with:
 
 ```sh
-safeyolo --root SOURCE_ROOT support notices --agent support --home primary
+safeyolo --instance-dir SOURCE_ROOT support notices --agent support --home primary
 ```
 
 Use the printed scanned cursor with `--since` for another page. This cursor is
@@ -308,7 +308,7 @@ Approval delegation is optional and separate from support. On the owner of the
 pending approvals, open the named delegation:
 
 ```sh
-safeyolo --root OWNER_ROOT configure approvals builds
+safeyolo --instance-dir OWNER_ROOT configure approvals builds
 ```
 
 Select reviewers' durable agents and instance, local beneficiaries and explicit

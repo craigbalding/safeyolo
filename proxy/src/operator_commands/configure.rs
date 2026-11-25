@@ -5,13 +5,13 @@ use std::{fs, os::unix::fs::OpenOptionsExt};
 
 mod connection;
 
-pub(super) const HELP: &str = "safeyolo [--root ROOT] configure identity FILE
-safeyolo [--root ROOT] configure command-centre [FILE]
-safeyolo [--root ROOT] configure connection
-safeyolo [--root ROOT] configure support NAME
-safeyolo [--root ROOT] configure approvals NAME
-safeyolo [--root ROOT] configure revoke-support NAME
-safeyolo [--root ROOT] configure revoke-approvals NAME
+pub(super) const HELP: &str = "safeyolo [--instance-dir PATH] configure identity FILE
+safeyolo [--instance-dir PATH] configure command-centre [FILE]
+safeyolo [--instance-dir PATH] configure connection
+safeyolo [--instance-dir PATH] configure support NAME
+safeyolo [--instance-dir PATH] configure approvals NAME
+safeyolo [--instance-dir PATH] configure revoke-support NAME
+safeyolo [--instance-dir PATH] configure revoke-approvals NAME
 
 Run on the selected instance's operator host. Guided edits carry the prepared
 proposal, acknowledgment, revision and approved factory binding internally.

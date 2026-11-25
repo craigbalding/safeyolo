@@ -31,8 +31,8 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
-pub const HELP: &str = r#"safeyolo [--root ROOT] job run SPEC.json [--input DIRECTORY] [--console-file PATH]
-safeyolo [--root ROOT] job validate SPEC.json
+pub const HELP: &str = r#"safeyolo [--instance-dir PATH] job run SPEC.json [--input DIRECTORY] [--console-file PATH]
+safeyolo [--instance-dir PATH] job validate SPEC.json
 Run a trusted host-supplied job definition. Only the host caller selects DIRECTORY.
 Inputs are copied without following symlinks. No job receives an Agent API, Coord, harness or host-script authority.
 Spec fields: gate_id, argv, timeout_seconds, max_input_bytes, max_input_entries, retain_bytes.
@@ -775,6 +775,8 @@ pub(super) async fn check_cancelled(cancel: &mut Option<tokio::sync::watch::Rece
 }
 
 pub async fn command(config: &Path, args: &[String]) -> Result<i32, Error> {
+    let selected_arguments = crate::operator_output::without_json(args);
+    let args = selected_arguments.as_slice();
     if args == ["--help"] {
         println!("{HELP}");
         return Ok(0);
@@ -787,10 +789,16 @@ pub async fn command(config: &Path, args: &[String]) -> Result<i32, Error> {
         spec.resolve_artifacts(path.parent().ok_or("job spec has no parent")?);
         spec.validate()?;
         let discovery = hyperlight::discover(config, &spec).await?;
-        println!(
-            "{}",
-            json!({"engine":spec.engine.name(),"valid":true,"runtime":discovery})
-        );
+        if crate::operator_output::json_requested() {
+            crate::operator_output::json(
+                &json!({"engine":spec.engine.name(),"valid":true,"runtime":discovery}),
+            )?;
+        } else {
+            println!(
+                "Job definition valid for {}. Runtime discovery completed; no job was run.",
+                spec.engine.name()
+            );
+        }
         return Ok(0);
     }
     let (args, console_path) = match args {
@@ -824,7 +832,32 @@ pub async fn command(config: &Path, args: &[String]) -> Result<i32, Error> {
         None
     };
     let result = run_inner(config, &spec, input, None, &[], console).await?;
-    println!("{}", serde_json::to_string(&result)?);
+    if crate::operator_output::json_requested() {
+        crate::operator_output::json(&serde_json::to_value(&result)?)?;
+    } else {
+        println!(
+            "Job {} ({}) — {}",
+            result.gate_id,
+            result.engine,
+            match &result.outcome {
+                Some(Outcome::Exit { code }) => format!("exited with code {code}"),
+                Some(Outcome::Signal { number }) => format!("terminated by signal {number}"),
+                Some(Outcome::Timeout) => "timed out".to_owned(),
+                Some(Outcome::Interrupted { signal }) => format!("interrupted by signal {signal}"),
+                None => "outcome unknown".to_owned(),
+            }
+        );
+        if let Some(error) = &result.observation_error {
+            println!(
+                "Observation unavailable: {}",
+                crate::network_guard::sanitize(error)
+            );
+        }
+        println!(
+            "Captured stdout: {} bytes; stderr: {} bytes. Select --json for retained streams and exact execution evidence.",
+            result.stdout.bytes, result.stderr.bytes
+        );
+    }
     Ok(command_status(result.outcome, result.observation_error))
 }
 

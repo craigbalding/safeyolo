@@ -96,7 +96,7 @@ def test_concurrent_command_creation_covers_absent_state(tmp_path, monkeypatch, 
     def reached_viewers():
         raise ReachedViewers
 
-    monkeypatch.setattr(sys, "argv", [str(probe_path), "--root", str(tmp_path),
+    monkeypatch.setattr(sys, "argv", [str(probe_path), "--instance-dir", str(tmp_path),
                                      "--fixture-parent", str(tmp_path), "--commit", commit])
     monkeypatch.setattr(probe.shutil, "which", lambda _: "tmux")
     monkeypatch.setattr(probe.subprocess, "check_output", version)
@@ -176,7 +176,7 @@ def test_probe_rejects_missing_tmux_before_configuration_changes(native_agent):
     root = native_agent["root"]
     before = {path: path.read_bytes() for path in (root / "config.toml", root / "policy.toml")}
     result = subprocess.run(
-        [sys.executable, str(probe_path), "--root", str(root), "--fixture-parent", str(root),
+        [sys.executable, str(probe_path), "--instance-dir", str(root), "--fixture-parent", str(root),
          "--commit", "0" * 40],
         capture_output=True, text=True, timeout=5, env={**os.environ, "PATH": ""},
     )
@@ -193,7 +193,7 @@ def test_probe_rejects_the_wrong_native_source_before_configuration_changes(nati
     (root / "bin/safeyolo").symlink_to(native_agent["cli"].resolve())
     before = {path: path.read_bytes() for path in (root / "config.toml", root / "policy.toml")}
     result = subprocess.run(
-        [sys.executable, str(probe_path), "--root", str(root), "--fixture-parent", str(root),
+        [sys.executable, str(probe_path), "--instance-dir", str(root), "--fixture-parent", str(root),
          "--commit", "0" * 40],
         capture_output=True, text=True, timeout=5, env=probe_host_environment,
     )
@@ -230,7 +230,7 @@ def test_probe_rejects_mixed_installed_profiles_before_starting_an_agent(
         path.with_suffix(".version").write_text(observed + "\n")
     before = {path: path.read_bytes() for path in (root / "config.toml", root / "policy.toml")}
     result = subprocess.run(
-        [sys.executable, str(probe_path), "--root", str(root), "--fixture-parent", str(root), "--commit", commit],
+        [sys.executable, str(probe_path), "--instance-dir", str(root), "--fixture-parent", str(root), "--commit", commit],
         capture_output=True, text=True, timeout=5, env=probe_host_environment,
     )
     assert result.returncode != 0 and f"installed source/profile differs: {different_profile}" in result.stderr

@@ -19,31 +19,31 @@ mod support;
 mod watch;
 pub(crate) use watch::run as watch_approvals;
 
-pub const HELP: &str = "safeyolo [--root ROOT] inspect [--factory NAME] [--agent NAME]
-safeyolo [--root ROOT] configure connection|support NAME|approvals NAME
-safeyolo [--root ROOT] configure --help
-safeyolo [--root ROOT] traffic list [--agent NAME] [--filter EXPRESSION] [--json]
-safeyolo [--root ROOT] traffic show ID|body ID request|response|websocket ID|message ID NUMBER [--offset BYTES] [--agent NAME] [--json]
-safeyolo [--root ROOT] traffic export ID FORMAT FILE [--agent NAME]
-safeyolo [--root ROOT] approvals list [--agent NAME] [--json]
-safeyolo [--root ROOT] approvals show|explain|approve|reject ID [--option ID] [--agent NAME] [--json]
-safeyolo [--root ROOT] approvals narrow-diagnostics ID --file SELECTION.json [--json]
-safeyolo [--root ROOT] approvals ask|context ID [--agent NAME] [--json]
-safeyolo [--root ROOT] approvals delegations [--json]\nsafeyolo [--root ROOT] approvals delegation check|preview|apply|revoke NAME --file PROPOSAL.json [--json]\nsafeyolo [--root ROOT] approvals review --agent NAME
-safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
-safeyolo [--root ROOT] support grants [--json]
-safeyolo [--root ROOT] support verify GRANT TARGET --agent SUPPORT [--home HOME] [--json]
-safeyolo [--root ROOT] support notices --agent SUPPORT [--home HOME] [--since CURSOR] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] support result OPERATION_ID --agent SUPPORT [--home HOME] [--output] [--json]
-safeyolo [--root ROOT] support receipts [--agent TARGET] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] support receipt|recover OPERATION_ID [--initiator PRINCIPAL] [--output] [--json]
-safeyolo [--root ROOT] support preview|apply|revoke|report NAME --file PROPOSAL.json [--json]
-safeyolo [--root ROOT] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] logs list [--instance ID] [--runtime ID] [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] logs connection ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] logs request ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] observations [--instance ID] [--runtime ID] [--json]
-safeyolo [--root ROOT] diagnose [--agent NAME] [--json]
+pub const HELP: &str = "safeyolo [--instance-dir PATH] inspect [--factory NAME] [--agent NAME]
+safeyolo [--instance-dir PATH] configure connection|support NAME|approvals NAME
+safeyolo [--instance-dir PATH] configure --help
+safeyolo [--instance-dir PATH] traffic list [--agent NAME] [--filter EXPRESSION] [--json]
+safeyolo [--instance-dir PATH] traffic show ID|body ID request|response|websocket ID|message ID NUMBER [--offset BYTES] [--agent NAME] [--json]
+safeyolo [--instance-dir PATH] traffic export ID FORMAT FILE [--agent NAME]
+safeyolo [--instance-dir PATH] approvals list [--agent NAME] [--json]
+safeyolo [--instance-dir PATH] approvals show|explain|approve|reject ID [--option ID] [--agent NAME] [--json]
+safeyolo [--instance-dir PATH] approvals narrow-diagnostics ID --file SELECTION.json [--json]
+safeyolo [--instance-dir PATH] approvals ask|context ID [--agent NAME] [--json]
+safeyolo [--instance-dir PATH] approvals delegations [--json]\nsafeyolo [--instance-dir PATH] approvals delegation check|preview|apply|revoke NAME --file PROPOSAL.json [--json]\nsafeyolo [--instance-dir PATH] approvals review --agent NAME
+safeyolo [--instance-dir PATH] approvals share ID --helper NAME [--agent NAME]
+safeyolo [--instance-dir PATH] support grants [--json]
+safeyolo [--instance-dir PATH] support verify GRANT TARGET --agent SUPPORT [--home HOME] [--json]
+safeyolo [--instance-dir PATH] support notices --agent SUPPORT [--home HOME] [--since CURSOR] [--lines NUMBER] [--json]
+safeyolo [--instance-dir PATH] support result OPERATION_ID --agent SUPPORT [--home HOME] [--output] [--json]
+safeyolo [--instance-dir PATH] support receipts [--agent TARGET] [--lines NUMBER] [--json]
+safeyolo [--instance-dir PATH] support receipt|recover OPERATION_ID [--initiator PRINCIPAL] [--output] [--json]
+safeyolo [--instance-dir PATH] support preview|apply|revoke|report NAME --file PROPOSAL.json [--json]
+safeyolo [--instance-dir PATH] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--instance-dir PATH] logs list [--instance ID] [--runtime ID] [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--instance-dir PATH] logs connection ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--instance-dir PATH] logs request ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]
+safeyolo [--instance-dir PATH] observations [--instance ID] [--runtime ID] [--json]
+safeyolo [--instance-dir PATH] diagnose [--agent NAME] [--json]
 Diagnostics: diagnose reads saved/current policy and audit availability without test traffic.
 agent diagnostics NAME probes the selected runtime/control and reports its next_action.
 doctor probes host prerequisites and each configured policy pipeline; it does not prove coding-agent readiness.
@@ -102,6 +102,132 @@ fn safe(value: &str) -> String {
 }
 fn print_json(value: &Value) -> Result<(), Error> {
     println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
+fn show_operator_result(kind: &str, value: &Value) -> Result<(), Error> {
+    use crate::operator_output::{field, rows, text};
+    match kind {
+        "approvals" => {
+            if let Some(approvals) = value["approvals"].as_array() {
+                if approvals.is_empty() {
+                    println!("No pending approvals for this selection.");
+                } else {
+                    rows(
+                        approvals,
+                        &[
+                            ("AGENT", "agent"),
+                            ("DESTINATION", "target"),
+                            ("STATE", "status"),
+                            ("APPROVAL", "approval_id"),
+                        ],
+                    );
+                    println!("Review and decide directly: safeyolo watch");
+                }
+            } else {
+                field("Status", &value["status"]);
+                field("Effect", &value["effect"]);
+            }
+        }
+        "diagnose" => {
+            field("Instance", &value["root"]);
+            field("Saved policy", &value["local_policy"]);
+            println!(
+                "Active policy observation: {}",
+                if value["admin"]["available"] == true {
+                    text(&value["admin"]["status"])
+                } else {
+                    "unavailable".into()
+                }
+            );
+            field(
+                "Saved matches active",
+                &value["admin"]["saved_matches_active"],
+            );
+            field("Observation failure", &value["admin"]["error"]);
+            field("Next action", &value["admin"]["guidance"]);
+            field("Audit log", &value["audit_log"]);
+            if !value["last_recorded_launch"].is_null() {
+                println!(
+                    "Last recorded launch: {} (recorded state; current runtime not verified)",
+                    text(&value["last_recorded_launch"]["state"])
+                );
+            }
+        }
+        "logs" => {
+            field("Audit file", &value["file"]);
+            let show = |events: &[Value]| {
+                if events.is_empty() {
+                    println!("No retained events in this selection.");
+                }
+                for event in events {
+                    let event = event.get("record").unwrap_or(event);
+                    println!(
+                        "{}  {}  {}  {}",
+                        text(&event["ts"]),
+                        text(&event["event"]),
+                        text(&event["agent"]),
+                        text(&event["summary"])
+                    );
+                }
+            };
+            if let Some(events) = value["events"].as_array() {
+                show(events);
+            }
+            if let Some(inputs) = value["inputs"].as_array() {
+                for input in inputs {
+                    field("Input", &input["file"]);
+                    if let Some(events) = input["events"].as_array() {
+                        show(events);
+                    }
+                }
+                field("Limits", &value["limits"]);
+            }
+        }
+        "traffic" => {
+            if let Some(flows) = value["flows"].as_array() {
+                if flows.is_empty() {
+                    println!("No retained flows match this selection.");
+                } else {
+                    rows(
+                        flows,
+                        &[
+                            ("ID", "id"),
+                            ("AGENT", "agent"),
+                            ("METHOD", "method"),
+                            ("HOST", "host"),
+                            ("STATUS", "status_code"),
+                        ],
+                    );
+                }
+            } else {
+                for (label, key) in [
+                    ("Flow", "id"),
+                    ("Agent", "agent"),
+                    ("Method", "method"),
+                    ("Host", "host"),
+                    ("Path", "path"),
+                    ("Response", "status_code"),
+                    ("Body", "text"),
+                ] {
+                    field(label, &value[key]);
+                }
+            }
+            field("Evidence", &value["availability"]);
+            field("Limit", &value["limits"]);
+        }
+        _ => {
+            for (label, key) in [
+                ("Status", "status"),
+                ("Effect", "effect"),
+                ("Next action", "next_action"),
+                ("Error", "error"),
+            ] {
+                field(label, &value[key]);
+            }
+        }
+    }
+    println!("Select --json for complete evidence and identifiers.");
     Ok(())
 }
 
@@ -629,10 +755,6 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
     }
     show_request_history(view)?;
     show_decision_evidence(view);
-    if let Some(options) = view.get("options") {
-        println!("Offered options (identity, effects and lifetime):");
-        show_evidence_fields(options, 2);
-    }
 
     if view["action"]["kind"] == "diagnostic_disclosure" {
         println!("Local read-only diagnostic disclosure:");
@@ -1880,7 +2002,8 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
     if args[0] == "observations" {
         return observations::run(&args[1..]).await;
     }
-    let options = Options::parse(&args[1..])?;
+    let mut options = Options::parse(&args[1..])?;
+    options.json |= crate::operator_output::json_requested();
     if args[0] == "support" && support::handles(&options) {
         return support::run(root, &options).await;
     }
@@ -2150,7 +2273,9 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         Ok(())
     } else if args[0] == "approvals" && !options.json && value.get("action").is_some() {
         show_approval(&value)
-    } else {
+    } else if options.json {
         print_json(&value)
+    } else {
+        show_operator_result(&args[0], &value)
     }
 }

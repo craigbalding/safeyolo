@@ -1,6 +1,6 @@
 """Exercise native terminals on a prepared Ubuntu/systrap or physical VZ host.
 
-Run as the ordinary account that owns the disposable native --root. Install
+Run as the ordinary account that owns the disposable native --instance-dir. Install
 matching host and Linux guest assets, prepare the platform boot inputs, and
 start the proxy first. --fixture-parent selects existing disk-backed storage.
 --commit is the full source ID reported by those installed assets.
@@ -62,7 +62,7 @@ def wait_terminal_exit(process: subprocess.Popen, master: int, screen: bytearray
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--root', type=Path, required=True)
+    parser.add_argument('--instance-dir', dest='root', type=Path, required=True)
     parser.add_argument('--fixture-parent', type=Path, required=True)
     parser.add_argument('--commit', required=True)
     args = parser.parse_args()
@@ -89,7 +89,7 @@ def main() -> None:
             selected_identity = identity
         assert identity == selected_identity, f'installed source/profile differs: {relative}: {version}; selected {selected_identity}'
         asset_identities[relative] = version
-    command = [str(root / 'bin/safeyolo'), '--root', str(root)]
+    command = [str(root / 'bin/safeyolo'), '--instance-dir', str(root)]
 
     def cli(*arguments: str, check: bool = True) -> subprocess.CompletedProcess:
         result = subprocess.run([*command, *arguments], capture_output=True, text=True, timeout=140, check=False)

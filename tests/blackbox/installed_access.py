@@ -111,7 +111,7 @@ def abrupt_authority(cli: str, root: Path, agent: str, platform: str, marker: st
     value["outage_origin_count"] = len(sinkhole.get_requests())
     save()
     assert value["outage_origin_count"] == before, "guest delivered during proxy outage"
-    checked([cli, "--root", str(root), "start"], timeout=60)
+    checked([cli, "--instance-dir", str(root), "--json", "start"], timeout=60)
     recovered = _runtime_observation(root, native, binary, config_path=root / "config.toml",
         working_directory=root, require_running=True, require_authenticated_identity=True)
     value["recovered"] = recovered
@@ -226,7 +226,7 @@ def authorize_access(api: AdminAPI, cli: str, agent: str, platform: str, marker:
 
 def setup_coord(cli: str, root: Path, primary: str, peer: str, *, room: str = ROOM) -> dict:
     """Provision the real native Coord owner rather than the Python reference."""
-    prefix = [cli, "--root", str(root), "coord"]
+    prefix = [cli, "--instance-dir", str(root), "--json", "coord"]
     status = json.loads(checked([*prefix, "status"]).stdout)
     assert status["state"] == "running", "owned native NATS is not running"
     created = json.loads(checked([*prefix, "room", "create", room]).stdout)
@@ -322,7 +322,7 @@ def run_collaboration_and_event(
         sent = guest(cli, primary, platform, marker, "collaboration-send", room=room)
         read = guest(cli, PEER, platform, marker, "collaboration-read", room=room)
         assert sent["message_id"] and read["message_count"] >= 1
-        checked([cli, "--root", str(config_dir), "coord", "revoke", room, PEER,
+        checked([cli, "--instance-dir", str(config_dir), "--json", "coord", "revoke", room, PEER,
                  "--operation-id", marker + "-revoke"])
         revoked = guest(cli, PEER, platform, marker, "collaboration-revoked", room=room)
         return {"approval_id": identifier, "operator_event": event["event"], "room_name": room,
@@ -389,7 +389,7 @@ def check_origin(sinkhole: SinkholeClient, credential: str, marker: str) -> dict
 
 def operator_terminal(cli: str, root: Path, agent: str, marker: str) -> dict:
     """Attach to an owned shell command while opening an independent shell."""
-    prefix = [cli, "--root", str(root), "agent"]
+    prefix = [cli, "--instance-dir", str(root), "--json", "agent"]
     checked([*prefix, "configure", agent, "--launcher", "tmux-window", "--command",
              f"printf '{marker}\\n'; exec sleep 600"])
     checked([*prefix, "start", agent], timeout=130)
@@ -561,7 +561,7 @@ def desktop_sharing(api, cli, root, worker, output):
     """Observe exact target/session binding and active viewer cessation."""
     from tests.blackbox.installed_shared_approvals import GUEST_REQUEST
 
-    prefix = [cli, "--root", str(root)]
+    prefix = [cli, "--instance-dir", str(root)]
     policy = tomllib.loads((root / "policy.toml").read_text())
     ids = {name: policy["agents"][name]["agent_id"] for name in (worker, PEER)}
     report = {"status": "incomplete", "sessions": {}, "browser_opener": "owned headless marker; no visual UI"}
@@ -670,7 +670,7 @@ def desktop_sharing(api, cli, root, worker, output):
 def operator_restart(cli: str, root: Path, agent: str, marker: str, terminal: dict,
                      sinkhole: SinkholeClient, *, platform: str) -> dict:
     """Return to the same installed target and observe new usable traffic."""
-    prefix = [cli, "--root", str(root)]
+    prefix = [cli, "--instance-dir", str(root)]
     instance = (root / "data/instance_id").read_text()
     policy = _sha256(root / "policy.toml")
     before = guest(cli, agent, platform, marker + "-before", "operator-traffic")
@@ -758,7 +758,7 @@ def main() -> None:
             # shell command for attachment, carrying forward accepted H4/Codex
             # results rather than starting another model or using a fake login.
             checked(guest_command_args(cli, args.agent, "/safeyolo/guest-desktop check"))
-            checked([cli, "--root", str(config_dir), "policy", "apply", str(config_dir / "policy.toml")])
+            checked([cli, "--instance-dir", str(config_dir), "--json", "policy", "apply", str(config_dir / "policy.toml")])
             terminal = operator_terminal(cli, config_dir, args.agent, marker)
         repository = Path(__file__).resolve().parents[2]
         checked([cli, "agent", "create", PEER, "--workspace", str(repository)], timeout=30)

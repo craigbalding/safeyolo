@@ -48,7 +48,7 @@ class TestLiveHostListener:
             output.write_text(json.dumps(report, indent=2) + "\n")
 
         def guest():
-            status = subprocess.run([cli, "--root", str(root), "agent", "status", agent],
+            status = subprocess.run([cli, "--instance-dir", str(root), "--json", "agent", "status", agent],
                                     capture_output=True, text=True, timeout=15, check=True)
             return running_guest(root, agent, json.loads(status.stdout))
 

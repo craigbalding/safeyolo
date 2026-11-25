@@ -37,7 +37,7 @@ pub(super) fn prepared(
 
 fn command(root: &Path, args: &[&str]) -> String {
     std::iter::once(root.join("bin/safeyolo").to_string_lossy().into_owned())
-        .chain(["--root".into(), root.display().to_string()])
+        .chain(["--instance-dir".into(), root.display().to_string()])
         .chain(args.iter().map(|s| (*s).to_owned()))
         .map(|s| shell_quote(&s))
         .collect::<Vec<_>>()

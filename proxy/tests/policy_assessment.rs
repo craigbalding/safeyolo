@@ -579,7 +579,7 @@ async fn native_operator_view_escapes_source_and_leads_with_trusted_effects() {
     )
     .unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(f.root.path())
         .args(["policy", "assess", &id])
         .arg(&path)

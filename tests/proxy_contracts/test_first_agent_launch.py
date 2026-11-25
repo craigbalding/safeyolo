@@ -114,7 +114,7 @@ def test_launch_refusal_has_no_setup_service_or_agent_effect(tmp_path, choice, h
     root, workspace = tmp_path / "installed", tmp_path / "workspace"
     workspace.mkdir()
     # This control stops before staging. No guest or provider input is used.
-    initialized = subprocess.run([str(binary), "--root", str(root), "init"], capture_output=True, text=True, timeout=15)
+    initialized = subprocess.run([str(binary), "--instance-dir", str(root), "init"], capture_output=True, text=True, timeout=15)
     assert initialized.returncode == 0, initialized.stderr
     (root / "bin").mkdir()
     (root / "bin/safeyolo").symlink_to(binary.resolve())
@@ -149,7 +149,7 @@ def codex_login_launch(tmp_path, _binary_cache):
     binary = (artifacts / "safeyolo").resolve()
     root, workspace = tmp_path / "installed", tmp_path / "workspace"
     workspace.mkdir()
-    initialized = subprocess.run([str(binary), "--root", str(root), "init"],
+    initialized = subprocess.run([str(binary), "--instance-dir", str(root), "init"],
                                  capture_output=True, text=True, timeout=15)
     assert initialized.returncode == 0, initialized.stderr
     (root / "bin").mkdir()
@@ -180,7 +180,7 @@ def codex_login_launch(tmp_path, _binary_cache):
     instance.config_path = root / "config.toml"
 
     def cli(*args):
-        result = subprocess.run([str(binary), "--root", str(root), *args],
+        result = subprocess.run([str(binary), "--instance-dir", str(root), *args],
                                 env=instance.environment, capture_output=True, text=True, timeout=15)
         assert result.returncode == 0, result.stderr
         return json.loads(result.stdout) if result.stdout.startswith(("[", "{")) else result.stdout
@@ -199,7 +199,7 @@ def codex_login_launch(tmp_path, _binary_cache):
         if instance.config_path != root / "config.toml":
             instance.config_path.rename(root / "config.toml")
         saved = instance.cli("coord", "status").get("process")
-        subprocess.run([str(binary), "--root", str(root), "coord", "stop"],
+        subprocess.run([str(binary), "--instance-dir", str(root), "coord", "stop"],
                        env=instance.environment, capture_output=True, check=True, timeout=15)
         assert instance.cli("coord", "status") == {"state": "stopped"}
         if saved and process_is_alive(saved["pid"]):
@@ -262,7 +262,7 @@ def test_return_launch_resolves_ambiguity_and_respects_explicit_harness(codex_lo
     policy_path.write_text(tomlkit.dumps(policy))
     saved = policy_path.read_bytes()
     binary = (instance.root / "bin/safeyolo").resolve()
-    result = subprocess.run([str(binary), "--root", str(instance.root), "agent", "launch", workspace],
+    result = subprocess.run([str(binary), "--instance-dir", str(instance.root), "agent", "launch", workspace],
                             env=instance.environment, capture_output=True, text=True, timeout=10)
     assert result.returncode != 0
     assert "first" in result.stderr and "other" in result.stderr and "--name NAME" in result.stderr
@@ -279,7 +279,7 @@ def test_return_launch_resolves_ambiguity_and_respects_explicit_harness(codex_lo
         assert b"Reusing agent first" in output and b"Agent name" not in output
         os.write(master, b"q\n")
         assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
-    conflict = subprocess.run([str(binary), "--root", str(instance.root), "agent", "launch", workspace,
+    conflict = subprocess.run([str(binary), "--instance-dir", str(instance.root), "agent", "launch", workspace,
                                "--harness", "claude", "--name", "first"],
                               env=instance.environment, capture_output=True, text=True, timeout=10)
     assert conflict.returncode != 0 and "different workspace, harness or launcher" in conflict.stderr
@@ -774,11 +774,11 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
 def test_unsupported_launch_harness_is_rejected_before_instance_mutation(tmp_path):
     artifacts, _, _ = native_inputs()
     root = tmp_path / "installed"
-    initialized = subprocess.run([str(artifacts / "safeyolo"), "--root", str(root), "init"],
+    initialized = subprocess.run([str(artifacts / "safeyolo"), "--instance-dir", str(root), "init"],
                                  capture_output=True, text=True, timeout=15)
     assert initialized.returncode == 0, initialized.stderr
     saved = {name: (root / name).read_bytes() for name in ("policy.toml", "config.toml")}
-    result = subprocess.run([str(artifacts / "safeyolo"), "--root", str(root), "agent", "launch", "--harness", "unknown"],
+    result = subprocess.run([str(artifacts / "safeyolo"), "--instance-dir", str(root), "agent", "launch", "--harness", "unknown"],
                             capture_output=True, text=True, timeout=15)
     assert result.returncode != 0
     assert "available: claude, codex" in result.stderr

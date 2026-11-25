@@ -700,7 +700,7 @@ def test_killed_component_pull_keeps_the_old_pair_and_recovers_on_retry(
     index = digest(g2["manifests/compat-v1"])
     contents["manifests/" + index] = g2["manifests/compat-v1"]
     faults["pause"] = "blobs/" + digest(archive)
-    arguments = [str(native_cli), "--root", str(root), "upgrade", "--bundle", str(second), "--guest-index", index]
+    arguments = [str(native_cli), "--instance-dir", str(root), "upgrade", "--bundle", str(second), "--guest-index", index]
     process = subprocess.Popen(arguments, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         assert faults["entered"].wait(timeout=20)
@@ -939,7 +939,7 @@ def test_guided_activation_failure_reports_selected_pair_and_retained_rollback(
         assert failure["selected"]["current"]["host"]["source_commit"] == "b" * 40
         assert failure["selected"]["previous"] == original["current"]
         assert failure["observed"]["proxy"]["state"] != "running"
-        assert failure["next_action"]["rollback"] == [str(root / "safeyolo-upgrade"), "--root", str(root), "rollback"]
+        assert failure["next_action"]["rollback"] == [str(root / "safeyolo-upgrade"), "--instance-dir", str(root), "rollback"]
         assert "can refuse without changing selection" in failure["next_action"]["limit"]
         assert "only after rollback succeeds" in failure["next_action"]["limit"]
         if coord_state == "compatible":
@@ -984,7 +984,7 @@ def test_terminal_upgrade_can_defer_activation_after_choosing_a_release(
         # Choose the displayed default release, then defer activation through
         # the real terminal interface, without spelling a release identifier.
         os.write(terminal, b"\nn\n")
-        deferred = subprocess.run([str(native_cli), "--root", str(root), "upgrade"],
+        deferred = subprocess.run([str(native_cli), "--instance-dir", str(root), "upgrade"],
                                   env=environment, stdin=slave, stderr=slave,
                                   stdout=subprocess.PIPE, text=True, timeout=30)
         assert deferred.returncode == 0, deferred.stdout
@@ -1037,7 +1037,7 @@ def test_guided_installed_upgrade_keeps_other_instance_live_and_recovers_failed_
                    "SAFEYOLO_NATS_TEST_INSTANCE": "guided-upgrade-installed",
                    "TERM": "xterm-256color"}
     for instance in (root, unrelated):
-        installed = subprocess.run([str(baseline / "install.sh"), "--root", str(instance),
+        installed = subprocess.run([str(baseline / "install.sh"), "--instance-dir", str(instance),
                                     "--command-dir", str(instance / "commands"), "--yes"],
                                    env=environment, capture_output=True, text=True, timeout=30)
         assert installed.returncode == 0, installed.stderr

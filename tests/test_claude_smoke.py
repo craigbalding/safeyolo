@@ -225,7 +225,8 @@ def installed_smoke(tmp_path, monkeypatch):
     state = {"failure": None, "calls": [], "cleanup": []}
 
     def execute(arguments, **options):
-        label = arguments[3:]
+        assert arguments[3] == "--json"
+        label = arguments[4:]
         state["calls"].append(label)
         stdout = b""
         if label[:2] == ["agent", "create"]:
@@ -450,7 +451,7 @@ def test_installed_section_uses_provisioned_root_and_preserves_cleanup_failure(t
     def execute(arguments, **_options):
         calls.append(arguments)
         assert arguments[1].endswith("claude_smoke.py")
-        assert arguments[arguments.index("--root") + 1] == str(source)
+        assert arguments[arguments.index("--instance-dir") + 1] == str(source)
         assert arguments[arguments.index("--credential") + 1] == "host-subscription"
         report = tmp_path / "reports/claude/claude-smoke.json"
         report.write_text(json.dumps({"cleanup_failures": ["still live"] if cleanup_failed else [],

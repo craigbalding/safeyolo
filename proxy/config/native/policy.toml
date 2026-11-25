@@ -3,3 +3,7 @@ budget = 12000
 
 [hosts]
 "*" = { egress = "allow", unknown_creds = "prompt", rate = 600 }
+# Ordinary provider keys may reach their own API. Unknown credentials and
+# unrelated destinations still require approval. Existing policies are retained.
+"api.openai.com" = { allow = ["openai:*"], rate = 3000 }
+"api.anthropic.com" = { allow = ["anthropic:*"], rate = 3000 }

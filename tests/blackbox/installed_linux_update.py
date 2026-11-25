@@ -174,7 +174,7 @@ def main():
         return json.loads(process.stdout) if json_output else process.stdout
 
     def cli(label, *arguments, binary=None, **kwargs):
-        return run(label, [binary or root / "bin/safeyolo", "--root", root, *arguments], **kwargs)
+        return run(label, [binary or root / "bin/safeyolo", "--instance-dir", root, *arguments], **kwargs)
 
     def state(label, expected):
         guest = check_selection(root, args.architecture, expected)
@@ -272,7 +272,7 @@ def main():
         install_started = time.monotonic()
         # The unchanged c9 installer predates --guest-index. Use its normal
         # public discovery, then its supported explicit historical selection.
-        run("install-c9", [args.initial / "install.sh", "--root", root, "--command-dir",
+        run("install-c9", [args.initial / "install.sh", "--instance-dir", root, "--command-dir",
                            args.output / "commands", "--yes"], timeout=600)
         report["initial_discovery"] = json.loads((root / "share/guest-selection.json").read_text())
         cli("select-initial-G1", "guest", "upgrade", "--index", G1, json_output=True, timeout=600)

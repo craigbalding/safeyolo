@@ -49,12 +49,12 @@ host_arguments=()
 build_arguments=()
 while (($#)); do
   case "$1" in
-    --root|--bundle|--platform-assets|--guest-index|--command-dir|--artifacts|--guest-artifacts|--runtime-artifacts|--vm-artifacts|--profile|--system-runsc)
+    --instance-dir|--bundle|--platform-assets|--guest-index|--command-dir|--artifacts|--guest-artifacts|--runtime-artifacts|--vm-artifacts|--profile|--system-runsc)
       option=$1
       (($# >= 2)) || { echo "$option requires a value" >&2; exit 2; }
       [[ -n $2 ]] || { echo "$option requires a nonempty value" >&2; exit 2; }
       case "$option" in
-        --root) root=$2;; --bundle) bundle=$2;; --platform-assets) platform_assets=$2;;
+        --instance-dir) root=$2;; --bundle) bundle=$2;; --platform-assets) platform_assets=$2;;
         --command-dir) command_dir=$2;;
         --guest-index) guest_index=$2;;
         --system-runsc) host_arguments+=("$option" "$2"); runtime_override=true;;
@@ -62,13 +62,13 @@ while (($#)); do
       esac
       shift 2;;
     --help)
-      echo 'Usage: install_native.sh [--root ROOT] [--bundle UNPACKED_BUNDLE] [--guest-index sha256:DIGEST | --platform-assets DIRECTORY | --no-guest-download] [--command-dir DIRECTORY] [--system-runsc PATH] [--yes]'
-      echo 'From source: scripts/install_native.sh --root ROOT --runtime-artifacts DIRECTORY [--artifacts HOST_BIN_DIRECTORY] [--guest-artifacts LINUX_BIN_DIRECTORY] [--vm-artifacts DIRECTORY] [--profile production|debug]'
+      echo 'Usage: install_native.sh [--instance-dir PATH] [--bundle UNPACKED_BUNDLE] [--guest-index sha256:DIGEST | --platform-assets DIRECTORY | --no-guest-download] [--command-dir DIRECTORY] [--system-runsc PATH] [--yes]'
+      echo 'From source: scripts/install_native.sh --instance-dir PATH --runtime-artifacts DIRECTORY [--artifacts HOST_BIN_DIRECTORY] [--guest-artifacts LINUX_BIN_DIRECTORY] [--vm-artifacts DIRECTORY] [--profile production|debug]'
       echo 'The public bootstrap uses --move-bundle to consume its temporary extraction. Ordinary --bundle input is copied and remains reusable.'
-      echo 'Installation checks the bundle, acquires its compatible default guest and creates configuration, trust and tokens internally. Default ROOT is HOME/.safeyolo (or SAFEYOLO_CONFIG_DIR). Repeat preserves a matching installation without upgrading. Conflicting or older state requires a separate root. --platform-assets uses prepared/offline guest inputs; --no-guest-download supports contributor or proxy-only installation.'
+      echo 'Installation checks the bundle, acquires its compatible default guest and creates configuration, trust and tokens internally. The default instance directory is HOME/.safeyolo (or SAFEYOLO_CONFIG_DIR). Repeat preserves a matching installation without upgrading. Conflicting or older state requires a separate instance directory. --platform-assets uses prepared/offline guest inputs; --no-guest-download supports contributor or proxy-only installation.'
       echo 'New Linux bundles include the complete pinned gVisor runtime. Host preparation shows exact commands and explains required packages, unused UID/GID allocations, private-runtime access and AppArmor changes before consent. --yes accepts those changes; --system-runsc selects a complete compatible system payload. Proxy-only --no-guest-download skips preparation unless --system-runsc explicitly selects a runtime.'
       echo 'Installs the safeyolo command in HOME/.local/bin when that directory is already on PATH, otherwise /usr/local/bin (using sudo if needed). --command-dir selects another command location. Existing unrelated commands are preserved.'
-      echo 'Every host sudo command and its effects are shown before execution, including cached/passwordless authorization and guest-stage cleanup. A user-writable --command-dir avoids command-link sudo.'
+      echo 'Every host sudo command and its effects are shown before execution, including cached/passwordless authorization. Guest extraction and cleanup need no host sudo. A user-writable --command-dir avoids command-link sudo.'
       echo '--guest-index pins first acquisition to an exact compatible OCI index. Repeated installation retains its installed guest; use guest upgrade for a later change.'
       exit 0;;
     --no-guest-download) download_guest=false; shift;;
@@ -82,7 +82,7 @@ if [[ -n $guest_index ]]; then
     echo '--guest-index requires a SHA-256 index and guest download without --platform-assets' >&2; exit 2
   }
 fi
-[[ -n $root ]] || { echo '--root requires a nonempty directory' >&2; exit 2; }
+[[ -n $root ]] || { echo '--instance-dir requires a nonempty directory' >&2; exit 2; }
 source "$script_dir/native_package.sh"
 host_platform >/dev/null
 [[ $root == /* ]] || root=$PWD/$root
@@ -90,7 +90,7 @@ check_fresh_root() {
   local name
   for name in config.toml policy.toml bin libexec lib assets package-info SHA256SUMS LICENSE install.sh install_native.sh native_package.sh data certs logs builtin-services services; do
     [[ ! -e $root/$name && ! -L $root/$name ]] || {
-      echo "Existing path $root/$name was preserved. Choose a fresh --root and separate --command-dir." >&2; return 1
+      echo "Existing path $root/$name was preserved. Choose a fresh --instance-dir and separate --command-dir." >&2; return 1
     }
   done
 }
@@ -98,7 +98,7 @@ move_install_input() {
   local input=$1 directory=$2
   mv -n "$input" "$directory/"
   [[ ! -e $input && ! -L $input ]] || {
-    echo "Existing path $directory/${input##*/} was preserved. Installation is incomplete. Choose a fresh --root and separate --command-dir." >&2; return 1
+    echo "Existing path $directory/${input##*/} was preserved. Installation is incomplete. Choose a fresh --instance-dir and separate --command-dir." >&2; return 1
   }
 }
 if [[ -e $root && ! -d $root ]]; then
@@ -111,7 +111,7 @@ existing=false
 if [[ -e $root/config.toml || -L $root/config.toml || -e $root/policy.toml || -L $root/policy.toml || -e $root/data/admin_token ]]; then
   existing=true
   if [[ ! -f $root/install_native.sh || ! -f $root/native_package.sh || ! -f $root/config.toml || ! -f $root/policy.toml ]]; then
-    echo "Existing or incomplete instance at $root was preserved; use its installed command or choose a fresh root with --root and a separate --command-dir." >&2; exit 1
+    echo "Existing or incomplete instance at $root was preserved; use its installed command or choose a fresh root with --instance-dir and a separate --command-dir." >&2; exit 1
   fi
   [[ -n $bundle ]] || bundle=$root
 fi
@@ -130,10 +130,10 @@ echo 'SafeYolo: checking the host package.' >&2
 verify_native_package "$bundle"
 if $existing; then
   cmp -s "$root/package-info" "$bundle/package-info" || {
-    echo "Host package differs from the installed host at $root. State was preserved. Repeat is not an upgrade; use the installed command or a separate --root and --command-dir." >&2; exit 1
+    echo "Host package differs from the installed host at $root. State was preserved. Repeat is not an upgrade; use the installed command or a separate --instance-dir and --command-dir." >&2; exit 1
   }
   cmp -s "$root/SHA256SUMS" "$bundle/SHA256SUMS" || {
-    echo "Host package bytes differ from the installed host at $root. State was preserved. Repeat is not an upgrade; use the installed command or a separate --root and --command-dir." >&2; exit 1
+    echo "Host package bytes differ from the installed host at $root. State was preserved. Repeat is not an upgrade; use the installed command or a separate --instance-dir and --command-dir." >&2; exit 1
   }
   # The normal repeat supplies the installed directory itself. A distinct
   # supplied bundle still requires an independent check of the installed files.
@@ -200,11 +200,11 @@ if ((${#command_install[@]})); then
 fi
 if $existing; then
   if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]] || $runtime_override; }; then
-    "$root/bin/safeyolo" --root "$root" host prepare ${host_arguments[@]+"${host_arguments[@]}"}
+    "$root/bin/safeyolo" --instance-dir "$root" host prepare ${host_arguments[@]+"${host_arguments[@]}"} >/dev/null
   fi
   if [[ -f $root/share/guest-selection.json ]]; then
     temporary=$(mktemp -d "$(dirname -- "$root")/native-repeat.XXXXXX")
-    "$root/bin/safeyolo" --root "$root" guest acquire --package-info "$root/package-info" --write-selection "$temporary/guest-selection.json" >/dev/null
+    "$root/bin/safeyolo" --instance-dir "$root" guest acquire --package-info "$root/package-info" --write-selection "$temporary/guest-selection.json" >/dev/null
   fi
 fi
 if ! $existing; then
@@ -221,8 +221,8 @@ if ! $existing; then
   guest_host_arguments=(--namespace-root "$root")
   if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]] || $runtime_override; }; then
     echo 'SafeYolo: checking and preparing the Linux host.' >&2
-    "$bundle/bin/safeyolo" --root "$root" host prepare --package-root "$bundle" --installed-root "$root" \
-      --write-settings "$staged_root/host-settings.toml" ${host_arguments[@]+"${host_arguments[@]}"}
+    "$bundle/bin/safeyolo" --instance-dir "$root" host prepare --package-root "$bundle" --installed-root "$root" \
+      --write-settings "$staged_root/host-settings.toml" ${host_arguments[@]+"${host_arguments[@]}"} >/dev/null
     require_file "$staged_root/host-settings.toml"
     guest_host_arguments+=(--host-settings "$staged_root/host-settings.toml")
   fi
@@ -246,7 +246,7 @@ if ! $existing; then
       echo "Guest inputs at $root/share were preserved. Supply them with --platform-assets or retain them with --no-guest-download." >&2; exit 1
     }
     echo 'SafeYolo: acquiring and verifying the compatible guest.' >&2
-    platform_assets=$("$staged_root/bin/safeyolo" --root "$staged_root" guest acquire --package-info "$staged_root/package-info" --write-selection "$staged_root/guest-selection.json" ${guest_host_arguments[@]+"${guest_host_arguments[@]}"}) || {
+    platform_assets=$("$staged_root/bin/safeyolo" --instance-dir "$staged_root" guest acquire --package-info "$staged_root/package-info" --write-selection "$staged_root/guest-selection.json" ${guest_host_arguments[@]+"${guest_host_arguments[@]}"}) || {
       acquisition_status=$?
       echo 'Guest acquisition failed. No instance was activated. Completed host preparation remains as reported above. Retry after repairing the prerequisite; verified guest inputs remain reusable.' >&2; exit "$acquisition_status"
     }
@@ -256,7 +256,7 @@ if ! $existing; then
     install_platform_assets "$platform_assets" "$staged_root/share"
   fi
   echo 'SafeYolo: initializing configuration, identity and trust.' >&2
-  "$staged_root/bin/safeyolo" --root "$staged_root" init
+  "$staged_root/bin/safeyolo" --instance-dir "$staged_root" init >/dev/null
   cat >> "$staged_root/config.toml" <<'EOF'
 gateway_builtin_services_dir = "assets/services"
 gateway_services_dir = "data/services"
@@ -269,7 +269,7 @@ EOF
   if [[ -d $staged_root/share && -d $root/share ]]; then
     for input in "$staged_root/share/"*; do
       [[ ! -e $root/share/${input##*/} && ! -L $root/share/${input##*/} ]] || {
-        echo "Prepared input $root/share/${input##*/} was preserved. Choose a fresh --root or retain your prepared inputs with --no-guest-download." >&2; exit 1
+        echo "Prepared input $root/share/${input##*/} was preserved. Choose a fresh --instance-dir or retain your prepared inputs with --no-guest-download." >&2; exit 1
       }
     done
   fi
@@ -296,7 +296,7 @@ if ! $existing; then
   if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]] || $runtime_override; }; then
     # The staged config selects the final runtime paths. Grant access only
     # after those files exist, while keeping config publication last.
-    "$root/bin/safeyolo" --root "$staged_root" host grant-runtime-access
+    "$root/bin/safeyolo" --instance-dir "$staged_root" host grant-runtime-access >/dev/null
   fi
   move_install_input "$staged_root/config.toml" "$root"
 else
@@ -310,8 +310,15 @@ check_command_entry
   echo "Command entry $command_entry does not select $command_target. Installation at $root was preserved. Check the command directory and retry, or select a separate --command-dir." >&2; exit 1
 }
 echo "Installed SafeYolo: $root"
-echo "Command: $command_entry"
+echo "Selected instance: $root"
 "$command_entry" --version
+if [[ ${SAFEYOLO_INSTALL_LAUNCH:-false} != true ]]; then
+  echo 'Installation is ready. Proxy and agent readiness are checked when you launch.'
+  echo 'Next: launch from your project directory (or append its workspace path):'
+  printf '  %q --instance-dir %q agent launch\n' "$command_entry" "$root"
+  echo 'To inspect this instance first:'
+  printf '  %q --instance-dir %q status\n' "$command_entry" "$root"
+fi
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then

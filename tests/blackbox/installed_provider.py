@@ -3,7 +3,7 @@
 
 On an owned Linux host, supply Python 3.11+, tomlkit, a prepared installation
 with the selected CLI/proxy/guest binaries, pinned runsc and native host
-preparation, and a free Admin port. --root and --output must be new disk-backed
+preparation, and a free Admin port. --instance-dir and --output must be new disk-backed
 directories with traversable parents. The driver reuses immutable inputs and
 creates two credential-free agents. It grants only the caller's reader
 capability, exercises refusal and revocation, then stops its guests, proxy and
@@ -207,7 +207,7 @@ def inputs(base, revision):
 
 def run(args):
     base, root, output = args.prepared_config.resolve(), args.root.resolve(), args.output.resolve()
-    assert not root.exists(), "--root must be new"
+    assert not root.exists(), "--instance-dir must be new"
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     assert not any(output.iterdir()), "--output must be empty"
     output.chmod(0o700)
@@ -222,7 +222,7 @@ def run(args):
                         "TMPDIR": str(root / "data/tmp")}
 
     def native(*arguments):
-        return checked([cli, "--root", str(root), *arguments], env=env,
+        return checked([cli, "--instance-dir", str(root), "--json", *arguments], env=env,
                        diagnostics=output / "native.log")
     producer, caller = root / "workspaces/proofspot", root / "workspaces/caller"
     children = []
@@ -264,8 +264,9 @@ def run(args):
             config_path=root / "config.toml", working_directory=root, require_running=True,
             require_authenticated_identity=True)
         doctor = json.loads(native("doctor"))
-        runtime_path = Path(doctor["linux"]["path"])
-        report["runsc"] = {**doctor["linux"], "sha256": _sha256(runtime_path)}
+        runtime = next(check["details"] for check in doctor["checks"] if check["name"] == "Linux runtime and namespaces")
+        runtime_path = Path(runtime["path"])
+        report["runsc"] = {**runtime, "sha256": _sha256(runtime_path)}
         observed = report["participants"]["caller"]["runtime"]
         context = {"platform": "systrap", "agent": "caller", "pid": observed["backend_pid"],
                    "start_token": observed["backend_token"]}
@@ -423,7 +424,7 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepared-config", type=Path, required=True)
-    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--instance-dir", dest="root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--runtime-revision", help="binary source commit; defaults to --revision")

@@ -295,11 +295,11 @@ The following example runs from the SafeYolo repository root. It selects the
 installation at `$HOME/.safeyolo`, the shipped backlog contract and three owned
 repository directories. Replace `/work/relay`, `/work/forge` and `/work/lens`
 with your selected workspaces. Keep the installation outside those workspaces.
-If you use another instance, change both the executable and `--root` path.
+If you use another instance, change both the executable and `--instance-dir` path.
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" start
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory setup docs/factories/backlog.toml --workspace coordinator=/work/relay --workspace owner=/work/forge --workspace reviewer=/work/lens
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" start
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" factory setup docs/factories/backlog.toml --workspace coordinator=/work/relay --workspace owner=/work/forge --workspace reviewer=/work/lens
 ```
 
 Setup shows the selected root, exact snapshot, role identities and workspaces.
@@ -381,7 +381,7 @@ the identity-wide attention feed.
 
 The commands in this guide use the installation at `$HOME/.safeyolo`. If your
 installed instance uses another root, replace that path in both the executable
-and `--root` argument. Keep using the same host account and instance.
+and `--instance-dir` argument. Keep using the same host account and instance.
 
 Run the example from the SafeYolo repository root containing
 `docs/factories/backlog.toml`. The example uses that contract and three existing
@@ -391,10 +391,10 @@ agents' writable workspaces. The contract selects the role agents, harnesses,
 models, instructions and allowed handoffs.
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory check docs/factories/backlog.toml
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory approve docs/factories/backlog.toml
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" start
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory prepare backlog --workspace coordinator=/work/relay --workspace owner=/work/forge --workspace reviewer=/work/lens
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" factory check docs/factories/backlog.toml
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" factory approve docs/factories/backlog.toml
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" start
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" factory prepare backlog --workspace coordinator=/work/relay --workspace owner=/work/forge --workspace reviewer=/work/lens
 ```
 
 `check` validates the contract and displays each role's exact content identity.
@@ -408,9 +408,9 @@ Establish each role's own login through the entry. For the shipped
 contract, authenticate the coordinator, owner and reviewer:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory login backlog coordinator
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory login backlog owner
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory login backlog reviewer
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" factory login backlog coordinator
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" factory login backlog owner
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" factory login backlog reviewer
 ```
 
 Codex uses its device login and explicit agent-local adoption. Pi opens its
@@ -424,7 +424,7 @@ For the first run, explicitly confirm that the roles with missing checkpoints
 are fresh as described above. On the same host account and instance, run:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory run backlog --confirm-fresh-identity
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" factory run backlog --confirm-fresh-identity
 ```
 
 The confirmation applies only to this launch; it is not stored in the
@@ -455,15 +455,15 @@ approved `operator_input` binding. The message is canonically attributed to the
 local operator and wakes that role only:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory send backlog 'Inspect the disposable repository and repair its failing fixture test.'
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory history backlog
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" factory send backlog 'Inspect the disposable repository and repair its failing fixture test.'
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" factory history backlog
 ```
 
 For an interactive terminal conversation in the same instance, use chat.
 The approved snapshot selects the coordinator without pane discovery:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" coord chat backlog
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" coord chat backlog
 ```
 
 History returns canonical message IDs, senders and sequences. Use
@@ -474,8 +474,8 @@ independent result, together with the changed artifact and test.
 Stop and restart the same newly created Factory:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory stop backlog
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory run backlog
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" factory stop backlog
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" factory run backlog
 ```
 
 Stop affects the selected role runtimes. It retains the approved contract,
@@ -654,8 +654,8 @@ and retained proof were preserved.
 Use the read-only diagnosis when readiness fails:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory doctor backlog
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent diagnostics forge
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" factory doctor backlog
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" agent diagnostics forge
 ```
 
 Doctor names the failed role or room and reports its actual runtime and
@@ -682,7 +682,7 @@ the operator wants to abandon. Stop each affected agent with `safeyolo agent
 stop NAME` first. Select the exact target URL from the retained assignment:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" factory release backlog --target https://github.com/craigbalding/safeyolo/issues/123
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" factory release backlog --target https://github.com/craigbalding/safeyolo/issues/123
 ```
 
 The command shows the selected targets and matching record counts for each

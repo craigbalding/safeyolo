@@ -265,7 +265,7 @@ def retained_invocation(invocation, monkeypatch):
     native = textwrap.dedent(f'''\
         #!{sys.executable}
         import json, os, pathlib, sys
-        root = pathlib.Path(sys.argv[sys.argv.index('--root')+1])
+        root = pathlib.Path(sys.argv[sys.argv.index('--instance-dir')+1])
         stage = sys.argv[-1]
         with pathlib.Path({str(controller / 'events')!r}).open('a') as output:
             output.write(json.dumps({{'stage':stage}})+'\\n')

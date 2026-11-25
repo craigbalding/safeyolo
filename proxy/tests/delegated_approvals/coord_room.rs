@@ -453,7 +453,7 @@ async fn independent_receive_attention_survives_unrelated_sources_but_not_regran
     let (_, revision) = delegate(&f, envelope()).await;
     approve(&f, &["send"], "unrelated-send").await;
     let brief = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(f.root.path())
         .args([
             "coord",
@@ -664,7 +664,7 @@ struct NatsCleanup(std::path::PathBuf);
 impl Drop for NatsCleanup {
     fn drop(&mut self) {
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(&self.0)
             .args(["coord", "stop"])
             .stdout(std::process::Stdio::null())
@@ -740,7 +740,7 @@ async fn real_nats_room_approval_attention_objects_and_pending_connections() {
         .unwrap();
     }
     let cli = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(f.root.path())
         .args([
             "coord",

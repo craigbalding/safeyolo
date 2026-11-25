@@ -722,7 +722,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-provider-recovery-py).
 - [tests/blackbox/installed_state_transition.py::main](../tests/blackbox/installed_state_transition.py#L503) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `continuity`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `continuity`.
-- [tests/blackbox/installed_provider.py::main](../tests/blackbox/installed_provider.py#L423) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_provider.py::main](../tests/blackbox/installed_provider.py#L424) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `provider`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections).
 
 ### BB-21 — Nested Docker / gateway
@@ -952,7 +952,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-test-guest-upgrade-py).
 - [tests/test_component_upgrade.py](../tests/test_component_upgrade.py#L117) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-component-upgrade-py).
-- [tests/test_linux_host.py](../tests/test_linux_host.py#L53) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
+- [tests/test_linux_host.py](../tests/test_linux_host.py#L55) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-linux-host-py).
 - [tests/blackbox/installed_storage.py::qualify](../tests/blackbox/installed_storage.py#L99) — Prepared native Linux installation; acquisition or prepared-guest reuse and two systrap boots with root/user persistence. Evidence: Rootless --boot uses the maintained pytest receipt and unavailable host sudo; standalone acquisition keeps its original scope. Both record actual package/guest/maps and owned cleanup; manual selection establishes no recurring cadence.
   Selection: manual; no recurring selector resolved.
@@ -1028,7 +1028,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-policy-cli-py).
 - [tests/proxy_contracts/test_service_effect_assessment.py](../tests/proxy_contracts/test_service_effect_assessment.py#L36) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-service-effect-assessment-py).
-- [proxy/tests/native_policy_feeds.rs](../proxy/tests/native_policy_feeds.rs#L281) — Native CLI/proxy in an installed layout; owned feed server; no guest. Evidence: Real acquisition, refresh and request decisions with retained snapshot provenance and independent destination contact observations.
+- [proxy/tests/native_policy_feeds.rs](../proxy/tests/native_policy_feeds.rs#L282) — Native CLI/proxy in an installed layout; owned feed server; no guest. Evidence: Real acquisition, refresh and request decisions with retained snapshot provenance and independent destination contact observations.
   Exact identities: [source inventory](#witness-proxy-tests-native-policy-feeds-rs).
 
 ### BB-31 — Hyperlight capabilities
@@ -1127,7 +1127,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-test-guest-upgrade-py).
 - [tests/test_component_upgrade.py](../tests/test_component_upgrade.py#L117) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-component-upgrade-py).
-- [tests/test_linux_host.py](../tests/test_linux_host.py#L53) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
+- [tests/test_linux_host.py](../tests/test_linux_host.py#L55) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-linux-host-py).
 - [tests/blackbox/rootless_preparation.py::observe](../tests/blackbox/rootless_preparation.py#L50) — Retained native Linux storage observations; recorded ordinary host identity and systrap guest root/user. Evidence: Manual run-controls.sh rootless-preparation; canonical source/digest supplied separately; recorded operands checked without command replay or independent product acceptance.
   Selection: manual; no recurring selector resolved.
@@ -1187,7 +1187,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-blackbox-host-native-test-installed-native-py).
 - [tests/blackbox/installed_ingress.py::main](../tests/blackbox/installed_ingress.py#L195) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `kvm` section `ingress`.
-- [tests/blackbox/installed_host_smoke.py::main](../tests/blackbox/installed_host_smoke.py#L995) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/installed_host_smoke.py::main](../tests/blackbox/installed_host_smoke.py#L1001) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
 - [tests/proxy_contracts/test_public_arm_install_workflow.py](../tests/proxy_contracts/test_public_arm_install_workflow.py#L40) — Workflow/report fixtures; controlled installer adapters. Evidence: Controlled acquisition/report consumers; not a fresh installed native identity pass.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-public-arm-install-workflow-py).
@@ -2549,21 +2549,21 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
 
-- [`tests/test_linux_host.py::test_retained_systrap_caller_remaps_only_its_private_copy`](../tests/test_linux_host.py#L53)
-- [`tests/test_linux_host.py::test_runtime_input_fails_before_host_changes`](../tests/test_linux_host.py#L145)
-- [`tests/test_linux_host.py::test_relative_package_directory_selects_its_bundled_payload`](../tests/test_linux_host.py#L167)
-- [`tests/test_linux_host.py::test_namespace_failure_keeps_original_result_and_observes_only_its_audit`](../tests/test_linux_host.py#L186)
-- [`tests/test_linux_host.py::test_runtime_access_preserves_other_acl_rights_and_honors_named_denial`](../tests/test_linux_host.py#L243)
-- [`tests/test_linux_host.py::test_runtime_access_keeps_mapped_uid_read_access_before_after_and_repeat`](../tests/test_linux_host.py#L277)
-- [`tests/test_linux_host.py::test_mapping_remap_keeps_modes_links_and_guest_user_ids`](../tests/test_linux_host.py#L313)
-- [`tests/test_linux_host.py::test_remap_preserves_unchanged_inode_metadata`](../tests/test_linux_host.py#L359)
-- [`tests/test_linux_host.py::test_remap_nested_attributes_and_links_preserve_external_target`](../tests/test_linux_host.py#L384)
-- [`tests/test_linux_host.py::test_remap_refuses_live_tree_and_bad_owner_before_changing_files`](../tests/test_linux_host.py#L419)
-- [`tests/test_linux_host.py::test_denied_runtime_permission_reports_changes_and_retry_is_idempotent`](../tests/test_linux_host.py#L439)
-- [`tests/test_linux_host.py::test_doctor_keeps_selected_system_identity_when_runtime_disappears`](../tests/test_linux_host.py#L499)
-- [`tests/test_linux_host.py::test_profile_load_failure_retains_only_its_complete_profile`](../tests/test_linux_host.py#L554)
-- [`tests/test_linux_host.py::test_host_prepare_retries_retained_runtime_profile`](../tests/test_linux_host.py#L583)
-- [`tests/test_linux_host.py::test_scoped_namespace_entry_with_both_apparmor_restrictions`](../tests/test_linux_host.py#L681)
+- [`tests/test_linux_host.py::test_retained_systrap_caller_remaps_only_its_private_copy`](../tests/test_linux_host.py#L55)
+- [`tests/test_linux_host.py::test_runtime_input_fails_before_host_changes`](../tests/test_linux_host.py#L147)
+- [`tests/test_linux_host.py::test_relative_package_directory_selects_its_bundled_payload`](../tests/test_linux_host.py#L169)
+- [`tests/test_linux_host.py::test_namespace_failure_keeps_original_result_and_observes_only_its_audit`](../tests/test_linux_host.py#L188)
+- [`tests/test_linux_host.py::test_runtime_access_preserves_other_acl_rights_and_honors_named_denial`](../tests/test_linux_host.py#L245)
+- [`tests/test_linux_host.py::test_runtime_access_keeps_mapped_uid_read_access_before_after_and_repeat`](../tests/test_linux_host.py#L279)
+- [`tests/test_linux_host.py::test_mapping_remap_keeps_modes_links_and_guest_user_ids`](../tests/test_linux_host.py#L315)
+- [`tests/test_linux_host.py::test_remap_preserves_unchanged_inode_metadata`](../tests/test_linux_host.py#L361)
+- [`tests/test_linux_host.py::test_remap_nested_attributes_and_links_preserve_external_target`](../tests/test_linux_host.py#L386)
+- [`tests/test_linux_host.py::test_remap_refuses_live_tree_and_bad_owner_before_changing_files`](../tests/test_linux_host.py#L421)
+- [`tests/test_linux_host.py::test_denied_runtime_permission_reports_changes_and_retry_is_idempotent`](../tests/test_linux_host.py#L441)
+- [`tests/test_linux_host.py::test_doctor_keeps_selected_system_identity_when_runtime_disappears`](../tests/test_linux_host.py#L501)
+- [`tests/test_linux_host.py::test_profile_load_failure_retains_only_its_complete_profile`](../tests/test_linux_host.py#L556)
+- [`tests/test_linux_host.py::test_host_prepare_retries_retained_runtime_profile`](../tests/test_linux_host.py#L585)
+- [`tests/test_linux_host.py::test_scoped_namespace_entry_with_both_apparmor_restrictions`](../tests/test_linux_host.py#L683)
 
 <a id="witness-tests-test-host-sudo-py"></a>
 ### [`tests/test_host_sudo.py`](../tests/test_host_sudo.py)
@@ -3208,15 +3208,15 @@ Selection: manual native phase `named-checks` (named execution receipt; ignored 
 
 Selection: manual native phase `managed-feeds` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds assessment_keeps_adopted_feed_scope_and_expiry_without_reloading_its_path -- --exact`](../proxy/tests/native_policy_feeds.rs#L281)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_refresh_preserves_literal_initial_and_redirect_endpoints -- --exact`](../proxy/tests/native_policy_feeds.rs#L327)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_refresh_after_rollback_recovers_unchanged_provider_membership -- --exact`](../proxy/tests/native_policy_feeds.rs#L376)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_setup_refresh_retention_expiry_restart_rollback_and_recovery -- --exact`](../proxy/tests/native_policy_feeds.rs#L504)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_download_validation_and_adopted_redirect_boundaries -- --exact`](../proxy/tests/native_policy_feeds.rs#L638)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_first_start_failure_recovers_automatically_without_approvals -- --exact`](../proxy/tests/native_policy_feeds.rs#L770)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_named_feed_only_fallback_refresh_preview_restart_and_rollback -- --exact`](../proxy/tests/native_policy_feeds.rs#L799)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds pending_acquisition_rechecks_source_adoption_and_retains_interrupted_schedule -- --exact`](../proxy/tests/native_policy_feeds.rs#L1023)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds feed_setup_and_candidate_check_keep_the_selected_policy_directory -- --exact`](../proxy/tests/native_policy_feeds.rs#L1123)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds assessment_keeps_adopted_feed_scope_and_expiry_without_reloading_its_path -- --exact`](../proxy/tests/native_policy_feeds.rs#L282)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_refresh_preserves_literal_initial_and_redirect_endpoints -- --exact`](../proxy/tests/native_policy_feeds.rs#L328)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_refresh_after_rollback_recovers_unchanged_provider_membership -- --exact`](../proxy/tests/native_policy_feeds.rs#L377)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_setup_refresh_retention_expiry_restart_rollback_and_recovery -- --exact`](../proxy/tests/native_policy_feeds.rs#L505)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_download_validation_and_adopted_redirect_boundaries -- --exact`](../proxy/tests/native_policy_feeds.rs#L639)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_first_start_failure_recovers_automatically_without_approvals -- --exact`](../proxy/tests/native_policy_feeds.rs#L771)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_named_feed_only_fallback_refresh_preview_restart_and_rollback -- --exact`](../proxy/tests/native_policy_feeds.rs#L800)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds pending_acquisition_rechecks_source_adoption_and_retains_interrupted_schedule -- --exact`](../proxy/tests/native_policy_feeds.rs#L1024)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds feed_setup_and_candidate_check_keep_the_selected_policy_directory -- --exact`](../proxy/tests/native_policy_feeds.rs#L1124)
 
 <a id="witness-proxy-src-coord-rooms-work-automatic-tests-rs"></a>
 ### [`proxy/src/coord_rooms/work/automatic_tests.rs`](../proxy/src/coord_rooms/work/automatic_tests.rs)
@@ -3415,7 +3415,7 @@ request with no origin delivery, and protected local API boundaries.
 Exercise scoped jobs, revocation and teardown through an owned proxy.
 
 Requires host Python 3.10+, tomlkit, OpenSSL, candidate CLI/proxy binaries and
-an installed shared Trixie guest. Supply a fresh --root with traversable parents
+an installed shared Trixie guest. Supply a fresh --instance-dir with traversable parents
 and a disk-backed --scratch directory. --admin-port and --upstream-port must be
 free ports authorized for this run. On macOS use the approved physical VZ wrapper
 and a short, owned TMPDIR. This creates a separate instance and retains its saved
@@ -3428,7 +3428,7 @@ revocation, expiry and caller cancellation, including retained connections.
 Exercise disposable jobs on a prepared Linux or physical macOS instance.
 
 On the selected host, supply the candidate CLI and a disposable installed root:
-python3 tests/blackbox/host/job_sandbox.py --cli /path/to/safeyolo --root /path/to/instance --scratch /disk/backed/directory
+python3 tests/blackbox/host/job_sandbox.py --cli /path/to/safeyolo --instance-dir /path/to/instance --scratch /disk/backed/directory
 The root must already select the shared Trixie guest and native launcher.
 For macOS, also supply --observer-probe /path/to/arm64-linux-static-probe.
 Build that small test executable on Linux as documented in tests/fixtures/job-observer-probe.c.
@@ -3458,7 +3458,7 @@ The driver creates two synthetic agents, starts no model, and stops its agents
 and proxy on every exit. It deliberately restarts the primary at the end to
 check saved versus live-only intent. The earlier same-session proof is retained.
 
-    python3 tests/nested-linux/live_mount_backend_proof.py         --root /owned/fresh-instance --base /owned/new-result-directory         --candidate FULL_COMMIT
+    python3 tests/nested-linux/live_mount_backend_proof.py         --instance-dir /owned/fresh-instance --base /owned/new-result-directory         --candidate FULL_COMMIT
 
 Use --saved-retirement for the focused saved add/update/remove, live change,
 explicit restart and retirement proof. It retains a home marker and checks the
@@ -3483,7 +3483,7 @@ Start its proxy and configure two disposable workers with an owned workspace,
 the supervisor launcher and a long-running command such as ``exec sleep 300``.
 Both workers must be stopped. Supply their names as --support and --target.
 
-Run with host Python 3.11+ and --cli, --root and an empty disk-backed --scratch.
+Run with host Python 3.11+ and --cli, --instance-dir and an empty disk-backed --scratch.
 This starts and stops those two workers, changes only the named test grant,
 and retains proposals in scratch and canonical receipts in the instance.
 It does not launch a model or establish the separate unexplained-fault journey.
@@ -3505,7 +3505,7 @@ Compose a native HTTP service through two real Linux/systrap sandboxes.
 
 On an owned Linux host, supply Python 3.11+, tomlkit, a prepared installation
 with the selected CLI/proxy/guest binaries, pinned runsc and native host
-preparation, and a free Admin port. --root and --output must be new disk-backed
+preparation, and a free Admin port. --instance-dir and --output must be new disk-backed
 directories with traversable parents. The driver reuses immutable inputs and
 creates two credential-free agents. It grants only the caller's reader
 capability, exercises refusal and revocation, then stops its guests, proxy and

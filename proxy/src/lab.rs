@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-pub const HELP: &str = "safeyolo [--root ROOT | --config FILE] lab [--objective TEXT] [--workspace PATH] [--agent NAME] [--nested-assets PATH] [--dangerously-allow-unowned] [--yes]\nsafeyolo [--root ROOT | --config FILE] lab [--agent NAME] --status [--json]\nsafeyolo [--root ROOT | --config FILE] lab [--agent NAME] --recover|--relaunch|--teardown [--keep-agent]\n\nStart from an experiment objective, or reattach to the same owned Lab. The installed instance needs its prepared guest runtime and Lab assets. Codex tools are prepared in the Lab's own guest home; normal authentication remains an operator choice.\nExiting the viewer retains the controller, workspace and evidence. --recover restarts an owned dead controller. --relaunch explicitly replaces it. --teardown captures redacted evidence and removes the owned session, then stops its guest unless --keep-agent is selected. Workspace, authentication and evidence files remain for inspection.\nOn Linux, Lab reuses this instance's installed CLI and proxy as inner inputs when available. --nested-assets selects another prepared SafeYolo Linux installation. Only its CLI and proxy are copied into the guest read-only share at /safeyolo/lab-native; instance credentials and policy are not copied. The controller proposes the experiment before changing its inner instance. Outer policy is unchanged. Use --agent to choose among multiple Labs. Other agents and sessions are not adopted.";
+pub const HELP: &str = "safeyolo [--instance-dir PATH | --config FILE] lab [--objective TEXT] [--workspace PATH] [--agent NAME] [--nested-assets PATH] [--dangerously-allow-unowned] [--yes]\nsafeyolo [--instance-dir PATH | --config FILE] lab [--agent NAME] --status [--json]\nsafeyolo [--instance-dir PATH | --config FILE] lab [--agent NAME] --recover|--relaunch|--teardown [--keep-agent]\n\nStart from an experiment objective, or reattach to the same owned Lab. The installed instance needs its prepared guest runtime and Lab assets. Codex tools are prepared in the Lab's own guest home; normal authentication remains an operator choice.\nExiting the viewer retains the controller, workspace and evidence. --recover restarts an owned dead controller. --relaunch explicitly replaces it. --teardown captures redacted evidence and removes the owned session, then stops its guest unless --keep-agent is selected. Workspace, authentication and evidence files remain for inspection.\nOn Linux, Lab reuses this instance's installed CLI and proxy as inner inputs when available. --nested-assets selects another prepared SafeYolo Linux installation. Only its CLI and proxy are copied into the guest read-only share at /safeyolo/lab-native; instance credentials and policy are not copied. The controller proposes the experiment before changing its inner instance. Outer policy is unchanged. Use --agent to choose among multiple Labs. Other agents and sessions are not adopted.";
 
 #[derive(Default)]
 struct Options {
@@ -366,7 +366,11 @@ async fn run_inner(options: Options) -> Result<i32, Error> {
         };
         if selected.is_none() && options.action.is_some() {
             if options.action.as_deref() == Some("--status") {
-                println!("{}", json!({"managed":false,"agents":[]}));
+                if crate::operator_output::json_requested() {
+                    crate::operator_output::json(&json!({"managed":false,"agents":[]}))?;
+                } else {
+                    println!("No managed Lab is configured. Start with: safeyolo lab");
+                }
                 return Ok(0);
             }
             return Err("no owned Lab is available; start safeyolo lab first".into());
@@ -470,10 +474,19 @@ async fn run_inner(options: Options) -> Result<i32, Error> {
         } else {
             Value::Null
         };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json!({"lab":lab,"runtime":runtime,"guest":guest}))?
-        );
+        if crate::operator_output::json_requested() {
+            crate::operator_output::json(&json!({"lab":lab,"runtime":runtime,"guest":guest}))?;
+        } else {
+            println!(
+                "Lab {name}: runtime {}; controller {}.",
+                crate::operator_output::text(&runtime["runtime_state"]),
+                crate::operator_output::text(&guest["session_exists"])
+            );
+            println!(
+                "Objective: {}. Resume: safeyolo lab --agent {name}",
+                safe(&lab.objective)
+            );
+        }
         return Ok(0);
     }
     if options.action.as_deref() == Some("--teardown") && runtime["runtime_state"] == "stopped" {

@@ -772,7 +772,7 @@ def test_factory_setup_interruption_preserves_prepared_roles():
     for role in declared.values():
         home = root / "agents" / role["agent"] / "home"
         assert not (home / ".safeyolo/coord-supervisor-state.json").exists()
-    resumed = subprocess.run([str(root / "bin/safeyolo"), "--root", str(root), *arguments[:3]],
+    resumed = subprocess.run([str(root / "bin/safeyolo"), "--instance-dir", str(root), *arguments[:3]],
                              capture_output=True, text=True, timeout=180)
     (root / "setup-interrupted-resume.log").write_text(resumed.stdout + resumed.stderr)
     assert resumed.returncode != 0 and '"status": "checkpoint-required"' in resumed.stdout
@@ -790,7 +790,7 @@ CLAUDE_FACTORY_DIRECTION = (
 
 def installed_claude_direction(root, agent, identity, sequence=None):
     """Read the authenticated direction; a retained sequence never sends again."""
-    host = [str(root / "bin/safeyolo"), "--root", str(root)]
+    host = [str(root / "bin/safeyolo"), "--instance-dir", str(root)]
     room = f"{agent}-agent"
     if sequence is None:
         sent = subprocess.run([*host, "coord", "send", room, CLAUDE_FACTORY_DIRECTION, "--to", agent],
@@ -892,7 +892,7 @@ def installed_claude_work(root, source, command, role_checks):
     workspace = Path(tomllib.loads((root / "policy.toml").read_text())["agents"][agent]["folder"])
     marker = "claude-factory-" + uuid.uuid4().hex
     artifact = workspace / (marker + ".txt")
-    host = [str(root / "bin/safeyolo"), "--root", str(root)]
+    host = [str(root / "bin/safeyolo"), "--instance-dir", str(root)]
 
     def invoke(*args):
         result = subprocess.run([*host, *args], capture_output=True, text=True, timeout=60)
@@ -1021,7 +1021,7 @@ def installed_claude_pending_work(root, source, *, session_recovery=False):
     argument_report = workspace / (marker + ".argument.json")
     paths = (artifact, started, release, argument_report) if session_recovery else (artifact, started, release)
     assert not any(path.exists() for path in paths), "inspect the retained pending attempt before retrying"
-    host = [str(root / "bin/safeyolo"), "--root", str(root)]
+    host = [str(root / "bin/safeyolo"), "--instance-dir", str(root)]
     command = [*host, "factory"]
 
     def invoke(*args):
@@ -1371,7 +1371,7 @@ def test_factory_run_executes_staged_worker_commands():
     root = Path(supplied).resolve()
     executable = root / "bin/safeyolo"
     name = os.environ["SAFEYOLO_FACTORY_ACCEPTANCE_NAME"]
-    command = [str(executable), "--root", str(root), "factory"]
+    command = [str(executable), "--instance-dir", str(root), "factory"]
     source = os.environ.get("SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE")
     start = ["setup", source, "--confirm-fresh-identity"] if source else ["run", name]
     try:

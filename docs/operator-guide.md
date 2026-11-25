@@ -27,10 +27,17 @@ safeyolo status
 ```
 
 `--version` identifies the executable's source and build profile. `status`
-reports the selected `root`, `proxy_state` and configured `agents`. Use the
-agent's `name` from that inventory. The examples below use the `work` agent
-created during setup. Check that the root and agent match the guest terminal
+leads with the selected instance, proxy observation and a readable agent table.
+Use `safeyolo agent list` to find saved agent names. The examples below use the `work` agent
+created during setup. Check that the instance and agent match the guest terminal
 you opened. A running proxy alone does not mean that the agent is running.
+
+Human output is the default, including when redirected. Select `--json` for
+complete structured records. `safeyolo` and bare command groups show navigable
+help before any instance lookup. `doctor` orders prerequisites before dependent
+probes and reports pass, warning, failure, skip and unknown counts. Its exit
+status is 1 for a failed or unknown required check, and 0 otherwise. It does not
+start or repair services. A skipped check is not a pass.
 
 Keep the operator credential in the instance's `data/admin_token` on the host.
 
@@ -94,9 +101,9 @@ Select the candidate directory on the host, then run:
 safeyolo job run check.json --input /absolute/path/to/candidate
 ```
 
-The command prints JSON with observed exit, signal, timeout or interruption,
-input and rootfs digests, and full byte counts and hashes for both output
-streams. Retained output is bounded by `retain_bytes`. Exit zero with complete
+The command summarizes the observed exit, signal, timeout or interruption.
+Select `--json` for input and rootfs digests, retained streams, byte counts and
+hashes. Retained output is bounded by `retain_bytes`. Exit zero with complete
 evidence returns CLI status zero; timeout returns 124. Observation, startup or
 cleanup failures cannot report success. A printed `PASS` is ordinary job output.
 The trusted caller decides how the observed result satisfies its gate.
@@ -130,6 +137,51 @@ Closing the host delegation connection removes the temporary listener, including
 when the host caller disappears. Normal job teardown waits for this revocation
 before reporting success. A job never creates a saved gate grant. Existing
 operator grants remain available for the next run until revoked or expired.
+
+## Inspect TLS trust and passthrough
+
+Use `safeyolo tls --help` to inspect the selected instance's public CA, select an
+additional upstream CA bundle, or add/remove an exact TLS passthrough
+destination. `tls ca --pem` exports only the public certificate, never its
+signing key. Upstream trust and passthrough changes are saved for the next
+proxy start; restart explicitly to activate them. Passthrough leaves TLS
+encrypted end to end, so HTTP inspection and credential/route rules cannot
+apply inside that connection. Network controls remain in force.
+
+## Share a guest web app
+
+Use the account and instance that own the running agent. Start the app inside
+that guest and keep its HTTP port, for example 3000, distinct from a port on
+your computer or on the SafeYolo host. Discover the commands with
+`safeyolo agent --help` and `safeyolo agent publish --help`.
+
+```sh
+safeyolo agent publish work --port 3000 --audience tailnet
+safeyolo agent publications work
+safeyolo agent unpublish work --port 3000 --audience tailnet
+```
+
+The publication reports the selected agent, guest port, audience, URL and a
+separate unlock code. Open the URL on the intended device and enter that code.
+`local` is reachable from the SafeYolo host's browser; `tailnet` uses that host's
+existing Tailscale Serve authority and the tailnet's access rules. It creates no
+public or Funnel exposure. The app retains its own login, cookies and redirects;
+the publication gate does not authenticate you to the app. HTTP streaming and
+WebSocket connections use the same bound guest-port transport.
+
+No desktop or graphical packages are needed. The default lifetime is 900
+seconds; `--ttl SECONDS` selects up to 86400 seconds. `--tailnet-port PORT`
+selects a different unused HTTPS port when the agent's reserved port is already
+occupied. Use the same optional tailnet port when stopping that publication.
+Stop, expiry or a changed guest run disconnects its viewers and removes only
+its foreground Serve mapping. Other publications and unrelated mappings remain.
+Publication grants no outbound network, credential, service or peer-support
+access. Keep unlock codes private.
+
+An unavailable transport or Serve permission reports the selected target's
+missing capability. A generated URL alone does not prove app readiness or
+reachability from your device. Check the URL from that device and follow the
+reported failure for the same instance and agent.
 
 ## Open an agent desktop
 
@@ -466,7 +518,7 @@ safeyolo observations
 safeyolo observations --json
 ```
 
-For another installed instance, put `--root /path/to/instance` or
+For another installed instance, put `--instance-dir /path/to/instance` or
 `--config /path/to/selected.toml` before `observations`. The report identifies
 the selected config, durable `instance_id` and process `runtime_id`. The CLI
 checks the returned instance against the selected installation's identity.

@@ -571,7 +571,7 @@ extension ModelTests {
         _ = menu.view
         let localCommand = try controller.localConnection.terminalCommand(localAgent, client: local, action: .shell)
         let remoteCommand = try remoteConnection.terminalCommand(remoteAgent, client: remote, action: .shell)
-        precondition(localCommand == "'/local/bin/safeyolo' --root '/local/instance' agent shell --persistent -- 'worker'")
+        precondition(localCommand == "'/local/bin/safeyolo' --instance-dir '/local/instance' agent shell --persistent -- 'worker'")
         precondition(remoteCommand.hasPrefix("ssh -t -- 'ops@remote.example' ") && remoteCommand.contains("/remote/bin/safeyolo"))
         do {
             _ = try controller.localConnection.terminalCommand(remoteAgent, client: remote, action: .shell)

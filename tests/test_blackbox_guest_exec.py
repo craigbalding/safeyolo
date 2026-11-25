@@ -40,7 +40,7 @@ def test_guest_dispatcher_uses_selected_native_cli_without_a_python_package(tmp_
     ], env=environment, cwd=tmp_path, capture_output=True, text=True, timeout=10)
     assert result.returncode == 7, result.stderr
     command = literal if user == 'agent' else 'exec sudo -n /bin/bash -lc ' + shlex.quote(literal)
-    assert result.stdout.splitlines() == ['--root', str(root), 'agent', 'shell', 'marker', '-c', command]
+    assert result.stdout.splitlines() == ['--instance-dir', str(root), 'agent', 'shell', 'marker', '-c', command]
     assert not (root / 'agents').exists()
 
 
@@ -88,7 +88,7 @@ def test_runner_readiness_and_preparation_reach_native_shell(tmp_path):
         assert result.returncode == 0, result.stderr
         calls.append(json.loads(record.read_text().splitlines()[-1]))
     readiness, prepare_primary, prepare_peer = calls
-    prefix = ['--root', str(root), 'agent', 'shell']
+    prefix = ['--instance-dir', str(root), 'agent', 'shell']
     primary = [*prefix, 'marker', '-c']
     assert readiness == [*primary, 'true']
     for agent, preparation in (('marker', prepare_primary), ('bbpeer', prepare_peer)):
@@ -413,7 +413,7 @@ def test_guest_preparation_preserves_selected_root_and_propagates_failure(tmp_pa
     else:
         guest_exec.prepare_guest_tests(str(cli), agent, env=environment)
     call = json.loads(record.read_text())
-    assert call[:-1] == ['--root', root, 'agent', 'shell', agent, '-c']
+    assert call[:-1] == ['--instance-dir', root, 'agent', 'shell', agent, '-c']
     root_command = shlex.split(call[-1])
     assert root_command[:5] == ['exec', 'sudo', '-n', '/bin/bash', '-lc']
     assert shlex.split(root_command[-1]) == [
@@ -466,7 +466,7 @@ def pytest_collection_modifyitems(items):
 root = pathlib.Path(os.environ['PROBE_ROOT'])
 failure = os.environ['PROBE_FAILURE']
 args = sys.argv[1:]
-if args[:1] == ['--root']:
+if args[:1] == ['--instance-dir']:
     assert args[1] == os.environ['SAFEYOLO_CONFIG_DIR']
     args = args[2:]
 with (root / 'calls.jsonl').open('a') as output:
@@ -549,7 +549,7 @@ def test_workload_producer_preserves_root_identity_and_literal_arguments(monkeyp
     cli = '/selected-root/bin/safeyolo'
     literal = 'with spaces $(not-expanded)'
     args = installed_workloads.guest_args(cli, 'marker', literal, 'package', '--sha', 'abc')
-    assert args[:-1] == [cli, '--root', '/selected-root', 'agent', 'shell', 'marker', '-c']
+    assert args[:-1] == [cli, '--instance-dir', '/selected-root', 'agent', 'shell', 'marker', '-c']
     root_command = shlex.split(args[-1])
     assert root_command[:5] == ['exec', 'sudo', '-n', '/bin/bash', '-lc']
     request = shlex.split(root_command[-1])
@@ -557,7 +557,7 @@ def test_workload_producer_preserves_root_identity_and_literal_arguments(monkeyp
     assert request[request.index('--marker') + 1] == literal
     for args in (installed_access.guest_command(cli, 'marker', 'systrap', literal, 'coord'),
                  installed_lifecycle.guest_command(cli, 'marker', 'tls', literal)):
-        assert args[:-1] == [cli, '--root', '/selected-root', 'agent', 'shell', 'marker', '-c']
+        assert args[:-1] == [cli, '--instance-dir', '/selected-root', 'agent', 'shell', 'marker', '-c']
         assert shlex.split(args[-1])[:4] == ['cd', '/workspace', '&&', '/usr/bin/python3']
         assert shlex.split(args[-1])[shlex.split(args[-1]).index('--marker') + 1] == literal
 
@@ -572,7 +572,7 @@ def test_operator_attachment_opens_independent_shell_before_detach(tmp_path, mon
     native.write_text(f'''#!{sys.executable}
 import json, os, pathlib, sys, tty
 root = pathlib.Path({str(root)!r})
-assert sys.argv[1:3] == ['--root', str(root)], 'ambient root selected'
+assert sys.argv[1:3] == ['--instance-dir', str(root)], 'ambient root selected'
 arguments = sys.argv[3:]
 with (root / 'calls').open('a') as output:
     output.write(json.dumps(arguments) + '\\n')
@@ -627,7 +627,7 @@ def test_operator_restart_retains_selected_guest_transport_and_requires_fresh_ru
     native.write_text(f'''#!{sys.executable}
 import json, os, pathlib, shlex, sys
 root = pathlib.Path({str(root)!r})
-assert sys.argv[1:3] == ['--root', str(root)], 'ambient root selected'
+assert sys.argv[1:3] == ['--instance-dir', str(root)], 'ambient root selected'
 arguments = sys.argv[3:]
 with (root / 'calls').open('a') as output:
     output.write(json.dumps(arguments) + '\\n')
@@ -743,7 +743,7 @@ def test_lifecycle_guest_selects_root_from_its_subprocess_environment(tmp_path, 
     cli, _ = lifecycle_cli_probe
 
     result = installed_lifecycle.guest(cli, 'bbowner', 'echo', 'p4-marker', env=environment)
-    selected = ['--root', expected_root] if expected_root else []
+    selected = ['--instance-dir', expected_root] if expected_root else []
     assert result['argv'][:-1] == [*selected, 'agent', 'shell', 'bbowner', '-c']
     assert result['root'] == expected_root
     assert result['platform'] == 'systrap'
@@ -781,6 +781,6 @@ def test_lifecycle_owner_controls_use_owner_root_for_both_guest_calls(tmp_path, 
     operands = [json.loads(line) for line in calls.read_text().splitlines()]
     assert len(operands) == 2
     for operand in operands:
-        assert operand['argv'][:-1] == ['--root', str(owner), 'agent', 'shell', 'bbowner', '-c']
+        assert operand['argv'][:-1] == ['--instance-dir', str(owner), 'agent', 'shell', 'bbowner', '-c']
         assert operand['root'] == str(owner)
     assert os.environ['SAFEYOLO_CONFIG_DIR'] == str(subject)

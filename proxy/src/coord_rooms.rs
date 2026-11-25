@@ -78,7 +78,7 @@ pub(crate) fn check_rollback_store(root: &Path, prior: &Path) -> Result<fs::File
                 .ok_or("Coord snapshot path must be UTF-8")?],
         )?;
         let output = std::process::Command::new(prior)
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(snapshot.path())
             .args(["coord", "room", "list"])
             .output()?;
@@ -98,7 +98,7 @@ pub(crate) fn check_rollback_store(root: &Path, prior: &Path) -> Result<fs::File
     };
     check().map_err(|error| -> Error {
         format!(
-            "rollback refused before changing selection for {}: {error}. The selected pair and retained state are unchanged. Keep the selected host and Coord store at {}; if stopped, restart this instance with {} --root {} start, or select a newer compatible host bundle",
+            "rollback refused before changing selection for {}: {error}. The selected pair and retained state are unchanged. Keep the selected host and Coord store at {}; if stopped, restart this instance with {} --instance-dir {} start, or select a newer compatible host bundle",
             root.display(), store.display(), root.join("bin/safeyolo").display(), root.display(),
         ).into()
     })?;
@@ -874,6 +874,8 @@ pub fn grant(
 }
 
 pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
+    let selected_arguments = crate::operator_output::without_json(arguments);
+    let arguments = selected_arguments.as_slice();
     if arguments
         .first()
         .is_some_and(|kind| matches!(kind.as_str(), "completion-notes" | "proposals"))
@@ -929,7 +931,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
             Duration::from_secs(5),
         )
         .await?;
-        if json {
+        if json || crate::operator_output::json_requested() {
             print!("{}", crate::coord_operator::signals::json_text(&state)?);
         } else {
             print!("{}", room_status::render(&state));
@@ -1061,7 +1063,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
         }
         [help] if help == "--help" => {
             println!(
-                "safeyolo [--root ROOT] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--root ROOT] coord stop|status\nsafeyolo [--root ROOT] coord room create NAME\nsafeyolo [--root ROOT] coord room list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--root ROOT] coord revoke ROOM AGENT [--operation-id ID]\nInstance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports default to 127.0.0.1. Host-held coord-federation.json explicitly selects TLS, verified Tailscale or loopback protection and the client listener address; monitoring stays loopback-only. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
+                "safeyolo [--instance-dir PATH] coord start [--binary PINNED_NATS] [--client-port PORT] [--monitor-port PORT]\nsafeyolo [--instance-dir PATH] coord stop|status\nsafeyolo [--instance-dir PATH] coord room create NAME\nsafeyolo [--instance-dir PATH] coord room list\nsafeyolo [--instance-dir PATH] coord grant ROOM AGENT [send] [receive] [page_operator] [--operation-id ID]\nsafeyolo [--instance-dir PATH] coord revoke ROOM AGENT [--operation-id ID]\nInstance rooms and membership use the existing SQLite/JetStream store. Agents use the scoped Agent API. start acquires the reviewed NATS 2.14.5 binary through the configured route when missing.\nListener ports default to 127.0.0.1. Host-held coord-federation.json explicitly selects TLS, verified Tailscale or loopback protection and the client listener address; monitoring stays loopback-only. Explicit ports must be distinct and between 1 and 65535. Omitted ports use 4222/8222, or dynamic ports with SAFEYOLO_NATS_TEST_INSTANCE. A running instance is reused unless an explicit port conflicts. Stop Coord before changing live ports; repeat explicit ports on each new start."
             );
             println!("{}", crate::coord_operator::HELP);
             println!("{}", crate::coord_operator::BRIEF_HELP);
@@ -1075,7 +1077,7 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
         }
         _ => return Err("usage: safeyolo coord --help".into()),
     };
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    crate::operator_output::coord(&result)?;
     Ok(())
 }
 

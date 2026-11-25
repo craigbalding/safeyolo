@@ -116,7 +116,7 @@ def run(args):
             assert missing.returncode == 127 and "Required guest helper is missing" in missing.stderr
         finally:
             held.rename(helper)
-        recovery = subprocess.run([args.native_cli, "--root", str(root), "agent", "recover", args.agent],
+        recovery = subprocess.run([args.native_cli, "--instance-dir", str(root), "agent", "recover", args.agent],
                                   capture_output=True, text=True, timeout=18)
         assert recovery.returncode == 0, recovery.stderr
         recovered = json.loads(recovery.stdout)

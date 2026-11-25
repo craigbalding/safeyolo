@@ -4,7 +4,7 @@ use super::*;
 use crate::{agent_api::coord::OperatorCoord, coord_tools::Client};
 use std::ffi::OsString;
 
-pub const HELP: &str = "safeyolo [--root ROOT] coord completion-notes ROOM SEQUENCE\nsafeyolo [--root ROOT] coord proposals observe ROOM SEQUENCE --verified FILE [--candidate INDEX] [--ledger FILE]\nsafeyolo [--root ROOT] coord proposals list|pending [--ledger FILE]\nsafeyolo [--root ROOT] coord proposals presented ROOM SEQUENCE [--ledger FILE] [--relay NAME]\nsafeyolo [--root ROOT] coord proposals outcome ROOM SEQUENCE [--ledger FILE]\nsafeyolo [--root ROOT] coord proposals reconcile ROOM [--since SEQUENCE] [--ledger FILE] [--relay NAME]\n\nThe agent CLI supports the same operations as safeyolo-coord completion-notes|proposals, using its scoped Agent API reader.\nEvery envelope is read from retained Coord data; there is no envelope-file or operator-attribution input.\n--verified is Relay's checked observation plus an explicit coverage result (null or an issue reference); candidate text is not verified evidence.\nPending returns frozen bodies for Relay to send unchanged through its existing Coord tool. No command publishes or applies a recommendation.\nReconcile retained history before pending after restart or unknown publication. Outcome requires an exact retained operator message.\nDefault ledger: the selected data directory's coord/factory-proposals.json on the host, or $SAFEYOLO_COORD_DATA_DIR/factory-proposals.json in a guest (otherwise ~/.safeyolo/data/coord/factory-proposals.json).";
+pub const HELP: &str = "safeyolo [--instance-dir PATH] coord completion-notes ROOM SEQUENCE\nsafeyolo [--instance-dir PATH] coord proposals observe ROOM SEQUENCE --verified FILE [--candidate INDEX] [--ledger FILE]\nsafeyolo [--instance-dir PATH] coord proposals list|pending [--ledger FILE]\nsafeyolo [--instance-dir PATH] coord proposals presented ROOM SEQUENCE [--ledger FILE] [--relay NAME]\nsafeyolo [--instance-dir PATH] coord proposals outcome ROOM SEQUENCE [--ledger FILE]\nsafeyolo [--instance-dir PATH] coord proposals reconcile ROOM [--since SEQUENCE] [--ledger FILE] [--relay NAME]\n\nThe agent CLI supports the same operations as safeyolo-coord completion-notes|proposals, using its scoped Agent API reader.\nEvery envelope is read from retained Coord data; there is no envelope-file or operator-attribution input.\n--verified is Relay's checked observation plus an explicit coverage result (null or an issue reference); candidate text is not verified evidence.\nPending returns frozen bodies for Relay to send unchanged through its existing Coord tool. No command publishes or applies a recommendation.\nReconcile retained history before pending after restart or unknown publication. Outcome requires an exact retained operator message.\nDefault ledger: the selected data directory's coord/factory-proposals.json on the host, or $SAFEYOLO_COORD_DATA_DIR/factory-proposals.json in a guest (otherwise ~/.safeyolo/data/coord/factory-proposals.json).";
 
 enum Reader {
     Operator(OperatorCoord),
@@ -264,7 +264,11 @@ async fn run(config: Option<&Path>, args: &[OsString]) -> Result<(), Error> {
     if let Some(reader) = reader {
         reader.shutdown().await;
     }
-    println!("{}", serde_json::to_string_pretty(&result?)?);
+    if config.is_none() {
+        crate::operator_output::json(&result?)?;
+    } else {
+        crate::operator_output::coord(&result?)?;
+    }
     Ok(())
 }
 pub async fn run_operator(config: &Path, args: &[OsString]) -> Result<(), Error> {

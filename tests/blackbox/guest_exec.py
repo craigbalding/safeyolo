@@ -34,7 +34,7 @@ def guest_command_args(
         command = "exec sudo -n /bin/bash -lc " + shlex.quote(command)
     environment = os.environ if env is None else env
     root = environment.get("SAFEYOLO_CONFIG_DIR")
-    selected = [cli, "--root", root] if root else [cli]
+    selected = [cli, "--instance-dir", root] if root else [cli]
     return [*selected, "agent", "shell", agent, "-c", command]
 
 

@@ -71,6 +71,7 @@ for the selected path.
 | Add or qualify a coding harness | [Harness authoring](../harness-authoring/SKILL.md). Check installed capabilities and qualification before host activation. Ordinary launch uses the agent guide above. |
 | Build an automated check or action | [Job authoring](../job-authoring/SKILL.md). Choose the execution engine and prepare the check; activation belongs to the selected instance's existing operator authority. |
 | Delegate work, coordinate agents or follow up a result | [Coord work coordination](references/coord.md). Use the selected native or message contract and current membership; a shared room does not grant peer administration. |
+| Share an app running in the current guest | [Operator actions](references/agent-api.md#operator-actions). Keep the current guest and HTTP port; use `web.publish` and the existing preview authority owner without starting a desktop. Verify access from the intended operator device. |
 
 For a failed request or boundary problem, use the evidence workflow below and
 its matched troubleshooting reference. Product setup does not require running

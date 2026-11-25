@@ -1,6 +1,6 @@
 # Configuration
 
-Select the installed instance with `safeyolo --root ROOT COMMAND`, or set
+Select the installed instance with `safeyolo --instance-dir PATH COMMAND`, or set
 `SAFEYOLO_CONFIG_DIR`. The default root is `$HOME/.safeyolo`. SafeYolo
 reads `config.toml` and `policy.toml`. Paths resolve relative to the selected
 configuration or policy file. It does not search for project-local configuration,
@@ -295,7 +295,7 @@ them available when the serving host is unreachable.
 ### Set up and inspect the local mount
 
 Run the following commands on either a Linux or macOS SafeYolo host, as the
-account that owns the instance. Select that instance with `--root` or
+account that owns the instance. Select that instance with `--instance-dir` or
 `SAFEYOLO_CONFIG_DIR` as described at the start of this guide. The example uses
 an existing agent named `dropbox-trial` and an instance directory name of
 `work-instance`. For a new agent, first follow [agent setup](installation.md#configure-and-use-an-agent).
@@ -529,7 +529,7 @@ the guest is not evidence of a remaining host mount.
 
 On the host, use the account that owns the selected instance. The examples use
 the default instance and the disposable agent `dropbox-trial`. For another
-instance, put `--root ROOT` before `agent`. Preview retirement first:
+instance, put `--instance-dir PATH` before `agent`. Preview retirement first:
 
 ```sh
 safeyolo agent retire dropbox-trial
@@ -577,7 +577,7 @@ agent entries and settings when editing the policy manually.
 ## Change saved mounts for the next start
 
 On the owning host account, agent `work` must already be configured. The host
-source directories in these examples must exist. Use `--root ROOT` before
+source directories in these examples must exist. Use `--instance-dir PATH` before
 `agent` to select another instance:
 
 ```sh
@@ -608,7 +608,7 @@ available.
 
 On the host, use the account that owns the selected instance. Agent `work`
 must already be running. The host directories in these examples must exist.
-Use `--root ROOT` before `agent` for another instance.
+Use `--instance-dir PATH` before `agent` for another instance.
 
 ```sh
 safeyolo agent mount work "$HOME/reference:/reference:ro"
@@ -673,7 +673,7 @@ update the installed inputs and select a future stop/start explicitly.
 ## Protected host directories
 
 Run these commands on the host as the account that owns the instance. They use
-the default instance at `$HOME/.safeyolo`; use `--root ROOT` for another instance.
+the default instance at `$HOME/.safeyolo`; use `--instance-dir PATH` for another instance.
 To require read-only extra mounts of `$HOME/reference` and its descendants:
 
 ```sh

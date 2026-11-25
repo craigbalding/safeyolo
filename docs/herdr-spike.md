@@ -18,7 +18,7 @@ the coding command with the pane's terminal input and output:
 ```sh
 python3 /trusted/checkout/scripts/safeyolo_herdr.py demo \
   --safeyolo /installed/safeyolo/bin/safeyolo \
-  --root /installed/safeyolo
+  --instance-dir /installed/safeyolo
 ```
 
 The wrapper delegates `agent start NAME --foreground`, reads `agent status NAME`
@@ -45,7 +45,7 @@ the wrapper command. In this example, `delivery` is that room:
 ```sh
 python3 /trusted/checkout/scripts/safeyolo_herdr.py demo \
   --safeyolo /installed/safeyolo/bin/safeyolo \
-  --root /installed/safeyolo --coord-room delivery
+  --instance-dir /installed/safeyolo --coord-room delivery
 ```
 
 The wrapper reads native `coord status delivery --json` during refresh. It

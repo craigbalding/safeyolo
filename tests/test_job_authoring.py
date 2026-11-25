@@ -51,7 +51,7 @@ existing="existing.txt"
 
 def run(root, output, engine="hyperlight", bundle=None):
     return subprocess.run([sys.executable, str(root / "assets/skills/job-authoring/scripts/prepare.py"),
-        "--root", str(root), "--engine", engine, "--repository", "owner/repository", "--author-id", "42",
+        "--instance-dir", str(root), "--engine", engine, "--repository", "owner/repository", "--author-id", "42",
         "--issue", "1", "--room", "engineering", "--factory", "example", "--credential", "existing-github",
         "--output", str(output), *(["--bundle", str(bundle)] if bundle else [])], capture_output=True, text=True)
 

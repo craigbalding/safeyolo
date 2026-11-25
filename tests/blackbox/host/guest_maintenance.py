@@ -107,7 +107,7 @@ def needs_patch(version: str) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--instance-dir", dest="root", required=True, type=Path)
     parser.add_argument("--agent", required=True)
     parser.add_argument("--agent-id", required=True)
     parser.add_argument("--run-id", required=True)
@@ -138,7 +138,7 @@ def main() -> None:
     args.output.chmod(0o600)
 
     def command(*words: str) -> str:
-        result = subprocess.run([str(cli), "--root", str(root), *words],
+        result = subprocess.run([str(cli), "--instance-dir", str(root), "--json", *words],
                                 capture_output=True, text=True, timeout=150)
         if result.returncode:
             raise RuntimeError(f"{words[:2]} failed: {result.stderr[-1500:]}")

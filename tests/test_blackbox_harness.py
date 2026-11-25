@@ -82,7 +82,7 @@ def test_installed_federation_binds_destination_and_observes_before_asserting(tm
 
     def guest_shell(arguments, **kwargs):
         # Exercise the real guest HTTP helper through its native-shell boundary.
-        assert arguments[:5] == [str(tmp_path / "bin/safeyolo"), "--root", str(root), "agent", "shell"]
+        assert arguments[:5] == [str(tmp_path / "bin/safeyolo"), "--instance-dir", str(root), "agent", "shell"]
         actor = arguments[5]
         words = shlex.split(arguments[-1])
         url = urlsplit(words[-1])
@@ -741,7 +741,7 @@ def test_prepared_inputs_reach_native_lifecycle_with_fresh_state(monkeypatch, na
             installed_sections.prepare_native_instance(source, root)
             monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(root))
             monkeypatch.delenv("SAFEYOLO_NATIVE_CONFIG_PATH", raising=False)
-            assert json.loads(subprocess.check_output([str(root / "bin/safeyolo"), "--root", str(root), "status"]))["agents"] == []
+            assert json.loads(subprocess.check_output([str(root / "bin/safeyolo"), "--instance-dir", str(root), "status"]))["agents"] == []
             assert (root / "bin/safeyolo").resolve() == Path(binary).resolve()
             assert (root / "assets/input").stat().st_ino == (source / "assets/input").stat().st_ino
             if namespace_entry:
@@ -784,10 +784,10 @@ def test_shared_approval_transport_keeps_owned_selection_when_preparation_fails(
     owned, unrelated = tmp_path / "owned", tmp_path / "unrelated"
     identities = {}
     for root in (owned, unrelated):
-        installed_shared_approvals.checked([binary, "--root", str(root), "init"])
+        installed_shared_approvals.checked([binary, "--instance-dir", str(root), "init"])
         for name in ("worker", "helper"):
             created = installed_shared_approvals.checked([
-                binary, "--root", str(root), "agent", "create", name,
+                binary, "--instance-dir", str(root), "agent", "create", name,
                 "--workspace", str(workspace), "--launcher", "supervisor",
             ])
             identities[root, name] = json.loads(created)["configuration"]["id"]
@@ -1870,12 +1870,12 @@ def test_blackbox_coord_binding_reaches_real_native_start_and_restart(tmp_path):
     runner = (ROOT / "tests/blackbox/run-tests.sh").read_text()
     probe = tmp_path / "coord-start.sh"
     probe.write_text(runner[:runner.index("# Test instance ports")]
-                     + '\nexec "$SELECTED_NATIVE_CLI" --root "$SAFEYOLO_CONFIG_DIR" coord start --binary "$SELECTED_NATS"\n')
+                     + '\nexec "$SELECTED_NATIVE_CLI" --instance-dir "$SAFEYOLO_CONFIG_DIR" coord start --binary "$SELECTED_NATS"\n')
     root = tmp_path / "disposable"
     env = {key: value for key, value in os.environ.items()
            if key not in {"SAFEYOLO_NATS_TEST_INSTANCE", "SAFEYOLO_COORD_DATA_DIR", "SAFEYOLO_NATIVE_CONFIG_PATH"}}
     env.update(SAFEYOLO_TEST_CONFIG_DIR=str(root), SELECTED_NATIVE_CLI=cli, SELECTED_NATS=nats)
-    subprocess.run([cli, "--root", str(root), "init"], env=env,
+    subprocess.run([cli, "--instance-dir", str(root), "init"], env=env,
                    capture_output=True, text=True, timeout=10, check=True)
     try:
         for _ in range(2):
@@ -1884,13 +1884,13 @@ def test_blackbox_coord_binding_reaches_real_native_start_and_restart(tmp_path):
             process = json.loads(result.stdout)
             assert process["client_port"] not in {4222, 8222}
             assert process["monitor_port"] not in {4222, 8222, process["client_port"]}
-            status = subprocess.run([cli, "--root", str(root), "coord", "status"], env=env,
+            status = subprocess.run([cli, "--instance-dir", str(root), "coord", "status"], env=env,
                                     capture_output=True, text=True, timeout=10, check=True)
             assert json.loads(status.stdout)["process"] == process
-            subprocess.run([cli, "--root", str(root), "coord", "stop"], env=env,
+            subprocess.run([cli, "--instance-dir", str(root), "coord", "stop"], env=env,
                            capture_output=True, text=True, timeout=10, check=True)
     finally:
-        subprocess.run([cli, "--root", str(root), "coord", "stop"], env=env,
+        subprocess.run([cli, "--instance-dir", str(root), "coord", "stop"], env=env,
                        capture_output=True, text=True, timeout=10, check=True)
 
 
@@ -1926,7 +1926,7 @@ def test_kvm_access_only_preparation_reuses_acl_and_stops_before_installation(tm
     assert result.returncode == expected, result.stderr
     assert not unexpected.exists() and not (tmp_path / "prepared").exists()
     if lane == "kvm":
-        assert json.loads(calls.read_text()) == ["--root", str(tmp_path / "prepared"), "host", "prepare", "--yes"]
+        assert json.loads(calls.read_text()) == ["--instance-dir", str(tmp_path / "prepared"), "host", "prepare", "--yes"]
         assert ("KVM access prepared" in result.stdout) == (acl_exit == 0)
     else:
         assert not calls.exists() and "requires the KVM lane" in result.stderr
@@ -1968,10 +1968,10 @@ if sys.argv[4] == 'start': sys.exit({start_exit})
                             env=env, capture_output=True, text=True, timeout=15, check=False)
     assert result.returncode == start_exit, result.stderr
     commands = [json.loads(line) for line in calls.read_text().splitlines()]
-    expected = ['--root', str(root), 'coord', 'start', '--binary', env['SAFEYOLO_COORD_NATS_BINARY']]
+    expected = ['--instance-dir', str(root), 'coord', 'start', '--binary', env['SAFEYOLO_COORD_NATS_BINARY']]
     if lane == 'vz':
         expected += ['--client-port', '46370', '--monitor-port', '46372']
-    assert commands == [expected] + ([] if start_exit else [['--root', str(root), 'coord', 'stop']])
+    assert commands == [expected] + ([] if start_exit else [['--instance-dir', str(root), 'coord', 'stop']])
     assert ('no test guest started' in result.stdout) == (start_exit == 0)
 
 
@@ -3017,7 +3017,7 @@ def test_installed_boundary_paths_fit_delegated_sockets_and_keep_owned_cleanup(
         if not arguments[1].endswith("installed_boundaries.py"):
             return run_command(arguments, **kwargs)
         selected = dict(zip(arguments[2::2], arguments[3::2], strict=True))
-        root, output = Path(selected["--root"]), Path(selected["--output"])
+        root, output = Path(selected["--instance-dir"]), Path(selected["--output"])
         section, env = selected["--section"], kwargs["env"]
         roots.append(root)
         assert root.parent == directories[0] and not root.exists()
@@ -3395,7 +3395,7 @@ def test_desktop_sharing_uses_body_approval_and_saves_viewer_before_cessation(tm
                     openings.write("opened\n")
                 resolved.add(current["identifier"])
             return SimpleNamespace(stdout=json.dumps({"status": 200, "body": "{}"}))
-        assert arguments[:3] == ["selected-cli", "--root", str(tmp_path)]
+        assert arguments[:3] == ["selected-cli", "--instance-dir", str(tmp_path)]
         if arguments[3:5] == ["agent", "status"]:
             return SimpleNamespace(stdout=json.dumps({"agent_id": "ag-worker", "run_id": "run-after"}))
         assert arguments[3:5] in (["agent", "stop"], ["agent", "start"])
@@ -4022,14 +4022,14 @@ def test_lifecycle_owner_prepares_pinned_nats_on_independent_ports(monkeypatch, 
     monkeypatch.delenv("SAFEYOLO_NATIVE_CONFIG_PATH", raising=False)
     monkeypatch.setattr(lifecycle, "checked", checked)
     try:
-        original_checked([str(Path(bundle) / "install.sh"), "--root", str(source),
+        original_checked([str(Path(bundle) / "install.sh"), "--instance-dir", str(source),
                           "--command-dir", str(source / "commands"), "--no-guest-download"])
         (source / "share").mkdir(exist_ok=True)
-        primary_args = [cli, "--root", str(source), "coord", "start", "--binary", nats]
+        primary_args = [cli, "--instance-dir", str(source), "coord", "start", "--binary", nats]
         if platform == "vz":
             primary_args += ["--client-port", "46370", "--monitor-port", "46372"]
         primary = original_checked(primary_args)
-        before = original_checked([cli, "--root", str(source), "coord", "status"]).stdout
+        before = original_checked([cli, "--instance-dir", str(source), "coord", "status"]).stdout
         upstream_ca = str(source / "certs/mitmproxy-ca-cert.pem")
         assert Path(upstream_ca).is_file()
         with pytest.raises(GuestBootBoundary):
@@ -4037,7 +4037,7 @@ def test_lifecycle_owner_prepares_pinned_nats_on_independent_ports(monkeypatch, 
                                     {"parent_proxy": "", "upstream_ca_file": upstream_ca},
                                     str(source / "bin/safeyolo-proxy"), parent / "unused.json")
         assert tomllib.loads((owner / "config.toml").read_text())["upstream_ca_file"] == upstream_ca
-        observed = json.loads(original_checked([cli, "--root", str(owner), "coord", "status"]).stdout)
+        observed = json.loads(original_checked([cli, "--instance-dir", str(owner), "coord", "status"]).stdout)
         assert observed["state"] == "running", observed
         owner_status = observed["process"]
         primary_status = json.loads(primary.stdout)
@@ -4053,9 +4053,9 @@ def test_lifecycle_owner_prepares_pinned_nats_on_independent_ports(monkeypatch, 
         binary = Path("data/coord/nats/bin/2.14.5/nats-server")
         assert (source / binary).read_bytes() == (owner / binary).read_bytes()
         assert (source / binary).stat().st_ino != (owner / binary).stat().st_ino
-        assert original_checked([cli, "--root", str(source), "coord", "status"]).stdout == before
+        assert original_checked([cli, "--instance-dir", str(source), "coord", "status"]).stdout == before
         assert installed_sections.cleanup_instance(Path(cli), owner, owner=True) == []
-        assert original_checked([cli, "--root", str(source), "coord", "status"]).stdout == before
+        assert original_checked([cli, "--instance-dir", str(source), "coord", "status"]).stdout == before
     finally:
         failures = []
         for root, is_owner in ((owner, True), (source, False)):

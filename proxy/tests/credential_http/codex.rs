@@ -41,7 +41,7 @@ impl Fixture {
     async fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let initialized = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .args(["--root", directory.path().to_str().unwrap(), "init"])
+            .args(["--instance-dir", directory.path().to_str().unwrap(), "init"])
             .output()
             .unwrap();
         assert!(initialized.status.success(), "native initialization failed");
@@ -181,7 +181,7 @@ impl Fixture {
         std::fs::write(&source, document).unwrap();
         std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
             .args([
-                "--root",
+                "--instance-dir",
                 self.directory.path().to_str().unwrap(),
                 "credentials",
                 "import-codex",

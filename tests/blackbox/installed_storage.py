@@ -149,7 +149,7 @@ def qualify(args: argparse.Namespace, *, reuse_prepared_guest: bool = False) -> 
     cli = prepared / "bin/safeyolo"
 
     def native(label, *arguments, **kwargs):
-        return run(label, [cli, "--root", root, *arguments], **kwargs)
+        return run(label, [cli, "--instance-dir", root, *arguments], **kwargs)
 
     tracked = []
     try:
@@ -178,7 +178,7 @@ def qualify(args: argparse.Namespace, *, reuse_prepared_guest: bool = False) -> 
             acquired = output / "acquired"
             # Acquisition stages in a fresh root; authorization belongs to the
             # supplied prepared instance, as it does for the normal installer.
-            run("native-acquire", [cli, "--root", acquired, "guest", "acquire", *common,
+            run("native-acquire", [cli, "--instance-dir", acquired, "guest", "acquire", *common,
                                   "--namespace-root", prepared,
                                   "--host-settings", args.host_settings, "--write-selection", selection], timeout=300)
         selected = json.loads(selection.read_text())

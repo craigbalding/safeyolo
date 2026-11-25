@@ -315,9 +315,9 @@ nodes:
         native_claude: "SAFEYOLO_CLAUDE_SMOKE_CREDENTIAL=<existing-host-credential-name> .venv/bin/python tests/blackbox/retained_inputs.py run --lane systrap --selection <frozen-selection.json> --prepared-config <dedicated-selected-installation> --section claude --artifacts <new-private-report-directory>"
         gvisor_systrap: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh systrap --verbose"
         gvisor_kvm: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh kvm --verbose"
-        disposable_jobs: "python3 tests/blackbox/host/job_sandbox.py --cli <candidate-cli> --root <prepared-disposable-instance> --scratch <disk-backed-directory>"
+        disposable_jobs: "python3 tests/blackbox/host/job_sandbox.py --cli <candidate-cli> --instance-dir <prepared-disposable-instance> --scratch <disk-backed-directory>"
         linux_storage: ".venv/bin/python tests/blackbox/installed_storage.py --prepared-config <verified-installed-root> --host-settings <saved-linux-settings.toml> --archive <retained-published-guest.tar.zst> --archive-sha256 <verified-archive-sha256> --index sha256:<published-index-sha256> --install-commit <installed-source-sha> --output <new-disk-backed-directory>"
-        credentialed_jobs: "python3 tests/blackbox/host/job_network.py --cli <candidate-cli> --proxy <candidate-proxy> --base-root <prepared-instance> --root <fresh-traversable-root> --scratch <empty-disk-backed-directory> --admin-port <authorized-port> --upstream-port <authorized-port>"
+        credentialed_jobs: "python3 tests/blackbox/host/job_network.py --cli <candidate-cli> --proxy <candidate-proxy> --base-root <prepared-instance> --instance-dir <fresh-traversable-root> --scratch <empty-disk-backed-directory> --admin-port <authorized-port> --upstream-port <authorized-port>"
       capture: [trusted base, runsc version, actual platform metadata, uid map, guest-root boundary, lifecycle result, runsc logs, exit status]
 
   - id: ev.accept_vz_lane
@@ -396,8 +396,8 @@ nodes:
         full_vz: "./tests/blackbox/run-lane.sh vz --verbose"
         snapshot_capture: "bash vm/test/snapshot-smoke.sh capture-only <signed-helper> <standard-guest-dir> <staged-assets-dir> <new-run-dir>"
         snapshot_restore: "bash vm/test/snapshot-smoke.sh full <signed-helper> <standard-guest-dir> <staged-assets-dir> <new-run-dir>"
-        disposable_jobs: "python3 tests/blackbox/host/job_sandbox.py --cli <candidate-cli> --root <prepared-disposable-instance> --scratch <disk-backed-directory> --observer-probe <static-linux-arm64-probe>"
-        credentialed_jobs: "python3 tests/blackbox/host/job_network.py --cli <candidate-cli> --proxy <candidate-proxy> --base-root <prepared-instance> --root <fresh-traversable-root> --scratch <empty-disk-backed-directory> --admin-port <authorized-port> --upstream-port <authorized-port>"
+        disposable_jobs: "python3 tests/blackbox/host/job_sandbox.py --cli <candidate-cli> --instance-dir <prepared-disposable-instance> --scratch <disk-backed-directory> --observer-probe <static-linux-arm64-probe>"
+        credentialed_jobs: "python3 tests/blackbox/host/job_network.py --cli <candidate-cli> --proxy <candidate-proxy> --base-root <prepared-instance> --instance-dir <fresh-traversable-root> --scratch <empty-disk-backed-directory> --admin-port <authorized-port> --upstream-port <authorized-port>"
       capture: [trusted base, helper and guest input identities, physical host identity, exact argv, completed save and paired overlay, queued canaries and gate observations, daemon and job results, snapshot fingerprint result when selected, owned cleanup, exit status]
 
   - id: ev.accept_coord_lane

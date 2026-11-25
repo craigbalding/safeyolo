@@ -64,6 +64,8 @@ pub(crate) struct Access {
     agent: String,
     agent_id: String,
     run_id: Option<String>,
+    guest_port: u16,
+    web: bool,
     diagnostics: Mutex<Option<(Instant, serde_json::Value)>>,
     #[cfg(target_os = "macos")]
     viewer_assets: tokio::sync::Semaphore,
@@ -82,6 +84,7 @@ pub(crate) struct Access {
 #[derive(Clone)]
 pub(crate) enum PreviewAuthority {
     Operator,
+    OperatorUntil(Instant),
     Action {
         issued: Box<crate::policy::delegation::IssuedAccess>,
         state: crate::RuntimeState,
@@ -93,6 +96,7 @@ impl PreviewAuthority {
     fn id(&self) -> String {
         match self {
             Self::Operator => "operator".into(),
+            Self::OperatorUntil(_) => "operator".into(),
             Self::Action { issued, .. } => issued.approval_id.clone(),
         }
     }
@@ -100,6 +104,7 @@ impl PreviewAuthority {
     pub(crate) fn active(&self) -> bool {
         match self {
             Self::Operator => true,
+            Self::OperatorUntil(until) => Instant::now() < *until,
             Self::Action {
                 issued,
                 state,
@@ -107,8 +112,7 @@ impl PreviewAuthority {
             } => {
                 let policy = state.read().ok().and_then(|runtime| runtime.policy.clone());
                 policy.is_some_and(|policy| issued.active(&policy))
-                    && crate::desktop_present::configuration_revision()
-                        .is_ok_and(|revision| issued.action["configuration_revision"] == revision)
+                    && crate::operator_actions::configuration_current(state, &issued.action)
                     && store
                         .get(&issued.approval_id)
                         .ok()
@@ -231,6 +235,49 @@ impl Preview {
         shared: Option<Arc<SharedListener>>,
         authority: PreviewAuthority,
     ) -> Result<Self, Error> {
+        Self::start_port(
+            agent,
+            agent_id,
+            host_port,
+            tailnet_port,
+            shared,
+            authority,
+            GUEST_PORT,
+            false,
+        )
+        .await
+    }
+
+    pub(crate) async fn start_web(
+        agent: &str,
+        agent_id: &str,
+        guest_port: u16,
+        tailnet_port: Option<u16>,
+        authority: PreviewAuthority,
+    ) -> Result<Self, Error> {
+        Self::start_port(
+            agent,
+            agent_id,
+            0,
+            tailnet_port,
+            None,
+            authority,
+            guest_port,
+            true,
+        )
+        .await
+    }
+
+    async fn start_port(
+        agent: &str,
+        agent_id: &str,
+        host_port: u16,
+        tailnet_port: Option<u16>,
+        shared: Option<Arc<SharedListener>>,
+        authority: PreviewAuthority,
+        guest_port: u16,
+        web: bool,
+    ) -> Result<Self, Error> {
         let named_host = host_port != 0 && tailnet_port.is_none();
         let (listener, shared, port) = if named_host {
             let shared = match shared {
@@ -248,6 +295,8 @@ impl Preview {
             agent: agent.to_owned(),
             agent_id: agent_id.to_owned(),
             run_id: crate::host_runs::id(agent).ok(),
+            guest_port,
+            web,
             diagnostics: Mutex::new(None),
             // The VZ shell bridge admits six streams. Do not let parallel
             // module imports consume all of them while viewers and the fixed
@@ -279,7 +328,7 @@ impl Preview {
                     break;
                 };
                 let valid = crate::host_platform::in_config(access.config.clone(), async {
-                    access.authorized()
+                    access.authorized() && (!access.web || access.check_run().is_ok())
                 })
                 .await;
                 if !valid || *access.stop.borrow() {
@@ -320,7 +369,10 @@ impl Preview {
             "127.0.0.1".into()
         };
         let mut preview = Self {
-            url: format!("http://{host}:{port}/_safeyolo_desktop/"),
+            url: format!(
+                "http://{host}:{port}{}",
+                if web { "/" } else { "/_safeyolo_desktop/" }
+            ),
             access,
             task,
             shared,
@@ -332,7 +384,7 @@ impl Preview {
         if let Some(tailnet_port) = tailnet_port {
             match crate::tailnet::Session::start(port, tailnet_port).await {
                 Ok(session) => {
-                    preview.url = session.url("/_safeyolo_desktop/");
+                    preview.url = session.url(if web { "/" } else { "/_safeyolo_desktop/" });
                     *preview.tailnet.lock().await = Some(session);
                 }
                 Err(error) => {
@@ -345,9 +397,9 @@ impl Preview {
             agent,
             "agent.preview_open",
             "agent",
-            format!("Preview opened for {agent}:127.0.0.1:{GUEST_PORT}"),
+            format!("Preview opened for {agent}:127.0.0.1:{guest_port}"),
             Some("agent-preview"),
-            json!({"agent":agent,"guest_port":GUEST_PORT,"host":"127.0.0.1",
+            json!({"agent":agent,"guest_port":guest_port,"host":"127.0.0.1",
                 "host_port":port,"tailnet_port":tailnet_port,"url":preview.url}),
         );
         preview.opened = true;
@@ -405,12 +457,15 @@ impl Preview {
             .filter(|authority| authority.active())
             .map(|authority| match authority {
                 PreviewAuthority::Operator => json!({"kind":"operator"}),
+                PreviewAuthority::OperatorUntil(until) => json!({"kind":"operator","remaining_seconds":until.saturating_duration_since(Instant::now()).as_secs()}),
                 PreviewAuthority::Action { issued, .. } => {
                     json!({"kind":"action","authority":issued})
                 }
             })
             .collect();
-        Some(json!({"agent_id":self.access.agent_id,"agent":self.access.agent,"sources":sources}))
+        Some(
+            json!({"agent_id":self.access.agent_id,"agent":self.access.agent,"run_id":self.access.run_id,"guest_port":self.access.guest_port,"sources":sources}),
+        )
     }
 
     pub(crate) fn authority_active(&self, approval_id: &str) -> bool {
@@ -470,11 +525,11 @@ impl Preview {
                 "agent.preview_close",
                 "agent",
                 format!(
-                    "Preview closed for {}:127.0.0.1:{GUEST_PORT}",
-                    self.access.agent
+                    "Preview closed for {}:127.0.0.1:{}",
+                    self.access.agent, self.access.guest_port
                 ),
                 Some("agent-preview"),
-                json!({"agent":self.access.agent,"guest_port":GUEST_PORT,
+                json!({"agent":self.access.agent,"guest_port":self.access.guest_port,
                     "host_port":self.access.host_port,"tailnet_port":self.tailnet_port}),
             );
             self.opened = false;
@@ -740,7 +795,7 @@ fn local_origin(request: &Request, access: &Access) -> bool {
     origin == format!("{scheme}://{host}")
 }
 
-fn form_code(request: &Request, body: &[u8]) -> String {
+fn form_value(request: &Request, body: &[u8], field: &str) -> String {
     if !request
         .header("Content-Type")
         .is_some_and(|value| value.contains("application/x-www-form-urlencoded"))
@@ -753,7 +808,7 @@ fn form_code(request: &Request, body: &[u8]) -> String {
     body.split('&')
         .find_map(|part| {
             let (name, value) = part.split_once('=')?;
-            (name == "code").then(|| {
+            (name == field).then(|| {
                 percent_decode_str(&value.replace('+', " "))
                     .decode_utf8_lossy()
                     .trim()
@@ -761,6 +816,30 @@ fn form_code(request: &Request, body: &[u8]) -> String {
             })
         })
         .unwrap_or_default()
+}
+
+fn unlock_html(request: &Request, web: bool) -> String {
+    if !web {
+        return UNLOCK_HTML.into();
+    }
+    let target = request
+        .path
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    UNLOCK_HTML.replace(
+        "<label>",
+        &format!("<input type=\"hidden\" name=\"return_to\" value=\"{target}\"><label>"),
+    )
+}
+
+fn preview_log_path<'a>(request: &'a Request, access: &Access) -> &'a str {
+    if access.web {
+        request.path.split('?').next().unwrap_or("/")
+    } else {
+        &request.path
+    }
 }
 
 fn log_preview(
@@ -772,11 +851,15 @@ fn log_preview(
     started: Instant,
     bytes_out: u64,
 ) {
+    // An app callback can carry an authorization code in its query. Retain the
+    // route and transport facts, never those query values in preview events.
+    let path = preview_log_path(request, access);
     let mut details = json!({
-        "agent":access.agent,"guest_port":GUEST_PORT,"host_port":access.host_port,
-        "method":request.method,"path":request.path,"bytes_in":0,"bytes_out":bytes_out,
+        "agent":access.agent,"guest_port":access.guest_port,"host_port":access.host_port,
+        "method":request.method,"path":path,"bytes_in":0,"bytes_out":bytes_out,
         "duration_ms":((started.elapsed().as_secs_f64() * 10_000.0).round() / 10.0)
     });
+    details["query_withheld"] = json!(access.web && request.path.contains('?'));
     if let Some(status) = status {
         details["status"] = status.into();
     }
@@ -914,7 +997,7 @@ async fn serve(
                     ("Content-Type", "text/html; charset=utf-8".into()),
                     ("Cache-Control", "no-store".into()),
                 ],
-                UNLOCK_HTML.as_bytes(),
+                unlock_html(&request, access.web).as_bytes(),
                 false,
             )
             .await;
@@ -983,7 +1066,7 @@ async fn serve(
             }
             Err(error) => return Err(error),
         };
-        let code = form_code(&request, &body);
+        let code = form_value(&request, &body, "code");
         let mut unlock = access.unlock.lock().await;
         if unlock.locked || unlock.code.is_none() {
             let result = reply(
@@ -1064,11 +1147,25 @@ async fn serve(
             "{}={}; Path=/; HttpOnly; SameSite=Strict{secure}",
             access.cookie_name, access.token
         );
+        let target = form_value(&request, &body, "return_to");
+        let target = if access.web
+            && target.starts_with('/')
+            && !target.starts_with("//")
+            && !target.contains('\\')
+            && !target.chars().any(|c| c.is_control() || c.is_whitespace())
+            && !target.starts_with("/_safeyolo_preview")
+        {
+            target.as_str()
+        } else if access.web {
+            "/"
+        } else {
+            "/_safeyolo_desktop/"
+        };
         let result = reply(
             &mut socket,
             "303 See Other",
             &[
-                ("Location", "/_safeyolo_desktop/".into()),
+                ("Location", target.into()),
                 ("Set-Cookie", cookie),
                 ("Cache-Control", "no-store".into()),
             ],
@@ -1111,7 +1208,7 @@ async fn serve(
                 ("Content-Type", "text/html; charset=utf-8".into()),
                 ("Cache-Control", "no-store".into()),
             ],
-            UNLOCK_HTML.as_bytes(),
+            unlock_html(&request, access.web).as_bytes(),
             head_only,
         )
         .await;
@@ -1158,7 +1255,7 @@ async fn serve(
     }
     let mut viewer_id = None;
     let mut viewer_asset = false;
-    if request.path.starts_with("/_safeyolo_desktop/") {
+    if !access.web && request.path.starts_with("/_safeyolo_desktop/") {
         if request.method != "GET" && request.method != "HEAD" {
             return reply(
                 &mut socket,
@@ -1298,7 +1395,11 @@ async fn serve(
         &access,
         &request,
         "traffic.preview_request",
-        format!("preview {} {}", request.method, request.path),
+        format!(
+            "preview {} {}",
+            request.method,
+            preview_log_path(&request, &access)
+        ),
         None,
         started,
         0,
@@ -1336,7 +1437,11 @@ async fn serve(
             &access,
             &request,
             "traffic.preview_response",
-            format!("preview {} {} -> {status}", request.method, request.path),
+            format!(
+                "preview {} {} -> {status}",
+                request.method,
+                preview_log_path(&request, &access)
+            ),
             Some(*status),
             started,
             *bytes_out,
@@ -1369,7 +1474,7 @@ fn valid_attempt_id(id: &str) -> bool {
     id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn guest_request(request: &Request) -> Vec<u8> {
+fn guest_request(request: &Request, access: &Access) -> Vec<u8> {
     let upgrade = request.upgrade();
     let mut result = Vec::new();
     result.extend_from_slice(request.method.as_bytes());
@@ -1377,7 +1482,20 @@ fn guest_request(request: &Request) -> Vec<u8> {
     result.extend(request.path.chars().map(|value| value as u8));
     result.push(b' ');
     result.extend_from_slice(request.version.as_bytes());
-    result.extend_from_slice(format!("\r\nHost: 127.0.0.1:{GUEST_PORT}\r\n").as_bytes());
+    if access.web {
+        // Host has already been checked against this publication's listener.
+        // Preserve the browser origin for app redirects and OAuth callbacks.
+        result.extend_from_slice(
+            format!(
+                "\r\nHost: {}\r\n",
+                request.header("Host").unwrap_or_default()
+            )
+            .as_bytes(),
+        );
+    } else {
+        result
+            .extend_from_slice(format!("\r\nHost: 127.0.0.1:{}\r\n", access.guest_port).as_bytes());
+    }
     for header in &request.headers {
         let lower = header.name.to_ascii_lowercase();
         if lower == "host"
@@ -1502,14 +1620,14 @@ async fn relay(
     } else {
         None
     };
-    let header = guest_request(request);
+    let header = guest_request(request, access);
     let started = Instant::now();
     loop {
         // A retry must not send the previous run's request to a new run.
         access.check_run()?;
         let mut guest = match tokio::time::timeout(
             Duration::from_secs(12),
-            crate::host_platform::open_guest_port(agent, GUEST_PORT),
+            crate::host_platform::open_guest_port(agent, access.guest_port),
         )
         .await
         .unwrap_or_else(|_| {
@@ -1527,7 +1645,8 @@ async fn relay(
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         continue;
                     }
-                    return waiting_room(&mut socket, request, agent, upgrade).await;
+                    return waiting_room(&mut socket, request, agent, access.guest_port, upgrade)
+                        .await;
                 }
                 return reply_status(
                     &mut socket,
@@ -1595,7 +1714,8 @@ async fn relay(
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         continue;
                     }
-                    return waiting_room(&mut socket, request, agent, upgrade).await;
+                    return waiting_room(&mut socket, request, agent, access.guest_port, upgrade)
+                        .await;
                 }
                 Err(_) => {
                     return reply_status(
@@ -1630,8 +1750,11 @@ async fn relay(
         let mut response = head;
         response.truncate(response.len() - 2);
         response.extend_from_slice(
-            format!("X-SafeYolo-Agent: {agent}\r\nX-SafeYolo-Preview-Port: {GUEST_PORT}\r\n\r\n")
-                .as_bytes(),
+            format!(
+                "X-SafeYolo-Agent: {agent}\r\nX-SafeYolo-Preview-Port: {}\r\n\r\n",
+                access.guest_port
+            )
+            .as_bytes(),
         );
         socket.write_all(&response).await?;
         if request.method == "HEAD" {
@@ -1677,6 +1800,7 @@ async fn waiting_room(
     socket: &mut TcpStream,
     request: &Request,
     agent: &str,
+    guest_port: u16,
     upgrade: bool,
 ) -> std::io::Result<(u16, u64)> {
     if upgrade
@@ -1700,7 +1824,7 @@ async fn waiting_room(
         .await;
     }
     let html = format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"60\"><title>Waiting for {agent}</title></head><body><h1>Waiting for {agent}</h1><p>Port {GUEST_PORT} inside the sandbox has no listener. This page reloads automatically.</p><script>setInterval(async()=>{{try{{const r=await fetch(location.href,{{cache:'no-store',credentials:'include',headers:{{'X-SafeYolo-Waiting-Room-Poll':'1'}}}});if(!r.headers.get('X-SafeYolo-Waiting-Room'))location.reload()}}catch(e){{}}}},1000)</script></body></html>"
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"60\"><title>Waiting for {agent}</title></head><body><h1>Waiting for {agent}</h1><p>Port {guest_port} inside the sandbox has no listener. This page reloads automatically.</p><script>setInterval(async()=>{{try{{const r=await fetch(location.href,{{cache:'no-store',credentials:'include',headers:{{'X-SafeYolo-Waiting-Room-Poll':'1'}}}});if(!r.headers.get('X-SafeYolo-Waiting-Room'))location.reload()}}catch(e){{}}}},1000)</script></body></html>"
     );
     reply_status(
         socket,

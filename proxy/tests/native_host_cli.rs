@@ -17,8 +17,9 @@ mod owned_run;
 
 fn cli(root: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(root)
+        .arg("--json")
         .args(args)
         .output()
         .unwrap()
@@ -180,7 +181,7 @@ fn initialization_makes_only_the_public_ca_world_readable() {
     let initialized = Command::new("sh")
         .args(["-c", "umask 077; exec \"$@\"", "init-test"])
         .arg(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(&root)
         .arg("init")
         .output()
@@ -453,7 +454,13 @@ esac
         fs::write(root.join("bin/runsc"), script).unwrap();
         fs::set_permissions(root.join("bin/runsc"), fs::Permissions::from_mode(0o755)).unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .args(["--root", root.to_str().unwrap(), "agent", "stop", "alice"])
+            .args([
+                "--instance-dir",
+                root.to_str().unwrap(),
+                "agent",
+                "stop",
+                "alice",
+            ])
             .env("PATH", root.join("bin"))
             .output()
             .unwrap();
@@ -569,7 +576,13 @@ fn unverified_holders_never_authorize_nsenter_or_signal() {
         fs::write(&path, &bytes).unwrap();
         fs::write(root.join("agents/alice/userns.pid"), pid.to_string()).unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .args(["--root", root.to_str().unwrap(), "agent", "stop", "alice"])
+            .args([
+                "--instance-dir",
+                root.to_str().unwrap(),
+                "agent",
+                "stop",
+                "alice",
+            ])
             .env("PATH", root.join("bin"))
             .output()
             .unwrap();
@@ -765,7 +778,13 @@ esac
     fs::write(&record, saved).unwrap();
     fs::write(root.join("mode"), "not-ready").unwrap();
     let stopped = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .args(["--root", root.to_str().unwrap(), "agent", "stop", "alice"])
+        .args([
+            "--instance-dir",
+            root.to_str().unwrap(),
+            "agent",
+            "stop",
+            "alice",
+        ])
         .env("PATH", root.join("bin"))
         .output()
         .unwrap();
@@ -851,7 +870,7 @@ esac
         let selected_cli = |args: &[&str]| {
             let mut command = Command::new(env!("CARGO_BIN_EXE_safeyolo"));
             command
-                .args(["--root", root.to_str().unwrap()])
+                .args(["--instance-dir", root.to_str().unwrap()])
                 .args(args)
                 .env("PATH", &path_env)
                 .env_remove("SAFEYOLO_RUNSC_ROOT");
@@ -1535,7 +1554,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     let _stop = StopOnDrop(&config_path);
     value(
         Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .args(["--root", root.to_str().unwrap(), "start"])
+            .args(["--instance-dir", root.to_str().unwrap(), "start"])
             .env(
                 "PATH",
                 format!("{}:/usr/bin:/bin", root.join("bin").display()),
@@ -1647,7 +1666,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     fs::set_permissions(&acl, fs::Permissions::from_mode(0o755)).unwrap();
     let retried = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
         .args([
-            "--root",
+            "--instance-dir",
             root.to_str().unwrap(),
             "agent",
             "start",
@@ -1691,7 +1710,13 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
         }
         script.push_str("exit 17\n");
         fs::write(&acl, script).unwrap();
-        let mut args = vec!["--root", root.to_str().unwrap(), "agent", "start", "marker"];
+        let mut args = vec![
+            "--instance-dir",
+            root.to_str().unwrap(),
+            "agent",
+            "start",
+            "marker",
+        ];
         if fault != "admin-listener" {
             args.push("--sandbox-only");
         }
@@ -1752,7 +1777,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     fs::write(&acl, b"#!/bin/sh\nexit 0\n").unwrap();
     let failed = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
         .args([
-            "--root",
+            "--instance-dir",
             root.to_str().unwrap(),
             "agent",
             "start",
@@ -2132,7 +2157,7 @@ fn workflow_stop_inherits_the_selected_lock_without_releasing_the_parent_barrier
     let run = |name| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_safeyolo"));
         command
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(&root)
             .args(["agent", "stop", name])
             .env("SAFEYOLO_HOST_SETUP_LOCK_FD", descriptor.to_string());
@@ -2460,7 +2485,7 @@ fn runsc_state_without_a_runtime_record_holds_native_and_admin_start() {
     fs::create_dir(&blocked_parent).unwrap();
     fs::set_permissions(&blocked_parent, fs::Permissions::from_mode(0o000)).unwrap();
     let denied = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(&root)
         .args(["agent", "status", "marker"])
         .env("SAFEYOLO_RUNSC_ROOT", blocked_parent.join("run"))
@@ -2961,7 +2986,7 @@ fn protected_directories_persist_resolved_paths_and_allow_removal() {
     let designated = value(
         Command::new(env!("CARGO_BIN_EXE_safeyolo"))
             .args([
-                "--root",
+                "--instance-dir",
                 root.to_str().unwrap(),
                 "mount",
                 "protect",
@@ -3767,8 +3792,17 @@ fn same_named_agents_have_separate_native_state_and_read_only_diagnostics() {
         fs::write(dir.join("runtime.json"), record).unwrap();
         let observed = value(cli(&a, &["agent", "status", "marker"]));
         assert_eq!(observed["runtime_state"], "unknown", "{record}: {observed}");
-        let doctor = value(cli(&a, &["doctor"]));
-        assert_eq!(doctor["agents"][0]["runtime_state"], "unknown");
+        let output = cli(&a, &["doctor"]);
+        assert_eq!(output.status.code(), Some(1));
+        let doctor: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let runtimes = doctor["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "Agent runtimes")
+            .unwrap();
+        assert_eq!(runtimes["status"], "unknown");
+        assert_eq!(runtimes["details"]["agents"][0]["runtime_state"], "unknown");
         assert_eq!(
             fs::read(dir.join("runtime.json")).unwrap(),
             record.as_bytes()
@@ -3940,7 +3974,7 @@ fn native_tmux_launch_uses_current_environment_on_the_owned_socket() {
     fs::write(root.join("bin/safeyolo"), b"#!/bin/sh\nprintf '%s\\n' \"$SAFEYOLO_CONFIG_DIR\" \"${SAFEYOLO_RUNSC_ROOT-unset}\" > \"$SAFEYOLO_CONFIG_DIR/environment-marker\"\nexec sleep 30\n").unwrap();
     fs::set_permissions(root.join("bin/safeyolo"), fs::Permissions::from_mode(0o755)).unwrap();
     let started = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(&root)
         .args(["agent", "launcher-session", "marker", "launch-env"])
         .env("SAFEYOLO_CONFIG_DIR", &root)
@@ -4021,7 +4055,7 @@ fn custom_launchers_can_delegate_to_the_shipped_tmux_presets() {
         }
         let _server = OwnedServer(&socket);
         let invalid = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(&root)
             .args(["agent", "launcher-session", "marker", "launch-custom"])
             .env("SAFEYOLO_TMUX_LAYOUT", "invalid")
@@ -4135,7 +4169,7 @@ fn native_demo_is_discoverable_and_early_cancellation_preserves_workspace() {
     );
     let original = fs::read(root.path().join("policy.toml")).unwrap();
     let mut cancel = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(root.path())
         .arg("demo")
         .stdin(std::process::Stdio::piped())
@@ -4380,7 +4414,7 @@ fn retirement_previews_retention_and_preserves_a_concurrent_saved_writer() {
     fs::write(
         &script,
         format!(
-            "#!/bin/sh\n'{}' --root '{}' agent configure bob --memory 777 >/dev/null\n",
+            "#!/bin/sh\n'{}' --instance-dir '{}' agent configure bob --memory 777 >/dev/null\n",
             env!("CARGO_BIN_EXE_safeyolo"),
             root.display()
         ),

@@ -90,7 +90,7 @@ impl ImportNamespace {
             }
             Ok(())
         })();
-        prepared.map_err(|error| format!("{error}; run safeyolo --root {} host prepare to check namespace authorization and delegated IDs, then retry. No guest tree was published", root.display()))?;
+        prepared.map_err(|error| format!("{error}; run safeyolo --instance-dir {} host prepare to check namespace authorization and delegated IDs, then retry. No guest tree was published", root.display()))?;
         Ok(namespace)
     }
 

@@ -9,7 +9,7 @@ cleanup() {
   for root in "$a" "$b"; do
     if [[ -x $root/bin/safeyolo && -f $root/config.toml ]]; then
       "$root/bin/tmux" -S "$root/data/package-tmux.sock" kill-server 2>/dev/null || true
-      "$root/bin/safeyolo" --root "$root" stop
+      "$root/bin/safeyolo" --instance-dir "$root" stop
     fi
   done
 }
@@ -21,13 +21,13 @@ configure() {
 }
 instance() {
   local root=$1; shift
-  SAFEYOLO_NATS_TEST_INSTANCE="${root##*/}-native-package" "$root/bin/safeyolo" --root "$root" "$@"
+  SAFEYOLO_NATS_TEST_INSTANCE="${root##*/}-native-package" "$root/bin/safeyolo" --instance-dir "$root" --json "$@"
 }
 
 if (($# == 4)); then
-  "$4" --root "$b" --command-dir "$b/commands" --no-guest-download --bundle "$package"
+  "$4" --instance-dir "$b" --command-dir "$b/commands" --no-guest-download --bundle "$package"
 else
-  "$package/install.sh" --root "$b" --command-dir "$b/commands" --no-guest-download
+  "$package/install.sh" --instance-dir "$b" --command-dir "$b/commands" --no-guest-download
 fi
 configure "$b" "$occupied_port"
 instance "$b" start
@@ -38,13 +38,13 @@ cp "$b/data/proxy-process.json" "$state/b-process-before.json"
 # A missing input is rejected before creating the instance, then the same
 # ordinary install command succeeds when that input is restored.
 mv "$package/bin/safeyolo-proxy" "$state/missing-proxy"
-if "$package/install.sh" --root "$a" --command-dir "$a/commands" --no-guest-download > "$state/missing.stdout" 2> "$state/missing.stderr"; then
+if "$package/install.sh" --instance-dir "$a" --command-dir "$a/commands" --no-guest-download > "$state/missing.stdout" 2> "$state/missing.stderr"; then
   echo 'Missing proxy was incorrectly accepted' >&2; exit 1
 fi
 grep 'required artifact is missing.*safeyolo-proxy' "$state/missing.stderr"
 [[ ! -e $a ]]
 mv "$state/missing-proxy" "$package/bin/safeyolo-proxy"
-"$package/install.sh" --root "$a" --command-dir "$a/commands" --no-guest-download
+"$package/install.sh" --instance-dir "$a" --command-dir "$a/commands" --no-guest-download
 configure "$a" "$occupied_port"
 if instance "$a" start > "$state/occupied.stdout" 2> "$state/occupied.stderr"; then
   echo 'Occupied Admin endpoint was incorrectly accepted' >&2; exit 1
@@ -60,7 +60,7 @@ cmp "$state/b-policy-before.json" "$state/b-policy-after.json"
 configure "$a" 0
 instance "$a" start
 instance "$a" status | grep '"proxy_state": "running"'
-instance "$a" doctor | grep '"proxy_state": "running"'
+instance "$a" doctor | python3 -c 'import json,sys; r=json.load(sys.stdin); assert any(c["name"]=="Admin API and runtime identity" and c["status"]=="pass" for c in r["checks"])'
 instance "$a" policy show > "$state/a-policy.json"
 for binary in safeyolo safeyolo-proxy safeyolo-coord; do "$a/bin/$binary" --version; done
 "$a/bin/tmux" -V

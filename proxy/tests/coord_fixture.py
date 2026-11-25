@@ -50,7 +50,7 @@ def native(root: Path, *arguments: str) -> str:
     default = Path(__file__).resolve().parents[1] / "target/release/safeyolo"
     binary = os.environ.get("SAFEYOLO_NATIVE_CLI", str(default))
     result = subprocess.run(
-        [binary, "--root", str(root), *arguments],
+        [binary, "--instance-dir", str(root), *arguments],
         capture_output=True,
         text=True,
         check=False,

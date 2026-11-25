@@ -128,7 +128,7 @@ are test observations, not real evidence of an earlier disappearance.
 ```sh
 ./safeyolo-host-executor --version
 ./safeyolo-host-executor demo --directory /home/hostop/case
-./safeyolo-host-executor starter --root /home/hostop/case --service demo.service --output starter.json
+./safeyolo-host-executor starter --instance-dir /home/hostop/case --service demo.service --output starter.json
 ```
 
 On macOS, the service selector is the actual loaded launchd service, for example
@@ -398,7 +398,7 @@ returns the observed workload SID and stable groups used by `starter`. The
 server and credential command also accept the noninteractive native path.
 
 The Windows starter declares `TEMP` and `TMP` as `Temp` beneath the selected
-`--root`. Before running its PowerShell operations, create that directory and
+`--instance-dir`. Before running its PowerShell operations, create that directory and
 give the workload account Modify access. PowerShell startup uses writable
 temporary storage for policy probes; an absent or unwritable location can
 leave the workload in ConstrainedLanguage even when the executor account's

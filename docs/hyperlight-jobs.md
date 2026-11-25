@@ -20,7 +20,7 @@ Installation puts them in the selected instance's `assets/hyperlight`; it needs
 no source checkout, Rust, LLVM or upstream runtime build tools. Installing the
 bundle does not adopt policy or grant service access.
 
-For execution, select an existing SafeYolo instance with `--root`. Linux needs
+For execution, select an existing SafeYolo instance with `--instance-dir`. Linux needs
 accessible Kernel-based Virtual Machine (KVM). Apple-silicon macOS needs
 Hypervisor.framework (HVF) support and the signed helper. A macOS VM without
 nested hypervisor support can build the
@@ -32,8 +32,8 @@ instance, replace that path throughout. With
 and run the installed core definition:
 
 ```sh
-safeyolo --root "$HOME/.safeyolo" job validate "$HOME/.safeyolo/assets/hyperlight/hyperlight.json"
-safeyolo --root "$HOME/.safeyolo" job run "$HOME/.safeyolo/assets/hyperlight/hyperlight.json" --input /absolute/path/to/input
+safeyolo job validate "$HOME/.safeyolo/assets/hyperlight/hyperlight.json"
+safeyolo job run "$HOME/.safeyolo/assets/hyperlight/hyperlight.json" --input /absolute/path/to/input
 ```
 
 The example's decoded stdout is `{"input_bytes":N}`, where `N` is the byte
@@ -135,7 +135,7 @@ On the selected owning host:
 ```sh
 cat "$HOME/.safeyolo/package-info"
 cat "$HOME/.safeyolo/assets/hyperlight/runtime.json"
-safeyolo --root "$HOME/.safeyolo" upgrade status
+safeyolo upgrade status
 ```
 
 Use the [existing host upgrade](installation.md#upgrade-host-and-guest-components)

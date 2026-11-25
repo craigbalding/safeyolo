@@ -45,7 +45,7 @@ def staged_guest(native_agent):
 
 
 def recover(guest, timeout=2):
-    return subprocess.run([str(guest["cli"]), "--root", str(guest["root"]), "agent", "recover", "demo",
+    return subprocess.run([str(guest["cli"]), "--instance-dir", str(guest["root"]), "agent", "recover", "demo",
                            "--timeout", str(timeout)], capture_output=True, text=True, timeout=timeout + 3)
 
 

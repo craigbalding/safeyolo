@@ -276,7 +276,7 @@ def run(root: Path, workspace: Path, credential: str, output: Path, timeout: int
         save()
         started = time.monotonic()
         try:
-            result = subprocess.run([str(cli), "--root", str(root), *arguments], env=environment,
+            result = subprocess.run([str(cli), "--instance-dir", str(root), "--json", *arguments], env=environment,
                                     input=stdin, capture_output=True, timeout=seconds, check=False)
         except subprocess.TimeoutExpired:
             row["timed_out"] = True
@@ -349,7 +349,7 @@ def run(root: Path, workspace: Path, credential: str, output: Path, timeout: int
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--instance-dir", dest="root", type=Path, required=True)
     parser.add_argument("--workspace", type=Path, required=True, help="New disk-backed workspace")
     parser.add_argument("--credential", required=True, help="Existing host encrypted-store credential name")
     parser.add_argument("--output", type=Path, required=True, help="Sanitized JSON report")

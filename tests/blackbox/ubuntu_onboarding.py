@@ -215,7 +215,7 @@ def observe(label, args, timeout=20, private_output=False, role="observer"):
 
 
 def guest(label, code, deadline, private_output=False):
-    return observe(label, [cli, "--root", root, "agent", "shell", "first", "-c", code],
+    return observe(label, [cli, "--instance-dir", root, "agent", "shell", "first", "-c", code],
                    min(20, max(0.1, deadline - time.monotonic())), private_output=private_output)
 
 
@@ -703,7 +703,7 @@ def witness(phase, start_marker=False, connected=False):
     x[phase] = row
     save()
     capture(row, "runtime", live_record)
-    row["status"] = observe(phase + "-status", [cli, "--root", root, "agent", "status", "first"])
+    row["status"] = observe(phase + "-status", [cli, "--instance-dir", root, "agent", "status", "first"])
     capture(row, "launch", launch_record)
     capture(row, "terminal_attachment", lambda: terminal_attachment(phase, row["launch"]))
     capture(row, "processes", processes)
@@ -1267,7 +1267,7 @@ def cleanup():
         for label, args in [("stop-first", ["agent", "stop", "first"]), ("stop-instance", ["stop"]),
                             ("stop-coord", ["coord", "stop"]), ("final-agent", ["agent", "status", "first"]),
                             ("final-proxy", ["status"]), ("final-coord", ["coord", "status"])]:
-            x["cleanup"].append(observe(label, [cli, "--root", root, *args], min(25, max(0.1, deadline - time.monotonic()))))
+            x["cleanup"].append(observe(label, [cli, "--instance-dir", root, *args], min(25, max(0.1, deadline - time.monotonic()))))
     capture(x, "remaining_owned_processes", processes)
     capture(x, "remaining_owned_listeners", lambda: listeners(x.get("remaining_owned_processes", [])))
     tracked = {}
@@ -1576,7 +1576,7 @@ def cold_setup_run(args, package):
     commands = [
         ("bootstrap-download", download),
         ("host-package-acquisition", ["bash", "install-safeyolo.sh", "--release", "host-" + package["source"], "--download-only", bundle]),
-        ("pinned-guest-install", ["bash", bundle / "install.sh", "--root", root, "--guest-index", COLD_SETUP_GUEST["index"], "--yes"]),
+        ("pinned-guest-install", ["bash", bundle / "install.sh", "--instance-dir", root, "--guest-index", COLD_SETUP_GUEST["index"], "--yes"]),
         ("harness-host-setup", ["env", "SAFEYOLO_CLAUDE_COPY_HOST_STATE=0", cli, "agent", "create", "first",
                                 "--workspace", project, "--host-script", setup, "--launcher", "tmux-window"]),
         ("proxy-start", [cli, "start"]),

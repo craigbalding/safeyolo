@@ -168,6 +168,8 @@ pub(super) async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error
         "Selected guest {} {} for the next sandbox boot. Running guests are unchanged.",
         selected.version, selected.archive.digest
     );
-    println!("{}", serde_json::to_string_pretty(&selected)?);
+    if crate::operator_output::json_requested() {
+        crate::operator_output::json(&serde_json::to_value(&selected)?)?;
+    }
     Ok(())
 }

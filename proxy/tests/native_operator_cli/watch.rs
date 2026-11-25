@@ -59,12 +59,25 @@ async fn native_watch_keeps_selected_input_arrivals_deferral_and_concurrent_outc
     terminal
         .until(
             0,
-            &format!("Request #{worker_number}: approve persistent / reject"),
+            &format!("Request #{worker_number} [choice / d / r / l / q]"),
         )
         .await;
     assert!(!terminal.output().contains("approve once"));
     assert!(!terminal.output().contains("approve run"));
-    terminal.send("app");
+    let empty = terminal.mark();
+    terminal.send("\n");
+    terminal.until(empty, "No decision selected").await;
+    assert_eq!(shown(&fixture, &worker.id()).await["status"], "pending");
+    let invalid = terminal.mark();
+    terminal.send("a\n");
+    terminal.until(invalid, "Choose a displayed number").await;
+    assert_eq!(shown(&fixture, &worker.id()).await["status"], "pending");
+    let unavailable = terminal.mark();
+    terminal.send("c\n");
+    terminal
+        .until(unavailable, "Agent context is unavailable")
+        .await;
+    terminal.send("1");
     let arrival = terminal.mark();
     let peer = fixture.network("peer", fixture.address).await;
     assert_eq!(peer.status, 428);
@@ -75,7 +88,7 @@ async fn native_watch_keeps_selected_input_arrivals_deferral_and_concurrent_outc
     let peer_number = number(&output, "peer");
     assert_eq!(number(&output, "worker"), worker_number);
     assert_eq!(number(&output, "helper"), helper_number);
-    terminal.send("rove persistent\n");
+    terminal.send("\n");
     terminal
         .until(
             arrival,
@@ -105,9 +118,9 @@ async fn native_watch_keeps_selected_input_arrivals_deferral_and_concurrent_outc
     let deferred = terminal.mark();
     terminal.send(&format!("{helper_number}\n"));
     terminal
-        .until(deferred, &format!("Request #{helper_number}: approve"))
+        .until(deferred, &format!("Request #{helper_number} [choice"))
         .await;
-    terminal.send("later\n");
+    terminal.send("l\n");
     let unchanged = terminal
         .until(
             deferred,
@@ -139,7 +152,7 @@ async fn native_watch_keeps_selected_input_arrivals_deferral_and_concurrent_outc
     let concurrent = terminal.mark();
     terminal.send(&format!("{peer_number}\n"));
     terminal
-        .until(concurrent, &format!("Request #{peer_number}: approve"))
+        .until(concurrent, &format!("Request #{peer_number} [choice"))
         .await;
     let peer_view = shown(&fixture, &peer.id()).await;
     let rejected = success(
@@ -156,7 +169,7 @@ async fn native_watch_keeps_selected_input_arrivals_deferral_and_concurrent_outc
     terminal
         .until(concurrent, "PENDING APPROVALS: 1 (current state refreshed)")
         .await;
-    terminal.send("approve\n");
+    terminal.send("1\n");
     terminal
         .until(
             concurrent,

@@ -184,8 +184,9 @@ impl Instance {
         };
         let mut command = Command::new(executable);
         command
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(&self.root)
+            .arg("--json")
             .args(args)
             .env("http_proxy", &self.proxy)
             .env("https_proxy", &self.proxy)

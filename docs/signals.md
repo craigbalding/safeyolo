@@ -66,8 +66,8 @@ Removing a source or rule stops its following or reconciliation. Retained list
 snapshots still follow the feed's selected stale behavior and authored policy.
 
 ```sh
-safeyolo --root /private/instance signals configure /private/signal-rules.toml
-safeyolo --root /private/instance signals status
+safeyolo --instance-dir /private/instance signals configure /private/signal-rules.toml
+safeyolo --instance-dir /private/instance signals status
 ```
 
 `configure` validates and saves mode `0600` configuration. A running proxy adopts
@@ -106,7 +106,7 @@ publication. Set `follow = false` on a source used only for publishing. Broker
 acceptance is not an applied or verified response.
 
 ```sh
-safeyolo --root /private/instance signals publish advisories advisories.debian.example /private/advisory.json
+safeyolo --instance-dir /private/instance signals publish advisories advisories.debian.example /private/advisory.json
 ```
 
 Keep withdrawals as higher-revision envelopes with `withdrawn = true`.
@@ -197,9 +197,9 @@ agent's current owned run. It starts no stopped agent. Commands work from any
 working directory.
 
 ```sh
-safeyolo --root /private/instance signals configure /private/signal-rules.toml
-safeyolo --root /private/instance signals assess packages
-safeyolo --root /private/instance signals status
+safeyolo --instance-dir /private/instance signals configure /private/signal-rules.toml
+safeyolo --instance-dir /private/instance signals assess packages
+safeyolo --instance-dir /private/instance signals status
 ```
 
 `assess` returns `requested` with a request ID. The running proxy consumes the

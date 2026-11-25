@@ -623,7 +623,7 @@ jobs:
           bundle="$host/unpacked/safeyolo-linux-arm64-production"
           # Use the released host's allocator and ownership helper. Do not
           # share another account's IDs or change an existing prepared tree.
-          "$bundle/bin/safeyolo" --root "$host/preparation" host prepare \
+          "$bundle/bin/safeyolo" --instance-dir "$host/preparation" host prepare \
             --package-root "$bundle" --installed-root "$bundle" \
             --write-settings "$host/linux-settings.toml" --yes \
             | tee "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/host-preparation.txt"
@@ -638,7 +638,7 @@ jobs:
           stage=$(mktemp -d "$RUNNER_TEMP/extract-arm64.XXXXXX")
           assets="$RUNNER_TEMP/verified-extracted-assets"
           sudo -n mv "$assets/rootfs-tree" "$stage/rootfs-tree"
-          sudo -n "$bundle/bin/safeyolo" --root "$host/preparation" host remap-rootfs \
+          sudo -n "$bundle/bin/safeyolo" --instance-dir "$host/preparation" host remap-rootfs \
             "$stage/rootfs-tree" "$uid_base" "$gid_base" "$host_uid" "$host_gid"
           sudo -n mv "$stage/rootfs-tree" "$assets/rootfs-tree"
           rmdir "$stage"

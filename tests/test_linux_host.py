@@ -29,7 +29,9 @@ FILES = ("runsc", "gvisor-bin/gvisor-sentry-prewarmer", "gvisor-bin/gvisor_sentr
 
 
 def command(binary, *arguments, **kwargs):
-    return subprocess.run([str(binary), *map(str, arguments)], capture_output=True,
+    selected = list(map(str, arguments))
+    selected.insert(2 if selected and selected[0] in {"--instance-dir", "--config"} else 0, "--json")
+    return subprocess.run([str(binary), *selected], capture_output=True,
                           text=True, timeout=30, **kwargs)
 
 
@@ -85,7 +87,7 @@ def test_retained_systrap_caller_remaps_only_its_private_copy(native_cli, owned_
     actual_run = subprocess.run
 
     def prepared_host(arguments, **kwargs):
-        if arguments[:6] == [str(bundle / "bin/safeyolo"), "--root", str(root), "host", "prepare", "--package-root"]:
+        if arguments[:6] == [str(bundle / "bin/safeyolo"), "--instance-dir", str(root), "host", "prepare", "--package-root"]:
             prepare_calls.append(arguments)
             assert arguments[6:] == [str(bundle), "--installed-root", str(bundle), "--write-settings",
                                      str(directory / "linux-settings.toml"), *(["--yes"] if bases else [])]
@@ -156,7 +158,7 @@ def test_runtime_input_fails_before_host_changes(native_cli, tmp_path, component
     else:
         executable(runtime, "runsc version release-19000101.0")
     settings = tmp_path / "prepared.toml"
-    result = command(native_cli, "--root", tmp_path / "fresh", "host", "prepare",
+    result = command(native_cli, "--instance-dir", tmp_path / "fresh", "host", "prepare",
                      "--system-runsc", runtime, "--write-settings", settings)
     assert result.returncode != 0
     assert {"missing": "incomplete", "architecture": "another architecture", "version": "incompatible", "truncated": "corrupt"}[fault] in result.stderr
@@ -173,7 +175,7 @@ def test_relative_package_directory_selects_its_bundled_payload(native_cli, owne
         for name in FILES
     ))
     root = parent / "instance"
-    result = command(native_cli, "--root", root, "host", "prepare", "--yes",
+    result = command(native_cli, "--instance-dir", root, "host", "prepare", "--yes",
                      "--package-root", "bundle", "--installed-root", root,
                      "--write-settings", parent / "prepared.toml", cwd=parent)
     assert result.returncode == 0, result.stderr
@@ -210,7 +212,7 @@ def test_namespace_failure_keeps_original_result_and_observes_only_its_audit(
     )
     journal.chmod(0o755)
     settings = parent / "prepared.toml"
-    result = command(native_cli, "--root", parent / "instance", "host", "prepare", "--yes",
+    result = command(native_cli, "--instance-dir", parent / "instance", "host", "prepare", "--yes",
                      "--system-runsc", runtime, "--write-settings", settings,
                      input="operator input must stay outside the namespace probe\n",
                      env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}",
@@ -245,7 +247,7 @@ def test_runtime_access_preserves_other_acl_rights_and_honors_named_denial(nativ
     runtime = payload(parent / "runtime")
     (runtime.parent / "gvisor-bin").chmod(0o700)
     settings = parent / "prepared.toml"
-    arguments = ("--root", parent / "instance", "host", "prepare", "--yes",
+    arguments = ("--instance-dir", parent / "instance", "host", "prepare", "--yes",
                  "--system-runsc", runtime, "--write-settings", settings)
     first = command(native_cli, *arguments)
     assert first.returncode == 0, first.stderr
@@ -278,9 +280,9 @@ def test_runtime_access_keeps_mapped_uid_read_access_before_after_and_repeat(nat
     parent, _stage = owned_stage
     runtime = payload(parent / "runtime")
     root = parent / "instance"
-    initialized = command(native_cli, "--root", root, "init")
+    initialized = command(native_cli, "--instance-dir", root, "init")
     assert initialized.returncode == 0, initialized.stderr
-    prepared = command(native_cli, "--root", root, "host", "prepare", "--yes", "--system-runsc", runtime)
+    prepared = command(native_cli, "--instance-dir", root, "host", "prepare", "--yes", "--system-runsc", runtime)
     assert prepared.returncode == 0, prepared.stderr
     mapping = json.loads(prepared.stdout)["linux"]
     if prior_access == "group":
@@ -295,14 +297,14 @@ def test_runtime_access_keeps_mapped_uid_read_access_before_after_and_repeat(nat
                "-c", "import os,sys; print(sorted(os.listdir(sys.argv[1])))", parent)
     before = command("sudo", *listing)
     assert before.returncode == 0, before.stderr
-    grant = command(native_cli, "--root", root, "host", "grant-runtime-access")
+    grant = command(native_cli, "--instance-dir", root, "host", "grant-runtime-access")
     assert grant.returncode == 0, grant.stderr
     after = command("sudo", *listing)
     assert after.returncode == 0 and after.stdout == before.stdout, after.stderr
     selected_acl = command("getfacl", "-ncp", parent).stdout
     assert f"user:{mapping['uid_base']}:r-x" in selected_acl and "mask::r-x" in selected_acl
     assert ("user:42:---" if prior_access == "other" else "user:42:r--") in selected_acl
-    repeat = command(native_cli, "--root", root, "host", "grant-runtime-access")
+    repeat = command(native_cli, "--instance-dir", root, "host", "grant-runtime-access")
     assert repeat.returncode == 0, repeat.stderr
     assert command("getfacl", "-ncp", parent).stdout == selected_acl
     repeated_listing = command("sudo", *listing)
@@ -449,7 +451,7 @@ def test_denied_runtime_permission_reports_changes_and_retry_is_idempotent(nativ
     (tools / "sudo").write_text("#!/bin/sh\necho 'fixture sudo denied' >&2\nexit 77\n")
     (tools / "sudo").chmod(0o755)
     settings = parent / "prepared.toml"
-    arguments = ("--root", parent / "instance", "host", "prepare", "--yes",
+    arguments = ("--instance-dir", parent / "instance", "host", "prepare", "--yes",
                  "--system-runsc", runtime, "--write-settings", settings)
     declined = command(native_cli, *(arg for arg in arguments if arg != "--yes"), input="n\n")
     assert declined.returncode != 0 and "declined" in declined.stderr
@@ -481,18 +483,18 @@ def test_denied_runtime_permission_reports_changes_and_retry_is_idempotent(nativ
     # Activation also grants access to a newly created private install root.
     # Its narrow operation must retain the same partial-failure diagnosis.
     root = parent / "instance"
-    initialized = command(native_cli, "--root", root, "init")
+    initialized = command(native_cli, "--instance-dir", root, "init")
     assert initialized.returncode == 0, initialized.stderr
     with (root / "config.toml").open("a") as config:
         config.write(settings.read_text())
     base = json.loads(repeated.stdout)["linux"]["uid_base"]
     subprocess.run(["sudo", "-n", "setfacl", "-x", f"u:{base}", str(private)], check=True)
-    activation = command(native_cli, "--root", root, "host", "grant-runtime-access",
+    activation = command(native_cli, "--instance-dir", root, "host", "grant-runtime-access",
                          env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}"})
     assert activation.returncode != 0 and "fixture sudo denied" in activation.stderr
     assert "Host changes and attempted operations: attempted allow UID" in activation.stderr
     assert "retry the installer" in activation.stderr
-    recovery = command(native_cli, "--root", root, "host", "grant-runtime-access")
+    recovery = command(native_cli, "--instance-dir", root, "host", "grant-runtime-access")
     assert recovery.returncode == 0, recovery.stderr
 
 
@@ -500,21 +502,21 @@ def test_doctor_keeps_selected_system_identity_when_runtime_disappears(native_cl
     parent, _stage = owned_stage
     runtime = payload(parent / "runtime")
     root = parent / "instance"
-    initialized = command(native_cli, "--root", root, "init")
+    initialized = command(native_cli, "--instance-dir", root, "init")
     assert initialized.returncode == 0, initialized.stderr
-    prepared = command(native_cli, "--root", root, "host", "prepare", "--yes", "--system-runsc", runtime)
+    prepared = command(native_cli, "--instance-dir", root, "host", "prepare", "--yes", "--system-runsc", runtime)
     assert prepared.returncode == 0, prepared.stderr
-    first = command(native_cli, "--root", root, "doctor")
-    assert first.returncode == 0, first.stderr
-    observed = json.loads(first.stdout)["linux"]
+    first = command(native_cli, "--instance-dir", root, "doctor")
+    assert first.returncode == json.loads(first.stdout)["exit_code"], first.stderr
+    observed = next(check["details"] for check in json.loads(first.stdout)["checks"] if check["name"] == "Linux runtime and namespaces")
     assert observed["path"] == str(runtime) and observed["origin"] == "system"
     assert observed["version"] == "release-20261005.0-safeyolo.1"
     tools = parent / "tools"
     tools.mkdir()
     (tools / "getent").symlink_to(shutil.which("getent"))
-    unavailable = command(native_cli, "--root", root, "doctor",
+    unavailable = command(native_cli, "--instance-dir", root, "doctor",
                           env={**os.environ, "PATH": str(tools)})
-    observed = json.loads(unavailable.stdout)["linux"]
+    observed = next(check["details"] for check in json.loads(unavailable.stdout)["checks"] if check["name"] == "Linux runtime and namespaces")
     assert observed["state"] == "unavailable"
     assert "newuidmap" in observed["error"] and "newgidmap" in observed["error"]
     assert "zstd" not in observed["error"]
@@ -526,25 +528,25 @@ def test_doctor_keeps_selected_system_identity_when_runtime_disappears(native_cl
         if path:
             (tools / name).symlink_to(path)
     assert shutil.which("zstd", path=str(tools)) is None
-    ready = command(native_cli, "--root", root, "doctor",
+    ready = command(native_cli, "--instance-dir", root, "doctor",
                     env={**os.environ, "PATH": str(tools)})
-    observed = json.loads(ready.stdout)["linux"]
+    observed = next(check["details"] for check in json.loads(ready.stdout)["checks"] if check["name"] == "Linux runtime and namespaces")
     assert observed["state"] == "ready", observed
     if not Path("/dev/kvm").exists():
-        kvm = command(native_cli, "--root", root, "doctor",
+        kvm = command(native_cli, "--instance-dir", root, "doctor",
                       env={**os.environ, "SAFEYOLO_RUNSC_PLATFORM": "kvm"})
-        observed = json.loads(kvm.stdout)["linux"]
+        observed = next(check["details"] for check in json.loads(kvm.stdout)["checks"] if check["name"] == "Linux runtime and namespaces")
         assert observed["state"] == "unavailable", observed
         assert "/dev/kvm" in observed["error"] and "host prepare" in observed["error"]
         assert observed["path"] == str(runtime) and observed["origin"] == "system"
         for backend in ("auto", "systrap"):
-            available = command(native_cli, "--root", root, "doctor",
+            available = command(native_cli, "--instance-dir", root, "doctor",
                                 env={**os.environ, "SAFEYOLO_RUNSC_PLATFORM": backend})
-            assert json.loads(available.stdout)["linux"]["state"] == "ready", available.stdout
+            assert next(check["details"] for check in json.loads(available.stdout)["checks"] if check["name"] == "Linux runtime and namespaces")["state"] == "ready", available.stdout
     runtime.unlink()
-    missing = command(native_cli, "--root", root, "doctor")
+    missing = command(native_cli, "--instance-dir", root, "doctor")
     assert missing.returncode == 0, missing.stderr
-    observed = json.loads(missing.stdout)["linux"]
+    observed = next(check["details"] for check in json.loads(missing.stdout)["checks"] if check["name"] == "Linux runtime and namespaces")
     assert observed["state"] == "unavailable" and observed["path"] == str(runtime)
     assert observed["origin"] == "system" and "no other runtime" in observed["error"]
 
@@ -638,7 +640,7 @@ int {name}(const char *path, int flags, ...) {{
     environment = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}", "LD_PRELOAD": str(shim),
                    "SAFEYOLO_FIXTURE_RESTRICTION": str(restriction)}
     settings = parent / "prepared.toml"
-    arguments = (native_cli, "--root", root, "host", "prepare", "--yes",
+    arguments = (native_cli, "--instance-dir", root, "host", "prepare", "--yes",
                  "--system-runsc", runtime, "--write-settings", settings)
     subprocess.run(["sudo", "-n", "mkdir", "-p", str(profiles[0].parent)], check=True)
     try:
@@ -690,7 +692,7 @@ def test_scoped_namespace_entry_with_both_apparmor_restrictions(native_cli, owne
     profiles = [Path("/etc/apparmor.d") / (prefix + "-" + hashlib.sha256(os.fsencode(path)).hexdigest()[:16])
                 for prefix, path in (("safeyolo-runsc", runtime), ("safeyolo-userns", entry))]
     try:
-        prepared = command(native_cli, "--root", root, "host", "prepare", "--yes",
+        prepared = command(native_cli, "--instance-dir", root, "host", "prepare", "--yes",
                            "--system-runsc", runtime, "--write-settings", parent / "prepared.toml")
         assert prepared.returncode == 0, prepared.stderr
         observe = ("import json,os; from pathlib import Path; print(json.dumps({"
@@ -704,12 +706,12 @@ def test_scoped_namespace_entry_with_both_apparmor_restrictions(native_cli, owne
         assert observed["net"] != os.readlink("/proc/self/ns/net"), observed
         assert observed["uid"] == 0 and list(map(int, observed["uid_map"].split())) == [0, os.getuid(), 1]
         assert profiles[1].name in observed["label"] and "//&unconfined" not in observed["label"], observed
-        repeated = command(native_cli, "--root", root, "host", "prepare", "--yes",
+        repeated = command(native_cli, "--instance-dir", root, "host", "prepare", "--yes",
                            "--system-runsc", runtime, "--write-settings", parent / "repeated.toml")
         assert repeated.returncode == 0, repeated.stderr
         assert json.loads(repeated.stdout)["applied"] == []
         subprocess.run(["sudo", "-n", "apparmor_parser", "-R", str(profiles[0])], check=True)
-        runtime_repaired = command(native_cli, "--root", root, "host", "prepare", "--yes",
+        runtime_repaired = command(native_cli, "--instance-dir", root, "host", "prepare", "--yes",
                                    "--system-runsc", runtime, "--write-settings", parent / "runtime-repaired.toml")
         assert runtime_repaired.returncode == 0, runtime_repaired.stderr
         applied = json.loads(runtime_repaired.stdout)["applied"]
@@ -719,7 +721,7 @@ def test_scoped_namespace_entry_with_both_apparmor_restrictions(native_cli, owne
         assert str(profiles[0]) in applied[1]
         entry.chmod(0o700)
         subprocess.run(["sudo", "-n", "apparmor_parser", "-R", str(profiles[1])], check=True)
-        repaired = command(native_cli, "--root", root, "host", "prepare", "--yes",
+        repaired = command(native_cli, "--instance-dir", root, "host", "prepare", "--yes",
                            "--system-runsc", runtime, "--write-settings", parent / "repaired.toml")
         assert repaired.returncode == 0, repaired.stderr
         assert stat.S_IMODE(entry.stat().st_mode) == 0o700

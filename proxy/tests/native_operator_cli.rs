@@ -40,7 +40,7 @@ async fn cli(root: &Path, args: &[&str]) -> std::process::Output {
     timeout(
         Duration::from_secs(15),
         tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(root)
             .args(args)
             .output(),
@@ -51,7 +51,9 @@ async fn cli(root: &Path, args: &[&str]) -> std::process::Output {
 }
 
 async fn success(root: &Path, args: &[&str]) -> Value {
-    let output = cli(root, args).await;
+    let mut arguments = vec!["--json"];
+    arguments.extend_from_slice(args);
+    let output = cli(root, &arguments).await;
     assert!(
         output.status.success(),
         "{args:?}: {}",
@@ -579,7 +581,7 @@ async fn requesting_context_uses_real_coord_attention_and_the_authenticated_repl
     impl Drop for StopCoord {
         fn drop(&mut self) {
             let output = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-                .arg("--root")
+                .arg("--instance-dir")
                 .arg(&self.0)
                 .args(["coord", "stop"])
                 .output()
@@ -1260,7 +1262,7 @@ async fn guided_credential_scope_selects_the_canonical_pending_request() {
     .await;
     assert_eq!(before["action"]["kind"], "credential_allow");
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(fixture.root.path())
         .args(["configure", "approvals", "credential-review"])
         .stdin(std::process::Stdio::piped())
@@ -1788,7 +1790,7 @@ async fn pending_gateway_credential_replacement_has_the_same_agent_and_operator_
 
     let question = success(fixture.root.path(), &["approvals", "ask", &id, "--json"]).await;
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(fixture.root.path())
         .args([
             "credentials",
@@ -2833,7 +2835,7 @@ responses = ["DONE", "BLOCKED", "FAILED"]
         let mut terminal = unsafe {fs::File::from_raw_fd(master)};
         let slave = unsafe {fs::File::from_raw_fd(slave)};
         let mut child=std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root").arg(path).args(["inspect","--factory","operator"])
+            .arg("--instance-dir").arg(path).args(["inspect","--factory","operator"])
             .stdin(slave.try_clone().unwrap()).stdout(slave.try_clone().unwrap()).stderr(slave).spawn().unwrap();
         terminal.write_all(b"select worker\nstate\npending\nlogs\nattach\nback\nselect helper\npending\nquit\n").unwrap();
         // The owned child has a bounded external timeout in the test command.
@@ -2877,7 +2879,7 @@ async fn unavailable_model_does_not_block_manual_resolution_or_grant_permission(
         .env("PATH", "")
         .env_remove("OPENAI_API_KEY")
         .env_remove("OPENAI_ACCESS_TOKEN")
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(fixture.root.path())
         .args([
             "approvals",

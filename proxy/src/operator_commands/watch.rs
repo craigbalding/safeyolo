@@ -64,7 +64,11 @@ impl PendingRequests {
                     ""
                 },
                 safe(text(&view["agent"])),
-                context_json(&view["summary"])?
+                format!(
+                    "{} → {}",
+                    safe(text(&view["action"]["kind"])),
+                    safe(text(&view["target"]))
+                )
             ));
         }
         if self.current && self.numbered.is_empty() {
@@ -143,14 +147,40 @@ fn review(
         return Ok(true);
     }
     println!(
-        "{} #{number} | Agent: {} ({}) | Action: {} | Destination: {}",
+        "{} #{number} | Agent: {} | Destination: {}",
         cue("REVIEW", "36", color),
         safe(text(&view["agent"])),
-        safe(text(&view["action"]["agent_id"])),
-        safe(text(&view["action"]["kind"])),
-        context_json(&view["approval"]["target"])?
+        safe(text(&view["approval"]["target"]))
     );
-    show_approval(&view)?;
+    if view["action"]["kind"] == "credential_allow" {
+        println!(
+            "Credential access requested. Observed request: {} on port {}.",
+            safe(text(&view["authority"]["method"])),
+            view["authority"]["port"]
+        );
+        if let Some(credentials) = view["action"]["credentials"].as_array() {
+            for credential in credentials {
+                println!(
+                    "Credential identity: {} (fingerprint, not a provider/account claim)",
+                    safe(text(credential))
+                );
+            }
+        }
+        println!(
+            "Permission covers all ports, methods and paths at this host. Network and service controls remain."
+        );
+    } else {
+        println!("{}", safe(text(&view["effect"])));
+        if matches!(
+            view["action"]["kind"].as_str(),
+            Some("policy_change" | "policy_snapshot")
+        ) {
+            show_decision_evidence(&view);
+        }
+    }
+    if let Some(count) = view["request_history"]["equivalent_request_count"].as_u64() {
+        println!("{count} equivalent requests grouped under this decision.");
+    }
     if view["status"] != "pending" {
         println!(
             "Request #{number} is no longer pending. Use list to review the remaining requests."
@@ -163,25 +193,66 @@ fn review(
         );
         return Ok(true);
     }
-    // Use the host's explanation for scope, lifetime and non-grants. A failed
-    // explanation does not remove the existing manual decision path.
-    match handle.block_on(explain(config, id, None, None)) {
-        Ok(explanation) => show_explanation(&explanation)?,
-        Err(error) => println!("Explanation unavailable: {}", safe(&error.to_string())),
+    let choices: Vec<_> = view["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|option| option["status"] == "available")
+        .filter_map(|option| {
+            option["id"]
+                .as_str()
+                .map(|id| (id.to_owned(), option["effect"].as_str().unwrap_or("")))
+        })
+        .collect();
+    for (index, (id, effect)) in choices.iter().enumerate() {
+        println!("  {}  {} — {}", index + 1, safe(id), safe(effect));
+    }
+    println!(
+        "  r  Reject: retain the current denial
+  d  Details and expanded explanation
+  l  Leave pending
+  q  Detach"
+    );
+    let context = handle
+        .block_on(approval_context(config, id, None, false))
+        .ok();
+    let context_usable = context.as_ref().is_some_and(|value| {
+        value["context"]["status"] == "answered"
+            || value["context"]["delivery"] != "unavailable"
+                && !value["context"]["delivery"].is_null()
+    });
+    if context_usable {
+        println!(
+            "  c  Read agent context (untrusted)
+  ask  Request current context"
+        );
     }
     let mut selected_option = None::<String>;
     loop {
-        let prompt = format!(
-            "Request #{number}: {} / explain [OPTION] / ask / context / later > ",
-            approval_decision_commands(&view)
-        );
+        let prompt = format!("Request #{number} [choice / d / r / l / q] > ");
         let Some(answer) = line(editor, &prompt)? else {
             return Ok(false);
         };
-        let parts: Vec<_> = answer.split_whitespace().collect();
+        let trimmed = answer.trim();
+        let normalized = if let Ok(number) = trimmed.parse::<usize>() {
+            choices
+                .get(number.wrapping_sub(1))
+                .map(|(id, _)| format!("approve {id}"))
+                .unwrap_or_else(|| trimmed.to_owned())
+        } else {
+            match trimmed {
+                "r" => "reject".to_owned(),
+                "l" => "later".to_owned(),
+                _ => trimmed.to_owned(),
+            }
+        };
+        let parts: Vec<_> = normalized.split_whitespace().collect();
         match parts.as_slice() {
             ["q" | "quit"] => return Ok(false),
-            [] | ["later" | "back"] => {
+            [] => {
+                println!("No decision selected. Choose a displayed key; l leaves it pending.");
+            }
+            ["later" | "back"] => {
                 requests
                     .lock()
                     .map_err(|_| "pending view unavailable")?
@@ -193,7 +264,7 @@ fn review(
                 );
                 return Ok(true);
             }
-            ["list" | "l"] => {
+            ["list"] => {
                 print!(
                     "{}",
                     requests
@@ -202,16 +273,27 @@ fn review(
                         .render(color)?
                 );
             }
-            [command @ ("ask" | "a" | "context" | "c")] => {
-                match handle.block_on(approval_context(
-                    config,
-                    id,
-                    None,
-                    matches!(*command, "ask" | "a"),
-                )) {
+            [command @ ("ask" | "context" | "c")] => {
+                if !context_usable {
+                    println!(
+                        "Agent context is unavailable. The displayed decision choices remain usable."
+                    );
+                    continue;
+                }
+                match handle.block_on(approval_context(config, id, None, *command == "ask")) {
                     Ok(context) => show_context(&context)?,
                     Err(error) => println!(
                         "Agent context unavailable: {}. Approve/reject remains available.",
+                        safe(&error.to_string())
+                    ),
+                }
+            }
+            ["d" | "details"] => {
+                show_approval(&view)?;
+                match handle.block_on(explain(config, id, None, None)) {
+                    Ok(value) => show_explanation(&value)?,
+                    Err(error) => println!(
+                        "Explanation unavailable: {}. Decision choices remain available.",
                         safe(&error.to_string())
                     ),
                 }
@@ -230,7 +312,7 @@ fn review(
             }
             ["approve"] | ["approve", _] | ["reject"] => {
                 let decision = parts[0];
-                let mut option = if decision == "approve" {
+                let option = if decision == "approve" {
                     parts
                         .get(1)
                         .map(|value| (*value).to_owned())
@@ -238,20 +320,9 @@ fn review(
                 } else {
                     None
                 };
-                if decision == "approve"
-                    && option.is_none()
-                    && view["action"]["kind"] == "service_authorize"
-                    && view["options"]
-                        .as_array()
-                        .is_some_and(|options| options.len() > 1)
-                {
-                    let Some(answer) = line(editor, "Option ID (Enter leaves pending): ")? else {
-                        return Ok(false);
-                    };
-                    if answer.trim().is_empty() {
-                        continue;
-                    }
-                    option = Some(answer.trim().to_owned());
+                if decision == "approve" && option.is_none() && choices.len() > 1 {
+                    println!("Select a displayed number to choose the exact approval scope.");
+                    continue;
                 }
                 // resolve_preview re-reads identity, scope, options and current
                 // status. It reconciles a lost response without replaying POST.
@@ -268,7 +339,11 @@ fn review(
                             cue("CANONICAL OUTCOME", "36", color),
                             safe(text(&outcome["status"]))
                         );
-                        show_approval(&outcome)?;
+                        if outcome["status"] == "pending" || outcome["status"] == "stale" {
+                            println!(
+                                "The decision was not applied. Select this request again to review current state."
+                            );
+                        }
                     }
                     Err(error) => println!(
                         "{} Request #{number}: {}. No decision is retried automatically; select this request again to inspect current state.",
@@ -279,7 +354,7 @@ fn review(
                 return Ok(true);
             }
             _ => println!(
-                "Choose approve [OPTION], reject, explain [OPTION], ask, context, list or later. q detaches."
+                "Choose a displayed number, r (reject), d (details), l (leave pending), or q (detach)."
             ),
         }
     }

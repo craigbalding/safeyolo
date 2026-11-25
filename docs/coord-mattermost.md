@@ -271,7 +271,7 @@ configuration, private state and the callback socket:
 
 ```sh
 chmod 600 "$HOME/.safeyolo/mattermost-bot-token"
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" \
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" \
   coord mattermost check --config "$HOME/.safeyolo/coord-mattermost.toml"
 ```
 
@@ -281,7 +281,7 @@ prove the independently operated public tunnel. A successful check prints
 under the operator's normal host supervisor:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" \
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" \
   coord mattermost run --config "$HOME/.safeyolo/coord-mattermost.toml"
 ```
 
@@ -313,7 +313,7 @@ send a new top-level post in a mapped channel. On the host, replace `ROOM_NAME`
 with that channel's configured Coord room and read its canonical history:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" \
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" \
   coord history ROOM_NAME
 ```
 

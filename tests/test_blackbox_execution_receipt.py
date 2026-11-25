@@ -117,7 +117,7 @@ paths = ["proxy/src/jobs/mediated/tests.rs"]
         source.parent.with_suffix(".rs").unlink()
     output = tmp_path / "result.json"
     result = subprocess.run([sys.executable, str(ROOT / "tests/blackbox/execution_receipt.py"),
-                             "--native-phase", "mediated-services", "--root", str(tmp_path),
+                             "--native-phase", "mediated-services", "--instance-dir", str(tmp_path),
                              "--lane", "process", "--run-id", "owned", "--output", str(output),
                              *(["--include-ignored"] if defect == "include-ignored" else [])],
                             capture_output=True, text=True, timeout=30)
@@ -189,7 +189,7 @@ def test_required(case, prepared):
              "collect-only": ["--collect-only"]}.get(defect, [])
     result = subprocess.run([sys.executable, str(ROOT / "tests/blackbox/execution_receipt.py"),
                              "--phase", "identity", "--lane", "kvm", "--run-id", "selected-run",
-                             "--root", str(tmp_path), "--output", str(output), "--", "-q", *extra],
+                             "--instance-dir", str(tmp_path), "--output", str(output), "--", "-q", *extra],
                             capture_output=True, text=True, timeout=25, check=False,
                             env=dict(os.environ, PYTEST_DISABLE_PLUGIN_AUTOLOAD="1"))
     report = json.loads(output.read_text())

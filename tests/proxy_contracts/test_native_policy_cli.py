@@ -105,12 +105,12 @@ def test_candidate_evaluation_reports_actions_without_destination_contact(tmp_pa
                 "finding": finding,
             }]))
             checked = subprocess.run(
-                [str(executable), "--root", str(root), "policy", "check", str(policy)],
+                [str(executable), "--instance-dir", str(root), "--json", "policy", "check", str(policy)],
                 capture_output=True, text=True, timeout=15,
             )
             assert checked.returncode == 0, checked.stderr
             evaluated = subprocess.run(
-                [str(executable), "--root", str(root), "policy", "evaluate", str(policy), str(request_file)],
+                [str(executable), "--instance-dir", str(root), "--json", "policy", "evaluate", str(policy), str(request_file)],
                 capture_output=True, text=True, timeout=15,
             )
             assert evaluated.returncode == 0, evaluated.stderr
@@ -199,7 +199,7 @@ def test_candidate_evaluation_preserves_captured_scores(tmp_path):
             # 1e400 is valid JSON syntax but cannot represent a finite f64.
             evidence_file.write_text(json.dumps(records).replace("Infinity", "1e400"))
             evaluated = subprocess.run(
-                [str(executable), "--root", str(root), "policy", "evaluate", str(policy), str(request_file)],
+                [str(executable), "--instance-dir", str(root), "--json", "policy", "evaluate", str(policy), str(request_file)],
                 capture_output=True, text=True, timeout=15,
             )
             assert evaluated.returncode == 0, evaluated.stderr
@@ -283,7 +283,7 @@ def test_candidate_evaluation_uses_time_after_all_evidence_reads(tmp_path, case)
             "hosts": hosts, "controls": {"network": {"homoglyph": False}},
             "checks": checks, "check_rules": rules,
         }))
-        command = [str(executable), "--root", str(root), "policy", "evaluate", str(policy), str(request_file)]
+        command = [str(executable), "--instance-dir", str(root), "--json", "policy", "evaluate", str(policy), str(request_file)]
         control = subprocess.run(command, capture_output=True, text=True, timeout=15)
         assert control.returncode == 0, control.stderr
         initial = json.loads(control.stdout)["result"]
@@ -351,7 +351,7 @@ class NativeInstance:
 
     def cli(self, *arguments, timeout=15):
         return subprocess.run(
-            [str(self.root / "bin/safeyolo"), "--root", str(self.root), *arguments],
+            [str(self.root / "bin/safeyolo"), "--instance-dir", str(self.root), "--json", *arguments],
             cwd=self.root.parent, env=self.environment, capture_output=True, text=True, timeout=timeout,
         )
 
@@ -419,7 +419,7 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
         if source_fixture:
             # A controlled guest transport needs native commands and source
             # assets, but consumes neither an installed package nor runsc.
-            subprocess.run([str(artifacts / "safeyolo"), "--root", str(root), "init"],
+            subprocess.run([str(artifacts / "safeyolo"), "--instance-dir", str(root), "init"],
                            check=True, capture_output=True, timeout=15)
             (root / "bin").mkdir()
             for binary in HOST_BINARIES:
@@ -441,7 +441,7 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
             shutil.copy2(REPO / "guest/rootfs/safeyolo-sudo", assets / "guest/guest-sudo")
         else:
             installation = subprocess.run(
-                [str(REPO / "scripts/install_native.sh"), "--root", str(root), "--command-dir", str(root / "commands"), "--yes", *inputs],
+                [str(REPO / "scripts/install_native.sh"), "--instance-dir", str(root), "--command-dir", str(root / "commands"), "--yes", *inputs],
                 capture_output=True, text=True, timeout=15,
             )
             assert installation.returncode == 0, installation.stderr
@@ -654,7 +654,7 @@ def test_installed_lab_stages_skills_without_the_optional_python_checker(tmp_pat
     workspace.mkdir()
     try:
         result = subprocess.run(
-            [str(artifacts / "safeyolo"), "--root", str(instance.root), "lab", "--agent", "lab-staging",
+            [str(artifacts / "safeyolo"), "--instance-dir", str(instance.root), "lab", "--agent", "lab-staging",
              "--workspace", str(workspace), "--objective", "inspect installed Lab assets", "--yes"],
             cwd=tmp_path, env=instance.environment, capture_output=True, text=True, timeout=15,
         )

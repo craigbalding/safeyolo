@@ -20,8 +20,8 @@ Use the installed CLI for that instance. Replace `ROOT` with the instance
 directory and `NAME` with the configured agent name:
 
 ```sh
-safeyolo --root ROOT status
-safeyolo --root ROOT agent diagnostics NAME
+safeyolo --instance-dir PATH status
+safeyolo --instance-dir PATH agent diagnostics NAME
 ```
 
 These commands inspect runtime, control, coding-agent, terminal and proxy
@@ -33,7 +33,7 @@ hop below. On Linux, shell execution needs the recorded runsc namespaces. On
 macOS, the shell probe checks the host Unix socket and guest SSH banner.
 
 Choose the diagnostic for the question, using the selected instance's executable
-and `--root ROOT` or `--config FILE` before the command:
+and `--instance-dir PATH` or `--config FILE` before the command:
 
 | Command | What it establishes | Probes and next action |
 | --- | --- | --- |
@@ -46,7 +46,7 @@ The normal `inspect` navigation also offers `diagnostics` and `doctor` for the
 selected context. Each command retains its existing structured result and effects.
 
 For a running guest with idle command supervision, use
-`safeyolo --root ROOT agent recover NAME` to check guest health without SSH.
+`safeyolo --instance-dir PATH agent recover NAME` to check guest health without SSH.
 The [shared-home recovery procedure](#probe-the-guest-through-pid-1-when-ssh-is-unavailable)
 explains its prerequisites and occupied-command refusal. When diagnostics prove
 the runtime stopped, `agent start NAME --sandbox-only` starts a sandbox for
@@ -356,7 +356,7 @@ generation. The installer supplies guest assets; the host staging path
 must bind them before boot. This operation needs no Python or SSH connection.
 
 ```sh
-ROOT/bin/safeyolo --root ROOT agent recover NAME
+ROOT/bin/safeyolo --instance-dir PATH agent recover NAME
 ```
 
 The probe is intended for a sandbox started with `agent start NAME

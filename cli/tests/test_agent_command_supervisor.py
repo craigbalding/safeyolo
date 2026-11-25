@@ -357,7 +357,7 @@ def test_agent_stop_records_intent_even_when_sandbox_is_already_gone(
     enabled = share / "command-supervisor-enabled"
     enabled.touch()
     result = subprocess.run(
-        [str(native_agent["cli"]), "--root", str(native_agent["root"]), "agent", "stop", "demo"],
+        [str(native_agent["cli"]), "--instance-dir", str(native_agent["root"]), "agent", "stop", "demo"],
         capture_output=True, text=True, timeout=5,
     )
 
