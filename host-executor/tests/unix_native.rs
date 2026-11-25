@@ -97,7 +97,7 @@ impl Fixture {
             expires_at: self.target.issuers["issuer"].authority.valid_until,
             expected: Some(
                 self.target
-                    .request_revisions("issuer", "grant", &action)
+                    .request_revisions("issuer", grant_id, &action)
                     .unwrap(),
             ),
             action,
