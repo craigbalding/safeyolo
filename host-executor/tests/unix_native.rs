@@ -356,16 +356,16 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
             "duration_seconds":301,"allow_agent_code":true,"allow_run_refresh":true,
             "executable_bytes":16777216,"dependency_bytes":16777216}
     });
-    let prepare = |request: &serde_json::Value| {
+    let prepare = |request: &serde_json::Value, directory: &Path| {
         Command::new(executor())
             .args(["enrol", "--request-base64"])
             .arg(STANDARD.encode(serde_json::to_vec(request).unwrap()))
             .arg("--directory")
-            .arg(&control)
+            .arg(directory)
             .output()
             .unwrap()
     };
-    let first = prepare(&request);
+    let first = prepare(&request, &control);
     assert!(
         first.status.success(),
         "retained {}: {}",
@@ -374,6 +374,33 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
     );
     let enrolled: enrolment::Enrolment = serde_json::from_slice(&first.stdout).unwrap();
     enrolled.validate().unwrap();
+    #[cfg(target_os = "macos")]
+    {
+        let mut without_broader = request.clone();
+        without_broader["plan"]["broader"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|bound| bound != "processes");
+        let result = prepare(&without_broader, &root.join("without-broader"));
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let narrower: enrolment::Enrolment = serde_json::from_slice(&result.stdout).unwrap();
+        narrower.validate().unwrap();
+        let facts = &narrower.network_enforcement["task:*"];
+        assert!(
+            facts
+                .iter()
+                .any(|fact| fact.contains("UNSUPPORTED DESCENDANT BOUND"))
+        );
+        assert!(
+            !facts
+                .iter()
+                .any(|fact| fact.contains("EXPLICIT BROADER PROCESSES"))
+        );
+    }
     let checked = Command::new(executor())
         .args(["check", "--config"])
         .arg(&enrolled.configuration)
@@ -444,7 +471,7 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
         assert!(controllers.split_whitespace().any(|name| name == "memory"));
         assert!(controllers.split_whitespace().any(|name| name == "pids"));
     }
-    let again = prepare(&request);
+    let again = prepare(&request, &control);
     assert!(
         again.status.success(),
         "{}",
@@ -453,7 +480,7 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
     assert_eq!(first.stdout, again.stdout);
     let mut changed = request;
     changed["plan"]["duration_seconds"] = serde_json::json!(600);
-    let refused = prepare(&changed);
+    let refused = prepare(&changed, &control);
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("another enrolment request"));
 

@@ -31,7 +31,15 @@ const DESCENDANT_LIMIT: &str = "EXPLICIT BROADER PROCESSES: fork/exec and posix_
 pub(crate) fn network_enforcement(operation: &Operation) -> Vec<String> {
     let mut facts = network::disclosure(operation);
     if operation.execution.resources.processes > 1 {
-        facts.push(DESCENDANT_LIMIT.into());
+        if operation
+            .execution
+            .broader
+            .contains(&BroaderBound::Processes)
+        {
+            facts.push(DESCENDANT_LIMIT.into());
+        } else {
+            facts.push("UNSUPPORTED DESCENDANT BOUND: this class has no broader processes exception. Multi-process code cannot be qualified by this backend; a supported single-process subset remains available. No broader lifetime authority is inferred from the process ceiling.".into());
+        }
     } else {
         facts.push("Single-process authority: fork and child execution are denied.".into());
     }
