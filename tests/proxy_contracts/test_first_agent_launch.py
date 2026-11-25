@@ -207,7 +207,7 @@ def codex_login_launch(tmp_path, _binary_cache):
             assert token is not None and token != saved["token"], saved
 
 
-def _codex_choice(until, master, *, new=True):
+def _codex_choice(until, master, *, new=True, subscription=True):
     if new:
         until(b"Run this setup and share this workspace?")
         os.write(master, b"y\n")
@@ -215,9 +215,36 @@ def _codex_choice(until, master, *, new=True):
         os.write(master, b"client\n")
     output = until(b"Codex login [displayed action / file PATH")
     assert b"client-held (readable by this guest)" in output
-    assert b"does not change explicit network/credential denials" in output
+    if subscription:
+        assert b"does not change explicit network/credential denials" in output
+    else:
+        assert b"provider's API billing" in output
+        assert b"copying grants no additional access" in output
     assert b"synthetic-first-launch-access" not in output
     assert b"synthetic-first-launch-refresh" not in output
+
+
+@pytest.mark.parametrize("selection", ["host", "file"])
+def test_codex_client_api_key_copy_preserves_custody_policy_and_does_not_create_a_vault(codex_login_launch, selection):
+    instance = codex_login_launch
+    instance.login.write_text(json.dumps({"OPENAI_API_KEY": "synthetic-client-held-api-key"}) + "\n")
+    original = instance.login.read_bytes()
+    with terminal(instance, instance.arguments) as (process, master, until):
+        _codex_choice(until, master, subscription=False)
+        policy = (instance.root / "policy.toml").read_bytes()
+        choice = "h" if selection == "host" else "file " + str(instance.login)
+        os.write(master, choice.encode() + b"\n")
+        output = until(b"First-agent services failed")
+        assert b"API-key login copied for first" in output
+        assert b"synthetic-client-held-api-key" not in output
+        assert b"Choose credential storage" not in output
+        assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
+    copied = instance.root / "agents/first/home/.codex/auth.json"
+    assert copied.read_bytes() == original == instance.login.read_bytes()
+    assert copied.stat().st_mode & 0o777 == 0o600
+    assert (instance.root / "policy.toml").read_bytes() == policy
+    assert not (instance.root / "data/credentials.enc").exists()
+    assert not (instance.root / "data/credentials.key").exists()
 
 
 @pytest.mark.parametrize("custom_name", [False, True])
@@ -339,7 +366,7 @@ def test_codex_launch_authorizes_selected_login_for_created_identity_before_star
         if not revoke:
             assert (instance.root / "data/credentials.enc").read_bytes() == saved[instance.root / "data/credentials.enc"]
     with terminal(instance, ["agent", "auth", "first"]) as (process, master, until):
-        until(b"Authentication [host-vault/client")
+        until(b"Authentication [client/host-vault")
         os.write(master, b"client\n")
         _codex_choice(until, master, new=False)
         os.write(master, b"a\n")
