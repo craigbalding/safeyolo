@@ -401,7 +401,14 @@ pub fn prepare(
     let state = directory.join("state");
     create_directory(&state)?;
     let identity = crate::workflow::identity(None)?;
-    let shell = fs::canonicalize("/bin/sh").map_err(failure)?;
+    // macOS /bin/sh selects another executable through /private/var/select/sh.
+    // Pin Bash directly so built-in task commands need no selector or extra exec.
+    let shell = fs::canonicalize(if cfg!(target_os = "macos") {
+        "/bin/bash"
+    } else {
+        "/bin/sh"
+    })
+    .map_err(failure)?;
     let shell_hash = crate::workflow::hash(&shell)?;
     let operation = task_operation(&request, &identity, &shell.to_string_lossy(), &shell_hash)?;
     let rule = UpdateRule {
