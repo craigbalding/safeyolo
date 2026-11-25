@@ -80,6 +80,9 @@ impl Fixture {
         call_bytes(&self.root, verb, body)
     }
     fn signed(&mut self, action: Action) -> Vec<u8> {
+        self.signed_with_grant("grant", action)
+    }
+    fn signed_with_grant(&mut self, grant_id: &str, action: Action) -> Vec<u8> {
         self.counter += 1;
         let request = Request {
             version: VERSION.into(),
@@ -87,8 +90,8 @@ impl Fixture {
             request_id: format!("request-{}", self.counter),
             target_id: self.target.target_id.clone(),
             issuer_id: "issuer".into(),
-            grant_id: "grant".into(),
-            principal: self.target.issuers["issuer"].authority.grants["grant"]
+            grant_id: grant_id.into(),
+            principal: self.target.issuers["issuer"].authority.grants[grant_id]
                 .principal
                 .clone(),
             expires_at: self.target.issuers["issuer"].authority.valid_until,
@@ -105,6 +108,11 @@ impl Fixture {
     fn call(&mut self, action: Action) -> Response {
         let verb = action.verb();
         let bytes = self.signed(action);
+        self.call_bytes(verb, &bytes)
+    }
+    fn call_with_grant(&mut self, grant_id: &str, action: Action) -> Response {
+        let verb = action.verb();
+        let bytes = self.signed_with_grant(grant_id, action);
         self.call_bytes(verb, &bytes)
     }
     fn invocation(&self, mode: &str) -> Invocation {
@@ -143,11 +151,18 @@ impl Fixture {
         self.terminal_with_timeout(id, Duration::from_secs(15))
     }
     fn terminal_with_timeout(&mut self, id: &str, timeout: Duration) -> Receipt {
+        self.terminal_with_grant("grant", id, timeout)
+    }
+    fn terminal_with_grant(&mut self, grant_id: &str, id: &str, timeout: Duration) -> Receipt {
         let deadline = Instant::now() + timeout;
         loop {
-            let receipt = self.job(id);
+            let Response::Job { receipt } =
+                self.call_with_grant(grant_id, Action::Job { job_id: id.into() })
+            else {
+                panic!("job refused for {grant_id}")
+            };
             if receipt.state.terminal() {
-                return receipt;
+                return *receipt;
             }
             assert!(Instant::now() < deadline, "job did not settle: {receipt:?}");
             std::thread::sleep(Duration::from_millis(10));
@@ -3621,8 +3636,8 @@ fn installed_api_authentication_and_cross_principal_reads_cannot_change_authorit
         "independent ledger/config: two legitimate jobs only; valid peer grants cannot read/output/cancel another principal's job; invalid signatures, definition injection and rationale cannot change authority"
     );
 }
-// The installed Unix profiles support reads and fixed-service control. A
-// writable configuration is assessment input, never silently adopted runtime.
+// The installed Unix profiles perform the selected configuration edit. The
+// assessment separately combines its retained effect with current authority.
 fn application_operation(f: &Fixture, mode: &str, resource: &str) -> Operation {
     use serde_json::json;
     let mut op = f.target.package.operations["observe"].clone();
@@ -3668,7 +3683,7 @@ fn application_operations(f: &mut Fixture) {
     let mut operations = f.target.package.operations.clone();
     for resource in ["a", "b"] {
         fs::write(f.root.join(format!("config-{resource}")), b"disabled\n").unwrap();
-        for mode in ["read-config", "execute-config"] {
+        for mode in ["read-config", "write-config", "execute-config"] {
             operations.insert(
                 format!("{mode}-{resource}"),
                 application_operation(f, mode, resource),
@@ -3713,7 +3728,13 @@ fn application_operations(f: &mut Fixture) {
         .grants
         .get_mut("grant")
         .unwrap()
-        .operations = f.target.ceiling.clone();
+        .operations = f
+        .target
+        .ceiling
+        .iter()
+        .filter(|(id, _)| !id.starts_with("write-config-"))
+        .map(|(id, scope)| (id.clone(), scope.clone()))
+        .collect();
     f.target.package.semantics = Some(serde_json::from_value(json!({
         "sources":{"fixture":{"location":"host-executor/tests/native_fixture.c and independent host file reads","version":"1"}},
         "resources":{"application":{"description":"Owned synthetic application configuration","identity":["target","id"]}},
@@ -3727,18 +3748,28 @@ fn application_operations(f: &mut Fixture) {
     fs::write(path, serde_json::to_vec_pretty(&configuration).unwrap()).unwrap();
 }
 
-fn application_result(f: &mut Fixture, operation: &str, resource: &str) -> (Receipt, String) {
+fn application_result(
+    f: &mut Fixture,
+    grant_id: &str,
+    operation: &str,
+    resource: &str,
+) -> (Receipt, String) {
     let mut invocation = f.invocation(operation);
     invocation.resource_id = format!("application:{resource}");
-    let Response::Proposal { prepared, .. } = f.call(Action::Propose { invocation }) else {
+    let Response::Proposal { prepared, .. } =
+        f.call_with_grant(grant_id, Action::Propose { invocation })
+    else {
         panic!("application proposal refused: {operation}")
     };
-    let Response::Job { receipt } = f.call(Action::Invoke {
-        invocation: prepared.invocation,
-    }) else {
+    let Response::Job { receipt } = f.call_with_grant(
+        grant_id,
+        Action::Invoke {
+            invocation: prepared.invocation,
+        },
+    ) else {
         panic!("application invocation refused: {operation}")
     };
-    let result = f.terminal(&receipt.job_id);
+    let result = f.terminal_with_grant(grant_id, &receipt.job_id, Duration::from_secs(15));
     eprintln!(
         "application receipt {}",
         serde_json::to_string(&result).unwrap()
@@ -3749,11 +3780,14 @@ fn application_result(f: &mut Fixture, operation: &str, resource: &str) -> (Rece
     assert!(native.processes_stopped && !native.output_truncated);
     let Response::Output {
         data_base64, eof, ..
-    } = f.call(Action::Output {
-        job_id: result.job_id.clone(),
-        offset: 0,
-        max_bytes: 4096,
-    })
+    } = f.call_with_grant(
+        grant_id,
+        Action::Output {
+            job_id: result.job_id.clone(),
+            offset: 0,
+            max_bytes: 4096,
+        },
+    )
     else {
         panic!("application output refused")
     };
@@ -3768,7 +3802,6 @@ fn application_assessment(
     f: &mut Fixture,
     label: &str,
     history: &serde_json::Value,
-    resource: &str,
     only_execute: Option<&str>,
     expected: &str,
 ) {
@@ -3777,23 +3810,8 @@ fn application_assessment(
         std::env::var_os("SAFEYOLO_HOST_ASSESSOR_BIN")
             .expect("supply the installed safeyolo CLI for read-only host assessment"),
     );
-    let original = fs::read(f.root.join("target.json")).unwrap();
-    let mut settings: Configuration = serde_json::from_slice(&original).unwrap();
-    // The complete assessment includes a historical writer. It does not
-    // pretend this Unix backend can enforce a writable native operation.
-    let writer_id = format!("write-config-{resource}");
-    let writer = application_operation(f, "write-config", resource);
-    let mut scope = f.target.ceiling[&format!("execute-config-{resource}")].clone();
-    scope.implementation_sha256 = writer.implementation_sha256();
-    settings
-        .target
-        .ceiling
-        .insert(writer_id.clone(), scope.clone());
-    settings
-        .target
-        .package
-        .operations
-        .insert(writer_id.clone(), writer);
+    let mut settings: Configuration =
+        serde_json::from_slice(&fs::read(f.root.join("target.json")).unwrap()).unwrap();
     settings.target.package.semantics.as_mut().unwrap().rules = serde_json::from_value(json!({"changed_configuration_execution":{
         "when":{"kind":"all_effects_same_scope","resource":"application","effects":["write_config","execute"]},
         "prerequisites":[],"consequence":"Execute with the changed synthetic configuration.",
@@ -3807,11 +3825,6 @@ fn application_assessment(
         .unwrap()
         .authority
         .grants;
-    let mut expired = grants["grant"].clone();
-    expired.not_before = now() - 2;
-    expired.expires_at = now() - 1;
-    expired.operations = BTreeMap::from([(writer_id, scope)]);
-    grants.insert("expired-writer".into(), expired);
     for grant in grants.values_mut() {
         grant.operations.retain(|id, _| {
             (label == "unknown-authority"
@@ -3857,7 +3870,7 @@ fn application_assessment(
             .as_array()
             .unwrap()
             .iter()
-            .any(|grant| grant["grant_id"] == "expired-writer")
+            .any(|grant| grant["grant_id"] == "writer")
     );
     assert_eq!(
         hash(&config),
@@ -3868,23 +3881,6 @@ fn application_assessment(
         "installed assessment {}",
         json!({"case":label,"status":expected,"assessor_sha256":hash(&assessor),"target":f.target.target_id,"input_revision":value["input_revision"],"history":history,"limitations":value["limitations"]})
     );
-    if label == "same-target-resource" {
-        let count = retained_job_count(f);
-        fs::write(f.root.join("target.json"), fs::read(&config).unwrap()).unwrap();
-        let refusal = f.call(Action::Discover);
-        fs::write(f.root.join("target.json"), original).unwrap();
-        eprintln!("native writable profile remains unavailable: {refusal:?}");
-        assert!(matches!(
-            refusal,
-            Response::Refused {
-                refusal: Refusal {
-                    code: RefusalCode::Unavailable,
-                    ..
-                }
-            }
-        ));
-        assert_eq!(retained_job_count(f), count);
-    }
 }
 
 #[test]
@@ -3909,27 +3905,97 @@ fn installed_adaptive_investigation_and_retained_configuration_effects() {
         JobState::Completed
     );
     assert_eq!(observe_service(false), None);
-    let (_, log) = application_result(&mut first, "application-log", "a");
+    let (_, log) = application_result(&mut first, "grant", "application-log", "a");
     let resource = log.trim().strip_prefix("configuration=").unwrap();
     assert!(["a", "b"].contains(&resource));
     let other = if resource == "a" { "b" } else { "a" };
-    let (read, diagnosis) =
-        application_result(&mut first, &format!("read-config-{resource}"), resource);
+    let (_, diagnosis) = application_result(
+        &mut first,
+        "grant",
+        &format!("read-config-{resource}"),
+        resource,
+    );
     assert_eq!(diagnosis, "disabled\n");
-    // Trusted host setup supplies a real earlier persistent edit. The agent
-    // has no native write grant, and expiry is not evidence of rollback.
-    fs::write(first.root.join(format!("config-{resource}")), b"enabled\n").unwrap();
+    let writer_id = format!("write-config-{resource}");
+    let mut invocation = first.invocation(&writer_id);
+    invocation.resource_id = format!("application:{resource}");
+    assert!(matches!(
+        first.call(Action::Propose { invocation }),
+        Response::Refused { refusal } if refusal.code == RefusalCode::Authority
+    ));
+    let mut writer = first.target.issuers["issuer"].authority.grants["grant"].clone();
+    writer.operations =
+        BTreeMap::from([(writer_id.clone(), first.target.ceiling[&writer_id].clone())]);
+    first
+        .target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .insert("writer".into(), writer);
+    let config = first.root.join("target.json");
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    settings.target = first.target.clone();
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    first.check_file_results();
+    let (written, output) = application_result(&mut first, "writer", &writer_id, resource);
+    assert!(
+        output.is_empty(),
+        "the result must come from the selected file"
+    );
+    let selected_file = first.root.join(format!("config-{resource}"));
+    let file_action = |offset, expected_file_revision| Action::File {
+        job_id: written.job_id.clone(),
+        path: selected_file.to_str().unwrap().into(),
+        offset,
+        max_bytes: 4,
+        expected_file_revision,
+    };
+    let Response::File {
+        data_base64,
+        file_revision,
+        total_bytes,
+        eof,
+        ..
+    } = first.call_with_grant("writer", file_action(0, None))
+    else {
+        panic!("written file unavailable")
+    };
+    assert_eq!(STANDARD.decode(data_base64).unwrap(), b"enab");
+    assert_eq!(total_bytes, 8);
+    assert!(!eof);
+    first.restart();
+    let Response::File {
+        data_base64, eof, ..
+    } = first.call_with_grant("writer", file_action(4, Some(file_revision)))
+    else {
+        panic!("written file unavailable after restart")
+    };
+    assert_eq!(STANDARD.decode(data_base64).unwrap(), b"led\n");
+    assert!(eof);
+    // Expire the actual producing grant. Its file remains, but neither its
+    // retained job ID nor assessment can recreate expired read/write authority.
+    let authority = &mut first.target.issuers.get_mut("issuer").unwrap().authority;
+    authority.grants.get_mut("writer").unwrap().expires_at = now() - 1;
+    authority.revision = "writer-expired".into();
+    settings.target = first.target.clone();
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    assert!(matches!(
+        first.call_with_grant("writer", file_action(0, None)),
+        Response::Refused { refusal } if refusal.code == RefusalCode::Expired
+    ));
+    assert_eq!(fs::read(&selected_file).unwrap(), b"enabled\n");
     let history = serde_json::json!([{
-        "id":"host-observed-configuration-edit", "observed_at":format!("unix-seconds:{}", now()),
+        "id":"executor-configuration-edit", "observed_at":format!("unix-seconds:{}", written.updated_at),
         "target_id":first.target.target_id,"operation":format!("write-config-{resource}"),
         "scopes":{"application":{"target":{"kind":"known","value":first.target.target_id},"id":{"kind":"known","value":format!("application:{resource}")}}},
-        "effects":["write_config"],"evidence":[{"location":format!("host setup edit after diagnostic job {}; independently read retained file",read.job_id),"version":hash(&first.root.join(format!("config-{resource}")))}]
+        "effects":["write_config"],"evidence":[{"location":format!("signed native writer job {}; selected-file route read across executor restart and independently read after grant expiry",written.job_id),"version":hash(&selected_file)}]
     }]);
     application_assessment(
         &mut first,
         "unknown-authority",
         &serde_json::json!([]),
-        resource,
         None,
         "unresolved",
     );
@@ -3937,40 +4003,36 @@ fn installed_adaptive_investigation_and_retained_configuration_effects() {
         &mut first,
         "without-history",
         &serde_json::json!([]),
-        resource,
         None,
         "non_match",
     );
-    application_assessment(
-        &mut first,
-        "same-target-resource",
-        &history,
-        resource,
-        None,
-        "match",
-    );
+    application_assessment(&mut first, "same-target-resource", &history, None, "match");
     application_assessment(
         &mut first,
         "other-resource",
         &history,
-        resource,
         Some(&format!("execute-config-{other}")),
         "non_match",
     );
-    application_assessment(
-        &mut second,
-        "other-target",
-        &history,
+    application_assessment(&mut second, "other-target", &history, None, "non_match");
+    let (_, changed) = application_result(
+        &mut first,
+        "grant",
+        &format!("execute-config-{resource}"),
         resource,
-        None,
-        "non_match",
     );
-    let (_, changed) =
-        application_result(&mut first, &format!("execute-config-{resource}"), resource);
-    let (_, different_resource) =
-        application_result(&mut first, &format!("execute-config-{other}"), other);
-    let (_, different_target) =
-        application_result(&mut second, &format!("execute-config-{resource}"), resource);
+    let (_, different_resource) = application_result(
+        &mut first,
+        "grant",
+        &format!("execute-config-{other}"),
+        other,
+    );
+    let (_, different_target) = application_result(
+        &mut second,
+        "grant",
+        &format!("execute-config-{resource}"),
+        resource,
+    );
     assert_eq!(changed, "enabled\n");
     assert_eq!(different_resource, "disabled\n");
     assert_eq!(different_target, "disabled\n");
@@ -3987,7 +4049,7 @@ fn installed_adaptive_investigation_and_retained_configuration_effects() {
         b"disabled\n"
     );
     eprintln!(
-        "independent configuration observer: host edit retained on target={}, selected={}; other resource and target unchanged; this fixture has no native write grant",
+        "independent configuration observer: native edit retained on target={}, selected={}; producing grant expired; other resource and target unchanged",
         first.target.target_id, resource
     );
     let (started, _) = first.invoke("service-start");
@@ -4004,7 +4066,7 @@ fn installed_adaptive_investigation_and_retained_configuration_effects() {
     first.assert_no_side_effects();
     second.assert_no_side_effects();
     eprintln!(
-        "installed useful work: diagnostic selected from prior output, fixed-service start/stop observed; retained-host-edit assessment and actual configuration reads distinguish targets/resources; no per-invocation approval"
+        "installed useful work: diagnostic selected the authorised native edit; signed file reads survive restart, grant expiry removes access without rollback; retained-effect assessment distinguishes targets/resources; fixed-service start/stop observed; no per-invocation approval"
     );
 }
 
