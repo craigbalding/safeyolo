@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import io
 import json
 import subprocess
 import urllib.error
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 
 import pytest
 
@@ -175,7 +177,7 @@ def test_staging_preserves_binary_bytes_and_quotes_the_selected_path(tmp_path, m
 
     def adopt(_args, script):
         scripts.append(script)
-        return {"original": {"request": {"target_id": "target", "issuer_id": "issuer"}}}
+        return {"operation_sha256": "operation", "original": {"request": {"target_id": "target", "issuer_id": "issuer"}}}
 
     def call(_binding, _request_id, action, _expected=None):
         if action["kind"] == "discover":
@@ -194,6 +196,86 @@ def test_staging_preserves_binary_bytes_and_quotes_the_selected_path(tmp_path, m
     subprocess.run(["/bin/sh", "-c", scripts[0]], cwd=tmp_path, check=True)
     assert target.read_bytes() == source.read_bytes()
     assert not (tmp_path / "accidental").exists()
+
+
+def test_interleaved_staging_refuses_another_calls_adopted_program(tmp_path, monkeypatch):
+    # Exercise full helper calls over HTTP. This controlled gateway checks pins
+    # and runs benign local scripts; it does not prove native containment.
+    first_adopted, second_adopted = Event(), Event()
+    current = {}
+    invoked = []
+    ceiling = {"execution": {"argv": [{"kind": "literal", "value": "-c"}]}}
+
+    class AgentAPI(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def respond(self, value):
+            body = json.dumps(value).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            self.respond({"host_bindings": [{"binding": "case", "target_id": "target", "task_active": True,
+                          "agent_code_classes": [{"prefix": "task:", "excluded": [], "rule": {"ceiling": ceiling}}]}]})
+
+        def do_POST(self):
+            value = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            action, request_id = value["action"], value["request_id"]
+            if action["kind"] == "discover":
+                if request_id == "req-stage-a-discovery":
+                    assert second_adopted.wait(5)
+                self.respond({"discovery": {"package_sha256": "package", "revisions": {},
+                              "operations": [current["operation"]] if current else []}})
+            elif action["kind"] == "adopt":
+                script = action["operation"]["execution"]["argv"][1]["value"]
+                digest = hashlib.sha256(script.encode()).hexdigest()
+                current.update(script=script, operation={"operation_id": "task:stage", "operation_sha256": digest,
+                               "implementation_sha256": digest, "revisions": {"package": digest}})
+                self.respond({"operation_sha256": digest, "original": {"request": {"target_id": "target",
+                              "issuer_id": "issuer", "request_id": request_id, "action": action}}})
+                (first_adopted if request_id == "req-stage-a-adopt" else second_adopted).set()
+            else:
+                assert value["expected"] == current["operation"]["revisions"]
+                assert action["invocation"]["operation_sha256"] == current["operation"]["operation_sha256"]
+                if action["kind"] == "propose":
+                    self.respond({"prepared": {"invocation": action["invocation"], "revisions": value["expected"]}})
+                else:
+                    assert action["kind"] == "invoke"
+                    invoked.append(request_id)
+                    subprocess.run(["/bin/sh", "-c", current["script"]], cwd=tmp_path, check=True)
+                    self.respond({"receipt": {"job_id": request_id}})
+
+    source = tmp_path / "source"
+    source.write_bytes(b"selected bytes")
+    token = tmp_path / "token"
+    token.write_text("fixture-agent")
+    monkeypatch.setattr(client, "TOKEN_PATH", token)
+    first = argparse.Namespace(binding="case", request_id="req-stage-a", file=str(source), path=str(tmp_path / "a"))
+    second = argparse.Namespace(binding="case", request_id="req-stage-b", file=str(source), path=str(tmp_path / "b"))
+    with ThreadingHTTPServer(("127.0.0.1", 0), AgentAPI) as server:
+        monkeypatch.setattr(client, "BASE_URL", f"http://127.0.0.1:{server.server_port}")
+        worker = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+        worker.start()
+        try:
+            with ThreadPoolExecutor(max_workers=2) as calls:
+                a = calls.submit(client.stage, first)
+                assert first_adopted.wait(5)
+                b = calls.submit(client.stage, second)
+                with pytest.raises(client.RequestFailed) as caught:
+                    a.result(timeout=5)
+                assert caught.value.value["adoption"]["original"]["request"]["request_id"] == "req-stage-a-adopt"
+                assert "No staging program was invoked" in caught.value.value["next_action"]
+                assert b.result(timeout=5)["target_result"]["receipt"]["job_id"] == "req-stage-b-invoke"
+        finally:
+            server.shutdown()
+            worker.join(timeout=5)
+    assert invoked == ["req-stage-b-invoke"]
+    assert not (tmp_path / "a").exists()
+    assert (tmp_path / "b").read_bytes() == source.read_bytes()
 
 
 @pytest.mark.parametrize("gateway_reply", [False, True])

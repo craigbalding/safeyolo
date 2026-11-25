@@ -143,7 +143,12 @@ def stage(args: argparse.Namespace) -> dict[str, Any]:
     adoption_args.request_id += "-adopt"
     adoption = adopt_code(adoption_args, script)
     discovery = call(args.binding, args.request_id + "-discovery", {"kind": "discover"})["discovery"]
-    operation = next(item for item in discovery["operations"] if item["operation_id"] == "task:stage")
+    operation = next((item for item in discovery["operations"] if item["operation_id"] == "task:stage"), None)
+    if operation is None or operation["operation_sha256"] != adoption["operation_sha256"]:
+        raise RequestFailed({"error": "The staging operation changed after this call adopted its selected bytes",
+                             "request_id": args.request_id, "adoption": adoption, "host_binding": args.binding,
+                             "execution_outcome": "unavailable",
+                             "next_action": "Inspect this original adoption and the current catalogue before preparing another stage. No staging program was invoked."})
     preparation = call(args.binding, args.request_id + "-propose", {"kind": "propose", "invocation": {
         "operation_id": "task:stage", "resource_id": "task:workspace", "operation_sha256": operation["operation_sha256"],
         "implementation_sha256": operation["implementation_sha256"], "arguments": {}, "expected_assessment_sha256": None,

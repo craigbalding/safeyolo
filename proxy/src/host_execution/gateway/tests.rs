@@ -438,7 +438,8 @@ async fn first_trust_preparation_retains_one_private_key_and_original_public_req
     assert!(crate::register_task(&f.proxy.runtime, "approved-task", private).is_ok());
     assert!(crate::activate_registered_task(&f.proxy.runtime, "approved-task").is_ok());
     let plan = task_plan(&f);
-    let input = json!({"kind":"prepare","operation_id":"req-new-host","plan":plan});
+    let operation = format!("req-{}", "1".repeat(32));
+    let input = json!({"kind":"prepare","operation_id":operation,"plan":plan});
     let first = f.api("/gateway/host-setup", "POST", input.clone()).await;
     assert_eq!(first.status, 200, "{}", first.value);
     assert!(
@@ -465,7 +466,11 @@ async fn first_trust_preparation_retains_one_private_key_and_original_public_req
         again.value["enrolment_request"]
     );
     let recovered = f
-        .api("/gateway/host-setup/req-new-host", "GET", Value::Null)
+        .api(
+            &format!("/gateway/host-setup/{operation}"),
+            "GET",
+            Value::Null,
+        )
         .await;
     assert_eq!(recovered.status, 200, "{}", recovered.value);
     assert_eq!(
@@ -476,7 +481,7 @@ async fn first_trust_preparation_retains_one_private_key_and_original_public_req
     assert_eq!(
         f.api_for(
             "bob",
-            "/gateway/host-setup/req-new-host",
+            &format!("/gateway/host-setup/{operation}"),
             "GET",
             Value::Null
         )
@@ -511,11 +516,12 @@ async fn resumed_task_uses_only_the_exact_adopted_document() {
         .clone();
     let mut plan = task_plan(&f);
     plan["allow_run_refresh"] = json!(false);
+    let operation = format!("req-{}", "2".repeat(32));
     let prepared = f
         .api(
             "/gateway/host-setup",
             "POST",
-            json!({"kind":"prepare","operation_id":"req-resume-prepare","plan":plan}),
+            json!({"kind":"prepare","operation_id":operation,"plan":plan}),
         )
         .await;
     assert_eq!(prepared.status, 200, "{}", prepared.value);
@@ -524,7 +530,7 @@ async fn resumed_task_uses_only_the_exact_adopted_document() {
     f.binding.target.target_id = public["target_id"].as_str().unwrap().into();
     f.binding.credential = format!(
         "host-task-{}",
-        revision(&("issuer", &f.run.agent_id, "req-resume-prepare"))
+        revision(&("issuer", &f.run.agent_id, &operation))
     );
     let old: Binding = bindings(&crate::policy::parse_toml_document(&f.source).unwrap())
         .unwrap()
@@ -543,7 +549,7 @@ async fn resumed_task_uses_only_the_exact_adopted_document() {
             "bob",
             "/gateway/host/local/resume",
             "POST",
-            json!({"request_id":"req-other"})
+            json!({"request_id":format!("req-{}", "3".repeat(32))})
         )
         .await
         .status,
@@ -553,7 +559,7 @@ async fn resumed_task_uses_only_the_exact_adopted_document() {
         f.api(
             "/gateway/host/local/resume",
             "POST",
-            json!({"request_id":"req-resume","task_document":{}})
+            json!({"request_id":format!("req-{}", "4".repeat(32)),"task_document":{}})
         )
         .await
         .status,
@@ -563,7 +569,7 @@ async fn resumed_task_uses_only_the_exact_adopted_document() {
         .api(
             "/gateway/host/local/resume",
             "POST",
-            json!({"request_id":"req-resume"}),
+            json!({"request_id":format!("req-{}", "5".repeat(32))}),
         )
         .await;
     assert_eq!(resumed.status, 200, "{}", resumed.value);

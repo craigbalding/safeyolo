@@ -97,7 +97,10 @@ assessment and the existing material authority decision, not an in-scope hash ap
 
 Use `stage BINDING --file SOURCE --path ABSOLUTE_TARGET_PATH` to carry selected
 bytes through the same code-adoption/propose/invoke path. Inspect the returned
-job and file before treating the write as complete. The selected root and
+job and file before treating the write as complete. If another call replaces
+the staging operation, the helper stops before proposing that replacement.
+Inspect the returned original adoption before preparing another stage.
+The selected root and
 current native scope still apply; control files, TLS/signing keys and adoption
 authority remain outside workload permissions. Staging adds no target decoder,
 Python runtime or transfer daemon. Large inputs must fit the existing request,

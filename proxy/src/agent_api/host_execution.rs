@@ -78,7 +78,7 @@ where
         enum Setup {
             Prepare {
                 operation_id: String,
-                plan: safeyolo_host_executor::enrolment::TaskPlan,
+                plan: Box<safeyolo_host_executor::enrolment::TaskPlan>,
             },
             Submit {
                 operation_id: String,
@@ -100,7 +100,7 @@ where
         };
         let result = match input {
             Setup::Prepare { operation_id, plan } => {
-                crate::host_execution::setup::prepare(state, run, &operation_id, plan).await
+                crate::host_execution::setup::prepare(state, run, &operation_id, *plan).await
             }
             Setup::Submit {
                 operation_id,

@@ -37,7 +37,7 @@ async fn configured_fixture() -> Fixture {
         std::fs::Permissions::from_mode(0o700),
     )
     .unwrap();
-    let manifest = json!({"protocol":3,"os":std::env::consts::OS,"architecture":std::env::consts::ARCH,
+    let manifest = json!({"protocol":4,"os":std::env::consts::OS,"architecture":std::env::consts::ARCH,
         "hyperlight":"0.19.0","unikraft":"0.21.0","kernel_contract":"controlled fixture",
         "helper":{"file":"helper","sha256":content_digest(helper.as_bytes())},
         "rootfs":{"file":"rootfs","sha256":content_digest(b"controlled supervisor fixture, no VM")},
