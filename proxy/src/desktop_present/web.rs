@@ -40,8 +40,8 @@ impl Parameters {
         if self.audience == Route::Local && self.tailnet_port.is_some() {
             return Err("tailnet_port requires the tailnet audience");
         }
-        if !(1..=86400).contains(&self.ttl_seconds) {
-            return Err("ttl_seconds must be from 1 to 86400");
+        if self.ttl_seconds == 0 {
+            return Err("ttl_seconds must be greater than zero");
         }
         Ok(())
     }
@@ -197,4 +197,20 @@ pub(crate) async fn list(agent_id: &str) -> Value {
         selected.push(value);
     }
     json!({"agent_id":agent_id,"publications":selected})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_publication_allows_an_operator_lifetime_beyond_desktop_limit() {
+        let mut parameters: Parameters = serde_json::from_value(json!({
+            "guest_port":3000,"audience":"local","ttl_seconds":172800
+        }))
+        .unwrap();
+        assert!(parameters.validate().is_ok());
+        parameters.ttl_seconds = 0;
+        assert!(parameters.validate().is_err());
+    }
 }

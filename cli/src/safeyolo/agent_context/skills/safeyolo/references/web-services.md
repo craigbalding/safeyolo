@@ -147,7 +147,7 @@ private. Enter it in the browser before using the app's own login. Publication
 retains the selected agent run, port and audience; it starts no desktop and
 grants no network or service access. Ports 8080 and 9090 are reserved SafeYolo
 plumbing. The default lifetime is 900 seconds; use `--ttl SECONDS` to select
-another lifetime within the existing preview authority's 1–86400-second range.
+another positive lifetime in seconds.
 Stop with the same agent, port, audience and optional tailnet port. Stop,
 expiry or a changed agent run disconnects only that publication. Unrelated
 publications and Tailscale mappings remain.

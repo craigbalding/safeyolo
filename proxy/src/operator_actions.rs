@@ -92,7 +92,7 @@ pub(crate) async fn discover(state: &RuntimeState, policy: &Policy, caller: &str
                 "guest_port":{"type":"integer","minimum":1,"maximum":65535},
                 "audience":{"type":"string","enum":["local","tailnet"]},
                 "tailnet_port":{"type":"integer","minimum":1,"maximum":65535},
-                "ttl_seconds":{"type":"integer","minimum":1,"maximum":86400,"default":900}}},
+                "ttl_seconds":{"type":"integer","minimum":1,"default":900}}},
             "side_effects":["Open a gated publication bound to this exact guest run and port.","Use an independent foreground Serve mapping for tailnet access; stop or expiry removes only this publication."],
             "non_grants":["No desktop startup, peer-support grant, public/Funnel exposure or change to network/service/credential permissions."]}]}))
     }).await
