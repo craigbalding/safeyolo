@@ -242,8 +242,7 @@ impl Preview {
             tailnet_port,
             shared,
             authority,
-            GUEST_PORT,
-            false,
+            None,
         )
         .await
     }
@@ -262,8 +261,7 @@ impl Preview {
             tailnet_port,
             None,
             authority,
-            guest_port,
-            true,
+            Some(guest_port),
         )
         .await
     }
@@ -275,9 +273,10 @@ impl Preview {
         tailnet_port: Option<u16>,
         shared: Option<Arc<SharedListener>>,
         authority: PreviewAuthority,
-        guest_port: u16,
-        web: bool,
+        web_port: Option<u16>,
     ) -> Result<Self, Error> {
+        let web = web_port.is_some();
+        let guest_port = web_port.unwrap_or(GUEST_PORT);
         let named_host = host_port != 0 && tailnet_port.is_none();
         let (listener, shared, port) = if named_host {
             let shared = match shared {

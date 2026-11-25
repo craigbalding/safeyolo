@@ -573,7 +573,8 @@ def test_operator_attachment_opens_independent_shell_before_detach(tmp_path, mon
 import json, os, pathlib, sys, tty
 root = pathlib.Path({str(root)!r})
 assert sys.argv[1:3] == ['--instance-dir', str(root)], 'ambient root selected'
-arguments = sys.argv[3:]
+assert sys.argv[3] == '--json'
+arguments = sys.argv[4:]
 with (root / 'calls').open('a') as output:
     output.write(json.dumps(arguments) + '\\n')
 operation = arguments[1]

@@ -95,38 +95,6 @@ fn required<'a>(value: &'a Value, key: &str) -> Result<&'a str, Error> {
         .ok_or_else(|| "subscription login is missing a required token".into())
 }
 
-#[cfg(test)]
-mod inspection_tests {
-    use super::*;
-
-    #[test]
-    fn inspection_distinguishes_sources_and_never_returns_authentication_values() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("auth.json");
-        assert_eq!(inspect(&path, Client::Codex)["state"], "missing");
-        std::fs::write(&path, "invalid JSON").unwrap();
-        assert_eq!(inspect(&path, Client::Codex)["state"], "unsupported");
-        std::fs::write(&path, r#"{"OPENAI_API_KEY":"synthetic-private-key"}"#).unwrap();
-        let inspected = inspect(&path, Client::Codex);
-        assert_eq!(inspected["state"], "found");
-        assert_eq!(inspected["kind"], "API key");
-        assert_eq!(inspected["provider_validity"], "unknown");
-        assert!(!inspected.to_string().contains("synthetic-private-key"));
-        std::fs::write(&path, r#"{"claudeAiOauth":{"accessToken":"synthetic-access","refreshToken":"synthetic-refresh","expiresAt":2000000000000,"scopes":["user:inference"]}}"#).unwrap();
-        let inspected = inspect(&path, Client::Claude);
-        assert_eq!(inspected["state"], "found");
-        assert_eq!(inspected["kind"], "subscription");
-        assert!(!inspected.to_string().contains("synthetic-access"));
-        let linked = directory.path().join("linked");
-        std::os::unix::fs::symlink(&path, &linked).unwrap();
-        assert_eq!(inspect(&linked, Client::Claude)["state"], "unreadable");
-        assert_eq!(
-            inspect(directory.path(), Client::Claude)["state"],
-            "unsupported"
-        );
-    }
-}
-
 fn expiry(timestamp: i64) -> Result<String, Error> {
     OffsetDateTime::from_unix_timestamp(timestamp)
         .map_err(|_| "subscription login expiry is outside the supported range")?
@@ -204,4 +172,36 @@ pub(crate) fn codex_access_expiry(access: &str) -> Result<String, Error> {
         .and_then(expiry);
     wipe_json(&mut claims);
     expires
+}
+
+#[cfg(test)]
+mod inspection_tests {
+    use super::*;
+
+    #[test]
+    fn inspection_distinguishes_sources_and_never_returns_authentication_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("auth.json");
+        assert_eq!(inspect(&path, Client::Codex)["state"], "missing");
+        std::fs::write(&path, "invalid JSON").unwrap();
+        assert_eq!(inspect(&path, Client::Codex)["state"], "unsupported");
+        std::fs::write(&path, r#"{"OPENAI_API_KEY":"synthetic-private-key"}"#).unwrap();
+        let inspected = inspect(&path, Client::Codex);
+        assert_eq!(inspected["state"], "found");
+        assert_eq!(inspected["kind"], "API key");
+        assert_eq!(inspected["provider_validity"], "unknown");
+        assert!(!inspected.to_string().contains("synthetic-private-key"));
+        std::fs::write(&path, r#"{"claudeAiOauth":{"accessToken":"synthetic-access","refreshToken":"synthetic-refresh","expiresAt":2000000000000,"scopes":["user:inference"]}}"#).unwrap();
+        let inspected = inspect(&path, Client::Claude);
+        assert_eq!(inspected["state"], "found");
+        assert_eq!(inspected["kind"], "subscription");
+        assert!(!inspected.to_string().contains("synthetic-access"));
+        let linked = directory.path().join("linked");
+        std::os::unix::fs::symlink(&path, &linked).unwrap();
+        assert_eq!(inspect(&linked, Client::Claude)["state"], "unreadable");
+        assert_eq!(
+            inspect(directory.path(), Client::Claude)["state"],
+            "unsupported"
+        );
+    }
 }

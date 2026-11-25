@@ -1396,6 +1396,28 @@ pub(super) fn run(root: &Path, args: &[String]) -> Result<(), Error> {
     }
 }
 
+fn show_prepared(settings: &Settings, applied: &[String]) -> Result<(), Error> {
+    if crate::operator_output::json_requested() {
+        return crate::operator_output::json(
+            &json!({"state":"prepared","linux":settings,"applied":applied}),
+        );
+    }
+    println!(
+        "Linux host prepared. Runtime: {} ({}). Mapped guest root UID/GID: {}/{}. Host proxy/launcher UID/GID: {}/{}.",
+        settings.runsc.display(),
+        settings.runsc_origin,
+        settings.uid_base,
+        settings.gid_base,
+        settings.host_uid,
+        settings.host_gid
+    );
+    println!(
+        "{} host changes completed; valid prerequisites were reused. Guest extraction and cleanup use delegated namespaces without host sudo.",
+        applied.len()
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1550,26 +1572,4 @@ mod tests {
             2
         ));
     }
-}
-
-fn show_prepared(settings: &Settings, applied: &[String]) -> Result<(), Error> {
-    if crate::operator_output::json_requested() {
-        return crate::operator_output::json(
-            &json!({"state":"prepared","linux":settings,"applied":applied}),
-        );
-    }
-    println!(
-        "Linux host prepared. Runtime: {} ({}). Mapped guest root UID/GID: {}/{}. Host proxy/launcher UID/GID: {}/{}.",
-        settings.runsc.display(),
-        settings.runsc_origin,
-        settings.uid_base,
-        settings.gid_base,
-        settings.host_uid,
-        settings.host_gid
-    );
-    println!(
-        "{} host changes completed; valid prerequisites were reused. Guest extraction and cleanup use delegated namespaces without host sudo.",
-        applied.len()
-    );
-    Ok(())
 }

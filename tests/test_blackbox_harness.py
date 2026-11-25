@@ -61,7 +61,8 @@ def test_installed_federation_binds_destination_and_observes_before_asserting(tm
         if arguments[0] == "openssl":
             Path(arguments[arguments.index("-keyout") + 1]).touch()
             return ""
-        selected, words = Path(arguments[2]), arguments[3:]
+        assert arguments[3] == "--json"
+        selected, words = Path(arguments[2]), arguments[4:]
         if words[:2] == ["agent", "status"]:
             return json.dumps({"agent_id": "ag-" + words[2]})
         if words == ["coord", "start"]:
@@ -174,7 +175,8 @@ def test_installed_federation_generates_a_trusted_server_leaf_despite_host_ca_de
     def command(arguments, **kwargs):
         if arguments[0] == "openssl":
             return checked(arguments, **kwargs)
-        selected, words = Path(arguments[2]), arguments[3:]
+        assert arguments[3] == "--json"
+        selected, words = Path(arguments[2]), arguments[4:]
         if words == ["coord", "start"] and (selected / "coord-federation.json").exists():
             raise RuntimeError("stop before starting TLS broker")
         if words == ["agent", "status", "bbtest"]:
@@ -415,7 +417,8 @@ def test_lifecycle_late_failure_keeps_completed_observations_and_cleanup(tmp_pat
                     (root / "policy.toml").write_text(tomlkit.dumps(document))
                     return json.dumps({"status": 409})
             return json.dumps({"status": 200 if approvals[identifier]["grant_active"] or approvals[identifier]["status"] == "pending" else 404})
-        operands = command[3:]
+        assert command[3] == "--json"
+        operands = command[4:]
         if operands == ["coord", "status"]:
             return json.dumps({"state": "running", "process": {"client_port": 19422, "monitor_port": 19822}})
         if operands[:2] == ["approvals", "show"]:
@@ -606,7 +609,8 @@ def test_delegated_clients_wait_for_selected_operator_choices_with_failed_attent
     monkeypatch.setattr(installed_shared_approvals, "stop_guest", lambda _cli, _root, name: stopped.append(name))
     def checked(command, **_kwargs):
         if command[0] != "controlled-guest":
-            arguments = command[3:]
+            assert command[3] == "--json"
+            arguments = command[4:]
             if arguments == ["coord", "status"]:
                 return json.dumps(coord)
             if arguments == ["coord", "stop"]:

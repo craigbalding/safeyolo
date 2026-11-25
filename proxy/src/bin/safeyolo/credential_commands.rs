@@ -285,9 +285,9 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
         })();
         let _ = std::fs::remove_file(&temporary);
         result?;
-        message(format!(
-            "Host 1Password executable configured. Restart the proxy to activate it."
-        ));
+        message(
+            "Host 1Password executable configured. Restart the proxy to activate it.".to_owned(),
+        );
         return Ok(());
     }
     if let [command, fingerprint, rest @ ..] = arguments
@@ -379,7 +379,7 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
                 Duration::from_secs(5),
             )
             .await?;
-            message(format!("Credential storage locked."));
+            message("Credential storage locked.".to_owned());
         }
         return Ok(());
     }

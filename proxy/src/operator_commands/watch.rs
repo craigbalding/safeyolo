@@ -57,18 +57,15 @@ impl PendingRequests {
         );
         for (number, view) in &self.numbered {
             output.push_str(&format!(
-                "  #{number}{} agent={} {}\n",
+                "  #{number}{} agent={} {} → {}\n",
                 if self.deferred.contains(number) {
                     " [left pending]"
                 } else {
                     ""
                 },
                 safe(text(&view["agent"])),
-                format!(
-                    "{} → {}",
-                    safe(text(&view["action"]["kind"])),
-                    safe(text(&view["target"]))
-                )
+                safe(text(&view["action"]["kind"])),
+                safe(text(&view["target"]))
             ));
         }
         if self.current && self.numbered.is_empty() {

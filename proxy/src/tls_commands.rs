@@ -126,7 +126,8 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
             if kind == "passthrough" && matches!(action.as_str(), "add" | "remove") =>
         {
             let mut hosts = native_config::read(config)?.ignore_hosts;
-            let normalized = crate::tunnels::Passthrough::normalize_hosts(&[host.clone()])?;
+            let normalized =
+                crate::tunnels::Passthrough::normalize_hosts(std::slice::from_ref(host))?;
             hosts.retain(|host| !normalized.contains(host));
             if action == "add" {
                 hosts.extend(normalized);
