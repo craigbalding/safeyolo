@@ -602,7 +602,17 @@ impl MacChild {
         // The unreaped leader reserves this group ID. Do not reuse this
         // operation after executor restart, when that ownership is lost.
         if unsafe { libc::kill(-(self.pid as i32), libc::SIGKILL) } != 0 {
-            return Err(unavailable(std::io::Error::last_os_error()));
+            let error = std::io::Error::last_os_error();
+            // A group containing only an unreaped zombie has no signal target;
+            // Darwin can return EPERM. This is safe only while our leader's
+            // wait status and an independent quiescence observation agree.
+            if self.exited()? && group_quiescent(self.pid)? {
+                return Ok(());
+            }
+            return Err(unavailable(format!(
+                "signal job process group {}: {error}",
+                self.pid
+            )));
         }
         Ok(())
     }

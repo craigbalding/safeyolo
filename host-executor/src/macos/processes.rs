@@ -50,13 +50,14 @@ pub(super) fn group_quiescent(group: u32) -> Result<bool, Refusal> {
     pids.sort_unstable();
     let mut zombies = Vec::new();
     for pid in &pids {
-        let Some(info) = process_info(*pid)? else {
-            return Ok(false);
-        };
-        if info.pbi_status != 5 {
-            return Ok(false);
+        match process_info(*pid)? {
+            Some(info) if info.pbi_status == 5 => zombies.push(Some(process_birth(&info))),
+            Some(_) => return Ok(false),
+            // On Darwin PROC_PIDTBSDINFO returns ESRCH for unreaped zombies,
+            // although proc_listpids still includes them. Other errors remain
+            // unavailable. Require this same absence in both passes below.
+            None => zombies.push(None),
         }
-        zombies.push(process_birth(&info));
     }
     // Zombies cannot execute or retain output writers, but can remain until
     // their parent is reaped. Require the same raw membership after observing
@@ -67,12 +68,15 @@ pub(super) fn group_quiescent(group: u32) -> Result<bool, Refusal> {
     if pids != after {
         return Ok(false);
     }
-    for zombie in zombies {
-        let Some(info) = process_info(zombie.pid)? else {
-            return Ok(false);
-        };
-        if info.pbi_status != 5 || !same(&zombie, &process_birth(&info)) {
-            return Ok(false);
+    for (pid, zombie) in pids.into_iter().zip(zombies) {
+        match (zombie, process_info(pid)?) {
+            (None, None) => (),
+            (Some(before), Some(info))
+                if info.pbi_status == 5 && same(&before, &process_birth(&info)) =>
+            {
+                ()
+            }
+            _ => return Ok(false),
         }
     }
     Ok(true)
