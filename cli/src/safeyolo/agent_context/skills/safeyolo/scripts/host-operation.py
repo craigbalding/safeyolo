@@ -124,8 +124,10 @@ def adopt_code(args: argparse.Namespace, script: str | None = None) -> dict[str,
             # A byte-staging job has no service to start. Do not inherit a
             # listening socket or reserve the service's candidate ports.
             operation["execution"]["network"] = {"destinations": [], "listeners": [], "ipc": []}
+            # The fixed printf recipe uses one interpreter and no children.
+            operation["execution"]["resources"]["processes"] = 1
             if "broader" in operation["execution"]:
-                operation["execution"]["broader"] = [bound for bound in operation["execution"]["broader"] if bound != "network_ipc"]
+                operation["execution"]["broader"] = [bound for bound in operation["execution"]["broader"] if bound not in {"network_ipc", "processes"}]
         if getattr(args, "dependencies", None):
             operation["execution"]["dependencies"] = json.loads(Path(args.dependencies).read_text())
     try:

@@ -241,6 +241,11 @@ pub fn command(args: Vec<String>) -> Result<(), Refusal> {
                 }
             }
         }
+        for family in &settings.target.families {
+            for fact in settings.native.network_enforcement(&family.rule.ceiling) {
+                println!("standing task-code class {}: {fact}", family.prefix);
+            }
+        }
         if let Some(status) = &settings.target.catalogue {
             let saved: Configuration =
                 serde_json::from_slice(&std::fs::read(&config).map_err(unavailable)?)

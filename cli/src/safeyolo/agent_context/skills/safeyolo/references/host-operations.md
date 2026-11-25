@@ -78,6 +78,10 @@ Output capture ends with the original group; an open writer is reported as
 truncated. Complete tree cancellation and automatic reservation release are
 unsupported. Use an enforced-tree backend when required. Restart never signals
 recovered PIDs or groups. Preserve that uncertainty during recovery.
+The built-in inspection and byte-staging recipes use one interpreter process.
+Adopted task code still uses the full standing task-code class selected by the
+operator; fixed preparation does not narrow that class. Check output and the
+enrolment's `task:*` boundary facts expose that full class before approval.
 
 Inside the issuing agent, after the trusted owner returns that original file, run:
 

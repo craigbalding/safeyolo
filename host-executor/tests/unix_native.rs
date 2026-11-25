@@ -389,6 +389,34 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
     let mut settings: server::Configuration =
         serde_json::from_slice(&fs::read(&enrolled.configuration).unwrap()).unwrap();
     let helper = &enrolled.target.package.operations["endpoint-inspect"];
+    assert_eq!(
+        enrolled.target.package.operations["task:inspect"]
+            .execution
+            .resources
+            .processes,
+        1
+    );
+    assert!(
+        !enrolled.target.package.operations["task:inspect"]
+            .execution
+            .broader
+            .contains(&BroaderBound::Processes)
+    );
+    assert_eq!(
+        enrolled.target.families[0]
+            .rule
+            .ceiling
+            .execution
+            .resources
+            .processes,
+        8
+    );
+    #[cfg(target_os = "macos")]
+    assert!(
+        enrolled.network_enforcement["task:*"]
+            .iter()
+            .any(|fact| fact.contains("escaped descendants may outlive"))
+    );
     assert!(
         helper.execution.filesystem.read.is_empty() && helper.execution.filesystem.write.is_empty()
     );
@@ -502,13 +530,26 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
                 panic!("task receipt");
             };
             if receipt.state.terminal() {
-                assert_eq!(receipt.state, JobState::Completed, "{receipt:?}");
+                let uncertain_tree =
+                    cfg!(target_os = "macos") && operation.execution.resources.processes > 1;
+                assert_eq!(
+                    receipt.state,
+                    if uncertain_tree {
+                        JobState::Uncertain
+                    } else {
+                        JobState::Completed
+                    },
+                    "{receipt:?}"
+                );
                 assert_eq!(
                     receipt.native.as_ref().unwrap().exit_code,
                     Some(0),
                     "{receipt:?}"
                 );
-                assert!(receipt.native.as_ref().unwrap().processes_stopped);
+                assert_eq!(
+                    receipt.native.as_ref().unwrap().processes_stopped,
+                    !uncertain_tree
+                );
                 break;
             }
             assert!(
@@ -576,6 +617,10 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
     {
         // Revise code through the same adopted task family. An external tool
         // and background shell use the prepared interpreter and standing scope.
+        // The fixed staging recipe narrowed its process use; general adopted
+        // code still selects the full, explicitly broader task ceiling.
+        stage.execution.resources.processes = enrolled.request.plan.execution_limits.processes;
+        stage.execution.broader.insert(BroaderBound::Processes);
         stage.execution.argv[1] = Word::Literal {
             value: format!(
                 "/bin/echo external-child > '{}'; ( /bin/sleep 0.1; printf 'revised-background\\n' >> '{}' ) &",
