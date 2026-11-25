@@ -521,7 +521,7 @@ jobs:
       - name: Test native desktop presentation and host entry
         if: steps.changes.outputs.rust == 'true'
         working-directory: proxy
-        run: ../scripts/cargo_with_space.sh test --release --locked --test desktop_native --test native_host_cli
+        run: ../scripts/cargo_with_space.sh test --release --locked --test desktop_native --test native_host_cli --test native_human_cli
 
       - name: Test changed Linux platform boundaries
         if: steps.changes.outputs.linux == 'true' && steps.changes.outputs.rust == 'true'
