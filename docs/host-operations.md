@@ -49,7 +49,7 @@ groups. Resolving an adopted
 read/write path permits metadata reads of its ancestors, with no sibling file
 contents or ancestor directory listing. File results remain at the selected
 host paths; the Output route returns stdout/stderr.
-The built-in task inspection and byte-staging recipes select one interpreter
+On macOS, built-in task inspection and byte-staging select one interpreter
 process. The standing task-code class keeps the operator's full process ceiling
 for subsequently adopted programs. Check output and enrolment's `task:*` facts
 explain that full class's native exposure before approval.

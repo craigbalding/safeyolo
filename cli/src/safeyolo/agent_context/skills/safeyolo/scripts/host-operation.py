@@ -124,8 +124,11 @@ def adopt_code(args: argparse.Namespace, script: str | None = None) -> dict[str,
             # A byte-staging job has no service to start. Do not inherit a
             # listening socket or reserve the service's candidate ports.
             operation["execution"]["network"] = {"destinations": [], "listeners": [], "ipc": []}
-            # The fixed printf recipe uses one interpreter and no children.
-            operation["execution"]["resources"]["processes"] = 1
+            # Drop the Mac class's broader process lifetime for this fixed
+            # single-interpreter recipe. Other backends retain their runtime
+            # overhead budget (Linux pids.max includes its sandbox launcher).
+            if "processes" in operation["execution"].get("broader", []):
+                operation["execution"]["resources"]["processes"] = 1
             if "broader" in operation["execution"]:
                 operation["execution"]["broader"] = [bound for bound in operation["execution"]["broader"] if bound not in {"network_ipc", "processes"}]
         if getattr(args, "dependencies", None):

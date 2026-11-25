@@ -466,14 +466,16 @@ def test_undecodable_read_error_is_unavailable(transport, action):
     assert len(calls) == 1
 
 
-def test_stage_does_not_reserve_the_service_listener(tmp_path, transport):
+@pytest.mark.parametrize("broader_processes", [False, True])
+def test_stage_does_not_reserve_the_service_listener(tmp_path, transport, broader_processes):
     calls, responses = transport
     source = tmp_path / "selected"
     source.write_bytes(b"selected bytes")
     network = {"destinations": [], "listeners": [{"address": "0.0.0.0", "port": 8080, "transport": "tcp"}],
                "listener_handoff": {"candidates": [{"address": "0.0.0.0", "port": 8080}]}, "ipc": []}
+    broader = ["network_ipc", "memory"] + (["processes"] if broader_processes else [])
     ceiling = {"execution": {"argv": [{"kind": "literal", "value": "-c"}, {"kind": "literal", "value": "pwd"}],
-                             "network": network, "broader": ["network_ipc", "processes", "memory"],
+                             "network": network, "broader": broader,
                              "resources": {"processes": 8}, "dependencies": {}}}
     responses.extend([
         {"host_bindings": [{"binding": "case", "agent_code_classes": [
@@ -489,6 +491,6 @@ def test_stage_does_not_reserve_the_service_listener(tmp_path, transport):
     execution = json.loads(calls[2].data)["action"]["operation"]["execution"]
     assert execution["network"] == {"destinations": [], "listeners": [], "ipc": []}
     assert execution["broader"] == ["memory"]
-    assert execution["resources"]["processes"] == 1
+    assert execution["resources"]["processes"] == (1 if broader_processes else 8)
     assert ceiling["execution"]["resources"]["processes"] == 8
     assert ceiling["execution"]["network"] == network

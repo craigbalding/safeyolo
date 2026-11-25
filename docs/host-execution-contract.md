@@ -869,7 +869,7 @@ reservation and executable snapshot remain retained after completion and
 restart, even when the observed group disappears. Automatic reservation
 release and complete descendant cancellation remain unsupported. Choose a
 backend with enforced tree ownership when those guarantees are required.
-The built-in task inspection and byte-staging recipes select one interpreter
+On macOS, built-in task inspection and byte-staging select one interpreter
 process without the `processes` exception. Their standing task-code class keeps
 the full selected ceiling for subsequently adopted programs. Human check output
 and enrolment's `task:*` boundary facts also explain that full standing authority.

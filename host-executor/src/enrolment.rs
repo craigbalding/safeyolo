@@ -726,8 +726,10 @@ pub(crate) fn command(args: &[String]) -> Result<bool, Refusal> {
 fn task_inspection(mut operation: Operation) -> Operation {
     // The initial pinned `pwd` recipe uses no children. Keep the full task
     // ceiling in its update rule/family for subsequent adopted programs.
-    operation.execution.resources.processes = 1;
-    operation.execution.broader.remove(&BroaderBound::Processes);
+    if cfg!(target_os = "macos") {
+        operation.execution.resources.processes = 1;
+        operation.execution.broader.remove(&BroaderBound::Processes);
+    }
     operation
 }
 

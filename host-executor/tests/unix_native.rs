@@ -394,7 +394,7 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
             .execution
             .resources
             .processes,
-        1
+        if cfg!(target_os = "macos") { 1 } else { 8 }
     );
     assert!(
         !enrolled.target.package.operations["task:inspect"]
