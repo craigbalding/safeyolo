@@ -24,7 +24,28 @@ use std::{
 
 mod filesystem;
 mod network;
-pub(crate) use network::disclosure as network_enforcement;
+mod processes;
+// <spawn.h>; the pinned libc omits this macOS flag.
+const POSIX_SPAWN_SETSID: i16 = 0x0400;
+const DESCENDANT_LIMIT: &str = "EXPLICIT BROADER PROCESSES: fork/exec and posix_spawn children inherit Seatbelt and can change groups or sessions. Only the original group is counted, memory-polled and stopped on cancellation or deadline; escaped descendants may outlive either. Group quiescence and output EOF do not prove tree cleanup. Multi-process jobs finish Uncertain with processes_stopped=false and retain their concurrency reservation, including after restart. This backend cannot establish complete descendant ownership or stop an escaped tree.";
+pub(crate) fn network_enforcement(operation: &Operation) -> Vec<String> {
+    let mut facts = network::disclosure(operation);
+    if operation.execution.resources.processes > 1 {
+        if operation
+            .execution
+            .broader
+            .contains(&BroaderBound::Processes)
+        {
+            facts.push(DESCENDANT_LIMIT.into());
+        } else {
+            facts.push("UNSUPPORTED DESCENDANT BOUND: this class has no broader processes exception. Multi-process code cannot be qualified by this backend; a supported single-process subset remains available. No broader lifetime authority is inferred from the process ceiling.".into());
+        }
+    } else {
+        facts.push("Single-process authority: fork and child execution are denied.".into());
+    }
+    facts
+}
+use processes::{group_members, group_memory, group_quiescent};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -56,7 +77,7 @@ fn identity() -> Result<ExecutionIdentity, Refusal> {
     })
 }
 
-fn birth(pid: u32) -> Result<Option<NativeProcess>, Refusal> {
+fn process_info(pid: u32) -> Result<Option<libc::proc_bsdinfo>, Refusal> {
     let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
     // SAFETY: proc_pidinfo receives a correctly sized output buffer. A zero
@@ -72,14 +93,7 @@ fn birth(pid: u32) -> Result<Option<NativeProcess>, Refusal> {
     };
     if n == size {
         let info = unsafe { info.assume_init() };
-        if info.pbi_status == 5 {
-            return Ok(None);
-        } // SZOMB: no executable work remains.
-        return Ok(Some(NativeProcess {
-            pid,
-            birth_seconds: info.pbi_start_tvsec,
-            birth_microseconds: info.pbi_start_tvusec as u32,
-        }));
+        return Ok(Some(info));
     }
     let error = std::io::Error::last_os_error();
     if n == 0 && error.raw_os_error() == Some(libc::ESRCH) {
@@ -87,6 +101,20 @@ fn birth(pid: u32) -> Result<Option<NativeProcess>, Refusal> {
     } else {
         Err(unavailable(error))
     }
+}
+fn process_birth(info: &libc::proc_bsdinfo) -> NativeProcess {
+    NativeProcess {
+        pid: info.pbi_pid,
+        process_group: info.pbi_pgid,
+        birth_seconds: info.pbi_start_tvsec,
+        birth_microseconds: info.pbi_start_tvusec as u32,
+        descendants_may_escape: false,
+    }
+}
+fn birth(pid: u32) -> Result<Option<NativeProcess>, Refusal> {
+    Ok(process_info(pid)?
+        .filter(|info| info.pbi_status != 5)
+        .map(|info| process_birth(&info)))
 }
 fn same(a: &NativeProcess, b: &NativeProcess) -> bool {
     a.pid == b.pid
@@ -140,10 +168,19 @@ impl MacRuntime {
                                 BroaderBound::Memory
                                     | BroaderBound::ExecutorRestart
                                     | BroaderBound::NetworkIpc
+                                    | BroaderBound::Processes
                             )
                         }),
                 RefusalCode::Unavailable,
                 "macOS requires explicit broader memory and executor_restart authority: memory is polled and a controller crash can leave an orphan; restart preserves unknown cleanup and its reservation",
+            )?;
+            require(
+                service
+                    || endpoint
+                    || e.resources.processes == 1
+                    || e.broader.contains(&BroaderBound::Processes),
+                RefusalCode::Unavailable,
+                "macOS descendants require explicit broader processes authority: only the original group is polled and stopped; escaped descendants can outlive cancellation or deadline, and tree cleanup remains unconfirmed",
             )?;
             require(
                 e.network.ipc.is_empty() && (service || e.delegated_services.is_empty()),
@@ -200,14 +237,23 @@ impl MacRuntime {
     pub fn reconcile(&self, ledger: &mut Ledger) -> Result<(), Refusal> {
         for receipt in ledger.recover(now())? {
             if let Some(process) = &receipt.process {
-                if birth(process.pid)?.is_some_and(|p| same(&p, process)) {
+                if process.descendants_may_escape {
+                    // Neither the current catalogue nor group membership can
+                    // reconstruct the admitted tree after an intermediate
+                    // parent exits. Keep the original reservation even when
+                    // the leader, its group and its output writers are gone.
+                    continue;
+                }
+                if birth(process.pid)?.is_some_and(|p| same(&p, process))
+                    || !group_quiescent(process.process_group)?
+                {
                     // A birth check followed by kill(pid) is still vulnerable
                     // to PID reuse after a restart: this executor no longer
                     // owns an unreaped child. Keep the reservation and unknown
                     // cleanup status instead of signalling by an unstable ID.
                     continue;
                 }
-                ledger.confirm_quiescent(&receipt.job_id, now(), "recorded no-fork process birth is absent or replaced; prior exit/effects stay unknown")?;
+                ledger.confirm_quiescent(&receipt.job_id, now(), "recorded single-process birth is absent or replaced and its original process group is quiescent; prior exit/effects stay unknown")?;
                 let snapshot = ledger
                     .artifact_root()
                     .join(format!("{}.executable", receipt.job_id));
@@ -255,10 +301,7 @@ impl MacRuntime {
         ) {
             Ok(listener) => listener,
             Err(error) => {
-                return Ok(crate::native::launch_refused(
-                    "macos-seatbelt-no-fork",
-                    error,
-                ));
+                return Ok(crate::native::launch_refused("macos-seatbelt", error));
             }
         };
         let root = ledger
@@ -297,6 +340,12 @@ impl MacRuntime {
             ),
             quoted(snapshot.to_str().unwrap())
         );
+        let descendants = !endpoint && !service && op.execution.resources.processes > 1;
+        if descendants {
+            // Seatbelt is inherited across both fork/exec and posix_spawn.
+            // Process-group membership does not establish descendant lifetime.
+            profile.push_str("(allow process-fork)");
+        }
         if endpoint {
             // Only this executable's fixed native helper receives socket
             // access. Its typed selector and filtering are trusted executor
@@ -378,6 +427,12 @@ impl MacRuntime {
                         .ok_or_else(|| unavailable("read path is not UTF-8"))?
                 )
             ));
+            if descendants {
+                profile.push_str(&format!(
+                    "(allow process-exec (subpath {}))",
+                    quoted(real.to_str().unwrap())
+                ));
+            }
         }
         let args = [
             vec![
@@ -397,8 +452,9 @@ impl MacRuntime {
         )?;
         drop(listener);
         let mut child = child;
-        let process = birth(child.pid)?
+        let mut process = birth(child.pid)?
             .ok_or_else(|| unavailable("suspended process identity unavailable"))?;
+        process.descendants_may_escape = descendants;
         ledger
             .lock()
             .map_err(unavailable)?
@@ -409,8 +465,7 @@ impl MacRuntime {
         let deadline = Instant::now() + Duration::from_secs(receipt.deadline.saturating_sub(now()));
         let mut reason = "exited";
         let mut truncated = false;
-        let mut status = None;
-        while status.is_none() {
+        loop {
             truncated |= child.output(ledger, &receipt.job_id, false)?.0;
             if truncated {
                 reason = "output_limit";
@@ -429,50 +484,56 @@ impl MacRuntime {
                 reason = "timeout";
                 break;
             }
-            let mut info = std::mem::MaybeUninit::<libc::proc_taskinfo>::uninit();
-            let size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
-            if unsafe {
-                libc::proc_pidinfo(
-                    child.pid as i32,
-                    libc::PROC_PIDTASKINFO,
-                    0,
-                    info.as_mut_ptr().cast(),
-                    size,
-                )
-            } == size
-                && unsafe { info.assume_init() }.pti_resident_size
-                    > op.execution.resources.memory_bytes
-            {
+            let members = group_members(child.pid)?;
+            if members.len() > op.execution.resources.processes as usize {
+                reason = "observed_process_limit";
+                break;
+            }
+            if group_memory(&members)? > op.execution.resources.memory_bytes {
                 reason = "observed_memory_limit";
                 break;
             }
-            status = child.wait(false)?;
-            if status.is_none() {
+            if child.exited()? && group_quiescent(child.pid)? {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if reason != "exited" {
+            child.kill_group()?;
+            let cleanup_deadline = Instant::now() + Duration::from_secs(2);
+            while !child.exited()? || !group_quiescent(child.pid)? {
+                require(
+                    Instant::now() < cleanup_deadline,
+                    RefusalCode::Unavailable,
+                    "process group did not become quiescent after SIGKILL; cleanup is unconfirmed",
+                )?;
+                // A fork already in progress can publish a new group member
+                // after the first group-directed signal. Our unreaped leader
+                // still reserves this group ID, so close that race by signalling
+                // again until native observation confirms quiescence.
+                child.kill_group()?;
+                truncated |= child.output(ledger, &receipt.job_id, false)?.0;
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
-        if status.is_none() {
-            if unsafe { libc::kill(child.pid as i32, libc::SIGKILL) } != 0 {
-                return Err(unavailable(std::io::Error::last_os_error()));
-            }
-            status = child.wait(true)?;
-        }
-        // No process can retain a pipe after the no-fork child was reaped.
-        // Drain to EOF, including bytes buffered just before exit; do not
-        // silently omit successful output at the final observation boundary.
-        let (overflow, eof) = child.output(ledger, &receipt.job_id, true)?;
-        truncated |= overflow;
+        // Keep the leader unreaped until the group is quiescent. Its PID anchors
+        // the group against reuse while group-directed signals are possible.
+        let status = child.wait(true)?;
+        // Escaped descendants can retain writers after group quiescence. Bound
+        // this drain too; an escaped producer must not stall result recording.
+        let (overflow, eof) = child.output(ledger, &receipt.job_id, !descendants)?;
+        truncated |= overflow || !eof;
         require(
-            eof,
+            eof || descendants,
             RefusalCode::Unavailable,
-            "reaped no-fork process has an open output writer; cleanup is unconfirmed",
+            "quiescent process group has an open output writer; cleanup is unconfirmed",
         )?;
-        let stopped = status.is_some();
+        let stopped = status.is_some() && !descendants;
         if stopped {
             fs::remove_file(snapshot).map_err(unavailable)?;
             child.reaped = true;
         }
-        let mut result = NativeObservation { backend: "macos-seatbelt-no-fork".into(), enforcement: vec!["Seatbelt adopted read paths and ancestor directory metadata, no file writes, no direct socket connections or Mach lookups, no process fork, pinned private executable snapshot and exact environment".into(), "single process; observed waitpid termination; bounded retained output and wall deadline while the executor remains live".into()], dependencies: vec!["EXPLICIT BROADER MEMORY: resident memory is polled; transient allocations and kernel pressure are not hard-capped".into(), "EXPLICIT BROADER EXECUTOR RESTART: a controller crash may leave the process running beyond its deadline; restart retains unknown cleanup and concurrency until the recorded process birth is absent. macOS Seatbelt, baseline sysctl reads and host-owned libraries are required".into()], exit_code: status.and_then(|s| std::process::ExitStatus::from_raw(s).code()), signal: status.and_then(|s| std::process::ExitStatus::from_raw(s).signal()), processes_stopped: stopped, output_truncated: truncated, termination_reason: reason.into() };
+        let mut result = NativeObservation { backend: "macos-seatbelt".into(), enforcement: vec!["Seatbelt adopted read paths and ancestor directory metadata, no file writes, no direct socket connections or Mach lookups, pinned private primary executable snapshot and exact environment".into(), "dedicated initial session and process group; leader wait status is retained until original-group quiescence; bounded retained output and original-group wall deadline while the executor remains live".into()], dependencies: vec!["EXPLICIT BROADER MEMORY: original-group resident memory is polled; transient allocations, escaped descendants and kernel pressure are not hard-capped".into(), "EXPLICIT BROADER EXECUTOR RESTART: a controller crash may leave processes running beyond the deadline. Recovered PIDs/groups are never signalled. Single-process reconciliation can release a reservation after observing quiescence; multi-process cleanup and its reservation remain uncertain. macOS Seatbelt, baseline sysctl reads and host-owned libraries are required".into()], exit_code: status.and_then(|s| std::process::ExitStatus::from_raw(s).code()), signal: status.and_then(|s| std::process::ExitStatus::from_raw(s).signal()), processes_stopped: stopped, output_truncated: truncated, termination_reason: reason.into() };
         if endpoint {
             result.enforcement[0] = "Seatbelt permits host system libraries, denies workload file scopes, Mach lookups and fork; only the pinned trusted endpoint helper receives sockets. Its native implementation filters the authorised typed selector before output.".into();
             result.enforcement.extend(crate::endpoints::disclosure());
@@ -483,7 +544,7 @@ impl MacRuntime {
             result.dependencies.push(crate::unix_services::disclosure());
         }
         if !writes.is_empty() {
-            result.enforcement[0] = "Seatbelt selected read/write paths, canonical ancestor metadata, no process fork, Mach lookup or Unix-socket bind/connect, pinned private executable snapshot and exact environment; selected IP sockets follow the separately reported network boundary".into();
+            result.enforcement[0] = "Seatbelt selected read/write paths, canonical ancestor metadata, no Mach lookup or Unix-socket bind/connect, pinned private primary executable snapshot and exact environment; process creation and selected IP sockets follow the separately reported boundaries".into();
             result.dependencies.push(format!("selected host read/write paths {writes:?}; validation refuses existing hard links outside the writable scope and executor control/runtime aliases. Seatbelt follows resolved paths at access time; host replacement changes the selected path contents. New descendants and file replacement are allowed within selected directories. Files persist after completion, cancellation and restart. Host services can consume written configuration outside this child's lifecycle; those indirect effects are not observed or rolled back. output_bytes bounds stdout/stderr, not file storage; Output does not retrieve these files."));
         }
         if !op.execution.network.destinations.is_empty()
@@ -491,14 +552,28 @@ impl MacRuntime {
         {
             result.dependencies.extend(network_enforcement(op));
             if writes.is_empty() {
-                result.enforcement[0] = "Seatbelt selected read paths, no writes, fork, Mach lookup or Unix-socket bind/connect, pinned private executable snapshot and exact environment; IP sockets follow the separately reported network boundary".into();
+                result.enforcement[0] = "Seatbelt selected read paths, no writes, Mach lookup or Unix-socket bind/connect, pinned private primary executable snapshot and exact environment; process creation and IP sockets follow the separately reported boundaries".into();
             }
         }
         if op.execution.network.listener_handoff.is_some() {
             result
                 .dependencies
                 .extend(crate::endpoints::handoff_disclosure(op));
-            result.enforcement.push("The trusted executor passes the selected listening TCP socket as descriptor 3. Unconnected TCP descriptors grant no channel: additional binding, implicit listen, outbound connections and fork remain denied unless separately granted by a supported ordinary profile.".into());
+            result.enforcement.push("The trusted executor passes the selected listening TCP socket as descriptor 3. Additional binding, implicit listen and outbound connections remain denied unless separately granted. Authorised descendants inherit the same network boundary and descriptor.".into());
+        }
+        if descendants {
+            result.enforcement.push("Fork/exec and posix_spawn descendants inherit Seatbelt file/network/IPC bounds. Child executables use selected read/write paths; those mutable binaries are not content-pinned. Background work in the original group keeps the job running until that group becomes quiescent, cancellation or deadline. Output capture ends with that group; an open writer is reported as truncated.".into());
+            if !result
+                .dependencies
+                .iter()
+                .any(|fact| fact == DESCENDANT_LIMIT)
+            {
+                result.dependencies.push(DESCENDANT_LIMIT.into());
+            }
+        } else {
+            result
+                .enforcement
+                .push("Single-process authority: fork and child execution remain denied.".into());
         }
         Ok(result)
     }
@@ -532,6 +607,41 @@ struct MacChild {
     reaped: bool,
 }
 impl MacChild {
+    fn exited(&self) -> Result<bool, Refusal> {
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+        // WNOWAIT keeps the leader's PID/group reserved until its original
+        // group is quiescent, even if a background launcher has exited.
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                self.pid,
+                info.as_mut_ptr(),
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result != 0 {
+            return Err(unavailable(std::io::Error::last_os_error()));
+        }
+        Ok(unsafe { info.assume_init() }.si_pid != 0)
+    }
+    fn kill_group(&self) -> Result<(), Refusal> {
+        // The unreaped leader reserves this group ID. Do not reuse this
+        // operation after executor restart, when that ownership is lost.
+        if unsafe { libc::kill(-(self.pid as i32), libc::SIGKILL) } != 0 {
+            let error = std::io::Error::last_os_error();
+            // A group containing only an unreaped zombie has no signal target;
+            // Darwin can return EPERM. This is safe only while our leader's
+            // wait status and an independent quiescence observation agree.
+            if self.exited()? && group_quiescent(self.pid)? {
+                return Ok(());
+            }
+            return Err(unavailable(format!(
+                "signal job process group {}: {error}",
+                self.pid
+            )));
+        }
+        Ok(())
+    }
     fn wait(&mut self, blocking: bool) -> Result<Option<i32>, Refusal> {
         let mut status = 0;
         let result = unsafe {
@@ -591,8 +701,8 @@ impl MacChild {
 impl Drop for MacChild {
     fn drop(&mut self) {
         if !self.reaped {
+            let _ = self.kill_group();
             unsafe {
-                libc::kill(self.pid as i32, libc::SIGKILL);
                 libc::waitpid(self.pid as i32, std::ptr::null_mut(), libc::WNOHANG);
             }
         }
@@ -676,7 +786,9 @@ fn spawn_suspended(
                 ))?;
                 check(libc::posix_spawnattr_setflags(
                     &mut attrs,
-                    (libc::POSIX_SPAWN_START_SUSPENDED | libc::POSIX_SPAWN_CLOEXEC_DEFAULT) as i16,
+                    (libc::POSIX_SPAWN_START_SUSPENDED
+                        | libc::POSIX_SPAWN_CLOEXEC_DEFAULT
+                        | POSIX_SPAWN_SETSID as i32) as i16,
                 ))?;
                 let mut pid = 0;
                 check(libc::posix_spawn(

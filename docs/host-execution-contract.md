@@ -50,10 +50,10 @@ the ceiling revision; it changes when the ceiling changes. Trust revisions
 change on issuer/key enrolment, rotation or removal. These revision obligations
 and delivery of fresh authority are required consumer dependencies. The witness
 uses fixed trusted inputs and does not implement their production adapters.
-`Target::revisions()` also hashes the actual trusted key set, grants and ceiling
+`Target::revisions()` also hashes the target identity, actual trusted key set, grants and ceiling
 with their owner revision references. Reusing a label cannot conceal changed
 inputs from a client that supplied expected revisions. Proposals and invocations
-use `request_revisions()` to bind the selected operation and grant. Discovery
+use `request_revisions()` to bind the selected target, operation and grant. Discovery
 returns those revisions per operation. Changes to another operation do not
 invalidate an unchanged prepared invocation.
 
@@ -88,6 +88,8 @@ without changing the routes:
 | `job` | `/v1/host-execution/job` | Current lifecycle receipt for the selected job. |
 | `output` | `/v1/host-execution/output` | Offset, base64 bytes, end indicator and retained-output digest. |
 | `cancel` | `/v1/host-execution/cancel` | Current receipt with cancellation requested. |
+| `adopt` | `/v1/host-execution/adopt` | Qualified exact agent-code adoption; no program dispatch. |
+| `adoption` | `/v1/host-execution/adoption` | Retained original signed adoption and resulting package/operation identities. |
 
 Timestamps are UTC Unix seconds. Time budgets are seconds, byte budgets are
 bytes, and concurrency/process limits are counts. Output offsets count bytes
@@ -110,12 +112,17 @@ grant, key ID, vault credential reference, service name, an authenticated
 endpoint and finite request/response/deadline limits. A `unix` endpoint selects a canonical absolute socket and executor UID.
 An `https` endpoint selects a host, port and adopted certificate PEM. Endpoint
 name and certificate validation precede signed-request dispatch. The
-credential value is base64 Ed25519 PKCS#8 in the existing encrypted store.
+credential contains Ed25519 PKCS#8 signing material in the existing encrypted store.
+Host-task preparation also retains its original public request in that encrypted
+credential. Neither representation changes signing-key custody.
 Neither the value nor a signed request is returned to the agent.
 
 The issuer ID must match the selected instance's durable identity. The native
-grant's principal selects the agent, run and task. The operator registers and
-activates that task through the existing task owner. `task_revision` is the
+grant's principal selects the durable agent, run and task. By default it requires
+that exact run. Explicit `allow_run_refresh` also permits a later host-observed
+current run of the same durable agent and task. It does not renew expiry, restore
+a revoked grant, reset budgets or permit a replacement agent by name.
+The existing task owner activates the selected task. `task_revision` is the
 shared canonical JSON digest of its registered document. A different task ID,
 changed active document, stopped run or changed durable agent identity cannot
 reuse the binding. The service must also have current `gateway:request` policy
@@ -140,12 +147,33 @@ The agent uses its ordinary Agent API bearer through
 
 Inputs contain only `request_id`, `expected`, `action`, optional
 `untrusted_rationale` and optional `challenge_id`. The gateway supplies target,
-issuer, grant, principal and expiry from the approved binding. Unknown fields,
-definition-management actions and issuer enrolment are refused. Discovery
+issuer, grant, principal and expiry from the approved binding. Unknown fields
+and caller-supplied authority are refused. Agent code uses the separate `adopt`
+action under an explicit code class. Discovery
 filters operations and catalogue changes to the selected grant. Proposals have
 no separate retained object or cross-agent readback route. The exposed API has
-no job-listing or definition-management route. Job, output and cancellation
-always require the target's exact issuer, principal and grant ownership.
+no job-listing route. Job, output and cancellation retain issuer, durable
+principal/task and grant ownership, including only explicitly selected run refresh.
+
+`GET /gateway/host-setup` exposes preparation schemas without an effect.
+`POST` prepares a public enrolment request with a vault-held signing key, or
+submits the target's returned preparation to the existing human policy-change
+owner. The Unix target's trusted bootstrap owner uses native `enrol`; this does
+not run task code. The issuer derives the exact binding and concrete authority
+review. It never gives the agent Admin credentials or adoption authority.
+`GET /gateway/host-setup/{operation_id}` recovers the original public preparation.
+The setup operation and subsequent policy-change operation remain distinct;
+retain both results. A notification cannot select either effect for replay.
+
+An adopted binding can select `resume_task` and a separately labelled agent
+interpretation of intent. The exact task document remains private in the vault;
+public preparations and encoded bindings carry its revision only.
+`POST /gateway/host/{binding}/resume` rechecks
+current run/grant eligibility and activates only that document through the
+existing task registry. It accepts only a request ID. A conflicting active task
+is refused. Native task registration and the separately selected document
+survive issuer restart. Clearing deactivates the task; grant revocation removes
+standing permission to resume. Neither action reverses prior external effects.
 
 The existing `route_challenges` owner can select native invocations by agent,
 binding service, operation ID as `capability`, method `POST` and path
@@ -284,6 +312,29 @@ the package's delegated service references do not contain those credential value
 
 ## Catalogue adoption and revision changes
 
+`allow_agent_code` is explicit authority distinct from publisher maintenance.
+Its operation ceiling bounds identity, files, native network/services, effects,
+checks and resources while allowing untrusted recipes and new executable bytes.
+`agent_dependency_bytes` bounds the aggregate pinned dependency bytes; native
+qualification checks their actual target paths and control-file separation.
+Catalogue `agent_code_keys` selects eligible issuer keys separately from the
+publisher key. Signatures authenticate origin and exact resulting package;
+they do not prove confinement or program equivalence.
+
+The signed `adopt` request binds the original request ID, base package, exact
+new operation and resulting package. Both issuer and target code classes must
+cover it. The target's existing catalogue owner qualifies the complete native
+candidate before saving it. The issuer advances the same package and bindings
+through its existing atomic policy transaction. No candidate program executes
+during preparation or catalogue qualification. `adoption` reads the original
+result after a lost reply; protected catalogue state repairs a commit interrupted
+before ledger publication without repeating the configuration effect.
+If the issuer cannot reconcile that target result, it reports the retained
+target adoption and exact remaining action. Another current base is a conflict.
+Agent-code intake requires direct observation; a catalogue following an external
+publisher file must have its owner select the intended observation source first.
+Invocation still requires its separate current proposal and native admission.
+
 `CatalogueAdoption` records publisher trust, an active signed catalogue, its
 previous signed revision, observed candidate input and standing update bounds.
 The target's `Configuration.catalogue` owns target adoption. A native issuer
@@ -407,7 +458,7 @@ reports `commit=unknown`; this is not a release identity.
 | Target | Required runtime components and current native profile |
 |---|---|
 | Linux x86-64 / ARM64 | Compatible C runtime; a pinned bubblewrap with the options used by the backend, including `--bind-fd`; kernel user namespaces, seccomp and delegated cgroup v2 memory/pids controls. The executor must run where it can migrate its own jobs into that delegation. Ordinary programs receive selected read/write paths and may execute descendants inside those namespaces and the same cgroup. The explicit broader TCP profile below shares the target network namespace and separates connect from listen/accept permission. Direct IPC remains unavailable. The fixed service profile separately admits its trusted OS client. |
-| macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive selected read/write paths and the explicitly broader IP socket profile below. Fork, Unix-socket bind/connect and Mach access remain denied. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed endpoint helper receives sockets for scoped observations. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
+| macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive selected read/write paths and the explicitly broader IP socket profile below. Multi-process operations require explicit `processes` authority: fork/exec and `posix_spawn` work, but count and cancellation cover only the original group. Escaped descendants can outlive cancellation or deadline. Tree cleanup and concurrency release remain unconfirmed, including after restart. Children inherit Seatbelt. Single-process grants deny fork. Unix-socket bind/connect and Mach access remain denied. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed endpoint helper receives sockets for scoped observations. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
 | Windows x86-64 | Native Windows security, Credential Manager, local named pipes, Job Objects, the Service Control Manager and the Universal C Runtime supplied by current Windows. The GNU package statically links its compiler runtime. Its remaining imports are Windows system DLLs. No MinGW installation is required on the target. |
 
 SQLite is bundled into the executable. Operation definitions separately declare
@@ -508,6 +559,16 @@ implemented by this profile.
 
 ### Retained listener handoff on Unix
 
+Task enrolment derives a fixed endpoint-inspection operation from the selected
+listener choices (or the complete handoff selector). It is separate from the
+agent-code class and has no file, outbound or listening workload permissions.
+The target records its native network-enforcement report with enrolment time;
+issuer policy review labels this as recorded target evidence, separately from
+intent, current readiness and observed audience reach. Covered staging and
+diagnostics can omit the optional inherited socket and use narrower disconnected
+scope without reserving the application's listener.
+
+
 For a program that accepts a listening socket as descriptor 3, set
 `execution.network.listener_handoff` to an endpoint selection. The existing
 issuer scope and target ceiling bind the complete ordered selection through
@@ -548,7 +609,8 @@ descriptor; that descriptor grants no channel. The program can accept and
 respond on the inherited listener. Ordinary network declarations may separately grant their
 reported broader authority. On Linux, permitted descendants inherit the same
 socket, namespaces, seccomp rules and job cgroup. On macOS, the existing
-no-fork, polled-memory and controller-crash limits remain. A program must not
+declared process boundary, polled-memory and controller-crash limits remain. Authorised
+children inherit the socket and Seatbelt rules. A program must not
 close or repurpose descriptor 3 before using the handoff.
 
 Read the running job's `listener_handoff` field to obtain the actual binding,
@@ -765,11 +827,53 @@ target ceiling binding. An empty set requires every declared bound. The current
 `memory` exception permits the macOS backend to poll resident memory without
 claiming a hard kernel memory cap. The `executor_restart` exception permits a
 process to remain running beyond its deadline if the controller crashes. Restart
-retains uncertain cleanup and concurrency until the recorded process birth is
-absent; it does not signal a recovered PID. The macOS backend requires both
+retains uncertain cleanup and concurrency. For a single-process operation,
+recovery can release that reservation after the recorded birth is absent and
+its original group is quiescent. Recovery does not signal recorded PIDs or
+groups. The macOS backend requires both
 exceptions. An enforcement label cannot select either exception. Adapters
 refuse required guarantees they cannot apply. Linux supports the explicitly
 broader TCP profile above; macOS supports the broader transport/port profile above.
+For ordinary macOS operations with `resources.processes > 1`, the additional
+`processes` exception permits child launch with incomplete process-tree control.
+Only the original group's process count and resident memory are polled.
+Short-lived excess processes can exist between observations, and escaped
+descendants are outside those observations. Neither is a hard kernel cap.
+The primary executable remains a pinned private snapshot. Children can execute
+programs in the selected read/write paths, including revised task code; their
+mutable binaries are not content-pinned. All descendants inherit the same
+Seatbelt file, network and IPC restrictions. Ordinary same-group `posix_spawn`,
+fork/exec, `setsid`, `setpgid` and spawn attributes that change groups or sessions
+are permitted under that exception. The executor creates the launcher in a new
+session and retains its wait status while signalling its original group.
+Group or session membership alone does not establish the complete descendant
+tree. In particular, `posix_spawn` can create another group/session before its
+child executes. Polling parent IDs can miss an intermediate process that exits
+between observations. Apple's [event header](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/event.h)
+also marks automatic `NOTE_TRACK` fork tracking unsupported. This adapter has
+no complete descendant-ownership observation or escaped-tree stop operation.
+
+The executor retains the launcher's wait status until the group is quiescent.
+Quiescence requires no executable members. A stable group of observed zombies
+is quiescent even when host reaping has not removed its process records.
+An authorised background child in the original group keeps the job running
+after its launcher exits. Cancellation, observed memory or process excess,
+output truncation and timeout stop that group while the live executor owns its
+unreaped leader. Escaped children can remain alive after any of those events,
+even without a controller crash. Retained files survive those stops.
+Output capture ends after original-group quiescence; an open writer is reported
+as truncated. Multi-process jobs retain their observed launcher exit and stop
+reason, but finish `Uncertain` with `processes_stopped=false`. Neither group
+quiescence nor output end-of-file establishes tree cleanup. Their concurrency
+reservation and executable snapshot remain retained after completion and
+restart, even when the observed group disappears. Automatic reservation
+release and complete descendant cancellation remain unsupported. Choose a
+backend with enforced tree ownership when those guarantees are required.
+On macOS, built-in task inspection and byte-staging select one interpreter
+process without the `processes` exception. Their standing task-code class keeps
+the full selected ceiling for subsequently adopted programs. Human check output
+and enrolment's `task:*` boundary facts also explain that full standing authority.
+
 An ordinary adopted program cannot receive a service-manager channel: under
 the executor account that channel could launch code outside the sandbox and
 modify executor inputs. A service name or executable digest alone does not

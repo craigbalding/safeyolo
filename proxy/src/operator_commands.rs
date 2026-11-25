@@ -469,6 +469,7 @@ pub fn show_policy_assessment(view: &Value) {
         "configured_agents",
         "authority",
         "services",
+        "host_operations",
         "network",
         "alternatives",
         "limitations",

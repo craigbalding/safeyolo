@@ -27,6 +27,7 @@ fn fixture_target() -> Target {
         serde_json::from_str(include_str!("fixtures/host_execution/package.json")).unwrap();
     let scope:OperationScope=serde_json::from_value(json!({"implementation_sha256":package.operations["restart"].implementation_sha256(),"resources":["service:demo"],"arguments":{"wait":[5],"mode":["normal","quiet"]},"budgets":{"calls":2,"concurrent":1,"timeout_seconds":15,"output_bytes":512}})).unwrap();
     let grant = Grant {
+        allow_run_refresh: false,
         families: Vec::new(),
         principal: principal(),
         not_before: 90,
@@ -1142,6 +1143,9 @@ impl Witness {
             return Ok(response.clone());
         }
         let response = match &req.action {
+            Action::Adopt { .. } | Action::Adoption { .. } => {
+                panic!("this invocation-only fixture does not adopt code")
+            }
             Action::Discover => Response::Discovery {
                 discovery: Box::new(self.target.discover(&auth)?),
             },
@@ -1750,6 +1754,8 @@ fn stale_preparation_refreshes_through_real_discovery_proposal_and_ledger_withou
         ceiling: target.package.operations["restart"].clone(),
         allow_narrower: true,
         allow_implementation_updates: true,
+        allow_agent_code: false,
+        agent_dependency_bytes: 0,
     };
     target.ceiling.get_mut("restart").unwrap().updates = Some(rule.clone());
     target
@@ -1778,6 +1784,7 @@ fn stale_preparation_refreshes_through_real_discovery_proposal_and_ledger_withou
     );
     let mut adoption = CatalogueAdoption {
         policy: CataloguePolicy {
+            agent_code_keys: BTreeMap::new(),
             publisher: "publisher".into(),
             public_key: STANDARD.encode(key().public_key().as_ref()),
             package_name: target.package.name.clone(),
