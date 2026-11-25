@@ -194,7 +194,7 @@ pub fn command(args: Vec<String>) -> Result<(), Refusal> {
         );
         #[cfg(unix)]
         println!(
-            "serve uses STATE/control.sock for the shared signed HTTP routes.\nLinux requires pinned bubblewrap and delegated cgroup v2 memory/pids controls, with permission to place jobs from the executor's current cgroup.\nmacOS requires Seatbelt and explicit broader memory and executor_restart authority; a controller crash can leave an orphan with unknown cleanup."
+            "serve uses STATE/control.sock for the shared signed HTTP routes.\nLinux requires pinned bubblewrap and delegated cgroup v2 memory/pids controls, with permission to place jobs from the executor's current cgroup.\nmacOS requires Seatbelt and explicit broader memory and executor_restart authority; a controller crash can leave descendants with unknown cleanup. Multi-process operations also require broader processes authority for polled process counts. Fork/exec children remain in the job's group; setsid, setpgid and posix_spawn are denied."
         );
         #[cfg(windows)]
         println!(

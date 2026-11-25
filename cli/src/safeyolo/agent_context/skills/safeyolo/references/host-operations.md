@@ -64,6 +64,15 @@ Its returned `enrolment.json` comes back through the same trusted transfer route
 the human does not assemble keys, identity documents, scopes or bindings.
 Automatic `enrol` is implemented for Linux and macOS. Windows retains the
 explicit native preparation/installation path in the operator guide.
+On macOS the prepared task interpreter is pinned directly to `/bin/bash`.
+For a task with more than one process, its plan must explicitly select broader
+`processes` authority for the polled process count, alongside `memory` and
+`executor_restart`. Selected read/write paths also bound child executables.
+Fork/exec children inherit Seatbelt and remain in the job's process group;
+`setsid`, `setpgid` and `posix_spawn` are denied. Background children keep the
+job running within its original deadline. After a controller crash, restart
+retains uncertain effects and concurrency until the group is empty; it never
+signals recovered PIDs or groups. Preserve that uncertainty during recovery.
 
 Inside the issuing agent, after the trusted owner returns that original file, run:
 

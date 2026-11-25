@@ -458,7 +458,7 @@ reports `commit=unknown`; this is not a release identity.
 | Target | Required runtime components and current native profile |
 |---|---|
 | Linux x86-64 / ARM64 | Compatible C runtime; a pinned bubblewrap with the options used by the backend, including `--bind-fd`; kernel user namespaces, seccomp and delegated cgroup v2 memory/pids controls. The executor must run where it can migrate its own jobs into that delegation. Ordinary programs receive selected read/write paths and may execute descendants inside those namespaces and the same cgroup. The explicit broader TCP profile below shares the target network namespace and separates connect from listen/accept permission. Direct IPC remains unavailable. The fixed service profile separately admits its trusted OS client. |
-| macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive selected read/write paths and the explicitly broader IP socket profile below. Fork, Unix-socket bind/connect and Mach access remain denied. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed endpoint helper receives sockets for scoped observations. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
+| macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive selected read/write paths and the explicitly broader IP socket profile below. Multi-process operations require explicit `processes` authority for a polled process count. Fork/exec children inherit the same boundary and stay in the job's process group. Single-process grants deny fork. Unix-socket bind/connect and Mach access remain denied. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed endpoint helper receives sockets for scoped observations. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
 | Windows x86-64 | Native Windows security, Credential Manager, local named pipes, Job Objects, the Service Control Manager and the Universal C Runtime supplied by current Windows. The GNU package statically links its compiler runtime. Its remaining imports are Windows system DLLs. No MinGW installation is required on the target. |
 
 SQLite is bundled into the executable. Operation definitions separately declare
@@ -609,7 +609,8 @@ descriptor; that descriptor grants no channel. The program can accept and
 respond on the inherited listener. Ordinary network declarations may separately grant their
 reported broader authority. On Linux, permitted descendants inherit the same
 socket, namespaces, seccomp rules and job cgroup. On macOS, the existing
-no-fork, polled-memory and controller-crash limits remain. A program must not
+declared process boundary, polled-memory and controller-crash limits remain. Authorised
+children inherit the socket and Seatbelt rules. A program must not
 close or repurpose descriptor 3 before using the handoff.
 
 Read the running job's `listener_handoff` field to obtain the actual binding,
@@ -827,10 +828,32 @@ target ceiling binding. An empty set requires every declared bound. The current
 claiming a hard kernel memory cap. The `executor_restart` exception permits a
 process to remain running beyond its deadline if the controller crashes. Restart
 retains uncertain cleanup and concurrency until the recorded process birth is
-absent; it does not signal a recovered PID. The macOS backend requires both
+absent and its confined process group is empty; it does not signal recovered
+PIDs or groups. The macOS backend requires both
 exceptions. An enforcement label cannot select either exception. Adapters
 refuse required guarantees they cannot apply. Linux supports the explicitly
 broader TCP profile above; macOS supports the broader transport/port profile above.
+For ordinary macOS operations with `resources.processes > 1`, the additional
+`processes` exception permits a polled group process count. Short-lived excess
+processes can exist between observations; this is not a hard kernel cap.
+The primary executable remains a pinned private snapshot. Children can execute
+programs in the selected read/write paths, including revised task code; their
+mutable binaries are not content-pinned. All descendants inherit the same
+Seatbelt file, network and IPC restrictions. The adapter denies `setsid`,
+`setpgid` and `posix_spawn`, which could otherwise escape the job's process
+group. Programs must use fork followed by exec for child launch. This also
+excludes `posix_spawn` calls that would have retained the group.
+
+The executor retains the launcher's wait status until the group is empty.
+An authorised background child keeps the job running after its launcher exits,
+within the same deadline and concurrency budget. Cancellation, observed memory
+or process excess, output truncation and timeout stop the group while the live
+executor owns its unreaped leader. Retained files survive those stops.
+After executor failure, children can remain alive beyond the deadline under
+the explicit `executor_restart` exception. Restart observes group quiescence
+without signalling or replaying the job. It preserves the uncertain prior exit
+and effects even after the group becomes empty.
+
 An ordinary adopted program cannot receive a service-manager channel: under
 the executor account that channel could launch code outside the sandbox and
 modify executor inputs. A service name or executable digest alone does not

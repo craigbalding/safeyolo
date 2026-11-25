@@ -1,35 +1,38 @@
 //! Observe only a job's confined process group, including orphaned descendants.
 use super::*;
 
+// <sys/proc_info.h>; the pinned libc exposes proc_listpids but omits this selector.
+const PROC_PGRP_ONLY: u32 = 2;
+
+fn list(group: u32, buffer: *mut libc::c_void, bytes: i32) -> Result<usize, Refusal> {
+    // libproc returns zero both for an empty list and for failure. Clear errno
+    // before the call so a failed read cannot be reported as quiescence.
+    unsafe {
+        *libc::__error() = 0;
+    }
+    let result = unsafe { libc::proc_listpids(PROC_PGRP_ONLY, group, buffer, bytes) };
+    let error = std::io::Error::last_os_error();
+    if result < 0 || result == 0 && error.raw_os_error() != Some(0) {
+        return Err(unavailable(error));
+    }
+    Ok(result as usize)
+}
+
 pub(super) fn group_members(group: u32) -> Result<Vec<NativeProcess>, Refusal> {
     // proc_listpids returns bytes, not a PID count. Allow growth between the
     // sizing and data calls; a filled buffer is incomplete and is never empty.
     for _ in 0..3 {
-        let bytes =
-            unsafe { libc::proc_listpids(libc::PROC_PGRP_ONLY, group, std::ptr::null_mut(), 0) };
-        require(
-            bytes >= 0,
-            RefusalCode::Unavailable,
-            "process-group sizing failed",
-        )?;
-        let capacity = (bytes as usize / std::mem::size_of::<u32>()).saturating_add(64);
+        let bytes = list(group, std::ptr::null_mut(), 0)?;
+        let capacity = (bytes / std::mem::size_of::<u32>()).saturating_add(64);
         let mut pids = vec![0u32; capacity];
-        let bytes = unsafe {
-            libc::proc_listpids(
-                libc::PROC_PGRP_ONLY,
-                group,
-                pids.as_mut_ptr().cast(),
-                (capacity * std::mem::size_of::<u32>())
-                    .try_into()
-                    .map_err(unavailable)?,
-            )
-        };
-        require(
-            bytes >= 0,
-            RefusalCode::Unavailable,
-            "process-group observation failed",
+        let bytes = list(
+            group,
+            pids.as_mut_ptr().cast(),
+            (capacity * std::mem::size_of::<u32>())
+                .try_into()
+                .map_err(unavailable)?,
         )?;
-        let count = bytes as usize / std::mem::size_of::<u32>();
+        let count = bytes / std::mem::size_of::<u32>();
         if count >= capacity {
             continue;
         }

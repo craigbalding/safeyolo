@@ -31,7 +31,16 @@ authority](host-execution-contract.md#macos-writable-paths-and-broader-network-a
 The operator selects the actual write roots and assesses Seatbelt's loopback or
 all-address class at each permitted port. The existing issuer and target scopes
 bind that operation; covered invocations need no recurring human decision.
-The macOS adapter still denies fork to ordinary programs. Resolving an adopted
+For a macOS operation with more than one process, select explicit broader
+`processes` authority as well as `memory` and `executor_restart`. The adapter
+polls aggregate memory and process count. Fork/exec children can execute in the
+selected read/write paths and inherit the same Seatbelt boundary. Single-process
+grants retain fork denial. `setsid`, `setpgid` and `posix_spawn` are denied to
+keep descendants in the job's process group. Use programs that launch children
+with fork followed by exec. Background children keep the job running until
+the group exits, cancellation or its deadline. A controller crash can leave
+them alive; restart retains uncertainty until the group is empty and never
+signals recovered PIDs or groups. Resolving an adopted
 read/write path permits metadata reads of its ancestors, with no sibling file
 contents or ancestor directory listing. File results remain at the selected
 host paths; the Output route returns stdout/stderr.
