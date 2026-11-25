@@ -34,7 +34,7 @@ pub(crate) fn network_enforcement(operation: &Operation) -> Vec<String> {
     }
     facts
 }
-use processes::{children_absent, group_empty, group_members, group_memory};
+use processes::{group_members, group_memory, group_quiescent};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -66,7 +66,7 @@ fn identity() -> Result<ExecutionIdentity, Refusal> {
     })
 }
 
-fn birth(pid: u32) -> Result<Option<NativeProcess>, Refusal> {
+fn process_info(pid: u32) -> Result<Option<libc::proc_bsdinfo>, Refusal> {
     let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
     // SAFETY: proc_pidinfo receives a correctly sized output buffer. A zero
@@ -82,15 +82,7 @@ fn birth(pid: u32) -> Result<Option<NativeProcess>, Refusal> {
     };
     if n == size {
         let info = unsafe { info.assume_init() };
-        if info.pbi_status == 5 {
-            return Ok(None);
-        } // SZOMB: no executable work remains.
-        return Ok(Some(NativeProcess {
-            pid,
-            process_group: info.pbi_pgid,
-            birth_seconds: info.pbi_start_tvsec,
-            birth_microseconds: info.pbi_start_tvusec as u32,
-        }));
+        return Ok(Some(info));
     }
     let error = std::io::Error::last_os_error();
     if n == 0 && error.raw_os_error() == Some(libc::ESRCH) {
@@ -98,6 +90,19 @@ fn birth(pid: u32) -> Result<Option<NativeProcess>, Refusal> {
     } else {
         Err(unavailable(error))
     }
+}
+fn process_birth(info: &libc::proc_bsdinfo) -> NativeProcess {
+    NativeProcess {
+        pid: info.pbi_pid,
+        process_group: info.pbi_pgid,
+        birth_seconds: info.pbi_start_tvsec,
+        birth_microseconds: info.pbi_start_tvusec as u32,
+    }
+}
+fn birth(pid: u32) -> Result<Option<NativeProcess>, Refusal> {
+    Ok(process_info(pid)?
+        .filter(|info| info.pbi_status != 5)
+        .map(|info| process_birth(&info)))
 }
 fn same(a: &NativeProcess, b: &NativeProcess) -> bool {
     a.pid == b.pid
@@ -221,7 +226,7 @@ impl MacRuntime {
         for receipt in ledger.recover(now())? {
             if let Some(process) = &receipt.process {
                 if birth(process.pid)?.is_some_and(|p| same(&p, process))
-                    || !group_empty(process.process_group)?
+                    || !group_quiescent(process.process_group)?
                 {
                     // A birth check followed by kill(pid) is still vulnerable
                     // to PID reuse after a restart: this executor no longer
@@ -472,7 +477,7 @@ impl MacRuntime {
                 reason = "observed_memory_limit";
                 break;
             }
-            if child.exited()? && children_absent(child.pid)? {
+            if child.exited()? && group_quiescent(child.pid)? {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -480,7 +485,7 @@ impl MacRuntime {
         if reason != "exited" {
             child.kill_group()?;
             let cleanup_deadline = Instant::now() + Duration::from_secs(2);
-            while !child.exited()? || !children_absent(child.pid)? {
+            while !child.exited()? || !group_quiescent(child.pid)? {
                 require(
                     Instant::now() < cleanup_deadline,
                     RefusalCode::Unavailable,

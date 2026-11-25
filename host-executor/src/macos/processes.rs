@@ -45,15 +45,37 @@ fn group_pids(group: u32) -> Result<Vec<u32>, Refusal> {
     ))
 }
 
-pub(super) fn group_empty(group: u32) -> Result<bool, Refusal> {
-    Ok(group_pids(group)?.is_empty())
-}
-
-pub(super) fn children_absent(group: u32) -> Result<bool, Refusal> {
-    // Call only after observing the leader's retained exit status. Inspect the
-    // raw group list: a process that exits between listing and birth lookup
-    // might have forked a child. Filtering that process out is not quiescence.
-    Ok(group_pids(group)?.iter().all(|pid| *pid == group))
+pub(super) fn group_quiescent(group: u32) -> Result<bool, Refusal> {
+    let mut pids = group_pids(group)?;
+    pids.sort_unstable();
+    let mut zombies = Vec::new();
+    for pid in &pids {
+        let Some(info) = process_info(*pid)? else {
+            return Ok(false);
+        };
+        if info.pbi_status != 5 {
+            return Ok(false);
+        }
+        zombies.push(process_birth(&info));
+    }
+    // Zombies cannot execute or retain output writers, but can remain until
+    // their parent is reaped. Require the same raw membership after observing
+    // every member dead: an exit during the first pass could have forked a new
+    // descendant. Check births again to exclude PID reuse between passes.
+    let mut after = group_pids(group)?;
+    after.sort_unstable();
+    if pids != after {
+        return Ok(false);
+    }
+    for zombie in zombies {
+        let Some(info) = process_info(zombie.pid)? else {
+            return Ok(false);
+        };
+        if info.pbi_status != 5 || !same(&zombie, &process_birth(&info)) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub(super) fn group_members(group: u32) -> Result<Vec<NativeProcess>, Refusal> {
