@@ -37,6 +37,11 @@ impl WindowsRuntime {
         }
         for operation in target.package.operations.values() {
             require(
+                operation.execution.network.listener_handoff.is_none(),
+                RefusalCode::Unavailable,
+                "native listener descriptor handoff is currently supported on Unix targets",
+            )?;
+            require(
                 operation.execution.broader
                     == [
                         BroaderBound::Filesystem,

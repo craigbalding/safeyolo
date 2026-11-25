@@ -248,6 +248,19 @@ impl MacRuntime {
         let endpoint = crate::endpoints::validate(op)?;
         network::validate(&op.execution)?;
         let writes = filesystem::validate(&op.execution.filesystem.write, protected)?;
+        let listener = match crate::endpoints::bind_for_job(
+            op.execution.network.listener_handoff.as_ref(),
+            ledger,
+            &receipt.job_id,
+        ) {
+            Ok(listener) => listener,
+            Err(error) => {
+                return Ok(crate::native::launch_refused(
+                    "macos-seatbelt-no-fork",
+                    error,
+                ));
+            }
+        };
         let root = ledger
             .lock()
             .map_err(unavailable)?
@@ -304,6 +317,28 @@ impl MacRuntime {
             }
         }
         profile.push_str(&network::profile(&op.execution));
+        if listener.is_some() {
+            let observation = ledger
+                .lock()
+                .map_err(unavailable)?
+                .observe(&receipt.job_id)?
+                .listener_handoff
+                .ok_or_else(|| unavailable("listener bind observation missing"))?;
+            let binding = observation
+                .binding
+                .ok_or_else(|| unavailable("bound listener address missing"))?;
+            // Creation and bind remain denied unless separately declared. This
+            // rule permits accept on the already-bound inherited TCP socket.
+            let address_class = if binding.ip().is_loopback() {
+                "localhost"
+            } else {
+                "*"
+            };
+            profile.push_str(&format!(
+                "(allow network-inbound (require-all (local tcp \"{}:{}\") (socket-type SOCK_STREAM)))",
+                address_class, binding.port(),
+            ));
+        }
         for path in &writes {
             // Source and destination link/rename checks still pass through
             // Seatbelt. Resolving an inner symlink grants no outside access.
@@ -354,7 +389,13 @@ impl MacRuntime {
             command.argv,
         ]
         .concat();
-        let child = spawn_suspended(&args, &command.environment, &command.working_directory)?;
+        let child = spawn_suspended(
+            &args,
+            &command.environment,
+            &command.working_directory,
+            listener.as_ref().map(AsRawFd::as_raw_fd),
+        )?;
+        drop(listener);
         let mut child = child;
         let process = birth(child.pid)?
             .ok_or_else(|| unavailable("suspended process identity unavailable"))?;
@@ -452,6 +493,12 @@ impl MacRuntime {
             if writes.is_empty() {
                 result.enforcement[0] = "Seatbelt selected read paths, no writes, fork, Mach lookup or Unix-socket bind/connect, pinned private executable snapshot and exact environment; IP sockets follow the separately reported network boundary".into();
             }
+        }
+        if op.execution.network.listener_handoff.is_some() {
+            result
+                .dependencies
+                .extend(crate::endpoints::handoff_disclosure(op));
+            result.enforcement.push("The trusted executor passes the selected listening TCP socket as descriptor 3. Unconnected TCP descriptors grant no channel: additional binding, implicit listen, outbound connections and fork remain denied unless separately granted by a supported ordinary profile.".into());
         }
         Ok(result)
     }
@@ -556,6 +603,7 @@ fn spawn_suspended(
     args: &[String],
     environment: &std::collections::BTreeMap<String, String>,
     cwd: &str,
+    listener: Option<i32>,
 ) -> Result<MacChild, Refusal> {
     // All allocation happens before posix_spawn. The kernel creates a suspended
     // child, with only the explicit standard descriptors, before durable capture.
@@ -613,6 +661,13 @@ fn spawn_suspended(
                         &mut actions,
                         write.as_raw_fd(),
                         n as i32 + 1,
+                    ))?;
+                }
+                if let Some(listener) = listener {
+                    check(libc::posix_spawn_file_actions_adddup2(
+                        &mut actions,
+                        listener,
+                        3,
                     ))?;
                 }
                 check(posix_spawn_file_actions_addchdir_np(

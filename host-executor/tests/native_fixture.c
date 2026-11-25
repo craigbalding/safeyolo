@@ -190,9 +190,59 @@ static int mac_network_probe(const char *mode, const char *directory, int local_
 #endif
 
 /* Prepared by the developer test, never by target discovery/qualification. */
+static int handoff_probe(const char *mode, const char *directory, int forbidden_port) {
+#ifdef __linux__
+    if (strstr(mode,"child")) {
+        pid_t child=fork();
+        if (child<0) return 119;
+        if (child) { alarm(4); for (;;) pause(); }
+        if (setsid()<0) return 120;
+    }
+#endif
+    struct sockaddr_storage address;
+    socklen_t size=sizeof(address);
+    if (getsockname(3,(struct sockaddr *)&address,&size)) { perror("inherited listener"); return 110; }
+    int extra=socket(AF_INET,SOCK_STREAM,0);
+    struct sockaddr_in forbidden={ .sin_family=AF_INET, .sin_port=htons((unsigned short)forbidden_port),
+        .sin_addr.s_addr=htonl(INADDR_LOOPBACK) };
+    if (extra>=0) {
+#ifdef __linux__
+        close(extra); return 111;
+#else
+        /* Seatbelt permits an unconnected descriptor. It must not acquire an
+           undeclared channel through bind, connect or implicit listen. */
+        if (bind(extra,(struct sockaddr *)&forbidden,sizeof(forbidden))!=-1 || errno!=EPERM) return 116;
+        if (connect(extra,(struct sockaddr *)&forbidden,sizeof(forbidden))!=-1 || errno!=EPERM) return 117;
+        if (listen(extra,1)!=-1 || errno!=EPERM) return 118;
+        close(extra);
+#endif
+    } else if (errno!=EPERM) return 111;
+    if (connect(3,(struct sockaddr *)&forbidden,sizeof(forbidden))!=-1) return 112;
+    char path[PATH_MAX];
+    if (snprintf(path,sizeof(path),"%s/result",directory)>=(int)sizeof(path)) return 113;
+    FILE *result=fopen(path,"w");
+    if (!result || fputs("service started with inherited listener\n",result)<0 || fclose(result)) return 114;
+    puts("application ready to accept on inherited listener");
+    /* Bound this development fixture after a controller-crash test. The
+       product does not infer an alarm or cleanup guarantee from this probe. */
+    alarm(4);
+    if (strstr(mode,"wait")) for (;;) pause();
+    int peer=accept(3,NULL,NULL);
+    if (peer<0 || write(peer,"service",7)!=7) { perror("inherited accept"); return 115; }
+    /* Let the client close first, so a Linux TIME_WAIT connection is not
+       mistaken for a retained listening socket by the cleanup observer. */
+    char byte;
+    if (read(peer,&byte,1)!=0) return 121;
+    close(peer);
+    if (strstr(mode,"child")) for (;;) pause();
+    close(3);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc != 5) return 2;
     setbuf(stdout, NULL);
+    if (!strncmp(argv[1],"handoff",7)) return handoff_probe(argv[1],argv[2],atoi(argv[4]));
 #ifdef __linux__
     if (!strncmp(argv[1],"tcp-",4)) return tcp_probe(argv[1],argv[2],atoi(argv[3]),atoi(argv[4]));
 #endif

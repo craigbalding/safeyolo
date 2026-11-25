@@ -149,6 +149,10 @@ pub struct Filesystem {
 pub struct Network {
     pub destinations: Vec<NetworkDestination>,
     pub listeners: Vec<NetworkListener>,
+    /// Bind one authorised alternative before launch and pass the retained
+    /// socket as descriptor 3. This grants no additional socket creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listener_handoff: Option<crate::endpoints::EndpointSelection>,
     pub ipc: Vec<IpcEndpoint>,
 }
 
@@ -411,6 +415,21 @@ impl Package {
             {
                 return Err(
                     "network destinations need an explicit host, nonzero port and transport".into(),
+                );
+            }
+            if e.network
+                .listener_handoff
+                .as_ref()
+                .is_some_and(|selection| {
+                    !selection.validate()
+                        || selection
+                            .candidates
+                            .iter()
+                            .any(|candidate| !matches!(candidate.transport, NetworkTransport::Tcp))
+                })
+            {
+                return Err(
+                    "listener handoff needs valid authorised TCP endpoint alternatives".into(),
                 );
             }
             for word in e.argv.iter().chain(e.environment.values()) {
