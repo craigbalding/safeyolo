@@ -38,8 +38,8 @@ selected read/write paths and inherit the same Seatbelt boundary. Single-process
 grants retain fork denial. `setsid`, `setpgid` and `posix_spawn` are denied to
 keep descendants in the job's process group. Use programs that launch children
 with fork followed by exec. Background children keep the job running until
-the group exits, cancellation or its deadline. A controller crash can leave
-them alive; restart retains uncertainty until the group is empty and never
+the group becomes quiescent, cancellation or its deadline. A controller crash can leave
+them alive; restart retains uncertainty until the group is quiescent and never
 signals recovered PIDs or groups. Resolving an adopted
 read/write path permits metadata reads of its ancestors, with no sibling file
 contents or ancestor directory listing. File results remain at the selected

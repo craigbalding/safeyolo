@@ -1027,6 +1027,35 @@ fn installed_macos_descendants_remain_owned_after_launcher_exit() {
     f.target = settings.target.clone();
     f.server.kill().unwrap();
     f.server.wait().unwrap();
+    let mut missing = settings.clone();
+    missing
+        .target
+        .package
+        .operations
+        .get_mut("children")
+        .unwrap()
+        .execution
+        .broader
+        .remove(&BroaderBound::Processes);
+    missing.target = common::target(
+        missing.target.target_id.clone(),
+        missing.target.package.operations.clone(),
+        &f.key,
+    );
+    fs::write(
+        f.root.join("target.json"),
+        serde_json::to_vec_pretty(&missing).unwrap(),
+    )
+    .unwrap();
+    let refused = Command::new(executor())
+        .args(["check", "--config"])
+        .arg(f.root.join("target.json"))
+        .arg("--state")
+        .arg(f.root.join("state"))
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("broader processes authority"));
     fs::write(
         f.root.join("target.json"),
         serde_json::to_vec_pretty(&settings).unwrap(),
@@ -1041,6 +1070,19 @@ fn installed_macos_descendants_remain_owned_after_launcher_exit() {
         eprintln!("{mode}: {result:?}");
         assert_eq!(result.state, JobState::Completed, "{result:?}");
         assert!(result.native.unwrap().processes_stopped);
+        if mode == "escape" {
+            let Response::Output { data_base64, .. } = f.call(Action::Output {
+                job_id: job.job_id,
+                offset: 0,
+                max_bytes: 4096,
+            }) else {
+                panic!("signed child output");
+            };
+            assert!(
+                String::from_utf8_lossy(&STANDARD.decode(data_base64).unwrap())
+                    .contains("escape paths refused")
+            );
+        }
     }
     assert_eq!(
         fs::read(work.join("result")).unwrap(),
@@ -1091,7 +1133,10 @@ fn installed_macos_descendants_remain_owned_after_launcher_exit() {
     f.restart();
     let quiescent = f.job(&job.job_id);
     assert_eq!(quiescent.state, JobState::Uncertain);
-    assert!(quiescent.detail.contains("group is empty"), "{quiescent:?}");
+    assert!(
+        quiescent.detail.contains("group is quiescent"),
+        "{quiescent:?}"
+    );
     f.assert_file_result(&job.job_id, &work.join("restart"), b"restart-result\n");
     assert_eq!(
         fs::read(work.join("cancel")).unwrap(),

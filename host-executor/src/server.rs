@@ -231,6 +231,10 @@ pub fn command(args: Vec<String>) -> Result<(), Refusal> {
             if !operation.execution.network.destinations.is_empty()
                 || !operation.execution.network.listeners.is_empty()
                 || operation.execution.network.listener_handoff.is_some()
+                || operation
+                    .execution
+                    .broader
+                    .contains(&BroaderBound::Processes)
             {
                 for fact in settings.native.network_enforcement(operation) {
                     println!("operation {id}: {fact}");

@@ -71,7 +71,7 @@ For a task with more than one process, its plan must explicitly select broader
 Fork/exec children inherit Seatbelt and remain in the job's process group;
 `setsid`, `setpgid` and `posix_spawn` are denied. Background children keep the
 job running within its original deadline. After a controller crash, restart
-retains uncertain effects and concurrency until the group is empty; it never
+retains uncertain effects and concurrency until the group is quiescent; it never
 signals recovered PIDs or groups. Preserve that uncertainty during recovery.
 
 Inside the issuing agent, after the trusted owner returns that original file, run:

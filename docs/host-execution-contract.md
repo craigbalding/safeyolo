@@ -828,7 +828,7 @@ target ceiling binding. An empty set requires every declared bound. The current
 claiming a hard kernel memory cap. The `executor_restart` exception permits a
 process to remain running beyond its deadline if the controller crashes. Restart
 retains uncertain cleanup and concurrency until the recorded process birth is
-absent and its confined process group is empty; it does not signal recovered
+absent and its confined process group is quiescent; it does not signal recovered
 PIDs or groups. The macOS backend requires both
 exceptions. An enforcement label cannot select either exception. Adapters
 refuse required guarantees they cannot apply. Linux supports the explicitly
@@ -844,7 +844,9 @@ Seatbelt file, network and IPC restrictions. The adapter denies `setsid`,
 group. Programs must use fork followed by exec for child launch. This also
 excludes `posix_spawn` calls that would have retained the group.
 
-The executor retains the launcher's wait status until the group is empty.
+The executor retains the launcher's wait status until the group is quiescent.
+Quiescence requires no executable members. A stable group of observed zombies
+is quiescent even when host reaping has not removed its process records.
 An authorised background child keeps the job running after its launcher exits,
 within the same deadline and concurrency budget. Cancellation, observed memory
 or process excess, output truncation and timeout stop the group while the live
@@ -852,7 +854,7 @@ executor owns its unreaped leader. Retained files survive those stops.
 After executor failure, children can remain alive beyond the deadline under
 the explicit `executor_restart` exception. Restart observes group quiescence
 without signalling or replaying the job. It preserves the uncertain prior exit
-and effects even after the group becomes empty.
+and effects even after the group becomes quiescent.
 
 An ordinary adopted program cannot receive a service-manager channel: under
 the executor account that channel could launch code outside the sandbox and

@@ -28,7 +28,7 @@ mod processes;
 pub(crate) fn network_enforcement(operation: &Operation) -> Vec<String> {
     let mut facts = network::disclosure(operation);
     if operation.execution.resources.processes > 1 {
-        facts.push("EXPLICIT BROADER PROCESSES: process-group count and aggregate memory are polled, not hard-capped. Fork/exec children use selected read/write paths and inherit the same Seatbelt boundary. setsid, setpgid and posix_spawn are denied to preserve group ownership. Background children keep the job running; restart never signals recovered PIDs/groups and retains uncertainty until the group is empty.".into());
+        facts.push("EXPLICIT BROADER PROCESSES: process-group count and aggregate memory are polled, not hard-capped. Fork/exec children use selected read/write paths and inherit the same Seatbelt boundary. setsid, setpgid and posix_spawn are denied to preserve group ownership. Background children keep the job running; restart never signals recovered PIDs/groups and retains uncertainty until the group is quiescent.".into());
     } else {
         facts.push("Single-process authority: fork and child execution are denied.".into());
     }
@@ -234,7 +234,7 @@ impl MacRuntime {
                     // cleanup status instead of signalling by an unstable ID.
                     continue;
                 }
-                ledger.confirm_quiescent(&receipt.job_id, now(), "recorded process birth is absent or replaced and its confined process group is empty; prior exit/effects stay unknown")?;
+                ledger.confirm_quiescent(&receipt.job_id, now(), "recorded process birth is absent or replaced and its confined process group is quiescent; prior exit/effects stay unknown")?;
                 let snapshot = ledger
                     .artifact_root()
                     .join(format!("{}.executable", receipt.job_id));
@@ -495,7 +495,7 @@ impl MacRuntime {
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
-        // Keep the leader unreaped until the group is empty. Its PID anchors
+        // Keep the leader unreaped until the group is quiescent. Its PID anchors
         // the group against reuse while group-directed signals are possible.
         let status = child.wait(true)?;
         // No confined descendant can retain a writer after group quiescence.
@@ -513,7 +513,7 @@ impl MacRuntime {
             fs::remove_file(snapshot).map_err(unavailable)?;
             child.reaped = true;
         }
-        let mut result = NativeObservation { backend: "macos-seatbelt".into(), enforcement: vec!["Seatbelt adopted read paths and ancestor directory metadata, no file writes, no direct socket connections or Mach lookups, pinned private primary executable snapshot and exact environment".into(), "dedicated process group; leader wait status is retained until group quiescence; bounded retained output and wall deadline while the executor remains live".into()], dependencies: vec!["EXPLICIT BROADER MEMORY: aggregate resident memory is polled; transient allocations and kernel pressure are not hard-capped".into(), "EXPLICIT BROADER EXECUTOR RESTART: a controller crash may leave descendants running beyond the deadline; restart retains unknown cleanup and concurrency until the confined group is empty. Recovered PIDs/groups are never signalled. macOS Seatbelt, baseline sysctl reads and host-owned libraries are required".into()], exit_code: status.and_then(|s| std::process::ExitStatus::from_raw(s).code()), signal: status.and_then(|s| std::process::ExitStatus::from_raw(s).signal()), processes_stopped: stopped, output_truncated: truncated, termination_reason: reason.into() };
+        let mut result = NativeObservation { backend: "macos-seatbelt".into(), enforcement: vec!["Seatbelt adopted read paths and ancestor directory metadata, no file writes, no direct socket connections or Mach lookups, pinned private primary executable snapshot and exact environment".into(), "dedicated process group; leader wait status is retained until group quiescence; bounded retained output and wall deadline while the executor remains live".into()], dependencies: vec!["EXPLICIT BROADER MEMORY: aggregate resident memory is polled; transient allocations and kernel pressure are not hard-capped".into(), "EXPLICIT BROADER EXECUTOR RESTART: a controller crash may leave descendants running beyond the deadline; restart retains unknown cleanup and concurrency until the confined group is quiescent. Recovered PIDs/groups are never signalled. macOS Seatbelt, baseline sysctl reads and host-owned libraries are required".into()], exit_code: status.and_then(|s| std::process::ExitStatus::from_raw(s).code()), signal: status.and_then(|s| std::process::ExitStatus::from_raw(s).signal()), processes_stopped: stopped, output_truncated: truncated, termination_reason: reason.into() };
         if endpoint {
             result.enforcement[0] = "Seatbelt permits host system libraries, denies workload file scopes, Mach lookups and fork; only the pinned trusted endpoint helper receives sockets. Its native implementation filters the authorised typed selector before output.".into();
             result.enforcement.extend(crate::endpoints::disclosure());
@@ -542,7 +542,7 @@ impl MacRuntime {
             result.enforcement.push("The trusted executor passes the selected listening TCP socket as descriptor 3. Additional binding, implicit listen and outbound connections remain denied unless separately granted. Authorised descendants inherit the same network boundary and descriptor.".into());
         }
         if descendants {
-            result.enforcement.push("Fork/exec descendants inherit Seatbelt file/network/IPC bounds. Child executables use selected read/write paths; those mutable binaries are not content-pinned. setsid, setpgid and posix_spawn are denied to prevent process-group escape; fork followed by exec is supported. Background work keeps the job running until the group exits, cancellation or deadline.".into());
+            result.enforcement.push("Fork/exec descendants inherit Seatbelt file/network/IPC bounds. Child executables use selected read/write paths; those mutable binaries are not content-pinned. setsid, setpgid and posix_spawn are denied to prevent process-group escape; fork followed by exec is supported. Background work keeps the job running until the group becomes quiescent, cancellation or deadline.".into());
             result.dependencies.push("EXPLICIT BROADER PROCESSES: group process count is polled, not a hard kernel cap; short-lived excess processes can exist between observations.".into());
         } else {
             result
