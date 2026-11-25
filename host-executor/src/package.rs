@@ -122,6 +122,7 @@ pub struct Dependency {
 #[serde(rename_all = "snake_case")]
 pub enum BroaderBound {
     Memory,
+    Processes,
     ExecutorRestart,
     Filesystem,
     Registry,

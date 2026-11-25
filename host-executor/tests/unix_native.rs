@@ -331,8 +331,8 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
     let key = Ed25519KeyPair::from_seed_unchecked(&[43; 32]).unwrap();
     let (read_paths, broader) = if cfg!(target_os = "macos") {
         (
-            vec!["/usr/lib", "/System/Library"],
-            vec!["memory", "executor_restart", "network_ipc"],
+            vec!["/bin", "/usr/lib", "/System/Library"],
+            vec!["memory", "processes", "executor_restart", "network_ipc"],
         )
     } else {
         (
@@ -565,19 +565,57 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
         .unwrap()
         .target;
     run(&mut call, &adopted, "task:stage");
-    assert_eq!(fs::read(output).unwrap(), [0, 255, b'\n', b'\'']);
+    assert_eq!(fs::read(&output).unwrap(), [0, 255, b'\n', b'\'']);
+    #[cfg(target_os = "macos")]
+    {
+        // Revise code through the same adopted task family. An external tool
+        // and background shell use the prepared interpreter and standing scope.
+        stage.execution.argv[1] = Word::Literal {
+            value: format!(
+                "/bin/echo external-child > '{}'; ( /bin/sleep 0.1; printf 'revised-background\\n' >> '{}' ) &",
+                output.display(),
+                output.display()
+            ),
+        };
+        let package = adopted.revised_package("task:stage", &stage).unwrap();
+        let response = call(
+            &adopted,
+            Action::Adopt {
+                operation_id: "task:stage".into(),
+                operation: Box::new(stage.clone()),
+                base_package_sha256: revision(&adopted.package),
+                package_sha256: revision(&package),
+                observed_at: enrolled.request.not_before,
+            },
+        );
+        assert!(
+            matches!(response, Response::Adoption { .. }),
+            "{response:?}"
+        );
+        let revised = server::load(&enrolled.configuration, &enrolled.state)
+            .unwrap()
+            .target;
+        run(&mut call, &revised, "task:stage");
+        assert_eq!(
+            fs::read(&output).unwrap(),
+            b"external-child\nrevised-background\n"
+        );
+    }
     stage
         .execution
         .filesystem
         .write
         .push(control.to_string_lossy().into_owned());
-    let package = adopted.revised_package("task:stage", &stage).unwrap();
+    let current = server::load(&enrolled.configuration, &enrolled.state)
+        .unwrap()
+        .target;
+    let package = current.revised_package("task:stage", &stage).unwrap();
     let refused = call(
-        &adopted,
+        &current,
         Action::Adopt {
             operation_id: "task:stage".into(),
             operation: Box::new(stage),
-            base_package_sha256: revision(&adopted.package),
+            base_package_sha256: revision(&current.package),
             package_sha256: revision(&package),
             observed_at: enrolled.request.not_before,
         },
@@ -758,7 +796,7 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
                     timeout_seconds: if mode == "deadline" { 1 } else { 5 },
                     output_bytes: 4096,
                     memory_bytes: 64 * 1024 * 1024,
-                    processes: 12,
+                    processes: if cfg!(target_os = "macos") { 1 } else { 12 },
                 },
                 delegated_services: vec![],
             },
@@ -910,6 +948,156 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
     };
     fixture.assert_no_side_effects();
     fixture
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires native macOS Seatbelt and the existing native fixture"]
+fn installed_macos_descendants_remain_owned_after_launcher_exit() {
+    let mut f = fixture(24, 128 * 1024);
+    let work = f.root.join("work");
+    fs::create_dir(&work).unwrap();
+    let mut settings: Configuration =
+        serde_json::from_slice(&fs::read(f.root.join("target.json")).unwrap()).unwrap();
+    let mut operations = BTreeMap::new();
+    for (name, script) in [
+        (
+            "children",
+            format!(
+                "/bin/echo external-child > '{0}/result'; ( /bin/sleep 0.3; printf 'background-result\\n' >> '{0}/result' ) &",
+                work.display()
+            ),
+        ),
+        (
+            "cancel",
+            format!(
+                "( printf 'persistent-result\\n' > '{0}/cancel'; exec /bin/sleep 30 ) & printf 'launcher-exit\\n'",
+                work.display()
+            ),
+        ),
+        (
+            "timeout",
+            format!(
+                "( printf 'timeout-result\\n' > '{0}/timeout'; exec /bin/sleep 30 ) &",
+                work.display()
+            ),
+        ),
+        (
+            "restart",
+            format!(
+                "( printf 'restart-result\\n' > '{0}/restart'; exec /bin/sleep 1.5 ) &",
+                work.display()
+            ),
+        ),
+        (
+            "limit",
+            "for ((i=0;i<16;i++)); do (while :; do :; done) & done; wait".into(),
+        ),
+        (
+            "denied",
+            format!(
+                "if /usr/bin/true; then exit 1; fi; if /bin/bash -c 'read x < \"{}\"'; then exit 2; fi; printf 'child-boundaries-refused\\n'",
+                f.root.join("forbidden").display()
+            ),
+        ),
+    ] {
+        let mut operation = f.target.package.operations["observe"].clone();
+        let e = &mut operation.execution;
+        e.executable = "/bin/bash".into();
+        e.executable_sha256 = hash(Path::new("/bin/bash"));
+        e.argv = vec![
+            Word::Literal { value: "-c".into() },
+            Word::Literal { value: script },
+        ];
+        e.filesystem.read.push("/bin".into());
+        e.filesystem.write = vec![work.to_string_lossy().into_owned()];
+        e.broader.insert(BroaderBound::Processes);
+        e.resources.processes = if name == "limit" { 2 } else { 8 };
+        e.resources.timeout_seconds = if name == "timeout" { 2 } else { 5 };
+        operations.insert(name.into(), operation);
+    }
+    let mut escape = operations["children"].clone();
+    escape.execution.executable = f.root.join("probe").to_string_lossy().into_owned();
+    escape.execution.executable_sha256 = hash(&f.root.join("probe"));
+    escape.execution.argv = vec![Word::Literal {
+        value: "mac-group-escapes".into(),
+    }];
+    operations.insert("escape".into(), escape);
+    settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    f.target = settings.target.clone();
+    f.server.kill().unwrap();
+    f.server.wait().unwrap();
+    fs::write(
+        f.root.join("target.json"),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    f.server = start(&f.root);
+    f.check_file_results();
+
+    for mode in ["children", "escape", "denied"] {
+        let (job, _) = f.invoke(mode);
+        let result = f.terminal(&job.job_id);
+        eprintln!("{mode}: {result:?}");
+        assert_eq!(result.state, JobState::Completed, "{result:?}");
+        assert!(result.native.unwrap().processes_stopped);
+    }
+    assert_eq!(
+        fs::read(work.join("result")).unwrap(),
+        b"external-child\nbackground-result\n"
+    );
+    for (mode, state, reason) in [
+        ("cancel", JobState::Cancelled, "cancelled"),
+        ("timeout", JobState::Failed, "timeout"),
+        ("limit", JobState::Failed, "observed_process_limit"),
+    ] {
+        let (job, _) = f.invoke(mode);
+        if mode == "cancel" {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !work.join(mode).exists() {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            // Give the launcher time to exit. Its background child must keep
+            // the job running and retain the group's concurrency reservation.
+            std::thread::sleep(Duration::from_millis(100));
+            let running = f.job(&job.job_id);
+            assert_eq!(running.state, JobState::Running, "{running:?}");
+            f.call(Action::Cancel {
+                job_id: job.job_id.clone(),
+            });
+        }
+        let result = f.terminal(&job.job_id);
+        eprintln!("{mode}: {result:?}");
+        assert_eq!(result.state, state, "{result:?}");
+        let native = result.native.unwrap();
+        assert!(native.processes_stopped);
+        assert_eq!(native.termination_reason, reason);
+    }
+    let (job, _) = f.invoke("restart");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !work.join("restart").exists() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    f.restart();
+    let retained = f.job(&job.job_id);
+    assert_eq!(retained.state, JobState::Uncertain, "{retained:?}");
+    assert!(!retained.detail.contains("observed quiescence"));
+    // Do not signal a recovered PID/group. This owned child exits naturally.
+    std::thread::sleep(Duration::from_secs(2));
+    f.restart();
+    let quiescent = f.job(&job.job_id);
+    assert_eq!(quiescent.state, JobState::Uncertain);
+    assert!(quiescent.detail.contains("group is empty"), "{quiescent:?}");
+    f.assert_file_result(&job.job_id, &work.join("restart"), b"restart-result\n");
+    assert_eq!(
+        fs::read(work.join("cancel")).unwrap(),
+        b"persistent-result\n"
+    );
+    assert_eq!(fs::read(work.join("timeout")).unwrap(), b"timeout-result\n");
+    f.assert_no_side_effects();
 }
 
 #[test]

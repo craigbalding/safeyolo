@@ -11,6 +11,10 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <spawn.h>
+extern char **environ;
+#endif
 
 #ifdef __linux__
 static int tcp_probe(const char *mode, const char *directory, int local_port, int remote_port) {
@@ -240,6 +244,32 @@ static int handoff_probe(const char *mode, const char *directory, int forbidden_
 }
 
 int main(int argc, char **argv) {
+#ifdef __APPLE__
+    if (argc > 1 && !strcmp(argv[1], "mac-group-escapes")) {
+        pid_t child=fork();
+        if (child<0) return 130;
+        if (!child) {
+            if (setsid()!=-1 || errno!=EPERM) _exit(131);
+            if (setpgid(0,0)!=-1 || errno!=EPERM) _exit(132);
+            for (short flags=0; flags<=2; ++flags) {
+                posix_spawnattr_t attributes;
+                if (posix_spawnattr_init(&attributes)) _exit(133);
+                posix_spawnattr_setflags(&attributes, flags==1 ? POSIX_SPAWN_SETPGROUP : flags==2 ? POSIX_SPAWN_SETSID : 0);
+                posix_spawnattr_setpgroup(&attributes,0);
+                pid_t escaped;
+                char *args[]={"/bin/echo","escaped",NULL};
+                int result=posix_spawn(&escaped,args[0],NULL,&attributes,args,environ);
+                posix_spawnattr_destroy(&attributes);
+                if (result!=EPERM) _exit(134);
+            }
+            _exit(0);
+        }
+        int status;
+        if (waitpid(child,&status,0)!=child || !WIFEXITED(status) || WEXITSTATUS(status)) return 135;
+        puts("fork succeeded; setsid, setpgid and posix_spawn escape paths refused");
+        return 0;
+    }
+#endif
     if (argc != 5) return 2;
     setbuf(stdout, NULL);
     if (!strncmp(argv[1],"handoff",7)) return handoff_probe(argv[1],argv[2],atoi(argv[4]));

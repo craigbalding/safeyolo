@@ -304,6 +304,7 @@ pub struct Receipt {
 #[serde(deny_unknown_fields)]
 pub struct NativeProcess {
     pub pid: u32,
+    pub process_group: u32,
     pub birth_seconds: u64,
     pub birth_microseconds: u32,
 }
