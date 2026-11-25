@@ -142,10 +142,11 @@ def stage(args: argparse.Namespace) -> dict[str, Any]:
     adoption_args.operation = "task:stage"
     adoption_args.request_id += "-adopt"
     adoption = adopt_code(adoption_args, script)
+    original = adoption["original"]["request"]
     discovery = call(args.binding, args.request_id + "-discovery", {"kind": "discover"})["discovery"]
     operation = next((item for item in discovery["operations"] if item["operation_id"] == "task:stage"), None)
-    if operation is None or operation["operation_sha256"] != adoption["operation_sha256"]:
-        raise RequestFailed({"error": "The staging operation changed after this call adopted its selected bytes",
+    if discovery["target_id"] != original["target_id"] or operation is None or operation["operation_sha256"] != adoption["operation_sha256"]:
+        raise RequestFailed({"error": "The staging target or operation changed after this call adopted its selected bytes",
                              "request_id": args.request_id, "adoption": adoption, "host_binding": args.binding,
                              "execution_outcome": "unavailable",
                              "next_action": "Inspect this original adoption and the current catalogue before preparing another stage. No staging program was invoked."})
@@ -158,7 +159,6 @@ def stage(args: argparse.Namespace) -> dict[str, Any]:
     except RequestFailed as error:
         if error.value.get("execution_outcome") == "uncertain":
             error.value.setdefault("host_binding", args.binding)
-            original = adoption["original"]["request"]
             identity = [original["target_id"], original["issuer_id"], args.request_id + "-invoke"]
             error.value.setdefault("possible_job_id", "job-" + hashlib.sha256(json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest())
             error.value.setdefault("target_id", original["target_id"])

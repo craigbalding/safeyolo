@@ -181,7 +181,7 @@ def test_staging_preserves_binary_bytes_and_quotes_the_selected_path(tmp_path, m
 
     def call(_binding, _request_id, action, _expected=None):
         if action["kind"] == "discover":
-            return {"discovery": {"operations": [{"operation_id": "task:stage", "operation_sha256": "operation",
+            return {"discovery": {"target_id": "target", "operations": [{"operation_id": "task:stage", "operation_sha256": "operation",
                     "implementation_sha256": "implementation", "revisions": {}}]}}
         if action["kind"] == "propose":
             return {"prepared": {"invocation": action["invocation"], "revisions": {}}}
@@ -228,7 +228,7 @@ def test_interleaved_staging_refuses_another_calls_adopted_program(tmp_path, mon
             if action["kind"] == "discover":
                 if request_id == "req-stage-a-discovery":
                     assert second_adopted.wait(5)
-                self.respond({"discovery": {"package_sha256": "package", "revisions": {},
+                self.respond({"discovery": {"target_id": "target", "package_sha256": "package", "revisions": {},
                               "operations": [current["operation"]] if current else []}})
             elif action["kind"] == "adopt":
                 script = action["operation"]["execution"]["argv"][1]["value"]
@@ -276,6 +276,29 @@ def test_interleaved_staging_refuses_another_calls_adopted_program(tmp_path, mon
     assert invoked == ["req-stage-b-invoke"]
     assert not (tmp_path / "a").exists()
     assert (tmp_path / "b").read_bytes() == source.read_bytes()
+
+
+@pytest.mark.parametrize("target,operations", [
+    ("another-target", [{"operation_id": "task:stage", "operation_sha256": "original"}]),
+    ("target", []),
+])
+def test_staging_refuses_a_changed_target_or_removed_operation(tmp_path, monkeypatch, target, operations):
+    source = tmp_path / "source"
+    source.write_bytes(b"selected bytes")
+    adoption = {"operation_sha256": "original", "original": {"request": {"target_id": "target"}}}
+    monkeypatch.setattr(client, "adopt_code", lambda *_args: adoption)
+    calls = []
+
+    def call(_binding, _request_id, action, _expected=None):
+        calls.append(action["kind"])
+        assert action["kind"] == "discover"
+        return {"discovery": {"target_id": target, "operations": operations}}
+
+    monkeypatch.setattr(client, "call", call)
+    with pytest.raises(client.RequestFailed) as caught:
+        client.stage(argparse.Namespace(binding="case", request_id="req-stage", file=str(source), path="/selected/file"))
+    assert caught.value.value["adoption"] == adoption
+    assert calls == ["discover"]
 
 
 @pytest.mark.parametrize("gateway_reply", [False, True])

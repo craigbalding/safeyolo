@@ -50,10 +50,10 @@ the ceiling revision; it changes when the ceiling changes. Trust revisions
 change on issuer/key enrolment, rotation or removal. These revision obligations
 and delivery of fresh authority are required consumer dependencies. The witness
 uses fixed trusted inputs and does not implement their production adapters.
-`Target::revisions()` also hashes the actual trusted key set, grants and ceiling
+`Target::revisions()` also hashes the target identity, actual trusted key set, grants and ceiling
 with their owner revision references. Reusing a label cannot conceal changed
 inputs from a client that supplied expected revisions. Proposals and invocations
-use `request_revisions()` to bind the selected operation and grant. Discovery
+use `request_revisions()` to bind the selected target, operation and grant. Discovery
 returns those revisions per operation. Changes to another operation do not
 invalidate an unchanged prepared invocation.
 

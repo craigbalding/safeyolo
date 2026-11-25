@@ -44,6 +44,8 @@ matching prebuilt executor and carries the public request to its `enrol`
 command. The command creates private control/TLS state, derives the actual
 account and executable pins, qualifies native bounds and can serve the protocol.
 Linux also needs bubblewrap and a delegated cgroup v2 memory/pids scope.
+Run bootstrap inside that delegated hierarchy. It creates its own task cgroup
+and enables the two controllers there; it preserves the parent and peer groups.
 Unsupported guarantees remain refused. This bootstrap executes no task program.
 Its returned `enrolment.json` comes back through the same trusted transfer route;
 the human does not assemble keys, identity documents, scopes or bindings.
@@ -97,8 +99,9 @@ assessment and the existing material authority decision, not an in-scope hash ap
 
 Use `stage BINDING --file SOURCE --path ABSOLUTE_TARGET_PATH` to carry selected
 bytes through the same code-adoption/propose/invoke path. Inspect the returned
-job and file before treating the write as complete. If another call replaces
-the staging operation, the helper stops before proposing that replacement.
+job and file before treating the write as complete. If the target changes or
+another call replaces the staging operation, the helper stops before proposing
+that replacement.
 Inspect the returned original adoption before preparing another stage.
 The selected root and
 current native scope still apply; control files, TLS/signing keys and adoption

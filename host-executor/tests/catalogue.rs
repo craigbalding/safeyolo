@@ -199,6 +199,26 @@ impl Drop for Store {
 }
 
 #[test]
+fn a_prepared_invocation_cannot_follow_a_binding_to_another_target() {
+    let (selected, key, _) = fixture();
+    let prepared = Store::new(&selected).prepared(&selected, "selected-proposal", &key);
+    let mut other = selected.clone();
+    other.target_id = "another-target".into();
+    let action = Action::Invoke {
+        invocation: prepared.invocation,
+    };
+    // The issuer resolves the changed binding and signs for that target, but
+    // must preserve the caller's original preparation and revision pins.
+    let mut request = request(&other, action, "original-invocation");
+    request.expected = Some(prepared.revisions);
+    let body = serde_json::to_vec(&SignedRequest::sign(request, "key".into(), &key)).unwrap();
+    let admitted = other
+        .authenticate("POST", Verb::Invoke.path(), &body, now())
+        .and_then(|authorized| other.prepare(&authorized, Usage::default()));
+    assert_eq!(admitted.unwrap_err().code, RefusalCode::Stale);
+}
+
+#[test]
 fn cosmetic_narrower_and_trusted_code_changes_are_quiet_and_separate_identities() {
     let (target, key, mut adoption) = fixture();
     let mut candidate = target.package.clone();

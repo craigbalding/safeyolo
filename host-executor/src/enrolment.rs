@@ -431,18 +431,48 @@ pub fn prepare(
     }
     #[cfg(target_os = "linux")]
     let native = {
+        use std::os::unix::fs::MetadataExt;
+
         let bubblewrap = fs::canonicalize("/usr/bin/bwrap").map_err(failure)?;
         let current = fs::read_to_string("/proc/self/cgroup").map_err(failure)?;
         let current = current
             .lines()
             .find_map(|line| line.strip_prefix("0::"))
             .ok_or_else(|| failure("a delegated cgroup v2 scope is required"))?;
-        let cgroup = Path::new("/sys/fs/cgroup")
-            .join(current.trim_start_matches('/'))
+        let current = Path::new("/sys/fs/cgroup").join(current.trim_start_matches('/'));
+        let uid = unsafe { libc::geteuid() };
+        let mut delegated = None;
+        // The bootstrap can run in a populated control leaf. Reuse the nearest
+        // already delegated ancestor, without changing its controllers or peers.
+        for parent in current.ancestors() {
+            if !parent.starts_with("/sys/fs/cgroup") {
+                break;
+            }
+            if fs::metadata(parent).map_err(failure)?.uid() != uid {
+                continue;
+            }
+            let controls =
+                fs::read_to_string(parent.join("cgroup.subtree_control")).map_err(failure)?;
+            if ["memory", "pids"]
+                .iter()
+                .all(|name| controls.split_whitespace().any(|value| value == *name))
+            {
+                delegated = Some(parent);
+                break;
+            }
+        }
+        let cgroup = delegated
+            .ok_or_else(|| failure("run bootstrap within an operator-delegated cgroup hierarchy with enabled memory and pids controllers"))?
             .join(&request.target_id);
         if !cgroup.exists() {
             fs::create_dir(&cgroup).map_err(|error|failure(format!("create selected delegated task cgroup: {error}; run the bootstrap in an operator-delegated memory/pids scope")))?;
         }
+        require(
+            fs::metadata(&cgroup).map_err(failure)?.uid() == uid,
+            RefusalCode::Unavailable,
+            "the selected task cgroup belongs to another account",
+        )?;
+        fs::write(cgroup.join("cgroup.subtree_control"), "+memory +pids").map_err(failure)?;
         NativeRuntime::Linux(crate::linux::LinuxRuntime {
             bubblewrap_sha256: crate::workflow::hash(&bubblewrap)?,
             bubblewrap,

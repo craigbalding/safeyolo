@@ -395,6 +395,7 @@ impl Target {
                 op,
             ));
             result.ceiling = revision(&(
+                &self.target_id,
                 &self.allowed_verbs,
                 self.max_authority_age_seconds,
                 self.ceiling.get(op),
@@ -449,6 +450,7 @@ impl Target {
             trust: revision(&(issuer_id, &trust.revision, &trust.public_keys)),
             authority: revision(&(&trust.authority.revision, &trust.authority.grants)),
             ceiling: revision(&(
+                &self.target_id,
                 &self.ceiling_revision,
                 &self.allowed_verbs,
                 self.max_authority_age_seconds,

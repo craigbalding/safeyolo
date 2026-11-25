@@ -311,6 +311,82 @@ fn executor() -> PathBuf {
         .into()
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires installed bubblewrap and an owned memory/pids delegation"]
+fn installed_linux_enrolment_qualifies_a_fresh_cgroup_and_recovers_preparation() {
+    let mut random = [0u8; 16];
+    SystemRandom::new().fill(&mut random).unwrap();
+    let target = format!("enrol-{:032x}", u128::from_le_bytes(random));
+    let root = std::env::temp_dir().join(&target);
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let root = root.canonicalize().unwrap();
+    let control = root.join("control");
+    // This public fixture key has no issuing-instance binding. The witness
+    // covers target bootstrap, not issuer custody or human commissioning.
+    let request = serde_json::json!({
+        "operation_id":format!("req-{:032x}", u128::from_le_bytes(random)),
+        "target_id":target,"issuer_id":"bootstrap-fixture","key_id":"task",
+        "public_key":STANDARD.encode([1u8;32]),
+        "principal":{"run":{"agent":"fixture","agent_id":"ag-fixture","run_id":"1".repeat(32)},"task_id":"bootstrap"},
+        "task_revision":"a".repeat(64),"not_before":now()-1,"expires_at":now()+300,
+        "plan":{"intent":{"outcome":"Qualify native task preparation","service_function":null,
+            "audience":null,"data_and_functions":null,"authentication":null,"lifetime":"Five minutes"},
+            "hostname":"127.0.0.1","control_listen":"127.0.0.1:18444","root":root.join("workload"),
+            "read_paths":["/usr","/bin","/lib","/lib64","/etc/ld.so.cache"],
+            "network":{"destinations":[],"listeners":[],"ipc":[]},"broader":[],
+            "execution_limits":{"timeout_seconds":10,"output_bytes":1024,"memory_bytes":67108864,"processes":8},
+            "budgets":{"calls":10,"concurrent":1,"timeout_seconds":10,"output_bytes":1024},
+            "duration_seconds":301,"allow_agent_code":true,"allow_run_refresh":true,
+            "executable_bytes":16777216,"dependency_bytes":16777216}
+    });
+    let prepare = |request: &serde_json::Value| {
+        Command::new(executor())
+            .args(["enrol", "--request-base64"])
+            .arg(STANDARD.encode(serde_json::to_vec(request).unwrap()))
+            .arg("--directory")
+            .arg(&control)
+            .output()
+            .unwrap()
+    };
+    let first = prepare(&request);
+    assert!(
+        first.status.success(),
+        "retained {}: {}",
+        root.display(),
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let enrolled: enrolment::Enrolment = serde_json::from_slice(&first.stdout).unwrap();
+    enrolled.validate().unwrap();
+    let settings = server::load(&enrolled.configuration, &enrolled.state).unwrap();
+    let NativeRuntime::Linux(runtime) = settings.native;
+    let controllers = fs::read_to_string(runtime.cgroup.join("cgroup.subtree_control")).unwrap();
+    assert!(controllers.split_whitespace().any(|name| name == "memory"));
+    assert!(controllers.split_whitespace().any(|name| name == "pids"));
+    let again = prepare(&request);
+    assert!(
+        again.status.success(),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+    assert_eq!(first.stdout, again.stdout);
+    let mut changed = request;
+    changed["plan"]["duration_seconds"] = serde_json::json!(600);
+    let refused = prepare(&changed);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("another enrolment request"));
+    assert_eq!(
+        fs::read_to_string(runtime.cgroup.join("cgroup.procs")).unwrap(),
+        ""
+    );
+    fs::remove_dir(&runtime.cgroup).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    eprintln!(
+        "fresh native task cgroup qualified; exact preparation recovered; changed request refused; no workload launched"
+    );
+}
+
 fn start(root: &Path) -> Child {
     let child = Command::new(executor())
         .arg("serve")
