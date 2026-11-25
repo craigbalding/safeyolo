@@ -25,10 +25,11 @@ use std::{
 mod filesystem;
 mod network;
 mod processes;
+const DESCENDANT_LIMIT: &str = "EXPLICIT BROADER PROCESSES: fork/exec and posix_spawn children inherit Seatbelt and can change groups or sessions. Only the original group is counted, memory-polled and stopped on cancellation or deadline; escaped descendants may outlive either. Group quiescence and output EOF do not prove tree cleanup. Multi-process jobs finish Uncertain with processes_stopped=false and retain their concurrency reservation, including after restart. This backend cannot establish complete descendant ownership or stop an escaped tree.";
 pub(crate) fn network_enforcement(operation: &Operation) -> Vec<String> {
     let mut facts = network::disclosure(operation);
     if operation.execution.resources.processes > 1 {
-        facts.push("EXPLICIT BROADER PROCESSES: process-group count and aggregate memory are polled, not hard-capped. Fork/exec children use selected read/write paths and inherit the same Seatbelt boundary. setsid, setpgid and posix_spawn are denied to preserve group ownership. Background children keep the job running; restart never signals recovered PIDs/groups and retains uncertainty until the group is quiescent.".into());
+        facts.push(DESCENDANT_LIMIT.into());
     } else {
         facts.push("Single-process authority: fork and child execution are denied.".into());
     }
@@ -97,6 +98,7 @@ fn process_birth(info: &libc::proc_bsdinfo) -> NativeProcess {
         process_group: info.pbi_pgid,
         birth_seconds: info.pbi_start_tvsec,
         birth_microseconds: info.pbi_start_tvusec as u32,
+        descendants_may_escape: false,
     }
 }
 fn birth(pid: u32) -> Result<Option<NativeProcess>, Refusal> {
@@ -168,7 +170,7 @@ impl MacRuntime {
                     || e.resources.processes == 1
                     || e.broader.contains(&BroaderBound::Processes),
                 RefusalCode::Unavailable,
-                "macOS descendants require explicit broader processes authority: process count is polled, not hard-capped",
+                "macOS descendants require explicit broader processes authority: only the original group is polled and stopped; escaped descendants can outlive cancellation or deadline, and tree cleanup remains unconfirmed",
             )?;
             require(
                 e.network.ipc.is_empty() && (service || e.delegated_services.is_empty()),
@@ -225,6 +227,13 @@ impl MacRuntime {
     pub fn reconcile(&self, ledger: &mut Ledger) -> Result<(), Refusal> {
         for receipt in ledger.recover(now())? {
             if let Some(process) = &receipt.process {
+                if process.descendants_may_escape {
+                    // Neither the current catalogue nor group membership can
+                    // reconstruct the admitted tree after an intermediate
+                    // parent exits. Keep the original reservation even when
+                    // the leader, its group and its output writers are gone.
+                    continue;
+                }
                 if birth(process.pid)?.is_some_and(|p| same(&p, process))
                     || !group_quiescent(process.process_group)?
                 {
@@ -234,7 +243,7 @@ impl MacRuntime {
                     // cleanup status instead of signalling by an unstable ID.
                     continue;
                 }
-                ledger.confirm_quiescent(&receipt.job_id, now(), "recorded process birth is absent or replaced and its confined process group is quiescent; prior exit/effects stay unknown")?;
+                ledger.confirm_quiescent(&receipt.job_id, now(), "recorded single-process birth is absent or replaced and its original process group is quiescent; prior exit/effects stay unknown")?;
                 let snapshot = ledger
                     .artifact_root()
                     .join(format!("{}.executable", receipt.job_id));
@@ -322,13 +331,9 @@ impl MacRuntime {
             quoted(snapshot.to_str().unwrap())
         );
         let descendants = !endpoint && !service && op.execution.resources.processes > 1;
-        profile.push_str(
-            "(deny syscall-unix (syscall-number SYS_setsid SYS_setpgid SYS_posix_spawn))",
-        );
         if descendants {
-            // Group ownership makes cancellation cover background descendants.
-            // posix_spawn can change groups/sessions without the corresponding
-            // syscalls, so it must also be denied. Fork followed by exec works.
+            // Seatbelt is inherited across both fork/exec and posix_spawn.
+            // Process-group membership does not establish descendant lifetime.
             profile.push_str("(allow process-fork)");
         }
         if endpoint {
@@ -437,8 +442,9 @@ impl MacRuntime {
         )?;
         drop(listener);
         let mut child = child;
-        let process = birth(child.pid)?
+        let mut process = birth(child.pid)?
             .ok_or_else(|| unavailable("suspended process identity unavailable"))?;
+        process.descendants_may_escape = descendants;
         ledger
             .lock()
             .map_err(unavailable)?
@@ -503,22 +509,21 @@ impl MacRuntime {
         // Keep the leader unreaped until the group is quiescent. Its PID anchors
         // the group against reuse while group-directed signals are possible.
         let status = child.wait(true)?;
-        // No confined descendant can retain a writer after group quiescence.
-        // Drain to EOF, including bytes buffered just before exit; do not
-        // silently omit successful output at the final observation boundary.
-        let (overflow, eof) = child.output(ledger, &receipt.job_id, true)?;
-        truncated |= overflow;
+        // Escaped descendants can retain writers after group quiescence. Bound
+        // this drain too; an escaped producer must not stall result recording.
+        let (overflow, eof) = child.output(ledger, &receipt.job_id, !descendants)?;
+        truncated |= overflow || !eof;
         require(
-            eof,
+            eof || descendants,
             RefusalCode::Unavailable,
             "quiescent process group has an open output writer; cleanup is unconfirmed",
         )?;
-        let stopped = status.is_some();
+        let stopped = status.is_some() && !descendants;
         if stopped {
             fs::remove_file(snapshot).map_err(unavailable)?;
             child.reaped = true;
         }
-        let mut result = NativeObservation { backend: "macos-seatbelt".into(), enforcement: vec!["Seatbelt adopted read paths and ancestor directory metadata, no file writes, no direct socket connections or Mach lookups, pinned private primary executable snapshot and exact environment".into(), "dedicated process group; leader wait status is retained until group quiescence; bounded retained output and wall deadline while the executor remains live".into()], dependencies: vec!["EXPLICIT BROADER MEMORY: aggregate resident memory is polled; transient allocations and kernel pressure are not hard-capped".into(), "EXPLICIT BROADER EXECUTOR RESTART: a controller crash may leave descendants running beyond the deadline; restart retains unknown cleanup and concurrency until the confined group is quiescent. Recovered PIDs/groups are never signalled. macOS Seatbelt, baseline sysctl reads and host-owned libraries are required".into()], exit_code: status.and_then(|s| std::process::ExitStatus::from_raw(s).code()), signal: status.and_then(|s| std::process::ExitStatus::from_raw(s).signal()), processes_stopped: stopped, output_truncated: truncated, termination_reason: reason.into() };
+        let mut result = NativeObservation { backend: "macos-seatbelt".into(), enforcement: vec!["Seatbelt adopted read paths and ancestor directory metadata, no file writes, no direct socket connections or Mach lookups, pinned private primary executable snapshot and exact environment".into(), "dedicated initial session and process group; leader wait status is retained until original-group quiescence; bounded retained output and original-group wall deadline while the executor remains live".into()], dependencies: vec!["EXPLICIT BROADER MEMORY: original-group resident memory is polled; transient allocations, escaped descendants and kernel pressure are not hard-capped".into(), "EXPLICIT BROADER EXECUTOR RESTART: a controller crash may leave processes running beyond the deadline. Recovered PIDs/groups are never signalled. Single-process reconciliation can release a reservation after observing quiescence; multi-process cleanup and its reservation remain uncertain. macOS Seatbelt, baseline sysctl reads and host-owned libraries are required".into()], exit_code: status.and_then(|s| std::process::ExitStatus::from_raw(s).code()), signal: status.and_then(|s| std::process::ExitStatus::from_raw(s).signal()), processes_stopped: stopped, output_truncated: truncated, termination_reason: reason.into() };
         if endpoint {
             result.enforcement[0] = "Seatbelt permits host system libraries, denies workload file scopes, Mach lookups and fork; only the pinned trusted endpoint helper receives sockets. Its native implementation filters the authorised typed selector before output.".into();
             result.enforcement.extend(crate::endpoints::disclosure());
@@ -547,8 +552,14 @@ impl MacRuntime {
             result.enforcement.push("The trusted executor passes the selected listening TCP socket as descriptor 3. Additional binding, implicit listen and outbound connections remain denied unless separately granted. Authorised descendants inherit the same network boundary and descriptor.".into());
         }
         if descendants {
-            result.enforcement.push("Fork/exec descendants inherit Seatbelt file/network/IPC bounds. Child executables use selected read/write paths; those mutable binaries are not content-pinned. setsid, setpgid and posix_spawn are denied to prevent process-group escape; fork followed by exec is supported. Background work keeps the job running until the group becomes quiescent, cancellation or deadline.".into());
-            result.dependencies.push("EXPLICIT BROADER PROCESSES: group process count is polled, not a hard kernel cap; short-lived excess processes can exist between observations.".into());
+            result.enforcement.push("Fork/exec and posix_spawn descendants inherit Seatbelt file/network/IPC bounds. Child executables use selected read/write paths; those mutable binaries are not content-pinned. Background work in the original group keeps the job running until that group becomes quiescent, cancellation or deadline. Output capture ends with that group; an open writer is reported as truncated.".into());
+            if !result
+                .dependencies
+                .iter()
+                .any(|fact| fact == DESCENDANT_LIMIT)
+            {
+                result.dependencies.push(DESCENDANT_LIMIT.into());
+            }
         } else {
             result
                 .enforcement
@@ -767,9 +778,8 @@ fn spawn_suspended(
                     &mut attrs,
                     (libc::POSIX_SPAWN_START_SUSPENDED
                         | libc::POSIX_SPAWN_CLOEXEC_DEFAULT
-                        | libc::POSIX_SPAWN_SETPGROUP) as i16,
+                        | libc::POSIX_SPAWN_SETSID) as i16,
                 ))?;
-                check(libc::posix_spawnattr_setpgroup(&mut attrs, 0))?;
                 let mut pid = 0;
                 check(libc::posix_spawn(
                     &mut pid,

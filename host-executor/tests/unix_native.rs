@@ -955,7 +955,7 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
 #[cfg(target_os = "macos")]
 #[test]
 #[ignore = "requires native macOS Seatbelt and the existing native fixture"]
-fn installed_macos_descendants_remain_owned_after_launcher_exit() {
+fn installed_macos_children_run_and_escaped_cleanup_remains_uncertain() {
     let mut f = fixture(24, 128 * 1024);
     let work = f.root.join("work");
     fs::create_dir(&work).unwrap();
@@ -1021,9 +1021,14 @@ fn installed_macos_descendants_remain_owned_after_launcher_exit() {
     let mut escape = operations["children"].clone();
     escape.execution.executable = f.root.join("probe").to_string_lossy().into_owned();
     escape.execution.executable_sha256 = hash(&f.root.join("probe"));
-    escape.execution.argv = vec![Word::Literal {
-        value: "mac-group-escapes".into(),
-    }];
+    escape.execution.argv = vec![
+        Word::Literal {
+            value: "mac-group-escapes".into(),
+        },
+        Word::Literal {
+            value: work.to_string_lossy().into_owned(),
+        },
+    ];
     operations.insert("escape".into(), escape);
     settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
     f.target = settings.target.clone();
@@ -1070,11 +1075,31 @@ fn installed_macos_descendants_remain_owned_after_launcher_exit() {
         let (job, _) = f.invoke(mode);
         let result = f.terminal(&job.job_id);
         eprintln!("{mode}: {result:?}");
-        assert_eq!(result.state, JobState::Completed, "{result:?}");
-        assert!(result.native.unwrap().processes_stopped);
+        assert_eq!(result.state, JobState::Uncertain, "{result:?}");
+        assert!(result.process.as_ref().unwrap().descendants_may_escape);
+        let native = result.native.as_ref().unwrap();
+        assert_eq!(native.exit_code, Some(0), "{result:?}");
+        assert!(!native.processes_stopped);
+        assert!(
+            native
+                .dependencies
+                .iter()
+                .any(|fact| fact.contains("escaped descendants may outlive"))
+        );
         if mode == "escape" {
+            let escaped: Vec<u32> = fs::read_to_string(work.join("escaped-pid"))
+                .unwrap()
+                .split_whitespace()
+                .map(|value| value.parse().unwrap())
+                .collect();
+            assert_ne!(escaped[1], result.process.as_ref().unwrap().process_group);
+            assert_eq!(unsafe { libc::kill(escaped[0] as i32, 0) }, 0);
+            assert!(
+                native.output_truncated,
+                "escaped writer must be reported as partial"
+            );
             let Response::Output { data_base64, .. } = f.call(Action::Output {
-                job_id: job.job_id,
+                job_id: job.job_id.clone(),
                 offset: 0,
                 max_bytes: 4096,
             }) else {
@@ -1082,7 +1107,29 @@ fn installed_macos_descendants_remain_owned_after_launcher_exit() {
             };
             assert!(
                 String::from_utf8_lossy(&STANDARD.decode(data_base64).unwrap())
-                    .contains("escape paths refused")
+                    .contains("ordinary-posix-spawn-child")
+            );
+            f.restart();
+            assert_eq!(f.job(&job.job_id).state, JobState::Uncertain);
+            let deadline = Instant::now() + Duration::from_secs(4);
+            while !work.join("escaped-done").exists() {
+                assert!(
+                    Instant::now() < deadline,
+                    "owned escaped probe did not finish"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            f.restart();
+            let retained = f.job(&job.job_id);
+            assert!(
+                !retained.detail.contains("observed quiescence"),
+                "{retained:?}"
+            );
+            let invocation = f.invocation("escape");
+            let refused = f.call(Action::Invoke { invocation });
+            assert!(
+                matches!(refused, Response::Refused { refusal } if refusal.code == RefusalCode::Budget),
+                "uncertain tree must retain its concurrency reservation"
             );
         }
     }
@@ -1091,9 +1138,9 @@ fn installed_macos_descendants_remain_owned_after_launcher_exit() {
         b"external-child\nbackground-result\n"
     );
     for (mode, state, reason) in [
-        ("cancel", JobState::Cancelled, "cancelled"),
-        ("timeout", JobState::Failed, "timeout"),
-        ("limit", JobState::Failed, "observed_process_limit"),
+        ("cancel", JobState::Uncertain, "cancelled"),
+        ("timeout", JobState::Uncertain, "timeout"),
+        ("limit", JobState::Uncertain, "observed_process_limit"),
     ] {
         let (job, _) = f.invoke(mode);
         if mode == "cancel" {
@@ -1116,7 +1163,7 @@ fn installed_macos_descendants_remain_owned_after_launcher_exit() {
         eprintln!("{mode}: {result:?}");
         assert_eq!(result.state, state, "{result:?}");
         let native = result.native.unwrap();
-        assert!(native.processes_stopped);
+        assert!(!native.processes_stopped);
         assert_eq!(native.termination_reason, reason);
     }
     let (job, _) = f.invoke("restart");
@@ -1136,7 +1183,7 @@ fn installed_macos_descendants_remain_owned_after_launcher_exit() {
     let quiescent = f.job(&job.job_id);
     assert_eq!(quiescent.state, JobState::Uncertain);
     assert!(
-        quiescent.detail.contains("group is quiescent"),
+        !quiescent.detail.contains("observed quiescence"),
         "{quiescent:?}"
     );
     f.assert_file_result(&job.job_id, &work.join("restart"), b"restart-result\n");

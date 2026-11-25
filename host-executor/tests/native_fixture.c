@@ -245,29 +245,59 @@ static int handoff_probe(const char *mode, const char *directory, int forbidden_
 
 int main(int argc, char **argv) {
 #ifdef __APPLE__
-    if (argc > 1 && !strcmp(argv[1], "mac-group-escapes")) {
-        pid_t child=fork();
-        if (child<0) return 130;
-        if (!child) {
-            if (setsid()!=-1 || errno!=EPERM) _exit(131);
-            if (setpgid(0,0)!=-1 || errno!=EPERM) _exit(132);
-            for (short flags=0; flags<=2; ++flags) {
-                posix_spawnattr_t attributes;
-                if (posix_spawnattr_init(&attributes)) _exit(133);
-                posix_spawnattr_setflags(&attributes, flags==1 ? POSIX_SPAWN_SETPGROUP : flags==2 ? POSIX_SPAWN_SETSID : 0);
-                posix_spawnattr_setpgroup(&attributes,0);
-                pid_t escaped;
-                char *args[]={"/bin/echo","escaped",NULL};
-                int result=posix_spawn(&escaped,args[0],NULL,&attributes,args,environ);
-                posix_spawnattr_destroy(&attributes);
-                if (result!=EPERM) _exit(134);
-            }
-            _exit(0);
-        }
-        int status;
-        if (waitpid(child,&status,0)!=child || !WIFEXITED(status) || WEXITSTATUS(status)) return 135;
-        puts("fork succeeded; setsid, setpgid and posix_spawn escape paths refused");
+    if (argc > 2 && !strcmp(argv[1], "mac-escaped-child")) {
+        char path[PATH_MAX];
+        if (snprintf(path,sizeof(path),"%s/escaped-pid",argv[2]) >= (int)sizeof(path)) return 130;
+        FILE *marker=fopen(path,"w");
+        if (!marker || fprintf(marker,"%d %d\n",getpid(),getpgrp())<0 || fclose(marker)) return 131;
+        /* Keep an inherited output writer and a different group alive after
+         * the launcher exits, then stop naturally without host signalling. */
+        sleep(2);
+        if (snprintf(path,sizeof(path),"%s/escaped-done",argv[2]) >= (int)sizeof(path)) return 132;
+        marker=fopen(path,"w");
+        if (!marker || fputs("escaped child finished\n",marker)<0 || fclose(marker)) return 133;
+        puts("escaped output after launcher exit");
         return 0;
+    }
+    if (argc > 1 && !strcmp(argv[1], "mac-group-escapes")) {
+        for (int session=0; session<=1; ++session) {
+            pid_t child=fork();
+            if (child<0) return 134;
+            if (!child) _exit((session ? setsid() : setpgid(0,0))<0 ? 135 : 0);
+            int status;
+            if (waitpid(child,&status,0)!=child || !WIFEXITED(status) || WEXITSTATUS(status)) return 136;
+        }
+        for (short flags=0; flags<=2; ++flags) {
+            posix_spawnattr_t attributes;
+            if (posix_spawnattr_init(&attributes)) return 137;
+            if (posix_spawnattr_setflags(&attributes, flags==1 ? POSIX_SPAWN_SETPGROUP : flags==2 ? POSIX_SPAWN_SETSID : 0)
+                || posix_spawnattr_setpgroup(&attributes,0)) return 138;
+            pid_t child;
+            char *args[]={"/bin/echo","ordinary-posix-spawn-child",NULL};
+            int result=posix_spawn(&child,args[0],NULL,&attributes,args,environ);
+            posix_spawnattr_destroy(&attributes);
+            if (result) return 139;
+            int status;
+            if (waitpid(child,&status,0)!=child || !WIFEXITED(status) || WEXITSTATUS(status)) return 140;
+        }
+        posix_spawnattr_t attributes;
+        if (argc!=3 || posix_spawnattr_init(&attributes)) return 141;
+        if (posix_spawnattr_setflags(&attributes,POSIX_SPAWN_SETSID)) return 142;
+        pid_t escaped;
+        char *args[]={argv[0],"mac-escaped-child",argv[2],NULL};
+        int result=posix_spawn(&escaped,args[0],NULL,&attributes,args,environ);
+        posix_spawnattr_destroy(&attributes);
+        if (result) return 143;
+        char path[PATH_MAX];
+        if (snprintf(path,sizeof(path),"%s/escaped-pid",argv[2]) >= (int)sizeof(path)) return 144;
+        for (int i=0; i<1000; ++i) {
+            if (!access(path,F_OK)) {
+                puts("ordinary spawn and group/session changes succeeded; escaped child remains alive");
+                return 0;
+            }
+            usleep(1000);
+        }
+        return 145;
     }
 #endif
     if (argc != 5) return 2;

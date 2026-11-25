@@ -307,6 +307,9 @@ pub struct NativeProcess {
     pub process_group: u32,
     pub birth_seconds: u64,
     pub birth_microseconds: u32,
+    /// The admitted macOS operation permits children whose lifetime cannot be
+    /// proved from the original process group. Persist before resuming it.
+    pub descendants_may_escape: bool,
 }
 
 /// Observed native facts. An absent exit code or cleanup observation stays

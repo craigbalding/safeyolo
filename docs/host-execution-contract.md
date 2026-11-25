@@ -458,7 +458,7 @@ reports `commit=unknown`; this is not a release identity.
 | Target | Required runtime components and current native profile |
 |---|---|
 | Linux x86-64 / ARM64 | Compatible C runtime; a pinned bubblewrap with the options used by the backend, including `--bind-fd`; kernel user namespaces, seccomp and delegated cgroup v2 memory/pids controls. The executor must run where it can migrate its own jobs into that delegation. Ordinary programs receive selected read/write paths and may execute descendants inside those namespaces and the same cgroup. The explicit broader TCP profile below shares the target network namespace and separates connect from listen/accept permission. Direct IPC remains unavailable. The fixed service profile separately admits its trusted OS client. |
-| macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive selected read/write paths and the explicitly broader IP socket profile below. Multi-process operations require explicit `processes` authority for a polled process count. Fork/exec children inherit the same boundary and stay in the job's process group. Single-process grants deny fork. Unix-socket bind/connect and Mach access remain denied. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed endpoint helper receives sockets for scoped observations. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
+| macOS ARM64 | Native Seatbelt through the OS `sandbox-exec`, system libraries and process-observation APIs. Ordinary programs receive selected read/write paths and the explicitly broader IP socket profile below. Multi-process operations require explicit `processes` authority: fork/exec and `posix_spawn` work, but count and cancellation cover only the original group. Escaped descendants can outlive cancellation or deadline. Tree cleanup and concurrency release remain unconfirmed, including after restart. Children inherit Seatbelt. Single-process grants deny fork. Unix-socket bind/connect and Mach access remain denied. The profile requires explicit `memory` and `executor_restart` exceptions. The fixed endpoint helper receives sockets for scoped observations. The fixed service profile adds disclosed Mach lookup authority and, for restart, signal permission for its trusted OS client. |
 | Windows x86-64 | Native Windows security, Credential Manager, local named pipes, Job Objects, the Service Control Manager and the Universal C Runtime supplied by current Windows. The GNU package statically links its compiler runtime. Its remaining imports are Windows system DLLs. No MinGW installation is required on the target. |
 
 SQLite is bundled into the executable. Operation definitions separately declare
@@ -827,34 +827,48 @@ target ceiling binding. An empty set requires every declared bound. The current
 `memory` exception permits the macOS backend to poll resident memory without
 claiming a hard kernel memory cap. The `executor_restart` exception permits a
 process to remain running beyond its deadline if the controller crashes. Restart
-retains uncertain cleanup and concurrency until the recorded process birth is
-absent and its confined process group is quiescent; it does not signal recovered
-PIDs or groups. The macOS backend requires both
+retains uncertain cleanup and concurrency. For a single-process operation,
+recovery can release that reservation after the recorded birth is absent and
+its original group is quiescent. Recovery does not signal recorded PIDs or
+groups. The macOS backend requires both
 exceptions. An enforcement label cannot select either exception. Adapters
 refuse required guarantees they cannot apply. Linux supports the explicitly
 broader TCP profile above; macOS supports the broader transport/port profile above.
 For ordinary macOS operations with `resources.processes > 1`, the additional
-`processes` exception permits a polled group process count. Short-lived excess
-processes can exist between observations; this is not a hard kernel cap.
+`processes` exception permits child launch with incomplete process-tree control.
+Only the original group's process count and resident memory are polled.
+Short-lived excess processes can exist between observations, and escaped
+descendants are outside those observations. Neither is a hard kernel cap.
 The primary executable remains a pinned private snapshot. Children can execute
 programs in the selected read/write paths, including revised task code; their
 mutable binaries are not content-pinned. All descendants inherit the same
-Seatbelt file, network and IPC restrictions. The adapter denies `setsid`,
-`setpgid` and `posix_spawn`, which could otherwise escape the job's process
-group. Programs must use fork followed by exec for child launch. This also
-excludes `posix_spawn` calls that would have retained the group.
+Seatbelt file, network and IPC restrictions. Ordinary same-group `posix_spawn`,
+fork/exec, `setsid`, `setpgid` and spawn attributes that change groups or sessions
+are permitted under that exception. The executor creates the launcher in a new
+session and retains its wait status while signalling its original group.
+Group or session membership alone does not establish the complete descendant
+tree. In particular, `posix_spawn` can create another group/session before its
+child executes. Polling parent IDs can miss an intermediate process that exits
+between observations. Apple's [event header](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/event.h)
+also marks automatic `NOTE_TRACK` fork tracking unsupported. This adapter has
+no complete descendant-ownership observation or escaped-tree stop operation.
 
 The executor retains the launcher's wait status until the group is quiescent.
 Quiescence requires no executable members. A stable group of observed zombies
 is quiescent even when host reaping has not removed its process records.
-An authorised background child keeps the job running after its launcher exits,
-within the same deadline and concurrency budget. Cancellation, observed memory
-or process excess, output truncation and timeout stop the group while the live
-executor owns its unreaped leader. Retained files survive those stops.
-After executor failure, children can remain alive beyond the deadline under
-the explicit `executor_restart` exception. Restart observes group quiescence
-without signalling or replaying the job. It preserves the uncertain prior exit
-and effects even after the group becomes quiescent.
+An authorised background child in the original group keeps the job running
+after its launcher exits. Cancellation, observed memory or process excess,
+output truncation and timeout stop that group while the live executor owns its
+unreaped leader. Escaped children can remain alive after any of those events,
+even without a controller crash. Retained files survive those stops.
+Output capture ends after original-group quiescence; an open writer is reported
+as truncated. Multi-process jobs retain their observed launcher exit and stop
+reason, but finish `Uncertain` with `processes_stopped=false`. Neither group
+quiescence nor output end-of-file establishes tree cleanup. Their concurrency
+reservation and executable snapshot remain retained after completion and
+restart, even when the observed group disappears. Automatic reservation
+release and complete descendant cancellation remain unsupported. Choose a
+backend with enforced tree ownership when those guarantees are required.
 
 An ordinary adopted program cannot receive a service-manager channel: under
 the executor account that channel could launch code outside the sandbox and

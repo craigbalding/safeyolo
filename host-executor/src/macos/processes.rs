@@ -1,4 +1,4 @@
-//! Observe only a job's confined process group, including orphaned descendants.
+//! Observe only a job's original process group, not its full descendant tree.
 use super::*;
 
 // <sys/proc_info.h>; the pinned libc exposes proc_listpids but omits this selector.
