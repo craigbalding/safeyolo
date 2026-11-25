@@ -97,7 +97,8 @@ pub(crate) async fn report(agent: &host_agents::Agent) -> Result<Value, Error> {
         "vault":vault,"selected_account":account,
         "local_login":crate::subscription_login::inspect(&home(agent).join(if client=="codex" {".codex/auth.json"} else {".claude/.credentials.json"}), if client=="codex" {crate::subscription_login::Client::Codex} else {crate::subscription_login::Client::Claude}),
         "provider_validity":"unknown","client_use":"not_observed",
-        "next_action":format!("Use agent launch --name {}. Inspect approvals for this agent separately. After gateway changes or proxy restart, stop/relaunch the client to fetch a new scoped token; inspect prior task effects before retrying.",agent.name)
+        "next_action":format!("{} agent launch --name {}",crate::host_lifecycle::current_instance_command()?,crate::host_lifecycle::shell_quote(&agent.name)),
+        "recovery":"Inspect approvals for this agent separately. After gateway changes or proxy restart, stop/relaunch the client to fetch a new scoped token; inspect prior task effects before retrying."
     }))
 }
 
@@ -522,6 +523,12 @@ fn show(report: &Value) -> Result<(), Error> {
     );
     field("Outcome", &report["ok"]);
     field("Error", &report["error"]);
-    field("Next action", &report["next_action"]);
+    if let Some(command) = report["next_action"].as_str() {
+        println!(
+            "Next action: {}",
+            crate::network_guard::sanitize_with_limit(command, usize::MAX)
+        );
+    }
+    field("Recovery", &report["recovery"]);
     Ok(())
 }

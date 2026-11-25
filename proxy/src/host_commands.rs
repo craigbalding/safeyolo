@@ -80,7 +80,10 @@ fn print(value: &Value) -> Result<(), Error> {
         field("Instance", &value["root"]);
         field("Proxy", &value["proxy_state"]);
         if agents.is_empty() {
-            println!("No agents configured. Start with: safeyolo agent launch [WORKSPACE]");
+            println!(
+                "No agents configured. Start with: {} agent launch [WORKSPACE]",
+                host_lifecycle::current_instance_command()?
+            );
         } else {
             rows(
                 agents,
@@ -110,8 +113,9 @@ fn print(value: &Value) -> Result<(), Error> {
                     text(&json!(error))
                 );
             }
+            let command = host_lifecycle::current_instance_command()?;
             println!(
-                "Inspect an agent: safeyolo agent status NAME\nDiagnose uncertain state: safeyolo agent diagnostics NAME"
+                "Inspect an agent: {command} agent status NAME\nDiagnose uncertain state: {command} agent diagnostics NAME"
             );
         }
         if value["proxy_state"] == "unavailable" {
@@ -137,8 +141,9 @@ fn print(value: &Value) -> Result<(), Error> {
                 );
             }
             println!(
-                "Home and workspace retained. Resume: safeyolo agent launch --name {}",
-                text(&value["name"])
+                "Home and workspace retained. Resume: {} agent launch --name {}",
+                host_lifecycle::current_instance_command()?,
+                host_lifecycle::shell_quote(value["name"].as_str().unwrap_or_default())
             );
         } else {
             field("Next action", &value["next_action"]);
@@ -545,12 +550,9 @@ pub(crate) async fn shell_banner(path: &Path) -> Result<(), Error> {
 }
 
 pub(crate) fn diagnostic_commands(agent: Option<&str>) -> Value {
-    let Ok(executable) = std::env::current_exe() else {
+    let Ok(prefix) = host_lifecycle::current_instance_command() else {
         return json!({"available":false,"reason":"The current installed executable could not be identified; diagnostic commands cannot be qualified.","next_action":"Use the known installed CLI and configuration for this instance to inspect agent diagnostics, doctor or diagnose."});
     };
-    let executable = host_lifecycle::shell_quote(&executable.to_string_lossy());
-    let config = host_lifecycle::shell_quote(&host_platform::config_path().to_string_lossy());
-    let prefix = format!("{executable} --config {config}");
     let mut guidance = json!({
         "doctor":{"command":format!("{prefix} doctor"),"establishes":"Host prerequisites and a controlled request through the active policy pipeline; does not establish coding-agent readiness.","probes":true,"next_action":"Repair the reported failed prerequisite or control, then repeat this diagnostic."},
         "diagnose":{"command":format!("{prefix} diagnose"),"establishes":"Saved policy validity, current Admin policy availability, saved/active agreement and audit location; no test traffic.","probes":false,"next_action":"Follow the reported saved/active mismatch or Admin connection guidance; local logs remain available."}

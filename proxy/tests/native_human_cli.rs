@@ -96,6 +96,64 @@ fn empty_inventory_and_redirected_status_are_human_and_json_is_explicit() {
 }
 
 #[test]
+fn stopped_agent_recovery_keeps_the_executable_and_selected_config() {
+    let scratch = tempfile::tempdir().unwrap();
+    let a = scratch.path().join("old instance");
+    let b = scratch.path().join("selected 'instance");
+    let workspace = scratch.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    for root in [&a, &b] {
+        stdout(cli(root, &["init"]));
+        stdout(cli(
+            root,
+            &[
+                "agent",
+                "create",
+                "work",
+                "--workspace",
+                workspace.to_str().unwrap(),
+            ],
+        ));
+    }
+    let selected_config = b.join("selected config.toml");
+    fs::rename(b.join("config.toml"), &selected_config).unwrap();
+    let old_policy = fs::read(a.join("policy.toml")).unwrap();
+    let output = stdout(
+        Command::new(executable())
+            .arg("--config")
+            .arg(&selected_config)
+            .args(["agent", "status", "work"])
+            .env("SAFEYOLO_NATIVE_CONFIG_PATH", a.join("config.toml"))
+            .env("SAFEYOLO_CONFIG_DIR", &a)
+            .env("SAFEYOLO_HOME", &a)
+            .output()
+            .unwrap(),
+    );
+    let resume = output.split("Resume: ").nth(1).unwrap().trim();
+    assert!(resume.ends_with(" agent launch --name work"), "{output}");
+    // Follow the emitted executable/config prefix through the actual shell,
+    // inspecting the same agent before any launch or authentication effect.
+    let inspect = resume.replace(" agent launch --name work", " agent status work --json");
+    let selected: Value = serde_json::from_str(&stdout(
+        Command::new("sh")
+            .args(["-c", &inspect])
+            .env("SAFEYOLO_NATIVE_CONFIG_PATH", a.join("config.toml"))
+            .env("SAFEYOLO_CONFIG_DIR", &a)
+            .env("SAFEYOLO_HOME", &a)
+            .output()
+            .unwrap(),
+    ))
+    .unwrap();
+    let old: Value =
+        serde_json::from_str(&stdout(cli(&a, &["agent", "status", "work", "--json"]))).unwrap();
+    assert_ne!(selected["agent_id"], old["agent_id"]);
+    assert_eq!(selected["runtime_state"], "stopped");
+    assert_eq!(fs::read(a.join("policy.toml")).unwrap(), old_policy);
+    assert!(!a.join("data/proxy-process.json").exists());
+    assert!(!b.join("data/proxy-process.json").exists());
+}
+
+#[test]
 fn doctor_explains_failed_prerequisites_and_counts_skips_without_starting() {
     let scratch = tempfile::tempdir().unwrap();
     let root = scratch.path().join("uninstalled instance");
@@ -251,6 +309,25 @@ fn explicit_authentication_json_reads_state_without_entering_setup() {
         assert_eq!(value["agent"], "work");
         assert_eq!(value["provider_validity"], "unknown");
         assert_eq!(value["local_login"]["state"], "missing");
+        assert!(value["next_action"].as_str().unwrap().contains("--config"));
+        assert!(
+            value["next_action"]
+                .as_str()
+                .unwrap()
+                .contains(root.to_str().unwrap())
+        );
+        assert!(
+            value["next_action"]
+                .as_str()
+                .unwrap()
+                .ends_with("agent launch --name work")
+        );
+        assert!(
+            value["recovery"]
+                .as_str()
+                .unwrap()
+                .contains("inspect prior task effects")
+        );
     }
     assert!(!root.join("data/credentials.enc").exists());
     assert!(!root.join("agents/work/home/.codex/auth.json").exists());

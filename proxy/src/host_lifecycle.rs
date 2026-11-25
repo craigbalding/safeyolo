@@ -1957,6 +1957,14 @@ fn configured_guest_command(agent: &Agent, interactive: bool) -> Result<String, 
     }
 }
 
+pub(crate) fn current_instance_command() -> Result<String, Error> {
+    Ok(format!(
+        "{} --config {}",
+        shell_quote(&std::env::current_exe()?.to_string_lossy()),
+        shell_quote(&crate::host_platform::config_path().to_string_lossy())
+    ))
+}
+
 pub(crate) fn shell_quote(value: &str) -> String {
     if !value.is_empty()
         && value

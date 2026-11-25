@@ -336,12 +336,7 @@ async fn codex_login(
             "Enter resumes retained agent state; it does not force a new sign-in. Existing approvals still apply."
         );
     } else {
-        let executable = std::env::current_exe()?;
-        let prefix = format!(
-            "{} --config {}",
-            host_lifecycle::shell_quote(&executable.to_string_lossy()),
-            host_lifecycle::shell_quote(&host_platform::config_path().to_string_lossy())
-        );
+        let prefix = host_lifecycle::current_instance_command()?;
         let name = host_lifecycle::shell_quote(&agent.name);
         println!(
             "Enter starts Codex without preloaded authentication. Use its supported sign-in in the guest. If routing discovery times out after a delayed decision, retain the saved login. A grant for an old run does not authorize a new run.\nRecovery for this selected instance and agent:\n  {prefix} agent stop {name}\n  {prefix} agent auth {name}\n  {prefix} agent launch --name {name}\nIn authentication setup, select client-held state and authorize the found subscription through the existing import. Inspect prior task effects before retrying a task."
