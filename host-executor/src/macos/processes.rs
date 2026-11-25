@@ -72,10 +72,7 @@ pub(super) fn group_quiescent(group: u32) -> Result<bool, Refusal> {
         match (zombie, process_info(pid)?) {
             (None, None) => (),
             (Some(before), Some(info))
-                if info.pbi_status == 5 && same(&before, &process_birth(&info)) =>
-            {
-                ()
-            }
+                if info.pbi_status == 5 && same(&before, &process_birth(&info)) => {}
             _ => return Ok(false),
         }
     }
@@ -85,10 +82,10 @@ pub(super) fn group_quiescent(group: u32) -> Result<bool, Refusal> {
 pub(super) fn group_members(group: u32) -> Result<Vec<NativeProcess>, Refusal> {
     let mut members = Vec::new();
     for pid in group_pids(group)? {
-        if let Some(process) = birth(pid)? {
-            if process.process_group == group {
-                members.push(process);
-            }
+        if let Some(process) = birth(pid)?
+            && process.process_group == group
+        {
+            members.push(process);
         }
     }
     Ok(members)
