@@ -32,6 +32,18 @@ fn value(output: Output) -> Value {
     );
     serde_json::from_slice(&output.stdout).unwrap()
 }
+fn unknown_agent_runtimes(output: Output) -> Value {
+    assert_eq!(output.status.code(), Some(1));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let runtimes = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["name"] == "Agent runtimes")
+        .unwrap();
+    assert_eq!(runtimes["status"], "unknown");
+    runtimes["details"].clone()
+}
 fn admin_post(root: &Path, id: &str, operation: &str) -> (u16, Value) {
     let ready: Value =
         serde_json::from_slice(&fs::read(root.join("data/ready.json")).unwrap()).unwrap();
@@ -870,6 +882,7 @@ esac
         let selected_cli = |args: &[&str]| {
             let mut command = Command::new(env!("CARGO_BIN_EXE_safeyolo"));
             command
+                .arg("--json")
                 .args(["--instance-dir", root.to_str().unwrap()])
                 .args(args)
                 .env("PATH", &path_env)
@@ -1554,6 +1567,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     let _stop = StopOnDrop(&config_path);
     value(
         Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .arg("--json")
             .args(["--instance-dir", root.to_str().unwrap(), "start"])
             .env(
                 "PATH",
@@ -2157,6 +2171,7 @@ fn workflow_stop_inherits_the_selected_lock_without_releasing_the_parent_barrier
     let run = |name| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_safeyolo"));
         command
+            .arg("--json")
             .arg("--instance-dir")
             .arg(&root)
             .args(["agent", "stop", name])
@@ -2449,7 +2464,7 @@ fn runsc_state_without_a_runtime_record_holds_native_and_admin_start() {
         assert_eq!(observed["port_forward"], false);
     }
     assert_eq!(
-        value(cli(&root, &["doctor"]))["agents"][0]["runtime_state"],
+        unknown_agent_runtimes(cli(&root, &["doctor"]))["agents"][0]["runtime_state"],
         "unknown"
     );
     // Ordinary start goes through the authenticated Admin caller. The explicit
@@ -2485,6 +2500,7 @@ fn runsc_state_without_a_runtime_record_holds_native_and_admin_start() {
     fs::create_dir(&blocked_parent).unwrap();
     fs::set_permissions(&blocked_parent, fs::Permissions::from_mode(0o000)).unwrap();
     let denied = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--json")
         .arg("--instance-dir")
         .arg(&root)
         .args(["agent", "status", "marker"])
@@ -2721,7 +2737,10 @@ fn an_exited_backend_with_or_without_runsc_state_can_be_cleaned() {
         assert!(other_survived, "unrelated process birth was not preserved");
         for (status, doctor, stop, cleanup, preserved) in results {
             assert_eq!(value(status)["runtime_state"], "unknown");
-            assert_eq!(value(doctor)["agents"][0]["runtime_state"], "unknown");
+            assert_eq!(
+                unknown_agent_runtimes(doctor)["agents"][0]["runtime_state"],
+                "unknown"
+            );
             assert!(!stop.status.success());
             assert!(!cleanup.status.success());
             assert!(preserved);
@@ -2985,6 +3004,7 @@ fn protected_directories_persist_resolved_paths_and_allow_removal() {
     fs::set_permissions(&config, fs::Permissions::from_mode(0o640)).unwrap();
     let designated = value(
         Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .arg("--json")
             .args([
                 "--instance-dir",
                 root.to_str().unwrap(),
@@ -3069,6 +3089,7 @@ fn protected_directory_settings_use_the_selected_config_and_reject_invalid_types
     let selected = root.join("selected.toml");
     fs::write(&selected, "protected_host_directories = ['reference']\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--json")
         .args(["--config", selected.to_str().unwrap(), "mount", "list"])
         .current_dir(temp.path())
         .output()
@@ -3079,6 +3100,7 @@ fn protected_directory_settings_use_the_selected_config_and_reject_invalid_types
     );
     value(
         Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .arg("--json")
             .args([
                 "--config",
                 selected.to_str().unwrap(),
@@ -3721,6 +3743,7 @@ fn host_setup_keeps_the_explicit_config_and_failed_setup_does_not_publish() {
     fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
     let call = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .arg("--json")
             .arg("--config")
             .arg(&selected)
             .args(args)
@@ -3793,16 +3816,8 @@ fn same_named_agents_have_separate_native_state_and_read_only_diagnostics() {
         let observed = value(cli(&a, &["agent", "status", "marker"]));
         assert_eq!(observed["runtime_state"], "unknown", "{record}: {observed}");
         let output = cli(&a, &["doctor"]);
-        assert_eq!(output.status.code(), Some(1));
-        let doctor: Value = serde_json::from_slice(&output.stdout).unwrap();
-        let runtimes = doctor["checks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|check| check["name"] == "Agent runtimes")
-            .unwrap();
-        assert_eq!(runtimes["status"], "unknown");
-        assert_eq!(runtimes["details"]["agents"][0]["runtime_state"], "unknown");
+        let runtimes = unknown_agent_runtimes(output);
+        assert_eq!(runtimes["agents"][0]["runtime_state"], "unknown");
         assert_eq!(
             fs::read(dir.join("runtime.json")).unwrap(),
             record.as_bytes()
@@ -3865,6 +3880,7 @@ fn fresh_proxy_uses_the_explicit_toml_and_keeps_the_other_instance_unchanged() {
     let b_default = fs::read(b.join("config.toml")).unwrap();
     let selected_cli = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .arg("--json")
             .env("SAFEYOLO_NATIVE_CONFIG_PATH", &selected)
             .env("SAFEYOLO_CONFIG_DIR", &b)
             .args(args)
@@ -3974,6 +3990,7 @@ fn native_tmux_launch_uses_current_environment_on_the_owned_socket() {
     fs::write(root.join("bin/safeyolo"), b"#!/bin/sh\nprintf '%s\\n' \"$SAFEYOLO_CONFIG_DIR\" \"${SAFEYOLO_RUNSC_ROOT-unset}\" > \"$SAFEYOLO_CONFIG_DIR/environment-marker\"\nexec sleep 30\n").unwrap();
     fs::set_permissions(root.join("bin/safeyolo"), fs::Permissions::from_mode(0o755)).unwrap();
     let started = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--json")
         .arg("--instance-dir")
         .arg(&root)
         .args(["agent", "launcher-session", "marker", "launch-env"])
