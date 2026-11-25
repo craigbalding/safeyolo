@@ -247,6 +247,24 @@ int main(int argc, char **argv) {
 #ifdef __APPLE__
     if (argc > 2 && !strcmp(argv[1], "mac-escaped-child")) {
         char path[PATH_MAX];
+        if (argc!=4 || snprintf(path,sizeof(path),"%s/../forbidden",argv[2]) >= (int)sizeof(path)) return 146;
+        if (fopen(path,"r") || errno!=EPERM) return 147;
+        if (snprintf(path,sizeof(path),"%s/../forbidden.written",argv[2]) >= (int)sizeof(path)) return 148;
+        if (fopen(path,"w") || errno!=EPERM) return 149;
+        int fd=socket(AF_INET,SOCK_STREAM,0);
+        if (fd>=0) {
+            struct sockaddr_in denied={.sin_family=AF_INET,.sin_addr.s_addr=htonl(INADDR_LOOPBACK),
+                .sin_port=htons((unsigned short)atoi(argv[3]))};
+            if (connect(fd,(struct sockaddr *)&denied,sizeof(denied))!=-1 || errno!=EPERM) return 150;
+            close(fd);
+        } else if (errno!=EPERM) return 151;
+        fd=socket(AF_UNIX,SOCK_STREAM,0);
+        if (fd>=0) {
+            struct sockaddr_un denied={.sun_family=AF_UNIX};
+            if (snprintf(denied.sun_path,sizeof(denied.sun_path),"%s/../forbidden.socket",argv[2]) >= (int)sizeof(denied.sun_path)) return 152;
+            if (connect(fd,(struct sockaddr *)&denied,sizeof(denied))!=-1 || errno!=EPERM) return 153;
+            close(fd);
+        } else if (errno!=EPERM) return 154;
         if (snprintf(path,sizeof(path),"%s/escaped-pid",argv[2]) >= (int)sizeof(path)) return 130;
         FILE *marker=fopen(path,"w");
         if (!marker || fprintf(marker,"%d %d\n",getpid(),getpgrp())<0 || fclose(marker)) return 131;
@@ -281,10 +299,10 @@ int main(int argc, char **argv) {
             if (waitpid(child,&status,0)!=child || !WIFEXITED(status) || WEXITSTATUS(status)) return 140;
         }
         posix_spawnattr_t attributes;
-        if (argc!=3 || posix_spawnattr_init(&attributes)) return 141;
+        if (argc!=4 || posix_spawnattr_init(&attributes)) return 141;
         if (posix_spawnattr_setflags(&attributes,POSIX_SPAWN_SETSID)) return 142;
         pid_t escaped;
-        char *args[]={argv[0],"mac-escaped-child",argv[2],NULL};
+        char *args[]={argv[0],"mac-escaped-child",argv[2],argv[3],NULL};
         int result=posix_spawn(&escaped,args[0],NULL,&attributes,args,environ);
         posix_spawnattr_destroy(&attributes);
         if (result) return 143;

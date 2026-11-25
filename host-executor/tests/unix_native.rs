@@ -1073,6 +1073,9 @@ fn installed_macos_children_run_and_escaped_cleanup_remains_uncertain() {
         Word::Literal {
             value: work.to_string_lossy().into_owned(),
         },
+        Word::Literal {
+            value: f.network_listener.local_addr().unwrap().port().to_string(),
+        },
     ];
     operations.insert("escape".into(), escape);
     settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
@@ -1138,7 +1141,27 @@ fn installed_macos_children_run_and_escaped_cleanup_remains_uncertain() {
                 .map(|value| value.parse().unwrap())
                 .collect();
             assert_ne!(escaped[1], result.process.as_ref().unwrap().process_group);
-            assert_eq!(unsafe { libc::kill(escaped[0] as i32, 0) }, 0);
+            let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+            let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+            assert_eq!(
+                unsafe {
+                    libc::proc_pidinfo(
+                        escaped[0] as i32,
+                        libc::PROC_PIDTBSDINFO,
+                        0,
+                        info.as_mut_ptr().cast(),
+                        size,
+                    )
+                },
+                size
+            );
+            let info = unsafe { info.assume_init() };
+            assert_ne!(info.pbi_status, 5, "escaped process must actually be live");
+            assert_eq!(info.pbi_pgid, escaped[1]);
+            eprintln!(
+                "live escaped child pid={} group={} birth={}.{}; selected writes work, outside file/TCP/IPC controls refused",
+                info.pbi_pid, info.pbi_pgid, info.pbi_start_tvsec, info.pbi_start_tvusec
+            );
             assert!(
                 native.output_truncated,
                 "escaped writer must be reported as partial"
