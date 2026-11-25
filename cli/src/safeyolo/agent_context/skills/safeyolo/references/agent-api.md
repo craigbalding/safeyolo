@@ -2,6 +2,8 @@
 
 ## Contents
 
+- [Discover the right capability](#discover-the-right-capability)
+- [Policy capabilities](#policy-capabilities)
 - [Model](#model)
 - [Calling the API](#calling-the-api)
 - [Diagnostics and policy](#diagnostics-and-policy)
@@ -14,6 +16,25 @@
 - [Flow inspection](#flow-inspection)
 - [Service gateway](#service-gateway)
 - [Approved collaboration rooms](#approved-collaboration-rooms)
+
+## Discover the right capability
+
+Choose discovery for the operator's goal. These interfaces answer different
+questions; none is a universal list of everything an agent can help arrange.
+
+| Question | Interface and limits |
+|---|---|
+| What policy and operation forms does this installation support? | `discover_policy_capabilities` or `GET /policy/capabilities`. Generic definitions are available before policy disclosure; they grant no execution authority. |
+| What relevant access is visible now? | Capability discovery with `observe:true` adds caller-authorized support, service and operator-action observations. Failed or undisclosed reads remain unknown. |
+| Can I inspect, repair or start/stop another agent? | `support_grants` or `GET /support/grants`, then the [peer-support workflow](#delegated-local-peer-support). An empty grant list is an access gap, not proof that support is absent. |
+| Which external services can I use or request? | [Service gateway](#service-gateway). `/gateway/services` is an external-service catalogue, not a host-management catalogue. Its scoped tokens are credentials; do not print the response wholesale. Capability observations omit secret fields. |
+| Which typed operator actions are offered here? | `GET /operator-actions`. Discover its bounded action vocabulary, such as desktop preview. It does not enumerate peer support or host agent creation. |
+| Which agents have been seen? | `GET /agents` reports discovered agents and last-seen information, not the host's complete saved configured-agent list. |
+
+For a new worker or missing support rights, follow
+[agent creation and support](agent-launchers.md). Prepare the concrete operator
+step and resume after it; do not stop at the absence of a local host CLI.
+Use only operations and scopes actually offered by the installed version.
 
 ## Feed-driven responses
 
@@ -1050,7 +1071,10 @@ through the configured proxy. Local calls require no shared room, target
 model/terminal participation or working Coord/NATS notifications. They still
 need the owning API, policy and required runtime controls. Remote support is
 outside this local interface. Ask the operator to preview or change the
-support grant when an action lacks authority. Do not substitute host access.
+support grant when an action lacks authority. Use the
+[guided support handoff](agent-launchers.md#create-a-worker-and-delegate-support)
+with the selected identities and required rights, then recheck the grant and
+continue. Do not substitute host access.
 
 The operator can select operational event kinds in the same support-grant
 preview. Selected references arrive as `operational_event` objects through

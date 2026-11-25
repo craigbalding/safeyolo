@@ -1,12 +1,61 @@
 ---
 name: safeyolo
-description: Diagnose and resolve SafeYolo boundary failures and operate advanced SafeYolo facilities when the task explicitly concerns them. Use for proxy/TLS failures; non-HTTP client transports, UDP media, relays or gateways; policy or credential blocks; HTTP 403/428/429/503/508 or X-Blocked-By responses; surprising guest package, sudo, setpriv, apt, apk, pip, or mise behavior; debugger/profiler denials; operator recovery shells; desktop preview; Agent API policy, flow, budget, circuit-breaker, or service-gateway operations; approvals; collaboration rooms; and sandbox introspection. Do not invoke merely because the product or repository is SafeYolo, or for ordinary commands in a healthy sandbox, routine factory handoffs, or normal GitHub App Connector work already specified by injected instructions.
+description: Help the operator use SafeYolo and complete product tasks, including creating or launching agents, granting peer support, configuring workers, connecting services, discovering capabilities, changing policy through its approval owner, and coordinating work. Also use for proxy/TLS failures; non-HTTP transports, UDP media, relays or gateways; policy or credential blocks; HTTP 403/428/429/503/508 or X-Blocked-By responses; surprising guest package, sudo, setpriv, apt, apk, pip, or mise behavior; debugger/profiler denials; recovery shells; desktop preview; Agent API flows, budgets, circuit breakers and approvals; and sandbox introspection. Do not invoke merely because the repository is SafeYolo, or for ordinary healthy sandbox commands, routine factory handoffs, or GitHub App Connector work already specified by injected instructions.
 ---
 
-# Operate inside SafeYolo
+# Help the operator use SafeYolo
 
-Treat SafeYolo as the outer security boundary. Diagnose through its agent-side
-interfaces; do not try to bypass or weaken it.
+Help the operator reach the requested result through SafeYolo's existing
+interfaces and authority. Treat SafeYolo as the outer security boundary;
+do not try to bypass or weaken it.
+
+## Carry the task through
+
+1. Recover the operator's goal and known host, instance, agent, workspace and
+   harness choices. Preserve the selected executable and instance in every
+   command or handoff. Ask only for missing choices that change the result.
+2. Select the relevant workflow below. For a capability question, use
+   [capability discovery](references/agent-api.md#discover-the-right-capability)
+   and the relevant owner's current grants. Separate what the installed product
+   supports, what this agent may do, and what is ready now. A missing host CLI,
+   an empty grant list or a failed read does not establish an unsupported feature.
+3. Do the permitted work within the user's request and existing authority.
+   Read-only discovery within current access needs no new confirmation. Use an
+   existing grant when it covers the task; do not turn routine authorized work
+   into another approval request.
+4. When an operator step is necessary, finish the preparation you can do and
+   give the smallest concrete next step for the selected target. Include a
+   verified command or the existing approval reference, what it enables, and
+   what you will do afterward. Explain new access, scope and lifetime before
+   the decision. Do not end at "I cannot do that from here" or make the human
+   discover a supported workflow. Do not invent a command or request Admin
+   credentials to fill an access gap.
+5. After the operator acts, re-read effective access and target state, then
+   continue and verify the requested result. Report partial completion when
+   needed. Reconcile an uncertain operation by its original identity before
+   retrying; a submitted request or saved setting alone does not prove success.
+
+Keep the human response short: the outcome or blocker, the next useful action
+and any material decision. Read only the relevant reference section. Do not
+send raw capability catalogues, JSON, tokens or exhaustive internal options
+when the operator needs a recommendation or a command.
+
+## Choose the product workflow
+
+| Operator goal | Start here |
+|---|---|
+| Create, launch, resume or service another agent | [Agent creation, launch and support](references/agent-launchers.md). Creation and delegated servicing use different existing owners; prepare the host step and continue through a support grant. |
+| Set up a task worker, change its task or resume unfinished setup | [Worker commissioning](../safeyolo-commission/SKILL.md). Reuse intent, saved choices and completed work; prepare only the next useful increment. |
+| Discover or change network, credential, support or other policy rights | [Policy authoring](../policy-authoring/SKILL.md). Discover installed forms, prepare and assess a proposal, then use the existing human approval. |
+| Connect or use an external service | [Service gateway](references/agent-api.md#service-gateway). Discover the service, request offered access or a binding, and use policy authoring when a definition or configuration is missing. |
+| Perform a task on a host | [Host operations](references/host-operations.md). Discover adopted targets and task bindings; prepare missing capability through the existing setup and policy owners. |
+| Add or qualify a coding harness | [Harness authoring](../harness-authoring/SKILL.md). Check installed capabilities and qualification before host activation. Ordinary launch uses the agent guide above. |
+| Build an automated check or action | [Job authoring](../job-authoring/SKILL.md). Choose the execution engine and prepare the check; activation belongs to the selected instance's existing operator authority. |
+| Delegate work, coordinate agents or follow up a result | [Coord work coordination](references/coord.md). Use the selected native or message contract and current membership; a shared room does not grant peer administration. |
+
+For a failed request or boundary problem, use the evidence workflow below and
+its matched troubleshooting reference. Product setup does not require running
+every diagnostic first.
 
 ## Keep task files durable
 
@@ -80,20 +129,6 @@ for filters, pagination, retention and attribution limits.
 
 ## Select the needed reference
 
-- Read [Host operations](references/host-operations.md) for adopted standalone
-  target discovery, typed proposals, bounded invocation/evidence and private
-  missing-capability assessment through the current task-bound gateway.
-- Read [job authoring](../job-authoring/SKILL.md) to choose an execution engine,
-  develop a check or action, and prepare the installed GitHub/factory example.
-  Adoption belongs to the selected instance's existing operator authority.
-- Read [Agent launch and terminal troubleshooting](references/agent-launchers.md)
-  for sandbox-ready/agent-stopped confusion, persistent host launchers,
-  run versus attach versus shell, or managed-agent interactive debugging.
-- Read [Coord work coordination](references/coord.md) before joining or using
-  coord rooms, delegating or accepting peer work, waiting for attention, or
-  choosing between targeted attention and retained room history. It contains
-  native and message entry points. Follow the selected contract; the generic
-  message convention does not add a second native lifecycle or undeclared replies.
 - Read [GitHub composite checks](references/github-checks.md) before using the
   optional intake or exact-candidate helper through a configured GitHub App
   connector. It defines explicit inputs, normalized evidence, and failure
@@ -102,9 +137,9 @@ for filters, pagination, retention and attribution limits.
   consuming completion-note nominations for public engineering content or
   rendering a Dispatch or living topic page.
 - Read [Agent API and workflows](references/agent-api.md) before querying
-  policy, flows, service capabilities, contract bindings, or approved
-  collaboration rooms. It contains the current routes and request
-  shapes.
+  policy, flows, approvals, service capabilities, contract bindings or approved
+  collaboration rooms. Use its contents to select the current routes and
+  request shapes; do not load the whole reference for one operation.
 - Read [Troubleshooting and escalation](references/troubleshooting.md) for
   blocked responses, proxy/TLS failures, logs, request correlation, and exact
   host commands to ask the operator to run.
@@ -180,7 +215,8 @@ edge in the current one.
    yields the value I'm reading. For executable acceptance evidence, obey its
    `tool` trust and invocation annotation.
 3. Follow `implies` / `rules_out` edges by the evidence value.
-4. Land on a `conclusion` or `operator_ask` and stop.
+4. At a `conclusion` or `operator_ask`, stop graph traversal. Carry any required
+   operator step into the task handoff above; continue after it is resolved.
 5. **Graph gap:** if the evidence is not covered by an outgoing edge,
    report `Graph gap`, the node id, the observed evidence and the missing
    relationship to the operator. Keep the result unproved. Continue only
@@ -197,9 +233,12 @@ Repository maintenance is optional and is not a prerequisite for diagnosis.
 - Read `/app/agent_token` at call time and keep it out of output and files.
 - Treat `sgw_` gateway tokens as credentials even though they are not upstream
   secrets.
-- Never request the admin token or port 9090, change policy controls, edit host
-  policy, or suggest direct network bypasses.
+- From a guest, never request the Admin token or access port 9090, directly
+  edit host policy, or bypass network controls. Use the supported proposal and
+  approval paths for policy changes. An agent running on the owning host uses
+  only its actual host authority; this skill grants none.
 - Guest `sudo` is an intended capability, not host elevation. Keep its effects
   inside the declared writable mounts and do not confuse it with permission to
   alter host policy or SafeYolo's security boundary.
-- Ask for narrow operator action and explain why it is needed.
+- When operator action is needed, explain why and carry the goal through the
+  concrete handoff and subsequent verification.
