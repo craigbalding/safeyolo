@@ -386,7 +386,7 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
         "{}",
         String::from_utf8_lossy(&checked.stderr)
     );
-    let settings: server::Configuration =
+    let mut settings: server::Configuration =
         serde_json::from_slice(&fs::read(&enrolled.configuration).unwrap()).unwrap();
     let helper = &enrolled.target.package.operations["endpoint-inspect"];
     assert!(
@@ -429,6 +429,14 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("another enrolment request"));
 
+    // Reuse the fixture's private signed transport for this native shell
+    // regression. Remote TLS and human commissioning need their own proof.
+    settings.https = None;
+    fs::write(
+        &enrolled.configuration,
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
     struct StopServer(Child);
     impl Drop for StopServer {
         fn drop(&mut self) {
@@ -595,7 +603,7 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
 }
 
 fn start(root: &Path) -> Child {
-    let child = Command::new(executor())
+    let mut child = Command::new(executor())
         .arg("serve")
         .arg("--config")
         .arg(root.join("target.json"))
@@ -614,11 +622,14 @@ fn start(root: &Path) -> Child {
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     while UnixStream::connect(root.join("state/control.sock")).is_err() {
-        assert!(
-            Instant::now() < deadline,
-            "server not ready: {}",
-            fs::read_to_string(root.join("server.log")).unwrap()
-        );
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "server not ready: {}",
+                fs::read_to_string(root.join("server.log")).unwrap()
+            );
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
     child
