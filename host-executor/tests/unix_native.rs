@@ -156,10 +156,9 @@ impl Fixture {
     fn terminal_with_grant(&mut self, grant_id: &str, id: &str, timeout: Duration) -> Receipt {
         let deadline = Instant::now() + timeout;
         loop {
-            let Response::Job { receipt } =
-                self.call_with_grant(grant_id, Action::Job { job_id: id.into() })
-            else {
-                panic!("job refused for {grant_id}")
+            let response = self.call_with_grant(grant_id, Action::Job { job_id: id.into() });
+            let Response::Job { receipt } = response else {
+                panic!("job refused for {grant_id}: {response:?}")
             };
             if receipt.state.terminal() {
                 return *receipt;
@@ -3756,18 +3755,18 @@ fn application_result(
 ) -> (Receipt, String) {
     let mut invocation = f.invocation(operation);
     invocation.resource_id = format!("application:{resource}");
-    let Response::Proposal { prepared, .. } =
-        f.call_with_grant(grant_id, Action::Propose { invocation })
-    else {
-        panic!("application proposal refused: {operation}")
+    let response = f.call_with_grant(grant_id, Action::Propose { invocation });
+    let Response::Proposal { prepared, .. } = response else {
+        panic!("application proposal refused for {grant_id}/{operation}: {response:?}")
     };
-    let Response::Job { receipt } = f.call_with_grant(
+    let response = f.call_with_grant(
         grant_id,
         Action::Invoke {
             invocation: prepared.invocation,
         },
-    ) else {
-        panic!("application invocation refused: {operation}")
+    );
+    let Response::Job { receipt } = response else {
+        panic!("application invocation refused for {grant_id}/{operation}: {response:?}")
     };
     let result = f.terminal_with_grant(grant_id, &receipt.job_id, Duration::from_secs(15));
     eprintln!(
