@@ -20,6 +20,11 @@ before asking the operator to act. For a new worker, explain the host creation
 step and how you can support that worker afterward. Do not replace a requested
 host-managed agent with a nested agent inside your sandbox.
 
+First distinguish the target from your own guest, using `/safeyolo/agent-name`
+when needed. Ordinary work on your own workspace and processes uses your
+existing guest authority. Sharing your own HTTP app uses the
+[web-service workflow](web-services.md), not a peer-support grant.
+
 The built-in peer-support interface operates on existing configured agents.
 It can grant inspection, guest repair and selected start/stop/restart actions.
 It does not create the host agent definition or select new host scripts,

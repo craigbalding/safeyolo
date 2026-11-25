@@ -1,6 +1,6 @@
 ---
 name: safeyolo
-description: Help the operator use SafeYolo and complete product tasks, including creating or launching agents, granting peer support, configuring workers, connecting services, discovering capabilities, changing policy through its approval owner, and coordinating work. Also use for proxy/TLS failures; non-HTTP transports, UDP media, relays or gateways; policy or credential blocks; HTTP 403/428/429/503/508 or X-Blocked-By responses; surprising guest package, sudo, setpriv, apt, apk, pip, or mise behavior; debugger/profiler denials; recovery shells; desktop preview; Agent API flows, budgets, circuit breakers and approvals; and sandbox introspection. Do not invoke merely because the repository is SafeYolo, or for ordinary healthy sandbox commands, routine factory handoffs, or GitHub App Connector work already specified by injected instructions.
+description: Help the operator use SafeYolo and complete product tasks, including creating or launching agents, granting peer support, configuring workers, sharing a guest web service over the tailnet, connecting services, discovering capabilities, changing policy through its approval owner, and coordinating work. Also use for proxy/TLS failures; non-HTTP transports, UDP media, relays or gateways; policy or credential blocks; HTTP 403/428/429/503/508 or X-Blocked-By responses; surprising guest package, sudo, setpriv, apt, apk, pip, or mise behavior; debugger/profiler denials; recovery shells; desktop preview; Agent API flows, budgets, circuit breakers and approvals; and sandbox introspection. Do not invoke merely because the repository is SafeYolo, or for ordinary healthy sandbox commands, routine factory handoffs, or GitHub App Connector work already specified by injected instructions.
 ---
 
 # Help the operator use SafeYolo
@@ -40,11 +40,28 @@ and any material decision. Read only the relevant reference section. Do not
 send raw capability catalogues, JSON, tokens or exhaustive internal options
 when the operator needs a recommendation or a command.
 
+## Keep your execution context clear
+
+Use known context first. Inside a guest, if your own identity is unclear, read
+`/safeyolo/agent-name`. Select `agent_id`, `generation` and `workspace` from
+`/safeyolo/host-launch-context.json` when the durable identity, run or host
+workspace matters. These are host-staged files in the read-only per-run share.
+They provide context, not additional authority. Do not infer identity from a
+hostname, the shared Linux username `agent`, a repository name or another
+agent's message. `/health` and `/status` do not identify the caller.
+
+Distinguish your own guest, another agent, the owning host and the operator's
+computer. `127.0.0.1` belongs to the machine or network namespace using it.
+Your own workspace and running processes do not require a peer-support grant.
+A request to share your web app needs the web-service path below; it does not
+imply a graphical desktop or administration of a different agent.
+
 ## Choose the product workflow
 
 | Operator goal | Start here |
 |---|---|
 | Create, launch, resume or service another agent | [Agent creation, launch and support](references/agent-launchers.md). Creation and delegated servicing use different existing owners; prepare the host step and continue through a support grant. |
+| Share a web app running in your guest with the operator | [Share a guest web service](references/web-services.md). Preserve the app, port and requested audience; distinguish HTTP publication from a graphical desktop. |
 | Set up a task worker, change its task or resume unfinished setup | [Worker commissioning](../safeyolo-commission/SKILL.md). Reuse intent, saved choices and completed work; prepare only the next useful increment. |
 | Discover or change network, credential, support or other policy rights | [Policy authoring](../policy-authoring/SKILL.md). Discover installed forms, prepare and assess a proposal, then use the existing human approval. |
 | Connect or use an external service | [Service gateway](references/agent-api.md#service-gateway). Discover the service, request offered access or a binding, and use policy authoring when a definition or configuration is missing. |
@@ -156,6 +173,9 @@ for filters, pagination, retention and attribution limits.
 - Read [Desktop and operator preview](references/desktop.md) before starting a
   graphical guest program, exposing the optional desktop to the operator, or
   diagnosing Xvfb, VNC, noVNC, and browser startup.
+  For an operator opening a guest web app in their own browser, use the
+  [web-service guide](references/web-services.md). Tailnet access alone does
+  not require a desktop.
   Offer the normal typed `desktop.present` operator action when a preview
   helps the task. Use `GET /operator-actions` to discover its availability.
   Agent reasons remain untrusted; SafeYolo owns the consequences and approval.
@@ -201,7 +221,7 @@ inside it:
 | [`triage-tls-and-ca.yaml`](references/graph/triage-tls-and-ca.yaml) | "TLS handshake failing / cert not trusted" |
 | [`triage-guest-tools-and-sudo.yaml`](references/graph/triage-guest-tools-and-sudo.yaml) | "sudo / apt / mise / package install failing" |
 | [`triage-kernel-observability.yaml`](references/graph/triage-kernel-observability.yaml) | "perf / eBPF / bpftrace / ftrace / kprobe / uprobe doesn't work inside the guest" |
-| [`triage-desktop-preview.yaml`](references/graph/triage-desktop-preview.yaml) | "The operator can't see what I'm showing / desktop isn't working" |
+| [`triage-desktop-preview.yaml`](references/graph/triage-desktop-preview.yaml) | "The graphical guest desktop or its browser is not working" |
 | [`accept-safeyolo.yaml`](references/graph/accept-safeyolo.yaml) | "Which trusted tool proves this SafeYolo acceptance claim?" |
 
 Graphs cross-reference each other via a top-level `see_also:` block when a
