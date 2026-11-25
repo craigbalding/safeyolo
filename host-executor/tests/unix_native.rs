@@ -561,9 +561,15 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
         matches!(response, Response::Adoption { .. }),
         "{response:?}"
     );
-    let adopted = server::load(&enrolled.configuration, &enrolled.state)
-        .unwrap()
-        .target;
+    // The real executor qualifies its own endpoint helper before saving each
+    // adoption. Read that target here; this test binary has another current_exe
+    // and cannot repeat the helper's native self-identity qualification.
+    let saved_target = || {
+        serde_json::from_slice::<Configuration>(&fs::read(&enrolled.configuration).unwrap())
+            .unwrap()
+            .target
+    };
+    let adopted = saved_target();
     run(&mut call, &adopted, "task:stage");
     assert_eq!(fs::read(&output).unwrap(), [0, 255, b'\n', b'\'']);
     #[cfg(target_os = "macos")]
@@ -592,9 +598,7 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
             matches!(response, Response::Adoption { .. }),
             "{response:?}"
         );
-        let revised = server::load(&enrolled.configuration, &enrolled.state)
-            .unwrap()
-            .target;
+        let revised = saved_target();
         run(&mut call, &revised, "task:stage");
         assert_eq!(
             fs::read(&output).unwrap(),
@@ -606,9 +610,7 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
         .filesystem
         .write
         .push(control.to_string_lossy().into_owned());
-    let current = server::load(&enrolled.configuration, &enrolled.state)
-        .unwrap()
-        .target;
+    let current = saved_target();
     let package = current.revised_package("task:stage", &stage).unwrap();
     let refused = call(
         &current,
