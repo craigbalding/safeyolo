@@ -1,86 +1,158 @@
-# Share a guest web service
+# Guest browsers and service access
 
-Use this workflow when the operator wants to open an HTTP service running
-inside an agent in their own browser, locally or through a tailnet. A guest
-web server does not require a guest browser, Xvfb, VNC or noVNC.
+Choose the workflow from who needs access and where their browser or client
+runs. Reuse the operator's stated intent. A service can have several approved
+consumers; the choices below can coexist.
+
+## Contents
+
+- [Choose the consumer and access path](#choose-the-consumer-and-access-path)
+- [Preserve the actual target](#preserve-the-actual-target)
+- [Share with other agents through the gateway](#share-with-other-agents-through-the-gateway)
+- [Publish for the operator](#publish-for-the-operator)
+- [Verify the intended use](#verify-the-intended-use)
+
+## Choose the consumer and access path
+
+| Intended use | Path |
+|---|---|
+| Run a browser inside the guest, including webapp security testing | Use the guest browser. Follow the [desktop guide](desktop.md) when a graphical session or operator interaction with that browser is needed. |
+| Let other SafeYolo agents call a service hosted in a guest | Use the existing service gateway, a sandbox-hosted service definition and the consuming agents' service permissions. |
+| Let the operator reach a guest service through the host's localhost | Publish the selected guest port to a host loopback listener. A remote operator can use an existing SSH connection to forward that host listener. |
+| Let the operator use a guest service over the tailnet | Publish the selected guest port through the host's tailnet route. |
+
+A guest browser is a supported tool, including for remote websites reached
+through the normal proxy and certificate configuration. Its desktop can be
+presented locally, through SSH or over the configured tailnet route.
+`desktop.present` opens that graphical session; its `browser_url` navigates the
+guest browser. Select it when the task calls for that browser, rather than
+assuming that every web-service consumer needs a guest desktop.
 
 ## Preserve the actual target
 
-Start from the requested app, guest port and audience. If you started the app
-in this sandbox, treat it as your own service. Confirm an uncertain agent name
-from `/safeyolo/agent-name`; read only needed identity/run fields from
-`/safeyolo/host-launch-context.json`. Do not send the operator through a
-peer-support grant to work on your own app.
+Keep the app, provider agent, guest port and intended consumers together.
+If you started the app in this sandbox, it is your own service. When identity
+is unclear, read `/safeyolo/agent-name` and only needed identity/run fields from
+`/safeyolo/host-launch-context.json`. Ordinary work on your own app needs no
+peer-support grant. Calling another agent's service uses service access;
+administering that agent uses the separate support interface.
 
-Keep these addresses distinct:
+Distinguish guest loopback, host loopback and the operator's computer.
+`127.0.0.1:8765` inside the guest does not name a host listener. Another agent
+uses its service-gateway hostname and port, not the provider's loopback address.
+Retain the requested audience, lifetime, application authentication and running
+process. Install or configure only the components needed for the chosen use.
 
-| Address | What it reaches |
-|---|---|
-| `127.0.0.1:8765` from inside your guest | The app on guest port 8765 in this example. |
-| `127.0.0.1:PORT` from the owning host | A listener on that host; it does not automatically reach the guest's loopback. |
-| The published HTTPS tailnet URL | The route the operator needs from their tailnet device. It is not established by a successful guest-local request. |
+## Share with other agents through the gateway
 
-Use the existing process, saved configuration and permitted local checks to
-verify the app. Preserve the operator's requested audience and any known
-sharing lifetime. Do not install a desktop, move the app to another agent,
-replace its authentication or widen its listener just to obtain a preview.
-Do not change an accepted audience to a narrower one merely because another
-example uses it.
+This path is implemented. Reuse an accepted service definition and existing
+caller permissions when available. To prepare a new provider:
 
-## Select a supported publication path
+1. Run the service on its intended port inside the hosting agent.
+2. Prepare a service definition whose `name` matches that configured agent's
+   name. Choose its logical hostname, capabilities and route methods/paths for
+   the agreed service. The request destination supplies the guest port; there
+   is no separate `provider: {kind, agent, port}` configuration table.
+3. Have the existing host owner adopt the definition in the selected instance's
+   configured operator service directory. `services check FILE` validates the
+   prepared definition; it does not install it. Read `services show NAME` to
+   confirm the running catalogue accepted it. A policy proposal alone does not
+   install a new service YAML file.
+4. Prepare the logical host-to-service mapping and each consumer's selected
+   capability through the existing authorization or policy owner. Preserve the
+   agreed network port scope, contract bindings and other applicable controls.
+5. From the intended consumer, discover current access, request missing offered
+   access through the [gateway workflow](agent-api.md#service-gateway), and fetch
+   that consumer's own current token after adoption. Call the service's logical
+   hostname and guest port through the consumer's existing proxy.
 
-Check the installed capability and command vocabulary for sharing the selected
-guest web port. Use an existing authorized route when it provides that effect.
-If the owning host must act, prepare its actual supported command with the
-known instance, your agent name, app port and audience. Discover host command
-syntax on the owning host or from the matching installed documentation; the
-guest need not have the host CLI.
+For example, an agreed read-only item API on agent `web-worker`, port 8765,
+can use this credential-free definition:
 
-Do not confuse these different facilities:
+```yaml
+schema_version: 1
+name: web-worker
+default_host: web-worker.safeyolo.internal
+capabilities:
+  reader:
+    routes:
+      - methods: [GET]
+        path: /api/items
+```
 
-- `desktop.present` and host `agent present` expose the graphical desktop.
-  The `desktop.present` action's `browser_url` opens a browser inside the guest.
-  It does not select a web-server port to publish to the operator's browser.
-- Peer support grants permit their selected inspection, guest administration
-  and lifecycle work. They do not publish a web port to the operator.
-- A sandbox service provider is a configured service-gateway backend. Its
-  ability to connect to a guest port does not itself supply a browser URL.
-- A host-to-guest stream function in source code is transport plumbing, not
-  proof of an installed publishing command or authority to run a host forward.
+After this definition is adopted and the applicable network permission is in
+place, the selected owning host can authorize the existing agent `consumer`:
 
-### Current native gap
+```sh
+safeyolo services authorize consumer web-worker \
+  --capability reader --host web-worker.safeyolo.internal:8765
+```
 
-The native command implementation accompanying this reference exposes desktop
-presentation with a fixed guest port of 6080. It has no general command or
-typed operator action for publishing an arbitrary guest HTTP port. The earlier
-Python `agent preview` workflow supported that use; the historical preview
-design is not a current command reference. Check a newer installation's actual
-help and schemas before claiming that this limitation still applies there.
+Use the selected installation's command prefix. This maps the hostname and
+authorizes the named service capability; it does not itself grant network
+permission. Do not silently append `--allow-host-network`, which makes a
+separate host-wide egress choice.
 
-When this gap blocks the task, say so as a specific product limitation. Report
-what you verified locally, retain the app and its state, and identify the
-missing host publication for the exact agent, port and audience. The corrective
-work is tracked in [the CLI migration release blocker](https://github.com/craigbalding/safeyolo/issues/1716).
-Do not prescribe the retired command, install graphical packages or label
-desktop presentation as the requested web-service result. A configured,
-separately authorized host-operation route may be used if it actually supplies
-the requested publication; do not invent that capability or its command.
+The consumer requests `http://web-worker.safeyolo.internal:8765/api/items` with
+its own scoped gateway token. Without an upstream `auth` block, use the
+`Authorization: Bearer` header; no upstream credential is injected. Never share
+the provider's or another consumer's token. Verify the actual consumer's call.
+A stopped provider or closed port does not fall back to ordinary network delivery.
 
-For example, if the current agent is `web-worker`, its app is verified on port
-8765, and this native gap is confirmed, the useful handoff is:
+The [service schema](https://github.com/craigbalding/safeyolo/blob/master/docs/service-gateway-v2-yaml-spec.md)
+and [service authorization guide](https://github.com/craigbalding/safeyolo/blob/master/docs/credentials.md#authorization-binding-and-risk-approval)
+describe the existing definition, adoption and permission owners.
 
-> My app is running in this sandbox on port 8765. This SafeYolo build is missing
-> direct web-port sharing. The remaining step is a host-owned route for
-> web-worker:8765 to your tailnet. There is no published URL yet.
+## Publish for the operator
 
-Include a concrete command when the installed version or an existing adopted
-host operation supports one. Keep an unsupported command out of the handoff.
+Use the requested host-loopback or tailnet route. Check the installed command
+and capability vocabulary, reuse existing authority, and prepare the supported
+host action with the selected instance, agent and guest port. Publishing the
+HTTP service itself does not require a guest browser or desktop.
 
-## Verify the operator's result
+For **host localhost**, preserve the host-owned publication and its access
+controls. The operator can connect on the host or carry that listener over
+SSH from another computer. For example, after a supported publication has
+created a host loopback listener on port 18765, an operator with an existing
+SSH alias `sy-host` can run this on their own computer. Local port 18765 must
+be available:
 
-Once a supported route is active, distinguish local app health, host-to-guest
-reachability and an actual request from the operator's device. Check the
-application's login/navigation and WebSocket or streaming behavior when used.
-Do not claim completion from a listening port, an approval receipt, a generated
-URL or a guest-local health check alone. Preserve the route's existing access,
-audit, expiry and cleanup behavior, including unrelated tailnet mappings.
+```sh
+ssh -N -L 127.0.0.1:18765:127.0.0.1:18765 sy-host
+```
+
+Use the publication's browser URL with the forwarded endpoint. Retain any
+hostname and port required by its origin routing. The SSH forward carries an
+existing host listener; it does not create the host-to-guest publication.
+
+For **tailnet access**, publish the selected guest service through the host's
+configured Tailscale route and return its actual URL. Preserve the requested
+audience and existing access, audit, expiry and cleanup behavior, including
+unrelated Tailscale mappings.
+
+### Current native gap in direct operator publication
+
+The native implementation accompanying this reference supports guest browsers
+and gateway service delivery, but its direct presentation command is fixed to
+desktop port 6080. It lacks the general arbitrary-port HTTP publication command
+for the operator's host-loopback or tailnet access. The earlier Python
+`agent preview` supported those paths. Check a newer installation's actual
+help and schemas before asserting that the limitation still applies there.
+
+When this specific gap blocks the selected path, retain the app and report the
+exact remaining publication: agent, guest port and requested loopback or
+tailnet audience. It is tracked in [the CLI migration release blocker](https://github.com/craigbalding/safeyolo/issues/1716).
+Do not claim that guest browsing or gateway sharing is unavailable. Do not
+substitute desktop setup for direct HTTP publication, prescribe a retired
+command, or infer a usable command from an internal stream function. An
+existing authorized host operation can be used if it supplies the requested
+publication; verify that capability rather than inventing it.
+
+## Verify the intended use
+
+Use the actual consumer: the guest browser for a browser task, the authorized
+calling agent for gateway sharing, or the operator's browser through the
+selected localhost/SSH/tailnet route. Check login, navigation, callbacks and
+WebSocket or streaming behavior when used. Local app health, an approval,
+adopted configuration or a generated URL alone does not prove that result.
+Report each requested route separately when some work and others remain blocked.

@@ -4,11 +4,14 @@ SafeYolo owns the lifecycle and security boundary for its optional graphical
 desktop. The guest components listen only on loopback; the operator reaches
 noVNC through a token-gated SafeYolo preview.
 
-Use this reference for a graphical session inside the guest. If the operator
-wants to open your guest web service in their own browser, use
-[Share a guest web service](web-services.md). A tailnet route to an HTTP app
-does not require desktop packages. `desktop.present` with `browser_url` opens
-that URL in the guest browser; it does not publish the app's own port.
+Guest browsers are a supported choice for webapp security testing and other
+browser tasks. Use this reference when the task needs a graphical session
+inside the guest or the operator wants to interact with that guest browser.
+`desktop.present` with `browser_url` opens that URL in the guest browser.
+The desktop can itself be presented locally, through SSH or over the configured
+tailnet route. To share an app's HTTP service with other agents or with an
+operator's own browser, use [the service access choices](web-services.md).
+Those routes can coexist with guest-browser use.
 
 ## Request a preview during agent work
 

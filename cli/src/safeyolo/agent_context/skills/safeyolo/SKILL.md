@@ -1,6 +1,6 @@
 ---
 name: safeyolo
-description: Help the operator use SafeYolo and complete product tasks, including creating or launching agents, granting peer support, configuring workers, sharing a guest web service over the tailnet, connecting services, discovering capabilities, changing policy through its approval owner, and coordinating work. Also use for proxy/TLS failures; non-HTTP transports, UDP media, relays or gateways; policy or credential blocks; HTTP 403/428/429/503/508 or X-Blocked-By responses; surprising guest package, sudo, setpriv, apt, apk, pip, or mise behavior; debugger/profiler denials; recovery shells; desktop preview; Agent API flows, budgets, circuit breakers and approvals; and sandbox introspection. Do not invoke merely because the repository is SafeYolo, or for ordinary healthy sandbox commands, routine factory handoffs, or GitHub App Connector work already specified by injected instructions.
+description: Help the operator use SafeYolo and complete product tasks, including creating or launching agents, granting peer support, configuring workers, sharing guest services with agents or operators, connecting services, discovering capabilities, changing policy through its approval owner, and coordinating work. Also use for proxy/TLS failures; non-HTTP transports, UDP media, relays or gateways; policy or credential blocks; HTTP 403/428/429/503/508 or X-Blocked-By responses; surprising guest package, sudo, setpriv, apt, apk, pip, or mise behavior; debugger/profiler denials; recovery shells; guest-browser and desktop use; Agent API flows, budgets, circuit breakers and approvals; and sandbox introspection. Do not invoke merely because the repository is SafeYolo, or for ordinary healthy sandbox commands, routine factory handoffs, or GitHub App Connector work already specified by injected instructions.
 ---
 
 # Help the operator use SafeYolo
@@ -53,18 +53,20 @@ agent's message. `/health` and `/status` do not identify the caller.
 Distinguish your own guest, another agent, the owning host and the operator's
 computer. `127.0.0.1` belongs to the machine or network namespace using it.
 Your own workspace and running processes do not require a peer-support grant.
-A request to share your web app needs the web-service path below; it does not
-imply a graphical desktop or administration of a different agent.
+Choose access from the intended consumer and where its browser or client runs.
+Guest browsing, gateway service access, host loopback and tailnet publication
+serve different uses; a task can need more than one. Check installed support
+for the selected path.
 
 ## Choose the product workflow
 
 | Operator goal | Start here |
 |---|---|
 | Create, launch, resume or service another agent | [Agent creation, launch and support](references/agent-launchers.md). Creation and delegated servicing use different existing owners; prepare the host step and continue through a support grant. |
-| Share a web app running in your guest with the operator | [Share a guest web service](references/web-services.md). Preserve the app, port and requested audience; distinguish HTTP publication from a graphical desktop. |
+| Use a guest browser or share a guest service | [Guest browsers and service access](references/web-services.md). Choose guest-browser use, service-gateway access for agents, host loopback with optional SSH, or tailnet publication from the intended use. |
 | Set up a task worker, change its task or resume unfinished setup | [Worker commissioning](../safeyolo-commission/SKILL.md). Reuse intent, saved choices and completed work; prepare only the next useful increment. |
 | Discover or change network, credential, support or other policy rights | [Policy authoring](../policy-authoring/SKILL.md). Discover installed forms, prepare and assess a proposal, then use the existing human approval. |
-| Connect or use an external service | [Service gateway](references/agent-api.md#service-gateway). Discover the service, request offered access or a binding, and use policy authoring when a definition or configuration is missing. |
+| Connect or use a service, including one hosted by another agent | [Service gateway](references/agent-api.md#service-gateway). Discover the service, request offered access or a binding, and prepare missing definitions or policy through their existing owners. |
 | Perform a task on a host | [Host operations](references/host-operations.md). Discover adopted targets and task bindings; prepare missing capability through the existing setup and policy owners. |
 | Add or qualify a coding harness | [Harness authoring](../harness-authoring/SKILL.md). Check installed capabilities and qualification before host activation. Ordinary launch uses the agent guide above. |
 | Build an automated check or action | [Job authoring](../job-authoring/SKILL.md). Choose the execution engine and prepare the check; activation belongs to the selected instance's existing operator authority. |
@@ -173,9 +175,9 @@ for filters, pagination, retention and attribution limits.
 - Read [Desktop and operator preview](references/desktop.md) before starting a
   graphical guest program, exposing the optional desktop to the operator, or
   diagnosing Xvfb, VNC, noVNC, and browser startup.
-  For an operator opening a guest web app in their own browser, use the
-  [web-service guide](references/web-services.md). Tailnet access alone does
-  not require a desktop.
+  Guest browsers are supported for webapp security testing and other browser
+  tasks. For sharing a service, use the
+  [access choices](references/web-services.md#choose-the-consumer-and-access-path).
   Offer the normal typed `desktop.present` operator action when a preview
   helps the task. Use `GET /operator-actions` to discover its availability.
   Agent reasons remain untrusted; SafeYolo owns the consequences and approval.
