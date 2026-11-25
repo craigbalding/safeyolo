@@ -42,6 +42,8 @@ async fn catalogue_discovery_uses_actual_bytes_and_activates_coherent_gateway_de
         ceiling: package.operations["restart"].clone(),
         allow_narrower: true,
         allow_implementation_updates: true,
+        allow_agent_code: false,
+        agent_dependency_bytes: 0,
     };
     let signed = |package: &Package| {
         SignedCatalogue::sign(
@@ -62,6 +64,7 @@ async fn catalogue_discovery_uses_actual_bytes_and_activates_coherent_gateway_de
     std::fs::write(&source, serde_json::to_vec(&active).unwrap()).unwrap();
     let adoption = CatalogueAdoption {
         policy: CataloguePolicy {
+            agent_code_keys: BTreeMap::new(),
             publisher: "publisher".into(),
             public_key: STANDARD.encode(key.public_key().as_ref()),
             package_name: package.name.clone(),

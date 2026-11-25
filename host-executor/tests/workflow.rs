@@ -86,6 +86,23 @@ fn standalone_preparation_keeps_saved_authority_activation_and_observation_disti
         assert!(document["operations"][name].is_object(), "{name}");
     }
     let endpoint = &annotated.operations["endpoint-inspect"];
+    let semantics = endpoint.semantics.as_ref().unwrap();
+    assert!(semantics.limitations.iter().any(|limitation| {
+        limitation.contains("not a reservation")
+            && limitation.contains("readiness")
+            && limitation.contains("reach remain unobserved")
+    }));
+    for missing in ["evidence", "limitations"] {
+        let mut invalid = document.clone();
+        invalid["operations"]["endpoint-inspect"]["semantics"][missing] = json!([]);
+        assert!(
+            serde_json::from_value::<safeyolo_host_executor::Package>(invalid)
+                .unwrap()
+                .validate()
+                .is_err(),
+            "endpoint semantics without {missing} must still be refused"
+        );
+    }
     let selection = endpoint.arguments["endpoint"].options[0].clone();
     let command = endpoint
         .command(&std::collections::BTreeMap::from([(

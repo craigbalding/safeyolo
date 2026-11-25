@@ -74,6 +74,7 @@ pub fn target(
                     grants: BTreeMap::from([(
                         "grant".into(),
                         Grant {
+                            allow_run_refresh: false,
                             families: Vec::new(),
                             principal: Principal {
                                 run: AgentRun {

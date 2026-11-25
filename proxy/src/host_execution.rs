@@ -3,6 +3,7 @@ pub(crate) mod gateway;
 pub mod semantics;
 #[cfg(test)]
 mod semantics_tests;
+pub(crate) mod setup;
 use crate::services::ServiceDefinition;
 pub use safeyolo_host_executor::*;
 use schemars::JsonSchema;
@@ -272,6 +273,62 @@ pub(crate) fn catalogues_changed(
 /// Automatic updates use the same save/runtime/rollback transaction as policy
 /// adoption. Failed or partial activation leaves the prior source and registry.
 pub(crate) fn reconcile_catalogues(state: &crate::RuntimeState) -> Result<bool, Error> {
+    reconcile_catalogue_update(state, None)
+}
+
+fn observe_agent_code(
+    adoption: &mut CatalogueAdoption,
+    observed: &SignedCatalogue,
+) -> Result<bool, Error> {
+    if adoption.policy.package_name != observed.catalogue.package.name {
+        return Ok(false);
+    }
+    if revision(&adoption.active.catalogue.package) == revision(&observed.catalogue.package) {
+        return Ok(true);
+    }
+    if observed.agent_request.is_none()
+        || adoption.observed_file.is_some()
+        || observed.catalogue.previous.as_deref()
+            != Some(revision(&adoption.active.catalogue.package).as_str())
+    {
+        return Err("agent code needs the same retained base catalogue and direct task-code observation; inspect the original adoption before another revision".into());
+    }
+    observed.verify(&adoption.policy, now())?;
+    adoption.observed = observed.clone();
+    let plan = adoption.plan(now())?;
+    if plan.status.qualified.as_deref() != Some(revision(&observed.catalogue.package).as_str()) {
+        return Err(plan.status.reason.into());
+    }
+    Ok(true)
+}
+
+pub(crate) fn check_agent_catalogue(
+    policy: &crate::policy::Policy,
+    observed: &SignedCatalogue,
+) -> Result<(), Error> {
+    let source = policy
+        .native_source_text()
+        .ok_or("host policy source unavailable")?;
+    let document = crate::policy::parse_toml_document(source)?;
+    for mut adoption in catalogue_adoptions(&document)?.into_values() {
+        if observe_agent_code(&mut adoption, observed)? {
+            return Ok(());
+        }
+    }
+    Err("issuer has no adopted catalogue for this task-code revision".into())
+}
+
+pub(crate) fn reconcile_agent_catalogue(
+    state: &crate::RuntimeState,
+    observed: &SignedCatalogue,
+) -> Result<bool, Error> {
+    reconcile_catalogue_update(state, Some(observed))
+}
+
+fn reconcile_catalogue_update(
+    state: &crate::RuntimeState,
+    observed: Option<&SignedCatalogue>,
+) -> Result<bool, Error> {
     let (source, path) = {
         let runtime = state
             .read()
@@ -286,13 +343,26 @@ pub(crate) fn reconcile_catalogues(state: &crate::RuntimeState) -> Result<bool, 
     if let Some(path) = path
         && std::fs::read_to_string(path)? != source
     {
+        if observed.is_some() {
+            return Err(
+                "saved issuer policy changed; reload it and inspect the original target adoption"
+                    .into(),
+            );
+        }
         return Ok(false);
     }
     let parsed = crate::policy::parse_toml_document(&source)?;
     let mut pending = false;
+    let mut found = observed.is_none();
     for mut adoption in catalogue_adoptions(&parsed)?.into_values() {
+        if let Some(observed) = observed {
+            found |= observe_agent_code(&mut adoption, observed)?;
+        }
         let plan = adoption.plan(now())?;
         pending |= adoption.advance(&plan);
+    }
+    if !found {
+        return Err("issuer code catalogue changed; inspect the retained target adoption".into());
     }
     if !pending {
         return Ok(false);
@@ -316,9 +386,14 @@ pub(crate) fn reconcile_catalogues(state: &crate::RuntimeState) -> Result<bool, 
             let bindings =
                 gateway::bindings(&parsed).map_err(|e| crate::approvals::invalid(e.to_string()))?;
             let mut expected = BTreeMap::new();
+            let mut found = observed.is_none();
             for (name, mut adoption) in catalogue_adoptions(&parsed)
                 .map_err(|e| crate::approvals::invalid(e.to_string()))?
             {
+                if let Some(observed) = observed {
+                    found |= observe_agent_code(&mut adoption, observed)
+                        .map_err(|e| crate::approvals::invalid(e.to_string()))?;
+                }
                 let plan = adoption
                     .plan(now())
                     .map_err(|e| crate::approvals::invalid(e.to_string()))?;
@@ -347,6 +422,11 @@ pub(crate) fn reconcile_catalogues(state: &crate::RuntimeState) -> Result<bool, 
                     );
                     expected.insert(name, revision(&adoption.active.catalogue.package));
                 }
+            }
+            if !found {
+                return Err(crate::approvals::invalid(
+                    "issuer code catalogue changed during activation; inspect the original target adoption",
+                ));
             }
             let source =
                 crate::policy::restore_large_toml_integers(&document.to_string(), &context);

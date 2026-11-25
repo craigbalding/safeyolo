@@ -117,6 +117,20 @@ pub fn within_operation(op: &Operation, ceiling: &Operation, allow_code: bool) -
         *a.pointer_mut(path).unwrap() = Value::Null;
         *b.pointer_mut(path).unwrap() = Value::Null;
     }
+    // Omitting an optional inherited socket removes that capability. It is
+    // useful for staging/diagnostics within a service code class: those jobs
+    // must not reserve the service's listener. Any remaining socket-creation
+    // directions still have to fit the explicit network/broader subsets above.
+    if op.execution.network.listener_handoff.is_none() {
+        a["execution"]["network"]
+            .as_object_mut()
+            .unwrap()
+            .remove("listener_handoff");
+        b["execution"]["network"]
+            .as_object_mut()
+            .unwrap()
+            .remove("listener_handoff");
+    }
     // Free-text enforcement disclosures are assessment inputs, not a proof
     // that a claimed new guarantee is implemented by the selected backend.
     if !subset(&b["required_checks"], &a["required_checks"]) {
@@ -255,14 +269,52 @@ pub struct UpdateRule {
     pub ceiling: Operation,
     pub allow_narrower: bool,
     pub allow_implementation_updates: bool,
+    /// Untrusted task code may change the recipe within this native boundary.
+    /// Publisher maintenance alone never selects this authority.
+    #[serde(default)]
+    pub allow_agent_code: bool,
+    #[serde(default)]
+    pub agent_dependency_bytes: u64,
 }
 impl UpdateRule {
     pub fn allows(&self, op: &Operation) -> bool {
+        self.allows_publisher(op) || self.allows_agent_code(op)
+    }
+
+    pub fn allows_publisher(&self, op: &Operation) -> bool {
         op.enforcement.unresolved.is_empty()
             && within_operation(op, &self.ceiling, self.allow_implementation_updates)
             && (self.allow_narrower
                 || compare_operations(&self.ceiling, op).comparison == Comparison::Equivalent
                 || self.allow_implementation_updates && within_operation(&self.ceiling, op, true))
+    }
+
+    pub fn allows_agent_code(&self, op: &Operation) -> bool {
+        if !self.allow_agent_code || !op.enforcement.unresolved.is_empty() {
+            return false;
+        }
+        // The approved class already treats the program as arbitrary code.
+        // Changing argv cannot widen its account, files, network, services,
+        // resource bounds, effect disclosure or required checks. Executable
+        // and dependency bytes remain pinned and qualified by the target.
+        let mut candidate = op.clone();
+        candidate.execution.argv = self.ceiling.execution.argv.clone();
+        let bytes = candidate
+            .execution
+            .dependencies
+            .values()
+            .try_fold(0u64, |total, dependency| {
+                total.checked_add(dependency.bytes)
+            });
+        if bytes.is_none_or(|bytes| bytes > self.agent_dependency_bytes) {
+            return false;
+        }
+        let mut ceiling = self.ceiling.clone();
+        // Native qualification checks these selected paths against the actual
+        // target's read scope and control-file protections. The issuer may run
+        // on another OS and must not reinterpret the target's path syntax.
+        ceiling.execution.dependencies = candidate.execution.dependencies.clone();
+        within_operation(&candidate, &ceiling, true)
     }
 }
 
@@ -301,8 +353,57 @@ pub struct CatalogueRevision {
 pub struct SignedCatalogue {
     pub catalogue: CatalogueRevision,
     pub signature: String,
+    /// Agent-origin updates retain the authenticated issuer request that bound
+    /// the exact resulting package. This is distinct from a publisher signature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_request: Option<Box<SignedRequest>>,
 }
 impl SignedCatalogue {
+    pub fn adoption_response(&self) -> Result<Response, Refusal> {
+        let original = self
+            .agent_request
+            .clone()
+            .ok_or_else(|| crate::native::unavailable("catalogue has no agent adoption"))?;
+        let Action::Adopt { operation_id, .. } = &original.request.action else {
+            return Err(crate::native::unavailable(
+                "catalogue proof is not a code adoption",
+            ));
+        };
+        Ok(Response::Adoption {
+            operation_sha256: self.catalogue.package.operation_sha256(operation_id)?,
+            package_sha256: revision(&self.catalogue.package),
+            original,
+        })
+    }
+    pub fn from_agent_request(signed: SignedRequest, package: Package) -> Result<Self, Refusal> {
+        let Action::Adopt {
+            base_package_sha256,
+            package_sha256,
+            observed_at,
+            ..
+        } = &signed.request.action
+        else {
+            return Err(crate::native::unavailable("code adoption request required"));
+        };
+        require(
+            *package_sha256 == revision(&package),
+            RefusalCode::Stale,
+            "adoption package differs from its signed digest",
+        )?;
+        Ok(Self {
+            catalogue: CatalogueRevision {
+                publisher: signed.request.issuer_id.clone(),
+                announcement_revision: package.version,
+                package,
+                observed_at: *observed_at,
+                expires_at: signed.request.expires_at,
+                withdrawn: false,
+                previous: Some(base_package_sha256.clone()),
+            },
+            signature: signed.signature.clone(),
+            agent_request: Some(Box::new(signed)),
+        })
+    }
     fn message(catalogue: &CatalogueRevision) -> Vec<u8> {
         format!("safeyolo.host-catalogue/v1\n{}", revision(catalogue)).into_bytes()
     }
@@ -311,6 +412,7 @@ impl SignedCatalogue {
         Self {
             catalogue,
             signature,
+            agent_request: None,
         }
     }
     pub fn verify(&self, policy: &CataloguePolicy, now: u64) -> Result<(), Refusal> {
@@ -328,8 +430,14 @@ impl SignedCatalogue {
             "catalogue announcement revision must be positive",
         )?;
         require(
-            self.catalogue.publisher == policy.publisher
-                && self.catalogue.package.name == policy.package_name,
+            (if let Some(signed) = &self.agent_request {
+                policy
+                    .agent_code_keys
+                    .get(&self.catalogue.publisher)
+                    .is_some_and(|keys| keys.contains_key(&signed.key_id))
+            } else {
+                self.catalogue.publisher == policy.publisher
+            }) && self.catalogue.package.name == policy.package_name,
             RefusalCode::Issuer,
             "catalogue publisher or package name differs from adoption",
         )?;
@@ -342,14 +450,47 @@ impl SignedCatalogue {
             RefusalCode::Expired,
             "catalogue announcement needs a finite lifetime",
         )?;
+        let public_key = self
+            .agent_request
+            .as_ref()
+            .map(|signed| &policy.agent_code_keys[&self.catalogue.publisher][&signed.key_id])
+            .unwrap_or(&policy.public_key);
         let key = STANDARD
-            .decode(&policy.public_key)
+            .decode(public_key)
             .map_err(crate::native::unavailable)?;
         let signature = STANDARD
             .decode(&self.signature)
             .map_err(crate::native::unavailable)?;
+        let message = if let Some(signed) = &self.agent_request {
+            let Action::Adopt {
+                base_package_sha256,
+                package_sha256,
+                observed_at,
+                ..
+            } = &signed.request.action
+            else {
+                return Err(crate::native::unavailable(
+                    "catalogue proof is not a code adoption",
+                ));
+            };
+            require(
+                signed.request.issuer_id == self.catalogue.publisher
+                    && *package_sha256 == revision(&self.catalogue.package)
+                    && self.catalogue.previous.as_ref() == Some(base_package_sha256)
+                    && self.catalogue.observed_at == *observed_at
+                    && self.catalogue.expires_at == signed.request.expires_at
+                    && self.catalogue.announcement_revision == self.catalogue.package.version
+                    && !self.catalogue.withdrawn
+                    && self.signature == signed.signature,
+                RefusalCode::Signature,
+                "agent catalogue differs from its exact signed adoption request",
+            )?;
+            SignedRequest::signing_message(&signed.request, &signed.key_id)
+        } else {
+            Self::message(&self.catalogue)
+        };
         UnparsedPublicKey::new(&ED25519, key)
-            .verify(&Self::message(&self.catalogue), &signature)
+            .verify(&message, &signature)
             .map_err(|_| Refusal {
                 code: RefusalCode::Signature,
                 message: "catalogue publisher signature differs".into(),
@@ -362,6 +503,10 @@ impl SignedCatalogue {
 pub struct CataloguePolicy {
     pub publisher: String,
     pub public_key: String,
+    /// Explicit issuer signing keys for untrusted agent code, separate from the
+    /// publisher's maintenance key. Invocation still needs a current grant.
+    #[serde(default)]
+    pub agent_code_keys: BTreeMap<String, BTreeMap<String, String>>,
     pub package_name: String,
     pub operations: BTreeMap<String, UpdateRule>,
     pub families: Vec<OperationFamily>,
@@ -605,7 +750,14 @@ impl CatalogueAdoption {
                     .find(|f| f.contains(id, op))
                     .map(|f| &f.rule)
             });
-            let covered = equivalent || rule.is_some_and(|r| r.allows(op));
+            let covered = equivalent
+                || rule.is_some_and(|r| {
+                    if candidate.agent_request.is_some() {
+                        r.allows_agent_code(op)
+                    } else {
+                        r.allows_publisher(op)
+                    }
+                });
             // Unknown operations stay discoverable without acquiring authority.
             if !covered {
                 allowed = false;

@@ -338,18 +338,74 @@ impl Ledger {
         bytes: &[u8],
         now: u64,
     ) -> Result<Admission, Refusal> {
-        self.handle_runtime(target, path, bytes, now, None)
+        self.handle_runtime(target, path, bytes, now, None, None)
     }
 
-    pub(crate) fn handle_native(
+    pub(crate) fn handle_adopting(
         &mut self,
         target: &Target,
         path: &str,
         bytes: &[u8],
         now: u64,
         runtime: &NativeRuntime,
+        adopt: &mut dyn FnMut(&SignedRequest, &Package) -> Result<Response, Refusal>,
     ) -> Result<Admission, Refusal> {
-        self.handle_runtime(target, path, bytes, now, Some(runtime))
+        self.handle_runtime(target, path, bytes, now, Some(runtime), Some(adopt))
+    }
+
+    /// Reconcile the configuration commit after a crash between configuration
+    /// publication and the ledger commit. The protected catalogue retains the
+    /// exact signed request; no program or configuration effect is replayed.
+    pub(crate) fn recover_adoption(&mut self, catalogue: &SignedCatalogue) -> Result<(), Refusal> {
+        let Some(original) = &catalogue.agent_request else {
+            return Ok(());
+        };
+        let request = &original.request;
+        require(
+            request.target_id == self.target_id,
+            RefusalCode::Target,
+            "adoption belongs to another ledger",
+        )?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(unavailable)?;
+        let previous: Option<String> = transaction
+            .query_row(
+                "SELECT digest FROM mutations WHERE issuer=?1 AND request_id=?2",
+                params![request.issuer_id, request.request_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(unavailable)?;
+        if let Some(previous) = previous {
+            return require(
+                previous == revision(request),
+                RefusalCode::Conflict,
+                "adoption request ID identifies different retained content",
+            );
+        }
+        let retained: i64 = transaction.query_row(
+            "SELECT (SELECT count(*) FROM mutations)+(SELECT count(*) FROM jobs WHERE cancellation_key!=zeroblob(64))+(SELECT count(*) FROM jobs WHERE active=x'01' AND json_extract(CAST(receipt AS TEXT),'$.cancellation_requested')=0)",
+            [], |row| row.get(0)
+        ).map_err(unavailable)?;
+        require(
+            (retained as u64) < self.limits.mutation_records,
+            RefusalCode::Budget,
+            "adoption recovery needs retained mutation capacity; configuration is already committed",
+        )?;
+        transaction
+            .execute(
+                "INSERT INTO mutations VALUES(?1,?2,?3,?4)",
+                params![
+                    request.issuer_id,
+                    request.request_id,
+                    revision(request),
+                    json(&catalogue.adoption_response()?)?
+                ],
+            )
+            .map_err(unavailable)?;
+        transaction.commit().map_err(unavailable)
     }
 
     fn handle_runtime(
@@ -359,6 +415,7 @@ impl Ledger {
         bytes: &[u8],
         now: u64,
         runtime: Option<&NativeRuntime>,
+        adopt: Option<&mut dyn FnMut(&SignedRequest, &Package) -> Result<Response, Refusal>>,
     ) -> Result<Admission, Refusal> {
         require(
             target.target_id == self.target_id,
@@ -403,7 +460,10 @@ impl Ledger {
                 dispatch: false,
             });
         }
-        let mutation = matches!(req.action, Action::Invoke { .. } | Action::Cancel { .. });
+        let mutation = matches!(
+            req.action,
+            Action::Invoke { .. } | Action::Cancel { .. } | Action::Adopt { .. }
+        );
         if mutation {
             let count: i64 = transaction
                 .query_row("SELECT (SELECT count(*) FROM mutations)+(SELECT count(*) FROM jobs WHERE cancellation_key!=zeroblob(64))", [], |row| row.get(0))
@@ -437,6 +497,35 @@ impl Ledger {
         let mut dispatch = false;
         let mut reserved_cancellation = None;
         let response = match &req.action {
+            Action::Adopt { .. } => {
+                let package = auth.agent_code_package()?;
+                let signed: SignedRequest = serde_json::from_slice(bytes).map_err(unavailable)?;
+                let adopt =
+                    adopt.ok_or_else(|| unavailable("target catalogue owner is unavailable"))?;
+                adopt(&signed, &package)?
+            }
+            Action::Adoption { request_id } => {
+                let saved: Option<String> = transaction
+                    .query_row(
+                        "SELECT response FROM mutations WHERE issuer=?1 AND request_id=?2",
+                        params![req.issuer_id, request_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(unavailable)?;
+                let saved: Response = serde_json::from_str(&saved.ok_or_else(|| unavailable("original adoption is not retained; inspect the target configuration before retrying"))?).map_err(unavailable)?;
+                let Response::Adoption { original, .. } = &saved else {
+                    return Err(unavailable("request is not a code adoption"));
+                };
+                require(
+                    original.request.grant_id == req.grant_id
+                        && target.issuers[&req.issuer_id].authority.grants[&req.grant_id]
+                            .allows_principal(&original.request.principal),
+                    RefusalCode::Authority,
+                    "adoption belongs to another grant or principal",
+                )?;
+                saved
+            }
             Action::Discover => {
                 let mut discovery = target.discover(&auth)?;
                 if let Some(runtime) = runtime {

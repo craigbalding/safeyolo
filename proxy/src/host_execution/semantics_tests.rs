@@ -591,6 +591,7 @@ fn target() -> Target {
         .map(|id| (id.into(), scope(&package, id)))
         .collect();
     let grant = Grant {
+        allow_run_refresh: false,
         families: Vec::new(),
         principal: principal(),
         not_before: 90,
@@ -869,6 +870,8 @@ fn family_assessment_includes_the_future_ceiling_and_preserves_current_target_ch
             ceiling: writer,
             allow_narrower: true,
             allow_implementation_updates: true,
+            allow_agent_code: false,
+            agent_dependency_bytes: 0,
         },
         scope: scope(&target.package, "future:write"),
     });

@@ -68,6 +68,13 @@ servicing, read [adoption and worker support](references/adoption.md). It connec
 those existing owners without granting the preferred agent administration.
 For supervised self-tasking, selected schedules, checked early stop and resumed
 work, read [worker lifecycle](references/lifecycle.md).
+For a selected host task, read the installed SafeYolo skill's
+[host-operation workflow](../safeyolo/references/host-operations.md).
+It connects public first-trust preparation, the target's trusted bootstrap,
+the existing human policy review, and covered code adoption. Keep the service's
+intended function and audience separate from derived authority, actual binding,
+application readiness and observed reach. Use scoped endpoint facts before
+selecting an address or port; retain an intentionally broader authorised audience.
 
 ## Retain intent and reach the next useful result
 

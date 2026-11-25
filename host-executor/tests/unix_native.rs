@@ -1,12 +1,12 @@
 #![cfg(unix)]
-//! Run explicitly on native Linux with an operator-owned cgroup v2 delegation.
+//! Run explicitly on native macOS, or Linux with an owned cgroup v2 delegation.
 //! The developer fixture compiles its C probe; installed executor operation
 //! itself needs neither a compiler nor Python.
 use base64::{Engine, engine::general_purpose::STANDARD};
 mod common;
 use ring::{
     rand::{SecureRandom, SystemRandom},
-    signature::Ed25519KeyPair,
+    signature::{Ed25519KeyPair, KeyPair},
 };
 #[cfg(target_os = "linux")]
 use safeyolo_host_executor::linux::LinuxRuntime;
@@ -77,22 +77,7 @@ impl Fixture {
         );
     }
     fn call_bytes(&self, verb: Verb, body: &[u8]) -> Response {
-        let mut stream = UnixStream::connect(self.root.join("state/control.sock")).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
-        write!(
-            stream,
-            "POST {} HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
-            verb.path(),
-            body.len()
-        )
-        .unwrap();
-        stream.write_all(body).unwrap();
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).unwrap();
-        let end = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
-        serde_json::from_slice(&response[end..]).unwrap()
+        call_bytes(&self.root, verb, body)
     }
     fn signed(&mut self, action: Action) -> Vec<u8> {
         self.counter += 1;
@@ -311,8 +296,426 @@ fn executor() -> PathBuf {
         .into()
 }
 
+fn call_bytes(root: &Path, verb: Verb, body: &[u8]) -> Response {
+    let mut stream = UnixStream::connect(root.join("state/control.sock")).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    write!(
+        stream,
+        "POST {} HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+        verb.path(),
+        body.len()
+    )
+    .unwrap();
+    stream.write_all(body).unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    let end = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+    serde_json::from_slice(&response[end..]).unwrap()
+}
+
+#[test]
+#[ignore = "requires a native host; Linux needs bubblewrap and an owned memory/pids delegation"]
+fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
+    let mut random = [0u8; 16];
+    SystemRandom::new().fill(&mut random).unwrap();
+    let target = format!("enrol-{:032x}", u128::from_le_bytes(random));
+    let root = std::env::temp_dir().join(&target);
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let root = root.canonicalize().unwrap();
+    let control = root.join("control");
+    // This fixture key has no issuing-instance binding. The witness covers
+    // target preparation and signed native work, not human commissioning.
+    let key = Ed25519KeyPair::from_seed_unchecked(&[43; 32]).unwrap();
+    let (read_paths, broader) = if cfg!(target_os = "macos") {
+        (
+            vec!["/bin", "/usr/lib", "/System/Library"],
+            vec!["memory", "processes", "executor_restart", "network_ipc"],
+        )
+    } else {
+        (
+            vec!["/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache"],
+            vec!["network_ipc"],
+        )
+    };
+    let request = serde_json::json!({
+        "operation_id":format!("req-{:032x}", u128::from_le_bytes(random)),
+        "target_id":target,"issuer_id":"bootstrap-fixture","key_id":"task",
+        "public_key":STANDARD.encode(key.public_key().as_ref()),
+        "principal":{"run":{"agent":"fixture","agent_id":"ag-fixture","run_id":"1".repeat(32)},"task_id":"bootstrap"},
+        "task_revision":"a".repeat(64),"not_before":now()-1,"expires_at":now()+300,
+        "plan":{"intent":{"outcome":"Qualify native task preparation","service_function":null,
+            "audience":null,"data_and_functions":null,"authentication":null,"lifetime":"Five minutes"},
+            "hostname":"127.0.0.1","control_listen":"127.0.0.1:18444","root":root.join("workload"),
+            "read_paths":read_paths,
+            "network":{"destinations":[],"listeners":[{"address":"127.0.0.1","port":0,"transport":"tcp"}],"ipc":[]},"broader":broader,
+            "execution_limits":{"timeout_seconds":10,"output_bytes":1024,"memory_bytes":67108864,"processes":8},
+            "budgets":{"calls":10,"concurrent":1,"timeout_seconds":10,"output_bytes":1024},
+            "duration_seconds":301,"allow_agent_code":true,"allow_run_refresh":true,
+            "executable_bytes":16777216,"dependency_bytes":16777216}
+    });
+    let prepare = |request: &serde_json::Value, directory: &Path| {
+        Command::new(executor())
+            .args(["enrol", "--request-base64"])
+            .arg(STANDARD.encode(serde_json::to_vec(request).unwrap()))
+            .arg("--directory")
+            .arg(directory)
+            .output()
+            .unwrap()
+    };
+    let first = prepare(&request, &control);
+    assert!(
+        first.status.success(),
+        "retained {}: {}",
+        root.display(),
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let enrolled: enrolment::Enrolment = serde_json::from_slice(&first.stdout).unwrap();
+    enrolled.validate().unwrap();
+    #[cfg(target_os = "macos")]
+    {
+        let mut without_broader = request.clone();
+        without_broader["plan"]["broader"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|bound| bound != "processes");
+        let result = prepare(&without_broader, &root.join("without-broader"));
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let narrower: enrolment::Enrolment = serde_json::from_slice(&result.stdout).unwrap();
+        narrower.validate().unwrap();
+        let facts = &narrower.network_enforcement["task:*"];
+        assert!(
+            facts
+                .iter()
+                .any(|fact| fact.contains("UNSUPPORTED DESCENDANT BOUND"))
+        );
+        assert!(
+            !facts
+                .iter()
+                .any(|fact| fact.contains("EXPLICIT BROADER PROCESSES"))
+        );
+    }
+    let checked = Command::new(executor())
+        .args(["check", "--config"])
+        .arg(&enrolled.configuration)
+        .arg("--state")
+        .arg(&enrolled.state)
+        .output()
+        .unwrap();
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    let mut settings: server::Configuration =
+        serde_json::from_slice(&fs::read(&enrolled.configuration).unwrap()).unwrap();
+    let helper = &enrolled.target.package.operations["endpoint-inspect"];
+    assert_eq!(
+        enrolled.target.package.operations["task:inspect"]
+            .execution
+            .resources
+            .processes,
+        if cfg!(target_os = "macos") { 1 } else { 8 }
+    );
+    assert!(
+        !enrolled.target.package.operations["task:inspect"]
+            .execution
+            .broader
+            .contains(&BroaderBound::Processes)
+    );
+    assert_eq!(
+        enrolled.target.families[0]
+            .rule
+            .ceiling
+            .execution
+            .resources
+            .processes,
+        8
+    );
+    #[cfg(target_os = "macos")]
+    assert!(
+        enrolled.network_enforcement["task:*"]
+            .iter()
+            .any(|fact| fact.contains("escaped descendants may outlive"))
+    );
+    assert!(
+        helper.execution.filesystem.read.is_empty() && helper.execution.filesystem.write.is_empty()
+    );
+    assert!(helper.execution.network.listener_handoff.is_none());
+    assert!(
+        enrolled.target.ceiling["endpoint-inspect"]
+            .updates
+            .is_none()
+    );
+    assert!(
+        enrolled.network_enforcement["task:inspect"]
+            .iter()
+            .any(|fact| fact.contains("EXPLICIT BROADER"))
+    );
+    assert!(
+        enrolled.network_enforcement["endpoint-inspect"]
+            .iter()
+            .any(|fact| fact.contains("typed"))
+    );
+    #[cfg(target_os = "linux")]
+    {
+        let NativeRuntime::Linux(runtime) = &settings.native;
+        let controllers =
+            fs::read_to_string(runtime.cgroup.join("cgroup.subtree_control")).unwrap();
+        assert!(controllers.split_whitespace().any(|name| name == "memory"));
+        assert!(controllers.split_whitespace().any(|name| name == "pids"));
+    }
+    let again = prepare(&request, &control);
+    assert!(
+        again.status.success(),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+    assert_eq!(first.stdout, again.stdout);
+    let mut changed = request;
+    changed["plan"]["duration_seconds"] = serde_json::json!(600);
+    let refused = prepare(&changed, &control);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("another enrolment request"));
+
+    // Reuse the fixture's private signed transport for this native shell
+    // regression. Remote TLS and human commissioning need their own proof.
+    settings.https = None;
+    fs::write(
+        &enrolled.configuration,
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    struct StopServer(Child);
+    impl Drop for StopServer {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let server = StopServer(start(&control));
+    let mut counter = 0;
+    let mut call = |target: &Target, action: Action| {
+        counter += 1;
+        let issuer = &enrolled.request.issuer_id;
+        let verb = action.verb();
+        let signed = SignedRequest::sign(
+            Request {
+                version: VERSION.into(),
+                required_features: Vec::new(),
+                request_id: format!("bootstrap-{counter}"),
+                target_id: target.target_id.clone(),
+                issuer_id: issuer.clone(),
+                grant_id: "task".into(),
+                principal: enrolled.request.principal.clone(),
+                expires_at: enrolled.request.expires_at,
+                expected: Some(target.request_revisions(issuer, "task", &action).unwrap()),
+                action,
+                untrusted_rationale: "native enrolment regression".into(),
+            },
+            enrolled.request.key_id.clone(),
+            &key,
+        );
+        call_bytes(&control, verb, &serde_json::to_vec(&signed).unwrap())
+    };
+    let run = |call: &mut dyn FnMut(&Target, Action) -> Response, target: &Target, id: &str| {
+        let operation = &target.package.operations[id];
+        let invocation = Invocation {
+            operation_id: id.into(),
+            resource_id: "task:workspace".into(),
+            operation_sha256: target.package.operation_sha256(id).unwrap(),
+            implementation_sha256: operation.implementation_sha256(),
+            arguments: BTreeMap::new(),
+            expected_assessment_sha256: None,
+        };
+        let Response::Proposal { prepared, .. } = call(target, Action::Propose { invocation })
+        else {
+            panic!("task proposal");
+        };
+        let Response::Job { receipt } = call(
+            target,
+            Action::Invoke {
+                invocation: prepared.invocation,
+            },
+        ) else {
+            panic!("task invocation");
+        };
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let Response::Job { receipt } = call(
+                target,
+                Action::Job {
+                    job_id: receipt.job_id.clone(),
+                },
+            ) else {
+                panic!("task receipt");
+            };
+            if receipt.state.terminal() {
+                let uncertain_tree =
+                    cfg!(target_os = "macos") && operation.execution.resources.processes > 1;
+                assert_eq!(
+                    receipt.state,
+                    if uncertain_tree {
+                        JobState::Uncertain
+                    } else {
+                        JobState::Completed
+                    },
+                    "{receipt:?}"
+                );
+                assert_eq!(
+                    receipt.native.as_ref().unwrap().exit_code,
+                    Some(0),
+                    "{receipt:?}"
+                );
+                assert_eq!(
+                    receipt.native.as_ref().unwrap().processes_stopped,
+                    !uncertain_tree
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "task did not settle: {receipt:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    run(&mut call, &settings.target, "task:inspect");
+    let shell = &enrolled.target.package.operations["task:inspect"].execution;
+    let expected_shell = fs::canonicalize(if cfg!(target_os = "macos") {
+        "/bin/bash"
+    } else {
+        "/bin/sh"
+    })
+    .unwrap();
+    assert_eq!(Path::new(&shell.executable), expected_shell);
+    assert_eq!(shell.executable_sha256, hash(&expected_shell));
+
+    // Match the helper's built-in printf recipe, including binary bytes and
+    // a space in the destination. Staging inherits no service listener.
+    let output = enrolled.request.plan.root.join("staged bytes");
+    let mut stage = enrolled.target.package.operations["task:inspect"].clone();
+    stage.execution.argv[1] = Word::Literal {
+        value: format!(
+            "printf '%b' '\\0000\\0377\\0012\\0047' > '{}'",
+            output.display()
+        ),
+    };
+    stage.execution.network =
+        serde_json::from_value(serde_json::json!({"destinations":[],"listeners":[],"ipc":[]}))
+            .unwrap();
+    stage.execution.broader.remove(&BroaderBound::NetworkIpc);
+    let package = enrolled
+        .target
+        .revised_package("task:stage", &stage)
+        .unwrap();
+    let response = call(
+        &enrolled.target,
+        Action::Adopt {
+            operation_id: "task:stage".into(),
+            operation: Box::new(stage.clone()),
+            base_package_sha256: revision(&enrolled.target.package),
+            package_sha256: revision(&package),
+            observed_at: enrolled.request.not_before,
+        },
+    );
+    assert!(
+        matches!(response, Response::Adoption { .. }),
+        "{response:?}"
+    );
+    // The real executor qualifies its own endpoint helper before saving each
+    // adoption. Read that target here; this test binary has another current_exe
+    // and cannot repeat the helper's native self-identity qualification.
+    let saved_target = || {
+        serde_json::from_slice::<Configuration>(&fs::read(&enrolled.configuration).unwrap())
+            .unwrap()
+            .target
+    };
+    let adopted = saved_target();
+    run(&mut call, &adopted, "task:stage");
+    assert_eq!(fs::read(&output).unwrap(), [0, 255, b'\n', b'\'']);
+    #[cfg(target_os = "macos")]
+    {
+        // Revise code through the same adopted task family. An external tool
+        // and background shell use the prepared interpreter and standing scope.
+        // The fixed staging recipe narrowed its process use; general adopted
+        // code still selects the full, explicitly broader task ceiling.
+        stage.execution.resources.processes = enrolled.request.plan.execution_limits.processes;
+        stage.execution.broader.insert(BroaderBound::Processes);
+        stage.execution.argv[1] = Word::Literal {
+            value: format!(
+                "/bin/echo external-child > '{}'; ( /bin/sleep 0.1; printf 'revised-background\\n' >> '{}' ) &",
+                output.display(),
+                output.display()
+            ),
+        };
+        let package = adopted.revised_package("task:stage", &stage).unwrap();
+        let response = call(
+            &adopted,
+            Action::Adopt {
+                operation_id: "task:stage".into(),
+                operation: Box::new(stage.clone()),
+                base_package_sha256: revision(&adopted.package),
+                package_sha256: revision(&package),
+                observed_at: enrolled.request.not_before,
+            },
+        );
+        assert!(
+            matches!(response, Response::Adoption { .. }),
+            "{response:?}"
+        );
+        let revised = saved_target();
+        run(&mut call, &revised, "task:stage");
+        assert_eq!(
+            fs::read(&output).unwrap(),
+            b"external-child\nrevised-background\n"
+        );
+    }
+    stage
+        .execution
+        .filesystem
+        .write
+        .push(control.to_string_lossy().into_owned());
+    let current = saved_target();
+    let package = current.revised_package("task:stage", &stage).unwrap();
+    let refused = call(
+        &current,
+        Action::Adopt {
+            operation_id: "task:stage".into(),
+            operation: Box::new(stage),
+            base_package_sha256: revision(&current.package),
+            package_sha256: revision(&package),
+            observed_at: enrolled.request.not_before,
+        },
+    );
+    assert!(
+        matches!(&refused, Response::Refused { refusal } if refusal.code == RefusalCode::Authority),
+        "{refused:?}"
+    );
+    drop(server);
+    #[cfg(target_os = "linux")]
+    {
+        let NativeRuntime::Linux(runtime) = &settings.native;
+        assert_eq!(
+            fs::read_to_string(runtime.cgroup.join("cgroup.procs")).unwrap(),
+            ""
+        );
+        fs::remove_dir(&runtime.cgroup).unwrap();
+    }
+    fs::remove_dir_all(&root).unwrap();
+    eprintln!(
+        "native task inspection and binary staging passed; executable pin retained; preparation recovered; changed request and control-path expansion refused"
+    );
+}
+
 fn start(root: &Path) -> Child {
-    let child = Command::new(executor())
+    let mut child = Command::new(executor())
         .arg("serve")
         .arg("--config")
         .arg(root.join("target.json"))
@@ -331,11 +734,14 @@ fn start(root: &Path) -> Child {
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     while UnixStream::connect(root.join("state/control.sock")).is_err() {
-        assert!(
-            Instant::now() < deadline,
-            "server not ready: {}",
-            fs::read_to_string(root.join("server.log")).unwrap()
-        );
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "server not ready: {}",
+                fs::read_to_string(root.join("server.log")).unwrap()
+            );
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
     child
@@ -464,7 +870,7 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
                     timeout_seconds: if mode == "deadline" { 1 } else { 5 },
                     output_bytes: 4096,
                     memory_bytes: 64 * 1024 * 1024,
-                    processes: 12,
+                    processes: if cfg!(target_os = "macos") { 1 } else { 12 },
                 },
                 delegated_services: vec![],
             },
@@ -618,6 +1024,272 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
     fixture
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires native macOS Seatbelt and the existing native fixture"]
+fn installed_macos_children_run_and_escaped_cleanup_remains_uncertain() {
+    let mut f = fixture(24, 128 * 1024);
+    let work = f.root.join("work");
+    fs::create_dir(&work).unwrap();
+    let mut settings: Configuration =
+        serde_json::from_slice(&fs::read(f.root.join("target.json")).unwrap()).unwrap();
+    let mut operations = BTreeMap::new();
+    for (name, script) in [
+        (
+            "children",
+            format!(
+                "/bin/echo external-child > '{0}/result'; ( /bin/sleep 0.3; printf 'background-result\\n' >> '{0}/result' ) &",
+                work.display()
+            ),
+        ),
+        (
+            "cancel",
+            format!(
+                "( printf 'persistent-result\\n' > '{0}/cancel'; exec /bin/sleep 30 ) & printf 'launcher-exit\\n'",
+                work.display()
+            ),
+        ),
+        (
+            "timeout",
+            format!(
+                "( printf 'timeout-result\\n' > '{0}/timeout'; exec /bin/sleep 30 ) &",
+                work.display()
+            ),
+        ),
+        (
+            "restart",
+            format!(
+                "( printf 'restart-result\\n' > '{0}/restart'; exec /bin/sleep 1.5 ) &",
+                work.display()
+            ),
+        ),
+        (
+            "limit",
+            "for ((i=0;i<16;i++)); do (while :; do :; done) & done; wait".into(),
+        ),
+        (
+            "denied",
+            format!(
+                "if /usr/bin/true; then exit 1; fi; if /bin/bash -c 'read x < \"{}\"'; then exit 2; fi; printf 'child-boundaries-refused\\n'",
+                f.root.join("forbidden").display()
+            ),
+        ),
+    ] {
+        let mut operation = f.target.package.operations["observe"].clone();
+        let e = &mut operation.execution;
+        e.executable = "/bin/bash".into();
+        e.executable_sha256 = hash(Path::new("/bin/bash"));
+        e.argv = vec![
+            Word::Literal { value: "-c".into() },
+            Word::Literal { value: script },
+        ];
+        e.filesystem.read.push("/bin".into());
+        e.filesystem.write = vec![work.to_string_lossy().into_owned()];
+        e.broader.insert(BroaderBound::Processes);
+        e.resources.processes = if name == "limit" { 2 } else { 8 };
+        e.resources.timeout_seconds = if name == "timeout" { 2 } else { 5 };
+        operations.insert(name.into(), operation);
+    }
+    let mut escape = operations["children"].clone();
+    escape.execution.executable = f.root.join("probe").to_string_lossy().into_owned();
+    escape.execution.executable_sha256 = hash(&f.root.join("probe"));
+    escape.execution.argv = vec![
+        Word::Literal {
+            value: "mac-group-escapes".into(),
+        },
+        Word::Literal {
+            value: work.to_string_lossy().into_owned(),
+        },
+        Word::Literal {
+            value: f.network_listener.local_addr().unwrap().port().to_string(),
+        },
+    ];
+    operations.insert("escape".into(), escape);
+    settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    f.target = settings.target.clone();
+    f.server.kill().unwrap();
+    f.server.wait().unwrap();
+    let mut missing = settings.clone();
+    missing
+        .target
+        .package
+        .operations
+        .get_mut("children")
+        .unwrap()
+        .execution
+        .broader
+        .remove(&BroaderBound::Processes);
+    missing.target = common::target(
+        missing.target.target_id.clone(),
+        missing.target.package.operations.clone(),
+        &f.key,
+    );
+    fs::write(
+        f.root.join("target.json"),
+        serde_json::to_vec_pretty(&missing).unwrap(),
+    )
+    .unwrap();
+    let refused = Command::new(executor())
+        .args(["check", "--config"])
+        .arg(f.root.join("target.json"))
+        .arg("--state")
+        .arg(f.root.join("state"))
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("broader processes authority"));
+    fs::write(
+        f.root.join("target.json"),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    f.server = start(&f.root);
+    f.check_file_results();
+
+    for mode in ["children", "escape", "denied"] {
+        let (job, _) = f.invoke(mode);
+        let result = f.terminal(&job.job_id);
+        eprintln!("{mode}: {result:?}");
+        assert_eq!(result.state, JobState::Uncertain, "{result:?}");
+        assert!(result.process.as_ref().unwrap().descendants_may_escape);
+        let native = result.native.as_ref().unwrap();
+        assert_eq!(native.exit_code, Some(0), "{result:?}");
+        assert!(!native.processes_stopped);
+        assert!(
+            native
+                .dependencies
+                .iter()
+                .any(|fact| fact.contains("escaped descendants may outlive"))
+        );
+        if mode == "escape" {
+            let escaped: Vec<u32> = fs::read_to_string(work.join("escaped-pid"))
+                .unwrap()
+                .split_whitespace()
+                .map(|value| value.parse().unwrap())
+                .collect();
+            assert_ne!(escaped[1], result.process.as_ref().unwrap().process_group);
+            let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+            let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+            assert_eq!(
+                unsafe {
+                    libc::proc_pidinfo(
+                        escaped[0] as i32,
+                        libc::PROC_PIDTBSDINFO,
+                        0,
+                        info.as_mut_ptr().cast(),
+                        size,
+                    )
+                },
+                size
+            );
+            let info = unsafe { info.assume_init() };
+            assert_ne!(info.pbi_status, 5, "escaped process must actually be live");
+            assert_eq!(info.pbi_pgid, escaped[1]);
+            eprintln!(
+                "live escaped child pid={} group={} birth={}.{}; selected writes work, outside file/TCP/IPC controls refused",
+                info.pbi_pid, info.pbi_pgid, info.pbi_start_tvsec, info.pbi_start_tvusec
+            );
+            assert!(
+                native.output_truncated,
+                "escaped writer must be reported as partial"
+            );
+            let Response::Output { data_base64, .. } = f.call(Action::Output {
+                job_id: job.job_id.clone(),
+                offset: 0,
+                max_bytes: 4096,
+            }) else {
+                panic!("signed child output");
+            };
+            assert!(
+                String::from_utf8_lossy(&STANDARD.decode(data_base64).unwrap())
+                    .contains("ordinary-posix-spawn-child")
+            );
+            f.restart();
+            assert_eq!(f.job(&job.job_id).state, JobState::Uncertain);
+            let deadline = Instant::now() + Duration::from_secs(4);
+            while !work.join("escaped-done").exists() {
+                assert!(
+                    Instant::now() < deadline,
+                    "owned escaped probe did not finish"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            f.restart();
+            let retained = f.job(&job.job_id);
+            assert!(
+                !retained.detail.contains("observed quiescence"),
+                "{retained:?}"
+            );
+            let invocation = f.invocation("escape");
+            let refused = f.call(Action::Invoke { invocation });
+            assert!(
+                matches!(refused, Response::Refused { refusal } if refusal.code == RefusalCode::Budget),
+                "uncertain tree must retain its concurrency reservation"
+            );
+        }
+    }
+    assert_eq!(
+        fs::read(work.join("result")).unwrap(),
+        b"external-child\nbackground-result\n"
+    );
+    for (mode, state, reason) in [
+        ("cancel", JobState::Uncertain, "cancelled"),
+        ("timeout", JobState::Uncertain, "timeout"),
+        ("limit", JobState::Uncertain, "observed_process_limit"),
+    ] {
+        let (job, _) = f.invoke(mode);
+        if mode == "cancel" {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !work.join(mode).exists() {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            // Give the launcher time to exit. Its background child must keep
+            // the job running and retain the group's concurrency reservation.
+            std::thread::sleep(Duration::from_millis(100));
+            let running = f.job(&job.job_id);
+            assert_eq!(running.state, JobState::Running, "{running:?}");
+            f.call(Action::Cancel {
+                job_id: job.job_id.clone(),
+                expected_revision: running.revision,
+            });
+        }
+        let result = f.terminal(&job.job_id);
+        eprintln!("{mode}: {result:?}");
+        assert_eq!(result.state, state, "{result:?}");
+        let native = result.native.unwrap();
+        assert!(!native.processes_stopped);
+        assert_eq!(native.termination_reason, reason);
+    }
+    let (job, _) = f.invoke("restart");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !work.join("restart").exists() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    f.restart();
+    let retained = f.job(&job.job_id);
+    assert_eq!(retained.state, JobState::Uncertain, "{retained:?}");
+    assert!(!retained.detail.contains("observed quiescence"));
+    // Do not signal a recovered PID/group. This owned child exits naturally.
+    std::thread::sleep(Duration::from_secs(2));
+    f.restart();
+    let quiescent = f.job(&job.job_id);
+    assert_eq!(quiescent.state, JobState::Uncertain);
+    assert!(
+        !quiescent.detail.contains("observed quiescence"),
+        "{quiescent:?}"
+    );
+    f.assert_file_result(&job.job_id, &work.join("restart"), b"restart-result\n");
+    assert_eq!(
+        fs::read(work.join("cancel")).unwrap(),
+        b"persistent-result\n"
+    );
+    assert_eq!(fs::read(work.join("timeout")).unwrap(), b"timeout-result\n");
+    f.assert_no_side_effects();
+}
+
 #[test]
 #[ignore = "requires the existing native Unix fixture and prepared probe or C compiler"]
 fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
@@ -630,6 +1302,8 @@ fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
         ceiling: config.target.package.operations["observe"].clone(),
         allow_narrower: true,
         allow_implementation_updates: true,
+        allow_agent_code: false,
+        agent_dependency_bytes: 0,
     };
     config.target.ceiling.get_mut("observe").unwrap().updates = Some(rule.clone());
     config
@@ -664,6 +1338,7 @@ fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
     fs::write(&observed, serde_json::to_vec(&active).unwrap()).unwrap();
     config.catalogue = Some(CatalogueAdoption {
         policy: CataloguePolicy {
+            agent_code_keys: BTreeMap::new(),
             publisher: "publisher".into(),
             public_key: STANDARD.encode(f.key.public_key().as_ref()),
             package_name: config.target.package.name.clone(),
@@ -849,6 +1524,8 @@ fn installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authori
         ceiling: op.clone(),
         allow_narrower: true,
         allow_implementation_updates: true,
+        allow_agent_code: false,
+        agent_dependency_bytes: 0,
     };
     for scope in [
         config.target.ceiling.get_mut("observe").unwrap(),
@@ -886,6 +1563,7 @@ fn installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authori
     fs::write(&observed, serde_json::to_vec(&active).unwrap()).unwrap();
     config.catalogue = Some(CatalogueAdoption {
         policy: CataloguePolicy {
+            agent_code_keys: BTreeMap::new(),
             publisher: "publisher".into(),
             public_key: STANDARD.encode(f.key.public_key().as_ref()),
             package_name: config.target.package.name.clone(),

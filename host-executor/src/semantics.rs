@@ -314,6 +314,8 @@ mod tests {
             ceiling: adopted.clone(),
             allow_narrower: false,
             allow_implementation_updates: false,
+            allow_agent_code: false,
+            agent_dependency_bytes: 0,
         };
         adopted.description.push_str(" Reviewed wording.");
         assert!(rule.allows(&adopted));

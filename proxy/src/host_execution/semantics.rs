@@ -523,7 +523,7 @@ pub fn assess_target(
         .grants
         .iter()
         .filter(|(_, grant)| {
-            grant.principal == *principal && grant.not_before <= now && now < grant.expires_at
+            grant.allows_principal(principal) && grant.not_before <= now && now < grant.expires_at
         })
         .map(|(id, grant)| Authority {
             id: format!("{issuer}:{id}"),
@@ -536,7 +536,7 @@ pub fn assess_target(
     let mut potential = current.clone();
     let mut future_family_ceilings = Vec::new();
     for (id, grant) in &snapshot.grants {
-        if grant.principal == *principal && grant.not_before <= now && now < grant.expires_at {
+        if grant.allows_principal(principal) && grant.not_before <= now && now < grant.expires_at {
             future_family_ceilings.extend(family_ceilings(
                 &mut potential_package,
                 grant,
@@ -589,7 +589,7 @@ pub fn assess_target(
     } else {
         None
     };
-    let current_lifetimes:Vec<_>=snapshot.grants.iter().filter(|(_,grant)|grant.principal==*principal && grant.not_before<=now && now<grant.expires_at).map(|(id,grant)|json!({"grant_id":id,"not_before":grant.not_before,"expires_at":grant.expires_at,"verbs":grant.verbs})).collect();
+    let current_lifetimes:Vec<_>=snapshot.grants.iter().filter(|(_,grant)|grant.allows_principal(principal) && grant.not_before<=now && now<grant.expires_at).map(|(id,grant)|json!({"grant_id":id,"not_before":grant.not_before,"expires_at":grant.expires_at,"verbs":grant.verbs,"allow_run_refresh":grant.allow_run_refresh})).collect();
     Ok(
         json!({"target_id":target.target_id,"issuer_id":issuer,"principal":principal,"current_revisions":target.revisions(issuer)?,"authority_valid_until":snapshot.valid_until,"current_grants":current_lifetimes,"proposed_grant":proposed,"full_proposed_authority":requested,"standing_potential_authority":standing_potential,"future_family_ceilings":future_family_ceilings,"effective_authority":effective,"effective_grants":current,"input_revision":revision(&(target.revisions(issuer)?,revision(&target.package),&current,proposed,history)),"limitations":["Other issuer identities are not assumed to be this principal. Exact-operation grants acquire no future membership. Family ceilings show represented potential; uncharacterised future behavior remains unknown.","Budget ceilings are assessed without current ledger usage. Invocation still checks remaining budgets, required evidence and fresh adopted revisions."]}),
     )

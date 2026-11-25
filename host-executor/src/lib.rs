@@ -5,6 +5,7 @@ mod authority;
 mod catalogue;
 pub mod effects;
 pub mod endpoints;
+pub mod enrolment;
 mod files;
 pub mod https;
 mod ledger;
@@ -70,7 +71,13 @@ use serde_json::Value;
 use zeroize::Zeroize;
 
 pub const VERSION: &str = "safeyolo.host-execution/v1";
-pub const FEATURES: &[&str] = &["signed-request-v1", "revision-binding-v1", "job-receipt-v1"];
+pub const FEATURES: &[&str] = &[
+    "signed-request-v1",
+    "revision-binding-v1",
+    "job-receipt-v1",
+    "agent-code-adoption-v1",
+    "standing-run-authority-v1",
+];
 
 pub fn schemas() -> Value {
     serde_json::json!({

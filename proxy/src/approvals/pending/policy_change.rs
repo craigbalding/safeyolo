@@ -146,18 +146,22 @@ fn retain(
     operation: &str,
     data: &Retained,
     restore_of: Option<&str>,
+    host_setup_revision: Option<&str>,
 ) -> Result<Record> {
     let basis = json!({"base":data.snapshot.reference(),
         "candidate_revision":source_revision(&data.candidate.source),"materialized_revision":source_revision(&data.materialized),
         "assessment_id":data.assessment["assessment_id"],"restore_of":restore_of});
     let revision = digest(&basis);
-    let action = json!({"kind":"policy_change","agent":run.agent,"agent_id":run.agent_id,
+    let mut action = json!({"kind":"policy_change","agent":run.agent,"agent_id":run.agent_id,
         "run":if restore_of.is_some(){Value::Null}else{json!(run)},
         "initiator":if restore_of.is_some(){"operator"}else{"agent"},
         "basis_revision":revision,"base":basis["base"],"candidate_revision":basis["candidate_revision"],
         "materialized_revision":basis["materialized_revision"],"assessment_id":basis["assessment_id"],
         "snapshot_request_id":data.candidate.snapshot_request_id,"definition_version":data.candidate.definition_version,
         "restore_of":restore_of});
+    if let Some(revision) = host_setup_revision {
+        action["host_setup_revision"] = json!(revision);
+    }
     let authority = Authority { action, revision, method:"POST".into(),scheme:"http".into(),port:None,
         resource_digest:source_revision(&data.materialized),
         options:vec![OptionScope {id:"apply".into(),effect:
@@ -221,7 +225,99 @@ pub(crate) fn submit(
             "candidate is invalid or needs its existing trusted dependency adoption path; no approval was submitted",
         ));
     }
-    retain(writer, policy, run, &input.operation_id, &data, None)
+    retain(writer, policy, run, &input.operation_id, &data, None, None)
+}
+
+/// A typed trusted owner can prepare a local change without disclosing the
+/// complete policy to the agent. It still uses the same retained candidate,
+/// deterministic review, human decision and save/activation transaction.
+pub(crate) fn submit_host_setup(
+    state: &crate::RuntimeState,
+    writer: &Writer,
+    run: &AgentRun,
+    operation_id: &str,
+    setup_revision: &str,
+    build: impl FnOnce(&str) -> std::result::Result<String, crate::Error>,
+) -> Result<Record> {
+    if !crate::agent_api::valid_request_id(operation_id) {
+        return Err(invalid(
+            "choose a req- operation_id before preparing host setup",
+        ));
+    }
+    if let Some(record) = writer.approvals().get(operation_id)? {
+        let runtime = state.read().map_err(unavailable)?;
+        if !requester(&runtime, &record, run)?
+            || record.authority.action["host_setup_revision"] != setup_revision
+        {
+            return Err(invalid(
+                "changed host setup needs a new operation_id; read the original request",
+            ));
+        }
+        return Ok(record);
+    }
+    let runtime = state.read().map_err(unavailable)?.clone();
+    let policy = runtime
+        .policy
+        .as_deref()
+        .ok_or_else(|| invalid("policy unavailable"))?;
+    if !run.current(policy) {
+        return Err(invalid("trusted current-run requester identity required"));
+    }
+    let path = runtime
+        .config
+        .policy_file
+        .as_ref()
+        .ok_or_else(|| invalid("policy source unavailable"))?;
+    let source = Zeroizing::new(std::fs::read_to_string(path).map_err(unavailable)?);
+    let snapshot = policy
+        .full_snapshot(
+            &source,
+            path,
+            &policy_snapshot::instance_id(&runtime.config)?,
+            run,
+        )
+        .map_err(unavailable)?;
+    let candidate = Candidate {
+        snapshot_request_id: operation_id.to_owned(),
+        source: build(&snapshot.disclosed_source).map_err(unavailable)?,
+        definition_version: env!("SAFEYOLO_DEFINITION_VERSION").into(),
+    };
+    let materialized = snapshot
+        .materialize(&candidate.source)
+        .map_err(unavailable)?;
+    let grants = runtime
+        .gateway_grants
+        .as_ref()
+        .map(|store| store.current_grants_for_report(time::OffsetDateTime::now_utc()))
+        .transpose()?
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| !entry.expired)
+        .map(|entry| entry.grant)
+        .collect::<Vec<_>>();
+    let assessment = policy_assessment::operator_materialized(
+        &snapshot, &candidate, policy, &source, &grants, None,
+    )?;
+    let data = Retained {
+        snapshot,
+        candidate,
+        materialized: materialized.to_string(),
+        assessment,
+    };
+    if !dependencies_ready(&data, &data.assessment) {
+        return Err(invalid(
+            "host setup is invalid or needs an existing trusted dependency; no approval was submitted",
+        ));
+    }
+    retain(
+        writer,
+        policy,
+        run,
+        operation_id,
+        &data,
+        None,
+        Some(setup_revision),
+    )
 }
 
 fn requester(runtime: &crate::Runtime, record: &Record, run: &AgentRun) -> Result<bool> {
@@ -633,6 +729,7 @@ pub(crate) fn restore(
         &input.operation_id,
         &data,
         Some(&input.approval_id),
+        None,
     )?;
     drop(runtime);
     writer

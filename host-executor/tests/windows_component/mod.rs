@@ -1544,6 +1544,8 @@ fn catalogue_updates(fixture: &mut Fixture, resume: bool) {
             ceiling: op.clone(),
             allow_narrower: true,
             allow_implementation_updates: true,
+            allow_agent_code: false,
+            agent_dependency_bytes: 0,
         };
         let pin = op.implementation_sha256();
         for scope in [
@@ -1568,6 +1570,7 @@ fn catalogue_updates(fixture: &mut Fixture, resume: bool) {
         fs::write(&observed, serde_json::to_vec(&active).unwrap()).unwrap();
         config.catalogue = Some(CatalogueAdoption {
             policy: CataloguePolicy {
+                agent_code_keys: BTreeMap::new(),
                 publisher: "publisher".into(),
                 public_key: STANDARD.encode(key.public_key().as_ref()),
                 package_name: config.target.package.name.clone(),
