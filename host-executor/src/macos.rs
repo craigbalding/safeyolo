@@ -34,7 +34,7 @@ pub(crate) fn network_enforcement(operation: &Operation) -> Vec<String> {
     }
     facts
 }
-use processes::{group_members, group_memory};
+use processes::{children_absent, group_empty, group_members, group_memory};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -221,7 +221,7 @@ impl MacRuntime {
         for receipt in ledger.recover(now())? {
             if let Some(process) = &receipt.process {
                 if birth(process.pid)?.is_some_and(|p| same(&p, process))
-                    || !group_members(process.process_group)?.is_empty()
+                    || !group_empty(process.process_group)?
                 {
                     // A birth check followed by kill(pid) is still vulnerable
                     // to PID reuse after a restart: this executor no longer
@@ -472,7 +472,7 @@ impl MacRuntime {
                 reason = "observed_memory_limit";
                 break;
             }
-            if child.exited()? && members.is_empty() {
+            if child.exited()? && children_absent(child.pid)? {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -480,7 +480,7 @@ impl MacRuntime {
         if reason != "exited" {
             child.kill_group()?;
             let cleanup_deadline = Instant::now() + Duration::from_secs(2);
-            while !child.exited()? || !group_members(child.pid)?.is_empty() {
+            while !child.exited()? || !children_absent(child.pid)? {
                 require(
                     Instant::now() < cleanup_deadline,
                     RefusalCode::Unavailable,

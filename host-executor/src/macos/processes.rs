@@ -18,7 +18,7 @@ fn list(group: u32, buffer: *mut libc::c_void, bytes: i32) -> Result<usize, Refu
     Ok(result as usize)
 }
 
-pub(super) fn group_members(group: u32) -> Result<Vec<NativeProcess>, Refusal> {
+fn group_pids(group: u32) -> Result<Vec<u32>, Refusal> {
     // proc_listpids returns bytes, not a PID count. Allow growth between the
     // sizing and data calls; a filled buffer is incomplete and is never empty.
     for _ in 0..3 {
@@ -37,21 +37,35 @@ pub(super) fn group_members(group: u32) -> Result<Vec<NativeProcess>, Refusal> {
             continue;
         }
         pids.truncate(count);
-        let mut members = Vec::new();
-        for pid in pids {
-            if pid != 0 {
-                if let Some(process) = birth(pid)? {
-                    if process.process_group == group {
-                        members.push(process);
-                    }
-                }
-            }
-        }
-        return Ok(members);
+        pids.retain(|pid| *pid != 0);
+        return Ok(pids);
     }
     Err(unavailable(
         "process group changed faster than a complete observation",
     ))
+}
+
+pub(super) fn group_empty(group: u32) -> Result<bool, Refusal> {
+    Ok(group_pids(group)?.is_empty())
+}
+
+pub(super) fn children_absent(group: u32) -> Result<bool, Refusal> {
+    // Call only after observing the leader's retained exit status. Inspect the
+    // raw group list: a process that exits between listing and birth lookup
+    // might have forked a child. Filtering that process out is not quiescence.
+    Ok(group_pids(group)?.iter().all(|pid| *pid == group))
+}
+
+pub(super) fn group_members(group: u32) -> Result<Vec<NativeProcess>, Refusal> {
+    let mut members = Vec::new();
+    for pid in group_pids(group)? {
+        if let Some(process) = birth(pid)? {
+            if process.process_group == group {
+                members.push(process);
+            }
+        }
+    }
+    Ok(members)
 }
 
 pub(super) fn group_memory(members: &[NativeProcess]) -> Result<u64, Refusal> {
