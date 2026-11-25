@@ -21,12 +21,13 @@ done
 [[ -f $source_assets/rootfs-tree/usr/share/safeyolo/guest-base/packages.tsv ]] || {
   echo 'Source has no retained-state base inventory.' >&2; exit 1;
 }
+[[ -f $source_assets/cache-paths.txt && ! -L $source_assets/cache-paths.txt ]] || {
+  echo 'Source requires a regular cache-paths.txt (an explicitly supplied empty file is valid).' >&2; exit 1;
+}
 source_tree=$(cd -- "$source_assets/rootfs-tree" && pwd -P)
 mkdir -- "$output_assets"
 cp -a --reflink=auto -- "$source_tree" "$output_assets/rootfs-tree"
-if [[ -f $source_assets/cache-paths.txt ]]; then
-  cp -a -- "$source_assets/cache-paths.txt" "$output_assets/cache-paths.txt"
-fi
+cp -a -- "$source_assets/cache-paths.txt" "$output_assets/cache-paths.txt"
 copied_hook=$output_assets/rootfs-tree/usr/local/lib/safeyolo/guest-state-hook
 copied_tree=$(cd -- "$output_assets/rootfs-tree" && pwd -P)
 [[ $(realpath -e -- "$copied_hook") == "$copied_tree/"* ]] || {

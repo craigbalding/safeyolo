@@ -13,6 +13,16 @@ selected recreation use restored; on a satisfactory later base use fixed.
 Use recover on a separate prepared guest to fail health deliberately.
 Service restart, startup gating and physical VZ witnesses remain separate.
 
+Before recreation, prepare the independent older tree with
+prepare_guest_maintenance_apt.sh ROOTFS SAVED_2.0_DEB. For a satisfactory later
+tree, use its --fixed-base option in the tree's existing ownership namespace.
+The saved archive is in the original agent home at .q1611-maintenance/2.0.deb.
+Do not replay prepare or patch to repair an observer. --prior-result accepts
+the original passed driver result or the canonical M2 native-result readback.
+Restoration can already satisfy >=2.0; only a still-vulnerable guest is patched.
+Each assessment publishes a current controlled-feed revision of the same
+constraint. Historical advisory timestamps and patch results remain unchanged.
+
 prepare_guest_maintenance_inputs.sh makes a separate corrected Linux tree.
 Pass the prepared directory to install_native.sh --platform-assets DIRECTORY
 in a fresh owned instance for the normal-default case; leave agent/rootfs absent.
@@ -36,6 +46,65 @@ CONFIG = "/usr/local/etc/safeyolo-maintenance-probe.conf"
 PAYLOAD = "/usr/share/safeyolo-maintenance-fixture/version"
 
 
+def prior_binding(prior: dict, root: Path, agent_id: str, run_id: str,
+                  base_id: str, phase: str) -> dict:
+    """Bind an existing passed result; a projected native receipt is evidence,
+    not a replacement passed driver result or permission to repeat its effect.
+    """
+    if "native_report_identity_projection" in prior:
+        projection = prior["native_report_identity_projection"]
+        result = prior["results"]["retained_native_M2"]
+        assert result["binding"]["outcome"] == "passed"
+        assert projection["raw_file_bytes"] > 0 and len(projection["raw_file_sha256"]) == 64
+        runtime, context = projection["runtime"], projection["context"]
+        prior_root = projection["root_from_assessment_request"]
+        state = projection["retained_after"]
+        before = projection["retained_before"]
+        advisory = result["advisory"]
+    else:
+        assert prior["outcome"] == "passed" and prior["agent_id"] == agent_id
+        assert prior["root"] == str(root) and prior["run_id"] != run_id
+        assert (prior["base_id"] == base_id) == (phase == "restored")
+        return prior["advisory"]
+    assert runtime["agent_id"] == context["agent_id"] == agent_id
+    assert runtime["run_id"] == context["generation"] and runtime["run_id"] != run_id
+    assert prior_root == context["host_package"] == str(root)
+    assert before["base_id"] == before["actual_base_id"] == state["base_id"] == state["actual_base_id"]
+    assert (state["base_id"] == base_id) == (phase == "restored")
+    assert state["status"] == "captured" and state["capture_error"] is None
+    assert state["reconcile_required"] is False and state["configuration_commit"]
+    requirement = state["requirements"][PACKAGE]
+    assert requirement["distribution"] == "debian:trixie"
+    assert requirement["operator"] == "ge" and requirement["version"] == "2.0"
+    assert requirement["advisory"] == f'{advisory["source_id"]}/{advisory["id"]}'
+    return advisory
+
+
+def current_advisory(previous: dict | None, accepted: list, now: int) -> dict:
+    """Publish new current evidence, retaining the original semantic constraint."""
+    advisory = {"source_id": "q1611", "id": "advisories.q1611-maintenance", "revision": 1,
+                "observed_at": now, "expires_at": now + 3600, "withdrawn": False,
+                "evidence_refs": ["fixture:disposable-maintenance-package"],
+                "evidence": {"kind": "advisory", "distribution": "debian:trixie", "severity": 9,
+                             "subject": {"kind": "package", "name": PACKAGE,
+                                         "distribution": "debian:trixie", "fixed_version": "2.0"}}}
+    if previous:
+        assert (previous["source_id"], previous["id"]) == (advisory["source_id"], advisory["id"])
+        if "evidence" in previous:
+            assert previous["evidence"] == advisory["evidence"], "preserve the adopted constraint"
+    revisions = [record["evidence"]["revision"] for record in accepted
+                 if record["evidence"]["source_id"] == advisory["source_id"]
+                 and record["evidence"]["id"] == advisory["id"]]
+    advisory["revision"] = max([previous["revision"] if previous else 0, *revisions]) + 1
+    return advisory
+
+
+def needs_patch(version: str) -> bool:
+    result = subprocess.run(["dpkg", "--compare-versions", version, "lt", "2.0"], check=False)
+    assert result.returncode in {0, 1}, "invalid fixture package version"
+    return result.returncode == 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, type=Path)
@@ -51,7 +120,7 @@ def main() -> None:
     parser.add_argument("--phase", required=True,
                         choices=["inspect", "prepare", "patch", "restored", "fixed", "recover"])
     parser.add_argument("--authority", choices=["standing", "approval"], default="standing")
-    parser.add_argument("--prior-result", type=Path, help="passed previous phase for a new boot")
+    parser.add_argument("--prior-result", type=Path, help="passed driver result or canonical M2 native-result readback for a new boot")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     root = args.root.resolve(strict=True)
@@ -129,10 +198,9 @@ def main() -> None:
         if args.phase in {"restored", "fixed"}:
             assert args.prior_result, "bind the prior completed phase"
             prior = json.loads(args.prior_result.read_text())
-            assert prior["outcome"] == "passed" and prior["agent_id"] == args.agent_id
-            assert prior["root"] == str(root) and prior["run_id"] != args.run_id
-            assert (prior["base_id"] == args.base_id) == (args.phase == "restored")
-            report["advisory"] = prior["advisory"]
+            report["prior_advisory"] = prior_binding(
+                prior, root, args.agent_id, args.run_id, args.base_id, args.phase)
+            report["prior_result"] = str(args.prior_result)
         if args.phase == "prepare":
             config = tomllib.loads((root / "signals.toml").read_text())
             assert all(rule["response"]["kind"] != "maintenance" for rule in config["rules"].values())
@@ -162,10 +230,22 @@ safeyolo-guest-state capture
             assert shell("cat /workspace/.q1611-maintenance").strip() == args.agent_id
             before = applied()
             current = guest_root(f"dpkg-query -W -f='${{Version}}' {PACKAGE}").strip()
-            if args.phase in {"patch", "restored", "recover"}:
+            report.update(applied_before=before, version_before=current)
+            patch_required = needs_patch(current)
+            if args.phase in {"patch", "recover"}:
                 assert current == "1.0", "select the actual vulnerable fixture base before this phase"
-            else:
+            elif args.phase == "fixed":
                 guest_root(f"dpkg --compare-versions {shlex.quote(current)} ge 2.0")
+                inventory = guest_root("cat /usr/share/safeyolo/guest-base/packages.tsv")
+                report["base_package_inventory"] = inventory
+                base_version = next((fields[1] for row in inventory.splitlines()
+                                     if len(fields := row.split("\t")) == 4
+                                     and fields[0].split(":")[0] == PACKAGE
+                                     and fields[3][1:] == "i "), None)
+                assert base_version, "later base inventory does not provide the installed fixture"
+                guest_root(f"dpkg --compare-versions {shlex.quote(base_version)} ge 2.0")
+            else:
+                assert current == "1.0" or not patch_required, "unexpected restored version"
             config = tomllib.loads((root / "signals.toml").read_text())
             assert set(config["sources"]) == {"advisories"} and set(config["rules"]) == {"packages"}
             source = config["sources"]["advisories"]
@@ -177,7 +257,7 @@ safeyolo-guest-state capture
             patch = (f'dpkg --install {PROBE}/2.0.deb; install -m 0640 {PROBE}/custom.conf {CONFIG}; '
                      f'printf "applied\\n" >> {PROBE}/applied')
             health = f'test "$(cat {PAYLOAD})" = ' + ("1.0" if args.phase == "recover" else "2.0")
-            if args.phase == "fixed":
+            if not patch_required:
                 health = f'dpkg --compare-versions "$(cat {PAYLOAD})" ge 2.0'
             recover = f'dpkg --install "$SAFEYOLO_MAINTENANCE_DIRECTORY/before.deb"; cp -a "$SAFEYOLO_MAINTENANCE_DIRECTORY/config" {CONFIG}'
             # Reuse the assessment driver's private source/explicit-rule format.
@@ -220,19 +300,13 @@ max_output_bytes=1048576
                 stream.write(text)
             path.chmod(0o600)
             command("signals", "configure", str(path))
-            if args.phase in {"patch", "recover"}:
-                now = int(time.time())
-                advisory = {"source_id": "q1611", "id": "advisories.q1611-maintenance", "revision": 1,
-                            "observed_at": now, "expires_at": now + 3600, "withdrawn": False,
-                            "evidence_refs": ["fixture:disposable-maintenance-package"],
-                            "evidence": {"kind": "advisory", "distribution": "debian:trixie", "severity": 9,
-                                         "subject": {"kind": "package", "name": PACKAGE,
-                                                     "distribution": "debian:trixie", "fixed_version": "2.0"}}}
-                report["advisory"] = advisory
-                path = inputs / "maintenance-advisory.json"
-                with path.open("x") as stream:
-                    json.dump(advisory, stream)
-                command("signals", "publish", "advisories", advisory["id"], str(path))
+            accepted = value("signals", "status")["sources"]["advisories"]["accepted"]
+            advisory = current_advisory(report.get("prior_advisory"), accepted, int(time.time()))
+            report["advisory"] = advisory
+            path = inputs / f"maintenance-advisory-{args.phase}-{args.run_id}.json"
+            with path.open("x") as stream:
+                json.dump(advisory, stream)
+            command("signals", "publish", "advisories", advisory["id"], str(path))
             report["assessment_request"] = value("signals", "assess", "packages")
             request_id = report["assessment_request"]["request"]["request_id"]
             expected = "recovered" if args.phase == "recover" else "verified"
@@ -252,19 +326,32 @@ max_output_bytes=1048576
                     report["outcome"] = "pending_approval"
                     report["approval"] = value("approvals", "show", result["approval_id"], "--json")
                     return
+                accepted_current = any(row["evidence"] == advisory
+                                       for row in status["sources"]["advisories"]["accepted"])
+                if (selected["selection"]["applicability"] == "unknown_or_stale"
+                        and (accepted_current or time.monotonic() >= deadline)):
+                    report["outcome"] = "unavailable"
+                    report["next_action"] = selected["selection"]["next_action"]
+                    return
+                if not accepted_current:
+                    if time.monotonic() >= deadline:
+                        report["outcome"] = "unavailable"
+                        report["next_action"] = "Inspect the original publication; current advisory acceptance is unavailable."
+                        return
+                    time.sleep(0.25)
+                    continue
                 if result and result["status"] == expected:
                     assert selected["selection"]["run"]["run_id"] == args.run_id
-                    assert any(row["evidence"] == report["advisory"]
-                               for row in status["sources"]["advisories"]["accepted"])
                     report["maintenance"] = result
                     break
                 assert time.monotonic() < deadline, result
                 time.sleep(0.25)
             after = applied()
-            assert after == before + (args.phase != "fixed")
-            if args.phase == "fixed":
+            report["applied_after"] = after
+            assert after == before + int(patch_required)
+            if not patch_required:
                 assert guest_root(f"dpkg-query -W -f='${{Version}}' {PACKAGE}").strip() == current
-            expected_version = "1.0" if args.phase == "recover" else current if args.phase == "fixed" else "2.0"
+            expected_version = "1.0" if args.phase == "recover" else "2.0" if patch_required else current
             assert guest_root(f"cat {PAYLOAD}").strip() == expected_version
             assert guest_root(f"dpkg --verify {PACKAGE}").strip() == ""
             guest_root(f"cmp {CONFIG} {PROBE}/custom.conf; test $(stat -c %a {CONFIG}) = 640")

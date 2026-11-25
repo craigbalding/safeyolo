@@ -1243,7 +1243,7 @@ module = "ghcr"
 owner = "proxy/tests/credential_http.rs"
 
 [[out_of_scope]]
-paths = ["tests/test_guest_helper_build.py", "tests/test_guest_inputs.py", "tests/test_guest_oci_publisher.py", "tests/test_guest_promotion.py", "tests/test_guest_release_auth.py", "tests/test_guest_scheduling.py", "tests/test_guest_signatures.py", "tests/test_guest_smoke_upload.py", "tests/test_guest_test_packages.py"]
+paths = ["tests/test_guest_helper_build.py", "tests/test_guest_inputs.py", "tests/test_guest_maintenance_probe.py", "tests/test_guest_oci_publisher.py", "tests/test_guest_promotion.py", "tests/test_guest_release_auth.py", "tests/test_guest_scheduling.py", "tests/test_guest_signatures.py", "tests/test_guest_smoke_upload.py", "tests/test_guest_test_packages.py"]
 reason = "Guest artifact publication, preparation, scheduling and supporting contracts; no additional running sandbox-control witness is claimed. These source and workflow tests remain selected by their maintained CI lanes."
 
 [[witnesses]]

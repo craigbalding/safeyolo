@@ -3205,6 +3205,7 @@ Guest artifact publication, preparation, scheduling and supporting contracts; no
 
 - [`tests/test_guest_helper_build.py`](../tests/test_guest_helper_build.py)
 - [`tests/test_guest_inputs.py`](../tests/test_guest_inputs.py)
+- [`tests/test_guest_maintenance_probe.py`](../tests/test_guest_maintenance_probe.py)
 - [`tests/test_guest_oci_publisher.py`](../tests/test_guest_oci_publisher.py)
 - [`tests/test_guest_promotion.py`](../tests/test_guest_promotion.py)
 - [`tests/test_guest_release_auth.py`](../tests/test_guest_release_auth.py)
