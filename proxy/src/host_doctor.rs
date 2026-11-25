@@ -379,7 +379,7 @@ pub(crate) async fn report(path: &Path) -> Value {
             ("Coord message plane", "/admin/coord/diagnostics"),
             ("Credential store", "/admin/credentials/status"),
             ("Pending approvals", "/admin/approvals"),
-            ("Flow store", "/admin/traffic/flows?limit=1"),
+            ("Live traffic view", "/admin/traffic/flows"),
         ] {
             match native_client::admin(
                 path,
@@ -451,7 +451,7 @@ pub(crate) async fn report(path: &Path) -> Value {
             "Coord message plane",
             "Credential store",
             "Pending approvals",
-            "Flow store",
+            "Live traffic view",
         ] {
             check(
                 &mut checks,

@@ -3840,15 +3840,15 @@ fn help_uses_native_lifecycle_and_has_no_old_aliases() {
     let output = cli(root.path(), &["agent", "--help"]);
     assert!(output.status.success());
     let help = String::from_utf8(output.stdout).unwrap();
-    for required in [
-        "create|configure",
-        "start NAME",
-        "attach",
-        "diagnostics",
-        "--foreground",
-        "--sandbox-only",
-    ] {
-        assert!(help.contains(required));
+    for required in ["create / configure", "start NAME", "attach", "diagnostics"] {
+        assert!(help.contains(required), "{required}: {help}");
+    }
+    assert!(help.contains("agent ACTION --help"));
+    let output = cli(root.path(), &["agent", "start", "--help"]);
+    assert!(output.status.success());
+    let start_help = String::from_utf8(output.stdout).unwrap();
+    for required in ["start NAME", "--foreground", "--sandbox-only"] {
+        assert!(start_help.contains(required), "{required}: {start_help}");
     }
     for alias in [
         "agent up",
