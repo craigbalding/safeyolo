@@ -327,6 +327,12 @@ int main(int argc, char **argv) {
 #ifdef __APPLE__
     if (!strncmp(argv[1],"mac-net-",8)) return mac_network_probe(argv[1],argv[2],atoi(argv[3]),atoi(argv[4]));
 #endif
+    if (!strcmp(argv[1], "write-config")) {
+        FILE *output = fopen(argv[2], "w");
+        if (!output) return 25;
+        int written = fputs("enabled\n", output) >= 0;
+        return fclose(output) || !written ? 26 : 0;
+    }
     if (!strncmp(argv[1], "write-", 6)) {
         char path[PATH_MAX], replacement[PATH_MAX];
         if (snprintf(path,sizeof(path),"%s/new",argv[2]) >= (int)sizeof(path)
@@ -381,12 +387,6 @@ int main(int argc, char **argv) {
         fclose(input);
         if (failed || count == sizeof(data)) return 21;
         return fwrite(data, 1, count, stdout) == count ? 0 : 24;
-    }
-    if (!strcmp(argv[1], "write-config")) {
-        FILE *output = fopen(argv[2], "w");
-        if (!output) return 25;
-        int written = fputs("enabled\n", output) >= 0;
-        return fclose(output) || !written ? 26 : 0;
     }
     if (!strcmp(argv[1], "observe")) {
         puts("safeyolo-native-probe-revision=1");
