@@ -391,6 +391,26 @@ pub(crate) async fn report(path: &Path) -> Value {
             .await
             {
                 Ok(value) => {
+                    if name == "Coord message plane" {
+                        let connected = value["local_connection"] == "Connected";
+                        check(
+                            &mut checks,
+                            name,
+                            if connected { "pass" } else { "warn" },
+                            if connected {
+                                "Local NATS connection is connected"
+                            } else {
+                                "No connected local NATS client observed; saved room records are separate"
+                            },
+                            if connected {
+                                ""
+                            } else {
+                                "Inspect coord status and its current endpoints before sending messages."
+                            },
+                            value,
+                        );
+                        continue;
+                    }
                     let availability = value["availability"]
                         .as_str()
                         .unwrap_or("available")

@@ -306,6 +306,8 @@ async fn codex_login(
         agent_login["state"] == "found" && agent_login["kind"] == "subscription";
     let host_subscription =
         !agent_present && host_login["state"] == "found" && host_login["kind"] == "subscription";
+    let host_api_key =
+        !agent_present && host_login["state"] == "found" && host_login["kind"] == "API key";
     if agent_subscription {
         println!(
             "  a  Authorize the agent's selected subscription for this agent until removed or replaced"
@@ -314,6 +316,14 @@ async fn codex_login(
     if host_subscription {
         println!(
             "  h  Copy the found host subscription to this empty agent, then authorize it for this agent until removed or replaced"
+        );
+    }
+    if host_api_key {
+        println!(
+            "  h  Copy the found host API-key login into this empty agent (readable by guest commands; host original unchanged)"
+        );
+        println!(
+            "The key uses its provider's API billing. Existing network and credential policy still applies; copying grants no additional access."
         );
     }
     if agent_subscription || host_subscription {
@@ -347,7 +357,7 @@ async fn codex_login(
             "" => return Ok(CodexLogin::NormalApprovals),
             "q" => return Ok(CodexLogin::Cancelled),
             "a" if agent_subscription => auth.clone(),
-            "h" if host_subscription => host_auth.clone(),
+            "h" if host_subscription || host_api_key => host_auth.clone(),
             _ if !agent_present && choice.starts_with("file ") => {
                 PathBuf::from(choice.trim_start_matches("file "))
             }
@@ -360,9 +370,9 @@ async fn codex_login(
         };
         let selected =
             crate::subscription_login::inspect(&source, crate::subscription_login::Client::Codex);
-        if selected["state"] != "found" || selected["kind"] != "subscription" {
+        if selected["state"] != "found" {
             println!(
-                "Selected input is {} and cannot be imported as a Codex subscription. No login was copied or authorized.",
+                "Selected input is {} and is not a supported Codex login. No login was copied or authorized.",
                 crate::operator_output::text(&selected["state"])
             );
             continue;
@@ -374,6 +384,10 @@ async fn codex_login(
                 crate::coord_setup::copy_codex_login(&home, &source)?;
             } else {
                 crate::coord_setup::codex_state(&home, None, false, Some("adopt"))?;
+            }
+            if selected["kind"] == "API key" {
+                println!("API-key login copied for {}. The host original and access policy are unchanged.", agent.name);
+                return Ok(());
             }
             // Use the existing trusted import operation. Neither copying nor
             // an adoption marker is evidence for an automatic credential grant.

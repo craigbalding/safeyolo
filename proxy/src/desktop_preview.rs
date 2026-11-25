@@ -1483,8 +1483,9 @@ fn guest_request(request: &Request, access: &Access) -> Vec<u8> {
     result.push(b' ');
     result.extend_from_slice(request.version.as_bytes());
     if access.web {
-        // Host has already been checked against this publication's listener.
-        // Preserve the browser origin for app redirects and OAuth callbacks.
+        // Preserve the browser origin (including an SSH-forwarded endpoint)
+        // for app redirects and OAuth callbacks. The publication token and
+        // same-origin checks remain owned by this preview listener.
         result.extend_from_slice(
             format!(
                 "\r\nHost: {}\r\n",
@@ -1707,7 +1708,13 @@ async fn relay(
                     ))
                 }) {
                 Ok(response) => response,
-                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof && retryable => {
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::UnexpectedEof
+                        && retryable
+                        && matches!(request.method.as_str(), "GET" | "HEAD") =>
+                {
+                    // A form or API operation may have completed before the
+                    // reply was lost. Never replay those application bytes.
                     if request.header("X-SafeYolo-Waiting-Room-Poll") != Some("1")
                         && started.elapsed() < Duration::from_secs(5)
                     {

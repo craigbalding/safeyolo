@@ -22,6 +22,9 @@ pub fn handles(args: &[String]) -> bool {
     })
 }
 
+pub const AGENT_LAUNCH_HELP: &str = crate::host_launch::HELP;
+pub const AGENT_AUTH_HELP: &str = crate::host_client_auth::HELP;
+
 pub async fn run(config: PathBuf, args: &[String]) -> Result<i32, Error> {
     let arguments = crate::operator_output::without_json(args);
     let args = arguments.as_slice();

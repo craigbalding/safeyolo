@@ -30,6 +30,13 @@ impl Parameters {
         if self.guest_port == 0 || self.tailnet_port == Some(0) {
             return Err("guest and tailnet ports must be from 1 to 65535");
         }
+        // These are SafeYolo's proxy/control ports, not app listeners. Keep
+        // the historical arbitrary-port preview boundary.
+        if matches!(self.guest_port, 8080 | 9090) {
+            return Err(
+                "guest ports 8080 and 9090 are reserved for SafeYolo plumbing; select the app's HTTP port",
+            );
+        }
         if self.audience == Route::Local && self.tailnet_port.is_some() {
             return Err("tailnet_port requires the tailnet audience");
         }

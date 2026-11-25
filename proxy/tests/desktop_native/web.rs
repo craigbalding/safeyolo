@@ -29,7 +29,13 @@ async fn check() {
     config.policy_file = Some(root.path().join("policy.toml"));
     let guest = UnixListener::bind(root.path().join("guest.sock")).unwrap();
     let app = tokio::spawn(async move {
-        for path in ["/login", "/callback?done=1", "/events", "/socket"] {
+        for path in [
+            "/login",
+            "/callback?done=1",
+            "/events",
+            "/socket",
+            "/submit",
+        ] {
             let (mut stream, _) = guest.accept().await.unwrap();
             let mut header = Vec::new();
             while !header.ends_with(b"\r\n\r\n") {
@@ -37,8 +43,9 @@ async fn check() {
                 assert!(header.len() < 8192);
             }
             let header = String::from_utf8(header).unwrap();
+            let method = if path == "/submit" { "POST" } else { "GET" };
             assert!(
-                header.starts_with(&format!("GET {path} HTTP/1.1\r\n")),
+                header.starts_with(&format!("{method} {path} HTTP/1.1\r\n")),
                 "{header}"
             );
             assert!(header.contains("Host: 127.0.0.1:"));
@@ -59,12 +66,22 @@ async fn check() {
                     // The client must receive the first event before this closes.
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
-                _ => {
+                "/socket" => {
                     stream.write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n").await.unwrap();
                     let mut frame = [0; 8];
                     stream.read_exact(&mut frame).await.unwrap();
                     assert_eq!(&frame, b"\x81\x82\x01\x02\x03\x04ik");
                     stream.write_all(b"\x81\x02hi").await.unwrap();
+                }
+                _ => {
+                    let mut body = [0; 3];
+                    stream.read_exact(&mut body).await.unwrap();
+                    assert_eq!(&body, b"one");
+                    // The app committed this form, then lost its response.
+                    // Keep the listener open to detect an unsafe second send.
+                    drop(stream);
+                    assert!(tokio::time::timeout(Duration::from_millis(1200), guest.accept()).await.is_err(),
+                        "publication replayed a submitted form after losing the reply");
                 }
             }
         }
@@ -81,6 +98,18 @@ async fn check() {
     )
     .unwrap();
     let auth = [("Authorization", format!("Bearer {TOKEN}"))];
+    for port in [8080, 9090] {
+        let refused = request(
+            admin,
+            "POST",
+            &format!("/admin/agents/{ID}/web"),
+            &auth,
+            format!("{{\"guest_port\":{port},\"audience\":\"local\"}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(status(&refused), 400);
+        assert!(String::from_utf8_lossy(&refused).contains("reserved"));
+    }
     let pending = action_request(root.path(), "POST", "/operator-actions", json!({
         "action_id":"web.publish","parameters":{"guest_port":3000,"audience":"local","ttl_seconds":3},
         "reason":"Show the app running in this guest"
@@ -255,6 +284,15 @@ async fn check() {
     socket.read_exact(&mut echo).await.unwrap();
     assert_eq!(&echo, b"\x81\x02hi");
     drop(socket);
+    let submitted = request(
+        port,
+        "POST",
+        "/submit",
+        &[("Cookie", cookie.clone())],
+        b"one",
+    )
+    .await;
+    assert_eq!(status(&submitted), 502);
     app.await.unwrap();
     assert!(!root.path().join("desktop-start-command").exists());
     assert!(!root.path().join("desktop-ready").exists());

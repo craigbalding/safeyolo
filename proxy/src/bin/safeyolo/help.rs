@@ -179,6 +179,12 @@ pub fn show(arguments: &[OsString]) -> bool {
         {
             sy::host_commands::WEB_HELP
         }
+        "agent" if words.get(1).is_some_and(|word| word == "launch") => {
+            sy::host_commands::AGENT_LAUNCH_HELP
+        }
+        "agent" if words.get(1).is_some_and(|word| word == "auth") => {
+            sy::host_commands::AGENT_AUTH_HELP
+        }
         "agent" => sy::host_commands::AGENT_HELP,
         "policy" if words.len() == 1 => {
             println!("{POLICY}");
@@ -252,7 +258,7 @@ pub fn show(arguments: &[OsString]) -> bool {
     let mut printed = false;
     for line in reference.lines() {
         if !line.starts_with("safeyolo ") || words.len() == 1 || command_matches(line, &path) {
-            println!("{line}");
+            print_wrapped(line);
             printed = true;
         }
     }
@@ -271,6 +277,28 @@ pub fn show(arguments: &[OsString]) -> bool {
         }
     );
     true
+}
+
+fn print_wrapped(line: &str) {
+    let continuation = if line.starts_with("safeyolo ") {
+        "  "
+    } else {
+        ""
+    };
+    let mut width = 0;
+    for word in line.split_whitespace() {
+        let length = word.chars().count();
+        if width > 0 && width + 1 + length > 88 {
+            print!("\n{continuation}");
+            width = continuation.len();
+        } else if width > 0 {
+            print!(" ");
+            width += 1;
+        }
+        print!("{word}");
+        width += length;
+    }
+    println!();
 }
 
 fn command_matches(line: &str, path: &str) -> bool {
