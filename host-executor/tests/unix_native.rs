@@ -1065,6 +1065,7 @@ fn installed_macos_descendants_remain_owned_after_launcher_exit() {
             assert_eq!(running.state, JobState::Running, "{running:?}");
             f.call(Action::Cancel {
                 job_id: job.job_id.clone(),
+                expected_revision: running.revision,
             });
         }
         let result = f.terminal(&job.job_id);
