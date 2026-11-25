@@ -6,11 +6,12 @@ installation, Python, Rust toolchain or WSL. Windows starter operations use the
 inbox Windows PowerShell 5.1 and its named Windows modules. The server itself
 does not require PowerShell.
 
-The target operator selects the account, executable definitions, local ceiling
-and enrolled issuer keys. The issuing instance owns agent/run/task policy,
-signing credentials, private assessment and approvals. Installation grants no
-agent access. An operation proposal cannot adopt code, change the ceiling or
-enrol an issuer.
+The operator selects the target/account and material authority. The issuing
+instance owns agent/run/task policy, signing credentials, private assessment and
+approvals. Its constrained agent can prepare first trust and introduce task
+code under an explicitly adopted class. The trusted target and policy owners
+qualify and adopt those changes. Installation grants no agent access.
+Discovery and invocation proposals cannot change a ceiling or enrol an issuer.
 
 On Linux, the operation's process limit includes bubblewrap's monitor and
 namespace init; the Unix starter reserves three processes for its native
@@ -44,7 +45,39 @@ within the existing operation grant. Application readiness and audience reach
 still need their own observations. The handoff grants no additional binding or outbound authority. Seatbelt may
 permit unconnected descriptors, which grant no channel.
 
-## Acquire and prepare the target
+## Commission a selected Unix task
+
+Use the installed commissioning skill to recover intent, target context and
+material limits. The agent prepares the concrete plan and handles mechanical
+work through the selected trusted owners. Follow the
+[agent host-task workflow](../cli/src/safeyolo/agent_context/skills/safeyolo/references/host-operations.md)
+for `setup`, native `enrol`, `submit-setup`, normal `safeyolo watch` review,
+`resume` and covered `adopt`/`stage` calls. That workflow uses the same native
+configuration, catalogue, vault, task and policy-change owners described here.
+It requires no pre-created signing keys, identity JSON or gateway binding.
+
+The target still needs a verified prebuilt executor and its genuine OS
+prerequisites. Its existing authorised installer carries the public bootstrap
+request and returns `enrolment.json` through the trusted transfer route. Linux
+needs bubblewrap and a delegated cgroup v2 memory/pids scope. Native qualification
+refuses unsupported guarantees. The bootstrap creates private control/TLS
+state and can start the signed protocol listener; it runs no task program.
+The human reviews the derived exact issuer authority through the current
+policy approval interface. The agent receives no Admin credential or right to
+approve its own candidate.
+
+Keep the intended service function/audience separate from concrete account,
+files, outbound/listening authority, duration/resources and actual enforcement.
+Control-channel TLS proves no application authentication or audience reach.
+Use scoped endpoint observations and the existing deterministic assessment
+before a material exposure decision. A prepared/saved binding is not a running
+application. Honour broader authorised exposure and report unverified reach.
+
+The explicit catalogue preparation below also supports Windows and operators
+authoring custom fixed operations. It describes current native primitives;
+ordinary Unix task commissioning derives these files through `setup` instead.
+
+## Acquire and prepare a custom catalogue
 
 Download the standalone ZIP for the required OS/architecture and selected source
 from the native proxy workflow. The archive includes `host-executor.json`, this
@@ -713,9 +746,9 @@ still require assessment through the existing effect and policy owners.
 
 | Observation | Next action for the selected owner |
 |---|---|
-| Quiet authorized catalogue update | Inspect the target and issuer catalogue owners' desired/observed/qualified/active revisions. Refresh the stored binding to the already adopted target as described below, then rediscover. Keep the stable IDs and approved update bounds; no routine per-command prompt is added. |
+| Quiet authorized catalogue update | Inspect desired/observed/qualified/active revisions. The issuer's catalogue transaction advances matching stored bindings atomically. Rediscover current revisions; no routine per-command prompt is added. |
 | Scope/effect/dependency expansion | Privately assess the complete candidate. Use the existing adoption/approval path only where required; an assessment grants no permission. |
-| Missing operation | Submit an untrusted definition/scope proposal through existing policy-capability and private assessment tools. Discovery/proposal runs no proposed code. The operator adopts reviewed package bytes, ceiling and issuer policy explicitly. |
+| Missing operation | If an explicit agent-code class covers it, use `adopt` and then propose/invoke. Otherwise privately assess the concrete expansion through existing policy-capability and approval owners. Discovery/proposal runs no proposed code. |
 | Revoked or expired grant | Refresh or revoke the issuer's actual grant through its owner and update the target snapshot. No automatic renewal. Revocation stops new admissions/reads; admitted effects/deadlines are retained. |
 | Required check unavailable | Follow the adopted fallback. The checker remains optional by policy, supplementary and fallible. Inspect the private finding/challenge; revise/abandon or explicitly escalate through the existing approval owner. No automatic allow or retry. |
 | Lost reply | Inspect the original request's possible job ID/receipt. Identical retained mutation IDs deduplicate; changed content conflicts. If read authority is revoked, the target operator inspects the ledger. |
@@ -724,20 +757,13 @@ still require assessment through the existing effect and policy owners.
 | Changed TLS certificate/key, listener or runtime | Stop at a safe boundary, preserve state and restart the selected executor. Adopt the new target certificate at the issuer. Saved TLS paths do not prove the running listener changed. |
 | Upgrade failure | Keep the previous verified binary, config and ledger; inspect the original process/listener and jobs before restarting or restoring. Never launch a second executor against the same state. |
 
-After a quiet update, both catalogue owners can have adopted the new package
-while `host_bindings.case.target` still names the previous package. Rediscovery
-or a new proposal cannot change that stored binding. On the issuing operator
-host, compare both active catalogue revisions and inspect the target's adopted
-package, authority and ceiling against the approved update bounds. Use the
-material-expansion path if the change exceeds those bounds.
-
-For an already authorized update, transfer the current validated target
-configuration as `adopted-target.json` through the same trusted route. Rerun the
-binding-generation block above with that file and the retained current
-`issuer-context.json` and certificate. Preserve the selected issuer, key,
-credential, grant, task and transport limits. Replace only the `case` row in a
-copy of the complete issuer policy, then check, privately assess and apply it
-through the same policy owner. Use `policy show` to verify activation.
+The existing issuer catalogue transaction advances only bindings using the
+selected previous package. It preserves their target, grant, ceiling, endpoint,
+signing credential and task ownership. Another package snapshot is not silently
+replaced. After agent-code adoption, an interrupted issuer activation reports
+the retained target result. Read the original `adoption` result to reconcile
+the exact package before invoking. Another current base needs owner resolution.
+Explicit authority or endpoint changes still use the normal exact policy review.
 
 Return to the agent's existing `discover case` call. Compare its active package
 with the refreshed binding before preparing a new operation. This read adds no

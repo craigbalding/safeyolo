@@ -626,6 +626,23 @@ impl Vault {
     pub fn store(&self, credential: Credential) -> Result<()> {
         self.store_with_activation(credential, |_| Ok(()))
     }
+    /// First-trust preparation must not replace a key another concurrent
+    /// preparation has already returned. The caller reads the retained row.
+    pub(crate) fn store_if_absent(&self, credential: Credential) -> Result<bool> {
+        let name = credential.name.clone();
+        self.mutate(
+            None,
+            Some(&name),
+            |credentials| {
+                if credentials.iter().any(|current| current.name == name) {
+                    return false;
+                }
+                credentials.push(credential);
+                true
+            },
+            |_, _| Ok(()),
+        )
+    }
     /// Merge verified issuance under the existing cross-process vault lock.
     /// The caller checks the exact imported authority against this current row;
     /// concurrent observations must not discard each other's evidence.

@@ -89,6 +89,60 @@ pub struct EndpointObservation {
     pub reachable_audience: Option<String>,
 }
 
+/// Build the fixed inspection recipe from an already selected native helper.
+/// It discloses only the exact authorised selector, with no workload scope.
+pub(crate) fn inspection_operation(
+    mut operation: Operation,
+    selection: EndpointSelection,
+) -> Operation {
+    operation.description = "Resolve and check only the selected endpoint alternatives on this target. Probe sockets are released; this grants no service start, replacement or publication authority.".into();
+    operation.resources = ["endpoint:selected".into()].into();
+    operation.arguments = std::collections::BTreeMap::from([(
+        "endpoint".into(),
+        Argument {
+            kind: ArgumentType::Enum,
+            required: true,
+            default: None,
+            options: vec![serde_json::to_value(selection).expect("typed endpoint selection")],
+        },
+    )]);
+    let e = &mut operation.execution;
+    e.argv = vec![
+        Word::Literal {
+            value: INSPECT_COMMAND.into(),
+        },
+        Word::Argument {
+            name: "endpoint".into(),
+        },
+    ];
+    e.environment.clear();
+    e.dependencies.clear();
+    e.filesystem = Filesystem {
+        read: Vec::new(),
+        write: Vec::new(),
+    };
+    e.working_directory = "/".into();
+    e.network = Network {
+        destinations: Vec::new(),
+        listeners: Vec::new(),
+        listener_handoff: None,
+        ipc: Vec::new(),
+    };
+    e.delegated_services.clear();
+    e.broader
+        .retain(|bound| matches!(bound, BroaderBound::Memory | BroaderBound::ExecutorRestart));
+    operation.effects = std::collections::BTreeMap::from([("endpoint_observation".into(), NamedEffect {
+        description: "Disclose the selected target address/interface and bind observation; unrelated host inventory is not returned.".into(),
+        persists_after_access: true, evidence: vec!["package".into()],
+    })]);
+    operation.enforcement.enforced = disclosure();
+    operation.enforcement.adopted = vec!["The exact native helper and complete typed selector choices, intersected with current issuer and target authority.".into()];
+    operation.enforcement.adopted.push("A successful check is not a reservation. Application readiness, forwarding, authentication/TLS and audience reach remain unobserved.".into());
+    operation.enforcement.unresolved.clear();
+    operation.semantics = None;
+    operation
+}
+
 pub fn disclosure() -> Vec<String> {
     vec![
         "Selected endpoint inspection runs the pinned native executor helper with a typed, authorised selector. Only that selector's address/interface, bind result and observation time leave the trusted helper; unrelated listeners, ports, processes, routes and interfaces are not returned.".into(),

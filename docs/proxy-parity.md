@@ -864,7 +864,7 @@ Listener or token changes require a process restart, matching the source server'
 startup ownership.
 
 A successful task PUT validates the existing model schema and stores the supplied
-JSON in one process-local registry. It does not compile or activate task rules,
+JSON in the native instance's private task registry. It does not compile or activate task rules,
 inject a task ID into the stored document, or change the active policy hash.
 GET returns that raw document, including unknown fields and absent defaults.
 Replacing an ID retains the registry count; an invalid update retains the prior
@@ -875,7 +875,11 @@ DELETE on that path clears the document and, when selected, publishes the
 baseline-only snapshot. A failed compile leaves both the registered document and
 active policy unchanged. Enforcement, `/config`, policy hashes and operator
 reads therefore switch together after activation; a replacement remains only a
-registered candidate until that boundary. Restart starts a new empty registry.
+registered candidate until that boundary. Restart restores registered documents
+and the separately selected active document from private `tasks.json`.
+A registered replacement does not replace the active document on restart.
+Explicit clearing remains effective across restart. A failed registry write
+prevents publication of the new in-process state.
 Validation reuses the canonical loader's schema helpers without its matcher,
 host expansion or token issuance. Source task-file activation is a
 loader/engine library method; this native operator path keeps registration and

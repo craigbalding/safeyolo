@@ -28,6 +28,8 @@ fn fixture() -> (Target, Ed25519KeyPair, CatalogueAdoption) {
         ceiling: target.package.operations["restart"].clone(),
         allow_narrower: true,
         allow_implementation_updates: true,
+        allow_agent_code: false,
+        agent_dependency_bytes: 0,
     };
     target.ceiling.get_mut("restart").unwrap().updates = Some(rule.clone());
     target
@@ -45,6 +47,7 @@ fn fixture() -> (Target, Ed25519KeyPair, CatalogueAdoption) {
     let active = signed_catalogue(&target.package, &key, false, None);
     let adoption = CatalogueAdoption {
         policy: CataloguePolicy {
+            agent_code_keys: BTreeMap::new(),
             publisher: "publisher".into(),
             public_key: STANDARD.encode(key.public_key().as_ref()),
             package_name: target.package.name.clone(),
@@ -193,6 +196,26 @@ impl Drop for Store {
         self.ledger.take();
         fs::remove_dir_all(&self.root).unwrap();
     }
+}
+
+#[test]
+fn a_prepared_invocation_cannot_follow_a_binding_to_another_target() {
+    let (selected, key, _) = fixture();
+    let prepared = Store::new(&selected).prepared(&selected, "selected-proposal", &key);
+    let mut other = selected.clone();
+    other.target_id = "another-target".into();
+    let action = Action::Invoke {
+        invocation: prepared.invocation,
+    };
+    // The issuer resolves the changed binding and signs for that target, but
+    // must preserve the caller's original preparation and revision pins.
+    let mut request = request(&other, action, "original-invocation");
+    request.expected = Some(prepared.revisions);
+    let body = serde_json::to_vec(&SignedRequest::sign(request, "key".into(), &key)).unwrap();
+    let admitted = other
+        .authenticate("POST", Verb::Invoke.path(), &body, now())
+        .and_then(|authorized| other.prepare(&authorized, Usage::default()));
+    assert_eq!(admitted.unwrap_err().code, RefusalCode::Stale);
 }
 
 #[test]
@@ -1192,6 +1215,8 @@ fn dependency_byte_ceilings_compare_as_bounds_without_granting_update_trust() {
         ceiling: before.clone(),
         allow_narrower: true,
         allow_implementation_updates: false,
+        allow_agent_code: false,
+        agent_dependency_bytes: 0,
     };
     assert!(rule.allows(&after));
     after
@@ -1310,6 +1335,246 @@ fn exact_issuer_scope_does_not_inherit_new_effect_understanding_for_the_same_exe
     );
 }
 
+fn code_adoption(target: &Target, operation: Operation, key: &Ed25519KeyPair) -> SignedRequest {
+    let package = target.revised_package("restart", &operation).unwrap();
+    SignedRequest::sign(
+        request(
+            target,
+            Action::Adopt {
+                operation_id: "restart".into(),
+                operation: Box::new(operation),
+                base_package_sha256: revision(&target.package),
+                package_sha256: revision(&package),
+                observed_at: target.issuers["issuer"].authority.observed_at,
+            },
+            "code-adoption",
+        ),
+        "key".into(),
+        key,
+    )
+}
+
+#[test]
+fn agent_recipe_changes_need_separate_code_trust_at_both_owners() {
+    let (mut target, key, mut adoption) = fixture();
+    target.allowed_verbs.insert(Verb::Adopt);
+    target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("grant")
+        .unwrap()
+        .verbs
+        .insert(Verb::Adopt);
+    let mut operation = target.package.operations["restart"].clone();
+    operation.execution.argv = vec![Word::Literal {
+        value: "agent-authored task code".into(),
+    }];
+    for (issuer, target_code, allowed) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (true, true, true),
+    ] {
+        target
+            .ceiling
+            .get_mut("restart")
+            .unwrap()
+            .updates
+            .as_mut()
+            .unwrap()
+            .allow_agent_code = target_code;
+        target
+            .issuers
+            .get_mut("issuer")
+            .unwrap()
+            .authority
+            .grants
+            .get_mut("grant")
+            .unwrap()
+            .operations
+            .get_mut("restart")
+            .unwrap()
+            .updates
+            .as_mut()
+            .unwrap()
+            .allow_agent_code = issuer;
+        let signed = code_adoption(&target, operation.clone(), &key);
+        let body = serde_json::to_vec(&signed).unwrap();
+        let auth = target
+            .authenticate("POST", Verb::Adopt.path(), &body, now())
+            .unwrap();
+        assert_eq!(auth.agent_code_package().is_ok(), allowed);
+    }
+    let signed = code_adoption(&target, operation.clone(), &key);
+    let package = target.revised_package("restart", &operation).unwrap();
+    let observed = SignedCatalogue::from_agent_request(signed, package.clone()).unwrap();
+    assert!(
+        observed.verify(&adoption.policy, now()).is_err(),
+        "publisher trust alone must not authenticate agent code"
+    );
+    adoption.policy.agent_code_keys.insert(
+        "issuer".into(),
+        target.issuers["issuer"].public_keys.clone(),
+    );
+    adoption
+        .policy
+        .operations
+        .get_mut("restart")
+        .unwrap()
+        .allow_agent_code = true;
+    observed.verify(&adoption.policy, now()).unwrap();
+    adoption.observed = observed.clone();
+    assert_eq!(
+        revision(&adoption.plan(now()).unwrap().package),
+        revision(&package)
+    );
+    let mut tampered = observed;
+    tampered.catalogue.expires_at += 1;
+    assert_eq!(
+        tampered.verify(&adoption.policy, now()).unwrap_err().code,
+        RefusalCode::Signature
+    );
+
+    for change in ["files", "listener", "identity", "effects", "checks"] {
+        let mut outside = operation.clone();
+        match change {
+            "files" => outside
+                .execution
+                .filesystem
+                .write
+                .push("/outside-task".into()),
+            "listener" => outside.execution.network.listeners.push(NetworkListener {
+                address: "0.0.0.0".parse().unwrap(),
+                port: 8080,
+                transport: NetworkTransport::Tcp,
+            }),
+            "identity" => outside.execution.identity.principal = "another-account".into(),
+            "effects" => outside
+                .effects
+                .values_mut()
+                .next()
+                .unwrap()
+                .description
+                .push_str(" different consequences"),
+            "checks" => {
+                outside.required_checks.insert("not-adopted".into());
+            }
+            _ => unreachable!(),
+        }
+        let signed = code_adoption(&target, outside, &key);
+        let body = serde_json::to_vec(&signed).unwrap();
+        let auth = target
+            .authenticate("POST", Verb::Adopt.path(), &body, now())
+            .unwrap();
+        assert!(
+            auth.agent_code_package().is_err(),
+            "{change} cannot inherit the code class"
+        );
+    }
+}
+
+#[test]
+fn standing_run_authority_preserves_jobs_and_does_not_reset_call_budgets() {
+    let (mut target, key, _) = fixture();
+    {
+        let grant = target
+            .issuers
+            .get_mut("issuer")
+            .unwrap()
+            .authority
+            .grants
+            .get_mut("grant")
+            .unwrap();
+        grant.allow_run_refresh = true;
+        grant.principal.task_id = Some("approved-task".into());
+        grant.operations.get_mut("restart").unwrap().budgets.calls = 1;
+    }
+    target.ceiling.get_mut("restart").unwrap().budgets.calls = 1;
+    let mut store = Store::new(&target);
+    let prepared = store.prepared(&target, "first-proposal", &key);
+    let Response::Job { receipt } = store.call(
+        &target,
+        Action::Invoke {
+            invocation: prepared.invocation,
+        },
+        "first-invocation",
+        &key,
+    ) else {
+        panic!("job");
+    };
+    let ledger = store.ledger.as_mut().unwrap();
+    ledger.begin(&target, &receipt.job_id, now()).unwrap();
+    ledger
+        .finish(
+            &receipt.job_id,
+            JobState::Completed,
+            true,
+            now(),
+            "ledger control; no native program was launched".into(),
+        )
+        .unwrap();
+    let mut current = request(
+        &target,
+        Action::Job {
+            job_id: receipt.job_id.clone(),
+        },
+        "later-run-read",
+    );
+    current.principal.run.run_id = "22222222222222222222222222222222".into();
+    let principal = current.principal.clone();
+    let signed = serde_json::to_vec(&SignedRequest::sign(current, "key".into(), &key)).unwrap();
+    assert!(matches!(
+        ledger
+            .handle(&target, Verb::Job.path(), &signed, now())
+            .unwrap()
+            .response,
+        Response::Job { .. }
+    ));
+    let mut next = request(
+        &target,
+        Action::Propose {
+            invocation: invocation(&target, "restart"),
+        },
+        "later-run-proposal",
+    );
+    next.principal = principal.clone();
+    let signed =
+        serde_json::to_vec(&SignedRequest::sign(next.clone(), "key".into(), &key)).unwrap();
+    assert_eq!(
+        ledger
+            .handle(&target, Verb::Propose.path(), &signed, now())
+            .err()
+            .unwrap()
+            .code,
+        RefusalCode::Budget
+    );
+    next.principal.run.agent_id = "ag-replacement".into();
+    let signed =
+        serde_json::to_vec(&SignedRequest::sign(next.clone(), "key".into(), &key)).unwrap();
+    assert_eq!(
+        target
+            .authenticate("POST", Verb::Propose.path(), &signed, now())
+            .err()
+            .unwrap()
+            .code,
+        RefusalCode::Principal
+    );
+    next.principal = principal;
+    next.principal.task_id = Some("another-task".into());
+    let signed = serde_json::to_vec(&SignedRequest::sign(next, "key".into(), &key)).unwrap();
+    assert_eq!(
+        target
+            .authenticate("POST", Verb::Propose.path(), &signed, now())
+            .err()
+            .unwrap()
+            .code,
+        RefusalCode::Principal
+    );
+}
+
 #[test]
 fn listener_handoff_changes_authority_and_keeps_alternative_order() {
     use safeyolo_host_executor::endpoints::EndpointSelection;
@@ -1363,4 +1628,40 @@ fn listener_handoff_changes_authority_and_keeps_alternative_order() {
         .candidates[0]
         .transport = NetworkTransport::Udp;
     assert!(target.package.validate().is_err());
+}
+
+#[test]
+fn standing_service_code_can_stage_without_a_listener_reservation() {
+    let (target, _, _) = fixture();
+    let mut ceiling = target.package.operations["restart"].clone();
+    ceiling.execution.network.listener_handoff = Some(
+        serde_json::from_value(serde_json::json!({"candidates":[{
+            "transport":"tcp","family":"ipv4","address":"127.0.0.1","interface":null,
+            "port":8080,"ipv6_only":false,"reuse_address":false,"reuse_port":false
+        }]}))
+        .unwrap(),
+    );
+    ceiling.execution.network.listeners.push(NetworkListener {
+        address: "127.0.0.1".parse().unwrap(),
+        port: 8080,
+        transport: NetworkTransport::Tcp,
+    });
+    ceiling.execution.broader.insert(BroaderBound::NetworkIpc);
+    let mut rule = UpdateRule {
+        ceiling: ceiling.clone(),
+        allow_narrower: true,
+        allow_implementation_updates: false,
+        allow_agent_code: true,
+        agent_dependency_bytes: 0,
+    };
+    let mut staging = ceiling.clone();
+    staging.execution.network.listener_handoff = None;
+    staging.execution.network.listeners.clear();
+    staging.execution.network.destinations.clear();
+    staging.execution.broader.remove(&BroaderBound::NetworkIpc);
+    assert!(rule.allows_agent_code(&staging));
+    staging.execution.filesystem.write.push("/outside".into());
+    assert!(!rule.allows_agent_code(&staging));
+    rule.ceiling.execution.network.listener_handoff = None;
+    assert!(!rule.allows_agent_code(&ceiling));
 }

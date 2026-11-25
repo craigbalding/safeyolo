@@ -18,7 +18,7 @@ fn failure(error: impl std::fmt::Display) -> Refusal {
 fn read<T: serde::de::DeserializeOwned>(path: &str) -> Result<T, Refusal> {
     serde_json::from_reader(fs::File::open(path).map_err(failure)?).map_err(failure)
 }
-fn hash(path: &Path) -> Result<String, Refusal> {
+pub(crate) fn hash(path: &Path) -> Result<String, Refusal> {
     let mut file = fs::File::open(path).map_err(failure)?;
     let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
     let mut buffer = [0; 65536];
@@ -50,7 +50,7 @@ fn private_directory(path: &Path) -> Result<(), Refusal> {
     Ok(())
 }
 
-fn identity(credential: Option<&str>) -> Result<ExecutionIdentity, Refusal> {
+pub(crate) fn identity(credential: Option<&str>) -> Result<ExecutionIdentity, Refusal> {
     #[cfg(windows)]
     {
         let credential = credential.ok_or_else(|| {
@@ -453,34 +453,15 @@ fn add_inspection(
     }
     #[cfg(unix)]
     {
-        let mut operation = package.operations["bundle-metadata"].clone();
-        operation.description = "Resolve and check an explicitly selected endpoint on this target. Probe sockets are released; the observation grants no service-start, replacement or publication authority. The loopback example can be replaced with authorised interface/address/port choices.".into();
-        operation.resources = ["endpoint:selected".into()].into();
-        operation.arguments = BTreeMap::from([(
-            "endpoint".into(),
-            Argument {
-                kind: ArgumentType::Enum,
-                required: true,
-                default: None,
-                options: vec![json!({"candidates":[{
-                    "transport":"tcp", "family":"ipv4", "address":"127.0.0.1", "interface":null,
-                    "port":0, "ipv6_only":false, "reuse_address":false, "reuse_port":false
-                }]})],
-            },
-        )]);
-        operation.execution.argv = vec![
-            Word::Literal {
-                value: crate::endpoints::INSPECT_COMMAND.into(),
-            },
-            Word::Argument {
-                name: "endpoint".into(),
-            },
-        ];
-        operation.execution.filesystem.read.clear();
-        operation.execution.working_directory = "/".into();
-        operation.enforcement.enforced = crate::endpoints::disclosure();
-        operation.enforcement.adopted = vec!["The exact native helper and complete typed selector choices, intersected with current issuer and target authority.".into()];
-        operation.enforcement.unresolved = vec!["A successful check is not a reservation. Application readiness, forwarding, authentication/TLS and audience reach remain unobserved.".into()];
+        let selection = serde_json::from_value(json!({"candidates":[{
+            "transport":"tcp", "family":"ipv4", "address":"127.0.0.1", "interface":null,
+            "port":0, "ipv6_only":false, "reuse_address":false, "reuse_port":false
+        }]}))
+        .map_err(failure)?;
+        let operation = crate::endpoints::inspection_operation(
+            package.operations["bundle-metadata"].clone(),
+            selection,
+        );
         package
             .operations
             .insert("endpoint-inspect".into(), operation);
@@ -670,6 +651,7 @@ pub(crate) fn command(args: &[String]) -> Result<bool, Refusal> {
                 serde_json::from_reader(fs::File::open(plan.operations).map_err(failure)?)
                     .map_err(failure)?;
             let grant = Grant {
+                allow_run_refresh: false,
                 principal: plan.principal,
                 not_before: plan.not_before,
                 expires_at: plan.expires_at,

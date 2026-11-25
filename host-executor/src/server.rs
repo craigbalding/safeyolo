@@ -20,6 +20,8 @@ use std::{
     time::Duration,
 };
 
+static CONFIGURATION: Mutex<()> = Mutex::new(());
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Configuration {
@@ -166,6 +168,10 @@ pub fn load(config: &Path, state: &Path) -> Result<Configuration, Refusal> {
 }
 
 pub fn command(args: Vec<String>) -> Result<(), Refusal> {
+    #[cfg(unix)]
+    if crate::enrolment::command(&args)? {
+        return Ok(());
+    }
     if crate::workflow::command(&args)? {
         return Ok(());
     }
@@ -184,7 +190,7 @@ pub fn command(args: Vec<String>) -> Result<(), Refusal> {
     }
     if args.as_slice() == ["--help"] || args.is_empty() {
         println!(
-            "Usage: safeyolo-host-executor <check|serve|status> --config ABSOLUTE_JSON --state ABSOLUTE_DIRECTORY\nsafeyolo-host-executor tls-create --name DNS_NAME --directory PRIVATE_DIRECTORY\nsafeyolo-host-executor key-create --directory PRIVATE_DIRECTORY\nsafeyolo-host-executor starter --root ABSOLUTE_DIRECTORY --service FIXED_SERVICE --output NEW_PACKAGE_JSON [--credential WINDOWS_WORKLOAD_CREDENTIAL]\nsafeyolo-host-executor scopes --package JSON --selection JSON --output NEW_SCOPES_JSON\nsafeyolo-host-executor prepare-issuer --settings JSON --output NEW_ISSUERS_JSON\nsafeyolo-host-executor prepare --settings JSON --output NEW_CONFIG_JSON\nsafeyolo-host-executor demo --directory NEW_SYNTHETIC_DIRECTORY\nsafeyolo-host-executor inspect --root ABSOLUTE_PATH --kind directory|content --limit COUNT_OR_BYTES\n\ncheck validates the complete adopted target without running its programs.\nThe selected state directory must exist, be private and owned by this account.\nRequired enforcement that the selected backend cannot apply is refused.\nAn adopted https listener serves the same signed protocol on Linux, macOS and Windows. tls-create writes target.pem and target-key.pem without granting any issuer access.\nstarter binds shipped examples to actual executable hashes, account and selected paths. prepare combines that package with explicit target settings; absent issuers and ceilings grant no access. Neither executes a package program."
+            "Usage: safeyolo-host-executor <check|serve|status> --config ABSOLUTE_JSON --state ABSOLUTE_DIRECTORY\nsafeyolo-host-executor enrol --request-base64 PREPARED_PUBLIC_REQUEST --directory PRIVATE_CONTROL_DIRECTORY [--serve] (Unix)\nsafeyolo-host-executor tls-create --name DNS_NAME --directory PRIVATE_DIRECTORY\nsafeyolo-host-executor key-create --directory PRIVATE_DIRECTORY\nsafeyolo-host-executor starter --root ABSOLUTE_DIRECTORY --service FIXED_SERVICE --output NEW_PACKAGE_JSON [--credential WINDOWS_WORKLOAD_CREDENTIAL]\nsafeyolo-host-executor scopes --package JSON --selection JSON --output NEW_SCOPES_JSON\nsafeyolo-host-executor prepare-issuer --settings JSON --output NEW_ISSUERS_JSON\nsafeyolo-host-executor prepare --settings JSON --output NEW_CONFIG_JSON\nsafeyolo-host-executor demo --directory NEW_SYNTHETIC_DIRECTORY\nsafeyolo-host-executor inspect --root ABSOLUTE_PATH --kind directory|content --limit COUNT_OR_BYTES\n\ncheck validates the complete adopted target without running its programs.\nThe selected state directory must exist, be private and owned by this account.\nRequired enforcement that the selected backend cannot apply is refused.\nAn adopted https listener serves the same signed protocol on Linux, macOS and Windows. tls-create writes target.pem and target-key.pem without granting any issuer access.\nstarter binds shipped examples to actual executable hashes, account and selected paths. prepare combines that package with explicit target settings; absent issuers and ceilings grant no access. Neither executes a package program."
         );
         #[cfg(unix)]
         println!(
@@ -366,13 +372,22 @@ pub(crate) fn connection(
         // Closing a Unix socket with unread bytes can reset the connection and
         // discard the refusal. Reload still precedes authorization/admission.
         let settings = load_selected(config, state, original)?;
-        let admitted = ledger.lock().map_err(unavailable)?.handle_native(
+        let mut admission_ledger = ledger.lock().map_err(unavailable)?;
+        if let Some(catalogue) = &settings.catalogue {
+            if let Some(previous) = &catalogue.previous {
+                admission_ledger.recover_adoption(previous)?;
+            }
+            admission_ledger.recover_adoption(&catalogue.active)?;
+        }
+        let admitted = admission_ledger.handle_adopting(
             &settings.target,
             &path,
             &body,
             now(),
             &settings.native,
+            &mut |signed, package| adopt_code(config, state, &settings, signed, package),
         )?;
+        drop(admission_ledger);
         if admitted.dispatch {
             let Response::Job { receipt } = &admitted.response else {
                 return Err(unavailable("dispatch without an admitted receipt"));
@@ -472,8 +487,7 @@ pub(crate) fn reconcile_configuration(
     config: &Path,
     state: &Path,
 ) -> Result<Configuration, Refusal> {
-    static RELOAD: Mutex<()> = Mutex::new(());
-    let _guard = RELOAD.lock().map_err(unavailable)?;
+    let _guard = CONFIGURATION.lock().map_err(unavailable)?;
     protected(config, false)?;
     let before = std::fs::read(config).map_err(unavailable)?;
     let previous: Configuration = serde_json::from_slice(&before).map_err(unavailable)?;
@@ -482,6 +496,15 @@ pub(crate) fn reconcile_configuration(
     if !changed {
         return Ok(settings);
     }
+    save_configuration(config, &settings, &before)?;
+    Ok(settings)
+}
+
+fn save_configuration(
+    config: &Path,
+    settings: &Configuration,
+    before: &[u8],
+) -> Result<(), Refusal> {
     let mut random = [0; 16];
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut random)
         .map_err(|_| unavailable("cannot create catalogue save identity"))?;
@@ -539,7 +562,66 @@ pub(crate) fn reconcile_configuration(
             status.active, status.observed, status.policy_sha256, status.state
         );
     }
-    Ok(settings)
+    Ok(())
+}
+
+fn adopt_code(
+    config: &Path,
+    state: &Path,
+    expected: &Configuration,
+    signed: &SignedRequest,
+    package: &Package,
+) -> Result<Response, Refusal> {
+    let _guard = CONFIGURATION.lock().map_err(unavailable)?;
+    let before = std::fs::read(config).map_err(unavailable)?;
+    let mut settings = load(config, state)?;
+    require(
+        revision(&settings.target) == revision(&expected.target),
+        RefusalCode::Stale,
+        "target adoption changed during code qualification; inspect the original request",
+    )?;
+    let authenticated = settings.target.authenticate(
+        "POST",
+        Verb::Adopt.path(),
+        &serde_json::to_vec(signed).map_err(unavailable)?,
+        now(),
+    )?;
+    require(
+        revision(&authenticated.agent_code_package()?) == revision(package),
+        RefusalCode::Stale,
+        "code qualification inputs changed",
+    )?;
+    let observed = SignedCatalogue::from_agent_request(signed.clone(), package.clone())?;
+    let adoption = settings
+        .catalogue
+        .as_mut()
+        .ok_or_else(|| unavailable("target has no adopted code catalogue"))?;
+    require(
+        adoption.observed_file.is_none(),
+        RefusalCode::Unavailable,
+        "this catalogue follows a publisher file; its owner must select direct task-code adoption before agent intake",
+    )?;
+    adoption.observed = observed.clone();
+    let plan = adoption.plan(now())?;
+    require(
+        plan.status.qualified.as_deref() == Some(revision(package).as_str()),
+        RefusalCode::Authority,
+        &plan.status.reason,
+    )?;
+    settings.target.package = plan.package.clone();
+    settings.target.catalogue = Some(plan.status.clone());
+    let mut protected = vec![config.to_owned(), state.to_owned()];
+    if let Some(https) = &settings.https {
+        protected.extend([https.certificate.clone(), https.private_key.clone()]);
+    }
+    settings.native.validate(&settings.target, &protected)?;
+    settings
+        .catalogue
+        .as_mut()
+        .expect("adopted catalogue")
+        .advance(&plan);
+    save_configuration(config, &settings, &before)?;
+    observed.adoption_response()
 }
 
 struct DeadlineRead<'a, T: DeadlineStream> {

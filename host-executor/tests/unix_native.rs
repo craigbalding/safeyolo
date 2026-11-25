@@ -1,12 +1,12 @@
 #![cfg(unix)]
-//! Run explicitly on native Linux with an operator-owned cgroup v2 delegation.
+//! Run explicitly on native macOS, or Linux with an owned cgroup v2 delegation.
 //! The developer fixture compiles its C probe; installed executor operation
 //! itself needs neither a compiler nor Python.
 use base64::{Engine, engine::general_purpose::STANDARD};
 mod common;
 use ring::{
     rand::{SecureRandom, SystemRandom},
-    signature::Ed25519KeyPair,
+    signature::{Ed25519KeyPair, KeyPair},
 };
 #[cfg(target_os = "linux")]
 use safeyolo_host_executor::linux::LinuxRuntime;
@@ -77,22 +77,7 @@ impl Fixture {
         );
     }
     fn call_bytes(&self, verb: Verb, body: &[u8]) -> Response {
-        let mut stream = UnixStream::connect(self.root.join("state/control.sock")).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
-        write!(
-            stream,
-            "POST {} HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
-            verb.path(),
-            body.len()
-        )
-        .unwrap();
-        stream.write_all(body).unwrap();
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).unwrap();
-        let end = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
-        serde_json::from_slice(&response[end..]).unwrap()
+        call_bytes(&self.root, verb, body)
     }
     fn signed(&mut self, action: Action) -> Vec<u8> {
         self.counter += 1;
@@ -311,8 +296,314 @@ fn executor() -> PathBuf {
         .into()
 }
 
+fn call_bytes(root: &Path, verb: Verb, body: &[u8]) -> Response {
+    let mut stream = UnixStream::connect(root.join("state/control.sock")).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    write!(
+        stream,
+        "POST {} HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+        verb.path(),
+        body.len()
+    )
+    .unwrap();
+    stream.write_all(body).unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    let end = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+    serde_json::from_slice(&response[end..]).unwrap()
+}
+
+#[test]
+#[ignore = "requires a native host; Linux needs bubblewrap and an owned memory/pids delegation"]
+fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
+    let mut random = [0u8; 16];
+    SystemRandom::new().fill(&mut random).unwrap();
+    let target = format!("enrol-{:032x}", u128::from_le_bytes(random));
+    let root = std::env::temp_dir().join(&target);
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let root = root.canonicalize().unwrap();
+    let control = root.join("control");
+    // This fixture key has no issuing-instance binding. The witness covers
+    // target preparation and signed native work, not human commissioning.
+    let key = Ed25519KeyPair::from_seed_unchecked(&[43; 32]).unwrap();
+    let (read_paths, broader) = if cfg!(target_os = "macos") {
+        (
+            vec!["/usr/lib", "/System/Library"],
+            vec!["memory", "executor_restart", "network_ipc"],
+        )
+    } else {
+        (
+            vec!["/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache"],
+            vec!["network_ipc"],
+        )
+    };
+    let request = serde_json::json!({
+        "operation_id":format!("req-{:032x}", u128::from_le_bytes(random)),
+        "target_id":target,"issuer_id":"bootstrap-fixture","key_id":"task",
+        "public_key":STANDARD.encode(key.public_key().as_ref()),
+        "principal":{"run":{"agent":"fixture","agent_id":"ag-fixture","run_id":"1".repeat(32)},"task_id":"bootstrap"},
+        "task_revision":"a".repeat(64),"not_before":now()-1,"expires_at":now()+300,
+        "plan":{"intent":{"outcome":"Qualify native task preparation","service_function":null,
+            "audience":null,"data_and_functions":null,"authentication":null,"lifetime":"Five minutes"},
+            "hostname":"127.0.0.1","control_listen":"127.0.0.1:18444","root":root.join("workload"),
+            "read_paths":read_paths,
+            "network":{"destinations":[],"listeners":[{"address":"127.0.0.1","port":0,"transport":"tcp"}],"ipc":[]},"broader":broader,
+            "execution_limits":{"timeout_seconds":10,"output_bytes":1024,"memory_bytes":67108864,"processes":8},
+            "budgets":{"calls":10,"concurrent":1,"timeout_seconds":10,"output_bytes":1024},
+            "duration_seconds":301,"allow_agent_code":true,"allow_run_refresh":true,
+            "executable_bytes":16777216,"dependency_bytes":16777216}
+    });
+    let prepare = |request: &serde_json::Value| {
+        Command::new(executor())
+            .args(["enrol", "--request-base64"])
+            .arg(STANDARD.encode(serde_json::to_vec(request).unwrap()))
+            .arg("--directory")
+            .arg(&control)
+            .output()
+            .unwrap()
+    };
+    let first = prepare(&request);
+    assert!(
+        first.status.success(),
+        "retained {}: {}",
+        root.display(),
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let enrolled: enrolment::Enrolment = serde_json::from_slice(&first.stdout).unwrap();
+    enrolled.validate().unwrap();
+    let checked = Command::new(executor())
+        .args(["check", "--config"])
+        .arg(&enrolled.configuration)
+        .arg("--state")
+        .arg(&enrolled.state)
+        .output()
+        .unwrap();
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    let mut settings: server::Configuration =
+        serde_json::from_slice(&fs::read(&enrolled.configuration).unwrap()).unwrap();
+    let helper = &enrolled.target.package.operations["endpoint-inspect"];
+    assert!(
+        helper.execution.filesystem.read.is_empty() && helper.execution.filesystem.write.is_empty()
+    );
+    assert!(helper.execution.network.listener_handoff.is_none());
+    assert!(
+        enrolled.target.ceiling["endpoint-inspect"]
+            .updates
+            .is_none()
+    );
+    assert!(
+        enrolled.network_enforcement["task:inspect"]
+            .iter()
+            .any(|fact| fact.contains("EXPLICIT BROADER"))
+    );
+    assert!(
+        enrolled.network_enforcement["endpoint-inspect"]
+            .iter()
+            .any(|fact| fact.contains("typed"))
+    );
+    #[cfg(target_os = "linux")]
+    {
+        let NativeRuntime::Linux(runtime) = &settings.native;
+        let controllers =
+            fs::read_to_string(runtime.cgroup.join("cgroup.subtree_control")).unwrap();
+        assert!(controllers.split_whitespace().any(|name| name == "memory"));
+        assert!(controllers.split_whitespace().any(|name| name == "pids"));
+    }
+    let again = prepare(&request);
+    assert!(
+        again.status.success(),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+    assert_eq!(first.stdout, again.stdout);
+    let mut changed = request;
+    changed["plan"]["duration_seconds"] = serde_json::json!(600);
+    let refused = prepare(&changed);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("another enrolment request"));
+
+    // Reuse the fixture's private signed transport for this native shell
+    // regression. Remote TLS and human commissioning need their own proof.
+    settings.https = None;
+    fs::write(
+        &enrolled.configuration,
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    struct StopServer(Child);
+    impl Drop for StopServer {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let server = StopServer(start(&control));
+    let mut counter = 0;
+    let mut call = |target: &Target, action: Action| {
+        counter += 1;
+        let issuer = &enrolled.request.issuer_id;
+        let verb = action.verb();
+        let signed = SignedRequest::sign(
+            Request {
+                version: VERSION.into(),
+                required_features: Vec::new(),
+                request_id: format!("bootstrap-{counter}"),
+                target_id: target.target_id.clone(),
+                issuer_id: issuer.clone(),
+                grant_id: "task".into(),
+                principal: enrolled.request.principal.clone(),
+                expires_at: enrolled.request.expires_at,
+                expected: Some(target.request_revisions(issuer, "task", &action).unwrap()),
+                action,
+                untrusted_rationale: "native enrolment regression".into(),
+            },
+            enrolled.request.key_id.clone(),
+            &key,
+        );
+        call_bytes(&control, verb, &serde_json::to_vec(&signed).unwrap())
+    };
+    let run = |call: &mut dyn FnMut(&Target, Action) -> Response, target: &Target, id: &str| {
+        let operation = &target.package.operations[id];
+        let invocation = Invocation {
+            operation_id: id.into(),
+            resource_id: "task:workspace".into(),
+            operation_sha256: target.package.operation_sha256(id).unwrap(),
+            implementation_sha256: operation.implementation_sha256(),
+            arguments: BTreeMap::new(),
+            expected_assessment_sha256: None,
+        };
+        let Response::Proposal { prepared, .. } = call(target, Action::Propose { invocation })
+        else {
+            panic!("task proposal");
+        };
+        let Response::Job { receipt } = call(
+            target,
+            Action::Invoke {
+                invocation: prepared.invocation,
+            },
+        ) else {
+            panic!("task invocation");
+        };
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let Response::Job { receipt } = call(
+                target,
+                Action::Job {
+                    job_id: receipt.job_id.clone(),
+                },
+            ) else {
+                panic!("task receipt");
+            };
+            if receipt.state.terminal() {
+                assert_eq!(receipt.state, JobState::Completed, "{receipt:?}");
+                assert_eq!(
+                    receipt.native.as_ref().unwrap().exit_code,
+                    Some(0),
+                    "{receipt:?}"
+                );
+                assert!(receipt.native.as_ref().unwrap().processes_stopped);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "task did not settle: {receipt:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    run(&mut call, &settings.target, "task:inspect");
+    let shell = &enrolled.target.package.operations["task:inspect"].execution;
+    let expected_shell = fs::canonicalize(if cfg!(target_os = "macos") {
+        "/bin/bash"
+    } else {
+        "/bin/sh"
+    })
+    .unwrap();
+    assert_eq!(Path::new(&shell.executable), expected_shell);
+    assert_eq!(shell.executable_sha256, hash(&expected_shell));
+
+    // Match the helper's built-in printf recipe, including binary bytes and
+    // a space in the destination. Staging inherits no service listener.
+    let output = enrolled.request.plan.root.join("staged bytes");
+    let mut stage = enrolled.target.package.operations["task:inspect"].clone();
+    stage.execution.argv[1] = Word::Literal {
+        value: format!(
+            "printf '%b' '\\0000\\0377\\0012\\0047' > '{}'",
+            output.display()
+        ),
+    };
+    stage.execution.network =
+        serde_json::from_value(serde_json::json!({"destinations":[],"listeners":[],"ipc":[]}))
+            .unwrap();
+    stage.execution.broader.remove(&BroaderBound::NetworkIpc);
+    let package = enrolled
+        .target
+        .revised_package("task:stage", &stage)
+        .unwrap();
+    let response = call(
+        &enrolled.target,
+        Action::Adopt {
+            operation_id: "task:stage".into(),
+            operation: Box::new(stage.clone()),
+            base_package_sha256: revision(&enrolled.target.package),
+            package_sha256: revision(&package),
+            observed_at: enrolled.request.not_before,
+        },
+    );
+    assert!(
+        matches!(response, Response::Adoption { .. }),
+        "{response:?}"
+    );
+    let adopted = server::load(&enrolled.configuration, &enrolled.state)
+        .unwrap()
+        .target;
+    run(&mut call, &adopted, "task:stage");
+    assert_eq!(fs::read(output).unwrap(), [0, 255, b'\n', b'\'']);
+    stage
+        .execution
+        .filesystem
+        .write
+        .push(control.to_string_lossy().into_owned());
+    let package = adopted.revised_package("task:stage", &stage).unwrap();
+    let refused = call(
+        &adopted,
+        Action::Adopt {
+            operation_id: "task:stage".into(),
+            operation: Box::new(stage),
+            base_package_sha256: revision(&adopted.package),
+            package_sha256: revision(&package),
+            observed_at: enrolled.request.not_before,
+        },
+    );
+    assert!(
+        matches!(&refused, Response::Refused { refusal } if refusal.code == RefusalCode::Authority),
+        "{refused:?}"
+    );
+    drop(server);
+    #[cfg(target_os = "linux")]
+    {
+        let NativeRuntime::Linux(runtime) = &settings.native;
+        assert_eq!(
+            fs::read_to_string(runtime.cgroup.join("cgroup.procs")).unwrap(),
+            ""
+        );
+        fs::remove_dir(&runtime.cgroup).unwrap();
+    }
+    fs::remove_dir_all(&root).unwrap();
+    eprintln!(
+        "native task inspection and binary staging passed; executable pin retained; preparation recovered; changed request and control-path expansion refused"
+    );
+}
+
 fn start(root: &Path) -> Child {
-    let child = Command::new(executor())
+    let mut child = Command::new(executor())
         .arg("serve")
         .arg("--config")
         .arg(root.join("target.json"))
@@ -331,11 +622,14 @@ fn start(root: &Path) -> Child {
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     while UnixStream::connect(root.join("state/control.sock")).is_err() {
-        assert!(
-            Instant::now() < deadline,
-            "server not ready: {}",
-            fs::read_to_string(root.join("server.log")).unwrap()
-        );
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "server not ready: {}",
+                fs::read_to_string(root.join("server.log")).unwrap()
+            );
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
     child
@@ -630,6 +924,8 @@ fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
         ceiling: config.target.package.operations["observe"].clone(),
         allow_narrower: true,
         allow_implementation_updates: true,
+        allow_agent_code: false,
+        agent_dependency_bytes: 0,
     };
     config.target.ceiling.get_mut("observe").unwrap().updates = Some(rule.clone());
     config
@@ -664,6 +960,7 @@ fn installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch() {
     fs::write(&observed, serde_json::to_vec(&active).unwrap()).unwrap();
     config.catalogue = Some(CatalogueAdoption {
         policy: CataloguePolicy {
+            agent_code_keys: BTreeMap::new(),
             publisher: "publisher".into(),
             public_key: STANDARD.encode(f.key.public_key().as_ref()),
             package_name: config.target.package.name.clone(),
@@ -849,6 +1146,8 @@ fn installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authori
         ceiling: op.clone(),
         allow_narrower: true,
         allow_implementation_updates: true,
+        allow_agent_code: false,
+        agent_dependency_bytes: 0,
     };
     for scope in [
         config.target.ceiling.get_mut("observe").unwrap(),
@@ -886,6 +1185,7 @@ fn installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authori
     fs::write(&observed, serde_json::to_vec(&active).unwrap()).unwrap();
     config.catalogue = Some(CatalogueAdoption {
         policy: CataloguePolicy {
+            agent_code_keys: BTreeMap::new(),
             publisher: "publisher".into(),
             public_key: STANDARD.encode(f.key.public_key().as_ref()),
             package_name: config.target.package.name.clone(),
