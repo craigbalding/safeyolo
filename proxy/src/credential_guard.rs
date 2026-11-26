@@ -656,17 +656,18 @@ impl CredentialGuard {
     }
 
     /// Only the gateway's selected, materialized credential header enters here,
-    /// after service, caller, route and vault authorization. Reuse recognized
-    /// credential policy: skip the unknown-credential default while preserving
-    /// explicit credential rules, budgets, network checks and guard evidence.
+    /// after service, caller, route and vault authorization. An imported coding
+    /// subscription reuses recognized credential policy. Other credentials keep
+    /// their existing policy. Explicit rules, budgets and network checks remain.
     pub(crate) fn enforce_gateway_header(
         &self,
         pdp: Pdp<'_>,
         request: Request<'_>,
+        subscription: Option<crate::credentials::SubscriptionClient>,
         options: Options,
         now_ms: f64,
     ) -> Result<Outcome> {
-        self.enforce_inner(pdp, request, options, now_ms, None, true)
+        self.enforce_inner(pdp, request, options, now_ms, None, subscription.is_some())
     }
 
     fn enforce_inner(
@@ -819,7 +820,7 @@ impl CredentialGuard {
                 details["codex_authorized"] = json!(true);
             }
             if gateway_credential {
-                details["gateway_authorized"] = json!(true);
+                details["gateway_subscription_authorized"] = json!(true);
             }
             // Bind new operator prompts to the policy's current identity. The
             // first-launch picker must not attribute an older agent's prompt

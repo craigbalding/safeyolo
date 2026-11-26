@@ -3585,6 +3585,7 @@ where
     let mut request = Request::from_parts(parts, prepared.body);
     let mut grant_lease = None;
     let mut gateway_injected_header = None;
+    let mut gateway_subscription = None;
     let mut gateway_recording_header = None;
     let mut gateway_evidence = None;
     let mut route_challenge_selection = None;
@@ -4179,6 +4180,7 @@ where
                 };
                 match start {
                     crate::credential_injection::Start::Ready(replacement) => {
+                        gateway_subscription = replacement.subscription_client();
                         let name = replacement.name().clone();
                         let changed_headers: Vec<_> = replacement.changed_headers().collect();
                         gateway_recording_header = Some(name.clone());
@@ -4354,6 +4356,7 @@ where
                 prior_response: false,
                 headers: &headers,
             },
+            gateway_subscription,
             crate::credential_guard::Options {
                 block: runtime.operator_modes.credential_block(),
             },

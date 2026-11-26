@@ -3503,6 +3503,16 @@ async fn native_subscription_json_renewal_and_account_headers_reach_only_the_ori
             "synthetic-native-rotated"
         );
         // Recognition belongs only to the gateway's selected replacement.
+        // The same value without imported subscription metadata retains the
+        // existing ordinary service-credential prompt.
+        let mut ordinary = vault.get("simple-secret").unwrap().unwrap();
+        ordinary.subscription_client = None;
+        vault.store(ordinary.clone()).unwrap();
+        let response = raw_http(&socket, request.as_bytes()).await;
+        status(&response, "428");
+        assert_eq!(seen.lock().unwrap().len(), 3);
+        ordinary.subscription_client = Some(client);
+        vault.store(ordinary).unwrap();
         // An extra client-supplied credential still needs its own permission.
         let unrelated = request.replace(
             "\r\n\r\n",
