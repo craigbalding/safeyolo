@@ -2,20 +2,23 @@
 layout: default
 landing: true
 permalink: /
-title: "SafeYolo: Sandboxed coding agents with controlled network and service access"
+title: "SafeYOLO: let agents work unattended, inside boundaries you set"
+description: "SafeYOLO runs Claude Code, Codex, Pi and other agents in isolated sandboxes. Set the boundary once; they work unattended and only ask when it matters."
 ---
 <section class="hero">
   <div class="wrap hero-grid">
     <div>
-      <h1>SafeYolo</h1>
-      <p class="tagline">Let coding agents work. Control where they can reach.</p>
-      <p>SafeYolo runs Claude Code, OpenAI Codex and other coding agents in isolated Linux sandboxes with controlled network and service access.</p>
-      <p>Give agents guest-local root to install tools, run browsers, start services and debug code - without giving them unrestricted access to your host or the Internet.</p>
+      <p class="kicker">SafeYOLO</p>
+      <h1>Stop approving. Start delegating.</h1>
+      <p class="tagline">Let agents work. Control where they can reach.</p>
+      <p class="lede">Set the boundary once. Your agents work unattended and only ask when something is genuinely outside it. Get your day back.</p>
+      <p>SafeYOLO runs Claude Code, OpenAI Codex, Pi and other agents in isolated Linux sandboxes with controlled network and service access. Give agents guest-local root to install tools, run browsers, start services and debug code - without giving them unrestricted access to your host or the Internet.</p>
+      <p>Not only for code: agents can also run services and manage remote systems through API calls that SafeYOLO mediates.</p>
       <div class="actions">
         <a class="btn primary" href="https://github.com/craigbalding/safeyolo">View on GitHub</a>
         <a class="btn ghost" href="#start">Learn More</a>
       </div>
-      <p class="meta">Pre-v1 · Open source · macOS Apple Silicon + Linux<br>Built by <a href="https://threatspotting.com/">Threatspotting</a></p>
+      <p class="meta">Pre-v1 · Open source · Apple Silicon macOS, Linux and Windows (WSL2)<br>Built by <a href="https://threatspotting.com/">Threatspotting</a></p>
     </div>
     <div class="hero-mark"><img src="/assets/img/safeyolo-mark.svg" alt="" width="360" height="180"></div>
   </div>
@@ -39,17 +42,17 @@ title: "SafeYolo: Sandboxed coding agents with controlled network and service ac
         <li>Limits on runaway network activity</li>
         <li>A record of what the agent attempted and why it was allowed or blocked</li>
       </ul>
-      <p class="statement">SafeYolo separates local freedom from external authority.</p>
+      <p class="statement">SafeYOLO separates local freedom from external authority.</p>
     </div>
   </div>
 </section>
 
 <section class="band alt">
   <div class="wrap">
-    <p class="kicker">What SafeYolo does</p>
+    <p class="kicker">What SafeYOLO does</p>
     <div class="cards">
       <div class="card"><h3>Isolated workspace</h3><p>Each agent gets its own Linux sandbox and persistent home: hardware-backed microVMs on Apple Silicon macOS, rootless gVisor on Linux.</p></div>
-      <div class="card"><h3>Controlled network access</h3><p>The sandbox has no external network interface.</p><p>Traffic leaves through SafeYolo, with per-agent policy for destinations, approvals, rate budgets and service capabilities.</p></div>
+      <div class="card"><h3>Controlled network access</h3><p>The sandbox has no external network interface.</p><p>Traffic leaves through SafeYOLO, with per-agent policy for destinations, approvals, rate budgets and service capabilities.</p></div>
       <div class="card"><h3>Protected service credentials</h3><p>The service gateway can keep credentials on the trusted host and inject them only into authorised requests.</p><p>Credential guards restrict where detected secrets may be sent.</p></div>
       <div class="card"><h3>Visible work</h3><p>Inspect HTTP(S) traffic and open sandboxed browser or desktop previews while the agent works.</p></div>
       <div class="card"><h3>Limits and evidence</h3><p>Rate budgets, circuit breakers and loop detection constrain runaway activity.</p><p>Structured audit records preserve requests, decisions and block reasons.</p></div>
@@ -58,24 +61,35 @@ title: "SafeYolo: Sandboxed coding agents with controlled network and service ac
 </section>
 
 <section class="band">
-  <div class="wrap split">
+  <div class="wrap split wide">
     <div>
       <p class="kicker">How it fits</p>
-<pre class="ascii">YOUR TRUSTED HOST
-  Policy · approvals · credential vault
-  SafeYolo enforcement
-          │
- controls │ boundary
-          │
-AGENT SANDBOX — UNTRUSTED
-  Claude Code / Codex / tools
-  Guest-local root
-  Your selected workspace
-  No direct external network
-          │
-          ▼
-EXTERNAL SERVICES
-  Only through SafeYolo policy</pre>
+<figure class="fig">
+<svg viewBox="0 0 560 420" role="img" aria-label="Your trusted host holds policy, approvals, the credential vault and SafeYOLO enforcement. The untrusted agent sandbox has guest-local root and your workspace but no direct external network; its only route out is through SafeYOLO policy to external services.">
+  <defs><pattern id="hz" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="10" height="10" fill="#fff8d1"/><line x1="0" y1="0" x2="0" y2="10" stroke="#fce139" stroke-width="4"/></pattern>
+  <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1c1c1e"/></marker></defs>
+  <rect x="8" y="8" width="544" height="404" rx="16" fill="#f5f5f2" stroke="#1c1c1e" stroke-width="2"/>
+  <text x="28" y="40" font-family="Inter Tight, Inter, sans-serif" font-weight="800" font-size="17" fill="#1c1c1e">Your trusted host</text>
+  <rect x="28" y="56" width="504" height="96" rx="12" fill="#1c1c1e"/>
+  <text x="48" y="88" font-family="Inter Tight, Inter, sans-serif" font-weight="700" font-size="17" fill="#fce139">SafeYOLO enforcement</text>
+  <text x="48" y="114" font-family="Inter, sans-serif" font-size="14" fill="#e8e8e3">Policy · approvals · credential vault</text>
+  <text x="48" y="136" font-family="Inter, sans-serif" font-size="14" fill="#b9b9b2">Every request decided, recorded and explained</text>
+  <rect x="28" y="214" width="300" height="178" rx="12" fill="url(#hz)" stroke="#1c1c1e" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="46" y="244" font-family="Inter Tight, Inter, sans-serif" font-weight="800" font-size="15" fill="#1c1c1e">Agent sandbox — untrusted</text>
+  <text x="46" y="272" font-family="Inter, sans-serif" font-size="14" fill="#1c1c1e">Claude Code / Codex / Pi / tools</text>
+  <text x="46" y="296" font-family="Inter, sans-serif" font-size="14" fill="#1c1c1e">Guest-local root</text>
+  <text x="46" y="320" font-family="Inter, sans-serif" font-size="14" fill="#1c1c1e">Your selected workspace</text>
+  <text x="46" y="352" font-family="Inter, sans-serif" font-weight="600" font-size="14" fill="#1c1c1e">No direct external network</text>
+  <line x1="178" y1="212" x2="178" y2="156" stroke="#1c1c1e" stroke-width="2.5" marker-end="url(#ah)"/>
+  <text x="188" y="190" font-family="Inter, sans-serif" font-size="13" fill="#5b5b60">its only way out</text>
+  <rect x="368" y="214" width="164" height="178" rx="12" fill="#ffffff" stroke="#1c1c1e" stroke-width="1.5"/>
+  <text x="384" y="244" font-family="Inter Tight, Inter, sans-serif" font-weight="800" font-size="15" fill="#1c1c1e">External services</text>
+  <text x="384" y="272" font-family="Inter, sans-serif" font-size="14" fill="#1c1c1e">Only through</text>
+  <text x="384" y="292" font-family="Inter, sans-serif" font-size="14" fill="#1c1c1e">SafeYOLO policy</text>
+  <path d="M450 154 L450 210" stroke="#1c1c1e" stroke-width="2.5" fill="none" marker-end="url(#ah)"/>
+  <text x="460" y="190" font-family="Inter, sans-serif" font-size="13" fill="#5b5b60">if allowed</text>
+</svg>
+</figure>
     </div>
     <div>
       <p>On macOS: hardware-backed Linux microVMs.<br>On Linux: rootless gVisor.</p>
@@ -91,49 +105,65 @@ EXTERNAL SERVICES
       <p>It complies.</p>
     </div>
     <div>
-      <div class="term"><div><span class="prompt">agent$</span> curl https://unknown.example/upload ...</div><div class="bad">HTTP 428 — access not authorised</div><div class="dim">Destination is outside this agent's policy.</div></div>
-      <p>The agent cannot route around SafeYolo, its sandbox has no direct external network interface.</p>
-      <p>If the request uses a service configured through SafeYolo's gateway, the real service credential can remain on the host and is injected only after the request is authorised.</p>
-      <p>The attempt - including the policy decision and reason - is recorded for the operator.</p>
+      <div class="term"><div><span class="prompt">agent$</span> curl https://unknown.example/upload ...</div><div class="bad">HTTP 428 — Network access requires approval</div><div class="dim">Access to unknown.example is not in the allowed hosts list.</div></div>
+      <p>The agent cannot route around SafeYOLO, its sandbox has no direct external network interface.</p>
+      <p>If the request uses a service configured through SafeYOLO's gateway, the real service credential can remain on the host and is injected only after the request is authorised.</p>
+      <p>The attempt - including the policy decision and reason - is recorded for the operator, who can approve or deny it.</p>
       <div class="actions"><a class="btn dark" href="https://github.com/craigbalding/safeyolo">See demos in README</a></div>
     </div>
   </div>
 </section>
 
-<section class="band" id="install">
-  <div class="wrap split">
-    <div>
-      <p class="kicker">Install</p>
-      <p>SafeYolo is currently pre-v1 and installed from source.</p>
-      <p>macOS requires Apple Silicon, Command Line Tools, Lima and tmux. Linux supports x86_64 and arm64 and uses gVisor for sandboxing.</p>
-      <div class="actions"><a class="btn dark" href="https://github.com/craigbalding/safeyolo">Install / Run (GitHub)</a></div>
-    </div>
-    <div class="term"><div><span class="prompt">$</span> git clone https://github.com/craigbalding/safeyolo.git</div><div><span class="prompt">$</span> cd safeyolo</div><div><span class="prompt">$</span> ./install.sh</div><div><span class="prompt">$</span> safeyolo bootstrap</div><div class="dim"># On macOS:</div><div><span class="prompt">$</span> make -C vm install</div><div class="dim"># Then</div><div><span class="prompt">$</span> safeyolo agent add work ~/code --host-script @claude</div><div><span class="prompt">$</span> safeyolo agent run work</div></div>
+<section class="band">
+  <div class="wrap">
+    <p class="kicker">Grows with you</p>
+    <h2>Start with one contained agent. Grow into a factory.</h2>
+    <ol class="steps">
+      <li><b><a href="https://github.com/craigbalding/safeyolo#readme">Contain one agent</a></b><span>A sandbox with no network interface, one socket per agent, and your first 428.</span></li>
+      <li><b><a href="https://github.com/craigbalding/safeyolo/blob/master/cli/src/safeyolo/agent_context/skills/safeyolo/references/agent-api.md">Give it a home</a></b><span>An Agent API, skills, root, Docker and browsers inside its own sandbox.</span></li>
+      <li><b><a href="https://github.com/craigbalding/safeyolo/blob/master/docs/credentials.md">Give it reach, not secrets</a></b><span>Masked API access, scoped host work and remote commands without SSH.</span></li>
+      <li><b><a href="https://github.com/craigbalding/safeyolo/blob/master/docs/factories.md">Let agents run agents</a></b><span>Coord rooms, agents that support other agents, deterministic gates and a live software factory.</span></li>
+      <li><b><a href="https://github.com/craigbalding/safeyolo/blob/master/docs/federation-setup.md">Spread across machines</a></b><span>Federated instances, remote support and delegated approvals.</span></li>
+    </ol>
   </div>
 </section>
 
-<section class="band alt">
+<section class="band alt" id="install">
+  <div class="wrap split">
+    <div>
+      <p class="kicker">Install</p>
+      <p>SafeYOLO is pre-v1. Installation uses prebuilt release artifacts; no guest build is needed.</p>
+      <p>On Ubuntu 24.04 (x86_64), one command installs SafeYOLO and launches your first agent.</p>
+      <p>On Apple Silicon macOS 26 or later, Linux arm64 and Windows through WSL2, download the release archive for your host and follow the installation guide.</p>
+      <div class="actions"><a class="btn dark" href="https://github.com/craigbalding/safeyolo/blob/master/docs/installation.md">Installation guide</a><a class="btn dark" href="https://github.com/craigbalding/safeyolo/blob/master/docs/windows-wsl2.md">Windows (WSL2)</a></div>
+    </div>
+    <div class="term"><div><span class="prompt">$</span> curl -fLO https://github.com/craigbalding/safeyolo/releases/latest/download/install-safeyolo.sh</div><div><span class="prompt">$</span> bash install-safeyolo.sh --launch</div></div>
+  </div>
+</section>
+
+<section class="band">
   <div class="wrap">
     <p class="kicker">Who it’s for</p>
     <div class="cards">
       <div class="card"><p>Developers who want Claude Code, Codex or similar agents to work autonomously without giving them unrestricted host and network access</p></div>
       <div class="card"><p>Teams running persistent or multiple coding agents that need per-agent boundaries, visibility and audit evidence</p></div>
       <div class="card"><p>Security engineers using agents for browsers, APIs, testing and other workflows where external access needs to be controlled</p></div>
+      <div class="card"><p>People already running agents in YOLO mode who know they shouldn't be</p></div>
       <div class="card"><p>Organisations experimenting with agent autonomy but unwilling to make “let it work” synonymous with “trust it with everything”</p></div>
     </div>
   </div>
 </section>
 
-<section class="band" id="help">
+<section class="band alt" id="help">
   <div class="wrap person">
     <img src="/assets/img/craig-balding.jpg" alt="Headshot of Craig Balding" width="180" height="233">
     <div>
       <p class="kicker">Help / commercial</p>
-      <p>SafeYolo is MIT-licensed open-source software.</p>
+      <p>SafeYOLO is MIT-licensed open-source software.</p>
       <p>Threatspotting can help organisations use autonomous coding agents safely in real environments, including:</p>
       <ul class="checks">
         <li>Agent sandbox and trust-boundary design</li>
-        <li>SafeYolo deployment and policy design</li>
+        <li>SafeYOLO deployment and policy design</li>
         <li>Service capability and credential architecture</li>
         <li>Adversarial testing of agent containment and controls</li>
         <li>Independent assurance and security review</li>
