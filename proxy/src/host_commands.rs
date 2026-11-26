@@ -11,6 +11,8 @@ use std::{
 #[cfg(any(target_os = "macos", test))]
 use tokio::io::AsyncReadExt;
 
+pub const AGENT_HELP: &str = "safeyolo [--instance-dir PATH] agent launch [WORKSPACE] [--name NAME] [--harness claude|codex] [--launcher LAUNCHER] [--authentication client|host-vault]\nsafeyolo [--instance-dir PATH] agent auth NAME [--json]\nsafeyolo [--instance-dir PATH] agent create|configure NAME --workspace PATH [--memory MB] [--nested-docker true|false] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--instance-dir PATH] agent start NAME [--foreground|--sandbox-only] [--dangerously-allow-unowned] [-- ARGUMENTS...]\nsafeyolo [--instance-dir PATH] agent status|stop|cleanup|attach|present|diagnostics NAME\nsafeyolo [--instance-dir PATH] agent recover NAME [--timeout SECONDS]\nsafeyolo [--instance-dir PATH] agent watch NAME [--history COUNT] [--once] [--plain]\nsafeyolo [--instance-dir PATH] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--instance-dir PATH] agent mount NAME HOST:GUEST[:ro]\nsafeyolo [--instance-dir PATH] agent unmount NAME GUEST\nsafeyolo [--instance-dir PATH] agent mounts add|update NAME HOST:GUEST[:ro]\nsafeyolo [--instance-dir PATH] agent mounts remove NAME GUEST\nsafeyolo [--instance-dir PATH] agent retire NAME [--yes]\nsafeyolo [--instance-dir PATH] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nSaved mount add/update replaces that guest destination; remove selects the guest path. Saved edits affect the next explicit start; live mount/unmount affects only the current run. A live-removed saved mount returns on restart. retire without --yes previews effects and retained paths/references. --yes stops/cleans the selected agent and removes its saved definition while retaining its home and external data. Home deletion is separate.\nLaunch defaults to the current directory, reuses an unambiguous saved workspace/name harness, and defaults new agents to Claude. Setup and optional Claude host-state copying require host consent. Codex uses agent-local authentication and settings. Detach from the agent terminal to review requests here. Configure changes apply at the next sandbox start. Linux nested-docker enables guest mount and namespace administration for an inner Docker daemon; it adds no host mounts or network interface. Mount and unmount change only the current sandbox; saved mounts are unchanged and apply again on restart. Busy removal is refused. Copied or already resident data is not erased. Start arguments affect only that launch. Attach never launches an absent coding agent. Shell is independent. For runtime, coding-agent, terminal or shell failures, use agent diagnostics NAME; it probes the selected runtime/control and reports a targeted next_action. Use doctor for host/pipeline probes, or diagnose for saved/current policy and audit availability without test traffic.";
+
 pub fn handles(args: &[String]) -> bool {
     args.first().is_some_and(|arg| {
         matches!(
@@ -20,12 +22,22 @@ pub fn handles(args: &[String]) -> bool {
     })
 }
 
+pub const AGENT_LAUNCH_HELP: &str = crate::host_launch::HELP;
+pub const AGENT_AUTH_HELP: &str = crate::host_client_auth::HELP;
+
 pub async fn run(config: PathBuf, args: &[String]) -> Result<i32, Error> {
+    let arguments = crate::operator_output::without_json(args);
+    let args = arguments.as_slice();
     let parent = config
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."))
-        .canonicalize()?;
+        .to_owned();
+    let parent = if parent.is_absolute() {
+        parent
+    } else {
+        std::env::current_dir()?.join(parent)
+    };
     let config = parent.join(config.file_name().ok_or("configuration has no filename")?);
     host_platform::in_config(config, run_inner(args)).await
 }
@@ -57,8 +69,248 @@ pub fn record_proxy(root: &Path) -> Result<(), Error> {
     )
 }
 
-fn print(value: &Value) -> Result<(), Error> {
-    println!("{}", serde_json::to_string_pretty(value)?);
+pub const WEB_HELP: &str = "safeyolo agent publish NAME --port PORT --audience local|tailnet [--tailnet-port PORT] [--ttl SECONDS] [--json]\nsafeyolo agent publications NAME [--json]\nsafeyolo agent unpublish NAME --port PORT --audience local|tailnet [--tailnet-port PORT] [--json]\n\nPublish this running agent's HTTP app without starting a desktop. Local URLs are\nreachable on the SafeYolo host; tailnet URLs use that host's existing Tailscale\nServe authority. Open the URL on your device and enter the separate unlock code.\nApp login and cookies remain the app's responsibility. Publication grants no\nnetwork, credential or peer-support access. Default lifetime: 900 seconds.\nStop and expiry disconnect only this publication and remove its foreground Serve\nmapping. Unrelated mappings remain. The same agent, guest port, audience and\noptional tailnet port select unpublish.\nExample: safeyolo agent publish builder --port 3000 --audience tailnet";
+
+pub const AGENT_LIFECYCLE_HELP: &str = host_lifecycle::scheduled::HELP;
+
+pub(crate) fn print(value: &Value) -> Result<(), Error> {
+    use crate::operator_output::{field, json, json_requested, rows, text};
+    if json_requested() {
+        return json(value);
+    }
+    if let Some(probe) = value.get("guest_probe") {
+        field("Instance", &json!(host_platform::config_dir()));
+        println!(
+            "Guest probe completed for agent {}.",
+            text(&value["lifecycle"]["name"])
+        );
+        field("Guest UID", &probe["result"]["uid"]);
+        field(
+            "SSH banner observed",
+            &probe["result"]["sshd_loopback"]["received"],
+        );
+        field(
+            "SSH observation",
+            &probe["result"]["sshd_loopback"]["error"],
+        );
+        print(&value["lifecycle"])?;
+        println!("The probe does not start or resume the coding agent.");
+        if probe["result"]["sshd_loopback"]["received"] != true {
+            println!(
+                "Inspect: {} agent diagnostics {}",
+                host_lifecycle::current_instance_command()?,
+                host_lifecycle::shell_quote(
+                    value["lifecycle"]["name"].as_str().unwrap_or_default()
+                )
+            );
+        }
+        println!("Use --json for the full probe and lifecycle observations.");
+    } else if value["saved_configuration_changed"].is_boolean() {
+        field("Instance", &value["root"]);
+        field("Agent", &value["agent"]);
+        field("Mount operation", &value["operation"]);
+        field("Completed", &value["ok"]);
+        field(
+            "Guest path",
+            value
+                .get("destination")
+                .unwrap_or(&value["share"]["guest_path"]),
+        );
+        field(
+            "Saved configuration changed",
+            &value["saved_configuration_changed"],
+        );
+        field("Activation", &value["scope"]);
+        field("Error", &value["error"]);
+        if value["ok"] != true {
+            println!(
+                "Inspect: {} agent status {}",
+                host_lifecycle::current_instance_command()?,
+                host_lifecycle::shell_quote(value["agent"].as_str().unwrap_or_default())
+            );
+        }
+        println!("Use --json for the saved, live and next-start mount details.");
+    } else if value.get("saved_configuration").is_some() {
+        field("Instance", &json!(host_platform::config_dir()));
+        field("Agent", &value["name"]);
+        field("Lifecycle", &value["state"]);
+        field("Mode", &value["saved_configuration"]["mode"]);
+        field("Paused", &value["saved_configuration"]["paused"]);
+        field("Activation", &value["activation"]);
+        field("Next occurrence", &value["next_occurrence"]["state"]);
+        field("Next occurrence at", &value["next_occurrence"]["at"]);
+        field("Observation", &value["next_occurrence"]["reason"]);
+        field("Error", &value["error"]);
+        if value["saved_configuration"].is_null() {
+            println!("No lifecycle configuration.");
+        }
+        println!("Use --json for the full lifecycle configuration and receipt.");
+    } else if let Some(agents) = value["agents"].as_array() {
+        field("Instance", &value["root"]);
+        field("Proxy", &value["proxy_state"]);
+        if agents.is_empty() {
+            println!(
+                "No agents configured. Start with: {} agent launch [WORKSPACE]",
+                host_lifecycle::current_instance_command()?
+            );
+        } else {
+            rows(
+                agents,
+                &[
+                    ("AGENT", "name"),
+                    ("RUNTIME", "runtime_state"),
+                    ("CODING AGENT", "agent_state"),
+                    ("WORKSPACE", "/next_start_configuration/workspace"),
+                ],
+            );
+            let mut failures = std::collections::BTreeMap::<String, Vec<String>>::new();
+            for agent in agents {
+                for key in ["error", "runtime_error"] {
+                    if let Some(error) = agent[key].as_str() {
+                        let names = failures.entry(error.to_owned()).or_default();
+                        let name = text(&agent["name"]);
+                        if !names.contains(&name) {
+                            names.push(name);
+                        }
+                    }
+                }
+            }
+            for (error, names) in failures {
+                println!(
+                    "Unavailable for {}: {}",
+                    names.join(", "),
+                    text(&json!(error))
+                );
+            }
+            let command = host_lifecycle::current_instance_command()?;
+            println!(
+                "Inspect an agent: {command} agent status NAME\nDiagnose uncertain state: {command} agent diagnostics NAME"
+            );
+        }
+        if value["proxy_state"] == "unavailable" {
+            println!(
+                "Proxy is not verified running. Use doctor to inspect prerequisites, then start when ready."
+            );
+        }
+    } else if value.get("runtime_state").is_some() {
+        println!(
+            "Agent {}: runtime {}; coding agent {}; terminal {}.",
+            text(&value["name"]),
+            text(&value["runtime_state"]),
+            text(&value["agent_state"]),
+            text(&value["terminal_state"])
+        );
+        field("Guest control", &value["control_state"]);
+        field("Runtime observation", &value["runtime_error"]);
+        field("Coding-agent observation", &value["error"]);
+        if value["runtime_state"] == "stopped" && value["error"].is_null() {
+            if let Some(code) = value["exit_code"].as_i64() {
+                println!(
+                    "Previous coding process exited with code {code}; the runtime is now stopped."
+                );
+            }
+            println!(
+                "Home and workspace retained. Resume: {} agent launch --name {}",
+                host_lifecycle::current_instance_command()?,
+                host_lifecycle::shell_quote(value["name"].as_str().unwrap_or_default())
+            );
+        } else {
+            field("Next action", &value["next_action"]);
+        }
+    } else if value["retirement_state"].is_string() {
+        field("Instance", &value["root"]);
+        field("Agent", &value["agent"]);
+        field("Retirement", &value["retirement_state"]);
+        field("Effects", &value["effects"]);
+        field("Home retained", &value["home"]);
+        field("Workspace retained", &value["workspace_retained"]);
+        field("Failed step", &value["failed_stage"]);
+        field("Error", &value["error"]);
+        if value["retirement_state"] == "preview"
+            && let Some(command) = value["apply_command"].as_array()
+        {
+            println!(
+                "Apply: {}",
+                command
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(host_lifecycle::shell_quote)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+        println!("Use --json to inspect retained grant, credential and Coord references.");
+    } else if let Some(publications) = value["publications"].as_array() {
+        if publications.is_empty() {
+            println!("No web publications for this agent.");
+        }
+        rows(
+            publications,
+            &[
+                ("AGENT", "agent"),
+                ("GUEST PORT", "guest_port"),
+                ("ACTIVE", "active"),
+                ("URL", "url"),
+            ],
+        );
+    } else if value["url"].is_string() {
+        field("Agent", &value["agent"]);
+        field("Guest port", &value["guest_port"]);
+        field("Audience", &value["audience"]);
+        field("URL", &value["url"]);
+        field("Unlock code", &value["unlock_code"]);
+        field("Lifetime (seconds)", &value["ttl_seconds"]);
+        println!("Open this URL on the selected audience's device. Keep the unlock code private.");
+    } else if value["publication_id"].is_string() && value["stopped"].is_boolean() {
+        println!(
+            "Web publication {} for guest port {}. Other publications and Tailscale mappings remain.",
+            if value["stopped"] == true {
+                "stopped"
+            } else {
+                "was already absent"
+            },
+            text(&value["guest_port"])
+        );
+    } else if let Some(paths) = value["protected_host_directories"].as_array() {
+        if paths.is_empty() {
+            println!("No extra-mount directory protections configured.");
+        }
+        for path in paths {
+            println!("Protected: {}", text(path));
+        }
+        field("Applies to", &value["scope"]);
+    } else if value.get("configuration").is_some() {
+        println!(
+            "Saved configuration for {}.",
+            text(&value["configuration"]["name"])
+        );
+        field("Activation", &value["scope"]);
+    } else if value.get("proxy_state").is_some() {
+        field("Instance", &value["root"]);
+        field("Proxy", &value["proxy_state"]);
+        if value["agents"] == "unchanged" {
+            println!("Agent runtimes remain intact.");
+        }
+    } else {
+        for (label, key) in [
+            ("Outcome", "status"),
+            ("Completed", "ok"),
+            ("Agent", "name"),
+            ("Effect", "effect"),
+            ("Activation", "scope"),
+            ("Next action", "next_action"),
+            ("Error", "error"),
+            ("Terminal", "terminal_state"),
+        ] {
+            field(label, &value[key]);
+        }
+        if let Some(paths) = value["retained_paths"].as_array() {
+            for path in paths {
+                println!("Retained: {}", text(path));
+            }
+        }
+        println!("Use --json for complete operation details.");
+    }
     Ok(())
 }
 fn agent(name: &str) -> Result<host_agents::Agent, Error> {
@@ -367,12 +619,9 @@ pub(crate) async fn shell_banner(path: &Path) -> Result<(), Error> {
 }
 
 pub(crate) fn diagnostic_commands(agent: Option<&str>) -> Value {
-    let Ok(executable) = std::env::current_exe() else {
+    let Ok(prefix) = host_lifecycle::current_instance_command() else {
         return json!({"available":false,"reason":"The current installed executable could not be identified; diagnostic commands cannot be qualified.","next_action":"Use the known installed CLI and configuration for this instance to inspect agent diagnostics, doctor or diagnose."});
     };
-    let executable = host_lifecycle::shell_quote(&executable.to_string_lossy());
-    let config = host_lifecycle::shell_quote(&host_platform::config_path().to_string_lossy());
-    let prefix = format!("{executable} --config {config}");
     let mut guidance = json!({
         "doctor":{"command":format!("{prefix} doctor"),"establishes":"Host prerequisites and a controlled request through the active policy pipeline; does not establish coding-agent readiness.","probes":true,"next_action":"Repair the reported failed prerequisite or control, then repeat this diagnostic."},
         "diagnose":{"command":format!("{prefix} diagnose"),"establishes":"Saved policy validity, current Admin policy availability, saved/active agreement and audit location; no test traffic.","probes":false,"next_action":"Follow the reported saved/active mismatch or Admin connection guidance; local logs remain available."}
@@ -467,7 +716,7 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
     let root = host_platform::config_dir();
     match args {
         [kind, help] if kind == "mount" && help == "--help" => println!(
-            "safeyolo [--root ROOT | --config FILE] mount protect PATH\nsafeyolo [--root ROOT | --config FILE] mount unprotect PATH\nsafeyolo [--root ROOT | --config FILE] mount list\nProtection is saved in config.toml for extra mounts of the resolved path and its descendants. PATH may not exist yet. Protected sources require explicit :ro for configuration, live additions and startup. Workspace sharing and existing shares are unchanged."
+            "safeyolo [--instance-dir PATH | --config FILE] mount protect PATH\nsafeyolo [--instance-dir PATH | --config FILE] mount unprotect PATH\nsafeyolo [--instance-dir PATH | --config FILE] mount list\nProtection is saved in config.toml for extra mounts of the resolved path and its descendants. PATH may not exist yet. Protected sources require explicit :ro for configuration, live additions and startup. Workspace sharing and existing shares are unchanged."
         ),
         [kind, operation] if kind == "mount" && operation == "list" => {
             let directories = serde_json::to_value(
@@ -497,7 +746,12 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
             print(&host_lifecycle::scheduled::command(name, operation, Some(file)).await?)?;
         }
         [kind, group, name, operation] if kind == "agent" && group == "lifecycle" => {
-            print(&host_lifecycle::scheduled::command(name, operation, None).await?)?;
+            let mut result = host_lifecycle::scheduled::command(name, operation, None).await?;
+            if result.is_null() {
+                result = json!({"saved_configuration":null});
+            }
+            result["name"] = json!(name);
+            print(&result)?;
         }
         [kind, operation, name, id] if kind == "agent" && operation == "entrypoint" => {
             return host_lifecycle::run_entrypoint(name, id).await;
@@ -508,28 +762,32 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
         }
         [command] if command == "stop" => {
             stop_proxy().await?;
-            print(&json!({"proxy_state":"stopped","agents":"unchanged"}))?;
+            print(&json!({"proxy_state":"stopped","agents":"unchanged","root":root}))?;
         }
-        [command] if command == "status" || command == "doctor" => {
-            let agents = host_lifecycle::operate("list", None).await?;
-            let mut report = json!({"proxy_state":if proxy_live(){"running"}else{"unavailable"},"agents":agents["agents"],"root":root,"diagnostic_commands":diagnostic_commands(None)});
-            if command == "doctor" {
-                #[cfg(target_os = "linux")]
-                {
-                    report["linux"] = crate::linux_host::runsc_report();
-                }
-                report["pipeline"] =
-                    crate::host_doctor::pipeline(&host_platform::config_path()).await;
-                let failed = report["pipeline"]["verdict"] == "fail";
-                print(&report)?;
-                return Ok(i32::from(failed));
+        [command] if command == "doctor" => {
+            let report = crate::host_doctor::report(&host_platform::config_path()).await;
+            let failed = report["exit_code"].as_i64().unwrap_or(1) as i32;
+            if crate::operator_output::json_requested() {
+                crate::operator_output::json(&report)?;
+            } else {
+                crate::host_doctor::show(&report);
             }
+            return Ok(failed);
+        }
+        [command] if command == "status" => {
+            let agents = host_lifecycle::operate("list", None).await.map_err(|error|
+                format!("Cannot read agent inventory for instance {} (configuration {}): {error}. Inspect this path or select the installed instance with --instance-dir PATH; no service was changed", root.display(), host_platform::config_path().display()))?;
+            let report = json!({"proxy_state":if proxy_live(){"running"}else{"unavailable"},"agents":agents["agents"],"root":root,"diagnostic_commands":diagnostic_commands(None)});
+            print(&report)?;
+        }
+        [kind, operation] if kind == "agent" && operation == "list" => {
+            let mut report = host_lifecycle::operate("list", None).await.map_err(|error|
+                format!("Cannot read agent inventory for instance {} (configuration {}): {error}. Select the installed instance or repair its configuration; no service was changed", root.display(), host_platform::config_path().display()))?;
+            report["root"] = json!(root);
             print(&report)?;
         }
         [agent, help] if agent == "agent" && help == "--help" => {
-            println!(
-                "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude|codex] [--launcher LAUNCHER] [--authentication client|host-vault]\nsafeyolo [--root ROOT] agent auth NAME [--json]\nsafeyolo [--root ROOT] agent create|configure NAME --workspace PATH [--memory MB] [--nested-docker true|false] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] agent start NAME [--foreground|--sandbox-only] [--dangerously-allow-unowned] [-- ARGUMENTS...]\nsafeyolo [--root ROOT] agent status|stop|cleanup|attach|present|diagnostics|recover NAME\nsafeyolo [--root ROOT] agent watch NAME [--history COUNT] [--once] [--plain]\nsafeyolo [--root ROOT] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--root ROOT] agent mount NAME HOST:GUEST[:ro]\nsafeyolo [--root ROOT] agent unmount NAME GUEST\nsafeyolo [--root ROOT] agent mounts add|update NAME HOST:GUEST[:ro]\nsafeyolo [--root ROOT] agent mounts remove NAME GUEST\nsafeyolo [--root ROOT] agent retire NAME [--yes]\nsafeyolo [--root ROOT] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nSaved mount add/update replaces that guest destination; remove selects the guest path. Saved edits affect the next explicit start; live mount/unmount affects only the current run. A live-removed saved mount returns on restart. retire without --yes previews effects and retained paths/references. --yes stops/cleans the selected agent and removes its saved definition while retaining its home and external data. Home deletion is separate.\nLaunch defaults to the current directory, reuses an unambiguous saved workspace/name harness, and defaults new agents to Claude. Setup and optional Claude host-state copying require host consent. Codex uses agent-local authentication and settings. Detach from the agent terminal to review requests here. Configure changes apply at the next sandbox start. Linux nested-docker enables guest mount and namespace administration for an inner Docker daemon; it adds no host mounts or network interface. Mount and unmount change only the current sandbox; saved mounts are unchanged and apply again on restart. Busy removal is refused. Copied or already resident data is not erased. Start arguments affect only that launch. Attach never launches an absent coding agent. Shell is independent. For runtime, coding-agent, terminal or shell failures, use agent diagnostics NAME; it probes the selected runtime/control and reports a targeted next_action. Use doctor for host/pipeline probes, or diagnose for saved/current policy and audit availability without test traffic."
-            );
+            println!("{AGENT_HELP}");
             println!("{}", host_lifecycle::scheduled::HELP);
         }
         [kind, group, help] if kind == "agent" && group == "lifecycle" && help == "--help" => {
@@ -633,6 +891,29 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
             let agent = agent(name)?;
             let extra = &rest[1..];
             match operation.as_str() {
+                "publish"|"unpublish"|"publications" => {
+                    let mut parameters = json!({"ttl_seconds":900});
+                    if operation == "publications" {
+                        if !extra.is_empty() { return Err("publications takes only the agent name and optional --json".into()); }
+                    } else {
+                        let mut index = 0;
+                        while index < extra.len() {
+                            let flag = extra[index].as_str();
+                            let input = extra.get(index + 1).ok_or("publication option requires a value; use agent publish --help")?;
+                            let key = match flag {"--port"=>"guest_port", "--audience"=>"audience", "--tailnet-port"=>"tailnet_port", "--ttl"=>"ttl_seconds", _=>return Err("unknown publication option; use agent publish --help".into())};
+                            if key == "audience" { parameters[key] = json!(input); } else { parameters[key] = json!(input.parse::<u32>()?); }
+                            index += 2;
+                        }
+                        let selected: crate::desktop_present::web::Parameters = serde_json::from_value(parameters.clone())
+                            .map_err(|_| "publish and unpublish require --port PORT --audience local|tailnet")?;
+                        selected.validate()?;
+                    }
+                    let result = crate::native_client::admin(&host_platform::config_path(),
+                        &format!("/admin/agents/{}/web", agent.id),
+                        match operation.as_str() {"publications"=>hyper::Method::GET, "unpublish"=>hyper::Method::DELETE, _=>hyper::Method::POST},
+                        if operation == "publications" {Value::Null} else {parameters}, Duration::from_secs(40)).await?;
+                    print(&result)?;
+                },
                 "start"|"stop"|"status"|"cleanup"=>{
                     let (operation, arguments, allow_unowned) = if operation=="start" {
                         start_arguments(extra)?

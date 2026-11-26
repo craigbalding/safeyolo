@@ -40,8 +40,12 @@ pub(crate) fn authorize(
             .ok_or_else(|| invalid("desktop host configuration unavailable"))?
             .join("config.toml");
         if !crate::host_platform::with_config(path, || {
-            crate::desktop_present::configuration_revision()
-                .is_ok_and(|revision| record.authority.action["configuration_revision"] == revision)
+            (if record.authority.action["action_id"] == crate::operator_actions::WEB_PRESENT {
+                crate::desktop_present::web::configuration_revision()
+            } else {
+                crate::desktop_present::configuration_revision()
+            })
+            .is_ok_and(|revision| record.authority.action["configuration_revision"] == revision)
         }) {
             return Err(invalid("desktop host configuration changed"));
         }

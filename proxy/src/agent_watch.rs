@@ -47,7 +47,7 @@ pub(crate) fn recipient_cursor(agent: &host_agents::Agent, room: &str) -> Value 
     result
 }
 
-pub(crate) const HELP: &str = "safeyolo [--root ROOT] agent watch NAME [--history COUNT] [--since SEQUENCE] [--once] [--max-text COUNT] [--plain]\n\nWatch the named supervised agent's configured room and checkpoint. The view is read-only, compact and redacted, with 30 recent messages and at most 600 characters per line by default. Ctrl-C detaches. Checkpoint observations are labelled separately from retained agent events. They do not prove supervisor liveness. Missing or damaged checkpoints remain visible while the room follows. Use agent diagnostics NAME to inspect runtime failures.";
+pub(crate) const HELP: &str = "safeyolo [--instance-dir PATH] agent watch NAME [--history COUNT] [--since SEQUENCE] [--once] [--max-text COUNT] [--plain]\n\nWatch the named supervised agent's configured room and checkpoint. The view is read-only, compact and redacted, with 30 recent messages and at most 600 characters per line by default. Ctrl-C detaches. Checkpoint observations are labelled separately from retained agent events. They do not prove supervisor liveness. Missing or damaged checkpoints remain visible while the room follows. Use agent diagnostics NAME to inspect runtime failures.";
 
 fn failure(error: &Error) -> &'static str {
     match error.downcast_ref::<std::io::Error>().map(|e| e.kind()) {

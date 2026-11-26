@@ -76,7 +76,9 @@ mod macos_mounts;
 mod macos_share_warning;
 pub mod mattermost;
 pub mod observations;
+pub mod operator_output;
 mod packet_capture;
+pub mod tls_commands;
 
 /// Run the bounded PID-1/shared-home diagnostic without guest SSH.
 pub fn recover_guest_probe(

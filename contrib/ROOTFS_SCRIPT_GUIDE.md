@@ -382,13 +382,13 @@ host with the completed tree available:
 
 ```sh
 KALI_BUILD=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assets"])' "$HOME/kali-build.json")
-"$SAFEYOLO_CLI" --root "$HOME/kali-instance" host prepare \
+"$SAFEYOLO_CLI" --instance-dir "$HOME/kali-instance" host prepare \
   --package-root "$HOST_BUNDLE" --installed-root "$HOME/kali-instance" \
   --write-settings "$HOME/kali-host.toml"
 guest/export-profile.sh --build "$KALI_BUILD" --platform linux/amd64 \
   --output "$HOME/kali-platform" --native-cli "$SAFEYOLO_CLI" \
   --host-settings "$HOME/kali-host.toml"
-./scripts/install_native.sh --bundle "$HOST_BUNDLE" --root "$HOME/kali-instance" \
+./scripts/install_native.sh --bundle "$HOST_BUNDLE" --instance-dir "$HOME/kali-instance" \
   --platform-assets "$HOME/kali-platform"
 ```
 

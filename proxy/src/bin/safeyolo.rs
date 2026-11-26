@@ -21,6 +21,8 @@ use zeroize::Zeroizing;
 
 #[path = "safeyolo/credential_commands.rs"]
 mod credential_commands;
+#[path = "safeyolo/help.rs"]
+mod help;
 
 fn policy_directory(config: &Path) -> Result<PathBuf, Error> {
     if config.exists() {
@@ -39,7 +41,11 @@ fn check(path: &Path, root: &Path) -> Result<(), Error> {
     // The shared loader compiles the policy without evaluating a request or
     // persisting expiry changes. It therefore does not spend a live quota.
     Policy::from_native_candidate(path, root)?;
-    println!("Policy is valid: {}", path.display());
+    if safeyolo_proxy::operator_output::json_requested() {
+        safeyolo_proxy::operator_output::json(&json!({"valid":true,"policy_file":path}))?;
+    } else {
+        println!("Policy is valid: {}", path.display());
+    }
     Ok(())
 }
 
@@ -51,7 +57,7 @@ fn initialize(root: &Path, config: &Path) -> Result<(), Error> {
         return Err("configuration requires a TOML file".into());
     }
     if config.exists() || root.join("policy.toml").exists() {
-        return Err("instance already has configuration; choose a fresh root".into());
+        return Err("instance already has configuration; choose a fresh instance directory".into());
     }
     std::fs::create_dir_all(root.join("data"))?;
     std::fs::create_dir_all(root.join("logs"))?;
@@ -139,7 +145,13 @@ fn initialize(root: &Path, config: &Path) -> Result<(), Error> {
     ] {
         write_new(name, source)?;
     }
-    println!("Initialized SafeYolo instance: {}", root.display());
+    if safeyolo_proxy::operator_output::json_requested() {
+        safeyolo_proxy::operator_output::json(
+            &json!({"initialized":true,"root":root,"config":config}),
+        )?;
+    } else {
+        println!("Initialized SafeYolo instance: {}", root.display());
+    }
     Ok(())
 }
 
@@ -259,11 +271,21 @@ async fn run() -> Result<(), Error> {
             .file_name()
             .is_some_and(|name| name == "safeyolo-upgrade")
     });
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "--json")
+    {
+        arguments.remove(0);
+    }
     let explicit_config = arguments.first().is_some_and(|value| value == "--config");
-    let explicit_root = arguments.first().is_some_and(|value| value == "--root");
+    let explicit_root = arguments
+        .first()
+        .is_some_and(|value| value == "--instance-dir");
     let selected = if explicit_config || explicit_root {
         if arguments.len() < 2 {
-            return Err("--root requires a directory; --config requires a TOML file".into());
+            return Err(
+                "--instance-dir requires a directory; --config requires a TOML file".into(),
+            );
         }
         let selected = PathBuf::from(arguments.remove(1));
         arguments.remove(0);
@@ -312,6 +334,18 @@ async fn run() -> Result<(), Error> {
     } else {
         root.join("config.toml")
     };
+    // A global output option lets automation select structured output even
+    // where a leaf command has no other options. Existing leaf --json remains
+    // accepted by its owner. Neither form changes terminal interaction.
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "--json")
+    {
+        arguments.remove(0);
+    }
+    if !upgrade_command && help::show(&arguments) {
+        return Ok(());
+    }
     if arguments.first().is_some_and(|value| value == "instance") {
         let code = safeyolo_proxy::instance::run(&root, &arguments[1..]).await?;
         if code != 0 {
@@ -360,7 +394,7 @@ async fn run() -> Result<(), Error> {
     {
         return safeyolo_proxy::factory_proposals::run_operator(&config, &arguments[1..]).await;
     }
-    let arguments: Vec<String> = arguments
+    let mut arguments: Vec<String> = arguments
         .into_iter()
         .map(|argument| {
             argument
@@ -368,11 +402,17 @@ async fn run() -> Result<(), Error> {
                 .map_err(|_| "command arguments must be UTF-8 text")
         })
         .collect::<Result<_, _>>()?;
+    if arguments.first().is_some_and(|value| value == "policy") {
+        arguments = safeyolo_proxy::operator_output::without_json(&arguments);
+    }
     if arguments.first().is_some_and(|value| value == "codex") {
         return safeyolo_proxy::codex_package::run(&arguments[1..]).await;
     }
     if arguments.first().is_some_and(|value| value == "host") {
         return safeyolo_proxy::linux_host::run(&root, &arguments[1..]);
+    }
+    if arguments.first().is_some_and(|value| value == "tls") {
+        return safeyolo_proxy::tls_commands::run(&config, &arguments[1..]).await;
     }
     if arguments.first().is_some_and(|value| value == "job") {
         let code = safeyolo_proxy::jobs::command(&config, &arguments[1..]).await?;
@@ -425,40 +465,6 @@ async fn run() -> Result<(), Error> {
             safeyolo_proxy::ssh_proxy::run(host, port.parse()?).await
         }
         [command] if command == "init" => initialize(&root, &config),
-        [help] if matches!(help.as_str(), "--help" | "help") => {
-            println!("{}", safeyolo_proxy::signals::HELP);
-            println!("{}", credential_commands::CREDENTIAL_HELP);
-            println!("{}", credential_commands::SERVICE_HELP);
-            println!("{}", safeyolo_proxy::factory::HELP);
-            println!("{}", safeyolo_proxy::operator_commands::HELP);
-            println!("{}", safeyolo_proxy::ssh_proxy::HELP);
-            println!("{}", safeyolo_proxy::lab::HELP);
-            println!("{}", safeyolo_proxy::demo::HELP);
-            println!("{}", safeyolo_proxy::instance::HELP);
-            println!("{}", safeyolo_proxy::guest_acquisition::HELP);
-            println!(
-                "{}",
-                safeyolo_proxy::guest_acquisition::COMPONENT_UPGRADE_HELP
-            );
-            #[cfg(target_os = "linux")]
-            println!("{}", safeyolo_proxy::linux_host::HELP);
-            println!("{}", safeyolo_proxy::coord_operator::HELP);
-            println!("{}", safeyolo_proxy::coord_rooms::INVENTORY_HELP);
-            println!("{}", safeyolo_proxy::factory_proposals::HELP);
-            println!("{}", safeyolo_proxy::dispatch::request::HELP);
-            println!("{}", safeyolo_proxy::dispatch::HELP);
-            println!("{}", safeyolo_proxy::mattermost::HELP);
-            println!(
-                "safeyolo [--root ROOT | --config FILE] init\nsafeyolo [--root ROOT | --config FILE] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nsafeyolo [--root ROOT] mount --help\nsafeyolo [--root ROOT] coord start [--binary PATH]|stop|status\nsafeyolo [--root ROOT] coord room create NAME|list\nsafeyolo [--root ROOT] coord grant ROOM AGENT [send receive page_operator]|revoke ROOM AGENT\nsafeyolo [--root ROOT] coord signal --help\nsafeyolo [--root ROOT] watch [--once] [--json] [--jsonl FILE] [--no-interactive] [--no-color]\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status reads current runtime/control dimensions. doctor also probes host prerequisites and the active policy pipeline; it does not prove coding-agent readiness. For a selected agent, use agent diagnostics NAME for runtime/control/terminal probes and its next_action. Use diagnose [--agent NAME] for policy, audit and Admin availability without test traffic."
-            );
-            println!(
-                "safeyolo [--root ROOT] agent recover NAME [--timeout SECONDS]\nsafeyolo guest-command stage HOME SHARE ASSETS CONTEXT_JSON\nRecovery requires an already booted guest with idle command supervision. Staging is for a stopped guest; the caller supplies this run's context."
-            );
-            println!(
-                "safeyolo [--root ROOT] policy capabilities [--json]\nsafeyolo [--root ROOT] policy assess SNAPSHOT_REQUEST_ID FILE [--json]\nsafeyolo [--root ROOT] policy restore APPROVAL_ID --operation-id req-ID [--json]\nsafeyolo [--root ROOT] policy check FILE\nsafeyolo [--root ROOT] policy evaluate FILE REQUEST_JSON\nsafeyolo [--root ROOT] policy show\nsafeyolo [--root ROOT] policy apply FILE\nsafeyolo [--root ROOT] policy feeds --help\nsafeyolo config check FILE\nsafeyolo test-context --run ID --agent NAME [--role VALUE] [--suite VALUE] [--subject VALUE] [--step VALUE] [--test VALUE] [--intent VALUE] [--expect VALUE] [--field KEY=VALUE] [--header] [--write FILE]\nsafeyolo test-context declare --socket SOCKET --token-file FILE --run ID --agent NAME [--ttl SECONDS]\nsafeyolo test-context current|clear --socket SOCKET --token-file FILE\n\nassess privately explains candidate authority against an approved snapshot, with no approval submission, policy write or grant.\ncheck validates without saving or spending quotas.\nevaluate previews network decisions from captured evidence, without contacting the target or spending live quotas.\nshow reads effective policy and its source from the running process.\napply saves and activates through the operator Admin API.\nROOT contains config.toml and policy.toml. Named controls: network, credentials, patterns, test_context, circuits.\nContext agent is annotation; the trusted listener owns identity. --write atomically replaces a watched file.\n\nsafeyolo --version"
-            );
-            Ok(())
-        }
         [version] if version == "--version" => {
             println!(
                 "safeyolo {} commit={} profile={}",
@@ -469,7 +475,9 @@ async fn run() -> Result<(), Error> {
             Ok(())
         }
         [policy, command] if policy == "policy" && command == "capabilities" => {
-            safeyolo_proxy::policy::capabilities::print(false)
+            safeyolo_proxy::policy::capabilities::print(
+                safeyolo_proxy::operator_output::json_requested(),
+            )
         }
         [policy, command, flag]
             if policy == "policy" && command == "capabilities" && flag == "--json" =>
@@ -510,7 +518,7 @@ async fn run() -> Result<(), Error> {
             let definitions = safeyolo_proxy::policy::capabilities::discover();
             let result = admin(&config,"/admin/policy/assess",Method::POST,
                 json!({"snapshot_request_id":snapshot,"source":source.as_str(),"definition_version":definitions["definition_version"]}),Duration::from_secs(60)).await?;
-            if rest == ["--json"] {
+            if rest == ["--json"] || safeyolo_proxy::operator_output::json_requested() {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
                 safeyolo_proxy::operator_commands::show_policy_assessment(&result);
@@ -534,7 +542,7 @@ async fn run() -> Result<(), Error> {
                 Duration::from_secs(60),
             )
             .await?;
-            if rest == ["--json"] {
+            if rest == ["--json"] || safeyolo_proxy::operator_output::json_requested() {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
                 safeyolo_proxy::operator_commands::show_policy_assessment(&result["assessment"]);
@@ -551,17 +559,18 @@ async fn run() -> Result<(), Error> {
             let candidate: safeyolo_proxy::policy::checks::Candidate =
                 serde_json::from_slice(&std::fs::read(request)?)?;
             let result = policy.evaluate_candidate(&candidate.request()).await?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(
-                    &json!({"policy_file":path,"request_file":request,"result":result})
-                )?
-            );
+            safeyolo_proxy::operator_output::policy(
+                &json!({"policy_file":path,"request_file":request,"result":result}),
+            )?;
             Ok(())
         }
         [config, command, path] if config == "config" && command == "check" => {
             native_config::read(Path::new(path))?;
-            println!("Configuration is valid: {path}");
+            if safeyolo_proxy::operator_output::json_requested() {
+                safeyolo_proxy::operator_output::json(&json!({"valid":true,"config":path}))?;
+            } else {
+                println!("Configuration is valid: {path}");
+            }
             Ok(())
         }
         [command, rest @ ..] if command == "credentials" => {
@@ -595,8 +604,11 @@ async fn run() -> Result<(), Error> {
                 Value::Null,
                 Duration::from_secs(5),
             )
-            .await?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            .await
+            .or_else(|error| {
+                safeyolo_proxy::operator_output::saved_policy(&config, &error.to_string())
+            })?;
+            safeyolo_proxy::operator_output::policy(&result)?;
             Ok(())
         }
         [policy, command, path] if policy == "policy" && command == "apply" => {
@@ -604,7 +616,7 @@ async fn run() -> Result<(), Error> {
             let source = Policy::read_native_candidate(Path::new(path))?;
             match admin(&config, "/admin/policy/baseline", Method::PUT, json!({"source":source.as_str()}), Duration::from_secs(5)).await {
                 Ok(result) if result["status"] == "active" => {
-                    println!("{}", serde_json::to_string_pretty(&result)?);
+                    safeyolo_proxy::operator_output::policy(&result)?;
                     Ok(())
                 }
                 Ok(_) => Err("Admin API did not confirm activation; run policy show to inspect saved and active state".into()),

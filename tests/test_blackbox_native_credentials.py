@@ -33,7 +33,7 @@ def test_credential_setup_selects_supported_storage_before_one_private_write(
             assert ("--storage" in command) == storage_option
             if storage_option:
                 assert command[command.index("--storage") + 1] == "local"
-            root = Path(command[command.index("--root") + 1])
+            root = Path(command[command.index("--instance-dir") + 1])
             inputs.append(root)
             assert root.parent == data.parent and not root.is_relative_to(data)
             assert stat.S_IMODE(root.stat().st_mode) == 0o700

@@ -522,7 +522,7 @@ the external endpoint's private CA or bearer credential.
 
 ```sh
 python3 -m tests.blackbox.installed_docker_preflight \
-  --prepared-config PREPARED_OVERLAY --root RETAINED_INSTANCE \
+  --prepared-config PREPARED_OVERLAY --instance-dir RETAINED_INSTANCE \
   --output NEW_PRIVATE_OUTPUT --revision CLI_REVISION \
   --guest-revision GUEST_REVISION --proxy-revision CANDIDATE \
   --nested-docker --reuse-root --docker-data RETAINED_GUEST_DATA \

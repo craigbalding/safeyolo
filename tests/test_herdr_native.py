@@ -87,6 +87,8 @@ def native_cli(tmp_path):
     path.write_text(f"#!{sys.executable}\n" + '''
 import json, os, pathlib, sys
 root = pathlib.Path(sys.argv[2])
+if sys.argv[3:4] == ["--json"]:
+    del sys.argv[3]
 operation = sys.argv[4]
 if sys.argv[3] == "coord":
     (root / "coord-called.json").write_text(json.dumps(sys.argv[3:]))
@@ -181,7 +183,7 @@ def test_live_herdr_095_response_consumers(tmp_path, preparation, monkeypatch):
     rows = [claim(f"work-{index}", title=f"Repair {index}: " + "é" * 90) for index in range(CLAIM_SLOTS + 1)]
     rows.append(claim("work-second", agent_id="ag-second", title="Review the candidate"))
     (tmp_path / "coord-status.json").write_text(json.dumps(coord_page(*rows, total=len(rows) + 1)))
-    command = [preparation["route"]["cli"], "--root", str(tmp_path)]
+    command = [preparation["route"]["cli"], "--instance-dir", str(tmp_path)]
     journey = Journey(preparation, tmp_path, 30)
     try:
         journey.prepare()
@@ -324,7 +326,7 @@ def test_wrapper_delegates_real_stdio_and_exit_without_claiming_idle(tmp_path, n
     if ca_present:
         environment.update(SSL_CERT_FILE=str(tmp_path / "ca.pem"), EXPECTED_CA=str(tmp_path / "ca.pem"))
     args = [sys.executable, str(ROOT / "scripts/safeyolo_herdr.py"), "first",
-            "--safeyolo", str(native_cli), "--root", str(tmp_path)]
+            "--safeyolo", str(native_cli), "--instance-dir", str(tmp_path)]
     if attach:
         args.append("--attach")
     process = subprocess.Popen(args, env=environment, stdin=subprocess.PIPE,
@@ -360,7 +362,7 @@ def test_failed_status_clears_metadata_and_preserves_terminal(tmp_path, native_c
     environment = dict(os.environ, HERDR_SOCKET_PATH=str(socket_path), HERDR_PANE_ID="w1:p1",
                        FAIL_LATER_STATUS="1")
     process = subprocess.Popen([sys.executable, str(ROOT / "scripts/safeyolo_herdr.py"), "first",
-                                "--safeyolo", str(native_cli), "--root", str(tmp_path)], env=environment,
+                                "--safeyolo", str(native_cli), "--instance-dir", str(tmp_path)], env=environment,
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         wait_for(lambda: any(call["method"] == "pane.report_metadata"
@@ -377,7 +379,7 @@ def test_failed_status_clears_metadata_and_preserves_terminal(tmp_path, native_c
 
 def test_claims_select_durable_identity_and_clear_released_completed_work(tmp_path, native_cli, herdr_socket):
     path, calls = herdr_socket
-    command = [str(native_cli), "--root", str(tmp_path)]
+    command = [str(native_cli), "--instance-dir", str(tmp_path)]
     first = claim()
     second = claim("work-two", title="Review TLS", github_reference=None,
                    target_ref="https://github.com/owner/repo/pull/2")
@@ -418,7 +420,7 @@ def test_claims_select_durable_identity_and_clear_released_completed_work(tmp_pa
 def test_claim_projection_limits_remain_visible(tmp_path, native_cli, herdr_socket, rows, total, expected, warning):
     path, calls = herdr_socket
     (tmp_path / "coord-status.json").write_text(json.dumps(coord_page(*rows, total=total)))
-    assert refresh([str(native_cli), "--root", str(tmp_path)], "first", Herdr(str(path)), "w1:p1",
+    assert refresh([str(native_cli), "--instance-dir", str(tmp_path)], "first", Herdr(str(path)), "w1:p1",
                    room="ops") is None
     tokens = metadata_tokens(calls)
     assert tokens["claimed_work"] == expected
@@ -442,7 +444,7 @@ def test_claim_projection_limits_remain_visible(tmp_path, native_cli, herdr_sock
 ])
 def test_failed_coord_read_clears_stale_claims(tmp_path, native_cli, herdr_socket, bad_response):
     path, calls = herdr_socket
-    command, herdr = [str(native_cli), "--root", str(tmp_path)], Herdr(str(path))
+    command, herdr = [str(native_cli), "--instance-dir", str(tmp_path)], Herdr(str(path))
     status_file = tmp_path / "coord-status.json"
     status_file.write_text(json.dumps(coord_page(claim())))
     assert refresh(command, "first", herdr, "w1:p1", room="ops") is None
@@ -463,7 +465,7 @@ def test_failed_coord_read_clears_stale_claims(tmp_path, native_cli, herdr_socke
 
 def test_failed_native_identity_clears_claims(tmp_path, native_cli, herdr_socket, monkeypatch):
     path, calls = herdr_socket
-    command, herdr = [str(native_cli), "--root", str(tmp_path)], Herdr(str(path))
+    command, herdr = [str(native_cli), "--instance-dir", str(tmp_path)], Herdr(str(path))
     (tmp_path / "coord-status.json").write_text(json.dumps(coord_page(claim())))
     monkeypatch.setenv("FAIL_LATER_STATUS", "1")
     assert refresh(command, "first", herdr, "w1:p1", room="ops") is None
@@ -484,7 +486,7 @@ def test_claimed_work_option_keeps_stdio_and_clears_on_exit(tmp_path, native_cli
         (tmp_path / "coord-unavailable").touch()
     environment = dict(os.environ, HERDR_SOCKET_PATH=str(path), HERDR_PANE_ID="w1:p1")
     process = subprocess.Popen([sys.executable, str(ROOT / "scripts/safeyolo_herdr.py"), "first",
-                                "--safeyolo", str(native_cli), "--root", str(tmp_path), "--coord-room", "ops"],
+                                "--safeyolo", str(native_cli), "--instance-dir", str(tmp_path), "--coord-room", "ops"],
                                env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True)
     try:

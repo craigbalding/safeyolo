@@ -119,7 +119,7 @@ extension ModelTests {
             let client = connection.client!
             precondition(client.expectedInstanceID == profiles[index].instanceID && client.supportReceipts.count == 2)
             let terminal = try connection.terminalCommand(client.agents[0], client: client, action: .shell)
-            precondition(terminal.contains("--root '/owned/\(client.expectedInstanceID)' agent shell --persistent")
+            precondition(terminal.contains("--instance-dir '/owned/\(client.expectedInstanceID)' agent shell --persistent")
                          && !terminal.hasPrefix("ssh"), "Same-host terminals select their owner's root without an SSH hop")
             let first = try await client.readSupportReceipt(client.supportReceipts[0])
             precondition(first.receipt.instanceID == client.expectedInstanceID && !first.outputIncluded && first.recordedResult == nil)

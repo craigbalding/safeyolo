@@ -439,7 +439,7 @@ def deterministic_exchange(args, ids, guest, operator, native, ports, marker, hi
     # This deterministic journey uses the shipped Bash/curl, including after
     # turnover; the other approval modes still prepare their Python workload.
     start_guest(args.transport_cli, args.config_dir, args.worker, python_tests=False)
-    after = json.loads(checked([str(args.native_cli), "--root", str(args.config_dir), "agent", "status", args.worker]))
+    after = json.loads(checked([str(args.native_cli), "--instance-dir", str(args.config_dir), "agent", "status", args.worker]))
     assert after["agent_id"] == ids[args.worker] and after["run_id"] != run
     assert native("approvals", "show", current["approval_id"])["grant_active"] is False
     fresh = decide(blocked()["approval_id"])
@@ -546,7 +546,7 @@ def run(args: argparse.Namespace) -> None:
         return json.loads(checked(guest_command_args(args.transport_cli, name, command)))
 
     def native(*arguments: str) -> dict:
-        return json.loads(checked([str(cli), "--root", str(root), *arguments, "--json"]))
+        return json.loads(checked([str(cli), "--instance-dir", str(root), "--json", *arguments, "--json"]))
 
     def helper_native(operation: str, identifier: str, reason: str | None = None) -> dict:
         command = [guest_cli, "helper", operation, identifier]
@@ -591,7 +591,7 @@ def run(args: argparse.Namespace) -> None:
     if model_run:
         # Refuse before entering owned teardown, so an existing coding
         # session is neither replaced nor stopped by a failed preflight.
-        helper_state = json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.helper]))
+        helper_state = json.loads(checked([str(cli), "--instance-dir", str(root), "--json", "agent", "status", args.helper]))
         assert helper_state["agent_state"] in {"stopped", "exited", "failed"}, "preserve Helper's existing coding session"
     try:
         if delegated_room:
@@ -601,26 +601,26 @@ def run(args: argparse.Namespace) -> None:
                 coord_version = checked(guest_command_args(args.transport_cli, name, "/home/agent/.safeyolo/safeyolo-coord --version"))
                 assert expected in coord_version, "Coord executable is not the selected source"
             def turnover_worker(identifier):
-                before = json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.worker]))
+                before = json.loads(checked([str(cli), "--instance-dir", str(root), "--json", "agent", "status", args.worker]))
                 stop_guest(args.transport_cli, root, args.worker)
                 stopped = native("approvals", "show", identifier)
                 assert stopped["grant_active"] is False, "stopping the actual guest must invalidate its room source"
                 start_guest(args.transport_cli, root, args.worker)
-                after = json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.worker]))
+                after = json.loads(checked([str(cli), "--instance-dir", str(root), "--json", "agent", "status", args.worker]))
                 assert after["agent_id"] == before["agent_id"] and after["run_id"] != before["run_id"]
                 return {"before": before, "stopped_approval": stopped, "after": after}
             journey = room_exchange(args, ids, guest,
                 lambda name, operation, arguments: guest_coord(args.transport_cli, name, operation, arguments),
                 operator, native,
-                lambda text: checked([str(cli), "--root", str(root), "coord", "send", delegated_room, text]),
-                lambda: checked([str(cli), "--root", str(root), "coord", "history", delegated_room]),
+                lambda text: checked([str(cli), "--instance-dir", str(root), "--json", "coord", "send", delegated_room, text]),
+                lambda: checked([str(cli), "--instance-dir", str(root), "--json", "coord", "history", delegated_room]),
                 turnover_worker)
             result = {"commit": args.commit, "native_cli": cli_version, "proxy": proxy_version,
                 "guests": guests, "guest_native_versions": guest_versions, "room_journey": journey,
                 "limitations": "One existing local room and two actual systrap guests. Reuse source tests for races, interruption, narrowing, expiry and pending waits."}
             return
         if getattr(args, "delegated_lifecycle", False) or delegated_clients:
-            coord_command = [str(cli), "--root", str(root), "coord", "status"]
+            coord_command = [str(cli), "--instance-dir", str(root), "--json", "coord", "status"]
             coord_before = json.loads(checked(coord_command))
             assert coord_before["state"] == "running", "start this disposable instance's isolated Coord before the lifecycle probe"
             for name in names:
@@ -663,7 +663,7 @@ def run(args: argparse.Namespace) -> None:
             # Keep only selected nonsecret operands, never raw model input.
             model_observations.append({"model": request["model"], "marker": request["marker"],
                 "authenticated": request["authenticated"], "selected_request": identifier in json.dumps(request["input"]),
-                "runtime": json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.helper])),
+                "runtime": json.loads(checked([str(cli), "--instance-dir", str(root), "--json", "agent", "status", args.helper])),
                 "approval": native("approvals", "show", identifier, "--agent", args.worker),
                 "policy_unchanged": (root / "policy.toml").read_text() == selected, "origin_hits": list(hits)})
 
@@ -788,7 +788,7 @@ def run(args: argparse.Namespace) -> None:
                     with sqlite3.connect(database) as connection:
                         connection.execute("DROP TRIGGER sy769_missing_terminal")
                 source_before_restart = (root / "policy.toml").read_bytes()
-                checked([str(cli), "--root", str(root), "start"])
+                checked([str(cli), "--instance-dir", str(root), "--json", "start"])
                 runtime = _runtime_observation(root, native_config, binary, config_path=config_path,
                     working_directory=root, require_running=True, require_authenticated_identity=True)
                 ready = runtime["readiness"]
@@ -847,7 +847,7 @@ def run(args: argparse.Namespace) -> None:
             old_worker = before_replacement["agents"].pop(args.worker)
             before_replacement.pop("approval_delegations", None)
             apply_fixture_policy(operator, tomlkit.dumps(before_replacement))
-            created = json.loads(checked([str(cli), "--root", str(root), "agent", "create", args.worker,
+            created = json.loads(checked([str(cli), "--instance-dir", str(root), "--json", "agent", "create", args.worker,
                                          "--workspace", old_worker["folder"], "--launcher", "supervisor"]))
             replacement_id = created["configuration"]["id"]
             assert replacement_id != ids[args.worker]
@@ -909,7 +909,7 @@ def run(args: argparse.Namespace) -> None:
                 with service_value_file.open("x", encoding="utf-8") as output:
                     service_value_file.chmod(0o600)
                     output.write(secret)
-                checked([str(cli), "--root", str(root), "credentials", "add", service_credential,
+                checked([str(cli), "--instance-dir", str(root), "--json", "credentials", "add", service_credential,
                          "--type", "bearer", "--value-file", str(service_value_file), "--storage", "local"])
                 service_value_file.unlink()
                 policy["credential"]["delegated-service-provider"] = {
@@ -932,7 +932,7 @@ def run(args: argparse.Namespace) -> None:
             if delegated_clients:
                 # Stop only this marked instance's owned Coord. Canonical
                 # reads and operator decisions must survive failed delivery.
-                checked([str(cli), "--root", str(root), "coord", "stop"])
+                checked([str(cli), "--instance-dir", str(root), "--json", "coord", "stop"])
                 coord_unavailable = json.loads(checked(coord_command))
                 assert coord_unavailable["state"] == "stopped"
                 cursor = None
@@ -1015,7 +1015,7 @@ def run(args: argparse.Namespace) -> None:
                     "Read an uncertain decision before another attempt. Report only the approval ID and outcome."
                 )
             events_path = args.helper_events or root / "logs" / ("delegated-769-" + uuid.uuid4().hex + ".jsonl")
-            command = [str(cli), "--root", str(root), "agent", "start", args.helper,
+            command = [str(cli), "--instance-dir", str(root), "--json", "agent", "start", args.helper,
                 "--foreground", "--", "exec", "--json", "--ephemeral", "--skip-git-repo-check", prompt]
             exchanges = []
             header = {"Authorization": "Bearer " + secret}
@@ -1188,7 +1188,7 @@ def run(args: argparse.Namespace) -> None:
             for operation in ("wait_for_coord", "read_approval", "resolve_approval"):
                 assert any(event.get("item", {}).get("type") == "mcp_tool_call"
                            and event["item"].get("tool") == operation for event in model_events), f"reviewer did not use {operation}"
-            after = json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.helper]))
+            after = json.loads(checked([str(cli), "--instance-dir", str(root), "--json", "agent", "status", args.helper]))
             assert after["exit_code"] == 0 and after["launch_id"]
             assert model_config_path.read_bytes() == saved_model_config
             result = {"commit": args.commit, "native_cli": cli_version, "proxy": proxy_version,
@@ -1267,7 +1267,7 @@ def run(args: argparse.Namespace) -> None:
             events_path = args.helper_events or root / "logs" / ("helper-821-" + uuid.uuid4().hex + ".jsonl")
             helper_session["events_path"] = str(events_path)
             helper_session["stderr_path"] = str(events_path) + ".stderr"
-            output = run_helper([str(cli), "--root", str(root), "agent", "start", args.helper,
+            output = run_helper([str(cli), "--instance-dir", str(root), "--json", "agent", "start", args.helper,
                 "--foreground", "--", "exec", "--json", "--ephemeral", "--skip-git-repo-check", prompt], events_path)
             model_events = [json.loads(line) for line in output.splitlines()]
             assert synthetic_secret not in output and peer_secret not in output
@@ -1283,7 +1283,7 @@ def run(args: argparse.Namespace) -> None:
             assert preparation and preparation[-1]["details"]["prepared_by_id"] == ids[args.helper]
             assert preparation[-1]["details"]["network_action"] == action
             assert identifier in preparation[-1]["details"]["untrusted_reason_text"], "Helper did not cite the selected evidence"
-            helper_state = json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.helper]))
+            helper_state = json.loads(checked([str(cli), "--instance-dir", str(root), "--json", "agent", "status", args.helper]))
             assert helper_state["launch_id"] and helper_state["exit_code"] == 0
             helper_session["launch_id"] = helper_state["launch_id"]
             helper_session["thread_id"] = next(event["thread_id"] for event in model_events if event.get("type") == "thread.started")
@@ -1297,7 +1297,7 @@ def run(args: argparse.Namespace) -> None:
         if args.model_unavailable:
             prompt = f"Diagnose Worker request {identifier} using only its shared native Helper reads. Do not decide or change policy."
             events_path = args.helper_events or root / "logs" / ("helper-u6-" + uuid.uuid4().hex + ".jsonl")
-            output = run_helper([str(cli), "--root", str(root), "agent", "start", args.helper,
+            output = run_helper([str(cli), "--instance-dir", str(root), "--json", "agent", "start", args.helper,
                 "--foreground", "--", *unavailable_model_arguments(second_port, marker), prompt],
                 events_path, timeout=60, expected_exit=1)
             thread_id, diagnosis = model_failure_diagnosis(output, marker)
@@ -1312,7 +1312,7 @@ def run(args: argparse.Namespace) -> None:
             assert live["launch_id"] and live["launch_id"] != helper_state["launch_id"]
             assert observed["approval"]["status"] == "pending" and observed["approval"]["action"] == action
             assert observed["policy_unchanged"] and not observed["origin_hits"]
-            after = json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.helper]))
+            after = json.loads(checked([str(cli), "--instance-dir", str(root), "--json", "agent", "status", args.helper]))
             assert after["launch_id"] == live["launch_id"] and after["exit_code"] == 1, (
                 "failed Helper launch does not match the observed model turn")
             assert after["runtime_state"] == "running" and after["exec"] is True
@@ -1336,7 +1336,7 @@ def run(args: argparse.Namespace) -> None:
         assert "reusable network access" in view["body"]["effect"] and "until explicitly removed" in view["body"]["effect"]
         assert all(secret not in json.dumps(view["body"]) for secret in (synthetic_secret, peer_secret))
         if args.model_unavailable:
-            print(checked([str(cli), "--root", str(root), "approvals", "show", identifier,
+            print(checked([str(cli), "--instance-dir", str(root), "--json", "approvals", "show", identifier,
                 "--agent", args.worker]), flush=True)
         if args.real_helper or args.shared_room:
             logs = native("logs", "--agent", args.worker)
@@ -1357,7 +1357,7 @@ def run(args: argparse.Namespace) -> None:
             assert all(secret not in message["body"] for secret in (synthetic_secret, peer_secret))
             room_message = {"room": args.shared_room, "sequence": sequence, "sender_agent_id": ids[args.helper]}
         if args.real_helper or args.wait_for_operator:
-            print(checked([str(cli), "--root", str(root), "approvals", "show", identifier,
+            print(checked([str(cli), "--instance-dir", str(root), "--json", "approvals", "show", identifier,
                 "--agent", args.worker]), flush=True)
             print(json.dumps({"phase": "human_decision_required", "request_id": identifier,
                 "action": action, "effect": view["body"]["effect"], "origin_hits": hits,
@@ -1429,11 +1429,11 @@ def run(args: argparse.Namespace) -> None:
                 errors.append(f"synthetic credential input: {error}")
         if service_credential is not None:
             try:
-                checked([str(cli), "--root", str(root), "credentials", "remove", service_credential])
+                checked([str(cli), "--instance-dir", str(root), "--json", "credentials", "remove", service_credential])
             except (AssertionError, OSError, subprocess.SubprocessError) as error:
                 errors.append(f"synthetic credential removal: {error}")
         try:
-            checked([str(cli), "--root", str(root), "stop"])
+            checked([str(cli), "--instance-dir", str(root), "--json", "stop"])
         except (AssertionError, OSError, subprocess.SubprocessError) as error:
             errors.append(f"native proxy stop: {error}")
         owned_proxy = [{"pid": pid, "start_token": start_token}]

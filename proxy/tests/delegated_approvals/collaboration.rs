@@ -18,7 +18,7 @@ impl CollaborationNats {
 impl Drop for CollaborationNats {
     fn drop(&mut self) {
         let result = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(&self.0)
             .args(["coord", "stop"])
             .output();

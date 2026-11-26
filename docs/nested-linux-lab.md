@@ -22,7 +22,7 @@ two executables into its read-only guest share; it does not mount an outer
 instance's tokens or policy.
 
 ```sh
-/srv/lab-outer/bin/safeyolo --root /srv/lab-outer lab \
+/srv/lab-outer/bin/safeyolo --instance-dir /srv/lab-outer lab \
   --workspace /srv/experiment \
   --objective 'Compare the same owned request before and after a narrow policy change'
 ```
@@ -95,7 +95,7 @@ required by rootless runsc. Keep any rootfs builder output on the same
 guest-local filesystem. See the [guest build reference](../guest/README.md)
 for its package floor, including rsync and e2fsprogs.
 
-The maintained host operations select the instance with `--root`.
+The maintained host operations select the instance with `--instance-dir`.
 Use `agent create`, `agent start --sandbox-only`, `agent shell` and `agent stop`
 for an owned inner guest. `--sandbox-only` boots without starting a coding model.
 `start` and `stop` control the inner proxy separately from the guest. Stop both

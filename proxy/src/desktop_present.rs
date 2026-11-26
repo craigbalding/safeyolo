@@ -12,6 +12,8 @@ use crate::{
     host_agents, host_platform,
 };
 
+pub(crate) mod web;
+
 #[derive(Debug)]
 pub(crate) enum Error {
     Unavailable,

@@ -85,7 +85,7 @@ class SubscriptionJourney:
         with candidate.open("x") as output:
             output.write(tomlkit.dumps(policy))
         try:
-            checked([self.cli, "--root", str(self.root), "policy", "apply", str(candidate)])
+            checked([self.cli, "--instance-dir", str(self.root), "policy", "apply", str(candidate)])
         finally:
             candidate.unlink()
         login = {"auth_mode": "chatgpt", "tokens": {
@@ -107,7 +107,7 @@ class SubscriptionJourney:
         try:
             self.invoke(self.owner, "access", False)
             self.invoke(self.peer, "access", False)
-            result = checked([self.cli, "--root", str(self.root), "credentials", "import-codex", self.name,
+            result = checked([self.cli, "--instance-dir", str(self.root), "credentials", "import-codex", self.name,
                               "--storage", "local", "--agent", self.owner, "--auth-file", str(selected), "--scope", "run"])
             self.imported = True
             assert not any(value in result.stdout for value in login["tokens"].values()), "host import exposed a token"
@@ -127,14 +127,14 @@ class SubscriptionJourney:
         self.login(self.peer).write_bytes(self.login(self.owner).read_bytes())
         self.invoke(self.peer, "access", False)
         self.invoke(self.peer, "refresh", False)
-        checked([self.cli, "--root", str(self.root), "credentials", "remove", self.name])
+        checked([self.cli, "--instance-dir", str(self.root), "credentials", "remove", self.name])
         self.imported = False
         self.invoke(self.owner, "access", False)
         self.invoke(self.owner, "refresh", False)
 
     def cleanup(self) -> None:
         if self.imported:
-            checked([self.cli, "--root", str(self.root), "credentials", "remove", self.name])
+            checked([self.cli, "--instance-dir", str(self.root), "credentials", "remove", self.name])
             self.imported = False
         for path in self.created_logins:
             path.unlink(missing_ok=True)

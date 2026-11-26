@@ -79,7 +79,7 @@ def main():
         # keeps a broken CLI explicit; a timeout is never automatically retried.
         with (directory / "job.json").open("wb") as stdout, (directory / "stderr").open("wb") as stderr:
             try:
-                status = subprocess.run([str(args.cli.resolve()), "--root", str(args.root.resolve()), "job", "run",
+                status = subprocess.run([str(args.cli.resolve()), "--instance-dir", str(args.root.resolve()), "job", "run",
                                          str(args.spec.resolve()), "--input", str(input_directory.resolve())],
                                         stdout=stdout, stderr=stderr, timeout=spec["timeout_seconds"] + 30,
                                         check=False).returncode

@@ -18,7 +18,7 @@ if [[ $action = overnight || $action = on-demand ]]; then
         [[ $# = 2 && $1 =~ ^[0-9]+$ && $2 =~ ^sha256:[0-9a-f]{64}$ ]]
         selection=(--host-run "$1" --guest-index "$2")
     fi
-    attempt=$("$python" "$publisher" begin --root "$root" --lane kvm --trigger "$action")
+    attempt=$("$python" "$publisher" begin --instance-dir "$root" --lane kvm --trigger "$action")
 else
     [[ $action = reconcile && $# = 1 ]] || { echo 'Usage: run-kvm.sh overnight | on-demand HOST_RUN GUEST_INDEX | reconcile ATTEMPT' >&2; exit 64; }
     attempt=$(cd -- "$1" && pwd -P)

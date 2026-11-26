@@ -714,7 +714,7 @@ def test_coord_bootstrap_help_describes_the_native_installed_workflow():
                             capture_output=True, text=True, check=True)
     for expected in ("--home DIRECTORY", "--harness claude|codex", "--require-agent-local",
                      "SAFEYOLO_COORD_EXECUTABLE", "SAFEYOLO_COORD_GUEST_BINARY",
-                     "ROOT/bin/safeyolo --root ROOT agent start NAME"):
+                     "ROOT/bin/safeyolo --instance-dir PATH agent start NAME"):
         assert expected in result.stdout
     for obsolete in ("agent run", "agent add", "get_agent_home_dir", "vm.py", "set -euo", "while [", "show_help()"):
         assert obsolete not in result.stdout

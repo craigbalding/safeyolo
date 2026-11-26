@@ -16,9 +16,9 @@ use safeyolo_proxy::{
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-pub const CREDENTIAL_HELP: &str = "safeyolo [--root ROOT] credentials import-client NAME --client codex|claude --auth-file FILE [--expires-at TIME] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials import-codex NAME --agent AGENT --auth-file FILE [--scope persistent|run] [--expires-at TIME] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials add NAME [--type bearer|api_key|oauth2] [--value-file FILE | --value-env NAME | --stdin] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials add NAME --type oauth2 --value-file FILE --refresh-token-file FILE --token-url URL [--client-id ID] [--client-secret-file FILE] [--expires-at TIME]\nsafeyolo [--root ROOT] credentials reference NAME --provider onepassword --reference op://VAULT/ITEM/FIELD [--type bearer|api_key] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials provider --executable /absolute/host/path/to/op\nsafeyolo [--root ROOT] credentials approve FINGERPRINT --destination HOST\nsafeyolo [--root ROOT] credentials unlock [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials lock\nsafeyolo [--root ROOT] credentials list [--passphrase-file FILE]\nsafeyolo [--root ROOT] credentials remove NAME [--passphrase-file FILE]\n\nInstallation creates no credential storage. The first valid write asks for local random-key storage or passphrase protection; scripts must select --storage. Existing storage keeps its selected type. Passphrase writes explicitly unlock the current proxy; offline writes require credentials unlock after proxy start. Unlock lasts until credentials lock or proxy restart. CLI reads and writes require the passphrase again; use a hidden terminal prompt or --passphrase-file, never a passphrase argument. 1Password references keep secret values in 1Password; reference metadata uses the selected local store.\n\nWith no value source, add prompts without echo, or reads piped stdin. Values never appear in output or argv. Metadata shows names, types and external references. The host stores encrypted local values; external values are read only after request authorization and approval. Provider authentication stays in the host environment. If credential policy requires approval, inspect services approvals and approve its fingerprint for the reported destination; this is separate from a service risk grant. Restart the proxy after changing its configured provider executable.\n\nimport-codex authorizes an explicitly selected host subscription login for one agent. The default scope is persistent until expiry, replacement or removal. --scope run requires the current verified sandbox run. Codex manages renewal; the proxy records verified replacements in the encrypted vault. Provision the client login through your existing trusted workflow.\n\nimport-client stores a selected host subscription for the services gateway and its host-owned renewal. It does not copy a provider login or grant service access. Configure the native client with its scoped gateway token. The selected host file stays unchanged; after a rotating refresh, a client using the old file may need to sign in again.";
+pub const CREDENTIAL_HELP: &str = "safeyolo [--instance-dir PATH] credentials import-client NAME --client codex|claude --auth-file FILE [--expires-at TIME] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--instance-dir PATH] credentials import-codex NAME --agent AGENT --auth-file FILE [--scope persistent|run] [--expires-at TIME] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--instance-dir PATH] credentials add NAME [--type bearer|api_key|oauth2] [--value-file FILE | --value-env NAME | --stdin] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--instance-dir PATH] credentials add NAME --type oauth2 --value-file FILE --refresh-token-file FILE --token-url URL [--client-id ID] [--client-secret-file FILE] [--expires-at TIME]\nsafeyolo [--instance-dir PATH] credentials reference NAME --provider onepassword --reference op://VAULT/ITEM/FIELD [--type bearer|api_key] [--storage local|passphrase] [--passphrase-file FILE]\nsafeyolo [--instance-dir PATH] credentials provider --executable /absolute/host/path/to/op\nsafeyolo [--instance-dir PATH] credentials approve FINGERPRINT --destination HOST\nsafeyolo [--instance-dir PATH] credentials unlock [--passphrase-file FILE]\nsafeyolo [--instance-dir PATH] credentials lock\nsafeyolo [--instance-dir PATH] credentials list [--passphrase-file FILE]\nsafeyolo [--instance-dir PATH] credentials remove NAME [--passphrase-file FILE]\n\nInstallation creates no credential storage. The first valid write asks for local random-key storage or passphrase protection; scripts must select --storage. Existing storage keeps its selected type. Passphrase writes explicitly unlock the current proxy; offline writes require credentials unlock after proxy start. Unlock lasts until credentials lock or proxy restart. CLI reads and writes require the passphrase again; use a hidden terminal prompt or --passphrase-file, never a passphrase argument. 1Password references keep secret values in 1Password; reference metadata uses the selected local store.\n\nWith no value source, add prompts without echo, or reads piped stdin. Values never appear in output or argv. Metadata shows names, types and external references. The host stores encrypted local values; external values are read only after request authorization and approval. Provider authentication stays in the host environment. If credential policy requires approval, inspect services approvals and approve its fingerprint for the reported destination; this is separate from a service risk grant. Restart the proxy after changing its configured provider executable.\n\nimport-codex authorizes an explicitly selected host subscription login for one agent. The default scope is persistent until expiry, replacement or removal. --scope run requires the current verified sandbox run. Codex manages renewal; the proxy records verified replacements in the encrypted vault. Provision the client login through your existing trusted workflow.\n\nimport-client stores a selected host subscription for the services gateway and its host-owned renewal. It does not copy a provider login or grant service access. Configure the native client with its scoped gateway token. The selected host file stays unchanged; after a rotating refresh, a client using the old file may need to sign in again.";
 
-pub const SERVICE_HELP: &str = "safeyolo services generate OPENAPI_OR_HOST_PACKAGE_FILE\nsafeyolo services check DEFINITION_OR_HOST_PACKAGE_FILE\nsafeyolo services check HOST_PACKAGE_FILE GENERATED_PROJECTIONS_FILE\nsafeyolo services assess-host TARGET_CONFIG_JSON ISSUER_ID GRANT_ID [--proposed-grant FILE] [--known-effects FILE]\nOffline generate/check use the current definition loader. They do not activate definitions or grant access.\n\nsafeyolo [--root ROOT] services list\nsafeyolo [--root ROOT] services show NAME\nsafeyolo [--root ROOT] services authorize AGENT SERVICE --capability NAME [--credential NAME] [--account NAME] [--host HOST] [--allow-host-network]\nsafeyolo [--root ROOT] services authorized AGENT\nsafeyolo [--root ROOT] services revoke AGENT SERVICE\nsafeyolo [--root ROOT] services bind AGENT SERVICE CAPABILITY --bindings FILE\nsafeyolo [--root ROOT] services approvals\nsafeyolo [--root ROOT] services approve AGENT SERVICE METHOD PATH [--lifetime once|session|remembered]\nsafeyolo [--root ROOT] services grants\nsafeyolo [--root ROOT] services revoke-grant ID\n\nlist/show read the running gateway's accepted catalogue. Operator definitions override builtins with the same name. authorize selects its capability, credential reference and account; --host maps the destination (default: the definition's host). --allow-host-network explicitly permits host-wide network access; service access remains agent-scoped; existing credential policy still applies. Credential-free services omit --credential. authorized shows only this agent's minted gateway credential and scope. bind approves contract values; approve permits a risky route. Neither replaces service authorization. Revocation removes access and keeps the credential for other uses.";
+pub const SERVICE_HELP: &str = "safeyolo services generate OPENAPI_OR_HOST_PACKAGE_FILE\nsafeyolo services check DEFINITION_OR_HOST_PACKAGE_FILE\nsafeyolo services check HOST_PACKAGE_FILE GENERATED_PROJECTIONS_FILE\nsafeyolo services assess-host TARGET_CONFIG_JSON ISSUER_ID GRANT_ID [--proposed-grant FILE] [--known-effects FILE]\nOffline generate/check use the current definition loader. They do not activate definitions or grant access.\n\nsafeyolo [--instance-dir PATH] services list\nsafeyolo [--instance-dir PATH] services show NAME\nsafeyolo [--instance-dir PATH] services authorize AGENT SERVICE --capability NAME [--credential NAME] [--account NAME] [--host HOST] [--allow-host-network]\nsafeyolo [--instance-dir PATH] services authorized AGENT\nsafeyolo [--instance-dir PATH] services revoke AGENT SERVICE\nsafeyolo [--instance-dir PATH] services bind AGENT SERVICE CAPABILITY --bindings FILE\nsafeyolo [--instance-dir PATH] services approvals\nsafeyolo [--instance-dir PATH] services approve AGENT SERVICE METHOD PATH [--lifetime once|session|remembered]\nsafeyolo [--instance-dir PATH] services grants\nsafeyolo [--instance-dir PATH] services revoke-grant ID\n\nlist/show read the running gateway's accepted catalogue. Operator definitions override builtins with the same name. authorize selects its capability, credential reference and account; --host maps the destination (default: the definition's host). --allow-host-network explicitly permits host-wide network access; service access remains agent-scoped; existing credential policy still applies. Credential-free services omit --credential. authorized shows only this agent's minted gateway credential and scope. bind approves contract values; approve permits a risky route. Neither replaces service authorization. Revocation removes access and keeps the credential for other uses.";
 
 fn options(arguments: &[String]) -> Result<BTreeMap<&str, &str>, Error> {
     let mut fields = BTreeMap::new();
@@ -247,6 +247,8 @@ impl Drop for TerminalEcho {
 }
 
 pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(), Error> {
+    let selected_arguments = safeyolo_proxy::operator_output::without_json(arguments);
+    let arguments = selected_arguments.as_slice();
     if arguments.is_empty() || arguments == ["--help"] {
         println!("{CREDENTIAL_HELP}");
         return Ok(());
@@ -283,7 +285,9 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
         })();
         let _ = std::fs::remove_file(&temporary);
         result?;
-        println!("Host 1Password executable configured. Restart the proxy to activate it.");
+        message(
+            "Host 1Password executable configured. Restart the proxy to activate it.".to_owned(),
+        );
         return Ok(());
     }
     if let [command, fingerprint, rest @ ..] = arguments
@@ -302,7 +306,7 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
             Duration::from_secs(5),
         )
         .await?;
-        println!("{}", serde_json::to_string_pretty(&response)?);
+        show_services(&response)?;
         return Ok(());
     }
     let config = native_config::read(config_path)?;
@@ -341,9 +345,9 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
             record.is_expired(time::OffsetDateTime::now_utc())?;
         }
         store_credential(config_path, &config, data_dir, &fields, record).await?;
-        println!(
+        message(format!(
             "Host subscription stored: {name}. Authorize its service separately; keep the provider login outside agent mounts. The gateway renews its vault copy. The selected host file stays unchanged; a client using that old refresh token may need to sign in again."
-        );
+        ));
         return Ok(());
     }
     if let [command, rest @ ..] = arguments
@@ -363,8 +367,8 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
         }
         if command == "unlock" {
             unlock_proxy(config_path, &passphrase(&fields, false)?).await?;
-            println!(
-                "Credential storage unlocked for this proxy process. Restart or credentials lock requires another explicit unlock."
+            message(
+                "Credential storage unlocked for this proxy process. Restart or credentials lock requires another explicit unlock.",
             );
         } else {
             super::admin(
@@ -375,7 +379,7 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
                 Duration::from_secs(5),
             )
             .await?;
-            println!("Credential storage locked.");
+            message("Credential storage locked.".to_owned());
         }
         return Ok(());
     }
@@ -446,20 +450,42 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
             return Err("Codex authorization expiry is invalid or already expired".into());
         }
         store_credential(config_path, &config, data_dir, &fields, record).await?;
-        println!(
+        message(format!(
             "Codex login authorized for {agent}; remove credential {name} to revoke it. Existing credential and network rules still apply."
-        );
+        ));
         return Ok(());
     }
     match arguments {
         [command, rest @ ..] if command == "list" => {
             let fields = options(rest)?;
             validate_options(&fields, &["--passphrase-file"])?;
-            let metadata = open_storage(data_dir, &fields, false)?
+            let opened = open_storage(data_dir, &fields, false)?;
+            let absent = opened.is_none();
+            let metadata = opened
                 .map(|(vault, _)| vault.metadata())
                 .transpose()?
                 .unwrap_or_default();
-            println!("{}", serde_json::to_string_pretty(&metadata)?)
+            let metadata = serde_json::to_value(metadata)?;
+            if safeyolo_proxy::operator_output::json_requested() {
+                safeyolo_proxy::operator_output::json(&metadata)?;
+            } else if absent {
+                println!(
+                    "Credential storage is not configured for this instance. The first credentials add or import selects storage; listing creates nothing."
+                );
+            } else if let Some(rows) = metadata.as_array() {
+                if rows.is_empty() {
+                    println!("No stored credentials. Store or import one with credentials --help.");
+                } else {
+                    safeyolo_proxy::operator_output::rows(
+                        rows,
+                        &[
+                            ("NAME", "name"),
+                            ("TYPE", "type"),
+                            ("EXPIRES", "expires_at"),
+                        ],
+                    );
+                }
+            }
         }
         [command, name, rest @ ..] if command == "remove" => {
             let fields = options(rest)?;
@@ -470,7 +496,7 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
             if !vault.remove(name)? {
                 return Err("credential not found".into());
             }
-            println!("Credential removed: {name}");
+            message(format!("Credential removed: {name}"));
         }
         [command, name, rest @ ..] if matches!(command.as_str(), "add" | "reference") => {
             let fields = options(rest)?;
@@ -539,7 +565,7 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
             record.expires_at = fields.get("--expires-at").map(|value| value.to_string());
             record.is_expired(time::OffsetDateTime::now_utc())?;
             store_credential(config_path, &config, data_dir, &fields, record).await?;
-            println!("Credential stored: {name} (type={kind})");
+            message(format!("Credential stored: {name} (type={kind})"));
         }
         _ => return Err("invalid credentials command; see credentials --help".into()),
     }
@@ -547,6 +573,8 @@ pub async fn credentials(config_path: &Path, arguments: &[String]) -> Result<(),
 }
 
 pub async fn services(config: &Path, arguments: &[String]) -> Result<(), Error> {
+    let selected_arguments = safeyolo_proxy::operator_output::without_json(arguments);
+    let arguments = selected_arguments.as_slice();
     match arguments {
         [command, target, issuer, grant, rest @ ..] if command == "assess-host" => {
             let fields = options(rest)?;
@@ -618,7 +646,7 @@ pub async fn services(config: &Path, arguments: &[String]) -> Result<(), Error> 
                         .find(|service| service["definition"]["name"] == *name)
                 })
                 .ok_or("service is not loaded in the running catalogue")?;
-            println!("{}", serde_json::to_string_pretty(service)?);
+            show_services(service)?;
             return Ok(());
         }
         [command, agent] if command == "authorized" => (
@@ -725,7 +753,7 @@ pub async fn services(config: &Path, arguments: &[String]) -> Result<(), Error> 
         _ => return Err("invalid services command; see services --help".into()),
     };
     let response = super::admin(config, &path, method, body, Duration::from_secs(5)).await?;
-    println!("{}", serde_json::to_string_pretty(&response)?);
+    show_services(&response)?;
     Ok(())
 }
 
@@ -740,4 +768,66 @@ fn segment(value: &str) -> String {
         }
     }
     encoded
+}
+
+fn message(message: impl std::fmt::Display) {
+    if safeyolo_proxy::operator_output::json_requested() {
+        println!("{}", json!({"message":message.to_string()}));
+    } else {
+        println!("{message}");
+    }
+}
+
+fn show_services(value: &Value) -> Result<(), Error> {
+    use safeyolo_proxy::operator_output::{field, json, json_requested, rows, text};
+    if json_requested() {
+        return json(value);
+    }
+    if let Some(services) = value["services"].as_array() {
+        if services.is_empty() {
+            println!("No services loaded in the running catalogue.");
+        } else {
+            let entries: Vec<_> = services
+                .iter()
+                .map(|service| service.get("definition").unwrap_or(service).clone())
+                .collect();
+            rows(&entries, &[("SERVICE", "name"), ("HOST", "default_host")]);
+            println!("Inspect capabilities: safeyolo services show NAME");
+        }
+    } else if let Some(services) = value["services"].as_object() {
+        if services.is_empty() {
+            println!("No service access configured for this agent.");
+        }
+        for (name, grant) in services {
+            println!(
+                "{}: capability {}, credential {}, host {}",
+                name,
+                text(&grant["capability"]),
+                text(&grant["credential"]),
+                text(&grant["host"])
+            );
+        }
+    } else if let Some(definition) = value.get("definition") {
+        field("Service", &definition["name"]);
+        field("Host", &definition["default_host"]);
+        field("Description", &definition["description"]);
+        if let Some(capabilities) = definition["capabilities"].as_object() {
+            for (name, capability) in capabilities {
+                println!("  {name}: {}", text(&capability["description"]));
+            }
+        }
+    } else {
+        for (label, key) in [
+            ("Status", "status"),
+            ("Agent", "agent"),
+            ("Service", "service"),
+            ("Capability", "capability"),
+            ("Effect", "effect"),
+            ("Next action", "next_action"),
+        ] {
+            field(label, &value[key]);
+        }
+    }
+    println!("Use --json for complete access, bindings and catalogue details.");
+    Ok(())
 }

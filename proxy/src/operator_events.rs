@@ -19,7 +19,7 @@ struct State {
     signals: Option<[u8; 32]>,
     approvals: Option<[u8; 32]>,
     log_readable: bool,
-    gap: Option<&'static str>,
+    gap: Option<(uuid::Uuid, &'static str)>,
     revision: u64,
     checked_log_revision: u64,
 }
@@ -30,7 +30,8 @@ impl State {
             "signals":if self.signals.is_some() {"ready"} else {"unavailable"},
             "approvals":if self.approvals.is_some() {"ready"} else {"unavailable"},
             "log":if self.log_readable {"following"} else {"unavailable"},
-            "history_gap":self.gap})
+            "history_gap":self.gap.map(|(_, reason)| reason),
+            "history_gap_id":self.gap.map(|(id, _)| id.to_string())})
             .to_string(),
         )
     }
@@ -81,11 +82,13 @@ impl Feed {
                 let Ok((next, result)) = result else { return };
                 follower = next;
                 owner.state.send_if_modified(|state| {
-                    let changed = state.log_readable != result.readable
-                        || (result.gap.is_some() && state.gap != result.gap);
+                    let changed = state.log_readable != result.readable || result.gap.is_some();
                     state.log_readable = result.readable;
-                    if result.gap.is_some() {
-                        state.gap = result.gap;
+                    if let Some(gap) = result.gap {
+                        // The reason remains in subsequent state snapshots.
+                        // Distinct observations, including equal reasons after
+                        // restart, must not look like that repeated snapshot.
+                        state.gap = Some((uuid::Uuid::new_v4(), gap));
                     }
                     if changed {
                         state.revision += 1;

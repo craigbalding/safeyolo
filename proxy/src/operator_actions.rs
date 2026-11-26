@@ -16,13 +16,14 @@ use crate::{
 };
 
 pub(crate) const DESKTOP_PRESENT: &str = "desktop.present";
+pub(crate) const WEB_PRESENT: &str = "web.publish";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Request {
     pub(crate) action_id: String,
     #[serde(default)]
-    pub(crate) parameters: Parameters,
+    pub(crate) parameters: Value,
     pub(crate) reason: Option<String>,
 }
 
@@ -45,8 +46,12 @@ pub(crate) fn config_path(state: &RuntimeState) -> Result<PathBuf> {
 pub(crate) fn configuration_current(state: &RuntimeState, action: &Value) -> bool {
     config_path(state).ok().is_some_and(|path| {
         host_platform::with_config(path, || {
-            desktop_present::configuration_revision()
-                .is_ok_and(|revision| action["configuration_revision"] == revision)
+            (if action["action_id"] == WEB_PRESENT {
+                desktop_present::web::configuration_revision()
+            } else {
+                desktop_present::configuration_revision()
+            })
+            .is_ok_and(|revision| action["configuration_revision"] == revision)
         })
     })
 }
@@ -79,12 +84,22 @@ pub(crate) async fn discover(state: &RuntimeState, policy: &Policy, caller: &str
             "side_effects":["Start or reuse the managed guest desktop and gated preview.",
                 "Use the host's local browser or configured Tailscale Serve route.",
                 "Remove only this approval source when its finite lifetime expires; independent sources can preserve access."],
-            "non_grants":["No change to network policy, service grants or credentials.","No public or Funnel exposure."]}]}))
+            "non_grants":["No change to network policy, service grants or credentials.","No public or Funnel exposure."]},
+            {"action_id":WEB_PRESENT,"name":"Publish this guest's web app",
+            "description":"Publish one HTTP port from this requesting guest without starting a desktop. The operator receives the gated URL.",
+            "target":"requesting_agent","approval_required":true,"approval_option":"once",
+            "parameters":{"type":"object","additionalProperties":false,"required":["guest_port","audience"],"properties":{
+                "guest_port":{"type":"integer","minimum":1,"maximum":65535},
+                "audience":{"type":"string","enum":["local","tailnet"]},
+                "tailnet_port":{"type":"integer","minimum":1,"maximum":65535},
+                "ttl_seconds":{"type":"integer","minimum":1,"default":900}}},
+            "side_effects":["Open a gated publication bound to this exact guest run and port.","Use an independent foreground Serve mapping for tailnet access; stop or expiry removes only this publication."],
+            "non_grants":["No desktop startup, peer-support grant, public/Funnel exposure or change to network/service/credential permissions."]}]}))
     }).await
 }
 
 pub(crate) fn agent_view(record: &pending::Record) -> Value {
-    json!({"action_id":DESKTOP_PRESENT,"action_request_id":record.approval_id,
+    json!({"action_id":record.authority.action["action_id"],"action_request_id":record.approval_id,
         "approval_id":record.approval_id,"request_id":record.request_id,
         "status":if record.status == "pending" {"pending_approval"} else {record.status.as_str()},
         "result":agent_result(&record.result)})
@@ -119,12 +134,31 @@ pub(crate) async fn request(
     caller: &str,
     run: &crate::host_runs::AgentRun,
     request_id: &str,
-    input: Request,
+    mut input: Request,
 ) -> Result<Value> {
-    if input.action_id != DESKTOP_PRESENT {
+    let web = input.action_id == WEB_PRESENT;
+    if input.action_id != DESKTOP_PRESENT && !web {
         return Err(invalid("unknown operator action"));
     }
-    input.parameters.validate().map_err(invalid)?;
+    let desktop_parameters = if web {
+        let parameters: desktop_present::web::Parameters =
+            serde_json::from_value(input.parameters.clone()).map_err(|_| {
+                invalid("supply guest_port, audience and optional tailnet_port/ttl_seconds")
+            })?;
+        parameters.validate().map_err(invalid)?;
+        input.parameters = json!(parameters);
+        None
+    } else {
+        let parameters: Parameters = if input.parameters.is_null() {
+            Parameters::default()
+        } else {
+            serde_json::from_value(input.parameters.clone())
+                .map_err(|_| invalid("supply typed desktop parameters only"))?
+        };
+        parameters.validate().map_err(invalid)?;
+        input.parameters = json!(parameters);
+        Some(parameters)
+    };
     if input
         .reason
         .as_ref()
@@ -137,18 +171,24 @@ pub(crate) async fn request(
         if !run.current(policy) || run.agent != caller || run.agent_id != agent.id {
             return Err(invalid("trusted current-run requester identity required"));
         }
-        let route = match desktop_present::action_prerequisites(&agent.name).await {
+        let prerequisite = if web {
+            let parameters = serde_json::from_value(input.parameters.clone()).map_err(|_| invalid("web parameters unavailable"))?;
+            desktop_present::web::prerequisites(&agent.name, &parameters).await
+        } else { desktop_present::action_prerequisites(&agent.name).await };
+        let route = match prerequisite {
             Ok(route) => route,
-            Err(error) => return Ok(json!({"action_id":DESKTOP_PRESENT,"status":"unavailable","diagnostic":error.json()})),
+            Err(error) => return Ok(json!({"action_id":input.action_id,"status":"unavailable","diagnostic":error.json()})),
         };
-        let action = json!({"kind":"operator_action","action_id":DESKTOP_PRESENT,"agent":agent.name,
+        let revision = if web {desktop_present::web::configuration_revision()} else {desktop_present::configuration_revision()}
+            .map_err(|_| invalid("host publication configuration unavailable"))?;
+        let action = json!({"kind":"operator_action","action_id":input.action_id,"agent":agent.name,
             "instance_id":desktop_present::instance_id().map_err(|_| invalid("desktop instance unavailable"))?,
             "agent_id":agent.id,"run":run,"parameters":input.parameters,"presentation":route,
-            "configuration_revision":desktop_present::configuration_revision().map_err(|_| invalid("host desktop configuration unavailable"))?});
-        let effect = format!("Present this exact worker run's managed desktop through the {} path once. {}Add a separate preview authority source for at most {} seconds. Independent preview sources remain. If no valid source remains, refuse future access and disconnect viewers on the next authority check. Browser opening and disclosed content cannot be undone. Network and service permissions stay unchanged.",
+            "configuration_revision":revision});
+        let effect = if web { format!("Publish this exact guest run's HTTP port {} to the {} audience for at most {} seconds through a gated preview. No desktop starts. Stop, expiry or a changed run disconnects this publication; independent publications and unrelated Serve mappings remain. Network, credentials and service permissions stay unchanged.", input.parameters["guest_port"], if route == Route::Local {"host-local"} else {"tailnet"}, input.parameters["ttl_seconds"]) } else { format!("Present this exact worker run's managed desktop through the {} path once. {}Add a separate preview authority source for at most {} seconds. Independent preview sources remain. If no valid source remains, refuse future access and disconnect viewers on the next authority check. Browser opening and disclosed content cannot be undone. Network and service permissions stay unchanged.",
             if route == Route::Local {"local browser"} else {"configured gated tailnet"},
-            if input.parameters.browser_url.is_some() {"Open the validated URL in its guest browser. "} else {""},
-            input.parameters.ttl_seconds);
+            if desktop_parameters.as_ref().is_some_and(|p| p.browser_url.is_some()) {"Open the validated URL in its guest browser. "} else {""},
+            input.parameters["ttl_seconds"]) };
         let authority = pending::Authority {
             revision:pending::revision(policy, &action).ok_or_else(|| invalid("action authority unavailable"))?,
             resource_digest:pending::digest(&action), action,
@@ -172,12 +212,12 @@ pub(crate) async fn request(
         event.request_id = Some(request_id.into());
         event.approval = Some(crate::audit::Approval {
             required: record.status == "pending",
-            approval_type: crate::audit::ApprovalType::DesktopPresent,
-            key: record.approval_id.clone(), target: format!("desktop:{}", agent.id),
+            approval_type: if web {crate::audit::ApprovalType::WebPublish} else {crate::audit::ApprovalType::DesktopPresent},
+            key: record.approval_id.clone(), target: format!("{}:{}", input.action_id, agent.id),
             scope_hint: json!({"agent_id":agent.id}).into(),
         });
         event.details = json!({"approval_id":record.approval_id,"authority_digest":record.authority_digest,
-            "action_id":DESKTOP_PRESENT,"validated_action":record.authority.action,
+            "action_id":record.authority.action["action_id"],"validated_action":record.authority.action,
             "untrusted_reason_text":record.untrusted_reason_text,
             "submitted_reason_digest":submitted_reason_digest,"submitted_reason_bytes":submitted_reason_bytes,
             "request_count":record.request_count,"last_requested_at":record.last_requested_at}).into();
@@ -226,7 +266,7 @@ fn event(record: &pending::Record, name: &'static str, summary: &str) -> Event {
     }
     event.details =
         json!({"approval_id":record.approval_id,"authority_digest":record.authority_digest,
-        "action_id":DESKTOP_PRESENT,"status":record.status,"result":result})
+        "action_id":record.authority.action["action_id"],"status":record.status,"result":result})
         .into();
     event
 }
@@ -322,9 +362,6 @@ pub(crate) fn resolve(
             .is_err();
     }
     if execute {
-        let parameters: Parameters =
-            serde_json::from_value(record.authority.action["parameters"].clone())
-                .map_err(|_| invalid("saved preview parameters unavailable"))?;
         let route: Route = serde_json::from_value(record.authority.action["presentation"].clone())
             .map_err(|_| invalid("saved presentation unavailable"))?;
         let agent_id = record.authority.action["agent_id"]
@@ -338,16 +375,26 @@ pub(crate) fn resolve(
             state: state.clone(),
             store: writer.approvals().clone(),
         };
-        let result = handle.block_on(host_platform::in_config(
-            path,
-            desktop_present::present_action(
-                agent_id,
-                &parameters,
-                route,
-                &record.approval_id,
-                authority,
-            ),
-        ));
+        let result = handle.block_on(host_platform::in_config(path, async {
+            if record.authority.action["action_id"] == WEB_PRESENT {
+                let parameters =
+                    serde_json::from_value(record.authority.action["parameters"].clone())
+                        .map_err(|_| desktop_present::web::invalid_parameters())?;
+                desktop_present::web::present(agent_id, &parameters, Some(authority)).await
+            } else {
+                let parameters: Parameters =
+                    serde_json::from_value(record.authority.action["parameters"].clone())
+                        .map_err(|_| desktop_present::web::invalid_parameters())?;
+                desktop_present::present_action(
+                    agent_id,
+                    &parameters,
+                    route,
+                    &record.approval_id,
+                    authority,
+                )
+                .await
+            }
+        }));
         let result = match result {
             Ok(value) => {
                 let result = json!({"status":"started","presentation":route,"reused":value["reused"],"expires_at":issued.expires_at,"issued_access":issued});
@@ -413,12 +460,23 @@ pub(crate) fn preview(
     require_source: bool,
 ) -> Option<Value> {
     let path = config_path(state).ok()?;
-    let agent_id = record.authority.action["agent_id"].as_str()?;
+    let agent_id = publication_key(&record.authority.action)?;
     tokio::runtime::Handle::current().block_on(host_platform::in_config(
         path,
         desktop_present::inspect(
-            agent_id,
+            &agent_id,
             require_source.then_some(record.approval_id.as_str()),
         ),
     ))
+}
+
+pub(crate) fn publication_key(action: &Value) -> Option<String> {
+    let agent_id = action["agent_id"].as_str()?;
+    if action["action_id"] == WEB_PRESENT {
+        let parameters: desktop_present::web::Parameters =
+            serde_json::from_value(action["parameters"].clone()).ok()?;
+        Some(parameters.key(agent_id))
+    } else {
+        Some(agent_id.to_owned())
+    }
 }

@@ -7,7 +7,7 @@ Start its proxy and configure two disposable workers with an owned workspace,
 the supervisor launcher and a long-running command such as ``exec sleep 300``.
 Both workers must be stopped. Supply their names as --support and --target.
 
-Run with host Python 3.11+ and --cli, --root and an empty disk-backed --scratch.
+Run with host Python 3.11+ and --cli, --instance-dir and an empty disk-backed --scratch.
 This starts and stops those two workers, changes only the named test grant,
 and retains proposals in scratch and canonical receipts in the instance.
 It does not launch a model or establish the separate unexplained-fault journey.
@@ -42,7 +42,7 @@ from tests.blackbox.installed_lifecycle import running_guest
 
 def run(args):
     """Check real guest-origin calls and independently observe host state."""
-    cli = [str(args.cli.resolve()), "--root", str(args.root.resolve())]
+    cli = [str(args.cli.resolve()), "--instance-dir", str(args.root.resolve())]
     args.scratch.mkdir(mode=0o700)
     grant_name = "installed-support-control"
     proposal_file = args.scratch / "proposal.json"
@@ -347,7 +347,7 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cli", type=Path, required=True)
-    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--instance-dir", dest="root", type=Path, required=True)
     parser.add_argument("--scratch", type=Path, required=True)
     parser.add_argument("--support", default="support")
     parser.add_argument("--target", default="target")

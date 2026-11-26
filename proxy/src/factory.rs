@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 
-pub const HELP: &str = "safeyolo [--root ROOT] factory setup FILE [--workspace ROLE=PATH ...] [--preview] [--yes] [--login ROLE ...] [--confirm-fresh-identity]\nsafeyolo [--root ROOT] factory check FILE\nsafeyolo [--root ROOT] factory approve FILE [--yes]\nsafeyolo [--root ROOT] factory prepare NAME --workspace ROLE=PATH [--workspace ROLE=PATH ...] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] factory login NAME ROLE\nsafeyolo [--root ROOT] factory run NAME [--workspace ROLE=PATH ...] [--confirm-fresh-identity]\nsafeyolo [--root ROOT] factory doctor|stop NAME\nsafeyolo [--root ROOT] factory send NAME TEXT\nsafeyolo [--root ROOT] factory history NAME [--since SEQUENCE]\nsafeyolo [--root ROOT] factory release NAME --target URL [--target URL ...] [--room ROOM] [--yes]\n\nsetup guides the selected contract through approval, preparation, role-local authentication and supervised start. --preview returns the exact proposed/previous contract and current role observations without changes. --yes approves only the snapshot; it does not confirm fresh identities. Repeat setup to reuse valid staging, identities, workspaces and checkpoints.\ncheck validates the contract. approve selects its immutable content; it does not start roles.\nprepare provisions declared agents, rooms and staging without starting a model. Each harness needs its own agent-local login.\nrun starts the approved roles and verifies their actual readiness. Missing checkpoints require --confirm-fresh-identity once, only when those roles' configured identities or memberships have never received targeted attention in any configured room. Clearing room messages does not reset attention.\nstop preserves identities, checkpoints and messages; run restarts that same state without confirmation.\ndoctor is read-only and names the failed role or room. send targets the approved operator-input role. Direct agent diagnosis and recovery remain available.";
+pub const HELP: &str = "safeyolo [--instance-dir PATH] factory setup FILE [--workspace ROLE=PATH ...] [--preview] [--yes] [--login ROLE ...] [--confirm-fresh-identity]\nsafeyolo [--instance-dir PATH] factory check FILE\nsafeyolo [--instance-dir PATH] factory approve FILE [--yes]\nsafeyolo [--instance-dir PATH] factory prepare NAME --workspace ROLE=PATH [--workspace ROLE=PATH ...] [--dangerously-allow-unowned]\nsafeyolo [--instance-dir PATH] factory login NAME ROLE\nsafeyolo [--instance-dir PATH] factory run NAME [--workspace ROLE=PATH ...] [--confirm-fresh-identity]\nsafeyolo [--instance-dir PATH] factory doctor|stop NAME\nsafeyolo [--instance-dir PATH] factory send NAME TEXT\nsafeyolo [--instance-dir PATH] factory history NAME [--since SEQUENCE]\nsafeyolo [--instance-dir PATH] factory release NAME --target URL [--target URL ...] [--room ROOM] [--yes]\n\nsetup guides the selected contract through approval, preparation, role-local authentication and supervised start. --preview shows contract changes and current role observations without changes. Select --preview --json for complete proposed/previous contracts, or type details before approval. --yes approves only the snapshot; it does not confirm fresh identities. Repeat setup to reuse valid staging, identities, workspaces and checkpoints.\ncheck validates the contract. approve selects its immutable content; it does not start roles.\nprepare provisions declared agents, rooms and staging without starting a model. Each harness needs its own agent-local login.\nrun starts the approved roles and verifies their actual readiness. Missing checkpoints require --confirm-fresh-identity once, only when those roles' configured identities or memberships have never received targeted attention in any configured room. Clearing room messages does not reset attention.\nstop preserves identities, checkpoints and messages; run restarts that same state without confirmation.\ndoctor is read-only and names the failed role or room. send targets the approved operator-input role. Direct agent diagnosis and recovery remain available.";
 
 fn codex() -> String {
     "codex".into()
@@ -800,7 +800,7 @@ async fn start_roles(
             return Ok(report);
         }
         if tokio::time::Instant::now() >= deadline {
-            println!("{}", serde_json::to_string_pretty(&report)?);
+            show_report(&report)?;
             return Err("Factory did not become ready; inspect factory doctor. Started roles and checkpoints are preserved".into());
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -996,6 +996,8 @@ fn confirm(prompt: &str) -> Result<(), Error> {
     Ok(())
 }
 pub async fn run(config: &Path, args: &[String]) -> Result<(), Error> {
+    let selected_arguments = crate::operator_output::without_json(args);
+    let args = selected_arguments.as_slice();
     if args.is_empty() || args == ["--help"] {
         println!("{HELP}");
         return Ok(());
@@ -1033,8 +1035,8 @@ pub async fn run(config: &Path, args: &[String]) -> Result<(), Error> {
                         for (role_name,role) in &snapshot.roles { staged(&root,&snapshot,role_name,role)?; }
                     } else { prepare_roles(&root,&snapshot,&path,&choices,true,false).await?; }
                     let report=start_roles(&root,&snapshot,confirm_fresh_identity).await?;
-                    println!("{}",serde_json::to_string_pretty(&report)?);
-                    println!("Started Factory {name}; observed all approved roles ready");
+                    show_report(&report)?;
+                    if !crate::operator_output::json_requested() { println!("Started Factory {name}; observed all approved roles ready"); }
                 }
                 Ok(())
             }
@@ -1042,7 +1044,7 @@ pub async fn run(config: &Path, args: &[String]) -> Result<(), Error> {
                 let (snapshot,_) = approved(&root,name)?;
                 if kind=="stop" { return stop_roles(&snapshot).await; }
                 let report=doctor(&root,&snapshot).await?;
-                println!("{}",serde_json::to_string_pretty(&report)?);
+                show_report(&report)?;
                 if report["status"]!="ready" { return Err("Factory is not ready; correct the named component".into()); }
                 Ok(())
             }
@@ -1052,7 +1054,7 @@ pub async fn run(config: &Path, args: &[String]) -> Result<(), Error> {
                 let operator = OperatorCoord::open(&host_platform::config_path())?;
                 let result = operator.send(&snapshot.room, text, "text/plain", json!([snapshot.operator_agent()])).await;
                 operator.shutdown().await;
-                println!("{}",serde_json::to_string_pretty(&result?)?); Ok(())
+                crate::operator_output::coord(&result?)?; Ok(())
             }
             [kind,name,options @ ..] if kind=="history" => {
                 let(snapshot,_)=approved(&root,name)?;
@@ -1061,7 +1063,7 @@ pub async fn run(config: &Path, args: &[String]) -> Result<(), Error> {
                 let (_cancel, cancellation) = tokio::sync::watch::channel(false);
                 let result = operator.read(&snapshot.room, since, 200, false, cancellation).await;
                 operator.shutdown().await;
-                println!("{}",serde_json::to_string_pretty(&result?)?); Ok(())
+                crate::operator_output::coord(&result?)?; Ok(())
             }
             [kind,name,options @ ..] if kind=="release" => {
                 let(snapshot,_)=approved(&root,name)?;
@@ -1084,3 +1086,26 @@ pub async fn run(config: &Path, args: &[String]) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests;
+
+fn show_report(report: &Value) -> Result<(), Error> {
+    if crate::operator_output::json_requested() {
+        return crate::operator_output::json(report);
+    }
+    crate::operator_output::field("Factory", &report["factory"]);
+    crate::operator_output::field("Status", &report["status"]);
+    if let Some(checks) = report["checks"].as_array() {
+        for check in checks {
+            println!(
+                "{:<5} {}",
+                crate::operator_output::text(&check["status"]),
+                crate::operator_output::text(&check["component"])
+            );
+            crate::operator_output::field("  Observation", &check["error"]);
+            if check["status"] != "PASS" {
+                crate::operator_output::field("  Next action", &check["recovery"]);
+            }
+        }
+    }
+    println!("Use factory doctor NAME --json for the complete readiness evidence.");
+    Ok(())
+}

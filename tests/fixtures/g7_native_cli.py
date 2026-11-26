@@ -10,7 +10,7 @@ if sys.argv[1:] == ["--version"]:
     print(f"{Path(sys.argv[0]).name} 0.1.0 commit=fixture profile=debug")
     sys.exit(0)
 
-assert sys.argv[1] == "--root"
+assert sys.argv[1] == "--instance-dir"
 root = Path(sys.argv[2])
 parts = sys.argv[3:]
 data = json.loads(Path(os.environ["G7_FIXTURE"]).read_text())

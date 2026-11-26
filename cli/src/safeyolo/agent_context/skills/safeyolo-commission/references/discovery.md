@@ -18,7 +18,7 @@ the read-only identity and status commands:
 selected_cli=/absolute/path/to/installed/bin/safeyolo
 selected_root=/absolute/path/to/selected/instance
 "$selected_cli" --version
-"$selected_cli" --root "$selected_root" status
+"$selected_cli" --instance-dir "$selected_root" status
 ```
 
 Status reports the selected root, proxy state and configured agents. Verify

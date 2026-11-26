@@ -178,7 +178,7 @@ def stage_controlled_codex(home: Path, *, completion: bool = False) -> None:
 def run(args: argparse.Namespace) -> None:
     root = args.config_dir.resolve(strict=True)
     executable = root / "bin/safeyolo"
-    command = [str(executable), "--root", str(root)]
+    command = [str(executable), "--instance-dir", str(root)]
     if root == (Path.home() / ".safeyolo").resolve():
         # Exercise the ordinary command/default-root path after installation.
         for key in ("SAFEYOLO_CONFIG_DIR", "SAFEYOLO_HOME", "SAFEYOLO_NATIVE_CONFIG_PATH"):

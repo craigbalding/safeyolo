@@ -29,7 +29,7 @@ class ProposalInstance(NativeInstance):
                                SAFEYOLO_COORD_TOKEN_PATH=str(self.root / "data/agent_token"),
                                SAFEYOLO_COORD_DATA_DIR=str(self.root / "data/coord"))
         else:
-            command = [str(self.root / "bin/safeyolo"), "--root", str(self.root), "coord", *args]
+            command = [str(self.root / "bin/safeyolo"), "--instance-dir", str(self.root), "coord", *args]
             environment = self.environment
         result = subprocess.run(command, cwd=self.root.parent, env=environment, text=True,
                                 capture_output=True, input=input, timeout=15)
@@ -74,7 +74,7 @@ def proposal_instance(tmp_path, *, nats_binary):
     root = tmp_path / "native"
     environment = dict(os.environ, SAFEYOLO_NATS_TEST_INSTANCE=f"proposal-{tmp_path.name}",
                        SAFEYOLO_HOME=str(root), SAFEYOLO_CONFIG_DIR=str(root))
-    initialized = subprocess.run([str(artifacts / "safeyolo"), "--root", str(root), "init"],
+    initialized = subprocess.run([str(artifacts / "safeyolo"), "--instance-dir", str(root), "init"],
                                  cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=15)
     assert initialized.returncode == 0, initialized.stderr
     (root / "bin").mkdir()

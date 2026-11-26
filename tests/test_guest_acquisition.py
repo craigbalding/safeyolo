@@ -310,7 +310,7 @@ def registry(tmp_path, native_cli):
 def install(binary, root, store, environment, package_info, *arguments):
     if environment.get("SAFEYOLO_TEST_HOST_SETTINGS"):
         arguments = (*arguments, "--host-settings", environment["SAFEYOLO_TEST_HOST_SETTINGS"])
-    result = subprocess.run([str(binary), "--root", str(root), "guest", "acquire",
+    result = subprocess.run([str(binary), "--instance-dir", str(root), "guest", "acquire",
                            "--package-info", str(package_info), "--store", str(store),
                            "--write-selection", str(root / "prepared-selection.json"),
                            "--namespace-root", environment.get("SAFEYOLO_TEST_NAMESPACE_ROOT", str(root)), *arguments],
@@ -456,7 +456,7 @@ def test_copied_instance_keeps_installed_guest_binding(native_cli, registry, pac
     selection = (source / "share/guest-selection.json").read_bytes()
     request_count = len(requests)
     if prepared_host:
-        initialized = subprocess.run([str(native_cli), "--root", str(source), "init"], capture_output=True, text=True)
+        initialized = subprocess.run([str(native_cli), "--instance-dir", str(source), "init"], capture_output=True, text=True)
         assert initialized.returncode == 0, initialized.stderr
         uid_base, gid_base = owned_root_ids(source / "share/rootfs-tree")
         with (source / "config.toml").open("a") as configuration:
@@ -468,7 +468,7 @@ def test_copied_instance_keeps_installed_guest_binding(native_cli, registry, pac
 
     root = tmp_path / "section"
     prepare_native_instance(source, root)
-    selected = subprocess.run([str(root / "bin/safeyolo"), "--root", str(root), "guest", "rollback"],
+    selected = subprocess.run([str(root / "bin/safeyolo"), "--instance-dir", str(root), "--json", "guest", "rollback"],
                               env=environment, capture_output=True, text=True, timeout=10)
     assert selected.returncode == 0, selected.stderr
     assert json.loads(selected.stdout) == json.loads(selection)
@@ -642,7 +642,7 @@ def test_native_selection_pins_one_index_and_keeps_existing_installation(native_
     assert (tree / "hard").stat().st_ino == (tree / "command").stat().st_ino
     assert (tree / "symbolic").readlink() == Path("command")
     assert (root / "share/cache-paths.txt").read_text() == "/var/cache/apt\n"
-    initialized = subprocess.run([str(native_cli), "--root", str(root), "init"], env=environment,
+    initialized = subprocess.run([str(native_cli), "--instance-dir", str(root), "init"], env=environment,
                                  capture_output=True, text=True, timeout=10)
     assert initialized.returncode == 0, initialized.stderr
     preserved = {path: (root / path).read_bytes() for path in ("policy.toml", "data/admin_token", "data/agent_token", "data/instance_id")}
@@ -742,7 +742,7 @@ def test_guest_download_pins_index_and_reuses_verified_inputs(
     contents.update(data)
     contents["manifests/" + index] = data["manifests/compat-v1"]
     root = tmp_path / "not-an-instance"
-    downloaded = subprocess.run([str(native_cli), "--root", str(root), "guest", "download", "--package-info", str(package_info), "--namespace-root", environment["SAFEYOLO_TEST_NAMESPACE_ROOT"], "--store", str(guest_store), *(["--prepare"] if prepare else [])],
+    downloaded = subprocess.run([str(native_cli), "--instance-dir", str(root), "guest", "download", "--package-info", str(package_info), "--namespace-root", environment["SAFEYOLO_TEST_NAMESPACE_ROOT"], "--store", str(guest_store), *(["--prepare"] if prepare else [])],
                                 env=environment, capture_output=True, text=True, timeout=30)
     assert downloaded.returncode == 0, downloaded.stderr
     assert downloaded.stdout.strip() == index
@@ -911,7 +911,7 @@ def test_early_preparation_defers_unavailable_setup_and_reports_cleanup_failure(
     wrapper.chmod(0o755)
     root = tmp_path / "not-an-instance"
     downloaded = subprocess.run(
-        [str(native_cli), "--root", str(root), "guest", "download", "--prepare",
+        [str(native_cli), "--instance-dir", str(root), "guest", "download", "--prepare",
          "--package-info", str(package_info), "--namespace-root", environment["SAFEYOLO_TEST_NAMESPACE_ROOT"], "--store", str(guest_store)],
         env={**environment, "PATH": f"{tools}:{environment['PATH']}"},
         capture_output=True, text=True, timeout=30)
@@ -1018,7 +1018,7 @@ def test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes
     entered.chmod(0o755)
     environment = {**environment, "PATH": f"{tools}:{environment['PATH']}", "SAFEYOLO_GUEST_DOWNLOAD_TIMING": "1"}
     root = tmp_path / "not-an-instance"
-    command = [str(native_cli), "--root", str(root), "guest", "download", "--prepare",
+    command = [str(native_cli), "--instance-dir", str(root), "guest", "download", "--prepare",
                "--package-info", str(package_info), "--namespace-root", environment["SAFEYOLO_TEST_NAMESPACE_ROOT"], "--store", str(guest_store)]
     process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
@@ -1230,7 +1230,7 @@ def test_verified_bundle_installer_and_proxy_restart_retain_guest(native_cli, re
     environment = {**environment, "PATH": environment["SAFEYOLO_TEST_HOST_PATH"], "HOME": str(guest_store.parents[3]),
                    "SAFEYOLO_NATS_TEST_INSTANCE": "guest-acquisition-installed", "TERM": "xterm-256color"}
     installer = Path(bundle) / "install.sh"
-    result = subprocess.run([str(installer), "--root", str(root), "--command-dir", str(root / "commands"), "--yes"],
+    result = subprocess.run([str(installer), "--instance-dir", str(root), "--command-dir", str(root / "commands"), "--yes"],
                             env=environment, input="", umask=0o077, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     mapping = tomllib.loads((root / "config.toml").read_text())["linux"]
@@ -1258,7 +1258,7 @@ def test_verified_bundle_installer_and_proxy_restart_retain_guest(native_cli, re
     cli = root / "bin/safeyolo"
 
     def command(*arguments):
-        return subprocess.run([str(cli), "--root", str(root), *arguments], env=environment,
+        return subprocess.run([str(cli), "--instance-dir", str(root), "--json", *arguments], env=environment,
                               capture_output=True, text=True, timeout=20)
 
     before = len(requests)
@@ -1274,7 +1274,7 @@ def test_verified_bundle_installer_and_proxy_restart_retain_guest(native_cli, re
         assert len(requests) == before
         assert (root / "share/guest-selection.json").read_bytes() == selection
         assert all((root / name).read_bytes() == data for name, data in preserved.items())
-        repeated = subprocess.run([str(installer), "--root", str(root), "--command-dir", str(root / "commands")],
+        repeated = subprocess.run([str(installer), "--instance-dir", str(root), "--command-dir", str(root / "commands")],
                                  env=environment, input="", umask=0o077, capture_output=True, text=True, timeout=10)
         assert repeated.returncode == 0, repeated.stderr
         assert "SafeYolo needs these host changes" not in repeated.stderr

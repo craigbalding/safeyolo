@@ -20,8 +20,8 @@ canonical approval and issued permission remain owned by the destination.
 
 ## Configure and preview
 
-On the host, select the running instance with `--root ROOT`. Run
-`safeyolo --root ROOT status` to obtain the configured names and durable
+On the host, select the running instance with `--instance-dir PATH`. Run
+`safeyolo --instance-dir PATH status` to obtain the configured names and durable
 IDs. The two guests must already exist. Replace the names, IDs, destination and
 ports in this example with the intended local agents and destination.
 
@@ -60,8 +60,8 @@ timestamp range. Supported long lifetimes remain available.
 Preview the exact proposal before applying it:
 
 ```sh
-safeyolo --root ROOT approvals delegation preview local --file proposal.json
-safeyolo --root ROOT approvals delegation check local --file proposal.json --json > preview.json
+safeyolo --instance-dir PATH approvals delegation preview local --file proposal.json
+safeyolo --instance-dir PATH approvals delegation check local --file proposal.json --json > preview.json
 ```
 
 The preview shows the before and after configuration, deciding agents,
@@ -95,8 +95,8 @@ original['delegation']['acknowledgment'] = preview['acknowledgment']
 original['authority'] = preview['authority']
 Path('proposal.json').write_text(json.dumps(original, indent=2) + '\n')
 PY
-safeyolo --root ROOT approvals delegation apply local --file proposal.json --json
-safeyolo --root ROOT approvals delegations --json
+safeyolo --instance-dir PATH approvals delegation apply local --file proposal.json --json
+safeyolo --instance-dir PATH approvals delegations --json
 ```
 
 No generic force flag bypasses checks. Stale revisions, unknown fields,
@@ -190,7 +190,7 @@ the existing gated Tailscale presentation route. Prepare the worker's managed
 desktop capability. The reviewer needs its own current run and existing
 attention room. It does not receive a desktop URL, unlock code or viewer session.
 
-Use `safeyolo --root ROOT agent status worker` to obtain the worker's current
+Use `safeyolo --instance-dir PATH agent status worker` to obtain the worker's current
 `run_id`. Use the durable agent ID from the configured worker. In the proposal
 above, replace `scopes` with this shape and replace the example identity and run:
 
@@ -229,7 +229,7 @@ previews. A null delegation expiry does not make a desktop source permanent.
 On the operator host, use `approvals show ID` to recover an active presentation's
 URL and current unlock code. This read neither replays the action nor extends
 its authority. If the code has already been consumed, the existing authenticated
-browser session remains usable. The explicit `safeyolo --root ROOT agent present worker`
+browser session remains usable. The explicit `safeyolo --instance-dir PATH agent present worker`
 command remains the operator recovery path when the reviewer is offline;
 it adds an independent operator source. `started` records that execution
 completed. `preview_active` reports current source activation, or null while
@@ -254,8 +254,8 @@ the operator path in every case.
 
 On the owning host, prepare the room with the ordinary `coord room create`
 command if needed. Room creation remains operator-only. Obtain its exact ID
-with `safeyolo --root ROOT coord room list`. Inspect the current participants
-with `safeyolo --root ROOT coord status ROOM`; the JSON agent entries include
+with `safeyolo --instance-dir PATH coord room list`. Inspect the current participants
+with `safeyolo --instance-dir PATH coord status ROOM`; the JSON agent entries include
 `room_permissions`. Replace the example room
 ID and worker ID below. The operator entry and every current agent participant
 must appear with their existing rights. Add the intended worker's maximum
@@ -661,7 +661,7 @@ For revocation, save `{"expected_revision":"CURRENT_REVISION"}` in
 `revoke.json`, then run:
 
 ```sh
-safeyolo --root ROOT approvals delegation revoke local --file revoke.json --json
+safeyolo --instance-dir PATH approvals delegation revoke local --file revoke.json --json
 ```
 
 Revocation removes only that delegation's issued access. Independent operator
@@ -692,7 +692,7 @@ If the reviewer is missing, busy, offline, lacks model access, or cannot obtain
 evidence or attention, the worker stays blocked. The operator can still use
 `approvals list`, `approvals show`, `approvals explain`, `approvals approve` and
 `approvals reject`, including the offered run option. The native interactive
-view is `safeyolo --root ROOT inspect --agent WORKER`. Use `pending`,
+view is `safeyolo --instance-dir PATH inspect --agent WORKER`. Use `pending`,
 `approval APPROVAL_ID`, `explain APPROVAL_ID --option run`, or `review` there.
 The inspect session and Command Centre use the same host resolver. Direct
 policy controls remain operator-only.

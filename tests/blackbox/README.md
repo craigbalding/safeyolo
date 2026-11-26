@@ -604,7 +604,7 @@ Tailscale home using its existing host-held credential. The literal endpoint
 must match the observer, not the upstream broker port:
 
 ```sh
-INSTALLED_ROOT/bin/safeyolo --root SOURCE_ROOT coord federation home destination \
+INSTALLED_ROOT/bin/safeyolo --instance-dir SOURCE_ROOT coord federation home destination \
   DEST_INSTANCE_ID tailscale nats://DEST_IP:PORT DEST_NODE_ID PEER_CREDENTIAL_FILE
 ```
 
@@ -632,7 +632,7 @@ python -m tests.blackbox.installed_tailnet probe \
 python -m tests.blackbox.installed_tailnet phase \
   --address DEST_IP --source SOURCE_IP --port PORT --nonce NONCE \
   --source-node SOURCE_NODE_ID --destination-node DEST_NODE_ID \
-  --cli INSTALLED_ROOT/bin/safeyolo --root SOURCE_ROOT --agent SOURCE_AGENT \
+  --cli INSTALLED_ROOT/bin/safeyolo --instance-dir SOURCE_ROOT --agent SOURCE_AGENT \
   --home destination --room ROOM --phase initial --output INITIAL_OUTPUT
 ```
 
@@ -648,7 +648,7 @@ For each `check` row, use a distinct new root and output directory:
 python -m tests.blackbox.installed_tailnet check \
   --address DEST_IP --source SOURCE_IP --port PORT --nonce NONCE \
   --source-node SOURCE_NODE_ID --destination-node DEST_NODE_ID \
-  --cli INSTALLED_ROOT/bin/safeyolo --root NEW_CHECK_ROOT \
+  --cli INSTALLED_ROOT/bin/safeyolo --instance-dir NEW_CHECK_ROOT \
   --expect wrong-node --output WRONG_NODE_OUTPUT
 ```
 
@@ -665,7 +665,7 @@ broker; it preserves diagnostic state:
 
 ```sh
 python -m tests.blackbox.installed_tailnet stop \
-  --cli INSTALLED_ROOT/bin/safeyolo --root SOURCE_ROOT --output SOURCE_STOP_OUTPUT
+  --cli INSTALLED_ROOT/bin/safeyolo --instance-dir SOURCE_ROOT --output SOURCE_STOP_OUTPUT
 ```
 
 Transfer only the nonsecret reports through the existing authorized transport.
@@ -677,7 +677,7 @@ selected disposable destination, including after a failed assertion.**
 
 ```sh
 python -m tests.blackbox.installed_tailnet verify \
-  --cli DEST_INSTALLED_ROOT/bin/safeyolo --root DEST_ROOT \
+  --cli DEST_INSTALLED_ROOT/bin/safeyolo --instance-dir DEST_ROOT \
   --phase-report INITIAL_OUTPUT/result.json --phase-report LOST_OUTPUT/result.json \
   --phase-report RESTORED_OUTPUT/result.json \
   --check-report WRONG_NODE_OUTPUT/result.json --check-report WRONG_ROUTE_OUTPUT/result.json \

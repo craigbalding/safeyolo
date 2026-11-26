@@ -571,8 +571,8 @@ evaluate reads captured evidence and reports network decisions. Neither command
 saves policy, grants access, invokes a provider or consumes live quotas.
 
 ```sh
-safeyolo --root /path/to/instance policy check candidate.toml
-safeyolo --root /path/to/instance policy evaluate candidate.toml request.json
+safeyolo --instance-dir /path/to/instance policy check candidate.toml
+safeyolo --instance-dir /path/to/instance policy evaluate candidate.toml request.json
 ```
 
 The JSON preview identifies `recorded_offline` evidence, the applied condition

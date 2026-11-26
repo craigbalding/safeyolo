@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::{Error, host_agents, host_boot, host_commands, host_lifecycle, host_platform};
 
-pub(crate) const HELP: &str = "safeyolo [--root ROOT] agent launch [WORKSPACE] [--name NAME] [--harness claude|codex] [--launcher LAUNCHER] [--authentication client|host-vault] [--dangerously-allow-unowned]
+pub(crate) const HELP: &str = "safeyolo [--instance-dir PATH] agent launch [WORKSPACE] [--name NAME] [--harness claude|codex] [--launcher LAUNCHER] [--authentication client|host-vault] [--dangerously-allow-unowned]
 WORKSPACE reuses the named agent’s saved folder, or defaults to the current directory. An omitted harness reuses the saved
 workspace/name binding. New agents default to Claude. Use --name to select between
 multiple saved agents; --harness explicitly selects Claude or Codex.
@@ -251,7 +251,10 @@ enum CodexLogin {
     Imported,
 }
 
-async fn codex_login(agent: &host_agents::Agent) -> Result<CodexLogin, Error> {
+async fn codex_login(
+    agent: &host_agents::Agent,
+    resume_existing: bool,
+) -> Result<CodexLogin, Error> {
     let root = host_platform::config_dir();
     let directory = root.join("agents").join(&agent.name);
     let _lock = tokio::task::spawn_blocking(move || {
@@ -270,30 +273,105 @@ async fn codex_login(agent: &host_agents::Agent) -> Result<CodexLogin, Error> {
             PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".codex")
         })
         .join("auth.json");
+    let agent_login =
+        crate::subscription_login::inspect(&auth, crate::subscription_login::Client::Codex);
+    let host_login =
+        crate::subscription_login::inspect(&host_auth, crate::subscription_login::Client::Codex);
     println!(
-        "Authorize a trusted Codex subscription login for {} ({}). Agent files can be changed by the guest. Authorization lasts until removed or replaced. Existing credential and network rules still apply. If the agent has no login, the selected host file is copied; guests can read the copy. Host originals stay unchanged. If authorization fails, the copy remains.",
-        agent.name, agent.id
+        "Codex authentication for {}: client-held (readable by this guest).",
+        agent.name
     );
-    for (label, path) in [("a: agent login", &auth), ("h: host login", &host_auth)] {
+    for (label, state) in [("Agent login", &agent_login), ("Host login", &host_login)] {
         println!(
-            "{label}: {}",
-            crate::network_guard::sanitize_with_limit(&path.to_string_lossy(), usize::MAX)
+            "{label}: {}{}",
+            crate::operator_output::text(&state["state"]),
+            state["kind"]
+                .as_str()
+                .map(|kind| format!(
+                    " ({kind}; local file inspected, provider validity unverified)"
+                ))
+                .unwrap_or_default()
+        );
+        crate::operator_output::field("  Recorded account", &state["account_id"]);
+    }
+    if resume_existing && agent_login["state"] == "found" {
+        println!(
+            "Resuming the agent's saved login. No import, reset or new authorization is requested. Use agent auth {} to choose another authentication action.",
+            agent.name
+        );
+        return Ok(CodexLogin::NormalApprovals);
+    }
+    let agent_present = agent_login["state"] != "missing";
+    let agent_subscription =
+        agent_login["state"] == "found" && agent_login["kind"] == "subscription";
+    let host_subscription =
+        !agent_present && host_login["state"] == "found" && host_login["kind"] == "subscription";
+    let host_api_key =
+        !agent_present && host_login["state"] == "found" && host_login["kind"] == "API key";
+    if agent_subscription {
+        println!(
+            "  a  Authorize the agent's selected subscription for this agent until removed or replaced"
+        );
+    }
+    if host_subscription {
+        println!(
+            "  h  Copy the found host subscription to this empty agent, then authorize it for this agent until removed or replaced"
+        );
+    }
+    if host_api_key {
+        println!(
+            "  h  Copy the found host API-key login into this empty agent (readable by guest commands; host original unchanged)"
+        );
+        println!(
+            "The key uses its provider's API billing. Existing network and credential policy still applies; copying grants no additional access."
+        );
+    }
+    if agent_subscription || host_subscription {
+        println!(
+            "Authorization uses the host encrypted store to recognize only this login and verified renewals at Codex's provider. It does not change explicit network/credential denials. A copied login stays readable by the guest; the host original is unchanged. Storage is selected on first import."
+        );
+    }
+    if agent_present {
+        println!(
+            "Enter resumes retained agent state; it does not force a new sign-in. Existing approvals still apply."
+        );
+    } else {
+        let prefix = host_lifecycle::current_instance_command()?;
+        let name = host_lifecycle::shell_quote(&agent.name);
+        println!(
+            "Enter starts Codex without preloaded authentication. Use its supported sign-in in the guest. If routing discovery times out after a delayed decision, retain the saved login. A grant for an old run does not authorize a new run.\nRecovery for this selected instance and agent:\n  {prefix} agent stop {name}\n  {prefix} agent auth {name}\n  {prefix} agent launch --name {name}\nIn authentication setup, select client-held state and authorize the found subscription through the existing import. Inspect prior task effects before retrying a task."
         );
     }
     loop {
-        let Some(choice) = input(
-            "Codex login [a/h/file path, Enter: guest login/normal approvals, q: cancel launch]: ",
-        )?
+        let Some(choice) =
+            input("Codex login [displayed action / file PATH / Enter: continue / q: cancel]: ")?
         else {
             return Ok(CodexLogin::Cancelled);
         };
         let source = match choice.as_str() {
             "" => return Ok(CodexLogin::NormalApprovals),
             "q" => return Ok(CodexLogin::Cancelled),
-            "a" => auth.clone(),
-            "h" => host_auth.clone(),
-            _ => PathBuf::from(choice),
+            "a" if agent_subscription => auth.clone(),
+            "h" if host_subscription || host_api_key => host_auth.clone(),
+            _ if !agent_present && choice.starts_with("file ") => {
+                PathBuf::from(choice.trim_start_matches("file "))
+            }
+            _ => {
+                println!(
+                    "Choose a displayed action, Enter to continue, or q to cancel. Existing login state is retained."
+                );
+                continue;
+            }
         };
+        let selected =
+            crate::subscription_login::inspect(&source, crate::subscription_login::Client::Codex);
+        if selected["state"] != "found" {
+            println!(
+                "Selected input is {} and is not a supported Codex login. No login was copied or authorized.",
+                crate::operator_output::text(&selected["state"])
+            );
+            continue;
+        }
         current_selection(agent)?;
         let result = async {
             let source = source.canonicalize().map_err(|_| "cannot resolve selected Codex login input")?;
@@ -301,6 +379,10 @@ async fn codex_login(agent: &host_agents::Agent) -> Result<CodexLogin, Error> {
                 crate::coord_setup::copy_codex_login(&home, &source)?;
             } else {
                 crate::coord_setup::codex_state(&home, None, false, Some("adopt"))?;
+            }
+            if selected["kind"] == "API key" {
+                println!("API-key login copied for {}. The host original and access policy are unchanged.", agent.name);
+                return Ok(());
             }
             // Use the existing trusted import operation. Neither copying nor
             // an adoption marker is evidence for an automatic credential grant.
@@ -317,9 +399,24 @@ async fn codex_login(agent: &host_agents::Agent) -> Result<CodexLogin, Error> {
         }.await;
         match result {
             Ok(()) => return Ok(CodexLogin::Imported),
-            Err(error) => eprintln!("{}", phase("Codex authorization", error)),
+            Err(error) => {
+                return Err(phase(
+                    "Codex authorization",
+                    format!(
+                        "{error}. Any completed copy is retained. Inspect credentials list and agent auth {} --json before another import; no failed authorization is retried automatically",
+                        agent.name
+                    ),
+                ));
+            }
         }
     }
+}
+
+pub(crate) async fn select_codex_login(agent: &host_agents::Agent) -> Result<(), Error> {
+    if matches!(codex_login(agent, false).await?, CodexLogin::Cancelled) {
+        println!("Authentication selection cancelled; retained login and approvals are unchanged.");
+    }
+    Ok(())
 }
 
 pub(crate) fn harness_setup(root: &Path, harness: &str) -> Result<(PathBuf, &'static str), Error> {
@@ -457,12 +554,34 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
         let copy = if authentication.as_deref() == Some("host-vault") {
             Some(false)
         } else if harness == "claude" {
-            println!(
-                "Optional host state: copy selected identity fields from ~/.claude.json, ~/.claude/.credentials.json, settings.json, plugins, commands, agents and skills (except SafeYolo's reserved skills) into this agent home. Claude and guest commands can read the copied authentication. Sessions and history are excluded. Declining leaves host authentication untouched; use Claude's login in the guest."
+            let host_home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+            let login = crate::subscription_login::inspect(
+                &host_home.join(".claude/.credentials.json"),
+                crate::subscription_login::Client::Claude,
             );
-            Some(consent(
-                "Copy this selected host authentication and settings? [y/N] ",
-            )?)
+            println!(
+                "Host Claude login: {} (local file inspection; provider validity unverified).",
+                crate::operator_output::text(&login["state"])
+            );
+            if login["state"] == "found"
+                || host_home.join(".claude.json").is_file()
+                || host_home.join(".claude/settings.json").is_file()
+            {
+                println!(
+                    "Optional copy: selected identity/settings, plugins, commands, agents and skills into this agent home. {} Guest commands can read copied inputs. Sessions and history are excluded. The host originals stay unchanged.",
+                    if login["state"] == "found" {
+                        "A supported subscription login is included."
+                    } else {
+                        "No supported subscription login was found; copying settings does not establish authentication."
+                    }
+                );
+                Some(consent("Copy these available host inputs? [y/N] ")?)
+            } else {
+                println!(
+                    "No supported host login or settings found. Sign in with Claude inside the agent; no host inputs will be copied."
+                );
+                Some(false)
+            }
         } else {
             println!(
                 "Codex uses authentication and settings in this agent's ~/.codex. Setup preserves that state; a host login choice follows."
@@ -494,7 +613,7 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
         crate::host_client_auth::guide(&agent, "client").await?;
     }
     let login = if harness == "codex" && !host_vault {
-        codex_login(&agent)
+        codex_login(&agent, !create)
             .await
             .map_err(|error| phase("Codex login selection", error))?
     } else {

@@ -135,7 +135,7 @@ def prepare(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--instance-dir", dest="root", required=True, type=Path)
     parser.add_argument("--bundle", type=Path, help="Proposed job bundle; defaults to the selected instance's assets/hyperlight")
     parser.add_argument("--engine", required=True, choices=["hyperlight", "hyperlight-unikraft"])
     for name in ("repository", "author-id", "issue", "room", "factory", "credential"):

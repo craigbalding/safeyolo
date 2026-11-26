@@ -72,7 +72,7 @@ AGENTS = ("bbtest", "bbpeer")
 def live_guest(cli: str, config_dir: Path, agent: str) -> dict:
     """Read the current run, rejecting dead or reused backend and holder PIDs."""
     run = json.loads((config_dir / "agents" / agent / "runtime.json").read_text())
-    status = json.loads(checked([cli, "--root", str(config_dir), "agent", "status", agent]).stdout)
+    status = json.loads(checked([cli, "--instance-dir", str(config_dir), "--json", "agent", "status", agent]).stdout)
     value = running_guest(config_dir, agent, status)
     holder, token = run["holder_pid"], run["holder_token"]
     assert token and _process_start_token(holder) == token, "namespace holder birth no longer matches"
@@ -192,7 +192,7 @@ def main() -> None:
                 report["boundaries"][agent].append(value)
                 save()
                 assert value["uid"] == (0 if root else 1000), "boundary probe ran as the wrong guest user"
-        checked([cli, "--root", str(config_dir), "stop"], timeout=45)
+        checked([cli, "--instance-dir", str(config_dir), "--json", "stop"], timeout=45)
         report["stopped"] = {"guests": {agent: live_guest(cli, config_dir, agent) for agent in AGENTS}, "refusals": {}}
         save()
         assert report["stopped"]["guests"] == before, "proxy stop replaced a guest generation"
@@ -206,7 +206,7 @@ def main() -> None:
             report["stopped"]["refusals"][agent] = {"host_connect_errno": refused, "guest": value}
             save()
             assert refused != 0, "stopped private listener still accepts"
-        checked([cli, "--root", str(config_dir), "start"], timeout=45)
+        checked([cli, "--instance-dir", str(config_dir), "--json", "start"], timeout=45)
         restarted = runtime_identity(config_dir, cli, identity["candidate"]["path"], None,
                                      args.output.with_name("ingress-pair-restarted-runtime.json"),
                                      AGENTS[0], args.install_commit)
@@ -228,7 +228,7 @@ def main() -> None:
         sinkhole.close()
         for agent in AGENTS:
             stop_guest(cli, config_dir, agent)
-        checked([cli, "--root", str(config_dir), "stop"], timeout=45)
+        checked([cli, "--instance-dir", str(config_dir), "--json", "stop"], timeout=45)
         for row in listeners.values():
             assert_proxy_stopped(config_dir, Path(row["path"]), active_runtime)
         births = [{"pid": row[pid], "start_token": row[token]} for row in before.values()

@@ -15,7 +15,7 @@ fn binary(name: &str) -> PathBuf {
 
 async fn host(root: &Path, args: &[&str]) -> Value {
     let output = tokio::process::Command::new(binary("safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(root)
         .args(args)
         .env("SAFEYOLO_NATS_TEST_INSTANCE", root)

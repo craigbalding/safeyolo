@@ -19,7 +19,7 @@ use super::*;
 #[path = "guided.rs"]
 mod guided;
 
-pub(super) const HELP: &str = "safeyolo [--root ROOT] upgrade\nsafeyolo [--root ROOT] upgrade releases\nsafeyolo [--root ROOT] upgrade [--release host-COMMIT | --bundle DIRECTORY] [--guest-index sha256:DIGEST] --preview\nsafeyolo [--root ROOT] upgrade [--release host-COMMIT | --bundle DIRECTORY] [--guest-index sha256:DIGEST] --activate [--restart-agent NAME]...\nWithout options, choose a published production host in a terminal, inspect its impact, then choose when to activate and which agents to restart.\n--preview acquires and verifies inputs without changing selection or interrupting processes. --activate performs the displayed stop/select/start operations without a prompt. Without an explicit target these options choose the newest supported published host.\nThe guided path retains a compatible guest or resolves the target host compatibility tag once and pins its OCI index. Unknown discovery retains the explicit selection path.\nsafeyolo [--root ROOT] upgrade status\nsafeyolo [--root ROOT] upgrade --release host-COMMIT [--guest-index sha256:DIGEST]\nsafeyolo [--root ROOT] upgrade --bundle UNPACKED_DIRECTORY [--guest-index sha256:DIGEST]\nsafeyolo [--root ROOT] upgrade rollback\nSelect an explicit host release or verified local bundle. Keep the installed guest unless --guest-index selects another OCI index.\nValidate and stage the complete compatible pair before activation. Existing processes keep running; restart the proxy and agents to use the selected components.\nRollback validates the previous host against retained Coord state before restoring the host/guest pair without a download. An incompatible or unavailable store check leaves selection unchanged; keep the selected host or use a newer compatible bundle. Component rollback does not reverse later store or user-state changes. Configuration, credentials, logs and agent homes stay in ROOT.\nGuest-only changes remain available through guest upgrade and guest rollback.\nFor an older host without this command, run a new bundle's bin/safeyolo --root ROOT upgrade --bundle UNPACKED_DIRECTORY.\nThe first upgrade retains ROOT/safeyolo-upgrade. Use ROOT/safeyolo-upgrade status, --release, --bundle or rollback even after selecting an older host.\nKeep ROOT/versions, ROOT/host-packages and ROOT/upgrade-tools: active, rollback and upgrade commands use them.";
+pub(super) const HELP: &str = "safeyolo [--instance-dir PATH] upgrade\nsafeyolo [--instance-dir PATH] upgrade releases\nsafeyolo [--instance-dir PATH] upgrade [--release host-COMMIT | --bundle DIRECTORY] [--guest-index sha256:DIGEST] --preview\nsafeyolo [--instance-dir PATH] upgrade [--release host-COMMIT | --bundle DIRECTORY] [--guest-index sha256:DIGEST] --activate [--restart-agent NAME]...\nWithout options, choose a published production host in a terminal, inspect its impact, then choose when to activate and which agents to restart.\n--preview acquires and verifies inputs without changing selection or interrupting processes. --activate performs the displayed stop/select/start operations without a prompt. Without an explicit target these options choose the newest supported published host.\nThe guided path retains a compatible guest or resolves the target host compatibility tag once and pins its OCI index. Unknown discovery retains the explicit selection path.\nsafeyolo [--instance-dir PATH] upgrade status\nsafeyolo [--instance-dir PATH] upgrade --release host-COMMIT [--guest-index sha256:DIGEST]\nsafeyolo [--instance-dir PATH] upgrade --bundle UNPACKED_DIRECTORY [--guest-index sha256:DIGEST]\nsafeyolo [--instance-dir PATH] upgrade rollback\nSelect an explicit host release or verified local bundle. Keep the installed guest unless --guest-index selects another OCI index.\nValidate and stage the complete compatible pair before activation. Existing processes keep running; restart the proxy and agents to use the selected components.\nRollback validates the previous host against retained Coord state before restoring the host/guest pair without a download. An incompatible or unavailable store check leaves selection unchanged; keep the selected host or use a newer compatible bundle. Component rollback does not reverse later store or user-state changes. Configuration, credentials, logs and agent homes stay in ROOT.\nGuest-only changes remain available through guest upgrade and guest rollback.\nFor an older host without this command, run a new bundle's bin/safeyolo --instance-dir PATH upgrade --bundle UNPACKED_DIRECTORY.\nThe first upgrade retains ROOT/safeyolo-upgrade. Use ROOT/safeyolo-upgrade status, --release, --bundle or rollback even after selecting an older host.\nKeep ROOT/versions, ROOT/host-packages and ROOT/upgrade-tools: active, rollback and upgrade commands use them.";
 
 // These are the host payload paths produced by build_host_packages.sh.
 const HOST_PATHS: &[&str] = &[
@@ -545,6 +545,12 @@ fn retain_upgrader(root: &Path) -> Result<(), Error> {
 }
 
 pub(super) async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
+    let selected_arguments: Vec<_> = arguments
+        .iter()
+        .filter(|arg| *arg != "--json")
+        .cloned()
+        .collect();
+    let arguments = selected_arguments.as_slice();
     if guided::handles(arguments) {
         return guided::run(root, arguments).await;
     }
@@ -586,7 +592,7 @@ pub(super) async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error
     // The same lock serializes existing guest-only upgrades and complete pairs.
     let _lock = crate::host_platform::lock_host_state(&root.join("guest-install.lock"))?;
     if status_requested {
-        println!("{}", serde_json::to_string_pretty(&status(&root)?)?);
+        show_status(&status(&root)?)?;
         return Ok(());
     }
     if rollback_requested {
@@ -608,12 +614,12 @@ pub(super) async fn run(root: &Path, arguments: &[OsString]) -> Result<(), Error
             )?;
             replace_link(&root, "current", &previous)?;
         }
-        println!("{}", serde_json::to_string_pretty(&status(&root)?)?);
+        show_status(&status(&root)?)?;
         return Ok(());
     }
     let prepared = prepare(&root, bundle.as_deref(), release, index, None).await?;
     select(&root, &prepared)?;
-    println!("{}", serde_json::to_string_pretty(&status(&root)?)?);
+    show_status(&status(&root)?)?;
     Ok(())
 }
 
@@ -757,5 +763,55 @@ fn select(root: &Path, prepared: &Prepared) -> Result<(), Error> {
     fs::rename(stage.path(), &destination)?;
     sync_directory(&parent)?;
     replace_link(root, "current", &destination)?;
+    Ok(())
+}
+
+pub(super) fn show_status(value: &Value) -> Result<(), Error> {
+    use crate::operator_output::{field, text};
+    if crate::operator_output::json_requested() {
+        return crate::operator_output::json(value);
+    }
+    field("Instance", &value["root"]);
+    field("State", &value["state"]);
+    field("Outcome", &value["outcome"]);
+    field("Error", &value["error"]);
+    field("Explicit selection", &value["explicit_selection"]);
+    for (label, pair) in [
+        (
+            "Selected",
+            value.get("selected").unwrap_or(value).get("current"),
+        ),
+        (
+            "Previous",
+            value.get("selected").unwrap_or(value).get("previous"),
+        ),
+        ("Proposed", value.get("proposed")),
+    ] {
+        if let Some(pair) = pair.filter(|pair| !pair.is_null()) {
+            println!(
+                "{label} host: {} ({})",
+                text(&pair["host"]["source_commit"]),
+                text(&pair["host"]["profile"])
+            );
+            field(&format!("{label} guest"), &pair["guest"]["version"]);
+        }
+    }
+    if let Some(releases) = value["releases"].as_array() {
+        if releases.is_empty() {
+            println!("No compatible production releases found in this catalogue response.");
+        } else {
+            crate::operator_output::rows(
+                releases,
+                &[("RELEASE", "release"), ("PUBLISHED", "published_at")],
+            );
+        }
+    }
+    if !value["observed"].is_null() {
+        field("Observed proxy", &value["observed"]["proxy"]["state"]);
+    }
+    field("Agent activation", &value["agent_activation"]);
+    println!(
+        "Saved component selection applies on restart. Running agents retain their inputs. Inspect upgrade status before retrying an interrupted activation. Select --json for complete source identities and evidence."
+    );
     Ok(())
 }

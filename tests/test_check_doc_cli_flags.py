@@ -86,7 +86,7 @@ def test_native_usage_adds_real_host_commands_and_rejects_invented_flags():
         "safeyolo agent recover marker --timeout 15",
         "safeyolo coord mattermost check --config FILE",
         "safeyolo coord mattermost run --config FILE --once",
-        "safeyolo --root ROOT coord completion-notes backlog 123",
+        "safeyolo --instance-dir PATH coord completion-notes backlog 123",
         "safeyolo coord proposals observe backlog 123 --verified FILE --candidate 0",
         "safeyolo coord proposals pending --ledger FILE",
         "safeyolo coord proposals reconcile backlog --since 100 --relay relay",
@@ -97,7 +97,7 @@ def test_native_usage_adds_real_host_commands_and_rejects_invented_flags():
         "safeyolo factory history NAME --since 42",
     ):
         assert mod._validate_line(invocation, surface) is None
-    assert "--root" in surface[""]
+    assert "--instance-dir" in surface[""]
     assert mod._validate_line("safeyolo agent start marker --invented", surface)
     assert mod._validate_line("safeyolo agent launch --invented", surface)
     assert mod._validate_line("safeyolo agent up marker", surface)
@@ -173,12 +173,12 @@ class TestValidateLine:
         for invocation in (
             "safeyolo dispatch generate source.json --output-root site --check",
             "safeyolo dispatch check-site --site-root site --publication-base master",
-            "safeyolo --root root coord dispatch-trigger backlog --date 2026-08-29 --weekly-on monday --publication-mode manual",
+            "safeyolo --instance-dir root coord dispatch-trigger backlog --date 2026-08-29 --weekly-on monday --publication-mode manual",
         ):
             assert mod._validate_line(invocation, surface) is None
         assert mod._validate_line("safeyolo dispatch generate source.json --publish", surface)
-        assert mod._validate_line("safeyolo --root root coord dispatch-trigger backlog --invented", surface)
-        assert mod._validate_line("safeyolo --root", surface)
+        assert mod._validate_line("safeyolo --instance-dir root coord dispatch-trigger backlog --invented", surface)
+        assert mod._validate_line("safeyolo --instance-dir", surface)
 
     def test_builtin_help_is_valid_for_groups_and_commands(self):
         for invocation in (

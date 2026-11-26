@@ -6,7 +6,7 @@ struct StopCoord(std::path::PathBuf);
 impl Drop for StopCoord {
     fn drop(&mut self) {
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(&self.0)
             .args(["coord", "stop"])
             .stdout(std::process::Stdio::null())

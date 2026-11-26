@@ -98,14 +98,14 @@ def run(args):
                     raise ValueError("mount proof requires SAFEYOLO_MOUNT_HOLDER_PROBE built from tests/fixtures/live-mount-holder.c for the Linux guest architecture")
                 holder_probe = Path(holder).resolve(strict=True) if holder else None
                 copy_prepared_nats(base, root)
-                coord = [str(cli), "--root", str(root), "coord", "start"]
+                coord = [str(cli), "--instance-dir", str(root), "--json", "coord", "start"]
                 client_port = args.nats_client_port if args.nats_client_port is not None else (46370 if args.lane == "vz" else None)
                 monitor_port = args.nats_monitor_port if args.nats_monitor_port is not None else (46372 if args.lane == "vz" else None)
                 for option, port in (("--client-port", client_port), ("--monitor-port", monitor_port)):
                     if port is not None:
                         coord += [option, str(port)]
                 subprocess.run(coord, check=True, timeout=60)
-                subprocess.run([str(cli), "--root", str(root), "start"], check=True, timeout=60)
+                subprocess.run([str(cli), "--instance-dir", str(root), "--json", "start"], check=True, timeout=60)
                 run_proof(root, output / "mounts", candidate=args.revision, receipt=receipt, holder_probe=holder_probe)
         result["finished"] = True
         return 0
@@ -124,7 +124,7 @@ def main():
     parser.add_argument("--section", choices=BOUNDARY_SECTIONS, required=True)
     parser.add_argument("--lane", choices=("systrap", "kvm", "vz"), required=True)
     parser.add_argument("--prepared-config", type=Path, required=True)
-    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--instance-dir", dest="root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--admin-port", type=int, help="Admin listener (default: VZ 46371, Linux ephemeral)")

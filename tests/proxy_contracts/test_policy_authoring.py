@@ -64,7 +64,7 @@ def recipe_instance(directory, source, *, services, parent_proxy, service_source
         return
     root = directory / "source-layout"
     host = native_inputs()[0]
-    initialized = subprocess.run([str(host / "safeyolo"), "--root", str(root), "init"], capture_output=True, text=True)
+    initialized = subprocess.run([str(host / "safeyolo"), "--instance-dir", str(root), "init"], capture_output=True, text=True)
     assert initialized.returncode == 0, initialized.stderr
     (root / "bin").mkdir()
     for binary in ("safeyolo", "safeyolo-proxy", "safeyolo-coord"):
@@ -150,7 +150,7 @@ spec="job.json"
     sources.write_text('[sources.hagezi]\nendpoint="https://selected.test/list"\n')
     choice_path = tmp_path / "preferences.json"
     choice_path.write_text(json.dumps(preferences()))
-    command = [sys.executable, str(SKILL / "scripts/author.py"), "--root", str(root),
+    command = [sys.executable, str(SKILL / "scripts/author.py"), "--instance-dir", str(root),
                "--choices", str(choice_path), "--sources", str(sources), "--output", str(tmp_path / "candidate")]
     result = subprocess.run(command, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -250,7 +250,7 @@ def test_installed_authoring_feed_rdap_preview_activation_and_adverse_cases(tmp_
                 "retry_seconds": 60, "max_retry_seconds": 120, "on_unavailable": "deny", "on_stale": "deny",
             }}}))
             output = tmp_path / "authored"
-            generated = subprocess.run([sys.executable, str(installed_skill / "scripts/author.py"), "--root", str(instance.root),
+            generated = subprocess.run([sys.executable, str(installed_skill / "scripts/author.py"), "--instance-dir", str(instance.root),
                                         "--choices", str(choice_path), "--sources", str(source_path), "--output", str(output)],
                                        capture_output=True, text=True)
             assert generated.returncode == 0, generated.stderr
@@ -352,7 +352,7 @@ def test_installed_real_provider_and_research_run(tmp_path):
         source_path = tmp_path / "sources.toml"
         source_path.write_text(sources.stdout)
         output = tmp_path / "authored"
-        generated = subprocess.run([sys.executable, str(installed_skill / "scripts/author.py"), "--root", str(instance.root),
+        generated = subprocess.run([sys.executable, str(installed_skill / "scripts/author.py"), "--instance-dir", str(instance.root),
                                     "--choices", str(choice_path), "--sources", str(source_path), "--output", str(output)],
                                    capture_output=True, text=True)
         assert generated.returncode == 0, generated.stderr

@@ -130,23 +130,43 @@ configured Tailscale route and return its actual URL. Preserve the requested
 audience and existing access, audit, expiry and cleanup behavior, including
 unrelated Tailscale mappings.
 
-### Current native gap in direct operator publication
+### Supported human and agent-assisted publication
 
-The native implementation accompanying this reference supports guest browsers
-and gateway service delivery, but its direct presentation command is fixed to
-desktop port 6080. It lacks the general arbitrary-port HTTP publication command
-for the operator's host-loopback or tailnet access. The earlier Python
-`agent preview` supported those paths. Check a newer installation's actual
-help and schemas before asserting that the limitation still applies there.
+On the selected SafeYolo host, use the running agent's name and app port:
 
-When this specific gap blocks the selected path, retain the app and report the
-exact remaining publication: agent, guest port and requested loopback or
-tailnet audience. It is tracked in [the CLI migration release blocker](https://github.com/craigbalding/safeyolo/issues/1716).
-Do not claim that guest browsing or gateway sharing is unavailable. Do not
-substitute desktop setup for direct HTTP publication, prescribe a retired
-command, or infer a usable command from an internal stream function. An
-existing authorized host operation can be used if it supplies the requested
-publication; verify that capability rather than inventing it.
+```sh
+safeyolo agent publish builder --port 3000 --audience local
+safeyolo agent publications builder
+safeyolo agent unpublish builder --port 3000 --audience local
+```
+
+Select `--audience tailnet` for the host's existing Tailscale Serve route;
+`--tailnet-port PORT` selects a free tailnet listener explicitly. The command
+returns a clean browser URL and a separate one-time unlock code. Keep the code
+private. Enter it in the browser before using the app's own login. Publication
+retains the selected agent run, port and audience; it starts no desktop and
+grants no network or service access. Ports 8080 and 9090 are reserved SafeYolo
+plumbing. The default lifetime is 900 seconds; use `--ttl SECONDS` to select
+another positive lifetime in seconds.
+Stop with the same agent, port, audience and optional tailnet port. Stop,
+expiry or a changed agent run disconnects only that publication. Unrelated
+publications and Tailscale mappings remain.
+
+From the agent, discover `GET /operator-actions` and request `web.publish`
+through `POST /operator-actions` with parameters such as
+`{"guest_port":3000,"audience":"local","ttl_seconds":900}`. This uses the
+existing operator-action approval owner and binds the requesting guest's
+current run; no peer-support setup is needed for its own app. Agent responses
+contain the canonical request/result status. The URL and unlock code belong
+to the operator, who can open the publication through the supported command.
+Read the canonical result after a lost reply before submitting another request.
+
+Host localhost can be carried over the operator's existing SSH forward as
+described above. Tailnet requires the selected host's actual Serve authority.
+Linux/gVisor and macOS VZ use their existing verified guest-port transports;
+another backend reports its capability gap rather than falling back to a
+different agent or audience. A published URL still needs an actual consumer
+check; a local health response does not establish remote reachability.
 
 ## Verify the intended use
 

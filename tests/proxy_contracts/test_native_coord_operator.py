@@ -75,7 +75,7 @@ def instance(tmp_path):
 
 def cli(instance, *args, input=None):
     return subprocess.run(
-        [str(instance.root / "bin/safeyolo"), "--root", str(instance.root), "coord", *args],
+        [str(instance.root / "bin/safeyolo"), "--instance-dir", str(instance.root), "coord", *args],
         cwd=instance.root.parent, env=instance.environment, input=input,
         capture_output=True, text=isinstance(input, str) or input is None, timeout=15,
     )
@@ -143,7 +143,7 @@ def terminal(instance, arguments=None, *, cwd=None, command=None, columns=80):
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, columns, 0, 0))
     process = subprocess.Popen(
         command if command is not None else [
-            str(instance.root / "bin/safeyolo"), "--root", str(instance.root),
+            str(instance.root / "bin/safeyolo"), "--instance-dir", str(instance.root),
             *(arguments if arguments is not None else ["coord", "chat", ROOM, "--to", "bob"]),
         ],
         cwd=cwd if cwd is not None else instance.root.parent, env=instance.environment,
@@ -327,7 +327,7 @@ def test_watch_timeline_payload_modes_and_cursor_reconnect(instance):
     marker = json.loads(canonical.stdout)["sequence"]
     # Real connection loss: stop the owned NATS process, restart its same
     # endpoint/store and observe only messages beyond the saved cursor.
-    process = subprocess.Popen([str(instance.root / "bin/safeyolo"), "--root", str(instance.root),
+    process = subprocess.Popen([str(instance.root / "bin/safeyolo"), "--instance-dir", str(instance.root),
                                 "coord", "watch", ROOM, "--since", str(marker), "--json"],
                                env=instance.environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
@@ -517,7 +517,7 @@ def supervised(instance, tmp_path):
 
 
 def watch_once(instance, *arguments):
-    return subprocess.run([str(instance.root / "bin/safeyolo"), "--root", str(instance.root),
+    return subprocess.run([str(instance.root / "bin/safeyolo"), "--instance-dir", str(instance.root),
                            "agent", "watch", "alice", "--once", "--plain", *arguments],
                           env=instance.environment, capture_output=True, text=True, timeout=15)
 

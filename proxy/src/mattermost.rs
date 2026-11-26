@@ -25,7 +25,7 @@ use std::{
 };
 use zeroize::Zeroizing;
 
-pub const HELP: &str = "safeyolo [--root ROOT] coord mattermost check|run [--config FILE] [--once]\nExternal TOML defaults to coord-mattermost.toml beside the selected configuration. check validates identities, local grants, private state and callback bind; run is a foreground adapter. run --once does not issue buttons. Mattermost projects selected rooms and authenticates one operator; Coord stays authoritative. Unknown appends require manual reconciliation and are never replayed automatically.";
+pub const HELP: &str = "safeyolo [--instance-dir PATH] coord mattermost check|run [--config FILE] [--once]\nExternal TOML defaults to coord-mattermost.toml beside the selected configuration. check validates identities, local grants, private state and callback bind; run is a foreground adapter. run --once does not issue buttons. Mattermost projects selected rooms and authenticates one operator; Coord stays authoritative. Unknown appends require manual reconciliation and are never replayed automatically.";
 
 struct Api {
     base: String,

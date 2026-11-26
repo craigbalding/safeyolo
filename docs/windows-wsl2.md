@@ -63,7 +63,7 @@ host-preparation consent. The qualification used an already prepared host and
 declined any proposed change. It did not use `--yes`.
 
 ```sh
-bash "$HOME/wsl-inputs/product-source/install.sh" --bundle "$HOME/wsl-inputs/bundle" --platform-assets "$HOME/wsl-inputs/prepared/share" --root "$HOME/.safeyolo" --command-dir "$HOME/wsl-commands"
+bash "$HOME/wsl-inputs/product-source/install.sh" --bundle "$HOME/wsl-inputs/bundle" --platform-assets "$HOME/wsl-inputs/prepared/share" --instance-dir "$HOME/.safeyolo" --command-dir "$HOME/wsl-commands"
 ```
 
 Expected result: the installer prints the selected source commit, build profile,
@@ -93,7 +93,7 @@ Keep host scripts outside every agent-writable share. Existing script trust
 checks still refuse an unsafe location.
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent create work --workspace "$HOME/code/my-project" --host-script "$HOME/.safeyolo/assets/contrib/codex-host-setup.sh"
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" agent create work --workspace "$HOME/code/my-project" --host-script "$HOME/.safeyolo/assets/contrib/codex-host-setup.sh"
 ```
 
 Creation runs host setup without starting a guest or Codex. SafeYolo supplies
@@ -105,8 +105,8 @@ Windows profile paths for the staged agent home.
 Before authenticating a client, establish shell readiness in the same instance:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent start work --sandbox-only
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent shell work -c 'id; pwd'
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" agent start work --sandbox-only
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" agent shell work -c 'id; pwd'
 ```
 
 Expected result: the command runs inside the guest as user ID (UID) 1000 and
@@ -130,7 +130,7 @@ new agent home. Keep the donor unchanged and separate from login material.
 The destination must not already contain a `codex-package` directory.
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" codex import "$HOME/wsl-inputs/codex-import" "$HOME/.safeyolo/agents/work/home"
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" codex import "$HOME/wsl-inputs/codex-import" "$HOME/.safeyolo/agents/work/home"
 ```
 
 Expected result: exit 0 and a complete package under the agent home's
@@ -156,7 +156,7 @@ space-containing and empty arguments. To supply an initial task, pass the task
 as one quoted argument after `--no-alt-screen`.
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent start work --foreground -- --no-alt-screen
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" agent start work --foreground -- --no-alt-screen
 ```
 
 The foreground client uses the Windows SSH terminal through WSL. Exit through
@@ -168,7 +168,7 @@ state before restarting or resubmitting a task.
 From the same WSL account, use the selected instance to read the result:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent status work
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" agent status work
 ```
 
 Read the recorded command exit separately from the Windows SSH connection's
@@ -177,7 +177,7 @@ If the terminal or runtime fails, use `agent diagnostics work` with the same
 instance. Stop this agent explicitly when the sandbox is no longer needed:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent stop work
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" agent stop work
 ```
 
 Stopping retains the agent home and workspace. See

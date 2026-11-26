@@ -70,14 +70,14 @@ if [[ -n $HOST_PACKAGE ]]; then
         if $INSTALL_YES; then prepare_options+=(--yes); fi
         platform_assets=$(python3 "$SCRIPT_DIR/retained_inputs.py" prepare-guest \
             --selection "$SAFEYOLO_BLACKBOX_INPUT_SELECTION" --archive "$GUEST_ARCHIVE" \
-            --bundle "${packages[0]}" --root "$SAFEYOLO_CONFIG_DIR" --directory "$PACKAGE_DIR/guest" ${prepare_options[@]+"${prepare_options[@]}"})
+            --bundle "${packages[0]}" --instance-dir "$SAFEYOLO_CONFIG_DIR" --directory "$PACKAGE_DIR/guest" ${prepare_options[@]+"${prepare_options[@]}"})
         INSTALL_ARGUMENTS+=(--platform-assets "$platform_assets")
     fi
     INSTALL_STARTED=$SECONDS
-    "${packages[0]}/install.sh" --root "$SAFEYOLO_CONFIG_DIR" --command-dir "$SAFEYOLO_CONFIG_DIR/commands" ${INSTALL_ARGUMENTS[@]+"${INSTALL_ARGUMENTS[@]}"}
+    "${packages[0]}/install.sh" --instance-dir "$SAFEYOLO_CONFIG_DIR" --command-dir "$SAFEYOLO_CONFIG_DIR/commands" ${INSTALL_ARGUMENTS[@]+"${INSTALL_ARGUMENTS[@]}"}
     if [[ -n ${SAFEYOLO_BLACKBOX_INPUT_SELECTION:-} ]]; then
         python3 "$SCRIPT_DIR/retained_inputs.py" verify-installed \
-            --selection "$SAFEYOLO_BLACKBOX_INPUT_SELECTION" --root "$SAFEYOLO_CONFIG_DIR"
+            --selection "$SAFEYOLO_BLACKBOX_INPUT_SELECTION" --instance-dir "$SAFEYOLO_CONFIG_DIR"
     fi
     echo "Native installation elapsed: $((SECONDS - INSTALL_STARTED)) seconds (agent readiness not yet measured)"
     "$SAFEYOLO_CONFIG_DIR/bin/safeyolo" --help >/dev/null
@@ -90,8 +90,8 @@ if [[ -n $HOST_PACKAGE ]]; then
     if [[ $LANE == vz ]]; then
         nats+=(--client-port 46370 --monitor-port 46372)
     fi
-    "$SAFEYOLO_CONFIG_DIR/bin/safeyolo" --root "$SAFEYOLO_CONFIG_DIR" coord start ${nats[@]+"${nats[@]}"}
-    "$SAFEYOLO_CONFIG_DIR/bin/safeyolo" --root "$SAFEYOLO_CONFIG_DIR" coord stop
+    "$SAFEYOLO_CONFIG_DIR/bin/safeyolo" --instance-dir "$SAFEYOLO_CONFIG_DIR" coord start ${nats[@]+"${nats[@]}"}
+    "$SAFEYOLO_CONFIG_DIR/bin/safeyolo" --instance-dir "$SAFEYOLO_CONFIG_DIR" coord stop
 else
     "$SCRIPT_DIR/run-lane.sh" proxy --prepare-only
 fi

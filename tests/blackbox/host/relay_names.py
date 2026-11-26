@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Qualify installed relays in an owned disposable Linux/gVisor or physical VZ guest.
 
-Run with --cli PATH --root INSTANCE --agent NAME --platform systrap|kvm|vz
+Run with --cli PATH --instance-dir INSTANCE --agent NAME --platform systrap|kvm|vz
 --revision FULL_SHA --output REPORT --disposable-guest. The instance must already
 be running with candidate guest assets. This invokes real pkill and killall as
 guest root; never select an agent with other work in it.
@@ -30,7 +30,7 @@ def deadline(_signum, _frame):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cli', required=True)
-    parser.add_argument('--root', type=Path, required=True)
+    parser.add_argument('--instance-dir', dest='root', type=Path, required=True)
     parser.add_argument('--agent', required=True)
     parser.add_argument('--platform', required=True, choices=('systrap', 'kvm', 'vz'))
     parser.add_argument('--revision', required=True)
@@ -39,7 +39,7 @@ def main() -> None:
     args = parser.parse_args()
     source = (ROOT / 'tests/blackbox/isolation/relay_names.py').read_text()
     command = f'sudo -n python3 -u -c {shlex.quote(source)} --platform {args.platform} --disposable-guest'
-    shell = [args.cli, '--root', str(args.root), 'agent', 'shell', args.agent, '-c']
+    shell = [args.cli, '--instance-dir', str(args.root), 'agent', 'shell', args.agent, '-c']
     context = json.loads((args.root / 'agents' / args.agent
                           / 'config-share/host-launch-context.json').read_text())
     if args.platform == 'vz':

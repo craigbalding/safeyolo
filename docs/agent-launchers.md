@@ -336,8 +336,8 @@ terminal, restart the installed proxy. Replace `ROOT` with the instance
 directory:
 
 ```sh
-safeyolo --root ROOT stop
-safeyolo --root ROOT start
+safeyolo --instance-dir PATH stop
+safeyolo --instance-dir PATH start
 ```
 
 The restart briefly interrupts agent networking and Coord. Startup

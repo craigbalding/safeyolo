@@ -31,7 +31,7 @@ command -v uv >/dev/null || { echo 'uv is required for the Python test drivers' 
 root=${SAFEYOLO_CONFIG_DIR:?Set SAFEYOLO_CONFIG_DIR to a fresh disposable native installation}
 if [[ $lane == systrap || $lane == kvm ]]; then export SAFEYOLO_RUNSC_PLATFORM=$lane; else unset SAFEYOLO_RUNSC_PLATFORM; fi
 if [[ $prepare_kvm_only == true ]]; then
-  "${SAFEYOLO_NATIVE_CLI:-$root/bin/safeyolo}" --root "$root" host prepare --yes
+  "${SAFEYOLO_NATIVE_CLI:-$root/bin/safeyolo}" --instance-dir "$root" host prepare --yes
   echo 'KVM access prepared; no product installation or guest started'
   exit 0
 fi
@@ -66,7 +66,7 @@ else
   [[ -z ${SAFEYOLO_NATIVE_VM_ARTIFACTS:-} ]] || inputs+=(--vm-artifacts "$SAFEYOLO_NATIVE_VM_ARTIFACTS")
 fi
 # This is the ordinary source entry, delegating to the accepted installer.
-"$checkout/install.sh" --root "$root" --command-dir "$root/commands" --yes "${inputs[@]}"
+"$checkout/install.sh" --instance-dir "$root" --command-dir "$root/commands" --yes "${inputs[@]}"
 # The separate test environment never publishes a product CLI.
 (cd -- "$repository"; uv sync --frozen --group dev)
 export SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT="$checkout"
@@ -76,8 +76,8 @@ if [[ $prepare_only == true ]]; then
   nats=()
   [[ -z ${SAFEYOLO_COORD_NATS_BINARY:-} ]] || nats+=(--binary "$SAFEYOLO_COORD_NATS_BINARY")
   if [[ $lane == vz ]]; then nats+=(--client-port 46370 --monitor-port 46372); fi
-  safeyolo --root "$root" coord start ${nats[@]+"${nats[@]}"}
-  safeyolo --root "$root" coord stop
+  safeyolo --instance-dir "$root" coord start ${nats[@]+"${nats[@]}"}
+  safeyolo --instance-dir "$root" coord stop
   echo "Native product and $lane inputs prepared; no test guest started"
   exit 0
 fi

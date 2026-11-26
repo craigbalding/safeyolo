@@ -530,7 +530,7 @@ def test_init_and_read_only_commands_defer_storage_until_a_valid_secret_write(tm
     root = tmp_path / "instance"
 
     def command(*arguments, valid=True, value=None):
-        result = subprocess.run([str(binary), "--root", str(root), *arguments],
+        result = subprocess.run([str(binary), "--instance-dir", str(root), *arguments],
                                 input=value, capture_output=True, text=True, timeout=15)
         assert (result.returncode == 0) == valid, result.stderr
         assert LOCAL not in result.stdout + result.stderr
@@ -576,7 +576,7 @@ def test_first_storage_choice_and_hidden_passphrase_input(tmp_path, selection):
     artifacts, _, _ = native_inputs()
     root = tmp_path / "instance"
     binary = (artifacts / "safeyolo").resolve()
-    subprocess.run([str(binary), "--root", str(root), "init"], check=True, capture_output=True)
+    subprocess.run([str(binary), "--instance-dir", str(root), "init"], check=True, capture_output=True)
     (root / "bin").mkdir()
     (root / "bin/safeyolo").symlink_to(binary)
     value_file = tmp_path / "value"
@@ -615,7 +615,7 @@ def test_first_storage_choice_and_hidden_passphrase_input(tmp_path, selection):
             pass_file = tmp_path / "passphrase"
             pass_file.write_text(value)
             arguments = ["--passphrase-file", str(pass_file)]
-        result = subprocess.run([str(binary), "--root", str(root), "credentials", "list", *arguments],
+        result = subprocess.run([str(binary), "--instance-dir", str(root), "credentials", "list", *arguments],
                                 capture_output=True, text=True, timeout=15)
         assert (result.returncode == 0) == (value == protected)
         assert protected not in result.stdout + result.stderr

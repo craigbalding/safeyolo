@@ -36,8 +36,8 @@ for binary in safeyolo safeyolo-proxy; do
     cp -- "$inputs/bin/$binary" "$instance/bin/$binary"
     chmod 0755 "$instance/bin/$binary"
 done
-"$instance/bin/safeyolo" --root "$instance" init
-"$instance/bin/safeyolo" --root "$instance" agent create lab-client --workspace "$HOME"
+"$instance/bin/safeyolo" --instance-dir "$instance" init
+"$instance/bin/safeyolo" --instance-dir "$instance" agent create lab-client --workspace "$HOME"
 # This explicit listener is independent of a sandbox launch. The Lab controller
 # drives it through a Unix socket; no second model or inner guest is required.
 cat > "$instance/config.toml" <<'EOF'

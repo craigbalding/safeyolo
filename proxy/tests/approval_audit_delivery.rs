@@ -150,7 +150,7 @@ async fn operator_pending(root: &Path) -> Value {
     let output = tokio::time::timeout(
         Duration::from_secs(15),
         tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(root)
             .args(["approvals", "list", "--json"])
             .output(),

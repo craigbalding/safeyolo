@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-pub(crate) const HELP: &str = "safeyolo [--root ROOT] agent auth NAME [--json]\nsafeyolo [--root ROOT] agent auth NAME --authentication client|host-vault [--credential NAME] [--auth-file HOST_FILE] [--authorize] [--remove-guest-auth] [--storage local|passphrase] [--passphrase-file FILE] [--json]\nWith no options, guide authentication in a host terminal. --json alone reads current state. Changes require a stopped agent and its shipped Codex/Claude setup. --auth-file uses credentials import-client once; import grants no access. --authorize explicitly selects this agent's inference service and credential until revoked/replaced. Existing network, credential and risky-route policy still applies. No host-wide network approval is added. --remove-guest-auth explicitly removes the displayed client authentication inputs; omit it to retain them and refuse a conflicting custody change. Unrelated settings and denies are retained. Later launches fetch a fresh scoped token; after invalidation stop/relaunch the client. Check prior task effects before retrying. No automatic unlock or model-request replay.";
+pub(crate) const HELP: &str = "safeyolo [--instance-dir PATH] agent auth NAME [--json]\nsafeyolo [--instance-dir PATH] agent auth NAME --authentication client|host-vault [--credential NAME] [--auth-file HOST_FILE] [--authorize] [--remove-guest-auth] [--storage local|passphrase] [--passphrase-file FILE] [--json]\nWith no options, guide authentication in a host terminal. --json alone reads current state. Changes require a stopped agent and its shipped Codex/Claude setup. --auth-file uses credentials import-client once; import grants no access. --authorize explicitly selects this agent's inference service and credential until revoked/replaced. Existing network, credential and risky-route policy still applies. No host-wide network approval is added. --remove-guest-auth explicitly removes the displayed client authentication inputs; omit it to retain them and refuse a conflicting custody change. Unrelated settings and denies are retained. Later launches fetch a fresh scoped token; after invalidation stop/relaunch the client. Check prior task effects before retrying. No automatic unlock or model-request replay.";
 
 pub(crate) fn client(agent: &host_agents::Agent) -> Result<&'static str, Error> {
     let configured = Path::new(
@@ -95,14 +95,16 @@ pub(crate) async fn report(agent: &host_agents::Agent) -> Result<Value, Error> {
         "retained_guest_auth":coding_client::conflicts(&home(agent),client)?,
         "authorization":match authorization {Ok(row)=>json!({"state":if row.is_null(){"absent"}else{"configured"},"binding":row}),Err(_)=>json!({"state":"unavailable"})},
         "vault":vault,"selected_account":account,
+        "local_login":crate::subscription_login::inspect(&home(agent).join(if client=="codex" {".codex/auth.json"} else {".claude/.credentials.json"}), if client=="codex" {crate::subscription_login::Client::Codex} else {crate::subscription_login::Client::Claude}),
         "provider_validity":"unknown","client_use":"not_observed",
-        "next_action":format!("Use agent launch --name {}. Inspect approvals for this agent separately. After gateway changes or proxy restart, stop/relaunch the client to fetch a new scoped token; inspect prior task effects before retrying.",agent.name)
+        "next_action":format!("{} agent launch --name {}",crate::host_lifecycle::current_instance_command()?,crate::host_lifecycle::shell_quote(&agent.name)),
+        "recovery":"Inspect approvals for this agent separately. After gateway changes or proxy restart, stop/relaunch the client to fetch a new scoped token; inspect prior task effects before retrying."
     }))
 }
 
 fn explain(agent: &host_agents::Agent, client: &str) {
     println!(
-        "Host authentication — {} ({}) at {}. Provider: {client} subscription; service: {client}/inference. Select the credential account by its vault entry or host login file. Provider validity remains unknown until a real request succeeds.",
+        "Authentication — {} ({}) at {}. Provider: {client}; service: {client}/inference. Select the credential account by its vault entry or host login file. Provider validity remains unknown until a real request succeeds.",
         agent.name,
         agent.id,
         crate::network_guard::sanitize_with_limit(
@@ -297,14 +299,15 @@ pub(crate) async fn guide(agent: &host_agents::Agent, mode: &str) -> Result<(), 
     let client = client(agent)?;
     explain(agent, client);
     if mode == "client" {
-        return apply(
+        apply(
             agent,
             Options {
                 mode: Some(mode.into()),
                 ..Options::default()
             },
         )
-        .await;
+        .await?;
+        return Ok(());
     }
     let conflicts = coding_client::conflicts(&home(agent), client)?;
     let remove = if conflicts.is_empty() {
@@ -414,7 +417,7 @@ pub(crate) async fn ready(agent: &host_agents::Agent) -> Result<(), Error> {
     if observed["configuration"] != "host-vault" {
         return Ok(());
     }
-    println!("{}", serde_json::to_string_pretty(&observed)?);
+    show(&observed)?;
     if observed["vault"]["availability"] == "locked" {
         if crate::host_launch::input("Passphrase vault is locked. Type unlock for the existing hidden passphrase prompt, or Enter to return: ")?.as_deref() == Some("unlock") {
             let status = tokio::process::Command::new(host_platform::config_dir().join("bin/safeyolo"))
@@ -443,7 +446,7 @@ pub(crate) async fn run(arguments: &[String]) -> Result<i32, Error> {
     let options = parse(&arguments[1..])?;
     let result = if options.mode.is_some() {
         apply(&agent, options).await
-    } else if arguments.len() == 1 {
+    } else if arguments.len() == 1 && !crate::operator_output::json_requested() {
         if !std::io::stdin().is_terminal() {
             return Err("use --json to inspect authentication, or select --authentication for noninteractive setup".into());
         }
@@ -461,7 +464,11 @@ pub(crate) async fn run(arguments: &[String]) -> Result<i32, Error> {
         if mode.is_empty() {
             Ok(())
         } else if matches!(mode.as_str(), "client" | "host-vault") {
-            guide(&agent, &mode).await
+            guide(&agent, &mode).await?;
+            if mode == "client" && client == "codex" {
+                crate::host_launch::select_codex_login(&agent).await?;
+            }
+            Ok(())
         } else {
             Err("select client or host-vault".into())
         }
@@ -483,6 +490,45 @@ pub(crate) async fn run(arguments: &[String]) -> Result<i32, Error> {
             usize::MAX
         ));
     }
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    show(&report)?;
     Ok(if ok { 0 } else { 1 })
+}
+
+fn show(report: &Value) -> Result<(), Error> {
+    use crate::operator_output::{field, json, json_requested};
+    if json_requested() {
+        return json(report);
+    }
+    field("Instance", &report["root"]);
+    field("Agent", &report["agent"]);
+    field("Client", &report["client"]);
+    field("Credential custody", &report["configuration"]);
+    field("Local login file", &report["local_login"]["state"]);
+    field("Local login kind", &report["local_login"]["kind"]);
+    field("Recorded account", &report["local_login"]["account_id"]);
+    if report["configuration"] == "host-vault" {
+        field("Service authorization", &report["authorization"]["state"]);
+        field("Credential store", &report["vault"]["availability"]);
+        field(
+            "Selected credential",
+            &report["authorization"]["binding"]["credential"],
+        );
+        field(
+            "Selected account",
+            &report["selected_account"]["chatgpt_account_id"],
+        );
+    }
+    println!(
+        "Local file inspection and saved authorization do not verify provider authentication or a completed task."
+    );
+    field("Outcome", &report["ok"]);
+    field("Error", &report["error"]);
+    if let Some(command) = report["next_action"].as_str() {
+        println!(
+            "Next action: {}",
+            crate::network_guard::sanitize_with_limit(command, usize::MAX)
+        );
+    }
+    field("Recovery", &report["recovery"]);
+    Ok(())
 }

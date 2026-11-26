@@ -26,7 +26,7 @@ from pathlib import Path
 
 
 def run(args):
-    cli = [str(args.cli.resolve()), "--root", str(args.root.resolve())]
+    cli = [str(args.cli.resolve()), "--instance-dir", str(args.root.resolve())]
     args.scratch.mkdir(mode=0o700)
     revision = None
     grant_name = "installed-operational-events"
@@ -196,7 +196,7 @@ def run(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cli", type=Path, required=True)
-    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--instance-dir", dest="root", type=Path, required=True)
     parser.add_argument("--scratch", type=Path, required=True)
     parser.add_argument("--support", required=True)
     parser.add_argument("--target", required=True)

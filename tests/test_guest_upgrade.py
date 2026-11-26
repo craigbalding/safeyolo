@@ -32,7 +32,7 @@ guest_store = acquisition.guest_store
 
 
 def command(binary, root, environment, *arguments):
-    return subprocess.run([str(binary), "--root", str(root), *arguments], env=environment,
+    return subprocess.run([str(binary), "--instance-dir", str(root), "--json", *arguments], env=environment,
                           capture_output=True, text=True, timeout=30)
 
 
@@ -268,7 +268,7 @@ def test_killed_archive_pull_preserves_selection_and_next_upgrade_recovers(
     archive = compressed_archive(content=b"G2 guest")
     contents.update(release(archive, version="guest-2026-10-12.2"))
     faults["pause"] = "blobs/" + digest(archive)
-    process = subprocess.Popen([str(native_cli), "--root", str(root), "guest", "upgrade"],
+    process = subprocess.Popen([str(native_cli), "--instance-dir", str(root), "guest", "upgrade"],
                                env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         assert faults["entered"].wait(timeout=15)
@@ -338,7 +338,7 @@ def test_verified_bundle_guest_updates_preserve_running_proxy_host_and_restart_s
     root = tmp_path.parent / "h"
     environment = {**environment, "HOME": str(guest_store.parents[3]),
                    "SAFEYOLO_NATS_TEST_INSTANCE": "guest-upgrade-installed", "TERM": "xterm-256color"}
-    result = subprocess.run([str(Path(bundle) / "install.sh"), "--root", str(root),
+    result = subprocess.run([str(Path(bundle) / "install.sh"), "--instance-dir", str(root),
                              "--command-dir", str(root / "commands"), "--yes"], env=environment,
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr

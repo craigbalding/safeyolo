@@ -36,7 +36,7 @@ def authentication_instance(directory, client, service):
     """Run the actual auth owners without packaging unrelated VM/runtime inputs."""
     artifacts, _, _ = native_inputs()
     root = directory / "instance"
-    initialized = subprocess.run([str(artifacts / "safeyolo"), "--root", str(root), "init"],
+    initialized = subprocess.run([str(artifacts / "safeyolo"), "--instance-dir", str(root), "init"],
                                  capture_output=True, text=True, timeout=15)
     assert initialized.returncode == 0, initialized.stderr
     (root / "policy.toml").write_text(DENY + AGENTS)

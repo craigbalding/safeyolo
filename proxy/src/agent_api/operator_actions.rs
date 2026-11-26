@@ -120,7 +120,7 @@ where
         match parameters {
             Ok(parameters) => operator_actions::Request {
                 action_id: operator_actions::DESKTOP_PRESENT.into(),
-                parameters,
+                parameters: json!(parameters),
                 reason: None,
             },
             Err(_) => {

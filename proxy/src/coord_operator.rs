@@ -18,7 +18,7 @@ pub async fn watch(config: &Path, arguments: &[String]) -> Result<(), Error> {
     signals::watch(config, arguments).await
 }
 
-pub const HELP: &str = "safeyolo [--root ROOT] coord send ROOM [TEXT | --file FILE | --stdin] [--to AGENT ...] [--content-type text/plain|text/markdown]\nsafeyolo [--root ROOT] coord chat ROOM [--since SEQUENCE] [--to AGENT] [--observe]\nsafeyolo [--root ROOT] coord history ROOM [--since SEQUENCE]\nsafeyolo [--root ROOT] coord watch ROOM [--history COUNT] [--since SEQUENCE] [--once] [--raw|--json|--compact] [--max-text COUNT] [--redact] [--show-unknown] [--no-color]\nsafeyolo coord watch --jsonl FILE [--raw|--json|--compact] [--max-text COUNT] [--redact] [--show-unknown]\n\nSend reads exactly one UTF-8 input and preserves its payload. --to targets receive-authorized members; otherwise it notifies the room.\nChat receives while you edit. :paste/:p reads the host clipboard, :edit/:e opens $VISUAL or $EDITOR, :q exits. Composed clipboard/editor messages require confirmation. Chat requires a terminal on stdin and stdout.\nWatch renders room messages and Codex/Pi/Claude harness events. --compact shows the concise transcript, with one start line and only failures or useful receipts on completion. Text is complete by default. --max-text limits only display; --redact is optional. --json preserves canonical payloads as JSONL. --jsonl - reads stdin.\nUnknown publication is reported without automatic retry. Inspect history before deciding whether to send again.";
+pub const HELP: &str = "safeyolo [--instance-dir PATH] coord send ROOM [TEXT | --file FILE | --stdin] [--to AGENT ...] [--content-type text/plain|text/markdown]\nsafeyolo [--instance-dir PATH] coord chat ROOM [--since SEQUENCE] [--to AGENT] [--observe]\nsafeyolo [--instance-dir PATH] coord history ROOM [--since SEQUENCE]\nsafeyolo [--instance-dir PATH] coord watch ROOM [--history COUNT] [--since SEQUENCE] [--once] [--raw|--json|--compact] [--max-text COUNT] [--redact] [--show-unknown] [--no-color]\nsafeyolo coord watch --jsonl FILE [--raw|--json|--compact] [--max-text COUNT] [--redact] [--show-unknown]\n\nSend reads exactly one UTF-8 input and preserves its payload. --to targets receive-authorized members; otherwise it notifies the room.\nChat receives while you edit. :paste/:p reads the host clipboard, :edit/:e opens $VISUAL or $EDITOR, :q exits. Composed clipboard/editor messages require confirmation. Chat requires a terminal on stdin and stdout.\nWatch renders room messages and Codex/Pi/Claude harness events. --compact shows the concise transcript, with one start line and only failures or useful receipts on completion. Text is complete by default. --max-text limits only display; --redact is optional. --json preserves canonical payloads as JSONL. --jsonl - reads stdin.\nUnknown publication is reported without automatic retry. Inspect history before deciding whether to send again.";
 
 #[derive(Default)]
 struct Options {
@@ -110,7 +110,9 @@ fn parse(command: &str, args: &[String]) -> Result<Options, Error> {
                     options.display.max_text = Some(count);
                 }
                 "--raw" if command == "watch" => options.display.raw = true,
-                "--json" if command == "watch" => options.display.json = true,
+                "--json" if matches!(command, "watch" | "history" | "send") => {
+                    options.display.json = true
+                }
                 "--compact" if command == "watch" => options.display.compact = true,
                 "--redact" if command == "watch" => options.display.redact = true,
                 "--show-unknown" if command == "watch" => options.display.show_unknown = true,
@@ -125,6 +127,7 @@ fn parse(command: &str, args: &[String]) -> Result<Options, Error> {
             return Err(format!("unexpected coord {command} argument").into());
         }
     }
+    options.display.json |= crate::operator_output::json_requested();
     if [
         options.display.raw,
         options.display.json,
@@ -180,7 +183,7 @@ fn body(options: &Options, kind: &str) -> Result<String, Error> {
     Ok(body)
 }
 
-pub const BRIEF_HELP: &str = "safeyolo [--root ROOT] coord brief show ROOM\nsafeyolo [--root ROOT] coord brief set ROOM [MARKDOWN | --file FILE | --stdin] --expected-revision REVISION [--operation-id ID]\n\nShow prints the canonical Markdown, revision and SHA-256, or state=none with revision 0.\nSet reads exactly one nonempty UTF-8 input (at most 65536 bytes). Use expected revision 0 to create a missing brief. Different operations with stale expectations fail without changing the brief or attention. Choose an operation ID before writing to recover an ambiguous result: retry the same ID, original expected revision and exact Markdown to receive the original result, even after later updates. Changed input under that ID conflicts. Omitted IDs are generated and returned in results. Successful writes notify current receive-authorized members through brief_changed attention. A brief is optional standing context; it does not assign work or change workflow state.";
+pub const BRIEF_HELP: &str = "safeyolo [--instance-dir PATH] coord brief show ROOM\nsafeyolo [--instance-dir PATH] coord brief set ROOM [MARKDOWN | --file FILE | --stdin] --expected-revision REVISION [--operation-id ID]\n\nShow prints the canonical Markdown, revision and SHA-256, or state=none with revision 0.\nSet reads exactly one nonempty UTF-8 input (at most 65536 bytes). Use expected revision 0 to create a missing brief. Different operations with stale expectations fail without changing the brief or attention. Choose an operation ID before writing to recover an ambiguous result: retry the same ID, original expected revision and exact Markdown to receive the original result, even after later updates. Changed input under that ID conflicts. Omitted IDs are generated and returned in results. Successful writes notify current receive-authorized members through brief_changed attention. A brief is optional standing context; it does not assign work or change workflow state.";
 
 pub(crate) fn run_brief(root: &Path, arguments: &[String]) -> Result<Value, Error> {
     match arguments {
@@ -655,7 +658,12 @@ async fn run_options(
             )
             .await;
         client.shutdown().await;
-        println!("{}", accepted(&result?));
+        let result = result?;
+        if options.display.json {
+            crate::operator_output::json(&result)?;
+        } else {
+            println!("{}", accepted(&result));
+        }
         return Ok(());
     }
     let (cancel, cancellation) = tokio::sync::watch::channel(false);
@@ -665,8 +673,10 @@ async fn run_options(
     let display = |message: &Value| {
         if command == "chat" {
             coord_timeline::chat_message(message)
-        } else if command == "history" {
+        } else if command == "history" && options.display.json {
             format!("{message}\n")
+        } else if command == "history" {
+            coord_timeline::chat_message(message)
         } else if selected_agent
             .as_deref()
             .is_some_and(|id| message["sender_agent_id"] != id)

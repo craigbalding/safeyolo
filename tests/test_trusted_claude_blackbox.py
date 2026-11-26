@@ -265,12 +265,12 @@ def retained_invocation(invocation, monkeypatch):
     native = textwrap.dedent(f'''\
         #!{sys.executable}
         import json, os, pathlib, sys
-        root = pathlib.Path(sys.argv[sys.argv.index('--root')+1])
+        root = pathlib.Path(sys.argv[sys.argv.index('--instance-dir')+1])
         stage = sys.argv[-1]
         with pathlib.Path({str(controller / 'events')!r}).open('a') as output:
             output.write(json.dumps({{'stage':stage}})+'\\n')
         if stage == 'doctor':
-            print(json.dumps({{'linux':dict({doctor!r}, state=os.environ.get('DOCTOR_STATE', 'ready'))}}))
+            print(json.dumps({{'exit_code':0,'checks':[{{'name':'Linux runtime and namespaces','details':dict({doctor!r}, state=os.environ.get('DOCTOR_STATE', 'ready'))}}]}}))
         elif stage == 'init':
             root.mkdir()
             (root/'config.toml').write_text('')

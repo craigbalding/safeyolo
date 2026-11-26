@@ -19,54 +19,36 @@ mod support;
 mod watch;
 pub(crate) use watch::run as watch_approvals;
 
-pub const HELP: &str = "safeyolo [--root ROOT] inspect [--factory NAME] [--agent NAME]
-safeyolo [--root ROOT] configure connection|support NAME|approvals NAME
-safeyolo [--root ROOT] configure --help
-safeyolo [--root ROOT] traffic list [--agent NAME] [--filter EXPRESSION] [--json]
-safeyolo [--root ROOT] traffic show ID|body ID request|response|websocket ID|message ID NUMBER [--offset BYTES] [--agent NAME] [--json]
-safeyolo [--root ROOT] traffic export ID FORMAT FILE [--agent NAME]
-safeyolo [--root ROOT] approvals list [--agent NAME] [--json]
-safeyolo [--root ROOT] approvals show|explain|approve|reject ID [--option ID] [--agent NAME] [--json]
-safeyolo [--root ROOT] approvals narrow-diagnostics ID --file SELECTION.json [--json]
-safeyolo [--root ROOT] approvals ask|context ID [--agent NAME] [--json]
-safeyolo [--root ROOT] approvals delegations [--json]\nsafeyolo [--root ROOT] approvals delegation check|preview|apply|revoke NAME --file PROPOSAL.json [--json]\nsafeyolo [--root ROOT] approvals review --agent NAME
-safeyolo [--root ROOT] approvals share ID --helper NAME [--agent NAME]
-safeyolo [--root ROOT] support grants [--json]
-safeyolo [--root ROOT] support verify GRANT TARGET --agent SUPPORT [--home HOME] [--json]
-safeyolo [--root ROOT] support notices --agent SUPPORT [--home HOME] [--since CURSOR] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] support result OPERATION_ID --agent SUPPORT [--home HOME] [--output] [--json]
-safeyolo [--root ROOT] support receipts [--agent TARGET] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] support receipt|recover OPERATION_ID [--initiator PRINCIPAL] [--output] [--json]
-safeyolo [--root ROOT] support preview|apply|revoke|report NAME --file PROPOSAL.json [--json]
-safeyolo [--root ROOT] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] logs list [--instance ID] [--runtime ID] [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] logs connection ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] logs request ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]
-safeyolo [--root ROOT] observations [--instance ID] [--runtime ID] [--json]
-safeyolo [--root ROOT] diagnose [--agent NAME] [--json]
-Diagnostics: diagnose reads saved/current policy and audit availability without test traffic.
-agent diagnostics NAME probes the selected runtime/control and reports its next_action.
-doctor probes host prerequisites and each configured policy pipeline; it does not prove coding-agent readiness.
-safeyolo helper show ID|diagnostic ID|prepare ID --reason TEXT [--socket PATH] [--token-file FILE]
-safeyolo helper list\nsafeyolo helper approve|reject|defer ID --delegation NAME --option ID\nsafeyolo helper context|respond ID [--reason TEXT] [--socket PATH] [--token-file FILE]
-
-inspect keeps selection only in this session; it never changes a script's target.
-Factory roles come from the existing selected snapshot; live state supplies readiness.
-Exports: raw, raw_request, raw_response, curl, httpie, har, zhar.
-Generated commands are saved or displayed as evidence, never executed.
-Sharing permits selected diagnostic/approval reads only. A named approval delegation separately permits bounded Helper decisions. Other Helper work prepares a human decision.
-Each approval shows its fixed permission and options. Inspect leaves it pending.
-Explain shows SafeYolo facts, the selected option's effect, non-grants and unknown scope. It records an audit event and leaves the approval unchanged.
-Ask sends a fixed context question to the requesting agent's existing Coord room. Context reads its untrusted reply separately. Neither changes approval authority. Delivery failure or the 120-second reply deadline leaves approve/reject usable. Repeating ask reads the same exchange while it is open; ask again after a timeout to send a new question.
-Persistent network approval is reusable for the selected agent and host/port. Persistent credential approval changes shared policy. The run option instead binds supported access to the current worker run.
-Gateway risk approval defaults to once; --option selects an offered lifetime. A missing-route challenge offers a finite run-bound exception only after explicit escalation. Service access can require an offered credential option.
-Reject records a refusal without adding a policy deny rule. Terminal decisions cannot grant again.
-Helper uses its Agent API token (default /app/agent_token) and the existing guest proxy route.
-If evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable.
-Observations reads current runtime aggregates. --instance and --runtime check a retained namespace; they do not retrieve historical or per-agent measurements. Reload preserves counters; restart changes the runtime. Reading observations does not enable payload capture or content storage.
-Logs connection/request accept --capture FILE to read existing current pcap:compat metadata. Matches require the selected audit namespace, connection and recorded agent attribution; request observations require the selected request ID. Lower-layer ancestry can be shared input, not exclusive request bytes. Results include audit lines, one-based packet numbers and PCAP packet-header byte offsets. --lines also bounds retained matching connection observations and runtime loss records separately. Missing/unsupported captures remain unavailable; malformed/truncated input and omissions can leave partial evidence. Loss is runtime-wide with unknown connection/request attribution. Synthetic headers are representation, not measured wire behaviour. No payload is returned or capture enabled. EOF does not prove complete evidence.
-With --capture, prompt-exposure source/model transports also show retained stream chunk counts, observed-byte sums, size ranges and monotonic intervals, grouped by connection/point/layer/direction. Chunk references preserve observation IDs, packet/byte offsets and audit lines. The same observation limit covers selected and correlated connections together. These are connection-wide retained measurements, not exclusive request bytes, anomaly scores or complete coverage. Layers must not be added as application bytes.
-Logs use the configured local audit file unless --file PATH is supplied. Repeat --file for explicitly selected offline inputs; no installed config or API is needed. Each file is validated to EOF and retains the last --lines selected-agent rows (default 100 per file), so total retention is at most input count times --lines. Selected-file pivots identify every input/physical line and duplicate copy, and refuse conflicting event copies or transport owners as join evidence. Input order is not chronological order. Selection and schema validation do not authenticate the producer. Use logs list to discover retained namespaces, agent context, and connection/request/indicator references; --instance and --runtime optionally narrow that listing. It is not live inventory. Unknown attribution and conflicting copies stay distinct from recorded resolved agent context. Pivots require instance and runtime; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Prompt exposure correlations explain exact source and source/model transport novelty support, including partial or unavailable evidence. These are connection-wide relationships, not proof of malicious intent or model receipt. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.";
+/// Each command family owns its syntax and relevant evidence limits.
+pub fn help(group: &str) -> &'static str {
+    match group {
+        "inspect" => {
+            "safeyolo [--instance-dir PATH] inspect [--factory NAME] [--agent NAME]\ninspect keeps selection only in this session; it never changes a script's target.\nFactory roles come from the existing selected snapshot; live state supplies readiness.\nSharing permits selected diagnostic/approval reads only. A named approval delegation separately permits bounded Helper decisions. Other Helper work prepares a human decision.\nIf evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable."
+        }
+        "traffic" => {
+            "safeyolo [--instance-dir PATH] traffic list [--agent NAME] [--filter EXPRESSION] [--json]\nsafeyolo [--instance-dir PATH] traffic show ID|body ID request|response|websocket ID|message ID NUMBER [--offset BYTES] [--agent NAME] [--json]\nsafeyolo [--instance-dir PATH] traffic export ID FORMAT FILE [--agent NAME]\nExports: raw, raw_request, raw_response, curl, httpie, har, zhar.\nGenerated commands are saved or displayed as evidence, never executed.\nIf evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable."
+        }
+        "approvals" => {
+            "safeyolo [--instance-dir PATH] approvals list [--agent NAME] [--json]\nsafeyolo [--instance-dir PATH] approvals show|explain|approve|reject ID [--option ID] [--agent NAME] [--json]\nsafeyolo [--instance-dir PATH] approvals narrow-diagnostics ID --file SELECTION.json [--json]\nsafeyolo [--instance-dir PATH] approvals ask|context ID [--agent NAME] [--json]\nsafeyolo [--instance-dir PATH] approvals delegations [--json]\nsafeyolo [--instance-dir PATH] approvals delegation check|preview|apply|revoke NAME --file PROPOSAL.json [--json]\nsafeyolo [--instance-dir PATH] approvals review --agent NAME\nsafeyolo [--instance-dir PATH] approvals share ID --helper NAME [--agent NAME]\nSharing permits selected diagnostic/approval reads only. A named approval delegation separately permits bounded Helper decisions. Other Helper work prepares a human decision.\nEach approval shows its fixed permission and options. Inspect leaves it pending.\nExplain shows SafeYolo facts, the selected option's effect, non-grants and unknown scope. It records an audit event and leaves the approval unchanged.\nAsk sends a fixed context question to the requesting agent's existing Coord room. Context reads its untrusted reply separately. Neither changes approval authority. Delivery failure or the 120-second reply deadline leaves approve/reject usable. Repeating ask reads the same exchange while it is open; ask again after a timeout to send a new question.\nPersistent network approval is reusable for the selected agent and host/port. Persistent credential approval changes shared policy. The run option instead binds supported access to the current worker run.\nGateway risk approval defaults to once; --option selects an offered lifetime. A missing-route challenge offers a finite run-bound exception only after explicit escalation. Service access can require an offered credential option.\nReject records a refusal without adding a policy deny rule. Terminal decisions cannot grant again.\nIf evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable."
+        }
+        "support" => {
+            "safeyolo [--instance-dir PATH] support grants [--json]\nsafeyolo [--instance-dir PATH] support verify GRANT TARGET --agent SUPPORT [--home HOME] [--json]\nsafeyolo [--instance-dir PATH] support notices --agent SUPPORT [--home HOME] [--since CURSOR] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] support result OPERATION_ID --agent SUPPORT [--home HOME] [--output] [--json]\nsafeyolo [--instance-dir PATH] support receipts [--agent TARGET] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] support receipt|recover OPERATION_ID [--initiator PRINCIPAL] [--output] [--json]\nsafeyolo [--instance-dir PATH] support preview|apply|revoke|report NAME --file PROPOSAL.json [--json]\nSharing permits selected diagnostic/approval reads only. A named approval delegation separately permits bounded Helper decisions. Other Helper work prepares a human decision.\nIf evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable."
+        }
+        "logs" => {
+            "safeyolo [--instance-dir PATH] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs list [--instance ID] [--runtime ID] [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs connection ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs request ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]\nLogs connection/request accept --capture FILE to read existing current pcap:compat metadata. Matches require the selected audit namespace, connection and recorded agent attribution; request observations require the selected request ID. Lower-layer ancestry can be shared input, not exclusive request bytes. Results include audit lines, one-based packet numbers and PCAP packet-header byte offsets. --lines also bounds retained matching connection observations and runtime loss records separately. Missing/unsupported captures remain unavailable; malformed/truncated input and omissions can leave partial evidence. Loss is runtime-wide with unknown connection/request attribution. Synthetic headers are representation, not measured wire behaviour. No payload is returned or capture enabled. EOF does not prove complete evidence.\nWith --capture, prompt-exposure source/model transports also show retained stream chunk counts, observed-byte sums, size ranges and monotonic intervals, grouped by connection/point/layer/direction. Chunk references preserve observation IDs, packet/byte offsets and audit lines. The same observation limit covers selected and correlated connections together. These are connection-wide retained measurements, not exclusive request bytes, anomaly scores or complete coverage. Layers must not be added as application bytes.\nLogs use the configured local audit file unless --file PATH is supplied. Repeat --file for explicitly selected offline inputs; no installed config or API is needed. Each file is validated to EOF and retains the last --lines selected-agent rows (default 100 per file), so total retention is at most input count times --lines. Selected-file pivots identify every input/physical line and duplicate copy, and refuse conflicting event copies or transport owners as join evidence. Input order is not chronological order. Selection and schema validation do not authenticate the producer. Use logs list to discover retained namespaces, agent context, and connection/request/indicator references; --instance and --runtime optionally narrow that listing. It is not live inventory. Unknown attribution and conflicting copies stay distinct from recorded resolved agent context. Pivots require instance and runtime; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Prompt exposure correlations explain exact source and source/model transport novelty support, including partial or unavailable evidence. These are connection-wide relationships, not proof of malicious intent or model receipt. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.\nIf evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable."
+        }
+        "observations" => {
+            "safeyolo [--instance-dir PATH] observations [--instance ID] [--runtime ID] [--json]\nObservations reads current runtime aggregates. --instance and --runtime check a retained namespace; they do not retrieve historical or per-agent measurements. Reload preserves counters; restart changes the runtime. Reading observations does not enable payload capture or content storage."
+        }
+        "diagnose" => {
+            "safeyolo [--instance-dir PATH] diagnose [--agent NAME] [--json]\nDiagnostics: diagnose reads saved/current policy and audit availability without test traffic.\nagent diagnostics NAME probes the selected runtime/control and reports its next_action.\ndoctor probes host prerequisites and each configured policy pipeline; it does not prove coding-agent readiness.\nIf evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable."
+        }
+        "helper" => {
+            "safeyolo helper show ID|diagnostic ID|prepare ID --reason TEXT [--socket PATH] [--token-file FILE]\nsafeyolo helper list\nsafeyolo helper approve|reject|defer ID --delegation NAME --option ID\nsafeyolo helper context|respond ID [--reason TEXT] [--socket PATH] [--token-file FILE]\nSharing permits selected diagnostic/approval reads only. A named approval delegation separately permits bounded Helper decisions. Other Helper work prepares a human decision.\nEach approval shows its fixed permission and options. Inspect leaves it pending.\nExplain shows SafeYolo facts, the selected option's effect, non-grants and unknown scope. It records an audit event and leaves the approval unchanged.\nAsk sends a fixed context question to the requesting agent's existing Coord room. Context reads its untrusted reply separately. Neither changes approval authority. Delivery failure or the 120-second reply deadline leaves approve/reject usable. Repeating ask reads the same exchange while it is open; ask again after a timeout to send a new question.\nPersistent network approval is reusable for the selected agent and host/port. Persistent credential approval changes shared policy. The run option instead binds supported access to the current worker run.\nGateway risk approval defaults to once; --option selects an offered lifetime. A missing-route challenge offers a finite run-bound exception only after explicit escalation. Service access can require an offered credential option.\nReject records a refusal without adding a policy deny rule. Terminal decisions cannot grant again.\nHelper uses its Agent API token (default /app/agent_token) and the existing guest proxy route.\nIf evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable."
+        }
+        _ => "Use COMMAND --help to choose an operator action.",
+    }
+}
 
 pub fn handles(args: &[String]) -> bool {
     args.first().is_some_and(|arg| {
@@ -102,6 +84,132 @@ fn safe(value: &str) -> String {
 }
 fn print_json(value: &Value) -> Result<(), Error> {
     println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
+fn show_operator_result(kind: &str, value: &Value) -> Result<(), Error> {
+    use crate::operator_output::{field, rows, text};
+    match kind {
+        "approvals" => {
+            if let Some(approvals) = value["approvals"].as_array() {
+                if approvals.is_empty() {
+                    println!("No pending approvals for this selection.");
+                } else {
+                    rows(
+                        approvals,
+                        &[
+                            ("AGENT", "agent"),
+                            ("DESTINATION", "target"),
+                            ("STATE", "status"),
+                            ("APPROVAL", "approval_id"),
+                        ],
+                    );
+                    println!("Review and decide directly: safeyolo watch");
+                }
+            } else {
+                field("Status", &value["status"]);
+                field("Effect", &value["effect"]);
+            }
+        }
+        "diagnose" => {
+            field("Instance", &value["root"]);
+            field("Saved policy", &value["local_policy"]);
+            println!(
+                "Active policy observation: {}",
+                if value["admin"]["available"] == true {
+                    text(&value["admin"]["status"])
+                } else {
+                    "unavailable".into()
+                }
+            );
+            field(
+                "Saved matches active",
+                &value["admin"]["saved_matches_active"],
+            );
+            field("Observation failure", &value["admin"]["error"]);
+            field("Next action", &value["admin"]["guidance"]);
+            field("Audit log", &value["audit_log"]);
+            if !value["last_recorded_launch"].is_null() {
+                println!(
+                    "Last recorded launch: {} (recorded state; current runtime not verified)",
+                    text(&value["last_recorded_launch"]["state"])
+                );
+            }
+        }
+        "logs" => {
+            field("Audit file", &value["file"]);
+            let show = |events: &[Value]| {
+                if events.is_empty() {
+                    println!("No retained events in this selection.");
+                }
+                for event in events {
+                    let event = event.get("record").unwrap_or(event);
+                    println!(
+                        "{}  {}  {}  {}",
+                        text(&event["ts"]),
+                        text(&event["event"]),
+                        text(&event["agent"]),
+                        text(&event["summary"])
+                    );
+                }
+            };
+            if let Some(events) = value["events"].as_array() {
+                show(events);
+            }
+            if let Some(inputs) = value["inputs"].as_array() {
+                for input in inputs {
+                    field("Input", &input["file"]);
+                    if let Some(events) = input["events"].as_array() {
+                        show(events);
+                    }
+                }
+                field("Limits", &value["limits"]);
+            }
+        }
+        "traffic" => {
+            if let Some(flows) = value["flows"].as_array() {
+                if flows.is_empty() {
+                    println!("No retained flows match this selection.");
+                } else {
+                    rows(
+                        flows,
+                        &[
+                            ("ID", "id"),
+                            ("AGENT", "agent"),
+                            ("METHOD", "method"),
+                            ("HOST", "host"),
+                            ("STATUS", "status_code"),
+                        ],
+                    );
+                }
+            } else {
+                for (label, key) in [
+                    ("Flow", "id"),
+                    ("Agent", "agent"),
+                    ("Method", "method"),
+                    ("Host", "host"),
+                    ("Path", "path"),
+                    ("Response", "status_code"),
+                    ("Body", "text"),
+                ] {
+                    field(label, &value[key]);
+                }
+            }
+            field("Evidence", &value["availability"]);
+            field("Limit", &value["limits"]);
+        }
+        _ => {
+            for (label, key) in [
+                ("Status", "status"),
+                ("Effect", "effect"),
+                ("Next action", "next_action"),
+                ("Error", "error"),
+            ] {
+                field(label, &value[key]);
+            }
+        }
+    }
+    println!("Select --json for complete evidence and identifiers.");
     Ok(())
 }
 
@@ -629,10 +737,6 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
     }
     show_request_history(view)?;
     show_decision_evidence(view);
-    if let Some(options) = view.get("options") {
-        println!("Offered options (identity, effects and lifetime):");
-        show_evidence_fields(options, 2);
-    }
 
     if view["action"]["kind"] == "diagnostic_disclosure" {
         println!("Local read-only diagnostic disclosure:");
@@ -1773,17 +1877,17 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
                 ..Options::default()
             };
             match command {
-                "state" => print_json(&state(root, name).await?),
+                "state" => crate::host_commands::print(&state(root, name).await?),
                 "diagnostics" => {
                     let current = crate::host_agents::list()?;
                     let agent = current.iter().find(|agent| agent.name == *name).ok_or("selected agent is no longer configured")?;
-                    print_json(&crate::host_commands::diagnostics(agent).await?)
+                    crate::host_commands::print(&crate::host_commands::diagnostics(agent).await?)
                 }
                 "doctor" => {
                     let code = Box::pin(crate::host_commands::run(host_platform::config_path(), &["doctor".into()])).await?;
                     if code == 0 { Ok(()) } else { Err("doctor reported a failed check; follow its findings".into()) }
                 }
-                "traffic" => print_json(
+                "traffic" => show_operator_result("traffic",
                     &flows(
                         root,
                         &Options {
@@ -1804,7 +1908,7 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
                     evidence.agent = Some(name.into());
                     print_json(&traffic(root, &evidence).await?)
                 }
-                "pending" => print_json(&pending(root, Some(name)).await?),
+                "pending" => show_operator_result("approvals", &pending(root, Some(name)).await?),
                 "approval" => show_approval(&approval(root, rest, Some(name)).await?),
                 "explain" => {
                     let parts: Vec<_> = rest.split_whitespace().map(str::to_owned).collect();
@@ -1829,7 +1933,7 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
                     let (id, helper) = rest.split_once(' ').ok_or("share requires ID HELPER")?;
                     print_json(&share(root, id, helper.trim(), Some(name)).await?)
                 }
-                "logs" => print_json(&logs(root, &local)?),
+                "logs" => show_operator_result("logs", &logs(root, &local)?),
                 "receipts" => support::run(root,&Options { positional:vec!["receipts".into()],..local }).await,
                 "receipt" | "recover" => support::run(root,&Options { positional:vec![command.into(),rest.into()],..local }).await,
                 "verify" | "notices" => {
@@ -1840,7 +1944,7 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
                     parts.insert(0,command.into());
                     support::run(root,&Options {positional:parts,home,..local}).await
                 }
-                "diagnose" => print_json(&diagnose(root, &local).await?),
+                "diagnose" => show_operator_result("diagnose", &diagnose(root, &local).await?),
                 "attach" => attach(root, name).await,
                 _ => Err("unknown inspect action".into()),
             }
@@ -1874,13 +1978,14 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         return configure::run(root, &args[1..]).await;
     }
     if args.iter().any(|arg| arg == "--help") {
-        println!("{HELP}");
+        println!("{}", help("inspect"));
         return Ok(());
     }
     if args[0] == "observations" {
         return observations::run(&args[1..]).await;
     }
-    let options = Options::parse(&args[1..])?;
+    let mut options = Options::parse(&args[1..])?;
+    options.json |= crate::operator_output::json_requested();
     if args[0] == "support" && support::handles(&options) {
         return support::run(root, &options).await;
     }
@@ -2150,7 +2255,9 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         Ok(())
     } else if args[0] == "approvals" && !options.json && value.get("action").is_some() {
         show_approval(&value)
-    } else {
+    } else if options.json {
         print_json(&value)
+    } else {
+        show_operator_result(&args[0], &value)
     }
 }

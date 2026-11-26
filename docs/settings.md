@@ -113,12 +113,12 @@ Build with `scripts/build_host_packages.sh --output DIRECTORY
 receipts. The [build reference](installation.md#build-a-bundle) states
 these inputs. For this disposable witness, install its command entry below
 `ROOT/commands` to preserve the host's ordinary command. Select the installed
-executable with `ROOT/bin/safeyolo --root ROOT` for subsequent witness commands.
+executable with `ROOT/bin/safeyolo --instance-dir PATH` for subsequent witness commands.
 Normal operator installation and command discovery remain in the linked
 installation guide. Install through the existing command:
 
 ```sh
-./scripts/install_native.sh --root "$ROOT" --command-dir "$ROOT/commands" --bundle "$BUNDLE" --platform-assets "$PLATFORM_ASSETS"
+./scripts/install_native.sh --instance-dir "$ROOT" --command-dir "$ROOT/commands" --bundle "$BUNDLE" --platform-assets "$PLATFORM_ASSETS"
 ```
 
 Record the bundle's `package-info`, executable identities and observation
@@ -130,7 +130,7 @@ built from the current source or F.
 | Required relationship | Existing invocation and remaining observation |
 | --- | --- |
 | R1 package/install failures and recovery | On each supported host, use `tests/proxy_contracts/native-package-journey.sh BUNDLE STATE FREE_ADMIN_PORT` with a disposable writable bundle, fresh disk-backed state parent and permitted free port. The witness creates two roots, checks missing-proxy refusal/restoration and occupied-endpoint refusal without harming the other root, then status/identity/doctor and owned stop. It does not boot a guest. The maintained installed lanes supply the guest observations. |
-| R3 continuous guest/operator path | Reuse applicable child results and the full lane's `access`, `lifecycle` and `continuity` observations. `installed_access.py` binds the retained HTTP export to `raw_request`. The accepted Ubuntu G2/G4 driver is `tests/nested-linux/operator_coord_acceptance.py --root ROOT --agent AGENT --peer PEER --commit FULL_SHA`, using two already booted guests and provisioned Codex. Reuse its recorded native Coord/Agent API exchange when those inputs remain applicable; `installed_guest_commands.py` supplies G1 supervision/recovery, not that Coord result. Native attach, independent shell, desktop presentation/missing-target reporting and same-instance stop/restart must be observed where a child or lane has not already supplied them. Use the commands in [native host guidance](installation.md#configure-and-use-an-agent) and [operator guidance](operator-guide.md), with the selected installed executable/root. A host-only socket fixture does not supply guest effects. |
+| R3 continuous guest/operator path | Reuse applicable child results and the full lane's `access`, `lifecycle` and `continuity` observations. `installed_access.py` binds the retained HTTP export to `raw_request`. The accepted Ubuntu G2/G4 driver is `tests/nested-linux/operator_coord_acceptance.py --instance-dir PATH --agent AGENT --peer PEER --commit FULL_SHA`, using two already booted guests and provisioned Codex. Reuse its recorded native Coord/Agent API exchange when those inputs remain applicable; `installed_guest_commands.py` supplies G1 supervision/recovery, not that Coord result. Native attach, independent shell, desktop presentation/missing-target reporting and same-instance stop/restart must be observed where a child or lane has not already supplied them. Use the commands in [native host guidance](installation.md#configure-and-use-an-agent) and [operator guidance](operator-guide.md), with the selected installed executable/root. A host-only socket fixture does not supply guest effects. |
 | R4 Demo, Lab and Factory | Use installed `safeyolo demo`, `safeyolo lab` and the [Factory check/approve/prepare/login/run/restart commands](factories.md#fresh-setup-check-approve-and-run). [W1 at `b5451c2d` plus `4b40c521`](https://github.com/craigbalding/safeyolo/issues/822#issuecomment-6083223408), [W3 at `35df27b1`](https://github.com/craigbalding/safeyolo/issues/820#issuecomment-6034124246) and [W4/W5 at `73ba3231`](https://github.com/craigbalding/safeyolo/issues/820#issuecomment-6036872352) supply accepted installed Ubuntu results at those revisions and limits. Compare their native package, embedded Codex launcher, skill tree, staging and protocol inputs with F; repeat only an affected installed relationship. Deterministic fixtures count only under R4's reuse rule and are never a new live-model pass. On macOS, check registration of all three entries and compare [G7's installed `594630519` staging/guest-start result](https://github.com/craigbalding/safeyolo/issues/818#issuecomment-6090918076) with F before reuse. |
 | R4 assistance and external resolver | The existing [installed real-Helper invocation](../tests/blackbox/README.md#installed-shared-approval-witness) binds U3's human-decided action. [U3/U7/U8 and cross-client U6 are independently supported](https://github.com/craigbalding/safeyolo/issues/821#issuecomment-6073857108) at native backend `a8e3648e`, executed driver `a0d0d72c` and Commander `cb587fcc`; compare their relevant package/launch/staging/client inputs with F before reuse. The [running-Helper model-unavailable relationship is independently accepted](https://github.com/craigbalding/safeyolo/issues/821#issuecomment-6074970483) at that native backend with driver `ac53f3df`; compare its actual launch, policy and model inputs with F before reuse. C3's actual host `op`/authentication/synthetic-item result remains missing under #819. `tests/proxy_contracts/test_native_onepassword_cli.py::test_real_onepassword_resolves_only_after_host_approval` supplies the existing bounded provider witness; set `SAFEYOLO_NATIVE_BUNDLE` to the selected verified bundle so the fixture installs that package instead of building from default debug artifacts. Retain its declared host authentication setup, process-boundary controls and secret-free observations. |
 | R5 process/dependency coverage | During installed R1/R3/R4, observe the actual launched descendants and correlate shebang/interpreter/inline shell/embedding relationships with this map and final package inputs. Reuse the [bounded journey and detector procedure](../tests/blackbox/README.md#journey-with-python-unavailable) where applicable. PID-1 boot/login/recovery and generated `/run` inputs were outside the accepted selected guest trace; static source evidence is not a dynamic observation. On the actual macOS launch path, record the selected CLI, signed VM/terminal helpers, guest assets, Commander/SSH transport and `otool` library closure plus the execution scope actually observed. No Mac or final-F coverage follows from the Ubuntu result. |
@@ -182,15 +182,15 @@ keep the two explicit roots unchanged. The four example ports must be free and p
 policy. Start Coord before starting each proxy:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/sy-a" coord start --client-port 14222 --monitor-port 18222
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/sy-b" coord start --client-port 24222 --monitor-port 28222
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/sy-a" coord start --client-port 14222 --monitor-port 18222
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/sy-b" coord start --client-port 24222 --monitor-port 28222
 ```
 
 Each command returns its owned process identity and observed client/monitor
 ports. Room commands, Agent API clients, status and stop use that
 instance's endpoints. A compatible live server is reused. A conflicting
 explicit port is refused without changing or stopping the live server.
-Use `safeyolo --root ROOT coord stop` before changing its listener ports.
+Use `safeyolo --instance-dir PATH coord stop` before changing its listener ports.
 Repeat explicit ports on each new start; these options do not change
 `config.toml` defaults. `coord status` reports the selected instance's current
 process and ports. `--binary PATH` retains its reviewed NATS binary pin.

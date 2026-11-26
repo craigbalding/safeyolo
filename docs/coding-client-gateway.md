@@ -156,7 +156,16 @@ approval through the host workflow below. Claude's
 [server-managed settings documentation](https://code.claude.com/docs/en/server-managed-settings#platform-availability)
 describes which authentication configurations fetch policy.
 
-## Approve the first request
+## First-request permissions
+
+An explicitly imported coding subscription, selected through an authorized
+service binding, is recognized for that binding's provider request. It does
+not need a second generic unknown-credential approval. This applies to the
+selected host-held subscription, including its refreshed access token; it
+does not authorize other client-supplied credentials or destinations.
+Explicit credential denials, prompts and budgets still apply, as do network
+and risky-route controls. Ordinary service credentials retain their existing
+credential policy.
 
 The first client request can stop for an existing network, credential or risky-route
 approval. Service authorization does not grant those approvals. Scoped service-token

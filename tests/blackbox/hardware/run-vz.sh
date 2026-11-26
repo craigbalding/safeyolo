@@ -63,7 +63,7 @@ else
     exit 64
 fi
 if [[ $trigger != collect ]]; then
-    attempt=$("$python" "$publisher" begin --root "$root" --lane vz --trigger "$trigger")
+    attempt=$("$python" "$publisher" begin --instance-dir "$root" --lane vz --trigger "$trigger")
 fi
 printf 'Attempt: %s\n' "$attempt"
 test "$(dirname "$attempt")" = "$(cd -- "$root" && pwd -P)"

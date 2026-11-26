@@ -73,7 +73,7 @@ snapshot request ID. The following read uses the authenticated Admin API and
 does not apply the candidate:
 
 ```sh
-safeyolo --root /path/to/instance policy assess SNAPSHOT_REQUEST_ID candidate.toml
+safeyolo --instance-dir /path/to/instance policy assess SNAPSHOT_REQUEST_ID candidate.toml
 ```
 
 The readable view leads with trusted consequences and affected authority, then

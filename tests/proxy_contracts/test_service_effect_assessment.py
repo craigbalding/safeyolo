@@ -128,7 +128,7 @@ def test_host_package_guidance_is_shared_by_challenge_private_and_operator_revie
         operator = _admin(fixture, "GET", "/admin/approvals/" + value["challenge_id"])
         assert operator["assessment"] == assessed
         for action in ("show", "explain"):
-            result = subprocess.run([str(binary), "--root", str(fixture.directory), "approvals", action, value["challenge_id"]],
+            result = subprocess.run([str(binary), "--instance-dir", str(fixture.directory), "approvals", action, value["challenge_id"]],
                                     capture_output=True, text=True, timeout=15)
             assert result.returncode == 0, result.stderr
             assert "service_start" in result.stdout and "service-status-before-control" in result.stdout
@@ -177,7 +177,7 @@ def test_normal_approval_interfaces_retain_canonical_effects_guidance_and_outcom
         # The same nonsecret canonical input is consumed by the native Mac view.
         (tmp_path / "canonical-approval.json").write_text(json.dumps(record))
         binary = native_inputs()[0] / "safeyolo"
-        command = [str(binary), "--root", str(fixture.directory)]
+        command = [str(binary), "--instance-dir", str(fixture.directory)]
         for action in ("show", "explain"):
             result = subprocess.run([*command, "approvals", action, identifier, "--agent", "alice"],
                                     capture_output=True, text=True, timeout=15)
