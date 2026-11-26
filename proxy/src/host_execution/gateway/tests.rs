@@ -422,6 +422,95 @@ fn task_plan(f: &Fixture) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_host_binding_builds_a_policy_without_precreated_tables() {
+    let f = Fixture::new("").await;
+    let active = SignedCatalogue::sign(
+        CatalogueRevision {
+            publisher: "publisher".into(),
+            announcement_revision: 1,
+            package: f.binding.target.package.clone(),
+            observed_at: now(),
+            expires_at: now() + 300,
+            withdrawn: false,
+            previous: None,
+        },
+        &f.key,
+    );
+    let catalogue = CatalogueAdoption {
+        policy: CataloguePolicy {
+            publisher: "publisher".into(),
+            public_key: STANDARD.encode(f.key.public_key().as_ref()),
+            agent_code_keys: BTreeMap::new(),
+            package_name: f.binding.target.package.name.clone(),
+            operations: BTreeMap::new(),
+            families: Vec::new(),
+            on_withdraw: Withdrawal::Retain,
+        },
+        active: active.clone(),
+        previous: None,
+        observed: active,
+        pin: None,
+        observed_file: None,
+    };
+    // The installed initializer has neither host tables nor permissions.
+    // An explicit empty permission array and an existing adoption are also
+    // valid sources; setup must preserve their data and duplicate guard.
+    for source in [
+        include_str!("../../../config/native/policy.toml"),
+        "permissions = []\n",
+        f.source.as_str(),
+    ] {
+        let before = crate::policy::parse_toml_document(source).unwrap();
+        let candidate = crate::host_execution::setup::host_setup_policy(
+            source, "new", &f.binding, &catalogue, "alice",
+        )
+        .unwrap();
+        let after = crate::policy::parse_toml_document(&candidate).unwrap();
+        assert_eq!(
+            after["host_bindings"]["new"],
+            json!(serde_json::to_string(&f.binding).unwrap())
+        );
+        assert_eq!(
+            after["host_catalogues"][&catalogue.policy.package_name],
+            json!(serde_json::to_string(&catalogue).unwrap())
+        );
+        let expected = before["permissions"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            &after["permissions"].as_array().unwrap()[..expected.len()],
+            expected.as_slice()
+        );
+        assert_eq!(
+            after["permissions"].as_array().unwrap().len(),
+            expected.len() + 1
+        );
+        assert_eq!(
+            after["permissions"].as_array().unwrap().last().unwrap(),
+            &json!({"action":"gateway:request","resource":"local-host:/v1/host-execution/*",
+                "effect":"allow","condition":{"agent":"alice"}})
+        );
+        if before["host_bindings"].get("local").is_some() {
+            assert_eq!(
+                after["host_bindings"]["local"],
+                before["host_bindings"]["local"]
+            );
+        }
+        assert!(
+            crate::host_execution::setup::host_setup_policy(
+                &candidate, "new", &f.binding, &catalogue, "alice",
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("selected host binding already exists")
+        );
+    }
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    f.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn first_trust_preparation_retains_one_private_key_and_original_public_request() {
     let f = Fixture::new("").await;
     let mut private = f
