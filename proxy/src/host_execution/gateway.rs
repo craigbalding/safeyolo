@@ -868,10 +868,8 @@ pub(crate) fn assess(policy: &Policy) -> Result<Value, Error> {
                     "model_inputs":definition.inputs,"max_attempts":max_attempts,"disclose_rationale":disclose_rationale}))
             })
         }).collect::<Vec<_>>();
-        let model=if binding.target.package.semantics.is_some() {
-            semantics::assess_target(&binding.target,&binding.issuer_id,&grant.principal,None,&[],now())
-                .unwrap_or_else(|error|json!({"status":"unavailable","reason":error.to_string()}))
-        } else {json!({"status":"uncharacterised","reason":"No reviewed host effect model. Enforceable grant bounds are shown separately."})};
+        let model=semantics::assess_target(&binding.target,&binding.issuer_id,&grant.principal,None,&[],now())
+            .unwrap_or_else(|error|json!({"status":"unavailable","reason":error.to_string()}));
         Ok(json!({"binding":name,"target_id":binding.target.target_id,"issuer_id":binding.issuer_id,
             "grant_id":binding.grant_id,"principal":grant.principal,"full_grant":grant,"target_ceiling":binding.target.ceiling,
             "target_families":binding.target.families,"binding_revision":revision(&binding),"task_revision":binding.task_revision,
