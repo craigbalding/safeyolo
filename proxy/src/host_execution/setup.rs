@@ -323,10 +323,26 @@ pub(super) fn host_setup_policy(
     let mut condition = toml_edit::InlineTable::new();
     condition.insert("agent", agent_name.into());
     permission["condition"] = toml_edit::value(condition);
-    if document.get("permissions").is_none() {
-        document["permissions"] = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
-    }
-    let permissions = &mut document["permissions"];
+    let permissions = if document.get("hosts").is_some() {
+        // Host-form policies compile IAM rules here, rather than from the
+        // top-level permissions field. Keep the permission scoped to this agent.
+        let hosts = document["hosts"]
+            .as_table_like_mut()
+            .ok_or("policy hosts are not a table")?;
+        let host = hosts
+            .entry("*")
+            .or_insert(toml_edit::value(toml_edit::InlineTable::new()))
+            .as_table_like_mut()
+            .ok_or("wildcard host policy is not a table")?;
+        host.entry("rules")
+            .or_insert(toml_edit::value(toml_edit::Array::new()))
+    } else {
+        if document.get("permissions").is_none() {
+            document["permissions"] =
+                toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
+        }
+        &mut document["permissions"]
+    };
     if let Some(tables) = permissions.as_array_of_tables_mut() {
         tables.push(permission);
     } else if let Some(values) = permissions.as_array_mut() {
@@ -334,7 +350,7 @@ pub(super) fn host_setup_policy(
             permission.into_inline_table(),
         ));
     } else {
-        return Err("policy permissions are not an array".into());
+        return Err("host gateway permissions are not an array".into());
     }
     Ok(crate::policy::restore_large_toml_integers(
         &document.to_string(),
