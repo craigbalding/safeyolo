@@ -71,8 +71,8 @@ agent_id = "ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     )
 }
 
-fn refreshed_credential_policy(origin_port: u16, credential_type: &str) -> String {
-    let mut source = initial_policy(origin_port, true)
+fn detected_credential_policy(origin_port: u16) -> String {
+    initial_policy(origin_port, true)
         .replace(
             "detection_level = \"none\"",
             "detection_level = \"standard\"",
@@ -84,7 +84,15 @@ fn refreshed_credential_policy(origin_port: u16, credential_type: &str) -> Strin
         .replace(
             "use_default_credential_rules = false",
             "use_default_credential_rules = true",
-        );
+        )
+        .replace(
+            "service = \"simple\"",
+            "service = \"simple\"\nunknown_creds = \"prompt\"",
+        )
+}
+
+fn refreshed_credential_policy(origin_port: u16, credential_type: &str) -> String {
+    let mut source = detected_credential_policy(origin_port);
     source.push_str(&format!(
         r#"
 [[hosts."127.0.0.1".rules]]
@@ -3405,9 +3413,9 @@ async fn native_subscription_json_renewal_and_account_headers_reach_only_the_ori
             stream.write_all(payload).await.unwrap();
             request
         });
-        let policy = initial_policy(origin_port, true)
+        let policy = detected_credential_policy(origin_port)
             + "\n[agents.alice.services.simple]\ncapability='reader'\ntoken='simple-secret'\n";
-        std::fs::write(root.join("policy.toml"), policy).unwrap();
+        std::fs::write(root.join("policy.toml"), &policy).unwrap();
         let vault = Vault::unlock(root.join("data/credentials.enc"), &Secret::new(PASS)).unwrap();
         let mut record = Credential::new(
             "simple-secret",
@@ -3424,7 +3432,7 @@ async fn native_subscription_json_renewal_and_account_headers_reach_only_the_ori
         vault.store(record.clone()).unwrap();
         let mut configuration = config(root);
         configuration.native_product = true;
-        let proxy = Proxy::start(configuration).await.unwrap();
+        let mut proxy = Proxy::start(configuration).await.unwrap();
         let socket = root.join("alice.sock");
         let view = wait_for_alice(&socket).await;
         let token = view["authorized"]["simple"]["token"].as_str().unwrap();
@@ -3494,6 +3502,30 @@ async fn native_subscription_json_renewal_and_account_headers_reach_only_the_ori
             replacement.refresh_token.unwrap().expose_secret(),
             "synthetic-native-rotated"
         );
+        // Recognition belongs only to the gateway's selected replacement.
+        // An extra client-supplied credential still needs its own permission.
+        let unrelated = request.replace(
+            "\r\n\r\n",
+            "\r\nAuthorization: Bearer unselected-client-credential\r\n\r\n",
+        );
+        let response = raw_http(&socket, unrelated.as_bytes()).await;
+        status(&response, "428");
+        assert_eq!(seen.lock().unwrap().len(), 3);
+        // Explicit operator credential rules remain authoritative, including
+        // a deliberate prompt. No vault or shared permission is changed.
+        for (effect, expected) in [("deny", "403"), ("prompt", "428")] {
+            std::fs::write(
+                root.join("policy.toml"),
+                format!("{policy}\n[[hosts.\"127.0.0.1\".rules]]\naction='credential:use'\nresource='127.0.0.1/*'\neffect='{effect}'\ncondition={{credential='unknown:*'}}\n"),
+            ).unwrap();
+            assert!(proxy.reload_policy_if_changed().await.unwrap());
+            let view = wait_for_alice(&socket).await;
+            let token = view["authorized"]["simple"]["token"].as_str().unwrap();
+            let response = send_agent(&socket, origin_port, token, "127.0.0.1").await;
+            status(&response, expected);
+            assert!(String::from_utf8_lossy(&response).contains("credential-guard"));
+            assert_eq!(seen.lock().unwrap().len(), 3);
+        }
         proxy.shutdown().await;
         origin_task.abort();
     }

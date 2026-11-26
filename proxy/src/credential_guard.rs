@@ -652,7 +652,21 @@ impl CredentialGuard {
         options: Options,
         now_ms: f64,
     ) -> Result<Outcome> {
-        self.enforce_inner(pdp, request, options, now_ms, None)
+        self.enforce_inner(pdp, request, options, now_ms, None, false)
+    }
+
+    /// Only the gateway's selected, materialized credential header enters here,
+    /// after service, caller, route and vault authorization. Reuse recognized
+    /// credential policy: skip the unknown-credential default while preserving
+    /// explicit credential rules, budgets, network checks and guard evidence.
+    pub(crate) fn enforce_gateway_header(
+        &self,
+        pdp: Pdp<'_>,
+        request: Request<'_>,
+        options: Options,
+        now_ms: f64,
+    ) -> Result<Outcome> {
+        self.enforce_inner(pdp, request, options, now_ms, None, true)
     }
 
     fn enforce_inner(
@@ -662,6 +676,7 @@ impl CredentialGuard {
         options: Options,
         now_ms: f64,
         refresh_credential: Option<(&str, bool)>,
+        gateway_credential: bool,
     ) -> Result<Outcome> {
         let mut output = Outcome {
             kind: OutcomeKind::Bypassed,
@@ -786,7 +801,7 @@ impl CredentialGuard {
                 &request,
                 &detection.finding,
                 now_ms,
-                observed_ghcr_pull || observed_codex,
+                observed_ghcr_pull || observed_codex || gateway_credential,
             );
             let fingerprint = format!("hmac:{}", detection.finding.fingerprint);
             let expected = snapshot
@@ -802,6 +817,9 @@ impl CredentialGuard {
             }
             if observed_codex {
                 details["codex_authorized"] = json!(true);
+            }
+            if gateway_credential {
+                details["gateway_authorized"] = json!(true);
             }
             // Bind new operator prompts to the policy's current identity. The
             // first-launch picker must not attribute an older agent's prompt

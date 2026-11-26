@@ -4334,18 +4334,26 @@ where
             )
         });
         let guard = guard.clone().with_codex_vault(codex_vault.clone());
-        let outcome = match guard.enforce_ordered(
+        let injected = crate::credential_text::Headers::from_ordered(std::iter::once((
+            field_name,
+            field_value,
+        )))
+        .map_err(|_| crate::credential_guard::Error::InvalidHeaderEncoding)?;
+        let headers = injected.as_guard_headers();
+        let outcome = match guard.enforce_gateway_header(
             crate::credential_guard::Pdp::Ready(policy),
-            identity.request_identity(),
-            &destination.policy_host,
-            destination.port,
-            request.method().as_str(),
-            &destination.path,
-            &destination.scheme,
-            Some(request_id),
-            &identity.connection_id,
-            false,
-            std::iter::once((field_name, field_value)),
+            crate::credential_guard::Request {
+                identity: identity.request_identity(),
+                host: &destination.policy_host,
+                port: destination.port,
+                method: request.method().as_str(),
+                path: &destination.path,
+                scheme: &destination.scheme,
+                request_id: Some(request_id),
+                connection_id: &identity.connection_id,
+                prior_response: false,
+                headers: &headers,
+            },
             crate::credential_guard::Options {
                 block: runtime.operator_modes.credential_block(),
             },
