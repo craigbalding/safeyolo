@@ -1343,7 +1343,8 @@ def test_installed_config_help_and_named_diagnostics(tmp_path):
             assert result.returncode == 0 and discovery in result.stdout
             assert "addon" not in result.stdout.lower()
         checked = instance.cli("config", "check", str(instance.root / "config.toml"))
-        assert checked.returncode == 0 and "Configuration is valid" in checked.stdout
+        assert checked.returncode == 0, checked.stderr
+        assert json.loads(checked.stdout) == {"valid": True, "config": str(instance.root / "config.toml")}
         candidate = tmp_path / "invalid-config.toml"
         candidate.write_text("[addons.network_guard]\nenabled=false\n")
         rejected = instance.cli("config", "check", str(candidate))
