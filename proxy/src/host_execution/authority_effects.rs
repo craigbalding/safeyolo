@@ -11,6 +11,8 @@ pub(super) fn assess(package: &Package, permissions: &[Permission]) -> Result<Va
         ("connect", "Send data through the permitted outbound network direction.", true),
         ("listen", "Receive requests and send responses through the permitted listener direction or inherited listener.", true),
         ("ipc", "Use the represented local IPC or delegated service channel. Its downstream effects need separate understanding.", true),
+        ("broader_network_ipc", "Potential network/IPC channels under the selected backend's broader mode. Windows uses the workload account's permissions even with empty selectors. Linux/macOS native direction and channel restrictions still apply; this flag alone does not establish a connection, listener or IPC channel.", true),
+        ("broader_delegated_services", "Potential delegated service channels under the selected backend's broader mode, including account-accessible Windows services not listed in the operation. Actual channels and downstream authority require native qualification.", true),
         ("children", "Create child processes within the selected process and lifetime bounds, including explicit broader exceptions.", false),
     ].into_iter().map(|(name, description, persists)| (name, json!({
         "description":description,"persists_after_access":persists,"evidence":["native"]
@@ -26,6 +28,8 @@ pub(super) fn assess(package: &Package, permissions: &[Permission]) -> Result<Va
             ("connect", !e.network.destinations.is_empty()),
             ("listen", !e.network.listeners.is_empty() || e.network.listener_handoff.is_some()),
             ("ipc", !e.network.ipc.is_empty() || !e.delegated_services.is_empty()),
+            ("broader_network_ipc", e.broader.contains(&BroaderBound::NetworkIpc)),
+            ("broader_delegated_services", e.broader.contains(&BroaderBound::DelegatedServices)),
             ("children", e.resources.processes > 1),
         ].into_iter().filter(|(_, present)| *present).map(|(effect, _)| {
             represented.insert(effect);
@@ -55,6 +59,8 @@ pub(super) fn assess(package: &Package, permissions: &[Permission]) -> Result<Va
     let rules = [
         ("file_disclosure_outbound", vec!["read_files", "connect"], "Selected code may send readable task data through permitted outbound connections."),
         ("file_disclosure_listener", vec!["read_files", "listen"], "Selected code may expose readable task data or functions to clients of a permitted listener."),
+        ("file_disclosure_broader_network_ipc", vec!["read_files", "broader_network_ipc"], "Selected code may disclose readable data through broader network/IPC channels if the selected native backend permits them. Empty selectors do not establish disconnected Windows execution. Linux/macOS direction and channel restrictions remain effective; consult native qualification before inferring a usable channel."),
+        ("file_disclosure_broader_delegated_services", vec!["read_files", "broader_delegated_services"], "Selected code may disclose readable data to, or act through, account-accessible delegated services if the selected native backend permits them. Empty service selectors do not bound Windows account permissions. Downstream service effects and persistence remain unresolved."),
         ("changed_task_execution", vec!["write_files", "execute"], "Written task files may change current or later code, configuration and results under this account's authority."),
     ].into_iter().filter(|(_, effects, _)| effects.iter().all(|effect| represented.contains(effect)))
     .map(|(name, effects, consequence)| (name, json!({

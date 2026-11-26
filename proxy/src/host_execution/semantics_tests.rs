@@ -177,6 +177,82 @@ fn native_task_authority_is_assessed_without_program_annotations_or_intent() {
 }
 
 #[test]
+fn native_broader_channels_are_assessed_with_empty_selectors() {
+    let mut package = package();
+    package.semantics = None;
+    // The maintained Windows operations use account permissions rather than
+    // selector confinement. Challenge every operation with that same shape.
+    for (id, operation) in &package.operations {
+        let e = &operation.execution;
+        assert!(e.network.destinations.is_empty());
+        assert!(e.network.listeners.is_empty());
+        assert!(e.network.ipc.is_empty());
+        assert!(e.delegated_services.is_empty());
+        let result = assess(
+            &package,
+            &[permission(&package, "current", "windows-host", id)],
+        );
+        let model = &result["native_authority"]["model"];
+        let effects = model["direct"][0]["possible_effects"].as_array().unwrap();
+        for effect in [
+            "read_files",
+            "broader_network_ipc",
+            "broader_delegated_services",
+        ] {
+            assert!(effects.contains(&json!(effect)), "{id}: {model}");
+        }
+        for effect in ["connect", "listen", "ipc"] {
+            assert!(!effects.contains(&json!(effect)), "{id}: {model}");
+        }
+        for rule in [
+            "file_disclosure_broader_network_ipc",
+            "file_disclosure_broader_delegated_services",
+        ] {
+            assert_eq!(model["rules"][rule]["status"], "match", "{id}: {model}");
+        }
+    }
+    // Broader flags do not invent specific directions on a backend that
+    // qualifies them more narrowly. With no such flags there is no potential
+    // broader-channel disclosure at all.
+    let mut bounded = task_package();
+    let operation = bounded.operations.get_mut("task:inspect").unwrap();
+    operation.execution.network = Network {
+        destinations: vec![],
+        listeners: vec![],
+        listener_handoff: None,
+        ipc: vec![],
+    };
+    operation.execution.broader = [BroaderBound::NetworkIpc].into();
+    let result = assess(
+        &bounded,
+        &[permission(&bounded, "current", "unix-host", "task:inspect")],
+    );
+    let effects = result["native_authority"]["model"]["direct"][0]["possible_effects"]
+        .as_array()
+        .unwrap();
+    assert!(effects.contains(&json!("broader_network_ipc")));
+    assert!(!effects.contains(&json!("connect")));
+    assert!(!effects.contains(&json!("listen")));
+    bounded
+        .operations
+        .get_mut("task:inspect")
+        .unwrap()
+        .execution
+        .broader
+        .clear();
+    let result = assess(
+        &bounded,
+        &[permission(&bounded, "current", "unix-host", "task:inspect")],
+    );
+    for rule in [
+        "file_disclosure_broader_network_ipc",
+        "file_disclosure_broader_delegated_services",
+    ] {
+        assert!(result["native_authority"]["model"]["rules"][rule].is_null());
+    }
+}
+
+#[test]
 fn native_task_composition_preserves_target_account_and_disconnected_bounds() {
     let mut package = task_package();
     let mut reader = package.operations["task:inspect"].clone();
