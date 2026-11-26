@@ -60,7 +60,9 @@ See [SECURITY.md](../SECURITY.md) for the full security model.
 │   ├─ Agent API  virtual host _safeyolo.proxy.internal (via proxy)    │
 │   ├─ policy, approvals, grants, credential vault, service gateway   │
 │   ├─ evidence: audit JSONL, FlowStore (SQLite), observations/PCAP   │
-│   └─ Coord runtime: owned nats-server (JetStream) + SQLite kernel    │
+│   └─ Coord control state: SQLite kernel                              │
+│                                                                      │
+│  nats-server (JetStream): separate process managed by the host CLI    │
 │                                                                      │
 │  Sandboxes                                                           │
 │   ├─ Linux: rootless gVisor (runsc) in a user namespace              │
@@ -205,9 +207,11 @@ HTTP/1.1 and HTTP/2 (`http`, `upstream_h2`), and handles CONNECT tunnels
 opaque forwarding happens once, before parsing; a timeout or parse failure does
 not grant passthrough.
 
-The main request driver is `http::forward`. In broad order it applies:
+The main request driver is `http::forward`. Its controls have the following
+responsibilities. This table is not an execution order: ordinary HTTP and
+CONNECT use different check sites, and some controls run at more than one site.
 
-| Stage | Module(s) | Effect |
+| Control | Module(s) | Effect |
 |---|---|---|
 | Admin shield | `admin_shield` | Agents cannot reach the Admin API |
 | Agent API virtual host | `agent_api`, `http::local_agent_api` | `_safeyolo.proxy.internal` is answered locally, before network checks; never resolved upstream |
@@ -222,14 +226,19 @@ The main request driver is `http::forward`. In broad order it applies:
 | Test context | `test_context` | Requires/records `X-SafeYolo-Test-Context` for designated target hosts |
 | Response scan | `http::scan_response_with_lifetime` | Response-side inspection and decisions |
 
-Streamed bodies and TLS passthrough get narrower inspection and capture. The
-parity record for the Python-to-Rust port is [proxy-parity.md](proxy-parity.md).
+Streamed bodies and TLS passthrough get narrower inspection and capture. See
+the [capability inventory](proxy-parity.md) for current protocol and inspection
+limits.
 
 ## Policy and decisions
 
-- **Source of truth**: `policy.toml`. `safeyolo policy check`, `safeyolo policy apply` and `safeyolo policy show`
-  validates and activates candidates. The running proxy watches policy and the
-  service catalogue and reloads on change; `config.toml` reloads on SIGHUP.
+- **Source of truth**: `policy.toml`. `safeyolo policy check FILE` validates a
+  candidate without activating it. `safeyolo policy apply FILE` validates the
+  candidate, requests activation through the Admin API and checks that the
+  result is active. `safeyolo policy show` reads active policy state; if the
+  Admin API is unavailable, it identifies the saved-policy fallback instead.
+  The running proxy watches policy and the service catalogue and reloads on
+  change; `config.toml` reloads on SIGHUP.
 - **Snapshots and assessment**: `policy::snapshot`, `policy_runtime`,
   [policy-snapshots.md](policy-snapshots.md),
   [policy-assessment.md](policy-assessment.md).
@@ -295,7 +304,9 @@ Coord is SafeYolo's coordination kernel.
 
 - **Storage split**: SQLite owns control state (identity, membership, brief,
   work ownership, claims, attestations). NATS JetStream owns conversation
-  history. The proxy runs and owns the `nats-server` process.
+  history. The host CLI starts and stops the separate managed `nats-server`
+  process alongside the proxy. Proxy readiness does not establish Coord
+  readiness.
 - **Invariants**: addressing affects *attention, not visibility*; work claims
   are not resource locks; envelope attribution is authoritative and message
   bodies are untrusted.
@@ -377,4 +388,3 @@ use their own local Agent API.
 | Where are credentials swapped in? | `services.rs`, `credential_injection.rs`, `grants.rs` |
 | What does an agent see and call? | `agent_api.rs`, `cli/src/safeyolo/agent_context/skills/safeyolo/` |
 | How does Coord work? | `coord_rooms.rs`, `coord_supervisor.rs`, `bin/safeyolo-coord.rs` |
-| What did the old Python proxy do? | [historical Python proxy](historical-python-proxy.md), [historical addons](ADDONS.md), [proxy-parity.md](proxy-parity.md) |

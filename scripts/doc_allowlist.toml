@@ -34,7 +34,6 @@ user_facing_docs = [
     "contrib/agent-launcher-prompt.md",
     "contrib/ROOTFS_SCRIPT_GUIDE.md",
     "docs/ARCHITECTURE.md",
-    "docs/historical-python-proxy.md",
     "docs/AGENTS.md",
     "docs/demo.md",
     "docs/ADDONS.md",
