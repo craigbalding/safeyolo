@@ -422,6 +422,201 @@ fn task_plan(f: &Fixture) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_host_binding_builds_a_policy_without_precreated_tables() {
+    let f = Fixture::new("").await;
+    let active = SignedCatalogue::sign(
+        CatalogueRevision {
+            publisher: "publisher".into(),
+            announcement_revision: 1,
+            package: f.binding.target.package.clone(),
+            observed_at: now(),
+            expires_at: now() + 300,
+            withdrawn: false,
+            previous: None,
+        },
+        &f.key,
+    );
+    let catalogue = CatalogueAdoption {
+        policy: CataloguePolicy {
+            publisher: "publisher".into(),
+            public_key: STANDARD.encode(f.key.public_key().as_ref()),
+            agent_code_keys: BTreeMap::new(),
+            package_name: f.binding.target.package.name.clone(),
+            operations: BTreeMap::new(),
+            families: Vec::new(),
+            on_withdraw: Withdrawal::Retain,
+        },
+        active: active.clone(),
+        previous: None,
+        observed: active,
+        pin: None,
+        observed_file: None,
+    };
+    let denied_hosts = "[hosts.'*']\negress='allow'\n[[hosts.'*'.rules]]\naction='gateway:request'\nresource='local-host:/v1/host-execution/invoke'\neffect='deny'\ncondition={agent='alice'}\n";
+    let denied_inline = "[hosts]\n'*'={egress='allow',rules=[{action='gateway:request',resource='local-host:/v1/host-execution/invoke',effect='deny',condition={agent='alice'}}]}\n";
+    // Compile the same generated policy that first setup submits, including
+    // both host-rule representations and existing IAM permissions.
+    for source in [
+        include_str!("../../../config/native/policy.toml"),
+        "permissions = []\n",
+        f.source.as_str(),
+        denied_hosts,
+        denied_inline,
+        "hosts = {}\n",
+        "[hosts.'example.invalid']\negress='deny'\n[agents.alice]\negress='deny'\nagent_id='retained-agent'\n",
+    ] {
+        let before = crate::policy::parse_toml_document(source).unwrap();
+        let path = f.root.path().join("first-binding.toml");
+        std::fs::write(&path, source).unwrap();
+        let previous_policy = Policy::from_native_path(&path).unwrap();
+        let candidate = crate::host_execution::setup::host_setup_policy(
+            source, "new", &f.binding, &catalogue, "alice",
+        )
+        .unwrap();
+        std::fs::write(&path, &candidate).unwrap();
+        let policy = Policy::from_native_path(&path).unwrap();
+        let effect = |policy: &Policy, agent: &str, service: &str, path: &str| {
+            policy
+                .evaluate_gateway_request(crate::policy::GatewayRequest {
+                    agent,
+                    service,
+                    capability: "host_execution",
+                    method: "POST",
+                    path,
+                })
+                .effect
+        };
+        for verb in [
+            Verb::Discover,
+            Verb::Propose,
+            Verb::Invoke,
+            Verb::Job,
+            Verb::Output,
+            Verb::File,
+            Verb::Cancel,
+            Verb::Adopt,
+            Verb::Adoption,
+        ] {
+            let path = verb.path();
+            let expected =
+                if verb == Verb::Invoke && [denied_hosts, denied_inline].contains(&source) {
+                    crate::policy::Effect::Deny
+                } else {
+                    crate::policy::Effect::Allow
+                };
+            assert_eq!(
+                effect(&policy, "alice", "local-host", path),
+                expected,
+                "{source}"
+            );
+            assert_eq!(
+                effect(&policy, "bob", "local-host", path),
+                effect(&previous_policy, "bob", "local-host", path),
+                "{source}"
+            );
+            assert_eq!(
+                effect(&policy, "alice", "other-host", path),
+                crate::policy::Effect::Deny,
+                "{source}"
+            );
+        }
+        assert_eq!(
+            effect(&policy, "alice", "local-host", "/unrelated"),
+            crate::policy::Effect::Deny
+        );
+        assert!(
+            f.binding
+                .permission(&policy, &f.run, &Action::Discover)
+                .is_ok()
+        );
+        let denied_task = policy
+            .with_task_document(&json!({"permissions":[{
+                "action":"gateway:request", "resource":"local-host:/v1/host-execution/discover",
+                "effect":"deny", "condition":{"agent":"alice"}
+            }]}))
+            .unwrap();
+        assert!(
+            f.binding
+                .permission(&denied_task, &f.run, &Action::Discover)
+                .is_err()
+        );
+        for agent in ["alice", "bob"] {
+            let request = crate::policy::NetworkRequest {
+                agent: Some(agent),
+                host: "example.invalid",
+                port: Some(443),
+                method: "GET",
+                path: "/",
+            };
+            assert_eq!(
+                policy
+                    .evaluate(request, now() as f64 * 1000.0, false)
+                    .unwrap()
+                    .effect,
+                previous_policy
+                    .evaluate(request, now() as f64 * 1000.0, false)
+                    .unwrap()
+                    .effect,
+                "{source}"
+            );
+        }
+        let after = crate::policy::parse_toml_document(&candidate).unwrap();
+        assert_eq!(
+            after["host_bindings"]["new"],
+            json!(serde_json::to_string(&f.binding).unwrap())
+        );
+        assert_eq!(
+            after["host_catalogues"][&catalogue.policy.package_name],
+            json!(serde_json::to_string(&catalogue).unwrap())
+        );
+        let (previous_rules, rules) = if before.get("hosts").is_some() {
+            (
+                &before["hosts"]["*"]["rules"],
+                &after["hosts"]["*"]["rules"],
+            )
+        } else {
+            (&before["permissions"], &after["permissions"])
+        };
+        let expected = previous_rules.as_array().cloned().unwrap_or_default();
+        assert_eq!(
+            &rules.as_array().unwrap()[..expected.len()],
+            expected.as_slice()
+        );
+        assert_eq!(rules.as_array().unwrap().len(), expected.len() + 1);
+        assert_eq!(
+            rules.as_array().unwrap().last().unwrap(),
+            &json!({"action":"gateway:request","resource":"local-host:/v1/host-execution/*",
+                "effect":"allow","condition":{"agent":"alice"}})
+        );
+        assert_eq!(after["agents"], before["agents"]);
+        assert_eq!(
+            after["hosts"]["*"]["egress"],
+            before["hosts"]["*"]["egress"]
+        );
+        assert_eq!(
+            after["hosts"]["example.invalid"],
+            before["hosts"]["example.invalid"]
+        );
+        if before["host_bindings"].get("local").is_some() {
+            assert_eq!(
+                after["host_bindings"]["local"],
+                before["host_bindings"]["local"]
+            );
+        }
+        assert!(
+            crate::host_execution::setup::host_setup_policy(
+                &candidate, "new", &f.binding, &catalogue, "alice",
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("selected host binding already exists")
+        );
+    }
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    f.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn first_trust_preparation_retains_one_private_key_and_original_public_request() {
     let f = Fixture::new("").await;
     let mut private = f
