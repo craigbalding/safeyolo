@@ -388,7 +388,7 @@ pub(crate) async fn run(config: &Path, no_color: bool) -> Result<(), Error> {
                         }
                         WatchUpdate::Stale(notice) => {
                             pending.current = false;
-                            format!("{}: {notice}\n", cue("STALE / UNAVAILABLE", "31", color))
+                            notice.map(|notice| format!("{}: {notice}\n", cue("STALE / UNAVAILABLE", "31", color))).unwrap_or_default()
                         }
                         WatchUpdate::Notice(notice) => format!("{notice}\n"),
                     }

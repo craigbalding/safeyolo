@@ -15,7 +15,7 @@ pub(crate) enum WatchUpdate {
         current: BTreeMap<String, Value>,
         changes: String,
     },
-    Stale(String),
+    Stale(Option<String>),
     Notice(String),
 }
 
@@ -28,7 +28,8 @@ fn print_update(update: WatchUpdate) -> Result<(), Error> {
             print!("{output}");
             std::io::stdout().flush()?;
         }
-        WatchUpdate::Stale(notice) | WatchUpdate::Notice(notice) => eprintln!("{notice}"),
+        WatchUpdate::Stale(Some(notice)) | WatchUpdate::Notice(notice) => eprintln!("{notice}"),
+        WatchUpdate::Stale(None) => {}
     }
     Ok(())
 }
@@ -215,15 +216,22 @@ pub(crate) async fn follow(
     let mut approvals = BTreeMap::new();
     let mut signal_failure = None;
     let mut approval_failure = None;
+    let mut stream_failure = None;
+    let mut log_unavailable = false;
+    let mut history_gap = None;
     loop {
         let connection = native_client::operator_events(config).await;
         let mut subscription = match connection {
             Ok(connection) => connection,
             Err(error) => {
-                emit(WatchUpdate::Stale(format!(
-                    "Operator stream unavailable; pending view may be stale: {}",
-                    visible(&error.to_string())
-                )))?;
+                stream_unavailable(
+                    format!(
+                        "Operator stream unavailable; pending view may be stale: {}",
+                        visible(&error.to_string())
+                    ),
+                    &mut stream_failure,
+                    &mut emit,
+                )?;
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
@@ -251,22 +259,41 @@ pub(crate) async fn follow(
             let mut event = match event {
                 Ok(event) => event,
                 Err(error) => {
-                    emit(WatchUpdate::Stale(format!(
-                        "Operator stream interrupted; history may be missing; reconnecting: {}",
-                        visible(&error.to_string())
-                    )))?;
+                    stream_unavailable(
+                        format!(
+                            "Operator stream interrupted; history may be missing; reconnecting: {}",
+                            visible(&error.to_string())
+                        ),
+                        &mut stream_failure,
+                        &mut emit,
+                    )?;
                     break;
                 }
             };
+            // A handshake followed by an immediate failure is still the same
+            // outage. Recovery needs a real event after canonical snapshots.
+            if stream_failure.take().is_some() {
+                emit(WatchUpdate::Notice("Operator stream recovered; live events resumed. Recorded history may still be missing.".into()))?;
+            }
             if event["type"] == "operator_state" {
                 if event["log"] == "unavailable" {
-                    emit(WatchUpdate::Notice("Recorded event feed unavailable; current pending state is independent of JSONL delivery.".into()))?;
+                    if !log_unavailable {
+                        emit(WatchUpdate::Notice("Recorded event feed unavailable; current pending state is independent of JSONL delivery.".into()))?;
+                    }
+                    log_unavailable = true;
+                } else if event["log"] == "following" && log_unavailable {
+                    log_unavailable = false;
+                    emit(WatchUpdate::Notice("Recorded event feed recovered; following new records. Recorded history may still be missing.".into()))?;
                 }
                 if let Some(gap) = event["history_gap"].as_str() {
-                    emit(WatchUpdate::Notice(format!(
-                        "Recorded event history gap: {}. Current-state refresh does not replay history.",
-                        visible(gap)
-                    )))?;
+                    let current = (event["history_gap_id"].clone(), gap.to_owned());
+                    if history_gap.as_ref() != Some(&current) {
+                        emit(WatchUpdate::Notice(format!(
+                            "Recorded event history gap: {}. Current-state refresh does not replay history.",
+                            visible(gap)
+                        )))?;
+                        history_gap = Some(current);
+                    }
                 }
             }
             let refresh = crate::operator_events::refreshes_pending(&event);
@@ -289,6 +316,19 @@ pub(crate) async fn follow(
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+}
+
+fn stream_unavailable(
+    notice: String,
+    previous: &mut Option<String>,
+    emit: &mut impl FnMut(WatchUpdate) -> Result<(), Error>,
+) -> Result<(), Error> {
+    // Every failure invalidates current state, including after a successful
+    // snapshot on a short-lived attachment. Only the repeated text is quiet.
+    let changed = previous.as_ref() != Some(&notice);
+    emit(WatchUpdate::Stale(changed.then(|| notice.clone())))?;
+    *previous = Some(notice);
+    Ok(())
 }
 
 async fn refresh_current(
@@ -322,7 +362,7 @@ async fn refresh_current(
             visible(&error.to_string())
         );
         if approval_failure.as_ref() != Some(&notice) {
-            emit(WatchUpdate::Stale(notice.clone()))?;
+            emit(WatchUpdate::Stale(Some(notice.clone())))?;
             *approval_failure = Some(notice);
         }
     } else if approval_failure.take().is_some() {

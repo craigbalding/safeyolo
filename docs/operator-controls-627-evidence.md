@@ -17,8 +17,10 @@ Messages with `type: "operator_state"` are current-state controls. They have no
 `event` field and are not audit records. `signals` and `approvals` report whether
 the host can read those stores. `log: "following"` means the log reader is
 available; it does not prove that every producer recorded its events. A non-null
-`history_gap` reports skipped or unavailable history. Refreshing current work
-does not replay or reconstruct that history.
+`history_gap` reports skipped or unavailable history. `history_gap_id` identifies
+that observation across later controls and reconnects. A new observation has a
+new ID, including when its reason matches an earlier gap. Refreshing current
+work does not replay or reconstruct that history.
 
 One host check reads local canonical pending state each second for all viewers.
 The check includes committed signal revisions and the latest retained approval
@@ -47,8 +49,15 @@ it does not present them as current pending work.
 Commander refreshes its existing canonical approval list on controls and
 reconnect. Discovery does not resubmit requests. Existing attention claims,
 deduplication, suppression and decision authority still apply. A failed state
-read retains the previous view and reports it as unavailable/stale. After a
-failed canonical read, watch retries attachment with one-second pacing.
+read retains the previous view and reports it as unavailable/stale. Watch
+reports each unchanged state-read or stream failure once during an outage.
+Changed failures and recovery remain visible. Every failed stream attachment
+or interrupted subscription marks the approval view stale, including when the
+repeated warning stays quiet. A successful handshake alone does not establish
+stream recovery; watch must receive an event after canonical state refresh.
+After a failed canonical read, watch retries attachment with one-second pacing.
+Log availability notices follow status changes. Watch reports a retained gap
+once, then reports each new gap ID even when the reason is unchanged.
 
 The host reader retains at most an 8 MiB partial record and reads at most 1 MiB
 per turn. It follows renamed files and up to 64 retained rotation positions.
