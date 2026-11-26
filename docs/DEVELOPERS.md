@@ -337,6 +337,22 @@ CARGO_TARGET_DIR=/path/to/candidate/proxy/target \
   scripts/cargo_with_space.sh --manifest-path proxy/Cargo.toml clippy --locked --all-targets -- -D warnings
 ```
 
+For host-operation authority and semantics changes, run the focused integration
+suite from the repository root with the pinned Rust toolchain and the target
+and reserve settings for that host:
+
+```sh
+CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --manifest-path proxy/Cargo.toml \
+  --locked -p safeyolo-proxy --test host_semantics
+```
+
+This suite uses the public host-operation APIs and the shared Windows starter
+fixture. Cargo builds the normal proxy library and binaries, but skips the
+library test executable and unrelated test targets. The normal broader
+`cargo test --manifest-path proxy/Cargo.toml --locked` command also discovers
+this suite. Integration-target selection removes unrelated test compilation;
+it does not guarantee a faster production-edit build.
+
 For candidate-versus-mutant sensitivity tests, create one scratch source tree
 at the exact candidate commit and reuse it for the complete batch. Reuse one
 Cargo target for that batch. Do not recreate the full source tree or allocate a
