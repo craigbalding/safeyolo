@@ -1,6 +1,5 @@
 //! SafeYolo proxy: trusted per-agent UDS ingress, HTTP/TLS and admitted CONNECT
 //! streams. Policy, credential and content controls run natively in this process.
-//! The former Python proxy is migration reference only; see docs/proxy-parity.md.
 
 pub mod admin_api;
 mod admin_listener;
