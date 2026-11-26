@@ -3197,6 +3197,753 @@ where
     Ok(None)
 }
 
+/// Gateway results that later request stages use: the injected credential,
+/// grant lease, recording and evidence details, and provider or Docker routing.
+struct ServiceGatewaySelection<'a> {
+    grant_lease: Option<crate::grants::GrantLease>,
+    gateway_injected_header: Option<header::HeaderName>,
+    gateway_subscription: Option<crate::credentials::SubscriptionClient>,
+    gateway_recording_header: Option<header::HeaderName>,
+    gateway_evidence: Option<crate::credential_injection::Evidence>,
+    route_challenge_selection: Option<Box<crate::services::CredentialSelection>>,
+    provider_route: Option<(String, String, String)>,
+    docker_inspection: Option<(
+        &'a crate::services::docker::DockerAccess,
+        crate::services::docker::enforcement::Inspection,
+    )>,
+}
+
+enum ServiceGatewayStep<'a> {
+    /// The gateway answered locally; forward returns this reply.
+    Reply(Response<Body>, String),
+    Continue(Box<ServiceGatewaySelection<'a>>),
+}
+
+/// Selects the service gateway route for a request and applies its decision:
+/// contract and risk checks, grants, credential injection and provider routing.
+#[allow(clippy::too_many_arguments)]
+async fn select_service_gateway<'a, B>(
+    runtime: &Arc<Runtime>,
+    upgrades: &UpgradeTasks,
+    identity: &ConnectionIdentity,
+    request_id: &str,
+    request: &mut Request<B>,
+    ordered_headers: &mut crate::request_headers::RequestHeaders,
+    destination: &Destination,
+    docker_service: &Option<&'a crate::services::ServiceDefinition>,
+    traffic: &Option<Arc<traffic::Traffic>>,
+    gateway_headers: &[(String, String)],
+    contract_body: &Option<zeroize::Zeroizing<Vec<u8>>>,
+    contract_needs_body: bool,
+    provider_name: Option<String>,
+    gateway_trace: &Option<crate::request_trace::TraceHook>,
+) -> Result<ServiceGatewayStep<'a>, Error>
+where
+    B: HttpBody<Data = Bytes> + Unpin + Send + Sync + 'static,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    let mut grant_lease = None;
+    let mut gateway_injected_header = None;
+    let mut gateway_subscription = None;
+    let mut gateway_recording_header = None;
+    let mut gateway_evidence = None;
+    let mut route_challenge_selection = None;
+    let mut provider_route = None;
+    let mut docker_inspection = None;
+    if let Some(policy) = runtime.policy.as_deref() {
+        let snapshot = policy.gateway();
+        if provider_name.is_some() && destination.selected_ip.is_some() {
+            return Ok(ServiceGatewayStep::Reply(
+                prior_block(gateway_response(
+                    403,
+                    "GATEWAY_AUTH_REQUIRED",
+                    request_id,
+                    gateway_trace.as_ref(),
+                )?),
+                "deny".into(),
+            ));
+        }
+        if ordered_headers
+            .recording_pairs()
+            .filter(|(_, value)| crate::services::has_gateway_token(value))
+            .take(2)
+            .count()
+            > 1
+        {
+            let reply = gateway_response(403, "INVALID_TOKEN", request_id, gateway_trace.as_ref())?;
+            return Ok(ServiceGatewayStep::Reply(prior_block(reply), "deny".into()));
+        }
+        let gateway_decision = snapshot.map(|snapshot| {
+            snapshot.select(crate::services::GatewayRequest {
+                identity: match identity.request_identity() {
+                    crate::network_guard::Identity::Resolved(agent) => {
+                        crate::services::TrustedIdentity::Agent(agent)
+                    }
+                    crate::network_guard::Identity::Current(run) => {
+                        crate::services::TrustedIdentity::Agent(&run.agent)
+                    }
+                    crate::network_guard::Identity::Conflict => {
+                        crate::services::TrustedIdentity::Conflict
+                    }
+                    crate::network_guard::Identity::Unavailable => {
+                        crate::services::TrustedIdentity::Missing
+                    }
+                },
+                host: &destination.policy_host,
+                request: crate::contracts::ContractRequest {
+                    method: request.method().as_str(),
+                    target: &destination.path,
+                    headers: gateway_headers,
+                    // Contract selection runs only after request-body preparation;
+                    // the prepared bytes remain owned by the replay body below.
+                    body: contract_body
+                        .as_ref()
+                        .map_or(&[][..], |value| value.as_slice()),
+                },
+                route_mode: crate::services::RouteMode::CompiledPolicy(policy),
+            })
+        });
+        let decision = match gateway_decision {
+            Some(decision) => decision,
+            None => {
+                // A gateway token without an accepted catalog snapshot must
+                // never become an ordinary upstream header.
+                if ordered_headers
+                    .recording_pairs()
+                    .any(|(_, value)| crate::services::has_gateway_token(value))
+                {
+                    let reply = gateway_response(
+                        503,
+                        "GATEWAY_CONFIGURATION_ERROR",
+                        request_id,
+                        gateway_trace.as_ref(),
+                    )?;
+                    return Ok(ServiceGatewayStep::Reply(prior_block(reply), "deny".into()));
+                }
+                crate::services::GatewayDecision::PassThrough
+            }
+        };
+        match decision {
+            crate::services::GatewayDecision::PassThrough => {
+                if provider_name.is_some() || docker_service.is_some() {
+                    let reply = gateway_response(
+                        403,
+                        "GATEWAY_AUTH_REQUIRED",
+                        request_id,
+                        gateway_trace.as_ref(),
+                    )?;
+                    return Ok(ServiceGatewayStep::Reply(prior_block(reply), "deny".into()));
+                }
+                if let Some(hook) = &gateway_trace {
+                    hook.evaluated("not_a_gateway_request", None);
+                }
+            }
+            crate::services::GatewayDecision::Deny { status, code, .. } => {
+                let reply = gateway_response(status, &code, request_id, gateway_trace.as_ref())?;
+                return Ok(ServiceGatewayStep::Reply(prior_block(reply), "deny".into()));
+            }
+            crate::services::GatewayDecision::Compatibility { .. } => {
+                let reply = gateway_response(
+                    503,
+                    "GATEWAY_COMPATIBILITY_ERROR",
+                    request_id,
+                    gateway_trace.as_ref(),
+                )?;
+                return Ok(ServiceGatewayStep::Reply(prior_block(reply), "deny".into()));
+            }
+            crate::services::GatewayDecision::Selected { mut credential } => {
+                if docker_service.is_some_and(|service| service.name != credential.service) {
+                    return Ok(ServiceGatewayStep::Reply(
+                        prior_block(gateway_response(
+                            403,
+                            "GATEWAY_DOCKER_ENDPOINT_MISMATCH",
+                            request_id,
+                            gateway_trace.as_ref(),
+                        )?),
+                        "deny".into(),
+                    ));
+                }
+                if let Some(hook) = &gateway_trace {
+                    hook.evaluated("selected", None);
+                }
+                if let Some(service) = docker_service {
+                    let access = service
+                        .capabilities
+                        .get(&credential.capability)
+                        .and_then(|capability| capability.docker_access.as_ref())
+                        .ok_or("Docker access configuration unavailable")?;
+                    match access.request(
+                        request.method().as_str(),
+                        &destination.path,
+                        contract_body.as_ref().map_or(&[], |body| body.as_slice()),
+                    ) {
+                        Ok(inspection) => docker_inspection = Some((access, inspection)),
+                        Err(error) => {
+                            runtime.audit.emit(identity.request_event("gateway.docker_denied", crate::audit::Kind::Gateway,
+                                request_id, "Docker request exceeds the adopted capability",
+                                json!({"service":service.name,"reason":error.to_string(),"upstream_mutation_sent":false})))?;
+                            return Ok(ServiceGatewayStep::Reply(
+                                prior_block(gateway_response(
+                                    403,
+                                    "GATEWAY_DOCKER_CONSTRAINT",
+                                    request_id,
+                                    gateway_trace.as_ref(),
+                                )?),
+                                "deny".into(),
+                            ));
+                        }
+                    }
+                }
+                if let Some(provider) = provider_name {
+                    let caller = identity.request_agent().expect("selected gateway identity");
+                    let Some(caller_id) = identity
+                        .authorization_principal
+                        .as_ref()
+                        .map(|_| identity.agent_id.as_str())
+                        .or_else(|| {
+                            snapshot.and_then(|snapshot| snapshot.configured_agent_id(caller))
+                        })
+                    else {
+                        let reply = gateway_response(
+                            503,
+                            "GATEWAY_IDENTITY_UNAVAILABLE",
+                            request_id,
+                            gateway_trace.as_ref(),
+                        )?;
+                        return Ok(ServiceGatewayStep::Reply(prior_block(reply), "deny".into()));
+                    };
+                    provider_route = Some((provider, caller_id.to_owned(), caller.to_owned()));
+                }
+                if contract_needs_body && contract_body.is_none() {
+                    // A streamed body cannot be checked against a contract
+                    // without first owning its complete parser terminal. Do
+                    // not inject or dial while its constraint is unknown.
+                    let reply = gateway_response(
+                        503,
+                        "GATEWAY_BODY_UNAVAILABLE",
+                        request_id,
+                        gateway_trace.as_ref(),
+                    )?;
+                    return Ok(ServiceGatewayStep::Reply(prior_block(reply), "deny".into()));
+                }
+                let git = credential.github_git.as_ref();
+                let gateway_method = git.map_or(request.method().as_str(), |_| "POST");
+                let gateway_path = git.map_or(destination.path.as_str(), |git| git.path.as_str());
+                if policy
+                    .gateway()
+                    .and_then(|gateway| gateway.registry())
+                    .and_then(|registry| {
+                        registry
+                            .services
+                            .get(&credential.service)
+                            .map(|service| service.effect_model.is_some())
+                    })
+                    .unwrap_or(false)
+                {
+                    let action = json!({"kind":"gateway_route","agent":credential.agent,
+                        "service":credential.service,"capability":credential.capability,"account":credential.account,
+                        "credential":credential.vault_token,"binding_id":credential.binding_id,"run":identity.current_agent_run(),
+                        "host":destination.policy_host,"scheme":destination.scheme,"port":destination.port,
+                        "method":gateway_method,"path":gateway_path.split('?').next().unwrap_or("/")});
+                    let assessed = crate::approvals::pending::route_challenge::assessment(
+                        runtime, policy, &action,
+                    )?;
+                    let risk: crate::policy::Decision =
+                        serde_json::from_value(assessed["risk_policy"].clone())?;
+                    // A configured effect prohibition applies before every grant
+                    // lookup, including a request through another endpoint.
+                    if !matches!(
+                        risk.effect,
+                        crate::policy::Effect::Allow | crate::policy::Effect::Prompt
+                    ) {
+                        let mut event = identity.request_event("gateway.risky_route",crate::audit::Kind::Gateway,request_id,
+                            "Operator policy prohibits modeled service effects",json!({"service":credential.service,"method":gateway_method,"path":action["path"],"assessment":assessed}));
+                        event.decision = Some(crate::audit::Decision::Deny);
+                        event.severity = crate::audit::Severity::High;
+                        runtime.audit.emit(event)?;
+                        let mut reply = gateway_response(
+                            403,
+                            "GATEWAY_RISKY_ROUTE",
+                            request_id,
+                            gateway_trace.as_ref(),
+                        )?;
+                        *reply.body_mut() = full(serde_json::to_vec(
+                            &json!({"error":"GATEWAY_RISKY_ROUTE","assessment":assessed}),
+                        )?);
+                        return Ok(ServiceGatewayStep::Reply(prior_block(reply), "deny".into()));
+                    }
+                    let enables: Vec<String> = serde_json::from_value(assessed["enables"].clone())?;
+                    if credential.risky_route.is_none()
+                        && risk.effect == crate::policy::Effect::Prompt
+                        && risk.matched_resource.is_some()
+                    {
+                        credential.risky_route = Some(crate::services::RiskyRoute {
+                            path: action["path"].as_str().unwrap_or("/").into(),
+                            methods: vec![gateway_method.into()],
+                            description:
+                                "Prepared service effects require approval under operator policy."
+                                    .into(),
+                            tactics: Vec::new(),
+                            enables: Vec::new(),
+                            irreversible: false,
+                            group: None,
+                        });
+                    }
+                    if let Some(route) = &mut credential.risky_route {
+                        route.enables.extend(enables);
+                        route.enables.sort();
+                        route.enables.dedup();
+                    }
+                }
+                if credential.missing_route_allow {
+                    let Some(run) = identity
+                        .current_agent_run()
+                        .filter(|run| run.current(policy))
+                    else {
+                        return Ok(ServiceGatewayStep::Reply(
+                            prior_block(gateway_response(
+                                403,
+                                "ROUTE_DENIED",
+                                request_id,
+                                gateway_trace.as_ref(),
+                            )?),
+                            "deny".into(),
+                        ));
+                    };
+                    if let Some(risky) = &credential.risky_route {
+                        let risk = policy.evaluate_risky_route(crate::policy::RiskyRouteRequest {
+                            service: &credential.service,
+                            agent: &run.agent,
+                            account: &credential.account,
+                            tactics: &risky.tactics,
+                            enables: &risky.enables,
+                            irreversible: risky.irreversible,
+                            method: gateway_method,
+                            path: gateway_path.split('?').next().unwrap_or("/"),
+                        });
+                        if !matches!(
+                            risk.effect,
+                            crate::policy::Effect::Allow | crate::policy::Effect::Prompt
+                        ) {
+                            return Ok(ServiceGatewayStep::Reply(
+                                prior_block(gateway_response(
+                                    403,
+                                    "GATEWAY_RISKY_ROUTE",
+                                    request_id,
+                                    gateway_trace.as_ref(),
+                                )?),
+                                "deny".into(),
+                            ));
+                        }
+                    }
+                    grant_lease = crate::approvals::pending::route_challenge::grant(
+                        runtime,
+                        run,
+                        &credential,
+                        crate::policy::NetworkRequest {
+                            agent: Some(&run.agent),
+                            host: &destination.policy_host,
+                            port: Some(destination.port),
+                            method: gateway_method,
+                            path: gateway_path,
+                        },
+                        &destination.scheme,
+                    )?;
+                    if grant_lease.is_none() {
+                        route_challenge_selection = Some(credential.clone());
+                    } else {
+                        runtime.audit.emit(identity.request_event("gateway.route_exception_used", crate::audit::Kind::Gateway, request_id,
+                            "Explicit retry uses a temporary service route permission", json!({"grant_id":grant_lease.as_ref().map(|lease| &lease.grant().grant_id),"method":gateway_method,"path":gateway_path.split('?').next().unwrap_or("/")})))?;
+                        credential.authorization_binding = grant_lease
+                            .as_ref()
+                            .and_then(|lease| lease.grant().delegated.as_deref())
+                            .and_then(|encoded| {
+                                serde_json::from_str::<crate::policy::delegation::IssuedAccess>(
+                                    encoded,
+                                )
+                                .ok()
+                            })
+                            .and_then(|issued| {
+                                issued.action["credential_binding"]
+                                    .as_str()
+                                    .map(str::to_owned)
+                            });
+                    }
+                }
+                if !credential.missing_route_allow
+                    && let Some(risky) = credential.risky_route.as_ref()
+                {
+                    let risky_path = gateway_path.split('?').next().unwrap_or("/");
+                    let risky_method = gateway_method;
+                    let mut granted = None;
+                    if let Some(store) = runtime.gateway_grants.as_ref() {
+                        granted = store
+                            .check_grant_authority(
+                                crate::grants::RequestScope {
+                                    agent: identity
+                                        .request_agent()
+                                        .expect("selected gateway identity"),
+                                    service: &credential.service,
+                                    method: risky_method,
+                                    path: risky_path,
+                                },
+                                time::OffsetDateTime::now_utc(),
+                                identity.current_agent_run().map(|run| {
+                                    (
+                                        policy,
+                                        run,
+                                        credential.capability.as_str(),
+                                        credential.binding_id.as_deref(),
+                                    )
+                                }),
+                                |_| Ok(()),
+                            )
+                            .map_err(|error| -> Error { Box::new(error) })?;
+                    }
+                    if granted.is_none() {
+                        let risk = policy.evaluate_risky_route(crate::policy::RiskyRouteRequest {
+                            service: &credential.service,
+                            agent: identity.request_agent().expect("selected gateway identity"),
+                            account: &credential.account,
+                            tactics: &risky.tactics,
+                            enables: &risky.enables,
+                            irreversible: risky.irreversible,
+                            method: risky_method,
+                            path: risky_path,
+                        });
+                        if risk.effect != crate::policy::Effect::Allow {
+                            let status = match risk.effect {
+                                crate::policy::Effect::Deny => 403,
+                                crate::policy::Effect::BudgetExceeded => 429,
+                                _ => 428,
+                            };
+                            let agent =
+                                identity.request_agent().expect("selected gateway identity");
+                            let method = risky_method;
+                            let mut audit = crate::audit::Event::new(
+                                "gateway.risky_route",
+                                crate::audit::Kind::Gateway,
+                                crate::audit::Severity::High,
+                                git.map_or_else(
+                                    || {
+                                        format!(
+                                            "Risky route {} {}{}",
+                                            crate::network_guard::sanitize(method),
+                                            crate::network_guard::sanitize(&credential.service),
+                                            crate::network_guard::sanitize(risky_path),
+                                        )
+                                    },
+                                    |git| {
+                                        format!(
+                                            "{agent} wants to {} to {}",
+                                            git.action(),
+                                            git.repository
+                                        )
+                                    },
+                                ),
+                            );
+                            audit.addon = Some("service-gateway".into());
+                            audit.decision = Some(match risk.effect {
+                                crate::policy::Effect::Deny => crate::audit::Decision::Deny,
+                                crate::policy::Effect::BudgetExceeded => {
+                                    crate::audit::Decision::BudgetExceeded
+                                }
+                                _ => crate::audit::Decision::RequireApproval,
+                            });
+                            audit.host = Some(destination.policy_host.clone());
+                            audit.agent = Some(agent.to_owned());
+                            audit.request_id = Some(request_id.to_owned());
+                            audit.attribution = Some(identity.audit_attribution());
+                            if risk.effect == crate::policy::Effect::Prompt {
+                                audit.approval = Some(crate::audit::Approval {
+                                    required: true,
+                                    approval_type: crate::audit::ApprovalType::GatewayRoute,
+                                    key: format!(
+                                        "gw:{agent}:{}:{method}:{risky_path}",
+                                        credential.service
+                                    ),
+                                    target: credential.service.clone(),
+                                    scope_hint: json!({"method":method,"path":risky_path}).into(),
+                                });
+                            }
+                            let mut details = json!({
+                                "service":credential.service,
+                                "capability":credential.capability,
+                                "method":method,
+                                "path":risky_path,
+                                "risky_route":risky.path,
+                                "tactics":risky.tactics,
+                                "enables":risky.enables,
+                                "irreversible":risky.irreversible,
+                                "description":risky.description,
+                                "group":risky.group,
+                                "effect":risk.effect,
+                                "connection_id":identity.connection_id,
+                            });
+                            if let Some(git) = git {
+                                details["github_repository"] = git.repository.clone().into();
+                                details["git_operation"] = git.operation.clone().into();
+                            }
+                            audit.details = details.into();
+                            let pending = if risk.effect == crate::policy::Effect::Prompt {
+                                let pending = crate::approvals::pending::bind_risky(
+                                    runtime,
+                                    identity.current_agent_run(),
+                                    &mut audit,
+                                    crate::policy::NetworkRequest {
+                                        agent: Some(agent),
+                                        host: &destination.policy_host,
+                                        port: Some(destination.port),
+                                        method: risky_method,
+                                        path: if git.is_some() {
+                                            risky_path
+                                        } else {
+                                            &destination.path
+                                        },
+                                    },
+                                    &destination.scheme,
+                                    &credential,
+                                )
+                                .await?;
+                                runtime.audit.emit_confirmed(audit).await?;
+                                pending
+                            } else {
+                                runtime.audit.emit(audit)?;
+                                None
+                            };
+                            let mut reply = gateway_response(
+                                status,
+                                "GATEWAY_RISKY_ROUTE",
+                                request_id,
+                                gateway_trace.as_ref(),
+                            )?;
+                            if let Some(record) = pending {
+                                crate::approvals::pending::delegation::notify(runtime, &record)
+                                    .await;
+                                reply
+                                    .headers_mut()
+                                    .insert("x-safeyolo-approval-id", record.approval_id.parse()?);
+                            }
+                            return Ok(ServiceGatewayStep::Reply(
+                                prior_block(reply),
+                                "deny".into(),
+                            ));
+                        }
+                    }
+                    grant_lease = granted;
+                    runtime.audit.emit(identity.request_event("gateway.evaluated", crate::audit::Kind::Gateway, request_id, "Gateway request observation", json!({
+"outcome": if grant_lease.is_some() { "grant_reserved" } else { "risky_route_allowed" },
+"service": credential.service,
+"capability": credential.capability,
+"method": gateway_method,
+"path": risky_path
+,"grant_id":grant_lease.as_ref().map(|lease| &lease.grant().grant_id)
+})))?;
+                }
+                if git.is_some_and(|git| git.discovery)
+                    && let Some(lease) = grant_lease.as_mut()
+                {
+                    lease.retain_for_git_discovery();
+                }
+                let full_url = crate::credentials::Secret::new(format!(
+                    "{}://{}{}",
+                    destination.scheme, destination.uri_authority, destination.path
+                ));
+                // The process-owned vault is the refresh coordinator's state
+                // as well as the injection snapshot. Reconcile visible
+                // external edits before selecting a credential. A malformed,
+                // changed-salt, or unreadable reload deliberately retains the
+                // last accepted snapshot; the subsequent snapshot check and
+                // atomic refresh publication still fail closed on a visible
+                // replacement.
+                let loaded = if credential.auth_kind.is_some() {
+                    runtime.gateway_vault.load_for_injection().await?
+                } else {
+                    Err(crate::credential_injection::VaultUnavailable::Unavailable)
+                };
+                let vault = loaded
+                    .as_ref()
+                    .map(|loaded| &loaded.vault)
+                    .map_err(|reason| *reason);
+                if let Ok(vault) = vault {
+                    let _ = vault.reload_if_changed();
+                }
+                let selected_model_request = crate::prompt_injection::is_claude_messages(
+                    &credential,
+                    identity.request_agent(),
+                    &destination.scheme,
+                    &destination.policy_host,
+                    request.method().as_str(),
+                    &destination.path,
+                );
+                let start = crate::credential_injection::prepare(
+                    *credential,
+                    vault,
+                    crate::credential_injection::RequestInfo {
+                        authorization_guard: runtime.credential_guard.as_ref(),
+                        method: request.method().as_str(),
+                        host: &destination.policy_host,
+                        path: &destination.path,
+                        scheme: &destination.scheme,
+                        full_url: &full_url,
+                        request_id: Some(request_id),
+                    },
+                    time::OffsetDateTime::now_utc(),
+                );
+                let start = match start {
+                    Ok(start) => start,
+                    Err(_) => {
+                        let reply = gateway_response(
+                            503,
+                            "GATEWAY_INJECTION_ERROR",
+                            request_id,
+                            gateway_trace.as_ref(),
+                        )?;
+                        return Ok(ServiceGatewayStep::Reply(prior_block(reply), "deny".into()));
+                    }
+                };
+                let start =
+                    match start {
+                        crate::credential_injection::Start::External(pending) => {
+                            pending
+                                .resolve(runtime.config.native_settings.as_ref().and_then(
+                                    |settings| settings.onepassword_executable.as_deref(),
+                                ))
+                                .await
+                                .map_err(|error| Box::new(error) as Error)
+                        }
+                        crate::credential_injection::Start::Refresh(pending) => {
+                            resolve_refresh(
+                                runtime,
+                                loaded.as_ref().ok().map(|loaded| &loaded.oauth),
+                                identity,
+                                request_id,
+                                upgrades,
+                                pending,
+                            )
+                            .await
+                        }
+                        start => Ok(start),
+                    };
+                let start = match start {
+                    Ok(start) => start,
+                    Err(_) => {
+                        let reply = gateway_response(
+                            503,
+                            "GATEWAY_INJECTION_ERROR",
+                            request_id,
+                            gateway_trace.as_ref(),
+                        )?;
+                        return Ok(ServiceGatewayStep::Reply(prior_block(reply), "deny".into()));
+                    }
+                };
+                match start {
+                    crate::credential_injection::Start::Ready(replacement) => {
+                        gateway_subscription = replacement.subscription_client();
+                        let name = replacement.name().clone();
+                        let changed_headers: Vec<_> = replacement.changed_headers().collect();
+                        gateway_recording_header = Some(name.clone());
+                        let evidence = match replacement.apply(request.headers_mut()) {
+                            Ok(evidence) => evidence,
+                            Err(_) => {
+                                let reply = gateway_response(
+                                    503,
+                                    "GATEWAY_INJECTION_ERROR",
+                                    request_id,
+                                    gateway_trace.as_ref(),
+                                )?;
+                                return Ok(ServiceGatewayStep::Reply(
+                                    prior_block(reply),
+                                    "deny".into(),
+                                ));
+                            }
+                        };
+                        for changed in changed_headers {
+                            if let Some(value) = request.headers().get(&changed) {
+                                ordered_headers.replace_value(&changed, value.as_bytes());
+                            } else {
+                                ordered_headers.remove(&changed);
+                            }
+                        }
+                        if request.headers().contains_key(&name) {
+                            gateway_injected_header = Some(name);
+                        } else {
+                            // A service without an auth stanza deliberately
+                            // removes the gateway Authorization token. There
+                            // is no materialized credential to re-evaluate in
+                            // the final guard view.
+                            gateway_injected_header = None;
+                        }
+                        gateway_evidence = Some(evidence);
+                        if let Some(traffic) = &traffic {
+                            traffic.selected_model_request(selected_model_request);
+                        }
+                        if let Some(hook) = &gateway_trace {
+                            hook.evaluated("injected", None);
+                        }
+                    }
+                    crate::credential_injection::Start::Blocked(blocked) => {
+                        if let Some(hook) = &gateway_trace {
+                            hook.evaluated("blocked", None);
+                        }
+                        publish_gateway_evidence(runtime, identity, request_id, &blocked.evidence)?;
+                        let body = blocked.response.body_bytes();
+                        let mut reply = Response::builder()
+                            .status(StatusCode::from_u16(blocked.response.status)?)
+                            .body(full(body))?;
+                        for (name, value) in blocked.response.headers {
+                            reply
+                                .headers_mut()
+                                .append(header::HeaderName::try_from(name)?, value.parse()?);
+                        }
+                        strip_hop_headers(reply.headers_mut());
+                        return Ok(ServiceGatewayStep::Reply(prior_block(reply), "deny".into()));
+                    }
+                    crate::credential_injection::Start::Redirect(redirect) => {
+                        if let Some(hook) = &gateway_trace {
+                            hook.evaluated("redirected", None);
+                        }
+                        publish_gateway_evidence(
+                            runtime,
+                            identity,
+                            request_id,
+                            &redirect.evidence,
+                        )?;
+                        let mut reply = Response::builder()
+                            .status(StatusCode::from_u16(redirect.status())?)
+                            .header(header::LOCATION, redirect.location().expose_secret())
+                            .body(full(redirect.body()))?;
+                        strip_hop_headers(reply.headers_mut());
+                        return Ok(ServiceGatewayStep::Reply(prior_block(reply), "deny".into()));
+                    }
+                    crate::credential_injection::Start::Refresh(_)
+                    | crate::credential_injection::Start::External(_) => {
+                        let reply = gateway_response(
+                            503,
+                            "GATEWAY_REFRESH_UNAVAILABLE",
+                            request_id,
+                            gateway_trace.as_ref(),
+                        )?;
+                        return Ok(ServiceGatewayStep::Reply(prior_block(reply), "deny".into()));
+                    }
+                }
+            }
+        }
+    }
+    Ok(ServiceGatewayStep::Continue(Box::new(
+        ServiceGatewaySelection {
+            grant_lease,
+            gateway_injected_header,
+            gateway_subscription,
+            gateway_recording_header,
+            gateway_evidence,
+            route_challenge_selection,
+            provider_route,
+            docker_inspection,
+        },
+    )))
+}
+
 // Keep the immutable request snapshot separate from the reloadable state used
 // by later requests inside CONNECT, and keep routing separate from identity.
 #[allow(clippy::too_many_arguments)]
@@ -3661,696 +4408,39 @@ where
     let prepared = request_body::prepare(body, content_length, progressive).await?;
     let contract_body = prepared.unvalidated_content;
     let mut request = Request::from_parts(parts, prepared.body);
-    let mut grant_lease = None;
-    let mut gateway_injected_header = None;
-    let mut gateway_subscription = None;
-    let mut gateway_recording_header = None;
-    let mut gateway_evidence = None;
-    let mut route_challenge_selection = None;
-    let mut provider_route = None;
-    let mut docker_inspection = None;
     let gateway_trace = trace
         .as_ref()
         .and_then(|trace| trace.hook("service-gateway", "request"));
-    if let Some(policy) = runtime.policy.as_deref() {
-        let snapshot = policy.gateway();
-        if provider_name.is_some() && destination.selected_ip.is_some() {
-            return Ok((
-                prior_block(gateway_response(
-                    403,
-                    "GATEWAY_AUTH_REQUIRED",
-                    request_id,
-                    gateway_trace.as_ref(),
-                )?),
-                "deny".into(),
-            ));
-        }
-        if ordered_headers
-            .recording_pairs()
-            .filter(|(_, value)| crate::services::has_gateway_token(value))
-            .take(2)
-            .count()
-            > 1
-        {
-            let reply = gateway_response(403, "INVALID_TOKEN", request_id, gateway_trace.as_ref())?;
-            return Ok((prior_block(reply), "deny".into()));
-        }
-        let gateway_decision = snapshot.map(|snapshot| {
-            snapshot.select(crate::services::GatewayRequest {
-                identity: match identity.request_identity() {
-                    crate::network_guard::Identity::Resolved(agent) => {
-                        crate::services::TrustedIdentity::Agent(agent)
-                    }
-                    crate::network_guard::Identity::Current(run) => {
-                        crate::services::TrustedIdentity::Agent(&run.agent)
-                    }
-                    crate::network_guard::Identity::Conflict => {
-                        crate::services::TrustedIdentity::Conflict
-                    }
-                    crate::network_guard::Identity::Unavailable => {
-                        crate::services::TrustedIdentity::Missing
-                    }
-                },
-                host: &destination.policy_host,
-                request: crate::contracts::ContractRequest {
-                    method: request.method().as_str(),
-                    target: &destination.path,
-                    headers: &gateway_headers,
-                    // Contract selection runs only after request-body preparation;
-                    // the prepared bytes remain owned by the replay body below.
-                    body: contract_body
-                        .as_ref()
-                        .map_or(&[][..], |value| value.as_slice()),
-                },
-                route_mode: crate::services::RouteMode::CompiledPolicy(policy),
-            })
-        });
-        let decision = match gateway_decision {
-            Some(decision) => decision,
-            None => {
-                // A gateway token without an accepted catalog snapshot must
-                // never become an ordinary upstream header.
-                if ordered_headers
-                    .recording_pairs()
-                    .any(|(_, value)| crate::services::has_gateway_token(value))
-                {
-                    let reply = gateway_response(
-                        503,
-                        "GATEWAY_CONFIGURATION_ERROR",
-                        request_id,
-                        gateway_trace.as_ref(),
-                    )?;
-                    return Ok((prior_block(reply), "deny".into()));
-                }
-                crate::services::GatewayDecision::PassThrough
-            }
-        };
-        match decision {
-            crate::services::GatewayDecision::PassThrough => {
-                if provider_name.is_some() || docker_service.is_some() {
-                    let reply = gateway_response(
-                        403,
-                        "GATEWAY_AUTH_REQUIRED",
-                        request_id,
-                        gateway_trace.as_ref(),
-                    )?;
-                    return Ok((prior_block(reply), "deny".into()));
-                }
-                if let Some(hook) = &gateway_trace {
-                    hook.evaluated("not_a_gateway_request", None);
-                }
-            }
-            crate::services::GatewayDecision::Deny { status, code, .. } => {
-                let reply = gateway_response(status, &code, request_id, gateway_trace.as_ref())?;
-                return Ok((prior_block(reply), "deny".into()));
-            }
-            crate::services::GatewayDecision::Compatibility { .. } => {
-                let reply = gateway_response(
-                    503,
-                    "GATEWAY_COMPATIBILITY_ERROR",
-                    request_id,
-                    gateway_trace.as_ref(),
-                )?;
-                return Ok((prior_block(reply), "deny".into()));
-            }
-            crate::services::GatewayDecision::Selected { mut credential } => {
-                if docker_service.is_some_and(|service| service.name != credential.service) {
-                    return Ok((
-                        prior_block(gateway_response(
-                            403,
-                            "GATEWAY_DOCKER_ENDPOINT_MISMATCH",
-                            request_id,
-                            gateway_trace.as_ref(),
-                        )?),
-                        "deny".into(),
-                    ));
-                }
-                if let Some(hook) = &gateway_trace {
-                    hook.evaluated("selected", None);
-                }
-                if let Some(service) = docker_service {
-                    let access = service
-                        .capabilities
-                        .get(&credential.capability)
-                        .and_then(|capability| capability.docker_access.as_ref())
-                        .ok_or("Docker access configuration unavailable")?;
-                    match access.request(
-                        request.method().as_str(),
-                        &destination.path,
-                        contract_body.as_ref().map_or(&[], |body| body.as_slice()),
-                    ) {
-                        Ok(inspection) => docker_inspection = Some((access, inspection)),
-                        Err(error) => {
-                            runtime.audit.emit(identity.request_event("gateway.docker_denied", crate::audit::Kind::Gateway,
-                                request_id, "Docker request exceeds the adopted capability",
-                                json!({"service":service.name,"reason":error.to_string(),"upstream_mutation_sent":false})))?;
-                            return Ok((
-                                prior_block(gateway_response(
-                                    403,
-                                    "GATEWAY_DOCKER_CONSTRAINT",
-                                    request_id,
-                                    gateway_trace.as_ref(),
-                                )?),
-                                "deny".into(),
-                            ));
-                        }
-                    }
-                }
-                if let Some(provider) = provider_name {
-                    let caller = identity.request_agent().expect("selected gateway identity");
-                    let Some(caller_id) = identity
-                        .authorization_principal
-                        .as_ref()
-                        .map(|_| identity.agent_id.as_str())
-                        .or_else(|| {
-                            snapshot.and_then(|snapshot| snapshot.configured_agent_id(caller))
-                        })
-                    else {
-                        let reply = gateway_response(
-                            503,
-                            "GATEWAY_IDENTITY_UNAVAILABLE",
-                            request_id,
-                            gateway_trace.as_ref(),
-                        )?;
-                        return Ok((prior_block(reply), "deny".into()));
-                    };
-                    provider_route = Some((provider, caller_id.to_owned(), caller.to_owned()));
-                }
-                if contract_needs_body && contract_body.is_none() {
-                    // A streamed body cannot be checked against a contract
-                    // without first owning its complete parser terminal. Do
-                    // not inject or dial while its constraint is unknown.
-                    let reply = gateway_response(
-                        503,
-                        "GATEWAY_BODY_UNAVAILABLE",
-                        request_id,
-                        gateway_trace.as_ref(),
-                    )?;
-                    return Ok((prior_block(reply), "deny".into()));
-                }
-                let git = credential.github_git.as_ref();
-                let gateway_method = git.map_or(request.method().as_str(), |_| "POST");
-                let gateway_path = git.map_or(destination.path.as_str(), |git| git.path.as_str());
-                if policy
-                    .gateway()
-                    .and_then(|gateway| gateway.registry())
-                    .and_then(|registry| {
-                        registry
-                            .services
-                            .get(&credential.service)
-                            .map(|service| service.effect_model.is_some())
-                    })
-                    .unwrap_or(false)
-                {
-                    let action = json!({"kind":"gateway_route","agent":credential.agent,
-                        "service":credential.service,"capability":credential.capability,"account":credential.account,
-                        "credential":credential.vault_token,"binding_id":credential.binding_id,"run":identity.current_agent_run(),
-                        "host":destination.policy_host,"scheme":destination.scheme,"port":destination.port,
-                        "method":gateway_method,"path":gateway_path.split('?').next().unwrap_or("/")});
-                    let assessed = crate::approvals::pending::route_challenge::assessment(
-                        &runtime, policy, &action,
-                    )?;
-                    let risk: crate::policy::Decision =
-                        serde_json::from_value(assessed["risk_policy"].clone())?;
-                    // A configured effect prohibition applies before every grant
-                    // lookup, including a request through another endpoint.
-                    if !matches!(
-                        risk.effect,
-                        crate::policy::Effect::Allow | crate::policy::Effect::Prompt
-                    ) {
-                        let mut event = identity.request_event("gateway.risky_route",crate::audit::Kind::Gateway,request_id,
-                            "Operator policy prohibits modeled service effects",json!({"service":credential.service,"method":gateway_method,"path":action["path"],"assessment":assessed}));
-                        event.decision = Some(crate::audit::Decision::Deny);
-                        event.severity = crate::audit::Severity::High;
-                        runtime.audit.emit(event)?;
-                        let mut reply = gateway_response(
-                            403,
-                            "GATEWAY_RISKY_ROUTE",
-                            request_id,
-                            gateway_trace.as_ref(),
-                        )?;
-                        *reply.body_mut() = full(serde_json::to_vec(
-                            &json!({"error":"GATEWAY_RISKY_ROUTE","assessment":assessed}),
-                        )?);
-                        return Ok((prior_block(reply), "deny".into()));
-                    }
-                    let enables: Vec<String> = serde_json::from_value(assessed["enables"].clone())?;
-                    if credential.risky_route.is_none()
-                        && risk.effect == crate::policy::Effect::Prompt
-                        && risk.matched_resource.is_some()
-                    {
-                        credential.risky_route = Some(crate::services::RiskyRoute {
-                            path: action["path"].as_str().unwrap_or("/").into(),
-                            methods: vec![gateway_method.into()],
-                            description:
-                                "Prepared service effects require approval under operator policy."
-                                    .into(),
-                            tactics: Vec::new(),
-                            enables: Vec::new(),
-                            irreversible: false,
-                            group: None,
-                        });
-                    }
-                    if let Some(route) = &mut credential.risky_route {
-                        route.enables.extend(enables);
-                        route.enables.sort();
-                        route.enables.dedup();
-                    }
-                }
-                if credential.missing_route_allow {
-                    let Some(run) = identity
-                        .current_agent_run()
-                        .filter(|run| run.current(policy))
-                    else {
-                        return Ok((
-                            prior_block(gateway_response(
-                                403,
-                                "ROUTE_DENIED",
-                                request_id,
-                                gateway_trace.as_ref(),
-                            )?),
-                            "deny".into(),
-                        ));
-                    };
-                    if let Some(risky) = &credential.risky_route {
-                        let risk = policy.evaluate_risky_route(crate::policy::RiskyRouteRequest {
-                            service: &credential.service,
-                            agent: &run.agent,
-                            account: &credential.account,
-                            tactics: &risky.tactics,
-                            enables: &risky.enables,
-                            irreversible: risky.irreversible,
-                            method: gateway_method,
-                            path: gateway_path.split('?').next().unwrap_or("/"),
-                        });
-                        if !matches!(
-                            risk.effect,
-                            crate::policy::Effect::Allow | crate::policy::Effect::Prompt
-                        ) {
-                            return Ok((
-                                prior_block(gateway_response(
-                                    403,
-                                    "GATEWAY_RISKY_ROUTE",
-                                    request_id,
-                                    gateway_trace.as_ref(),
-                                )?),
-                                "deny".into(),
-                            ));
-                        }
-                    }
-                    grant_lease = crate::approvals::pending::route_challenge::grant(
-                        &runtime,
-                        run,
-                        &credential,
-                        crate::policy::NetworkRequest {
-                            agent: Some(&run.agent),
-                            host: &destination.policy_host,
-                            port: Some(destination.port),
-                            method: gateway_method,
-                            path: gateway_path,
-                        },
-                        &destination.scheme,
-                    )?;
-                    if grant_lease.is_none() {
-                        route_challenge_selection = Some(credential.clone());
-                    } else {
-                        runtime.audit.emit(identity.request_event("gateway.route_exception_used", crate::audit::Kind::Gateway, request_id,
-                            "Explicit retry uses a temporary service route permission", json!({"grant_id":grant_lease.as_ref().map(|lease| &lease.grant().grant_id),"method":gateway_method,"path":gateway_path.split('?').next().unwrap_or("/")})))?;
-                        credential.authorization_binding = grant_lease
-                            .as_ref()
-                            .and_then(|lease| lease.grant().delegated.as_deref())
-                            .and_then(|encoded| {
-                                serde_json::from_str::<crate::policy::delegation::IssuedAccess>(
-                                    encoded,
-                                )
-                                .ok()
-                            })
-                            .and_then(|issued| {
-                                issued.action["credential_binding"]
-                                    .as_str()
-                                    .map(str::to_owned)
-                            });
-                    }
-                }
-                if !credential.missing_route_allow
-                    && let Some(risky) = credential.risky_route.as_ref()
-                {
-                    let risky_path = gateway_path.split('?').next().unwrap_or("/");
-                    let risky_method = gateway_method;
-                    let mut granted = None;
-                    if let Some(store) = runtime.gateway_grants.as_ref() {
-                        granted = store
-                            .check_grant_authority(
-                                crate::grants::RequestScope {
-                                    agent: identity
-                                        .request_agent()
-                                        .expect("selected gateway identity"),
-                                    service: &credential.service,
-                                    method: risky_method,
-                                    path: risky_path,
-                                },
-                                time::OffsetDateTime::now_utc(),
-                                identity.current_agent_run().map(|run| {
-                                    (
-                                        policy,
-                                        run,
-                                        credential.capability.as_str(),
-                                        credential.binding_id.as_deref(),
-                                    )
-                                }),
-                                |_| Ok(()),
-                            )
-                            .map_err(|error| -> Error { Box::new(error) })?;
-                    }
-                    if granted.is_none() {
-                        let risk = policy.evaluate_risky_route(crate::policy::RiskyRouteRequest {
-                            service: &credential.service,
-                            agent: identity.request_agent().expect("selected gateway identity"),
-                            account: &credential.account,
-                            tactics: &risky.tactics,
-                            enables: &risky.enables,
-                            irreversible: risky.irreversible,
-                            method: risky_method,
-                            path: risky_path,
-                        });
-                        if risk.effect != crate::policy::Effect::Allow {
-                            let status = match risk.effect {
-                                crate::policy::Effect::Deny => 403,
-                                crate::policy::Effect::BudgetExceeded => 429,
-                                _ => 428,
-                            };
-                            let agent =
-                                identity.request_agent().expect("selected gateway identity");
-                            let method = risky_method;
-                            let mut audit = crate::audit::Event::new(
-                                "gateway.risky_route",
-                                crate::audit::Kind::Gateway,
-                                crate::audit::Severity::High,
-                                git.map_or_else(
-                                    || {
-                                        format!(
-                                            "Risky route {} {}{}",
-                                            crate::network_guard::sanitize(method),
-                                            crate::network_guard::sanitize(&credential.service),
-                                            crate::network_guard::sanitize(risky_path),
-                                        )
-                                    },
-                                    |git| {
-                                        format!(
-                                            "{agent} wants to {} to {}",
-                                            git.action(),
-                                            git.repository
-                                        )
-                                    },
-                                ),
-                            );
-                            audit.addon = Some("service-gateway".into());
-                            audit.decision = Some(match risk.effect {
-                                crate::policy::Effect::Deny => crate::audit::Decision::Deny,
-                                crate::policy::Effect::BudgetExceeded => {
-                                    crate::audit::Decision::BudgetExceeded
-                                }
-                                _ => crate::audit::Decision::RequireApproval,
-                            });
-                            audit.host = Some(destination.policy_host.clone());
-                            audit.agent = Some(agent.to_owned());
-                            audit.request_id = Some(request_id.to_owned());
-                            audit.attribution = Some(identity.audit_attribution());
-                            if risk.effect == crate::policy::Effect::Prompt {
-                                audit.approval = Some(crate::audit::Approval {
-                                    required: true,
-                                    approval_type: crate::audit::ApprovalType::GatewayRoute,
-                                    key: format!(
-                                        "gw:{agent}:{}:{method}:{risky_path}",
-                                        credential.service
-                                    ),
-                                    target: credential.service.clone(),
-                                    scope_hint: json!({"method":method,"path":risky_path}).into(),
-                                });
-                            }
-                            let mut details = json!({
-                                "service":credential.service,
-                                "capability":credential.capability,
-                                "method":method,
-                                "path":risky_path,
-                                "risky_route":risky.path,
-                                "tactics":risky.tactics,
-                                "enables":risky.enables,
-                                "irreversible":risky.irreversible,
-                                "description":risky.description,
-                                "group":risky.group,
-                                "effect":risk.effect,
-                                "connection_id":identity.connection_id,
-                            });
-                            if let Some(git) = git {
-                                details["github_repository"] = git.repository.clone().into();
-                                details["git_operation"] = git.operation.clone().into();
-                            }
-                            audit.details = details.into();
-                            let pending = if risk.effect == crate::policy::Effect::Prompt {
-                                let pending = crate::approvals::pending::bind_risky(
-                                    &runtime,
-                                    identity.current_agent_run(),
-                                    &mut audit,
-                                    crate::policy::NetworkRequest {
-                                        agent: Some(agent),
-                                        host: &destination.policy_host,
-                                        port: Some(destination.port),
-                                        method: risky_method,
-                                        path: if git.is_some() {
-                                            risky_path
-                                        } else {
-                                            &destination.path
-                                        },
-                                    },
-                                    &destination.scheme,
-                                    &credential,
-                                )
-                                .await?;
-                                runtime.audit.emit_confirmed(audit).await?;
-                                pending
-                            } else {
-                                runtime.audit.emit(audit)?;
-                                None
-                            };
-                            let mut reply = gateway_response(
-                                status,
-                                "GATEWAY_RISKY_ROUTE",
-                                request_id,
-                                gateway_trace.as_ref(),
-                            )?;
-                            if let Some(record) = pending {
-                                crate::approvals::pending::delegation::notify(&runtime, &record)
-                                    .await;
-                                reply
-                                    .headers_mut()
-                                    .insert("x-safeyolo-approval-id", record.approval_id.parse()?);
-                            }
-                            return Ok((prior_block(reply), "deny".into()));
-                        }
-                    }
-                    grant_lease = granted;
-                    runtime.audit.emit(identity.request_event("gateway.evaluated", crate::audit::Kind::Gateway, request_id, "Gateway request observation", json!({
-"outcome": if grant_lease.is_some() { "grant_reserved" } else { "risky_route_allowed" },
-"service": credential.service,
-"capability": credential.capability,
-"method": gateway_method,
-"path": risky_path
-,"grant_id":grant_lease.as_ref().map(|lease| &lease.grant().grant_id)
-})))?;
-                }
-                if git.is_some_and(|git| git.discovery)
-                    && let Some(lease) = grant_lease.as_mut()
-                {
-                    lease.retain_for_git_discovery();
-                }
-                let full_url = crate::credentials::Secret::new(format!(
-                    "{}://{}{}",
-                    destination.scheme, destination.uri_authority, destination.path
-                ));
-                // The process-owned vault is the refresh coordinator's state
-                // as well as the injection snapshot. Reconcile visible
-                // external edits before selecting a credential. A malformed,
-                // changed-salt, or unreadable reload deliberately retains the
-                // last accepted snapshot; the subsequent snapshot check and
-                // atomic refresh publication still fail closed on a visible
-                // replacement.
-                let loaded = if credential.auth_kind.is_some() {
-                    runtime.gateway_vault.load_for_injection().await?
-                } else {
-                    Err(crate::credential_injection::VaultUnavailable::Unavailable)
-                };
-                let vault = loaded
-                    .as_ref()
-                    .map(|loaded| &loaded.vault)
-                    .map_err(|reason| *reason);
-                if let Ok(vault) = vault {
-                    let _ = vault.reload_if_changed();
-                }
-                let selected_model_request = crate::prompt_injection::is_claude_messages(
-                    &credential,
-                    identity.request_agent(),
-                    &destination.scheme,
-                    &destination.policy_host,
-                    request.method().as_str(),
-                    &destination.path,
-                );
-                let start = crate::credential_injection::prepare(
-                    *credential,
-                    vault,
-                    crate::credential_injection::RequestInfo {
-                        authorization_guard: runtime.credential_guard.as_ref(),
-                        method: request.method().as_str(),
-                        host: &destination.policy_host,
-                        path: &destination.path,
-                        scheme: &destination.scheme,
-                        full_url: &full_url,
-                        request_id: Some(request_id),
-                    },
-                    time::OffsetDateTime::now_utc(),
-                );
-                let start = match start {
-                    Ok(start) => start,
-                    Err(_) => {
-                        let reply = gateway_response(
-                            503,
-                            "GATEWAY_INJECTION_ERROR",
-                            request_id,
-                            gateway_trace.as_ref(),
-                        )?;
-                        return Ok((prior_block(reply), "deny".into()));
-                    }
-                };
-                let start =
-                    match start {
-                        crate::credential_injection::Start::External(pending) => {
-                            pending
-                                .resolve(runtime.config.native_settings.as_ref().and_then(
-                                    |settings| settings.onepassword_executable.as_deref(),
-                                ))
-                                .await
-                                .map_err(|error| Box::new(error) as Error)
-                        }
-                        crate::credential_injection::Start::Refresh(pending) => {
-                            resolve_refresh(
-                                &runtime,
-                                loaded.as_ref().ok().map(|loaded| &loaded.oauth),
-                                identity,
-                                request_id,
-                                &upgrades,
-                                pending,
-                            )
-                            .await
-                        }
-                        start => Ok(start),
-                    };
-                let start = match start {
-                    Ok(start) => start,
-                    Err(_) => {
-                        let reply = gateway_response(
-                            503,
-                            "GATEWAY_INJECTION_ERROR",
-                            request_id,
-                            gateway_trace.as_ref(),
-                        )?;
-                        return Ok((prior_block(reply), "deny".into()));
-                    }
-                };
-                match start {
-                    crate::credential_injection::Start::Ready(replacement) => {
-                        gateway_subscription = replacement.subscription_client();
-                        let name = replacement.name().clone();
-                        let changed_headers: Vec<_> = replacement.changed_headers().collect();
-                        gateway_recording_header = Some(name.clone());
-                        let evidence = match replacement.apply(request.headers_mut()) {
-                            Ok(evidence) => evidence,
-                            Err(_) => {
-                                let reply = gateway_response(
-                                    503,
-                                    "GATEWAY_INJECTION_ERROR",
-                                    request_id,
-                                    gateway_trace.as_ref(),
-                                )?;
-                                return Ok((prior_block(reply), "deny".into()));
-                            }
-                        };
-                        for changed in changed_headers {
-                            if let Some(value) = request.headers().get(&changed) {
-                                ordered_headers.replace_value(&changed, value.as_bytes());
-                            } else {
-                                ordered_headers.remove(&changed);
-                            }
-                        }
-                        if request.headers().contains_key(&name) {
-                            gateway_injected_header = Some(name);
-                        } else {
-                            // A service without an auth stanza deliberately
-                            // removes the gateway Authorization token. There
-                            // is no materialized credential to re-evaluate in
-                            // the final guard view.
-                            gateway_injected_header = None;
-                        }
-                        gateway_evidence = Some(evidence);
-                        if let Some(traffic) = &traffic {
-                            traffic.selected_model_request(selected_model_request);
-                        }
-                        if let Some(hook) = &gateway_trace {
-                            hook.evaluated("injected", None);
-                        }
-                    }
-                    crate::credential_injection::Start::Blocked(blocked) => {
-                        if let Some(hook) = &gateway_trace {
-                            hook.evaluated("blocked", None);
-                        }
-                        publish_gateway_evidence(
-                            &runtime,
-                            identity,
-                            request_id,
-                            &blocked.evidence,
-                        )?;
-                        let body = blocked.response.body_bytes();
-                        let mut reply = Response::builder()
-                            .status(StatusCode::from_u16(blocked.response.status)?)
-                            .body(full(body))?;
-                        for (name, value) in blocked.response.headers {
-                            reply
-                                .headers_mut()
-                                .append(header::HeaderName::try_from(name)?, value.parse()?);
-                        }
-                        strip_hop_headers(reply.headers_mut());
-                        return Ok((prior_block(reply), "deny".into()));
-                    }
-                    crate::credential_injection::Start::Redirect(redirect) => {
-                        if let Some(hook) = &gateway_trace {
-                            hook.evaluated("redirected", None);
-                        }
-                        publish_gateway_evidence(
-                            &runtime,
-                            identity,
-                            request_id,
-                            &redirect.evidence,
-                        )?;
-                        let mut reply = Response::builder()
-                            .status(StatusCode::from_u16(redirect.status())?)
-                            .header(header::LOCATION, redirect.location().expose_secret())
-                            .body(full(redirect.body()))?;
-                        strip_hop_headers(reply.headers_mut());
-                        return Ok((prior_block(reply), "deny".into()));
-                    }
-                    crate::credential_injection::Start::Refresh(_)
-                    | crate::credential_injection::Start::External(_) => {
-                        let reply = gateway_response(
-                            503,
-                            "GATEWAY_REFRESH_UNAVAILABLE",
-                            request_id,
-                            gateway_trace.as_ref(),
-                        )?;
-                        return Ok((prior_block(reply), "deny".into()));
-                    }
-                }
-            }
-        }
-    }
+    let ServiceGatewaySelection {
+        mut grant_lease,
+        gateway_injected_header,
+        gateway_subscription,
+        gateway_recording_header,
+        gateway_evidence,
+        route_challenge_selection,
+        provider_route,
+        docker_inspection,
+    } = match select_service_gateway(
+        &runtime,
+        &upgrades,
+        identity,
+        request_id,
+        &mut request,
+        &mut ordered_headers,
+        destination,
+        &docker_service,
+        &traffic,
+        &gateway_headers,
+        &contract_body,
+        contract_needs_body,
+        provider_name,
+        &gateway_trace,
+    )
+    .await?
+    {
+        ServiceGatewayStep::Reply(reply, decision) => return Ok((reply, decision)),
+        ServiceGatewayStep::Continue(selection) => *selection,
+    };
     if let Some((_, caller_id, caller_name)) = &provider_route {
         let legacy_name = header::HeaderName::from_static("x-safeyolo-agent");
         request.headers_mut().remove(&legacy_name);
