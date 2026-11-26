@@ -9,6 +9,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import shlex
 import signal
 import socket
 import subprocess
@@ -44,8 +45,9 @@ def staged_guest(native_agent):
             "stop": home / ".safeyolo-command-supervisor.stop"}
 
 
-def recover(guest, timeout=2):
-    return subprocess.run([str(guest["cli"]), "--root", str(guest["root"]), "agent", "recover", "demo",
+def recover(guest, timeout=2, *, human=False):
+    output_format = [] if human else ["--json"]
+    return subprocess.run([str(guest["cli"]), "--instance-dir", str(guest["root"]), *output_format, "agent", "recover", "demo",
                            "--timeout", str(timeout)], capture_output=True, text=True, timeout=timeout + 3)
 
 
@@ -61,7 +63,8 @@ def published(guest):
 
 
 @pytest.mark.parametrize("prior_terminal", [None, "stopped", "failed", "exited"])
-def test_recipe_collects_real_probe_and_matching_guest_acknowledgement(staged_guest, prior_terminal):
+@pytest.mark.parametrize("human", [False, True])
+def test_recipe_collects_real_probe_and_matching_guest_acknowledgement(staged_guest, prior_terminal, human):
     if prior_terminal:
         write_json(staged_guest["state"], {"schema_version": 1, "name": "demo", "generation": "recovery-run", "command": "exec prior",
                                          "state": prior_terminal, "command_pid": None, "command_start_token": None})
@@ -70,7 +73,7 @@ def test_recipe_collects_real_probe_and_matching_guest_acknowledgement(staged_gu
     with socket.socket() as listener, ThreadPoolExecutor(max_workers=1) as pool:
         listener.bind(("127.0.0.1", 0))
         listener.listen()
-        future = pool.submit(recover, staged_guest)
+        future = pool.submit(recover, staged_guest, human=human)
         state = published(staged_guest)
         assert state["command"] == f"exec /safeyolo/safeyolo-guest probe {state['supervision_id']}"
         probe = subprocess.run([str(GUEST), "--stop", str(staged_guest["stop"]), "probe",
@@ -85,9 +88,27 @@ def test_recipe_collects_real_probe_and_matching_guest_acknowledgement(staged_gu
         write_json(staged_guest["state"], state)
         response = future.result(timeout=3)
     assert response.returncode == 0, response.stderr
-    observed = json.loads(response.stdout)["guest_probe"]
-    assert observed["generation"] == "recovery-run"
-    assert observed["result"] == result
+    if human:
+        assert "Guest probe completed for agent demo." in response.stdout
+        assert f"Guest UID: {os.getuid()}" in response.stdout
+        assert "SSH banner observed: no" in response.stdout
+        # A completed guest probe does not verify this fixture's synthetic run.
+        assert "Agent demo: runtime unknown" in response.stdout
+        assert "Runtime observation: invalid sandbox generation" in response.stdout
+        assert "The probe does not start or resume the coding agent." in response.stdout
+        inspect = response.stdout.split("Inspect: ", 1)[1].splitlines()[0]
+        followup = subprocess.run(inspect + " --json", shell=True, capture_output=True, text=True, timeout=3)
+        assert followup.returncode == 0, followup.stderr
+        lifecycle = json.loads(followup.stdout)
+        assert lifecycle["name"] == "demo"
+        assert lifecycle["runtime_state"] == "unknown"
+        assert f"coding agent {lifecycle['agent_state']}; terminal {lifecycle['terminal_state']}." in response.stdout
+        selected = shlex.split(inspect)
+        assert selected[selected.index("--config") + 1] == str(staged_guest["root"] / "config.toml")
+    else:
+        observed = json.loads(response.stdout)["guest_probe"]
+        assert observed["generation"] == "recovery-run"
+        assert observed["result"] == result
     assert staged_guest["state"].stat().st_mode & 0o777 == 0o600
     assert staged_guest["stop"].exists()
     assert not (staged_guest["share"] / "command-supervisor-enabled").exists()

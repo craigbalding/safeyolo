@@ -241,7 +241,7 @@ class Instance:
         self.index = 0
 
     def command(self, *arguments, input=None):
-        return subprocess.run([str(self.args.cli), "--root", str(self.root), *arguments],
+        return subprocess.run([str(self.args.cli), "--instance-dir", str(self.root), *arguments],
                               input=input, check=True, capture_output=True)
 
     def prepare(self, port):
@@ -361,7 +361,7 @@ class Instance:
                 spec["argv"].append("--isolation-probe" if probe == "isolation" else "--probe")
         path = prefix.with_suffix(".spec.json")
         save(path, spec)
-        arguments = [str(self.args.cli), "--root", str(self.root), "job", "run", str(path),
+        arguments = [str(self.args.cli), "--instance-dir", str(self.root), "job", "run", str(path),
                      "--input", str(inputs)]
         if console:
             console_path = prefix.with_suffix(".console")
@@ -1014,7 +1014,7 @@ def main():
     if not 0 <= args.provider_port <= 65535:
         parser.error("--provider-port must be zero or an authorized port")
     if args.root.exists() or any(args.scratch.iterdir()):
-        parser.error("--root must be new and --scratch must be empty")
+        parser.error("--instance-dir must be new and --scratch must be empty")
     args.scratch.chmod(0o700)
     if len(str(args.root / "driver.sock").encode()) >= 100:
         parser.error("choose a short root for the host's Unix socket limit")

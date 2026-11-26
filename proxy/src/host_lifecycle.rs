@@ -97,7 +97,14 @@ impl SetupLock {
         // Agent home is writable by the guest UID. Keeping this host lock
         // there lets the guest unlink it and make concurrent host callers
         // lock different inodes while the first sandbox is still starting.
-        std::fs::create_dir_all(directory)?;
+        // Set permissions at creation, before checking the directory. A
+        // cooperative umask must not make our own new state unsafe. Never
+        // repair existing state implicitly: the checks below still refuse it.
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(directory)?;
         let opened = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
@@ -107,7 +114,11 @@ impl SetupLock {
             || metadata.uid() != unsafe { libc::geteuid() }
             || metadata.permissions().mode() & 0o022 != 0
         {
-            return Err("unsafe host state directory for agent".into());
+            return Err(format!(
+                "unsafe host state directory {} (owner UID {}, mode {:04o}); expected your UID {} and no group/other write permission. Inspect ownership and permissions on this path before retrying; existing state was preserved",
+                directory.display(), metadata.uid(), metadata.permissions().mode() & 0o7777,
+                unsafe { libc::geteuid() }
+            ).into());
         }
         let name = std::ffi::CString::new("host-setup.lock")?;
         let descriptor = unsafe {
@@ -682,11 +693,20 @@ async fn attach_pane(record: &Value) -> Result<i32, Error> {
     if !dead.status.success() || String::from_utf8(dead.stdout)?.trim() != "0" {
         return Err("recorded terminal has exited; attach did not launch an agent".into());
     }
+    let name = record["name"]
+        .as_str()
+        .ok_or("recorded agent name is absent")?;
+    name_terminal(socket, pane, name, true).await?;
     let current = std::env::var("TMUX").unwrap_or_default();
     let own_socket = current
         .rsplit_once(',')
         .and_then(|(value, _)| value.rsplit_once(','))
         .map(|(socket, _)| socket);
+    if let Some(invoking_socket) = own_socket.filter(|current| *current != socket)
+        && let Ok(invoking_pane) = std::env::var("TMUX_PANE")
+    {
+        name_terminal(invoking_socket, &invoking_pane, name, false).await?;
+    }
     let mut command = tmux_command();
     command.args(["-S", socket]);
     if own_socket == Some(socket) {
@@ -697,6 +717,75 @@ async fn attach_pane(record: &Value) -> Result<i32, Error> {
             .args(["attach-session", "-t", pane]);
     }
     Ok(command.status().await?.code().unwrap_or(1))
+}
+
+/// Pin names only in windows we created or that tmux still names
+/// automatically. A manual rename belongs to the operator, including after a
+/// prior SafeYolo attachment. OSC title changes cannot then erase agent names.
+async fn name_terminal(socket: &str, pane: &str, name: &str, managed: bool) -> Result<(), Error> {
+    let output = tmux_command()
+        .args([
+            "-S",
+            socket,
+            "display-message",
+            "-p",
+            "-t",
+            pane,
+            "#{window_name}\n#{automatic-rename}\n#{@safeyolo_window_name}",
+        ])
+        .output()
+        .await?;
+    if !output.status.success() {
+        return Err("could not inspect the selected tmux window identity".into());
+    }
+    let text = String::from_utf8(output.stdout)?;
+    let mut lines = text.lines();
+    let current = lines.next().unwrap_or("");
+    let automatic = lines.next().unwrap_or("");
+    let previous = lines.next().unwrap_or("");
+    let rename = automatic == "1"
+        || automatic == "on"
+        || !previous.is_empty() && previous == current
+        || managed && previous.is_empty() && current == name;
+    let mut commands = Vec::<Vec<&str>>::new();
+    if rename {
+        commands.extend([
+            vec!["rename-window", "-t", pane, name],
+            vec![
+                "set-option",
+                "-w",
+                "-t",
+                pane,
+                "@safeyolo_window_name",
+                name,
+            ],
+            vec!["set-option", "-w", "-t", pane, "automatic-rename", "off"],
+            vec!["set-option", "-w", "-t", pane, "allow-rename", "off"],
+        ]);
+    }
+    if managed {
+        commands.push(vec![
+            "set-option",
+            "-p",
+            "-t",
+            pane,
+            "@safeyolo_agent_name",
+            name,
+        ]);
+        commands.push(vec!["select-pane", "-t", pane, "-T", name]);
+    }
+    for arguments in commands {
+        if !tmux_command()
+            .args(["-S", socket])
+            .args(arguments)
+            .status()
+            .await?
+            .success()
+        {
+            return Err("could not retain the agent name in its tmux terminal".into());
+        }
+    }
+    Ok(())
 }
 
 pub(crate) async fn persistent_shell(
@@ -1007,6 +1096,8 @@ pub(crate) async fn launcher_session(name: &str, launch_id: &str) -> Result<Valu
         {
             return Err("Could not identify agent tmux pane".into());
         }
+    } else {
+        name_terminal(&socket.to_string_lossy(), pane, name, true).await?;
     }
     Ok(json!({"tmux_socket":socket,"pane_id":pane}))
 }
@@ -1866,6 +1957,14 @@ fn configured_guest_command(agent: &Agent, interactive: bool) -> Result<String, 
     }
 }
 
+pub(crate) fn current_instance_command() -> Result<String, Error> {
+    Ok(format!(
+        "{} --config {}",
+        shell_quote(&std::env::current_exe()?.to_string_lossy()),
+        shell_quote(&crate::host_platform::config_path().to_string_lossy())
+    ))
+}
+
 pub(crate) fn shell_quote(value: &str) -> String {
     if !value.is_empty()
         && value
@@ -2527,7 +2626,7 @@ pub(crate) async fn retire(selected: &Agent, apply: bool) -> Result<Value, Error
         "workspace_retained":agent.folder,"saved_mount_sources_retained":agent.mounts.iter().map(|spec| spec.split(':').next().unwrap_or(spec)).collect::<Vec<_>>(),
         "effects":"Stop this agent and its coding harness, clean its runtime records, then remove only its saved agents table. Its home, workspace and extra mount sources remain. Grants, credentials, factory snapshots and Coord records remain unchanged.",
         "retained_references":crate::host_agents::retained_references(&agent),
-        "apply_command":["safeyolo","--root",crate::host_platform::config_dir().to_string_lossy().as_ref(),"agent","retire",agent.name.as_str(),"--yes"]});
+        "apply_command":["safeyolo","--instance-dir",crate::host_platform::config_dir().to_string_lossy().as_ref(),"agent","retire",agent.name.as_str(),"--yes"]});
     // Existing delegation validation can refuse removal. Disclose it before
     // stopping and revalidate the fresh document after stop/cleanup waits.
     if let Err(error) = crate::host_agents::remove_definition(&agent, false).await {
@@ -2682,6 +2781,124 @@ async fn stop_launcher(agent: &Agent) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires the installed tmux executable; run explicitly for terminal identity changes"]
+    async fn real_tmux_keeps_agent_names_after_reuse_and_shell_titles_without_renaming_user_windows()
+     {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir(root.join("bin")).unwrap();
+        std::os::unix::fs::symlink("/usr/bin/tmux", root.join("bin/tmux")).unwrap();
+        crate::host_platform::in_instance(root.to_owned(), async {
+            let socket = root.join("tmux.sock");
+            let socket = socket.to_str().unwrap();
+            async fn tmux(socket: &str, args: &[&str]) -> String {
+                let output = tmux_command()
+                    .args(["-S", socket])
+                    .args(args)
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                String::from_utf8(output.stdout).unwrap().trim().to_owned()
+            }
+            // Own an isolated server and ensure panic teardown cannot touch a
+            // user's tmux server or leave this fixture running.
+            struct Server<'a>(&'a str);
+            impl Drop for Server<'_> {
+                fn drop(&mut self) {
+                    let _ = std::process::Command::new("/usr/bin/tmux")
+                        .args(["-S", self.0, "kill-server"])
+                        .status();
+                }
+            }
+            let alice = tmux(
+                socket,
+                &[
+                    "-f",
+                    "/dev/null",
+                    "new-session",
+                    "-d",
+                    "-P",
+                    "-F",
+                    "#{pane_id}",
+                    "-s",
+                    "agents",
+                    "-n",
+                    "alice",
+                    "/bin/sh",
+                ],
+            )
+            .await;
+            let _server = Server(socket);
+            let bob = tmux(
+                socket,
+                &[
+                    "new-window",
+                    "-d",
+                    "-P",
+                    "-F",
+                    "#{pane_id}",
+                    "-t",
+                    "agents",
+                    "-n",
+                    "bob",
+                    "/bin/sh",
+                ],
+            )
+            .await;
+            for (pane, name) in [(&alice, "alice"), (&bob, "bob")] {
+                name_terminal(socket, pane, name, true).await.unwrap();
+                tmux(
+                    socket,
+                    &[
+                        "send-keys",
+                        "-t",
+                        pane,
+                        r"printf '\033kforeign-title\033\\'",
+                        "Enter",
+                    ],
+                )
+                .await;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            for (pane, name) in [(&alice, "alice"), (&bob, "bob")] {
+                name_terminal(socket, pane, name, true).await.unwrap();
+                assert_eq!(
+                    tmux(
+                        socket,
+                        &["display-message", "-p", "-t", pane, "#{window_name}"]
+                    )
+                    .await,
+                    name
+                );
+            }
+            tmux(socket, &["rename-window", "-t", &alice, "operator-notes"]).await;
+            name_terminal(socket, &alice, "alice", true).await.unwrap();
+            assert_eq!(
+                tmux(
+                    socket,
+                    &["display-message", "-p", "-t", &alice, "#{window_name}"]
+                )
+                .await,
+                "operator-notes"
+            );
+            assert_eq!(
+                tmux(
+                    socket,
+                    &["display-message", "-p", "-t", &bob, "#{window_name}"]
+                )
+                .await,
+                "bob"
+            );
+        })
+        .await;
+    }
 
     #[tokio::test]
     async fn listener_reconciliation_writes_only_changes_and_returns_the_published_config() {

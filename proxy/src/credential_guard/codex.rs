@@ -275,6 +275,7 @@ impl CredentialGuard {
             options,
             now_ms,
             Some((refresh.refresh_token.as_str(), observed)),
+            false,
         )?;
         for audit in &mut outcome.audit {
             audit.details["location"] = serde_json::json!("body:refresh_token");

@@ -60,7 +60,7 @@ for forensic analysis. These operator clients do not need a broker connection.
 ### Option 1: Consume JSONL Events
 
 On the host, use the account that owns the selected SafeYolo instance. The
-instance root defaults to `$HOME/.safeyolo`; `--root` or `SAFEYOLO_CONFIG_DIR`
+instance root defaults to `$HOME/.safeyolo`; `--instance-dir` or `SAFEYOLO_CONFIG_DIR`
 selects another instance. Its `config.toml` sets `audit_log_path`, which defaults
 to `logs/audit.jsonl` relative to that configuration file. Use that resolved path
 when consuming records. `SAFEYOLO_LOGS_DIR` and the former XDG `safeyolo.jsonl`
@@ -486,7 +486,7 @@ publisher.
 If process ownership or shutdown cannot be verified, cleanup preserves the
 root and reports its recovery command. Inspect the reported instance, correct
 the specific ownership or configuration problem, then use
-`safeyolo --root ROOT instance cleanup` with that retained root. Cleanup refuses
+`safeyolo --instance-dir PATH instance cleanup` with that retained root. Cleanup refuses
 to remove an instance whose runner is still live. SIGKILL and a host crash
 cannot run cleanup; use the same retained-root command after recovery.
 
@@ -504,10 +504,10 @@ format or a backend-selection adapter.
 After installing into `$HOME/sy-development`, run from a host terminal:
 
 ```sh
-"$HOME/sy-development/bin/safeyolo" --root "$HOME/sy-development" start
-"$HOME/sy-development/bin/safeyolo" --root "$HOME/sy-development" status
-"$HOME/sy-development/bin/safeyolo" --root "$HOME/sy-development" doctor
-"$HOME/sy-development/bin/safeyolo" --root "$HOME/sy-development" stop
+"$HOME/sy-development/bin/safeyolo" --instance-dir "$HOME/sy-development" start
+"$HOME/sy-development/bin/safeyolo" --instance-dir "$HOME/sy-development" status
+"$HOME/sy-development/bin/safeyolo" --instance-dir "$HOME/sy-development" doctor
+"$HOME/sy-development/bin/safeyolo" --instance-dir "$HOME/sy-development" stop
 ```
 
 Start waits for readiness. Status and doctor use the owned process

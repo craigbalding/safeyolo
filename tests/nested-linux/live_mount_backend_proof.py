@@ -9,7 +9,7 @@ and proxy on every exit. It deliberately restarts the primary at the end to
 check saved versus live-only intent. The earlier same-session proof is retained.
 
     python3 tests/nested-linux/live_mount_backend_proof.py \
-        --root /owned/fresh-instance --base /owned/new-result-directory \
+        --instance-dir /owned/fresh-instance --base /owned/new-result-directory \
         --candidate FULL_COMMIT
 
 Use --saved-retirement for the focused saved add/update/remove, live change,
@@ -122,7 +122,7 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
     base.mkdir(mode=0o755)
     receipt = receipt or ProcedureReceipt("mounts", base / "observed.json")
     report = {"root": str(root), "base": str(base), "commands": [], "operations": []}
-    cli = [str(root / "bin/safeyolo"), "--root", str(root)]
+    cli = [str(root / "bin/safeyolo"), "--instance-dir", str(root)]
     agent, second, failed = "proof1042", "proof1042second", "proof1042failed"
     created, initial, handles = [], {}, {}
     marker = None
@@ -644,7 +644,7 @@ def run_proof(root: Path, base: Path, native_test: Path | None = None, candidate
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--instance-dir", dest="root", type=Path, required=True)
     parser.add_argument("--base", type=Path, required=True)
     parser.add_argument("--native-test-binary", type=Path)
     parser.add_argument("--candidate")

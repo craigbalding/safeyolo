@@ -124,10 +124,12 @@ def retained_readiness(args: argparse.Namespace, selection: Path, attempt: Path,
     installed = verify_installed(selection, source, attempt)
     # Doctor checks the current runtime payload, mapping and host prerequisites.
     # Never copy unchecked Linux settings from a cached config.toml.
-    diagnosis = subprocess.run([str(source / "bin/safeyolo"), "--root", str(source), "doctor"],
+    diagnosis = subprocess.run([str(source / "bin/safeyolo"), "--instance-dir", str(source), "--json", "doctor"],
                                cwd=ROOT, stdout=subprocess.PIPE, stderr=log, check=True, timeout=15)
     diagnosis_json = json.loads(diagnosis.stdout)
-    linux = diagnosis_json.get("linux") if isinstance(diagnosis_json, dict) else None
+    checks = diagnosis_json.get("checks", []) if isinstance(diagnosis_json, dict) else []
+    runtime = [check for check in checks if check.get("name") == "Linux runtime and namespaces"]
+    linux = runtime[0].get("details") if len(runtime) == 1 else None
     if not isinstance(linux, dict) or linux.get("state") != "ready":
         raise ValueError("retained Linux runtime is not ready")
     readiness = attempt / "readiness"

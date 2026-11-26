@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, host_platform};
 
-pub const HELP: &str = "safeyolo [--root SOURCE] instance run --ephemeral [--runtime DIRECTORY] [--reuse-guest-assets-from ROOT|default] [--directory PARENT] -- COMMAND [ARGUMENTS...]\nRun COMMAND in a fresh private instance, then stop its agents, proxy and Coord and remove its root. COMMAND receives the selected CLI on PATH and instance-scoped environment. The runtime directory contains bin/safeyolo and bin/safeyolo-proxy (or the binaries directly). It defaults to the selected installation. Guest reuse is explicit: default means HOME/.safeyolo; ROOT selects another installation. Guest bytes are pinned by SHA-256 before the command runs and checked before each guest boot. Base images use the existing read-only guest mounts and private overlays. Configuration, credentials and federation are fresh; host prerequisites and source assets are preserved. --directory selects a short, disk-backed parent (default /var/tmp). Long socket paths fail with a targeted repair. Exit status follows COMMAND. SIGINT/SIGTERM stop its process group and clean up. SIGKILL cannot run cleanup. An unverified cleanup retains the root and reports the recovery command.\nsafeyolo [--root ROOT] instance cleanup\nRetry cleanup of a retained ephemeral root after inspecting its reported ownership failure.\nsafeyolo instance asset-digest PATH\nRead a file or tree and print its SHA-256, including names, file modes and symbolic-link targets.";
+pub const HELP: &str = "safeyolo [--instance-dir SOURCE] instance run --ephemeral [--runtime DIRECTORY] [--reuse-guest-assets-from ROOT|default] [--directory PARENT] -- COMMAND [ARGUMENTS...]\nRun COMMAND in a fresh private instance, then stop its agents, proxy and Coord and remove its root. COMMAND receives the selected CLI on PATH and instance-scoped environment. The runtime directory contains bin/safeyolo and bin/safeyolo-proxy (or the binaries directly). It defaults to the selected installation. Guest reuse is explicit: default means HOME/.safeyolo; ROOT selects another installation. Guest bytes are pinned by SHA-256 before the command runs and checked before each guest boot. Base images use the existing read-only guest mounts and private overlays. Configuration, credentials and federation are fresh; host prerequisites and source assets are preserved. --directory selects a short, disk-backed parent (default /var/tmp). Long socket paths fail with a targeted repair. Exit status follows COMMAND. SIGINT/SIGTERM stop its process group and clean up. SIGKILL cannot run cleanup. An unverified cleanup retains the root and reports the recovery command.\nsafeyolo [--instance-dir PATH] instance cleanup\nRetry cleanup of a retained ephemeral root after inspecting its reported ownership failure.\nsafeyolo instance asset-digest PATH\nRead a file or tree and print its SHA-256, including names, file modes and symbolic-link targets.";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -307,7 +307,7 @@ fn stage(root: &Path, runtime: &Path, reuse: Option<&Path>) -> Result<(), Error>
     }
     let mut init = Command::new(bin.join("safeyolo"));
     scoped(&mut init, root)?;
-    let result = init.arg("--root").arg(root).arg("init").output()?;
+    let result = init.arg("--instance-dir").arg(root).arg("init").output()?;
     if !result.status.success() {
         return Err(format!(
             "temporary instance init failed: {}",
@@ -658,10 +658,10 @@ pub async fn run(source: &Path, args: &[OsString]) -> Result<i32, Error> {
     scoped(&mut selected, &root)?;
     let outcome = command(selected, &mut interrupt, &mut terminate).await;
     if let Err(error) = cleanup(&root, outcome.is_ok()).await {
-        return Err(format!("ephemeral cleanup failed: {error}; root retained at {}. Inspect its status, then retry: {} --root {} instance cleanup", root.display(), root.join("bin/safeyolo").display(), root.display()).into());
+        return Err(format!("ephemeral cleanup failed: {error}; root retained at {}. Inspect its status, then retry: {} --instance-dir {} instance cleanup", root.display(), root.join("bin/safeyolo").display(), root.display()).into());
     }
     if let Err(error) = outcome {
-        return Err(format!("command failed: {error}; root retained at {}. Inspect this instance, then run: {} --root {} instance cleanup", root.display(), root.join("bin/safeyolo").display(), root.display()).into());
+        return Err(format!("command failed: {error}; root retained at {}. Inspect this instance, then run: {} --instance-dir {} instance cleanup", root.display(), root.join("bin/safeyolo").display(), root.display()).into());
     }
     outcome
 }

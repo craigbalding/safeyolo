@@ -39,7 +39,7 @@ class TestLiveAgentLifecycle:
         }
         cli = os.environ.get("SAFEYOLO_NATIVE_CLI", "safeyolo")
         command = (guest_command_args(cli, args[2], args[4])
-                   if args[:2] == ("agent", "shell") else [cli, "--root", env["SAFEYOLO_CONFIG_DIR"], *args])
+                   if args[:2] == ("agent", "shell") else [cli, "--instance-dir", env["SAFEYOLO_CONFIG_DIR"], *args])
         return subprocess.run(
             command,
             capture_output=True, text=True, env=env,

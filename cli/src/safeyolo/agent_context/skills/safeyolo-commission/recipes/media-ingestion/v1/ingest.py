@@ -51,7 +51,7 @@ def required_check(config, control, directory):
             spec.get("engine", {"kind": "platform"}) != {"kind": "platform"}):
         raise ValueError("Media control needs its fixed, network-disabled Linux job")
     result = subprocess.run([
-        config["safeyolo"], "--root", config["instance_root"], "job", "run", str(spec_path),
+        config["safeyolo"], "--instance-dir", config["instance_root"], "--json", "job", "run", str(spec_path),
         "--input", str(directory),
     ], capture_output=True, text=True, timeout=spec["timeout_seconds"] + 120)
     (directory / f"{control}-job-result.json").write_text(result.stdout)

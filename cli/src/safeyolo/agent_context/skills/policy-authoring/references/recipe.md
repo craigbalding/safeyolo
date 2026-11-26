@@ -41,9 +41,9 @@ active policy, source status and adopted services/grants before changes:
 
 ```sh
 "$HOME/.safeyolo/bin/safeyolo" --version
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" policy show
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" policy feeds status
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services list
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" policy show
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" policy feeds status
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" services list
 ```
 
 `policy show` reports the running source and `saved_matches_active`. If the
@@ -78,7 +78,7 @@ favorable dynamic result at every priority.
 ```sh
 cp "$HOME/.safeyolo/assets/skills/policy-authoring/assets/preferences.json" preferences.json
 "$HOME/.safeyolo/bin/safeyolo" policy feeds example hagezi > source-choice.toml
-uv run --script "$HOME/.safeyolo/assets/skills/policy-authoring/scripts/author.py" --root "$HOME/.safeyolo" --choices preferences.json --sources source-choice.toml --output candidate
+uv run --script "$HOME/.safeyolo/assets/skills/policy-authoring/scripts/author.py" --instance-dir "$HOME/.safeyolo" --choices preferences.json --sources source-choice.toml --output candidate
 ```
 
 `candidate/` contains the complete policy, merged source definitions, a
@@ -97,11 +97,11 @@ terms first. No list member is visited. A failed download retains the saved
 configuration and retry state; inspect status instead of treating it as empty.
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" policy feeds configure candidate/sources.toml
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" policy feeds status
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" policy feeds configure candidate/sources.toml
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" policy feeds status
 "$HOME/.safeyolo/bin/safeyolo" services check candidate/cyber-rdap.yaml
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" policy check candidate/candidate.toml
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" policy evaluate candidate/candidate.toml candidate/request.json
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" policy check candidate/candidate.toml
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" policy evaluate candidate/candidate.toml candidate/request.json
 ```
 
 Expected preview: `recorded_offline`, accepted feed version/freshness and named
@@ -128,9 +128,9 @@ capability. The research agent gains no service or administrative credential.
 
 ```sh
 cp candidate/cyber-rdap.yaml "$HOME/.safeyolo/services/cyber-rdap.yaml"
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" policy apply candidate/candidate.toml
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" policy show
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services show cyber-rdap
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" policy apply candidate/candidate.toml
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" policy show
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" services show cyber-rdap
 ```
 
 Success needs `status: active`, matching saved/active source and the accepted

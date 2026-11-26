@@ -2,11 +2,11 @@
 use super::{Error, Path, open, signals, work::Actor};
 use serde_json::{Value, json};
 
-pub(super) const HELP: &str = "safeyolo [--root ROOT] coord signal list ROOM [--state current|resolved|superseded|all] [--needs-operator] [--after ID] [--limit N]
-safeyolo [--root ROOT] coord signal show ROOM SIGNAL_ID [--revision N]
-safeyolo [--root ROOT] coord signal create ROOM blocker|decision|result|correction SUMMARY --basis observed|inferred [--work-id ID] [--ref REF ...] [--supersedes SIGNAL_ID --expected-revision N] [--operation-id ID]
-safeyolo [--root ROOT] coord signal resolve ROOM SIGNAL_ID --expected-revision N [--operation-id ID]
-safeyolo [--root ROOT] watch [--once] [--json] [--jsonl FILE]
+pub(super) const HELP: &str = "safeyolo [--instance-dir PATH] coord signal list ROOM [--state current|resolved|superseded|all] [--needs-operator] [--after ID] [--limit N]
+safeyolo [--instance-dir PATH] coord signal show ROOM SIGNAL_ID [--revision N]
+safeyolo [--instance-dir PATH] coord signal create ROOM blocker|decision|result|correction SUMMARY --basis observed|inferred [--work-id ID] [--ref REF ...] [--supersedes SIGNAL_ID --expected-revision N] [--operation-id ID]
+safeyolo [--instance-dir PATH] coord signal resolve ROOM SIGNAL_ID --expected-revision N [--operation-id ID]
+safeyolo [--instance-dir PATH] watch [--once] [--json] [--jsonl FILE]
 
 Use the owning host account. Agents use create_signal, read_signal and list_signals with their authenticated room membership. observed is the author's report, never independent attestation. A correction supersedes only its author's signal and requires its current revision. The operator may resolve any author's current signal. Original immutable revisions remain readable.
 Summary: 1..1024 UTF-8 bytes. Refs: at most 16 opaque strings of 1024 bytes; they are never fetched. Mutations: at most 32768 bytes. Lists: at most 100 items and 65536 bytes per page, ordered by signal_id; next_after continues without a shared snapshot. Current room_state includes bounded signals and needs_operator pages.

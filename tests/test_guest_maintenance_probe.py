@@ -123,7 +123,7 @@ def test_prepared_apt_candidate_drives_real_native_restore_preview(tmp_path):
     shutil.copytree(root / "etc", baseline / "etc")
     (baseline / "usr/local/etc").mkdir(parents=True)
     directory = tmp_path / "retained"
-    command = [helper, "retained-state", "--root", str(root), "--directory", str(directory)]
+    command = [helper, "retained-state", "--instance-dir", str(root), "--directory", str(directory)]
     run(*command, "start")
     state_path = directory / "state.json"
     state = json.loads(state_path.read_text())
@@ -292,7 +292,7 @@ def test_complete_driver_consumes_current_run_and_stopped_prior_result(
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "check_output", lambda *a, **k: "commit=fixture profile=debug")
     output = tmp_path / "result.json"
-    monkeypatch.setattr("sys.argv", [str(HOST / "guest_maintenance.py"), "--root", str(root),
+    monkeypatch.setattr("sys.argv", [str(HOST / "guest_maintenance.py"), "--instance-dir", str(root),
         "--agent", "m", "--agent-id", "ag-m1611", "--run-id", "current-run", "--commit", "fixture",
         "--hook-sha256", "hook", "--root-kind", "stock", "--rootfs", str(rootfs),
         "--base-id", base, "--overlay", "file", "--phase", phase, "--prior-result", str(prior_path),

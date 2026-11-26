@@ -68,8 +68,8 @@ Here `instance_root` is that instance's existing root and `test_agent` is the
 agent exercising the journey. These commands read current observations:
 
 ```sh
-safeyolo --root "$instance_root" traffic list --agent "$test_agent" --json
-safeyolo --root "$instance_root" observations --json
+safeyolo --instance-dir "$instance_root" traffic list --agent "$test_agent" --json
+safeyolo --instance-dir "$instance_root" observations --json
 ```
 
 The first command returns the current bounded live view. The second identifies

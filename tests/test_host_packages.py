@@ -552,7 +552,7 @@ def test_checksum_backends_through_installers(checksum_bundle, tmp_path, entry, 
     command = [str(bundle / "install.sh")]
     if entry == "source":
         command = [str(REPO / "install.sh"), "--bundle", str(bundle)]
-    result = run(*command, "--root", str(root), "--command-dir", str(tmp_path / "commands"),
+    result = run(*command, "--instance-dir", str(root), "--command-dir", str(tmp_path / "commands"),
                  "--no-guest-download")
     if damage:
         assert result.returncode != 0
@@ -582,7 +582,7 @@ def test_bootstrap_owned_bundle_moves_verified_files_without_copying(checksum_bu
     previous = binary.stat()
     contents = binary.read_bytes()
     root = tmp_path / "installed"
-    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(tmp_path / "commands"),
+    result = run(str(bundle / "install.sh"), "--instance-dir", str(root), "--command-dir", str(tmp_path / "commands"),
                  "--no-guest-download", "--move-bundle")
     assert result.returncode == 0, result.stderr
     installed = root / "bin/safeyolo"
@@ -630,7 +630,7 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
                       'execv(decoder,argv);return 99;}')
     if guest_exit is not None or guest_assets is not None:
         guest_command += ('if((argc>2 && strcmp(argv[1],"guest")==0 && strcmp(argv[2],"download")==0)||'
-                          '(argc>4 && strcmp(argv[1],"--root")==0 && strcmp(argv[3],"guest")==0 && strcmp(argv[4],"download")==0)){'
+                          '(argc>4 && strcmp(argv[1],"--instance-dir")==0 && strcmp(argv[3],"guest")==0 && strcmp(argv[4],"download")==0)){'
                          'char *download=getenv("PACKAGE_GUEST_DOWNLOAD_CLI");'
                          'if(download){execv(download,argv);return 95;}'
                          + (f'return {guest_exit};' if guest_exit is not None else 'puts("sha256:' + 'b' * 64 + '");return 0;') + '}')
@@ -649,7 +649,7 @@ def executable(path, identity, guest_exit=None, guest_assets=None):
                               f'puts("{guest_assets}");return 0;')
         guest_command += '}'
     host_command = (
-        'if(argc>5 && strcmp(argv[1],"--root")==0 && strcmp(argv[3],"coord")==0){'
+        'if(argc>5 && strcmp(argv[1],"--instance-dir")==0 && strcmp(argv[3],"coord")==0){'
         'char *coord=getenv("PACKAGE_COORD_CLI");'
         'if(coord){execv(coord,argv);return 99;}}'
         'if(argc>4 && strcmp(argv[3],"host")==0 && strcmp(argv[4],"prepare")==0){'
@@ -802,7 +802,7 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
         "options = dict(zip(arguments[::2], arguments[1::2]))\n"
         "if '--no-guest-download' in sys.argv: options['--no-guest-download'] = True\n"
         "assert '--yes' in sys.argv\n"
-        "root = pathlib.Path(options['--root']); (root / 'bin').mkdir(parents=True)\n"
+        "root = pathlib.Path(options['--instance-dir']); (root / 'bin').mkdir(parents=True)\n"
         "(root / 'native-inputs.json').write_text(json.dumps(options))\n"
         "cli = root / 'bin/safeyolo'\n"
         f"cli.write_text({fixture_cli!r})\ncli.chmod(0o755)\n")
@@ -847,7 +847,7 @@ def test_blackbox_preparation_binds_available_native_inputs(tmp_path, monkeypatc
     else:
         assert Path(options['--platform-assets']) == images
         assert '--no-guest-download' not in options
-    assert 'native --root' in result.stdout and 'coord stop' in result.stdout
+    assert 'native --instance-dir' in result.stdout and 'coord stop' in result.stdout
     if separate_checkout:
         failed = run(str(scripts / 'run-lane.sh'), lane, '--install-checkout', str(tmp_path / 'missing'), cwd=checkout)
         assert failed.returncode == 2 and 'requires a source checkout' in failed.stderr
@@ -1209,7 +1209,7 @@ def test_libc_refusal_precedes_installation(package_inputs, tmp_path, request, l
     metadata.write_text("".join(f"{key}={value}\n" for key, value in fields.items()))
     request.getfixturevalue("musl_runtime")
     root = tmp_path / "refused"
-    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"))
+    result = run(str(bundle / "install.sh"), "--instance-dir", str(root), "--command-dir", str(root / "commands"))
     assert result.returncode != 0 and diagnosis in result.stderr
     assert not root.exists()
 
@@ -1219,7 +1219,7 @@ def test_musl_package_is_refused_on_glibc_before_installation(package_inputs, tm
     metadata = bundle / "package-info"
     metadata.write_text(metadata.read_text() + "libc=musl\n")
     root = tmp_path / "refused"
-    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"))
+    result = run(str(bundle / "install.sh"), "--instance-dir", str(root), "--command-dir", str(root / "commands"))
     assert result.returncode != 0 and "package requires musl; this host uses glibc" in result.stderr
     assert not root.exists()
 
@@ -1254,7 +1254,7 @@ def test_runtime_payload_refusal_preserves_other_installation(package_inputs, tm
     canary = other / "policy.toml"
     canary.write_bytes(b"kept operator policy")
     root = tmp_path / "refused"
-    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"))
+    result = run(str(bundle / "install.sh"), "--instance-dir", str(root), "--command-dir", str(root / "commands"))
     assert result.returncode != 0, result.stdout
     assert not root.exists()
     assert canary.read_bytes() == b"kept operator policy"
@@ -1275,7 +1275,7 @@ def test_package_reader_refuses_invalid_guest_metadata_before_installation(packa
     metadata = bundle / "package-info"
     metadata.write_text(change(metadata.read_text()))
     root = tmp_path / "refused"
-    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"))
+    result = run(str(bundle / "install.sh"), "--instance-dir", str(root), "--command-dir", str(root / "commands"))
     assert result.returncode != 0 and diagnosis in result.stderr
     assert not root.exists()
 
@@ -1285,14 +1285,14 @@ def test_default_installer_calls_native_guest_before_creating_configuration(pack
     executable(package_inputs[1] / "safeyolo", f"safeyolo 0.1.0 commit={package_inputs[5]} profile=debug", guest_exit=31)
     bundle = build_bundle(package_inputs, tmp_path)
     root, marker = tmp_path / "fresh", tmp_path / "guest-argv"
-    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"),
+    result = run(str(bundle / "install.sh"), "--instance-dir", str(root), "--command-dir", str(root / "commands"),
                  *(["--guest-index", guest_index] if guest_index else []),
                  env=dict(os.environ, PACKAGE_GUEST_CALLS=str(marker)))
     assert result.returncode == 31 and "controlled guest acquisition refusal" in result.stderr
     arguments = marker.read_text().splitlines()
     staging = Path(arguments[1])
     assert staging.parent == root.parent and staging.name.startswith("safeyolo-install.")
-    assert arguments == ["--root", str(staging), "guest", "acquire", "--package-info", str(staging / "package-info"), "--write-selection", str(staging / "guest-selection.json"),
+    assert arguments == ["--instance-dir", str(staging), "guest", "acquire", "--package-info", str(staging / "package-info"), "--write-selection", str(staging / "guest-selection.json"),
                          *(["--index", guest_index] if guest_index else []),
                          "--namespace-root", str(root),
                          "--host-settings", str(staging / "host-settings.toml")]
@@ -1300,7 +1300,7 @@ def test_default_installer_calls_native_guest_before_creating_configuration(pack
     assert not (root / "config.toml").exists()
     assert not (root / "bin").exists()
     assert not (root / "data").exists()
-    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"), "--no-guest-download")
+    result = run(str(bundle / "install.sh"), "--instance-dir", str(root), "--command-dir", str(root / "commands"), "--no-guest-download")
     assert result.returncode == 0, result.stderr
     platform = tmp_path / "explicit"
     (platform / "rootfs-tree").mkdir(parents=True)
@@ -1309,7 +1309,7 @@ def test_default_installer_calls_native_guest_before_creating_configuration(pack
     selection.parent.mkdir(parents=True)
     selection.write_bytes(b'{"index": "prepared acquisition selection"}\n')
     acquisition_call = marker.read_bytes()
-    result = run(str(bundle / "install.sh"), "--root", str(supplied), "--command-dir", str(supplied / "commands"),
+    result = run(str(bundle / "install.sh"), "--instance-dir", str(supplied), "--command-dir", str(supplied / "commands"),
                  "--platform-assets", str(platform), env=dict(os.environ, PACKAGE_GUEST_CALLS=str(marker)))
     assert result.returncode == 0, result.stderr
     assert (supplied / "share/rootfs-tree").resolve() == (platform / "rootfs-tree").resolve()
@@ -1462,7 +1462,7 @@ def test_missing_bundle_input_is_reported_before_fresh_root_changes(package_inpu
     bundle = build_bundle(package_inputs, tmp_path)
     (bundle / "bin/safeyolo-proxy").unlink()
     root = tmp_path / "fresh"
-    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"), cwd=tmp_path)
+    result = run(str(bundle / "install.sh"), "--instance-dir", str(root), "--command-dir", str(root / "commands"), cwd=tmp_path)
     assert result.returncode != 0
     assert "required artifact is missing" in result.stderr and "safeyolo-proxy" in result.stderr
     assert not root.exists()
@@ -1473,7 +1473,7 @@ def test_installer_preserves_existing_instance(package_inputs, tmp_path):
     root = tmp_path / "existing"
     root.mkdir()
     (root / "config.toml").write_text("operator configuration\n")
-    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"))
+    result = run(str(bundle / "install.sh"), "--instance-dir", str(root), "--command-dir", str(root / "commands"))
     assert result.returncode != 0 and "fresh root" in result.stderr
     assert (root / "config.toml").read_text() == "operator configuration\n"
     assert not (root / "bin").exists()
@@ -1485,7 +1485,7 @@ def test_fresh_install_preserves_prepared_platform_inputs(package_inputs, tmp_pa
     (root / "share").mkdir(parents=True)
     image = root / "share/Image"
     image.write_bytes(b"prepared boot input")
-    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"), "--no-guest-download", cwd=tmp_path)
+    result = run(str(bundle / "install.sh"), "--instance-dir", str(root), "--command-dir", str(root / "commands"), "--no-guest-download", cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert image.read_bytes() == b"prepared boot input"
     assert (root / "LICENSE").read_bytes() == (bundle / "LICENSE").read_bytes()
@@ -1553,7 +1553,7 @@ def test_install_discovers_command_in_fresh_shell_without_selection_overrides(pa
         entry = package_inputs[0] / "install.sh"
         shutil.copy2(REPO / "install.sh", entry)
         arguments = ["--bundle", str(bundle)]
-    result = run(str(entry), "--root", str(root), *arguments, env=environment)
+    result = run(str(entry), "--instance-dir", str(root), *arguments, env=environment)
     assert result.returncode == 0, result.stderr
     assert (commands / "safeyolo").is_symlink()
     assert (commands / "safeyolo").resolve() == root / "bin/safeyolo"
@@ -1589,7 +1589,7 @@ def test_install_preserves_unrelated_command_and_instance_state(package_inputs, 
     boot.write_bytes(b"retained prepared boot input")
     environment = dict(os.environ, HOME=str(home), PATH=f"{commands}:/usr/local/bin:/usr/bin:/bin")
     environment.pop("BASH_ENV", None)
-    result = run(str(bundle / "install.sh"), "--root", str(root), env=environment)
+    result = run(str(bundle / "install.sh"), "--instance-dir", str(root), env=environment)
     assert result.returncode != 0
     assert f"Existing command {unrelated} was preserved" in result.stderr
     assert not (root / "config.toml").exists() and not (root / "bin").exists()
@@ -1612,7 +1612,7 @@ def test_platform_install_stages_cache_paths_without_changing_prepared_tree(pack
     if with_cache_paths:
         (platform / "cache-paths.txt").write_text(cache_paths)
     root = tmp_path / "installed"
-    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"), "--platform-assets", str(platform))
+    result = run(str(bundle / "install.sh"), "--instance-dir", str(root), "--command-dir", str(root / "commands"), "--platform-assets", str(platform))
     assert result.returncode == 0, result.stderr
     assert (root / "share/rootfs-tree").is_symlink()
     assert (root / "share/rootfs-tree").resolve() == tree.resolve()
@@ -1643,7 +1643,7 @@ def test_installer_grants_final_runtime_access_before_publishing_config(package_
         f"raise SystemExit({grant_status})\n",
     )
     grant.chmod(0o700)
-    result = run(str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(root / "commands"),
+    result = run(str(bundle / "install.sh"), "--instance-dir", str(root), "--command-dir", str(root / "commands"),
                  env={**os.environ, "PACKAGE_RUNTIME_ACCESS_CLI": str(grant)}, input="", umask=0o077)
     assert result.returncode == grant_status, result.stderr
     assert marker.read_text() == str(root / "libexec/runsc")
@@ -1690,7 +1690,7 @@ def test_source_installer_runs_native_bundle_without_python_or_uv(tmp_path, pack
     monkeypatch.setenv('INSTALL_CANARIES', str(canaries))
     monkeypatch.setenv('PATH', f'{canaries}:{os.environ["PATH"]}')
     root = tmp_path / 'selected root'
-    result = run(str(entry), '--root', str(root), '--command-dir', str(root / 'commands'), '--bundle', str(bundle), cwd=tmp_path)
+    result = run(str(entry), '--instance-dir', str(root), '--command-dir', str(root / 'commands'), '--bundle', str(bundle), cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert (root / 'bin/safeyolo').read_bytes().startswith(b'\x7fELF')
     assert (root / 'package-info').read_bytes() == (bundle / 'package-info').read_bytes()
@@ -1712,7 +1712,7 @@ def test_source_installer_preserves_missing_artifact_error_and_fresh_root(tmp_pa
     shutil.copy2(REPO / 'install.sh', entry)
     (bundle / 'bin/safeyolo-proxy').unlink()
     root = tmp_path / 'fresh'
-    result = run(str(entry), '--root', str(root), '--command-dir', str(root / 'commands'), '--bundle', str(bundle))
+    result = run(str(entry), '--instance-dir', str(root), '--command-dir', str(root / 'commands'), '--bundle', str(bundle))
     assert result.returncode != 0
     assert 'required artifact is missing' in result.stderr and 'safeyolo-proxy' in result.stderr
     assert not root.exists()
@@ -1754,8 +1754,8 @@ def test_installed_package_wrapper_selects_the_archive_installer_without_source_
     else:
         assert result.returncode == 42, result.stdout + result.stderr
         arguments = calls.read_text().splitlines()
-        root = Path(arguments[arguments.index("--root") + 1])
+        root = Path(arguments[arguments.index("--instance-dir") + 1])
         assert root.parent.parent == home
-        assert arguments[:4] == ["--root", str(root), "--command-dir", str(root / "commands")]
+        assert arguments[:4] == ["--instance-dir", str(root), "--command-dir", str(root / "commands")]
         assert arguments[4:] == options[4:]
         assert f"sha256:{digest}" in result.stdout

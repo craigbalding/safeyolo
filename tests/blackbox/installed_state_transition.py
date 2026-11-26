@@ -317,7 +317,7 @@ def start(cli: Path, root: Path, env: dict, revision: str) -> dict:
     config = tomllib.loads((root / "config.toml").read_text())
     check("backend" not in config, "package selection used a retired backend selector")
     package = installed_identity(cli, revision)
-    run([str(cli), "--root", str(root), "start"], env, timeout=45)
+    run([str(cli), "--instance-dir", str(root), "--json", "start"], env, timeout=45)
     path = socket_for(root, "alice")
     check(path.is_socket(), "native proxy did not publish Alice's listener")
     token = (root / "data" / "agent_token").read_text().strip()
@@ -721,7 +721,7 @@ print(json.dumps({'policy':'created'}))
         agent_token = (root / "data/agent_token").read_text().strip()
         alice = socket_for(root, "alice")
         initial_coord = setup_coord(str(args.cli), root, "alice", "bob", room="r638-rollback")
-        run([str(args.cli), "--root", str(root), "coord", "inventory", "advertise-resource",
+        run([str(args.cli), "--instance-dir", str(root), "coord", "inventory", "advertise-resource",
              "r638-rollback", "fixture", "slot", "--operation-id", "r638-resource-advertisement"], env)
         status, sent = json_request(alice, "POST", "/api/coord/rooms/r638-rollback/send", agent_token,
                                    {"body": "initial-native-r638", "declared_content_type": "text/plain",

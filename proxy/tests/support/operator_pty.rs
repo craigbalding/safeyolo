@@ -47,7 +47,7 @@ impl Terminal {
         let input = master.try_clone().unwrap();
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"));
         command
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(root)
             .args(args)
             .env("TERM", "xterm-256color")

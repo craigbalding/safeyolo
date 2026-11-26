@@ -59,7 +59,7 @@ PROBE = Path(__file__).parent / "blackbox/fixtures/nested-docker/network_probe.p
 
 @pytest.mark.parametrize("defect", [None, "reuse-root", "journey", "recurring", "gateway"])
 def test_application_resume_cli_selects_owned_receivers_without_recurring_gateway_replay(tmp_path, monkeypatch, defect):
-    arguments = ["--prepared-config", str(tmp_path / "prepared"), "--root", str(tmp_path / "retained"),
+    arguments = ["--prepared-config", str(tmp_path / "prepared"), "--instance-dir", str(tmp_path / "retained"),
                  "--output", str(tmp_path / "output"), "--revision", "product", "--nested-docker",
                  "--docker-data", "/home/agent/docker-image-data", "--reuse-root", "--journey",
                  "--application-resume", str(tmp_path / "previous/result.json")]

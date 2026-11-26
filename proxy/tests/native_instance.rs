@@ -13,8 +13,9 @@ use tempfile::TempDir;
 
 fn cli(root: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(root)
+        .arg("--json")
         .args(args)
         .output()
         .unwrap()
@@ -98,7 +99,7 @@ impl Fixture {
     fn run(&self, script: &str, reuse: bool) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_safeyolo"));
         command
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(self.root())
             .args(["instance", "run", "--ephemeral", "--runtime"])
             .arg(&self.runtime);

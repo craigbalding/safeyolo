@@ -69,7 +69,7 @@ def main():
                 assert destination.read_bytes() == (fixtures / name).read_bytes(), destination
             else:
                 destination.write_bytes((fixtures / name).read_bytes())
-        command = [str(root / "bin/safeyolo"), "--root", str(root), "factory"]
+        command = [str(root / "bin/safeyolo"), "--instance-dir", str(root), "factory"]
         subprocess.run([*command, "check", str(source)], check=True, timeout=30)
         policy = (root / "policy.toml").read_bytes()
         approved = root / "factories" / contract["name"] / "approved"

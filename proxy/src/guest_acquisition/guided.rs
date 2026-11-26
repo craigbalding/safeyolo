@@ -290,7 +290,7 @@ async fn restart_agent(root: &Path, name: &str) -> Result<(), Error> {
     // remain with the ordinary agent operations.
     for operation in ["stop", "start"] {
         let output = tokio::process::Command::new(root.join("bin/safeyolo"))
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(root)
             .args(["agent", operation, name])
             .output()
@@ -320,21 +320,16 @@ async fn run_inner(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
         let choices = match releases().await {
             Ok(choices) => choices,
             Err(error) => {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &json!({"root":root, "state":"unavailable", "error":error.to_string(), "explicit_selection":"upgrade --release host-COMMIT or --bundle DIRECTORY"})
-                    )?
-                );
+                components::show_status(
+                    &json!({"root":root,"state":"unavailable","error":error.to_string(),
+                        "explicit_selection":"upgrade --release host-COMMIT or --bundle DIRECTORY"}),
+                )?;
                 return Err(error);
             }
         };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(
-                &json!({"root":root, "releases":choices, "scope":"latest 100 release records; published production packages for this host"})
-            )?
-        );
+        components::show_status(
+            &json!({"root":root,"releases":choices,"scope":"latest 100 release records; published production packages for this host"}),
+        )?;
         return Ok(());
     }
     let interactive = arguments.is_empty();
@@ -434,7 +429,7 @@ async fn run_inner(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
             restarts = names.split_whitespace().map(str::to_owned).collect();
         } else if preview {
             view["outcome"] = json!("preview_only");
-            println!("{}", serde_json::to_string_pretty(&view)?);
+            components::show_status(&view)?;
             return Ok(());
         } else { display_preview(&view); }
         // Validate names before interrupting any component.
@@ -464,7 +459,7 @@ async fn run_inner(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
         result["agent_activation"] = json!("inspect observed current-run inputs; other agents retain their inputs until restarted");
         if interactive {
             println!("The proxy at {} is running the selected host. Completed agent stop/start commands: {}. Other agents keep their existing inputs.", root.display(), if restarts.is_empty() { "none".to_owned() } else { restarts.join(", ") });
-        } else { println!("{}", serde_json::to_string_pretty(&result)?); }
+        } else { components::show_status(&result)?; }
         Ok::<_, Error>(())
     }.await;
     if let Err(error) = &result {
@@ -473,7 +468,7 @@ async fn run_inner(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
         failure["error"] = json!(error.to_string());
         let mut retry = vec![
             json!("safeyolo"),
-            json!("--root"),
+            json!("--instance-dir"),
             json!(root),
             json!("upgrade"),
         ];
@@ -490,16 +485,21 @@ async fn run_inner(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
         for name in &restarts {
             retry.extend([json!("--restart-agent"), json!(name)]);
         }
-        failure["next_action"] = json!({"inspect":["safeyolo", "--root", root, "upgrade", "status"], "retry_after_inspection":retry});
+        failure["next_action"] = json!({"inspect":["safeyolo", "--instance-dir", root, "upgrade", "status"], "retry_after_inspection":retry});
         if !failure["selected"]["previous"].is_null() && root.join("safeyolo-upgrade").is_file() {
-            failure["next_action"]["rollback"] =
-                json!([root.join("safeyolo-upgrade"), "--root", root, "rollback"]);
-            failure["next_action"]["after_rollback"] = json!(["safeyolo", "--root", root, "start"]);
+            failure["next_action"]["rollback"] = json!([
+                root.join("safeyolo-upgrade"),
+                "--instance-dir",
+                root,
+                "rollback"
+            ]);
+            failure["next_action"]["after_rollback"] =
+                json!(["safeyolo", "--instance-dir", root, "start"]);
             failure["next_action"]["limit"] = json!(
                 "rollback validates the previous host against retained Coord state and can refuse without changing selection; stop the proxy first if running. Run after_rollback only after rollback succeeds. If refused, keep the selected host and retained store; restart the selected host or use a newer compatible bundle. Rollback does not reverse later store or user-state changes"
             );
         }
-        println!("{}", serde_json::to_string_pretty(&failure)?);
+        components::show_status(&failure)?;
     }
     result
 }

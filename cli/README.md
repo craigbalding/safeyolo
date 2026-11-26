@@ -29,7 +29,7 @@ extraction, cleanup, repeat installation and guest upgrades use no sudo after
 host preparation; ordinary execution runs as your account.
 
 ```sh
-./install.sh --root "$HOME/.safeyolo" --bundle "$HOME/safeyolo-bundle" --platform-assets "$HOME/safeyolo-platform"
+./install.sh --instance-dir "$HOME/.safeyolo" --bundle "$HOME/safeyolo-bundle" --platform-assets "$HOME/safeyolo-platform"
 safeyolo start
 safeyolo status
 safeyolo doctor

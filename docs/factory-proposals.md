@@ -11,7 +11,7 @@ operator message.
 
 ## Trusted workflow
 
-Use `safeyolo --root ROOT coord proposals` on the host, or
+Use `safeyolo --instance-dir PATH coord proposals` on the host, or
 `safeyolo-coord proposals` in a guest. Both use the existing Coord reader.
 The guest reader has only its Agent API room permissions. Every message is read
 by room and retained sequence; there is no envelope-file or sender override.
@@ -41,7 +41,7 @@ The commands neither publish a message nor perform a proposed change.
    decision appears in retained history. The command checks its actual envelope
    attribution and exact body. It records status only.
 
-For host examples, first select the existing instance with `--root ROOT`.
+For host examples, first select the existing instance with `--instance-dir PATH`.
 For guest examples, retain the staged Agent API connection and token-file
 settings. `--ledger FILE` selects a disposable ledger when needed. `list` and
 `pending` read local state without requiring a live Coord connection.

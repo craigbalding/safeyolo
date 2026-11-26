@@ -681,13 +681,19 @@ def _substrate_identity(config_dir: Path) -> dict[str, Any]:
         if cli.is_file():
             try:
                 # Active per-agent pipeline traces exceed the diagnostic tail.
-                inspection = _run([str(cli), "--root", str(config_dir), "doctor"], timeout=15, stdout_limit=None)
-                if inspection.returncode:
+                inspection = _run([str(cli), "--instance-dir", str(config_dir), "--json", "doctor"], timeout=15, stdout_limit=None)
+                if inspection.returncode not in (0, 1):
                     raise SmokeError(f"doctor exited {inspection.returncode}")
                 doctor = json.loads(inspection.stdout)
-                if not isinstance(doctor, dict) or "linux" in doctor and not isinstance(doctor["linux"], dict):
+                if not isinstance(doctor, dict) or not isinstance(doctor.get("checks"), list) or doctor.get("exit_code") != inspection.returncode:
                     raise SmokeError("doctor returned invalid runtime diagnosis")
-                selected = doctor.get("linux")
+                checks = doctor["checks"]
+                if any(not isinstance(check, dict) for check in checks):
+                    raise SmokeError("doctor returned invalid check records")
+                runtime_checks = [check for check in checks if check.get("name") == "Linux runtime and namespaces"]
+                if len(runtime_checks) != 1 or not isinstance(runtime_checks[0].get("details"), dict):
+                    raise SmokeError("doctor returned no usable Linux runtime diagnosis")
+                selected = runtime_checks[0]["details"]
                 if isinstance(selected, dict):
                     result = {"status": "discovered" if selected.get("state") == "ready" else "unavailable",
                               "kind": "gvisor", "path": selected.get("path"),
@@ -697,7 +703,7 @@ def _substrate_identity(config_dir: Path) -> dict[str, Any]:
                     return result
             except (SmokeError, ValueError) as exc:
                 return {"status": "unavailable", "kind": "gvisor", "reason": f"runtime diagnosis failed: {exc}"}
-        # Older retained host packages have no selected-runtime diagnosis.
+        # Explicit proxy-only inputs can have no installed host CLI.
         runsc = shutil.which("runsc")
         if runsc is None:
             return {
@@ -913,11 +919,11 @@ def _native_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             if value is not None:
                 coord_ports += [option, str(value)]
         if coord_ports:
-            result = _run([cli_path, "--root", str(config_dir), "coord", "start", *coord_ports],
+            result = _run([cli_path, "--instance-dir", str(config_dir), "coord", "start", *coord_ports],
                           env=env, cwd=cwd, timeout=45)
             if result.returncode:
                 raise SmokeError(f"installed Coord start failed (exit {result.returncode}): {result.stderr}")
-        result = _run([cli_path, "--root", str(config_dir), "start"], env=env, cwd=cwd, timeout=45)
+        result = _run([cli_path, "--instance-dir", str(config_dir), "start"], env=env, cwd=cwd, timeout=45)
         if result.returncode:
             raise SmokeError(f"installed native start failed (exit {result.returncode}): "
                              f"{result.stdout.strip()} {result.stderr.strip()}")

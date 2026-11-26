@@ -256,13 +256,13 @@ the unpacked bundle directory, `ROOT` to the new installation directory, and
 installer from the qualified source checkout:
 
 ```sh
-scripts/install_native.sh --bundle "$HOST_BUNDLE" --root "$ROOT" --guest-index "$INDEX" --yes
+scripts/install_native.sh --bundle "$HOST_BUNDLE" --instance-dir "$ROOT" --guest-index "$INDEX" --yes
 ```
 
 The installer selects the current host platform explicitly and verifies the
 published bytes. It does not repeat the distro build. For an existing
 compatible installation, select the same digest with
-`safeyolo --root "$ROOT" guest upgrade --index "$INDEX"`, then stop and start
+`safeyolo --instance-dir "$ROOT" guest upgrade --index "$INDEX"`, then stop and start
 the agent to use it. Publication success alone does not prove either installed
 workflow or complete the custom-profile acceptance criteria.
 
@@ -451,7 +451,7 @@ Replace `sha256:DIGEST` with the complete index digest from the guest release's
 publication. The package metadata stays unchanged.
 
 ```sh
-safeyolo --root /owned/fresh-root guest acquire --package-info /path/to/host-package/package-info --write-selection /owned/fresh-root/share/guest-selection.json --store /owned/guest-store --index sha256:DIGEST
+safeyolo --instance-dir /owned/fresh-root guest acquire --package-info /path/to/host-package/package-info --write-selection /owned/fresh-root/share/guest-selection.json --store /owned/guest-store --index sha256:DIGEST
 ```
 
 Success prints the prepared asset directory and writes the selection as JSON.
@@ -506,7 +506,7 @@ the restored selection. Stop and start the affected agent to boot that guest,
 using the existing `safeyolo agent stop NAME` and `safeyolo agent start NAME`
 commands with its configured name.
 
-For another instance, put `--root /absolute/instance/path` before `guest`.
+For another instance, put `--instance-dir /absolute/instance/path` before `guest`.
 For a specific release, pass `--index sha256:DIGEST` to `guest upgrade`, replacing
 `sha256:DIGEST` with the complete OCI index digest from that guest's publication.
 The Rust consumer verifies that index and pins its selected child and blob;
@@ -539,7 +539,7 @@ safeyolo agent stop NAME
 safeyolo agent start NAME
 ```
 
-For another instance, put `--root /absolute/instance/path` before each subcommand.
+For another instance, put `--instance-dir /absolute/instance/path` before each subcommand.
 A harness restart, or `agent start` on an already-running sandbox, does not
 replace its guest. A compatible host-only upgrade retains the selected guest
 unless a guest change is explicitly selected.

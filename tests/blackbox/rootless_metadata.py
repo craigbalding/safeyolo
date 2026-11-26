@@ -190,7 +190,7 @@ def qualify(output, prepared, checkout, baseline_path, specimens):
                 store = case_dir / "store"
                 index = seed_release(specimens / f"{case}.tar.zst", store, source)
                 selection = case_dir / "selection.json"
-                acquired = command(f"{lane}/{case}/production-acquire", [cli, "--root", case_dir / "root", "guest", "acquire",
+                acquired = command(f"{lane}/{case}/production-acquire", [cli, "--instance-dir", case_dir / "root", "guest", "acquire",
                     "--package-info", prepared / "package-info", "--namespace-root", prepared,
                     "--host-settings", settings_path, "--store", store, "--index", index,
                     "--write-selection", selection], required=False)

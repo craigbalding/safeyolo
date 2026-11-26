@@ -8,7 +8,7 @@ pub(super) async fn run(args: &[String]) -> Result<(), Error> {
     // These aggregates have no agent, request, connection or retained-file filter.
     let mut instance = None;
     let mut runtime = None;
-    let mut json_output = false;
+    let mut json_output = crate::operator_output::json_requested();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {

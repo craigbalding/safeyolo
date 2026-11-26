@@ -31,7 +31,7 @@ impl Drop for NatsCleanup {
     fn drop(&mut self) {
         let _ =
             std::process::Command::new(native_binary("safeyolo", env!("CARGO_BIN_EXE_safeyolo")))
-                .arg("--root")
+                .arg("--instance-dir")
                 .arg(&self.0)
                 .args(["coord", "stop"])
                 .output();
@@ -44,8 +44,9 @@ async fn cli(root: &Path, args: &[&str]) -> Output {
     tokio::time::timeout(
         Duration::from_secs(20),
         tokio::process::Command::new(native_binary("safeyolo", env!("CARGO_BIN_EXE_safeyolo")))
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(root)
+            .arg("--json")
             .args(args)
             .kill_on_drop(true)
             .output(),
@@ -1094,7 +1095,7 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
     fs::write(&input, toml::to_string(&feeds).unwrap()).unwrap();
     let acquisition =
         tokio::process::Command::new(native_binary("safeyolo", env!("CARGO_BIN_EXE_safeyolo")))
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(&publisher)
             .args(["policy", "feeds", "configure"])
             .arg(&input)

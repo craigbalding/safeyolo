@@ -25,7 +25,7 @@ outside the selected root. Run from the source checkout with its locked Python t
 environment and PYTHONPATH=tests/reference:.; keep results on disk-backed
 storage. For example, after preparation:
 
-    .venv/bin/python tests/nested-linux/operator_coord_acceptance.py --root /owned/root \
+    .venv/bin/python tests/nested-linux/operator_coord_acceptance.py --instance-dir /owned/root \
         --agent bbtest --peer bbpeer --commit FULL_EXECUTABLE_SOURCE_ID
 """
 
@@ -128,7 +128,7 @@ def codex_mcp_session(root: Path, primary: str, room: str, marker: str, cursor: 
             with os.fdopen(os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stderr:
                 script = "cd /workspace && /home/agent/.safeyolo-command exec --json --skip-git-repo-check " + shlex.quote(prompt)
                 outcome["exit_code"] = stream_codex_output(
-                    [str(root / "bin/safeyolo"), "--root", str(root), "agent", "shell", primary, "-c", script],
+                    [str(root / "bin/safeyolo"), "--instance-dir", str(root), "agent", "shell", primary, "-c", script],
                     stdout, stderr, outcome)
                 outcome["output_complete"] = True
         assert outcome["exit_code"] == 0, f"Codex exited {outcome['exit_code']}; inspect private output at {directory}"
@@ -287,7 +287,7 @@ def coordination_journey(root: Path, primary: str, peer: str, commit: str, comma
 
     last = history(primary)[-1]["sequence"]
     arguments = shlex.quote(json.dumps({"room_name": room, "since_sequence": last, "timeout_seconds": 15}))
-    waiter = subprocess.Popen([str(root / "bin/safeyolo"), "--root", str(root), "agent", "shell", peer,
+    waiter = subprocess.Popen([str(root / "bin/safeyolo"), "--instance-dir", str(root), "agent", "shell", peer,
                                "-c", f"printf 'WAIT_STARTED\\n'; printf '%s' {arguments} | {native} call wait_for_message"],
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
@@ -375,7 +375,7 @@ def coordination_journey(root: Path, primary: str, peer: str, commit: str, comma
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--instance-dir", dest="root", required=True, type=Path)
     parser.add_argument("--agent", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--peer", help="Run the G2/G4 journey with a second already booted systrap guest and provisioned Codex")
@@ -386,7 +386,7 @@ def main():
     cli = root / "bin/safeyolo"
 
     def command(*arguments, check=True, timeout=30):
-        result = subprocess.run([str(cli), "--root", str(root), *arguments],
+        result = subprocess.run([str(cli), "--instance-dir", str(root), *arguments],
                                 capture_output=True, text=True, timeout=timeout)
         if check:
             assert result.returncode == 0, result.stderr
@@ -436,7 +436,7 @@ def main():
         # is unfinished, then sends and receives another actual guest reply.
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
-        chat = subprocess.Popen([str(cli), "--root", str(root), "coord", "chat", room, "--to", args.agent],
+        chat = subprocess.Popen([str(cli), "--instance-dir", str(root), "coord", "chat", room, "--to", args.agent],
                                 stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
                                 env={**os.environ, "TERM": "xterm-256color"})
         os.close(slave)

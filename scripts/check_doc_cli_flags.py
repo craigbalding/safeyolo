@@ -131,7 +131,7 @@ def _native_cli_surface() -> dict[str, set[str]]:
     """
     surface: dict[str, set[str]] = {"": set()}
     for relative in (
-        "proxy/src/bin/safeyolo.rs", "proxy/src/host_commands.rs", "proxy/src/host_launch.rs", "proxy/src/demo.rs", "proxy/src/lab.rs", "proxy/src/factory.rs",
+        "proxy/src/bin/safeyolo.rs", "proxy/src/bin/safeyolo/help.rs", "proxy/src/tls_commands.rs", "proxy/src/host_commands.rs", "proxy/src/host_launch.rs", "proxy/src/demo.rs", "proxy/src/lab.rs", "proxy/src/factory.rs",
         "proxy/src/bin/safeyolo/credential_commands.rs",
         "proxy/src/policy_feeds.rs",
         "proxy/src/signals.rs",
@@ -218,7 +218,7 @@ def _validate_line(
     i = 1
     # Native instance selection precedes the command. Resolve the command
     # after its path value so its own flags still receive the normal check.
-    if i < len(tokens) and tokens[i] in {"--root", "--config"}:
+    if i < len(tokens) and tokens[i] in {"--instance-dir", "--config"}:
         if tokens[i] not in surface.get("", set()) or i + 1 >= len(tokens):
             return f"unknown global flag or missing path: `{tokens[i]}`"
         i += 2

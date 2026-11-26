@@ -147,7 +147,7 @@ def native_agent(tmp_path):
     cli = artifacts / "safeyolo"
     for arguments in (["init"], ["agent", "create", "demo", "--workspace", str(tmp_path)]):
         result = subprocess.run(
-            [str(cli), "--root", str(tmp_path), *arguments],
+            [str(cli), "--instance-dir", str(tmp_path), *arguments],
             capture_output=True, text=True, timeout=5,
         )
         assert result.returncode == 0, result.stderr

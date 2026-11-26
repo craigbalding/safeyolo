@@ -36,10 +36,10 @@ guest artifact is ROOT/assets/guest/safeyolo-coord with its version/checksum rec
 For an existing agent, replace ROOT and NAME with its installed root and name.
 Put ROOT/bin on PATH before invoking the bootstrap directly.
 Stop the agent before changing its home, then restart it to load the MCP settings:
-  ROOT/bin/safeyolo --root ROOT agent stop NAME
+  ROOT/bin/safeyolo --instance-dir PATH agent stop NAME
   ROOT/assets/contrib/coord-mcp-bootstrap.sh --home ROOT/agents/NAME/home
-  ROOT/bin/safeyolo --root ROOT start
-  ROOT/bin/safeyolo --root ROOT agent start NAME
+  ROOT/bin/safeyolo --instance-dir PATH start
+  ROOT/bin/safeyolo --instance-dir PATH agent start NAME
 
 See contrib/HOST_SCRIPT_GUIDE.md for agent create/configure --host-script setup.
 HELP

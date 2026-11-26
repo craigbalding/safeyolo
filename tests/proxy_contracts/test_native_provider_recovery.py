@@ -153,7 +153,7 @@ def test_authorized_provider_survives_only_its_holder_loss(tmp_path, monkeypatch
             assert b"boot" in arguments and run_id.encode() in arguments
             root_argument = str(instance.root / "run").encode()
             assert ((b"--root=" + root_argument) in arguments or
-                    any(pair == [b"--root", root_argument] for pair in
+                    any(pair == [b"--instance-dir", root_argument] for pair in
                         (arguments[index:index + 2] for index in range(len(arguments) - 1))))
             for kind in ("user", "net"):
                 operator_namespace = Path(f"/proc/self/ns/{kind}").stat().st_ino

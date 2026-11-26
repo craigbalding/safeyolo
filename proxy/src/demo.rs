@@ -23,7 +23,7 @@ use tokio::{
 };
 use toml_edit::{DocumentMut, Item, value};
 
-pub const HELP: &str = "safeyolo [--root ROOT | --config FILE] demo [--task tiny-web-app] [--workspace PATH] [--agent NAME] [--auth-file FILE] [--keep]\n\nBuild and run a tiny web app in a real guest, then approve its owned JSON request.\nAfter the verified result, type preview to request the normal desktop.present approval for the app. Preview requires the host's existing local display or configured tailnet presentation route and guest desktop packages.\nThe SafeYolo installation needs its prepared guest runtime and normal Codex model access.\nChoose an empty workspace, or use the disposable default. --agent reuses that stopped guest's own configured authentication; its authentication stays in that guest home.\n--auth-file selects an existing Codex auth.json to copy privately into a guest with no login. The interactive default offers your configured host login. A new guest can also use normal Codex device login. Missing authentication is reported before a model task starts.\nDemo stops its selected runtime and removes its fixture permission on exit. By default it removes the disposable workspace and any newly created guest home. --keep retains these files after stopping. A reused guest's home and prior workspace setting remain.\nThe fixture request record and normal proxy audit remain in the instance logs. Ctrl-C or cancel stops the Demo. Lab and tmux are not required.";
+pub const HELP: &str = "safeyolo [--instance-dir PATH | --config FILE] demo [--task tiny-web-app] [--workspace PATH] [--agent NAME] [--auth-file FILE] [--keep]\n\nBuild and run a tiny web app in a real guest, then approve its owned JSON request.\nAfter the verified result, type preview to request the normal desktop.present approval for the app. Preview requires the host's existing local display or configured tailnet presentation route and guest desktop packages.\nThe SafeYolo installation needs its prepared guest runtime and normal Codex model access.\nChoose an empty workspace, or use the disposable default. --agent reuses that stopped guest's own configured authentication; its authentication stays in that guest home.\n--auth-file selects an existing Codex auth.json to copy privately into a guest with no login. The interactive default offers your configured host login. A new guest can also use normal Codex device login. Missing authentication is reported before a model task starts.\nDemo stops its selected runtime and removes its fixture permission on exit. By default it removes the disposable workspace and any newly created guest home. --keep retains these files after stopping. A reused guest's home and prior workspace setting remain.\nThe fixture request record and normal proxy audit remain in the instance logs. Ctrl-C or cancel stops the Demo. Lab and tmux are not required.";
 
 const CODEX_COMMAND: &[u8] = include_bytes!("../../contrib/codex-command.sh");
 const GUEST_CODEX: &str = "/home/agent/.safeyolo/demo-codex-command";
@@ -931,9 +931,10 @@ async fn session(
             && let Some((id, view)) = fixture.pending_approval(&demo.agent).await?
         {
             println!(
-                "Observation: SafeYolo requires approval; the fixture has received zero requests.\n{}\nDemo removes this fixture permission during cleanup.",
-                serde_json::to_string_pretty(&view)?
+                "Observation: SafeYolo requires approval; the fixture has received zero requests."
             );
+            operator_commands::show_approval(&view)?;
+            println!("Demo removes this fixture permission during cleanup.");
             match operator_commands::flow(&host_platform::config_dir(), &id, Some(name)).await {
                 Ok(flow) if flow["status"].as_u64().is_some() => println!(
                     "Observation: traffic request {} returned HTTP {}.",
@@ -1015,16 +1016,28 @@ async fn session(
         {
             app_code(&demo.workspace)?;
             println!(
-                "Observation: independently read the running guest app: {}\nObservation: owned fixture delivery: {}\nInterpretation: the app's real JSON request continued after normal approval.",
-                serde_json::to_string(&app)?,
-                serde_json::to_string(&fixture.delivered()?)?
+                "Observation: the running guest app returned {} tasks totaling {} minutes.\nObservation: the owned fixture received {} requests; the app's fixture marker matches.\nInterpretation: the app's real JSON request continued after normal approval.",
+                app["count"],
+                app["total_minutes"],
+                fixture.delivered()?.len()
             );
             // Observe the model command's actual outcome as supporting evidence.
             // The app response and origin delivery establish the useful result.
             if let Some(status) = exit {
                 println!("Codex command exit: {status}");
             }
-            let choice = prompt(input, "Result is ready. Type preview to request the app's desktop preview, Enter to finish, or cancel: ").await?;
+            let choice = loop {
+                let choice = prompt(input, "Result is ready. Type evidence for full app/fixture records, preview for the app's desktop, Enter to finish, or cancel: ").await?;
+                if choice == "evidence" {
+                    println!(
+                        "App evidence: {}\nFixture evidence: {}",
+                        serde_json::to_string_pretty(&app)?,
+                        serde_json::to_string_pretty(&fixture.delivered()?)?
+                    );
+                } else {
+                    break choice;
+                }
+            };
             if choice == "cancel" {
                 return Err("Demo cancelled after the app result".into());
             }

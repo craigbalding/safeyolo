@@ -14,7 +14,7 @@ fn install_configuration() -> TempDir {
     let directory = TempDir::new().unwrap();
     let root = directory.path();
     let initialized = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(root)
         .arg("init")
         .output()
@@ -115,7 +115,7 @@ async fn native_discovery_keeps_two_roots_separate_and_has_no_interpreter_fallba
 fn coord_fixture(directory: &TempDir, marker: &str) {
     let root = directory.path();
     let created = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(root)
         .args(["agent", "create", "probe", "--workspace"])
         .arg(root)
@@ -153,7 +153,7 @@ fn coord_fixture(directory: &TempDir, marker: &str) {
     )
     .unwrap();
     let brief = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(root)
         .args([
             "coord",
@@ -248,7 +248,7 @@ async fn command_centre_handoffs_export_three_pinned_owners_without_printing_cre
         let destination = directory.path().join("operator-connection.json");
         let run = || {
             tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-                .arg("--root")
+                .arg("--instance-dir")
                 .arg(directory.path())
                 .args(["configure", "command-centre"])
                 .arg(&destination)
@@ -313,7 +313,7 @@ async fn command_centre_handoffs_export_three_pinned_owners_without_printing_cre
     .unwrap();
     let refused_file = source.path().join("wrong-owner.json");
     let refused = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(source.path())
         .args(["configure", "command-centre"])
         .arg(&refused_file)

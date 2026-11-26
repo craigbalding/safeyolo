@@ -284,7 +284,7 @@ def test_early_checked_command_failure_retains_original_output_before_cleanup(
     assert saved["type"] == "CalledProcessError"
     assert saved["command"] == failed.value.cmd
     assert saved["command"][:3] == [str(installed_fixture.root / "bin/safeyolo"),
-                                    "--root", str(installed_fixture.root)]
+                                    "--instance-dir", str(installed_fixture.root)]
     assert saved["command"][3:3 + len(parts)] == parts
     assert saved["exit_code"] == failed.value.returncode == 23
     assert saved["stdout"] == failed.value.stdout == "original command stdout\nretained ünicode\n"
@@ -351,7 +351,7 @@ module['main']()
                "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS")}
     env["PATH"] = str(tools)
     env["G7_FAILURE"] = failure
-    completed = subprocess.run([sys.executable, "-I", "-B", str(launcher), "--root", str(fixture.root),
+    completed = subprocess.run([sys.executable, "-I", "-B", str(launcher), "--instance-dir", str(fixture.root),
                                 "--workspace", str(fixture.workspace), "--commit", "fixture", "--profile", "debug"],
                                env=env, capture_output=True, text=True, timeout=30)
     assert completed.returncode == (0 if failure == "none" else 1), completed.stderr

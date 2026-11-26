@@ -74,7 +74,7 @@ An unrelated existing command is preserved and reported with its recovery.
 
 ```sh
 tar -xzf safeyolo-linux-arm64-production.tar.gz
-./safeyolo-linux-arm64-production/install.sh --root "$HOME/.safeyolo"
+./safeyolo-linux-arm64-production/install.sh --instance-dir "$HOME/.safeyolo"
 ```
 
 The installer prints the full source commit and build profile. Host executables
@@ -105,7 +105,9 @@ can supply the same pinned executable when acquisition is unavailable.
 
 The generated policy retains the existing wildcard network allowance,
 credential approval prompt, global budget of 12,000 requests per minute and
-host rate of 600. Edit `policy.toml` to select policy for your agent listeners.
+host rate of 600. Recognized OpenAI and Anthropic API keys may reach their own
+API hosts, at a rate of 3,000. Other credentials and destinations still follow
+policy and approvals. Existing operator policy is preserved. Edit `policy.toml` to select policy for your agent listeners.
 
 If you need different endpoints, edit `config.toml` before startup. Relative
 paths belong to this configuration directory. The administrative application programming interface
@@ -123,8 +125,9 @@ safeyolo doctor
 safeyolo --version
 ```
 
-Startup runs the proxy in the background. Status reports `proxy_state` as
-`running`; version prints the installed source and profile. Status and doctor
+Startup runs the proxy in the background. Human status reports the selected
+instance and observed proxy/agent state; `status --json` retains full records.
+Version prints the installed source and profile. Status and doctor
 report the proxy process separately from each agent's runtime, control, command
 and terminal state. These observations remain available when the Admin API is
 down. An occupied endpoint or unreadable input fails startup and points to
@@ -178,10 +181,13 @@ default harness remains Claude. For the two-command installer route, put
 `--launch --harness codex` on the second command; use the same public download
 command from the quick start.
 
-Current source offers a login choice before starting a stopped Codex agent.
-Select `a` to authorize a trusted login already in that agent's home, `h` to
-select the host's `CODEX_HOME/auth.json` (default `~/.codex/auth.json`), or enter
-another trusted file path. The choice uses `credentials import-codex` for the
+Launch inspects local Codex login files before offering a choice. A returning
+agent with a supported saved login resumes it without another import question.
+`agent auth NAME` returns to the explicit authentication choices. When offered,
+`a` authorizes the agent's selected subscription; `h` copies and authorizes a
+supported host subscription into an empty agent. `file PATH` selects another
+subscription file for an empty agent. A found file is not verified provider
+authentication. Unsupported or unreadable state is reported and retained. The choice uses `credentials import-codex` for the
 new agent's unique identity; it needs no separate import shell command.
 Installation asks no storage question and creates no vault. If this import is
 the first credential write, it asks for local random-key storage or passphrase
@@ -349,7 +355,7 @@ The earlier `host-7a38` manual alternative still requires a fresh root.
 A matching installation made with the current installer can be repeated.
 Repeat retains its host, policy, credentials, identity, agent state and selected
 guest without checking Latest or upgrading. An older or conflicting installation
-is preserved; use its installed command or choose a separate `--root` and
+is preserved; use its installed command or choose a separate `--instance-dir` and
 `--command-dir`. A download failure leaves verified cache inputs available for
 retry. Partial downloads are not activated. An interrupted final file move can
 leave incomplete files; the next invocation reports them and preserves them.
@@ -358,7 +364,7 @@ leave incomplete files; the next invocation reports them and preserves them.
 
 In your host terminal, run the guided upgrade for the installed instance.
 The default instance is `$HOME/.safeyolo`. For a custom instance, put
-`--root ROOT` before `upgrade`, with its absolute directory in place of `ROOT`.
+`--instance-dir PATH` before `upgrade`, with its absolute directory in place of `ROOT`.
 
 ```sh
 safeyolo upgrade
@@ -392,15 +398,15 @@ reported current-run observations or use `safeyolo agent status NAME` for a
 selected agent. You can restart another agent later with its ordinary
 `agent stop NAME` and `agent start NAME` commands.
 
-For automation or a separate preview, these commands return JSON. With no
+For automation or a separate preview, select complete JSON explicitly. With no
 explicit target, `--preview` and `--activate` choose the newest supported host
 in the latest 100 GitHub release records. `releases` lists published production
 packages for the current host platform and C library. Release listing is
 advisory; acquisition still verifies the selected package and guest.
 
 ```sh
-safeyolo upgrade releases
-safeyolo upgrade --preview
+safeyolo upgrade releases --json
+safeyolo upgrade --preview --json
 ```
 
 The preview's `release` field names its exact target. To activate that target
@@ -409,7 +415,7 @@ that appeared after the preview. `--activate` runs without a confirmation
 prompt. Add `--restart-agent NAME` for each agent you choose to stop and start.
 
 ```sh
-safeyolo upgrade --release "$RELEASE" --activate
+safeyolo upgrade --release "$RELEASE" --activate --json
 ```
 
 If discovery is unavailable, or no compatible choice can be verified, the
@@ -476,7 +482,7 @@ does not establish that every agent or managed Coord is ready.
 The first component change retains `safeyolo-upgrade` in the instance directory.
 Use a current CLI for the retained-state check below. A retained upgrader keeps
 the behavior of the CLI that saved it. If it predates this check, use a current
-verified bundle's `bin/safeyolo --root ROOT upgrade rollback`, with the existing
+verified bundle's `bin/safeyolo --instance-dir PATH upgrade rollback`, with the existing
 instance directory in place of `ROOT`.
 
 Rollback checks whether the previous host can use retained Coord state before
@@ -497,7 +503,7 @@ safeyolo stop
 safeyolo start
 ```
 
-For a custom instance, run its `safeyolo-upgrade` with `--root ROOT` before
+For a custom instance, run its `safeyolo-upgrade` with `--instance-dir PATH` before
 `rollback`. Carry the same root into `stop` and `start`. Component rollback
 makes no network request and does not undo subsequent changes to policy,
 credentials, homes or other user state. Running agents retain their inputs
@@ -514,8 +520,8 @@ persistent guest store: current and rollback selections use their files.
 ## Other installation paths
 
 The ordinary commands use `$HOME/.safeyolo`. To install a separate instance,
-choose a fresh directory with `install.sh --root PATH` and select it with
-`safeyolo --root PATH COMMAND`. For example, `safeyolo --root /path/to/instance status`
+choose a fresh directory with `install.sh --instance-dir PATH` and select it with
+`safeyolo --instance-dir PATH COMMAND`. For example, `safeyolo --instance-dir /path/to/instance status`
 reads that instance; replace the path with the directory you installed. These
 options do not move or convert existing state. Commands that edit files also
 need the matching paths inside that instance.
@@ -530,7 +536,7 @@ safeyolo status
 
 `SAFEYOLO_CONFIG_DIR` takes precedence over `SAFEYOLO_HOME`.
 `SAFEYOLO_NATIVE_CONFIG_PATH` selects a TOML configuration file and takes
-precedence over either directory variable. Explicit `--root PATH` or
+precedence over either directory variable. Explicit `--instance-dir PATH` or
 `--config FILE` overrides environment selection. Relative paths in a selected
 configuration belong to its directory. The ordinary default installation
 requires none of these settings.
@@ -571,7 +577,7 @@ Ubuntu uses `rootfs-tree`; macOS uses `Image`, `initramfs.cpio.gz` and
 `rootfs-base.ext4`. The installer places them under the instance's `share/`.
 Ubuntu needs the runsc and user-namespace setup described above.
 macOS needs the installed `bin/safeyolo-vm` and `bin/vsock-term` helpers.
-Supply their directory with `install.sh --root ROOT --platform-assets DIRECTORY`
+Supply their directory with `install.sh --instance-dir PATH --platform-assets DIRECTORY`
 at the fresh installation step. macOS copies the three image files with
 Apple File System (APFS) clones. Ubuntu links the prepared `rootfs-tree`, preserving its sandbox ownership;
 keep that shared tree available and immutable for the instance's lifetime.
@@ -1244,5 +1250,5 @@ On Ubuntu with the inputs above and prepared guest assets at
 `$HOME/safeyolo-platform` (replace that path with your directory):
 
 ```sh
-./install.sh --root "$HOME/.safeyolo" --runtime-artifacts /usr/bin --platform-assets "$HOME/safeyolo-platform"
+./install.sh --instance-dir "$HOME/.safeyolo" --runtime-artifacts /usr/bin --platform-assets "$HOME/safeyolo-platform"
 ```

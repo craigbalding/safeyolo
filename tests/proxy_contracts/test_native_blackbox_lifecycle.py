@@ -295,7 +295,7 @@ def test_native_start_waits_for_verified_readiness_and_bounds_owned_child(tmp_pa
     (root / "bin").mkdir(parents=True)
     for binary in ("safeyolo", "safeyolo-proxy"):
         (root / "bin" / binary).symlink_to((artifacts / binary).resolve(strict=True))
-    command = [str(root / "bin/safeyolo"), "--root", str(root)]
+    command = [str(root / "bin/safeyolo"), "--instance-dir", str(root)]
     environment = dict(os.environ, SAFEYOLO_CONFIG_DIR=str(root), SAFEYOLO_HOME=str(root),
                        SAFEYOLO_NATIVE_CONFIG_PATH=str(root / "config.toml"), SAFEYOLO_NATS_TEST_INSTANCE=str(root))
     environment["SAFEYOLO_STARTUP_TIMINGS"] = "1" if coord_control == "delayed" else "0"

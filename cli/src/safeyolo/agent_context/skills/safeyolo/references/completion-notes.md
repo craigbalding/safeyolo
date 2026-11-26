@@ -46,7 +46,7 @@ invalidate the trailer if authored.
 
 ## Trusted coordinator ingestion
 
-On the host, run `safeyolo --root ROOT coord completion-notes ROOM SEQUENCE`.
+On the host, run `safeyolo --instance-dir PATH coord completion-notes ROOM SEQUENCE`.
 In a guest, run `safeyolo-coord completion-notes ROOM SEQUENCE` through the
 ordinary scoped Agent API connection. Each command reads exactly that retained
 sequence using the existing Coord reader. No envelope file or authored sender

@@ -300,7 +300,7 @@ def until(predicate, timeout=10):
 @contextmanager
 def daemon(instance):
     process = subprocess.Popen(
-        [str(instance.root / "bin/safeyolo"), "--root", str(instance.root), "coord", "mattermost", "run"],
+        [str(instance.root / "bin/safeyolo"), "--instance-dir", str(instance.root), "coord", "mattermost", "run"],
         cwd=instance.root.parent, env=instance.environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     try:

@@ -72,7 +72,7 @@ def installed_identity(runtime: dict, install_checkout: Path | None, *, expected
     root = Path(runtime["instance"]["config_dir"]).resolve()
     observations = {}
     for operation in ("status", "doctor"):
-        result = subprocess.run([cli["path"], "--root", str(root), operation],
+        result = subprocess.run([cli["path"], "--instance-dir", str(root), operation],
                                 capture_output=True, text=True, check=False, timeout=45)
         assert result.returncode == 0, f"installed {operation} failed: {result.stderr[-700:]}"
         value = json.loads(result.stdout)
@@ -88,7 +88,7 @@ def installed_identity(runtime: dict, install_checkout: Path | None, *, expected
 def read_native_policy(cli: str, config_dir: Path) -> dict:
     """Read the selected running instance's effective policy through its CLI."""
     result = subprocess.run(
-        [cli, "--root", str(config_dir), "policy", "show"],
+        [cli, "--instance-dir", str(config_dir), "--json", "policy", "show"],
         capture_output=True, text=True, check=False, timeout=45,
     )
     assert result.returncode == 0, f"installed policy show failed: {result.stderr[-700:]}"

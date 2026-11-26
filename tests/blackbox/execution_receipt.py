@@ -518,7 +518,7 @@ def main() -> int:
     parser.add_argument("--lane", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--root", type=Path, default=ROOT)
+    parser.add_argument("--instance-dir", dest="root", type=Path, default=ROOT)
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     root = args.root.resolve()

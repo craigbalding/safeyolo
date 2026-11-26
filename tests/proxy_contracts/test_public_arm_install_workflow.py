@@ -427,7 +427,7 @@ def test_observer_command_preserves_actual_binding_and_fails_on_wrong_metadata(m
             stream.write(b'changed')
     output = tmp_path / 'reports'
     result = subprocess.run([os.sys.executable, str(REPO / 'tests/blackbox/observe_guest_metadata.py'),
-                             '--root', str(root), '--store', str(store), '--output', str(output)],
+                             '--instance-dir', str(root), '--store', str(store), '--output', str(output)],
                             capture_output=True, text=True, timeout=15)
     assert result.returncode != 0
     binding = json.loads((output / 'acquired-archive.json').read_text())

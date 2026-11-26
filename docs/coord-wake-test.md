@@ -37,8 +37,8 @@ its `claude-state` operation. See the
 Create the fixture room and grant the configured agent before starting it:
 
 ```sh
-ROOT/bin/safeyolo --root ROOT coord room create wake-loop
-ROOT/bin/safeyolo --root ROOT coord grant wake-loop wake-test-bob
+ROOT/bin/safeyolo --instance-dir PATH coord room create wake-loop
+ROOT/bin/safeyolo --instance-dir PATH coord grant wake-loop wake-test-bob
 ```
 
 ## Setup — Claude's system prompt
@@ -62,14 +62,14 @@ Give wake-test-bob a short, explicit system prompt (via Claude Code's
 In one terminal:
 
 ```sh
-ROOT/bin/safeyolo --root ROOT agent start wake-test-bob
+ROOT/bin/safeyolo --instance-dir PATH agent start wake-test-bob
 # Claude Code should start, load the system prompt, and call wait_for_coord
 ```
 
 In another terminal, attach as operator:
 
 ```sh
-ROOT/bin/safeyolo --root ROOT coord chat wake-loop --to wake-test-bob
+ROOT/bin/safeyolo --instance-dir PATH coord chat wake-loop --to wake-test-bob
 ```
 
 Then, one at a time, type these prompts and hit Enter. **Wait for bob's
@@ -87,7 +87,7 @@ third message with slightly more content
 - Each of the three real messages produces exactly one `ack:` from bob,
   within a few seconds of you sending.
 - Bob's canonical messages carry `sender_agent_id` = bob's `agent_id` (verify
-  with `ROOT/bin/safeyolo --root ROOT coord history wake-loop`).
+  with `ROOT/bin/safeyolo --instance-dir PATH coord history wake-loop`).
 - After each ack, bob re-arms `wait_for_coord` without you doing
   anything.
 - On `:done`, bob stops.

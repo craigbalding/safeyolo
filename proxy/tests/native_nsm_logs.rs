@@ -33,8 +33,9 @@ async fn cli(root: &Path, args: &[&str]) -> std::process::Output {
     timeout(
         Duration::from_secs(15),
         tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(root)
+            .arg("--json")
             .args(args)
             .output(),
     )

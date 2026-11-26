@@ -16,8 +16,8 @@ that agent. The following commands first grant receive-only access, then revoke
 it. Choose an operation ID before calling if you need lost-response recovery:
 
 ```sh
-safeyolo --root "$HOME/.safeyolo" coord grant chat alice receive --operation-id chat-alice-receive
-safeyolo --root "$HOME/.safeyolo" coord revoke chat alice --operation-id chat-alice-revoke
+safeyolo coord grant chat alice receive --operation-id chat-alice-receive
+safeyolo coord revoke chat alice --operation-id chat-alice-revoke
 ```
 
 Repeat the exact operation ID and input after an ambiguous response. SafeYolo
@@ -119,7 +119,7 @@ with an existing room (`chat` here). Replace the example URL with your actual
 issue or pull-request URL and choose an operation ID before running:
 
 ```sh
-safeyolo --root "$HOME/.safeyolo" coord work import-github chat https://github.com/craigbalding/safeyolo/issues/1313 --operation-id github-review
+safeyolo coord work import-github chat https://github.com/craigbalding/safeyolo/issues/1313 --operation-id github-review
 ```
 
 This command validates and stores the GitHub HTTPS URL through normal work
@@ -645,7 +645,7 @@ command removes it while preserving signal creation. Other valid approved
 permission sources remain effective:
 
 ```sh
-safeyolo --root "$HOME/.safeyolo" coord grant chat bob send receive
+safeyolo coord grant chat bob send receive
 ```
 
 The change affects future pages. Existing pending signals remain pending.
@@ -739,7 +739,7 @@ the catch-up files. The command below shows current canonical state without
 running a model or reading the transcript:
 
 ```sh
-safeyolo --root "$HOME/.safeyolo" coord catch-up chat
+safeyolo coord catch-up chat
 ```
 
 To generate a narrative, export the bounded request below. Redirection creates
@@ -750,8 +750,8 @@ The model needs no Coord tools or mutation permissions. Save its returned JSON
 as `catch-up-summary.json` in your current directory.
 
 ```sh
-safeyolo --root "$HOME/.safeyolo" coord catch-up chat --prompt > catch-up-input.json
-safeyolo --root "$HOME/.safeyolo" coord catch-up chat --summary catch-up-summary.json --evidence
+safeyolo coord catch-up chat --prompt > catch-up-input.json
+safeyolo coord catch-up chat --summary catch-up-summary.json --evidence
 ```
 
 The second command reads fresh canonical state first. It then displays a
@@ -787,7 +787,7 @@ references in every combined assertion. Collaborating agents do not need to
 load those chunks. This example starts at the retained beginning:
 
 ```sh
-safeyolo --root "$HOME/.safeyolo" coord catch-up chat --prompt --since 0 --max-messages 200
+safeyolo coord catch-up chat --prompt --since 0 --max-messages 200
 ```
 
 Summary input is limited to 65536 UTF-8 bytes, 32 assertions, 4096 bytes per
@@ -808,9 +808,9 @@ following examples use room `chat`, agent `bob` and the
 public collaboration label `rundeck:acceptance_runner`:
 
 ```sh
-safeyolo --root "$HOME/.safeyolo" coord inventory advertise-capability chat bob rundeck:acceptance_runner --operation-id chat-bob-runner
-safeyolo --root "$HOME/.safeyolo" coord inventory advertise-resource chat rundeck acceptance_runner
-safeyolo --root "$HOME/.safeyolo" coord state chat
+safeyolo coord inventory advertise-capability chat bob rundeck:acceptance_runner --operation-id chat-bob-runner
+safeyolo coord inventory advertise-resource chat rundeck acceptance_runner
+safeyolo coord state chat
 ```
 
 Advertising selects room visibility. It does not grant service access. A member's
@@ -886,14 +886,14 @@ permission for another listener or network route.
 On A's host, create a private peer credential:
 
 ```sh
-/srv/peer-safeyolo/bin/safeyolo --root /srv/peer-safeyolo coord federation credential /srv/peer-safeyolo/federation-secret
+/srv/peer-safeyolo/bin/safeyolo --instance-dir /srv/peer-safeyolo coord federation credential /srv/peer-safeyolo/federation-secret
 ```
 
 Transfer a private copy to `/srv/home-safeyolo/peer-secret` on B. B records A's
 transport trust through its own CLI:
 
 ```sh
-/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation trust sy-PEER /srv/home-safeyolo/peer-secret
+/srv/home-safeyolo/bin/safeyolo --instance-dir /srv/home-safeyolo coord federation trust sy-PEER /srv/home-safeyolo/peer-secret
 ```
 
 On B, save `coord-federation.json` in B's root. This example selects all host
@@ -918,7 +918,7 @@ B's selected client port, then start B's proxy through its ordinary owned
 lifecycle. For example, if port 7443 is authorized:
 
 ```sh
-/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord start --client-port 7443
+/srv/home-safeyolo/bin/safeyolo --instance-dir /srv/home-safeyolo coord start --client-port 7443
 ```
 
 The managed NATS client listener now requires TLS. B's local clients use the
@@ -935,7 +935,7 @@ On A, configure B's durable identity, TLS NATS endpoint, public CA and A's
 host-held credential:
 
 ```sh
-/srv/peer-safeyolo/bin/safeyolo --root /srv/peer-safeyolo coord federation home primary sy-HOME tls://home.example.test:7443 /srv/peer-safeyolo/home-ca.pem /srv/peer-safeyolo/federation-secret
+/srv/peer-safeyolo/bin/safeyolo --instance-dir /srv/peer-safeyolo coord federation home primary sy-HOME tls://home.example.test:7443 /srv/peer-safeyolo/home-ca.pem /srv/peer-safeyolo/federation-secret
 ```
 
 A connects outbound to B's broker. A needs no application listener to receive
@@ -980,7 +980,7 @@ advertisements and reconnects only to the configured literal endpoint.
 On A, save B's selected node ID and NATS endpoint with A's host-held credential:
 
 ```sh
-/srv/peer-safeyolo/bin/safeyolo --root /srv/peer-safeyolo coord federation home primary sy-HOME tailscale nats://100.64.10.20:7443 n-HOME /srv/peer-safeyolo/federation-secret
+/srv/peer-safeyolo/bin/safeyolo --instance-dir /srv/peer-safeyolo coord federation home primary sy-HOME tailscale nats://100.64.10.20:7443 n-HOME /srv/peer-safeyolo/federation-secret
 ```
 
 For two instances on the same host, B can instead save `mode: "loopback"` and
@@ -988,7 +988,7 @@ For two instances on the same host, B can instead save `mode: "loopback"` and
 fields. After B's owned restart on port 7443, A selects:
 
 ```sh
-/srv/peer-safeyolo/bin/safeyolo --root /srv/peer-safeyolo coord federation home primary sy-HOME loopback nats://127.0.0.1:7443 /srv/peer-safeyolo/federation-secret
+/srv/peer-safeyolo/bin/safeyolo --instance-dir /srv/peer-safeyolo coord federation home primary sy-HOME loopback nats://127.0.0.1:7443 /srv/peer-safeyolo/federation-secret
 ```
 
 Loopback accepts literal IPv4 or IPv6 loopback addresses. It does not resolve a
@@ -1005,8 +1005,8 @@ endpoint names and the certificate chain. `check` saves nothing. `apply` writes
 B's private broker configuration and reports required activation:
 
 ```sh
-/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation broker check /srv/home-safeyolo/broker-input.json
-/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation broker apply /srv/home-safeyolo/broker-input.json
+/srv/home-safeyolo/bin/safeyolo --instance-dir /srv/home-safeyolo coord federation broker check /srv/home-safeyolo/broker-input.json
+/srv/home-safeyolo/bin/safeyolo --instance-dir /srv/home-safeyolo coord federation broker apply /srv/home-safeyolo/broker-input.json
 ```
 
 Stop B's owned proxy and Coord. Start Coord with its selected ports, then start
@@ -1028,8 +1028,8 @@ On B, run the first command for local settings and the running process. On A,
 run the second command for its selected home route:
 
 ```sh
-/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation check
-/srv/peer-safeyolo/bin/safeyolo --root /srv/peer-safeyolo coord federation check primary
+/srv/home-safeyolo/bin/safeyolo --instance-dir /srv/home-safeyolo coord federation check
+/srv/peer-safeyolo/bin/safeyolo --instance-dir /srv/peer-safeyolo coord federation check primary
 ```
 
 The JSON separates configured and active protection, broker authentication,
@@ -1046,7 +1046,7 @@ For room participation, B grants the qualified remote identity ordinary room
 permissions. In this example `shared` already exists on B:
 
 ```sh
-/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation member shared sy-PEER ag-BOB remote-bob --operation-id grant-remote-bob
+/srv/home-safeyolo/bin/safeyolo --instance-dir /srv/home-safeyolo coord federation member shared sy-PEER ag-BOB remote-bob --operation-id grant-remote-bob
 ```
 
 Trust alone grants no room or target access. Omitting membership permissions
@@ -1162,7 +1162,7 @@ consumer, using the authenticated source, agent and wait identity.
 When a consumer is replaced or a connection is lost, keep that source's cursor
 and resume under current authority.
 
-On the owning host, `safeyolo --root ROOT coord status` reports broker connection,
+On the owning host, `safeyolo --instance-dir PATH coord status` reports broker connection,
 subscription and consumer counts, JetStream usage and configured capacity,
 pending outbox count and age, failed delivery and SQLite size. When the proxy
 is available, it also reports active requests/waits, admission rejection,
@@ -1189,8 +1189,8 @@ and JetStream namespace design.
 On B, revoke one membership or all peer trust:
 
 ```sh
-/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation unmember shared sy-PEER ag-BOB --operation-id revoke-remote-bob
-/srv/home-safeyolo/bin/safeyolo --root /srv/home-safeyolo coord federation revoke sy-PEER
+/srv/home-safeyolo/bin/safeyolo --instance-dir /srv/home-safeyolo coord federation unmember shared sy-PEER ag-BOB --operation-id revoke-remote-bob
+/srv/home-safeyolo/bin/safeyolo --instance-dir /srv/home-safeyolo coord federation revoke sy-PEER
 ```
 
 Peer revocation disables authentication and revokes memberships atomically.
@@ -1217,7 +1217,7 @@ running it:
 ```sh
 #!/bin/sh
 set -eu
-exec /absolute/instance/bin/safeyolo --root /absolute/instance coord send scheduled-work --file "$HOME/scheduled-coord-message.txt" --to alice --content-type text/plain
+exec /absolute/instance/bin/safeyolo --instance-dir /absolute/instance coord send scheduled-work --file "$HOME/scheduled-coord-message.txt" --to alice --content-type text/plain
 ```
 
 On a Linux host with cron already running, use the owning account's
@@ -1240,7 +1240,7 @@ history. This recipe gives guest jobs no host scheduler or operator credentials.
 
 The current runtime resolves Coord under the selected configuration's `data_dir`.
 For the default instance this is `$HOME/.safeyolo/data/coord`. Select the
-instance with `--root` and its configuration.
+instance with `--instance-dir` and its configuration.
 
 SafeYolo creates the Coord directory with mode `0700`. Its managed NATS runtime
 reuses `nats/creds` across ordinary stop/start cycles. When that file is absent,
@@ -1316,7 +1316,7 @@ different boundaries:
   disposable NATS. Only the test driver uses Python.
 - `tests/nested-linux/operator_coord_acceptance.py` uses an already running
   disposable installed proxy and Ubuntu systrap guest. Supply their root,
-  guest name and exact commit with `--root`, `--agent` and `--commit`. The matching
+  guest name and exact commit with `--instance-dir`, `--agent` and `--commit`. The matching
   guest helper must be staged at `/home/agent/.safeyolo/safeyolo-coord`. It
   observes guest send/read, guest arrival during a PTY draft, attribution and
   the room timeline, then stops that guest, proxy and Coord. Select disposable

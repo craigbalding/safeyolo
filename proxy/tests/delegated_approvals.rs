@@ -63,7 +63,7 @@ fn bound_runs(fixture: &Fixture, generation: &str, agents: &[(&str, &str)]) -> s
             "import time; time.sleep(300)",
             "boot",
             &format!("safeyolo-{generation}"),
-            "--root",
+            "--instance-dir",
         ])
         .arg(fixture.root.path().join("run"));
     let backend = command.spawn().unwrap();
@@ -1334,7 +1334,7 @@ async fn native(f: &Fixture, args: &[&str]) -> std::process::Output {
     timeout(
         Duration::from_secs(15),
         tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(f.root.path())
             .args(args)
             .kill_on_drop(true)
@@ -2355,7 +2355,7 @@ async fn native_inspect_reconnects_to_canonical_pending_and_operator_resolution(
     let slave = unsafe { fs::File::from_raw_fd(slave) };
     let inspector = Backend(
         std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(f.root.path())
             .args(["inspect", "--agent", "worker"])
             .stdin(slave.try_clone().unwrap())
@@ -2430,7 +2430,7 @@ async fn reviewer_attention_is_a_reference_and_reconnect_rechecks_canonical_auth
                 return;
             };
             let _ = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-                .arg("--root")
+                .arg("--instance-dir")
                 .arg(root)
                 .args(["coord", "stop"])
                 .stdout(std::process::Stdio::null())
@@ -2440,7 +2440,7 @@ async fn reviewer_attention_is_a_reference_and_reconnect_rechecks_canonical_auth
     let mut coord = CoordStop(Some(f.root.path().to_owned()));
     let binary = std::env::var("SAFEYOLO_COORD_NATS_BINARY").expect("set the pinned NATS binary");
     let started = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(f.root.path())
         .args(["coord", "start", "--binary", &binary])
         .env("SAFEYOLO_NATS_TEST_INSTANCE", f.root.path())

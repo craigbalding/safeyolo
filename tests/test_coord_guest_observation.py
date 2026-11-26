@@ -347,7 +347,7 @@ def test_failed_codex_session_keeps_private_operands_and_original_failure(tmp_pa
     monkeypatch.setitem(witness["main"].__globals__, "coordination_journey", journey)
     monkeypatch.setattr(installed_sections, "owned_processes", lambda root: [])
     monkeypatch.setattr(installed_sections, "surviving_processes", lambda owners: survivor_checks.append(owners.copy()) or [])
-    monkeypatch.setattr(sys, "argv", ["operator_coord_acceptance.py", "--root", str(tmp_path),
+    monkeypatch.setattr(sys, "argv", ["operator_coord_acceptance.py", "--instance-dir", str(tmp_path),
                                       "--agent", "bbtest", "--peer", "bbpeer", "--commit", "a" * 40])
     expected = {"nonzero": AssertionError, "parse": json.JSONDecodeError,
                 "observer": AssertionError, "timeout": subprocess.TimeoutExpired,

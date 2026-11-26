@@ -45,7 +45,7 @@ def guest(tmp_path):
     shutil.copytree(root / "etc", baseline / "configuration/etc")
     (baseline / "configuration/usr/local/etc").mkdir(parents=True)
     (baseline / "packages.tsv").write_text("")
-    command = [str(HELPER), "retained-state", "--root", str(root), "--directory", str(state)]
+    command = [str(HELPER), "retained-state", "--instance-dir", str(root), "--directory", str(state)]
     run(*command, "start")
     return root, state, command
 
@@ -731,7 +731,7 @@ def test_apt_choices_survive_real_nested_dpkg_hooks(guest, tmp_path, package_req
     config = tmp_path / "apt.conf"
     config.write_text(f'Dir "{root}";\nDir::Etc::parts "{root}/etc/apt/apt.conf.d";\nDir::Etc::main "{root}/etc/apt/apt.conf";\n')
     options += ["-o", "DPkg::Options::=--log=" + str(root / "var/log/dpkg.log")]
-    # --root does not redirect dpkg's host configuration lookup. Pass the
+    # --instance-dir does not redirect dpkg's host configuration lookup. Pass the
     # shipped hook settings explicitly, rebinding only the owned wrapper path.
     dpkg_config = root / "etc/dpkg/dpkg.cfg.d/99safeyolo-guest-state"
     for setting in dpkg_config.read_text().splitlines():

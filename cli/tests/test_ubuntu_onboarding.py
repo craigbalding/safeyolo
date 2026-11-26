@@ -681,8 +681,8 @@ esac
         wrapper.write_text("import json,os,subprocess,sys\n"
             f"tm={tm!r}\nrecord={str(m.root / 'agents/first/current-launch.json')!r}\n"
             "if not os.path.exists(record):\n"
-            + " for prompt in ['Allow these host changes? [y/N]', 'Run this setup and share this workspace? [y/N]', 'Copy this selected host authentication and settings? [y/N]']:\n"
-            + "  print('Actual consent prose: '+prompt,flush=True);assert sys.stdin.readline().strip()=='y'\n"
+            + " for prompt,answer in [('Allow these host changes? [y/N]','y'), ('Run this setup and share this workspace? [y/N]','y'), ('Authentication [host-vault/client, Enter: client]: ','client'), ('Copy these available host inputs? [y/N]','y')]:\n"
+            + "  print('Actual consent prose: '+prompt,flush=True);assert sys.stdin.readline().strip()==answer\n"
             + f" pane=subprocess.check_output(tm+['-f','/dev/null','new-session','-d','-x','120','-y','30','-P','-F','#{{pane_id}}','-s','public',{shlex.join([sys.executable,str(harness)])!r}],text=True).strip()\n"
             + " subprocess.run(tm+['set-option','-p','-t',pane,'@safeyolo_launch_id','launch-connected'],check=True)\n"
             + f" open(record,'w').write(json.dumps({{'tmux_socket':{socket_path!r},'tmux_session':'public','pane_id':pane,'launch_id':'launch-connected'}}))\n"
@@ -746,7 +746,7 @@ esac
         self.assertEqual(len([row for row in map(json.loads, canonical.read_text().splitlines())
                               if row.get("message", {}).get("content") == m.TASK]), 1)
         self.assertTrue(all(row["task_observation"]["successful_task"] for row in [cold, warm]))
-        self.assertEqual([i["answer"] for i in m.x["interactions"] if i.get("prompt")], ["y", "y", "y"])
+        self.assertEqual([i["answer"] for i in m.x["interactions"] if i.get("prompt")], ["y", "y", "client", "y"])
 
     def test_real_foreground_expired_login_keeps_submission_and_never_runs_a_warm_task(self):
         cold, warm, canonical = self.connected_console(error="Login expired · Please run /login")

@@ -231,6 +231,7 @@ pub enum Start {
 pub struct HeaderReplacement {
     name: HeaderName,
     value: Option<HeaderValue>,
+    subscription_client: Option<crate::credentials::SubscriptionClient>,
     // A Codex subscription owns this header even when the imported login has
     // no selected account. Other service credentials preserve existing headers.
     chatgpt_account_id: Option<Option<HeaderValue>>,
@@ -239,6 +240,9 @@ pub struct HeaderReplacement {
 impl HeaderReplacement {
     pub fn name(&self) -> &HeaderName {
         &self.name
+    }
+    pub(crate) fn subscription_client(&self) -> Option<crate::credentials::SubscriptionClient> {
+        self.subscription_client
     }
     pub fn changed_headers(&self) -> impl Iterator<Item = HeaderName> + '_ {
         std::iter::once(self.name.clone()).chain(
@@ -734,6 +738,9 @@ fn finish_with_value(
     Ok(Start::Ready(HeaderReplacement {
         name,
         value,
+        subscription_client: snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.credential().subscription_client),
         chatgpt_account_id,
         evidence,
     }))

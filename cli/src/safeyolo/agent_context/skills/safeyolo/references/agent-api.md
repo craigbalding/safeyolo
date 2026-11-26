@@ -50,7 +50,7 @@ assertion grant no execution or policy-change authority. Use the existing
 effect owner and its current access. A Work request for repair is not proof of
 repair. Unknown or stale inventory does not establish safety.
 
-The operator's host commands are `safeyolo --root ROOT signals status` and
+The operator's host commands are `safeyolo --instance-dir PATH signals status` and
 `approvals show ID`. Status separates source freshness, local applicability,
 standing authority or pending approval, attempted effects and verified local
 policy capture. An operator decides scoped approval through the existing
@@ -98,9 +98,34 @@ revision and submission through the existing policy owner.
 
 `GET /operator-actions` discovers the bounded SafeYolo action vocabulary for
 the requesting agent. `POST /operator-actions` accepts `action_id`, typed
-`parameters` and optional untrusted `reason`. The first action is
-`desktop.present`. See [Desktop and operator preview](desktop.md) for the
-request and its local or configured tailnet prerequisites.
+`parameters` and optional untrusted `reason`. `desktop.present` starts a
+graphical presentation; see [Desktop and operator preview](desktop.md).
+`web.publish` publishes one HTTP port without starting a desktop. Discover the
+installed vocabulary before choosing either action.
+
+For an app in your current guest, read `/safeyolo/agent-name` and the host-staged
+`/safeyolo/host-launch-context.json` when identity is uncertain. Keep the known
+instance, agent, app and port. Guest loopback, the SafeYolo host's loopback and
+the operator's computer are separate targets. Ordinary work on your own app
+does not require a peer-support grant.
+
+Submit `action_id: "web.publish"` with typed parameters
+`{"guest_port":3000,"audience":"tailnet","ttl_seconds":900}` through the
+existing authenticated `POST /operator-actions`. `audience` is `local` or
+`tailnet`; optional `tailnet_port` selects an unused HTTPS port. The request is
+bound to your current run and cannot select another agent. The existing
+approval owner decides this exposure and receives the URL and unlock code.
+Retain its action request ID, read its canonical result, and tell the operator
+what is ready or exactly which transport or publisher capability is missing.
+Do not retry a refused or interrupted publication with another reason.
+
+The owning host also has `safeyolo agent publish NAME --port PORT --audience
+local|tailnet`, `agent publications NAME` and `agent unpublish NAME --port PORT
+--audience local|tailnet`. Preserve the operator's selected executable and
+instance when preparing that handoff. Use its installed help to verify syntax.
+The operator opens the URL on the intended device; an in-guest health check or
+desktop port6080 does not establish that access. Keep app authentication,
+streaming/WebSocket behavior and scoped stop/expiry verification in the task.
 
 `GET /operator-actions/ACTION_REQUEST_ID` reads the requesting agent's result.
 Use the stable ID returned by the request. The operator decides through the

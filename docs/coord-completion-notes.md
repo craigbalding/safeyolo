@@ -50,7 +50,7 @@ needed to author a note.
 
 ## Trusted ingestion
 
-On the host, use `safeyolo --root ROOT coord completion-notes ROOM SEQUENCE`.
+On the host, use `safeyolo --instance-dir PATH coord completion-notes ROOM SEQUENCE`.
 In a guest, use `safeyolo-coord completion-notes ROOM SEQUENCE` with the ordinary
 scoped Agent API connection. The commands read exactly the requested retained
 sequence through the existing Coord reader and parse its canonical envelope.

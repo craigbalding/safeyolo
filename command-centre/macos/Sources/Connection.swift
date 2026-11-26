@@ -195,7 +195,7 @@ func installedHostCommand(
     if let config = hostConfigPath {
         guard config.hasPrefix("/") else { throw ConnectionError.missingNativeInstallation }
         selection = " --config " + shellQuoted(config)
-    } else { selection = " --root " + shellQuoted(root) }
+    } else { selection = " --instance-dir " + shellQuoted(root) }
     let command = shellQuoted(executable) + selection + " " + arguments
     guard remote else { return command }
     let target: String

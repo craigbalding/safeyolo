@@ -63,7 +63,7 @@ class Herdr:
 
 
 def native_status(command: list[str], name: str) -> dict:
-    response = subprocess.run([*command, "agent", "status", name], check=True,
+    response = subprocess.run([*command, "--json", "agent", "status", name], check=True,
                               capture_output=True, text=True, timeout=30)
     status = json.loads(response.stdout)
     if (not isinstance(status, dict) or status.get("name") != name
@@ -244,12 +244,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("name", help="existing native SafeYolo agent")
     parser.add_argument("--safeyolo", required=True, type=Path, help="installed native CLI")
-    parser.add_argument("--root", required=True, type=Path, help="existing SafeYolo root")
+    parser.add_argument("--instance-dir", dest="root", required=True, type=Path, help="existing SafeYolo root")
     parser.add_argument("--attach", action="store_true", help="use native attach for an existing attachable launch")
     parser.add_argument("--coord-room", help="show this agent's claimed work in the named Coord room")
     args = parser.parse_args()
     try:
-        return run_terminal([str(args.safeyolo), "--root", str(args.root)], args.name,
+        return run_terminal([str(args.safeyolo), "--instance-dir", str(args.root)], args.name,
                             Herdr(os.environ["HERDR_SOCKET_PATH"]), os.environ["HERDR_PANE_ID"],
                             attach=args.attach, room=args.coord_room)
     except (KeyError, OSError, ValueError, HerdrError, subprocess.SubprocessError) as error:

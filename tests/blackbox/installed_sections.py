@@ -47,7 +47,7 @@ def copy_prepared_nats(source: Path, root: Path) -> None:
 
 def prepare_native_instance(source: Path, root: Path, *, log=None) -> None:
     """Create fresh native state and reuse the prepared immutable inputs."""
-    subprocess.run([str(source / "bin/safeyolo"), "--root", str(root), "init"],
+    subprocess.run([str(source / "bin/safeyolo"), "--instance-dir", str(root), "init"],
                    check=True, timeout=10, stdout=log, stderr=log)
     for name in ("bin", "assets", "lib", "libexec", "share", "host"):
         if not (source / name).exists():
@@ -127,14 +127,14 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
         for agent in agents:
             if (root / "agents" / agent).is_dir():
                 try:
-                    result = subprocess.run([str(cli), "--root", str(root), "agent", "stop", agent], env=env,
+                    result = subprocess.run([str(cli), "--instance-dir", str(root), "--json", "agent", "stop", agent], env=env,
                                             capture_output=True, timeout=60, check=False)
                     if result.returncode:
                         failures.append(f"agent stop {agent} exited {result.returncode}")
                 except (OSError, subprocess.SubprocessError) as exc:
                     failures.append(f"agent stop {agent}: {exc}")
         try:
-            result = subprocess.run([str(cli), "--root", str(root), "stop"], env=env, capture_output=True,
+            result = subprocess.run([str(cli), "--instance-dir", str(root), "--json", "stop"], env=env, capture_output=True,
                                     timeout=60, check=False)
             if result.returncode:
                 failures.append(f"proxy stop exited {result.returncode}")
@@ -256,15 +256,15 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                          "--nats-monitor-port", "46372"]
         if section in {"peer-support", "shared-approvals"}:
             args = [str(REPOSITORY / ".venv/bin/python"), "-m", "tests.blackbox.installed_authority",
-                    "--section", section, "--prepared-config", str(source), "--root", str(instance),
+                    "--section", section, "--prepared-config", str(source), "--instance-dir", str(instance),
                     "--revision", revision, "--output", str(section_artifacts)]
         if section == "provider":
             args = [str(REPOSITORY / ".venv/bin/python"), "-m", "tests.blackbox.installed_provider",
-                    "--prepared-config", str(source), "--root", str(instance), "--revision", revision,
+                    "--prepared-config", str(source), "--instance-dir", str(instance), "--revision", revision,
                     "--output", str(section_artifacts), "--admin-port", "0"]
         if section == "federation":
             args = [str(REPOSITORY / ".venv/bin/python"), "-m", "tests.blackbox.installed_federation",
-                    "--prepared-config", str(source), "--root", str(instance), "--revision", revision,
+                    "--prepared-config", str(source), "--instance-dir", str(instance), "--revision", revision,
                     "--output", str(section_artifacts)]
         if section == "claude":
             # The operator prepares the subscription in this dedicated host
@@ -272,7 +272,7 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
             instance = source
             args = [str(REPOSITORY / ".venv/bin/python"),
                     str(REPOSITORY / "tests/blackbox/claude_smoke.py"),
-                    "--root", str(source), "--workspace", str(directory / "claude-workspace"),
+                    "--instance-dir", str(source), "--workspace", str(directory / "claude-workspace"),
                     "--credential", os.environ.get("SAFEYOLO_CLAUDE_SMOKE_CREDENTIAL", ""),
                     "--output", str(section_artifacts / "claude-smoke.json")]
         if section in BOUNDARY_SECTIONS:
@@ -282,7 +282,7 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
             args = [str(REPOSITORY / ".venv/bin/python"),
                     str(REPOSITORY / "tests/blackbox/installed_boundaries.py"),
                     "--section", section, "--lane", lane, "--prepared-config", str(source),
-                    "--root", str(instance), "--revision", revision, "--output", str(section_artifacts)]
+                    "--instance-dir", str(instance), "--revision", revision, "--output", str(section_artifacts)]
             for option, port in (("--admin-port", boundary_admin_port),
                                  ("--upstream-port", boundary_upstream_port),
                                  ("--nats-client-port", boundary_nats_client_port),

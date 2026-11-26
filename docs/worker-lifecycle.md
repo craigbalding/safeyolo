@@ -13,14 +13,14 @@ Factory.
 
 ## Select and adopt configuration
 
-On the owning host, select the existing instance with --root. This example
+On the owning host, select the existing instance with --instance-dir. This example
 uses an already prepared worker named catalogue. The host operator, or an
 agent with existing host configuration authority, can save a complete JSON
 configuration:
 
 ~~~sh
-safeyolo --root /srv/safeyolo agent lifecycle catalogue configure lifecycle.json
-safeyolo --root /srv/safeyolo agent lifecycle catalogue status
+safeyolo --instance-dir /srv/safeyolo agent lifecycle catalogue configure lifecycle.json
+safeyolo --instance-dir /srv/safeyolo agent lifecycle catalogue status
 ~~~
 
 The command saves agents.catalogue.lifecycle in the existing policy. A
@@ -132,10 +132,10 @@ Work as a side effect of stopping.
 On the selected host and instance:
 
 ~~~sh
-safeyolo --root /srv/safeyolo agent stop catalogue
-safeyolo --root /srv/safeyolo agent lifecycle catalogue pause
-safeyolo --root /srv/safeyolo agent lifecycle catalogue resume
-safeyolo --root /srv/safeyolo agent start catalogue
+safeyolo --instance-dir /srv/safeyolo agent stop catalogue
+safeyolo --instance-dir /srv/safeyolo agent lifecycle catalogue pause
+safeyolo --instance-dir /srv/safeyolo agent lifecycle catalogue resume
+safeyolo --instance-dir /srv/safeyolo agent start catalogue
 ~~~
 
 Stop ends the current run and retains its schedule. Pause disables future

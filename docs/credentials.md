@@ -20,11 +20,11 @@ still applies to the injected value.
 In a host terminal, inspect the running service definition, then add the token:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services show slack
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials add slack-account
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials list
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services authorize alice slack --capability reader --credential slack-account --account operator --allow-host-network
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services authorized alice
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" services show slack
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" credentials add slack-account
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" credentials list
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" services authorize alice slack --capability reader --credential slack-account --account operator --allow-host-network
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" services authorized alice
 ```
 
 `credentials add` prompts without terminal echo. It also accepts `--value-file`,
@@ -258,8 +258,8 @@ reported `hmac:` fingerprint and `HOST` with the intended destination. Approve
 only the token and destination you intend to permit:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials approve FINGERPRINT --destination HOST
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" policy show
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" credentials approve FINGERPRINT --destination HOST
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" policy show
 ```
 
 Wait for `saved_matches_active` to be true, then let the client retry.
@@ -289,16 +289,16 @@ executable, then restart the proxy using the installation instructions
 so the running process inherits the host's authentication environment:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials provider --executable /absolute/path/to/op
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" credentials provider --executable /absolute/path/to/op
 ```
 
 After restart, register the reference and authorize Alice:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials reference slack-external --provider onepassword --reference op://VAULT/ITEM/FIELD
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials list
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services authorize alice slack --capability reader --credential slack-external --account operator --allow-host-network
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services authorized alice
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" credentials reference slack-external --provider onepassword --reference op://VAULT/ITEM/FIELD
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" credentials list
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" services authorize alice slack --capability reader --credential slack-external --account operator --allow-host-network
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" services authorized alice
 ```
 
 SafeYolo stores the reference in the same encrypted store. The proxy invokes the
@@ -324,8 +324,8 @@ Replace `op://VAULT/ITEM/FIELD` below with that field's reference. Alice must
 already be a configured agent.
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials reference github-pat --provider onepassword --reference op://VAULT/ITEM/FIELD
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services authorize alice github-git --capability push --credential github-pat --allow-host-network
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" credentials reference github-pat --provider onepassword --reference op://VAULT/ITEM/FIELD
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" services authorize alice github-git --capability push --credential github-pat --allow-host-network
 ```
 
 The first credential write selects storage as described earlier. An existing
@@ -386,7 +386,7 @@ select the other offered lifetimes. A blocked Git command
 must be retried after approval. For the equivalent explicit host command:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services approve alice github-git POST /craigbalding/safeyolo.git/git-receive-pack --lifetime once
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" services approve alice github-git POST /craigbalding/safeyolo.git/git-receive-pack --lifetime once
 ```
 
 Ref discovery retains a once grant. A successful HTTP pack response consumes
@@ -454,8 +454,8 @@ use, run the first command below. To remove the credential itself, run the
 second command. Both changes affect subsequent requests without a proxy restart:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" services revoke alice slack
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" credentials remove slack-account
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" services revoke alice slack
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" credentials remove slack-account
 ```
 
 Revocation stops use of that service binding. Credential removal causes remaining

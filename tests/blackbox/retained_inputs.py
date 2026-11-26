@@ -57,12 +57,12 @@ def prepare_guest(selection_path: Path, archive: Path, bundle: Path, root: Path,
                             "--sparse", "--acls", "--xattrs", "--xattrs-include=*", "-xf", str(unpacked),
                             "-C", str(assets), "--", "rootfs-tree", "cache-paths.txt"], check=True)
             settings = directory / "linux-settings.toml"
-            subprocess.run([str(bundle / "bin/safeyolo"), "--root", str(root), "host", "prepare",
+            subprocess.run([str(bundle / "bin/safeyolo"), "--instance-dir", str(root), "host", "prepare",
                             "--package-root", str(bundle), "--installed-root", str(bundle),
                             "--write-settings", str(settings), *(["--yes"] if yes else [])], check=True, stdout=sys.stderr)
             import tomllib
             mapping = tomllib.loads(settings.read_text())["linux"]
-            subprocess.run(["sudo", "-n", str(bundle / "bin/safeyolo"), "--root", str(root), "host", "remap-rootfs",
+            subprocess.run(["sudo", "-n", str(bundle / "bin/safeyolo"), "--instance-dir", str(root), "host", "remap-rootfs",
                             str(assets / "rootfs-tree"), *(str(mapping[key]) for key in
                             ("uid_base", "gid_base", "host_uid", "host_gid"))], check=True, stdout=sys.stderr)
         else:
@@ -187,12 +187,12 @@ def main() -> int:
                          help="Reuse the exact selected installation for systrap sections; defaults to credential-free sections")
     verify = commands.add_parser("verify-installed")
     verify.add_argument("--selection", type=Path, required=True)
-    verify.add_argument("--root", type=Path, required=True)
+    verify.add_argument("--instance-dir", dest="root", type=Path, required=True)
     prepare = commands.add_parser("prepare-guest")
     prepare.add_argument("--selection", type=Path, required=True)
     prepare.add_argument("--archive", type=Path, required=True)
     prepare.add_argument("--bundle", type=Path, required=True)
-    prepare.add_argument("--root", type=Path, required=True)
+    prepare.add_argument("--instance-dir", dest="root", type=Path, required=True)
     prepare.add_argument("--directory", type=Path, required=True)
     prepare.add_argument("--yes", action="store_true")
     args = parser.parse_args()

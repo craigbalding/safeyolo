@@ -652,7 +652,14 @@ impl Record {
             Some("gateway_route") => ("gateway.risky_route", "gateway_risky_route"),
             Some("host_operation") => ("gateway.host_escalated", "gateway_route"),
             Some("service_authorize") => ("gateway.request_access", "service"),
-            Some("operator_action") => ("agent.operator_action_requested", "desktop_present"),
+            Some("operator_action") => (
+                "agent.operator_action_requested",
+                if self.authority.action["action_id"] == crate::operator_actions::WEB_PRESENT {
+                    "web_publish"
+                } else {
+                    "desktop_present"
+                },
+            ),
             Some("signal_response") => ("ops.signal_response_requested", "signal_response"),
             Some("diagnostic_disclosure") => ("agent.diagnostic_access_requested", "diagnostic"),
             Some("policy_snapshot") => ("agent.policy_snapshot_requested", "policy_snapshot"),
@@ -762,11 +769,9 @@ pub(crate) fn revision(policy: &Policy, action: &Value) -> Option<String> {
         .then(|| action["basis_revision"].as_str().map(str::to_owned))
         .flatten()
     } else if action["kind"] == "operator_action" {
-        Some(digest(
-            &json!({"action_id":crate::operator_actions::DESKTOP_PRESENT,
+        Some(digest(&json!({"action_id":action["action_id"],
             "configuration_revision":action["configuration_revision"],
-            "agent_id":policy.evidence_agent_id(action["agent"].as_str()?)?}),
-        ))
+            "agent_id":policy.evidence_agent_id(action["agent"].as_str()?)?})))
     } else if action["kind"] == "coord_collaboration" {
         crate::coord_rooms::collaboration::revision(policy, action)
     } else if action["kind"] == "coord_access" {
@@ -1232,7 +1237,7 @@ pub(crate) fn current_view(
                 .and_then(|path| {
                     crate::host_platform::with_config(path, || {
                         crate::desktop_present::source_active(
-                            &issued.beneficiary.agent_id,
+                            &crate::operator_actions::publication_key(&issued.action)?,
                             &issued.approval_id,
                         )
                     })

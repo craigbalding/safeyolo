@@ -307,7 +307,7 @@ def test_prepared_configuration_is_readable_by_native_cli(tmp_path):
     """Use the real config reader without starting a proxy, broker or sandbox."""
     cli = native_cli()
     base, root = tmp_path / "base", tmp_path / "instance"
-    subprocess.run([str(cli), "--root", str(base), "init"], check=True, capture_output=True)
+    subprocess.run([str(cli), "--instance-dir", str(base), "init"], check=True, capture_output=True)
     (base / "bin").mkdir()
     (base / "bin/safeyolo").symlink_to(cli)
     (base / "host").mkdir()
@@ -320,4 +320,4 @@ def test_prepared_configuration_is_readable_by_native_cli(tmp_path):
     prepare(base, root, 19437, 19438)
     assert (root / "host").resolve() == base / "host"
     assert (base / "host/prepared-sentinel").read_text() == "preserved"
-    subprocess.run([str(cli), "--root", str(root), "status"], check=True, capture_output=True)
+    subprocess.run([str(cli), "--instance-dir", str(root), "status"], check=True, capture_output=True)

@@ -568,11 +568,11 @@ def test_host_only_reuses_guest_and_retains_complete_pair_and_upgrader(
     assert os.readlink(root / "current") == link
     helper = root / "safeyolo-upgrade"
     # The retained native helper still works when the selected host predates it.
-    helper_status = subprocess.run([str(helper), "status"], env=environment,
+    helper_status = subprocess.run([str(helper), "status", "--json"], env=environment,
                                    capture_output=True, text=True, timeout=30)
     assert helper_status.returncode == 0, helper_status.stderr
     assert json.loads(helper_status.stdout) == selected
-    rolled_back = subprocess.run([str(helper), "rollback"], env=environment,
+    rolled_back = subprocess.run([str(helper), "rollback", "--json"], env=environment,
                                 capture_output=True, text=True, timeout=30)
     assert rolled_back.returncode == 0, rolled_back.stderr
     assert json.loads(rolled_back.stdout)["current"] == selected["previous"]
@@ -700,7 +700,7 @@ def test_killed_component_pull_keeps_the_old_pair_and_recovers_on_retry(
     index = digest(g2["manifests/compat-v1"])
     contents["manifests/" + index] = g2["manifests/compat-v1"]
     faults["pause"] = "blobs/" + digest(archive)
-    arguments = [str(native_cli), "--root", str(root), "upgrade", "--bundle", str(second), "--guest-index", index]
+    arguments = [str(native_cli), "--instance-dir", str(root), "upgrade", "--bundle", str(second), "--guest-index", index]
     process = subprocess.Popen(arguments, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         assert faults["entered"].wait(timeout=20)
@@ -910,6 +910,14 @@ def test_guided_unavailable_host_discovery_retains_explicit_bundle_path(
         assert unavailable["state"] == "unavailable"
         assert unavailable["root"] == str(root)
         assert "--bundle" in unavailable["explicit_selection"]
+        human = subprocess.run(
+            [str(native_cli), "--instance-dir", str(root), "upgrade", "releases"],
+            env=environment, capture_output=True, text=True, timeout=30,
+        )
+        assert human.returncode != 0
+        assert str(root) in human.stdout and "unavailable" in human.stdout
+        assert "Explicit selection: upgrade --release host-COMMIT or --bundle DIRECTORY" in human.stdout
+        assert not human.stdout.lstrip().startswith("{")
         assert upgrade(native_cli, root, environment, "status") == original
     preview = upgrade(native_cli, root, environment, "--bundle", target, "--preview")
     assert preview["selected"] == original
@@ -939,7 +947,7 @@ def test_guided_activation_failure_reports_selected_pair_and_retained_rollback(
         assert failure["selected"]["current"]["host"]["source_commit"] == "b" * 40
         assert failure["selected"]["previous"] == original["current"]
         assert failure["observed"]["proxy"]["state"] != "running"
-        assert failure["next_action"]["rollback"] == [str(root / "safeyolo-upgrade"), "--root", str(root), "rollback"]
+        assert failure["next_action"]["rollback"] == [str(root / "safeyolo-upgrade"), "--instance-dir", str(root), "rollback"]
         assert "can refuse without changing selection" in failure["next_action"]["limit"]
         assert "only after rollback succeeds" in failure["next_action"]["limit"]
         if coord_state == "compatible":
@@ -984,7 +992,7 @@ def test_terminal_upgrade_can_defer_activation_after_choosing_a_release(
         # Choose the displayed default release, then defer activation through
         # the real terminal interface, without spelling a release identifier.
         os.write(terminal, b"\nn\n")
-        deferred = subprocess.run([str(native_cli), "--root", str(root), "upgrade"],
+        deferred = subprocess.run([str(native_cli), "--instance-dir", str(root), "upgrade"],
                                   env=environment, stdin=slave, stderr=slave,
                                   stdout=subprocess.PIPE, text=True, timeout=30)
         assert deferred.returncode == 0, deferred.stdout
@@ -1037,7 +1045,7 @@ def test_guided_installed_upgrade_keeps_other_instance_live_and_recovers_failed_
                    "SAFEYOLO_NATS_TEST_INSTANCE": "guided-upgrade-installed",
                    "TERM": "xterm-256color"}
     for instance in (root, unrelated):
-        installed = subprocess.run([str(baseline / "install.sh"), "--root", str(instance),
+        installed = subprocess.run([str(baseline / "install.sh"), "--instance-dir", str(instance),
                                     "--command-dir", str(instance / "commands"), "--yes"],
                                    env=environment, capture_output=True, text=True, timeout=30)
         assert installed.returncode == 0, installed.stderr

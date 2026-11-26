@@ -54,7 +54,7 @@ struct NatsCleanup(PathBuf);
 impl Drop for NatsCleanup {
     fn drop(&mut self) {
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(&self.0)
             .args(["coord", "stop"])
             .stdout(Stdio::null())
@@ -75,7 +75,7 @@ async fn coord_cli_from(
         Duration::from_secs(15),
         tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
             .current_dir(working_directory)
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(root)
             .arg("coord")
             .args(arguments)
@@ -90,7 +90,9 @@ async fn coord_cli_from(
 }
 
 async fn coord_json(root: &Path, arguments: &[&str]) -> Value {
-    let output = coord_cli(root, arguments).await;
+    let mut selected = arguments.to_vec();
+    selected.push("--json");
+    let output = coord_cli(root, &selected).await;
     assert!(
         output.status.success(),
         "{}",
@@ -109,7 +111,8 @@ impl Drop for RestoreNatsRecord {
 fn host_command(root: &Path, arguments: &[&str]) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"));
     command
-        .arg("--root")
+        .arg("--json")
+        .arg("--instance-dir")
         .arg(root)
         .args(arguments)
         .env("SAFEYOLO_NATS_TEST_INSTANCE", root)
@@ -134,7 +137,7 @@ struct HostCleanup(PathBuf);
 impl Drop for HostCleanup {
     fn drop(&mut self) {
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(&self.0)
             .arg("stop")
             .output();
@@ -589,7 +592,7 @@ responses=['DONE','BLOCKED','FAILED']
     assert_eq!(other["state"], "none");
 
     let mut piped = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(root)
         .args([
             "coord",

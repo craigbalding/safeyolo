@@ -31,7 +31,7 @@ not grant room creation authority.
 Use a current [installed SafeYolo instance](../README.md#quick-start) and its
 `safeyolo` command on your PATH. Run the host commands below as the account
 that owns that instance, from any directory. The examples assume the default
-root, `$HOME/.safeyolo`. For another instance, put `--root /absolute/instance`
+root, `$HOME/.safeyolo`. For another instance, put `--instance-dir /absolute/instance`
 between `safeyolo` and the command throughout the walkthrough.
 When startup needs the pinned NATS message-server binary, SafeYolo downloads it
 through the configured network route. The host needs curl and tar. SafeYolo

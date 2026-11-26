@@ -171,7 +171,7 @@ def test_ingress_refuses_missing_or_malformed_effective_network(network):
 ])
 def test_ingress_policy_show_reports_failure(tmp_path, monkeypatch, stdout, returncode, message):
     def command(argv, **kwargs):
-        assert argv == ["selected-cli", "--root", str(tmp_path), "policy", "show"]
+        assert argv == ["selected-cli", "--instance-dir", str(tmp_path), "--json", "policy", "show"]
         assert kwargs["timeout"] == 45
         return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="fixture error")
 

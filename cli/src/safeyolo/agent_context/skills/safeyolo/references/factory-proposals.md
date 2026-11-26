@@ -12,7 +12,7 @@ normal.
 
 Use `safeyolo-coord completion-notes ROOM SEQUENCE` and
 `safeyolo-coord proposals` through the staged Agent API connection. On the host,
-use `safeyolo --root ROOT coord` with the same command arguments. Both readers
+use `safeyolo --instance-dir PATH coord` with the same command arguments. Both readers
 fetch the exact retained sequence; neither accepts an envelope file or sender override:
 
 1. Inspect the retained sequence with `completion-notes ROOM SEQUENCE`. Invalid, malformed,

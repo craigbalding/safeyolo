@@ -576,8 +576,13 @@ fn access_command(change: &(PathBuf, String, bool)) -> Command {
 }
 
 fn access_purpose(path: &Path, identity: &str) -> String {
+    let access = if path.is_dir() {
+        "traverse this directory (not list it or read its files); this applies to the whole named directory, not only SafeYolo"
+    } else {
+        "read and execute this runtime file"
+    };
     format!(
-        "allow {identity} required access to {} while preserving other ACL permissions",
+        "allow {identity} to {access}: {}. This ACL persists until removed; other principals keep their effective permissions",
         path.display()
     )
 }
@@ -1200,7 +1205,7 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
             );
         }
         eprintln!(
-            "The proxy and agent run as {owner}. Guest acquisition can also use sudo for extraction, ownership mapping and failed-stage cleanup; each command is shown before it runs."
+            "The host proxy and launcher run as {owner}. Guest extraction, ownership mapping and failed-stage cleanup use delegated user namespaces without host sudo. Only the host commands shown above need the displayed privileges."
         );
         if !yes {
             eprint!("Allow these host changes? [y/N] ");
@@ -1287,6 +1292,8 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
 }
 
 pub(super) fn run(root: &Path, args: &[String]) -> Result<(), Error> {
+    let selected_arguments = crate::operator_output::without_json(args);
+    let args = selected_arguments.as_slice();
     match args {
         [help] if help == "--help" => {
             println!("{}", linux_host::HELP);
@@ -1368,12 +1375,7 @@ pub(super) fn run(root: &Path, args: &[String]) -> Result<(), Error> {
                         .as_ref()
                         == Some(&settings)
                     {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(
-                                &json!({"state":"prepared","linux":settings,"applied":applied})
-                            )?
-                        );
+                        show_prepared(&settings, &applied)?;
                         return Ok(());
                     }
                     let mut existing: toml_edit::DocumentMut =
@@ -1385,18 +1387,35 @@ pub(super) fn run(root: &Path, args: &[String]) -> Result<(), Error> {
                         0o600,
                     )?;
                 }
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &json!({"state":"prepared","linux":settings,"applied":applied})
-                    )?
-                );
+                show_prepared(&settings, &applied)?;
                 Ok(())
             })();
             result.map_err(|error|format!("{error}\nHost changes and attempted operations: {}. Completed changes remain; retry reuses valid prerequisites",if applied.is_empty(){"none".into()}else{applied.join("; ")}).into())
         }
         _ => Err(format!("use host prepare\n{}", linux_host::HELP).into()),
     }
+}
+
+fn show_prepared(settings: &Settings, applied: &[String]) -> Result<(), Error> {
+    if crate::operator_output::json_requested() {
+        return crate::operator_output::json(
+            &json!({"state":"prepared","linux":settings,"applied":applied}),
+        );
+    }
+    println!(
+        "Linux host prepared. Runtime: {} ({}). Mapped guest root UID/GID: {}/{}. Host proxy/launcher UID/GID: {}/{}.",
+        settings.runsc.display(),
+        settings.runsc_origin,
+        settings.uid_base,
+        settings.gid_base,
+        settings.host_uid,
+        settings.host_gid
+    );
+    println!(
+        "{} host changes completed; valid prerequisites were reused. Guest extraction and cleanup use delegated namespaces without host sudo.",
+        applied.len()
+    );
+    Ok(())
 }
 
 #[cfg(test)]

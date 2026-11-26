@@ -76,8 +76,8 @@ On the operator host, use the installed CLI for the selected instance. Set
 `status`, and the owning instance ID from `support grants`:
 
 ```sh
-safeyolo --root "$ROOT" status
-safeyolo --root "$ROOT" support grants --json
+safeyolo --instance-dir "$ROOT" status
+safeyolo --instance-dir "$ROOT" support grants --json
 ```
 
 Save a proposal as `support.json` in an operator-owned directory. Replace the
@@ -109,9 +109,9 @@ and composition warnings. The following commands need `jq`. They acknowledge
 that exact preview and apply the grant named `incident`:
 
 ```sh
-safeyolo --root "$ROOT" support preview incident --file support.json --json > preview.json
+safeyolo --instance-dir "$ROOT" support preview incident --file support.json --json > preview.json
 jq --slurpfile preview preview.json '.grant = $preview[0].after | .grant.acknowledgment = $preview[0].acknowledgment | .authority = $preview[0].authority' support.json > acknowledged.json
-safeyolo --root "$ROOT" support apply incident --file acknowledged.json --json
+safeyolo --instance-dir "$ROOT" support apply incident --file acknowledged.json --json
 ```
 
 For a remote support identity on A, add `support_instance_id` with A's durable
@@ -155,7 +155,7 @@ this disclosure. On each destination, inspect its existing peer trust epoch with
 that installation's native CLI (substitute its actual executable path):
 
 ```sh
-/srv/destination-safeyolo/bin/safeyolo --root "$DESTINATION_ROOT" coord federation peers
+/srv/destination-safeyolo/bin/safeyolo --instance-dir "$DESTINATION_ROOT" coord federation peers
 ```
 
 In that destination's `policy.toml`, add a reader selection using the collector's
@@ -240,7 +240,7 @@ as the top-level field of `inventory.json`. The following command reads current
 metadata and does not change the grant:
 
 ```sh
-safeyolo --root "$ROOT" support report incident --file inventory.json --json > report.json
+safeyolo --instance-dir "$ROOT" support report incident --file inventory.json --json > report.json
 ```
 
 Set `remove: true` beside `owners` to preview revocation. The report shows remaining
@@ -503,7 +503,7 @@ For revocation, save only the current revision in `revoke.json`:
 ```
 
 ```sh
-safeyolo --root "$ROOT" support revoke incident --file revoke.json --json
+safeyolo --instance-dir "$ROOT" support revoke incident --file revoke.json --json
 ```
 
 Authority is checked at execution, including after setup, launch and guest-control

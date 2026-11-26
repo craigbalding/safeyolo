@@ -13,7 +13,7 @@ the selected [instance](installation.md#install-and-start). The example
 uses `$HOME/.safeyolo`; its configuration, agent `relay`, and `backlog`
 room must already exist. The operator must have send/receive access and Relay must be a
 receive-authorized room member. Start that instance's Coord/NATS runtime with
-`safeyolo --root "$HOME/.safeyolo" coord start` if it is stopped. See
+`safeyolo coord start` if it is stopped. See
 [operator communication](coord-operations.md) for room setup and grants.
 
 Deliver one operator-authored task for the explicit UTC date below. This writes
@@ -21,7 +21,7 @@ the delivery ledger and may publish one Coord message; it does not publish a
 website or install a schedule:
 
 ```sh
-safeyolo --root "$HOME/.safeyolo" coord dispatch-trigger backlog \
+safeyolo coord dispatch-trigger backlog \
   --date 2026-08-29 \
   --weekly-on monday \
   --publication-mode manual
@@ -65,7 +65,7 @@ The daily cron entry below computes a UTC date. Cron runs at 09:17 in the
 account's scheduler timezone; configure that timezone as UTC for a UTC launch:
 
 ```cron
-17 9 * * * /usr/local/bin/safeyolo --root "$HOME/.safeyolo" coord dispatch-trigger backlog --date "$(/bin/date -u +\%F)" --weekly-on monday --publication-mode manual
+17 9 * * * /usr/local/bin/safeyolo coord dispatch-trigger backlog --date "$(/bin/date -u +\%F)" --weekly-on monday --publication-mode manual
 ```
 
 For systemd, install these optional user units under
@@ -79,7 +79,7 @@ Description=Deliver the daily SafeYolo Dispatch production task
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'exec /usr/local/bin/safeyolo --root "%h/.safeyolo" coord dispatch-trigger backlog --date "$(/bin/date -u +%%F)" --weekly-on monday --publication-mode manual'
+ExecStart=/bin/sh -c 'exec /usr/local/bin/safeyolo --instance-dir "%h/.safeyolo" coord dispatch-trigger backlog --date "$(/bin/date -u +%%F)" --weekly-on monday --publication-mode manual'
 ```
 
 ```ini
@@ -102,7 +102,7 @@ requests with `systemctl --user disable --now safeyolo-dispatch.timer`, or remov
 the cron entry. Stopping the scheduler does not retract a delivered request or
 delete the ledger. The trigger is one-shot and owns no background worker. To
 stop Coord for a disposable instance you own, use
-`safeyolo --root "$HOME/.safeyolo" coord stop`; keep a shared instance
+`safeyolo coord stop`; keep a shared instance
 running for its other users.
 
 No launchd example is shipped because SafeYolo does not install or validate a
@@ -159,7 +159,7 @@ operator has inspected roughly 5–10 real Dispatches and deliberately grants a
 Relay-only, site-scoped repository path, change the host invocation to:
 
 ```sh
-safeyolo --root "$HOME/.safeyolo" coord dispatch-trigger backlog \
+safeyolo coord dispatch-trigger backlog \
   --date 2026-09-15 \
   --weekly-on monday \
   --publication-mode automatic

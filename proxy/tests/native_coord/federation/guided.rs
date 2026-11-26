@@ -6,7 +6,7 @@ struct HostCleanup(PathBuf);
 impl Drop for HostCleanup {
     fn drop(&mut self) {
         let _ = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(&self.0)
             .arg("stop")
             .stdout(Stdio::null())
@@ -637,7 +637,7 @@ async fn guided_verification_recovers_original_receipts_without_repeating_operat
         original_count
     );
     let mut session = tokio::process::Command::new("script")
-        .args(["-qec", "exec \"$SAFEYOLO_INSPECT_BINARY\" --root \"$SAFEYOLO_INSPECT_ROOT\" inspect --agent alice", "/dev/null"])
+        .args(["-qec", "exec \"$SAFEYOLO_INSPECT_BINARY\" --instance-dir \"$SAFEYOLO_INSPECT_ROOT\" inspect --agent alice", "/dev/null"])
         .env("SAFEYOLO_INSPECT_BINARY",env!("CARGO_BIN_EXE_safeyolo"))
         .env("SAFEYOLO_INSPECT_ROOT",&b)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).spawn().unwrap();
