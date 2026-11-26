@@ -9,6 +9,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import shlex
 import signal
 import socket
 import subprocess
@@ -102,7 +103,8 @@ def test_recipe_collects_real_probe_and_matching_guest_acknowledgement(staged_gu
         assert lifecycle["name"] == "demo"
         assert lifecycle["runtime_state"] == "unknown"
         assert f"coding agent {lifecycle['agent_state']}; terminal {lifecycle['terminal_state']}." in response.stdout
-        assert str(staged_guest["root"]) in inspect
+        selected = shlex.split(inspect)
+        assert selected[selected.index("--config") + 1] == str(staged_guest["root"] / "config.toml")
     else:
         observed = json.loads(response.stdout)["guest_probe"]
         assert observed["generation"] == "recovery-run"
