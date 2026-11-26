@@ -581,7 +581,13 @@ pub(crate) fn show(report: &Value) {
             );
             if check["status"] != "pass" && check["status"] != "skip" && check["next_action"] != ""
             {
-                println!("        {}", text(&check["next_action"]));
+                println!(
+                    "        {}",
+                    crate::network_guard::sanitize_with_limit(
+                        check["next_action"].as_str().unwrap_or_default(),
+                        usize::MAX
+                    )
+                );
             }
         }
     }
