@@ -681,7 +681,7 @@ fn storage_checks(config: &crate::Config) -> Vec<Value> {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
         connection.busy_timeout(std::time::Duration::from_millis(500))?;
-        let count: u64 =
+        let count: i64 =
             connection.query_row("SELECT COUNT(*) FROM flows", [], |row| row.get(0))?;
         Ok(Some(
             json!({"path":path,"bytes":meta.len(),"count":count,"enabled":config.flow_store_enabled}),
