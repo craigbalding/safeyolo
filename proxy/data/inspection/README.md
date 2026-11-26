@@ -2,7 +2,7 @@
 
 The native pattern scanner uses this generated data for Python's `\w` and
 `\d` categories and `\N{...}` character-name escapes. Rust's regex tables can
-move ahead of the Python runtime used by SafeYOLO, so using its properties
+move ahead of the Python runtime used by SafeYolo, so using its properties
 directly would make a newly assigned Unicode scalar match in native while
 Python 3.12 does not. The ranges include letters, numbers and underscore for
 `\w`, and decimal-number scalars for `\d`. `\s` remains the existing explicit
