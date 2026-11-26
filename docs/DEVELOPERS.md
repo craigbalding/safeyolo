@@ -1429,7 +1429,7 @@ tests start only owned local fixtures. The contract test also needs the matching
 native CLI for its gateway credential fixture:
 
 ```sh
-CARGO_TARGET_DIR="$PWD/proxy/target" CARGO_BUILD_JOBS=1 SAFEYOLO_CARGO_RESERVE_GIB=10 scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --release --locked --bins
+CARGO_TARGET_DIR="$PWD/proxy/target" SAFEYOLO_CARGO_RESERVE_GIB=10 scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --release --locked --bins
 SAFEYOLO_NATIVE_CLI="$PWD/proxy/target/release/safeyolo" uv run --frozen --no-sync pytest -q tests/proxy_contracts/test_http2_gate.py tests/proxy_contracts/test_http2_gate_timing.py tests/proxy_contracts/test_http2_contract.py
 ```
 
