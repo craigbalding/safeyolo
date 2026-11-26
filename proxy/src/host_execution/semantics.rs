@@ -272,6 +272,12 @@ fn permissions(package: &Package, authority: &[Authority]) -> Result<Vec<Permiss
                     return Err("host authority contains an unadopted resource".into());
                 }
                 let mut path_arguments = BTreeMap::new();
+                path_arguments.insert(
+                    "native:target".into(),
+                    Scope::Known {
+                        value: grant.target_id.clone(),
+                    },
+                );
                 if let Some(notes) = &op.semantics {
                     for (name, mapping) in &notes.resources {
                         for (key, source) in mapping {
@@ -321,9 +327,27 @@ pub fn assess(
     authority: &[Authority],
     history: &[PersistentEffect],
 ) -> Result<Value, Error> {
-    let service = service(package)?.ok_or("host package has no adopted semantics")?;
-    let model = service.effect_model.as_ref().unwrap();
+    package.validate()?;
     let permissions = permissions(package, authority)?;
+    let native_authority = super::authority_effects::assess(package, &permissions)?;
+    let Some(service) = service(package)? else {
+        if !history.is_empty() {
+            return Err(
+                "uncharacterised historical operation; retain explicit historical uncertainty"
+                    .into(),
+            );
+        }
+        return Ok(json!({
+            "package_revision": revision(package),
+            "understanding_revision": native_authority["model_revision"],
+            "native_authority": native_authority,
+            "model": {"status":"uncharacterised","reason":"Program behavior has no reviewed effect annotations. Native authority potential is assessed separately."},
+            "alternatives": {},
+            "known_persistent_effects": [],
+            "limitations": ["Native permissions describe potential exposure, not observed program behavior. This assessment grants nothing and does not establish current target enforcement, application readiness or audience reach."]
+        }));
+    };
+    let model = service.effect_model.as_ref().unwrap();
     let mut assessment = model.assess(&service, &permissions)?;
     let mut observations = BTreeSet::new();
     for observation in history {
@@ -412,7 +436,7 @@ pub fn assess(
     assessment = model.assess_direct(assessment.direct);
     let alternatives = alternatives(package, authority, &service)?;
     Ok(
-        json!({"package_revision":revision(package),"understanding_revision":revision(&(&package.semantics,package.operations.iter().map(|(id,op)|(id,op.semantic_revisions().understanding)).collect::<BTreeMap<_,_>>())),"model":assessment,"alternatives":alternatives,"known_persistent_effects":history,"limitations":["Only represented authority and supplied trusted observations are assessed. Historical state and ambient dependencies remain unobserved unless evidence is supplied. Expiry does not remove earlier effects.","This prepared assessment grants nothing. Existing authored allow/deny/approval policy decides acceptable risk. Native target and gateway owners must enforce the actual invocation."]}),
+        json!({"package_revision":revision(package),"understanding_revision":revision(&(&package.semantics,package.operations.iter().map(|(id,op)|(id,op.semantic_revisions().understanding)).collect::<BTreeMap<_,_>>())),"native_authority":native_authority,"model":assessment,"alternatives":alternatives,"known_persistent_effects":history,"limitations":["Only represented authority and supplied trusted observations are assessed. Historical state and ambient dependencies remain unobserved unless evidence is supplied. Expiry does not remove earlier effects.","This prepared assessment grants nothing. Existing authored allow/deny/approval policy decides acceptable risk. Native target and gateway owners must enforce the actual invocation."]}),
     )
 }
 

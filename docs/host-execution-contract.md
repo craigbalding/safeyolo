@@ -192,6 +192,18 @@ grants, target ceilings and future-family bounds through the existing host
 effect assessor. The result distinguishes represented effects from unknown
 behavior. A favorable assessment creates no permission.
 
+The shared assessment also derives native authority potential from each
+operation's concrete execution definition, independently of program annotations
+and agent intent. It uses the existing effect evaluator to combine file access,
+execution and network directions on the same target account. Current operations
+and standing future-family ceilings are assessed separately. The view retains
+the selected paths, network selectors, broader exceptions and resource bounds.
+Missing program annotations remain unknown; they do not hide native authority.
+These combinations describe possible disclosure and changed execution, not
+observed behavior or a new risk policy. The recorded target enforcement report
+still supplies platform-specific limits. A selected address or port alone does
+not establish confinement, application readiness or audience reach.
+
 The gateway checks Unix socket peer UID and protected path ownership, or
 verifies the configured HTTPS certificate and endpoint name. It rechecks current
 policy, task, run and vault selection before sending. The target then
