@@ -180,6 +180,9 @@ fn native_task_authority_is_assessed_without_program_annotations_or_intent() {
 fn native_broader_channels_are_assessed_with_empty_selectors() {
     let mut package = package();
     package.semantics = None;
+    for operation in package.operations.values_mut() {
+        operation.semantics = None;
+    }
     // The maintained Windows operations use account permissions rather than
     // selector confinement. Challenge every operation with that same shape.
     for (id, operation) in &package.operations {
