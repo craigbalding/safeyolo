@@ -1,11 +1,12 @@
-//! Native proxy-policy evaluation, selected by the development policy_file option.
+//! Native proxy-policy evaluation over the configured policy_file.
 //!
-//! Decisions mirror PolicyEngine.evaluate_request, including its existing exact
-//! index case sensitivity, shared host budgets and separate CONNECT counters.
-//! Credential and gateway decisions share the same rule matcher and budget state.
-//! File-backed host lists and IAM task overlays retain production precedence.
-//! Each action supplies only its existing Python context. Credential detection,
-//! service route compilation, addon enforcement and PDP effect mapping live elsewhere.
+//! Decisions keep the former Python PolicyEngine.evaluate_request behaviour,
+//! including its exact index case sensitivity, shared host budgets and separate
+//! CONNECT counters. Credential and gateway decisions share the same rule matcher
+//! and budget state. File-backed host lists and IAM task overlays retain
+//! production precedence. Each action supplies only the context that the former
+//! Python action supplied. Credential detection, service route compilation,
+//! addon enforcement and PDP effect mapping live elsewhere.
 //! Expiry is applied at load/reload, including the intentional agent-host expiry
 //! fix; reaching a deadline alone does not schedule a reload.
 

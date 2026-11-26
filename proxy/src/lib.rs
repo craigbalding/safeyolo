@@ -1,6 +1,5 @@
-//! Development proxy: trusted UDS ingress, HTTP/TLS and admitted CONNECT streams.
-//! Network policy runs natively or through an explicitly configured temporary
-//! Python bridge. The development pipeline does not yet have production parity.
+//! SafeYolo proxy: trusted per-agent UDS ingress, HTTP/TLS and admitted CONNECT
+//! streams. Policy, credential and content controls run natively in this process.
 
 pub mod admin_api;
 mod admin_listener;

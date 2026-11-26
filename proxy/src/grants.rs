@@ -2,7 +2,7 @@
 //! owns the active gateway state. Once reservations are process-local and must be
 //! shared by all requests; they are not additional durable approvals.
 //!
-//! Unlike the Python gateway, pending once requests reserve their grant and
+//! Unlike the former Python gateway, pending once requests reserve their grant and
 //! persisted-state reload removes externally revoked grants and bindings. Live
 //! sessions survive reload. No transport, HTTP authentication, or secret access is
 //! activated here; callers supply trusted agent identity and activation callbacks.
