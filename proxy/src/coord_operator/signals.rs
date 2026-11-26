@@ -213,6 +213,8 @@ pub(crate) async fn follow(
 ) -> Result<(), Error> {
     let mut seen = BTreeMap::new();
     let mut approvals = BTreeMap::new();
+    let mut signal_failure = None;
+    let mut approval_failure = None;
     loop {
         let connection = native_client::operator_events(config).await;
         let mut subscription = match connection {
@@ -229,9 +231,17 @@ pub(crate) async fn follow(
         // Subscribe before both snapshots. Mutations during attachment either
         // enter the snapshots or the registered stream; shared host recovery
         // also detects changes whose final audit notification was lost.
-        if refresh_current(config, json, &mut seen, &mut approvals, &mut emit)
-            .await
-            .is_err()
+        if refresh_current(
+            config,
+            json,
+            &mut seen,
+            &mut approvals,
+            &mut signal_failure,
+            &mut approval_failure,
+            &mut emit,
+        )
+        .await
+        .is_err()
         {
             tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
@@ -262,9 +272,17 @@ pub(crate) async fn follow(
             let refresh = crate::operator_events::refreshes_pending(&event);
             crate::credentials::wipe_json(&mut event);
             if refresh
-                && refresh_current(config, json, &mut seen, &mut approvals, &mut emit)
-                    .await
-                    .is_err()
+                && refresh_current(
+                    config,
+                    json,
+                    &mut seen,
+                    &mut approvals,
+                    &mut signal_failure,
+                    &mut approval_failure,
+                    &mut emit,
+                )
+                .await
+                .is_err()
             {
                 break;
             }
@@ -278,21 +296,39 @@ async fn refresh_current(
     json: bool,
     signals: &mut BTreeMap<String, u64>,
     approvals: &mut BTreeMap<String, Value>,
+    signal_failure: &mut Option<String>,
+    approval_failure: &mut Option<String>,
     emit: &mut impl FnMut(WatchUpdate) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let signals = refresh_signals(config, json, signals, emit).await;
     if let Err(error) = &signals {
-        emit(WatchUpdate::Notice(format!(
+        let notice = format!(
             "Pending signals unavailable; previous signal view is stale: {}",
             visible(&error.to_string())
-        )))?;
+        );
+        if signal_failure.as_ref() != Some(&notice) {
+            emit(WatchUpdate::Notice(notice.clone()))?;
+            *signal_failure = Some(notice);
+        }
+    } else if signal_failure.take().is_some() {
+        emit(WatchUpdate::Notice(
+            "Pending signals recovered; current signal state refreshed.".into(),
+        ))?;
     }
     let approvals = refresh_approvals(config, json, approvals, emit).await;
     if let Err(error) = &approvals {
-        emit(WatchUpdate::Stale(format!(
+        let notice = format!(
             "Pending approvals unavailable; previous view is stale: {}",
             visible(&error.to_string())
-        )))?;
+        );
+        if approval_failure.as_ref() != Some(&notice) {
+            emit(WatchUpdate::Stale(notice.clone()))?;
+            *approval_failure = Some(notice);
+        }
+    } else if approval_failure.take().is_some() {
+        emit(WatchUpdate::Notice(
+            "Pending approvals recovered; current approval state refreshed.".into(),
+        ))?;
     }
     let _ = std::io::stdout().flush();
     // A failed read can consume the final invalidation while host state stays

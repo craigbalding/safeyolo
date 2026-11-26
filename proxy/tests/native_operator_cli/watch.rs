@@ -95,6 +95,19 @@ async fn native_watch_keeps_selected_input_arrivals_deferral_and_concurrent_outc
     terminal
         .until(unavailable, "Agent context is unavailable")
         .await;
+    // This fixture has no signal store. Reattachment must keep approvals
+    // current without scrolling the selected decision away every second.
+    terminal.until(0, "Pending signals unavailable").await;
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+    assert_eq!(
+        terminal
+            .output()
+            .matches("Pending signals unavailable")
+            .count(),
+        1,
+        "unchanged signal failure flooded the approval review: {}",
+        terminal.output()
+    );
     terminal.send("1");
     let arrival = terminal.mark();
     let peer = fixture.network("peer", fixture.address).await;

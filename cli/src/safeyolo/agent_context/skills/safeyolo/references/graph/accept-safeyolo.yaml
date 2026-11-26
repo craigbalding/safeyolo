@@ -691,7 +691,7 @@ nodes:
         - path: proxy/tests/native_coord/federation/guided.rs
           sha256: 4394b1086ac19aee265ccbbdb0ae6bc2f477eaf6f48fa50ea3f937b3b8453f0d
         - path: proxy/tests/native_operator_cli/watch.rs
-          sha256: 741289d1da068c0f2a60ac1a0f8690a7cfb5671ae8e5e493791a8c7180fff924
+          sha256: 42eb1b4ae7b2a9e1696e446c1f0f1d70c26e6725eef2fa5b3618a829b989d122
         - path: proxy/tests/support/operator_pty.rs
           sha256: 398d53be816a90fadcc3a0027235f906b6e1c00734a70c7336b0446e46ce0ee3
         - path: proxy/tests/native_operator_cli.rs
@@ -823,7 +823,7 @@ nodes:
         - path: proxy/src/admin_api/coord_signals.rs
           sha256: 02a963eef1bf4e390e9c57b9dbb0f95854bbb6c7592f6bb0b461ee2f04f41624
         - path: proxy/src/coord_operator/signals.rs
-          sha256: 6877bb1004175a48c28af3a283c6c971bc6165925616a48626d582cfa104f7ad
+          sha256: 00811a38bbdb3a161f274cfd9d2bf948a60c03f5b549f4d7e75130dcce1bb71e
         - path: proxy/src/coord_tools.rs
           sha256: e61af91a7c38db5b4e0b4805ccf069be30cbe5facd2af9dcc1dcc43e0db9a574
         - path: proxy/src/coord_rooms/room_status.rs
