@@ -1,0 +1,55 @@
+---
+layout: waypoint
+full_width: true
+permalink: /journey/masked-apis/
+title: "API access without the secret · SafeYOLO journey"
+description: "Give agents real access to Slack, GitHub, Docker and other services through scoped tokens, while the real credentials stay on your host."
+act: "Act 2"
+waypoint: 3
+headline: "Give an agent real API access, without giving it the key"
+lede: "You want an agent to read Slack, push to GitHub or drive Docker, but you do not want a live token sitting in its sandbox for a prompt injection to find."
+lit: "credentials checkpoint policy-and-approvals agent-api"
+next:
+  title: "See the whole journey"
+  url: /journey/
+  blurb: "Next: agents beyond code, approvals that scale, and work on your host."
+---
+<h2>The problem with handing over tokens</h2>
+<p>An agent with a token in its environment can send that token anywhere, use it for anything the token allows, and leak it in a log. Scoping the token at the vendor helps, but the secret is still in the sandbox.</p>
+
+<h2>What you do</h2>
+<p>On the host, store the credential and authorise one agent for one named capability. For Slack's read-only <code>reader</code> capability:</p>
+<pre><code>safeyolo credentials add slack-account
+safeyolo services authorize alice slack --capability reader --credential slack-account --account operator --allow-host-network</code></pre>
+<p><code>credentials add</code> prompts without echo, so the secret never appears in your shell history. The store is encrypted on the host, or points at 1Password.</p>
+
+<h2>What the agent does</h2>
+<ol>
+<li>It fetches its own scoped <code>sgw_</code> token from the Agent API, using the identity of its socket.</li>
+<li>It sends that token in the service's usual header, like any API client.</li>
+<li>The <a href="/how-it-works/checkpoint/">checkpoint</a> checks the method and path against the capability, then replaces the token with your real credential on the way out.</li>
+</ol>
+<p>Another agent, another destination, or a method or path outside the capability cannot use Alice's token. The service still applies its own permissions.</p>
+
+<h2>When it needs more</h2>
+<table>
+<tr><th>The agent needs</th><th>What happens</th></tr>
+<tr><td>A capability it does not have</td><td>It requests that capability with a reason; you approve or decline it</td></tr>
+<tr><td>One route the capability does not cover</td><td>It gets a route challenge with the exact recorded scope, and can ask for temporary access to that one route</td></tr>
+<tr><td>A risky route, such as a Git push</td><td>You see a specific request, for example <i>alice wants to push to craigbalding/safeyolo</i>, and approve it once, for the session, or remembered</td></tr>
+</table>
+<p>None of these widens a capability. Each answer applies inside what you already authorised.</p>
+
+<h2>The same pattern, many services</h2>
+<ul>
+<li><b>GitHub</b> over HTTPS, including Git pushes behind a risk approval</li>
+<li><b>Docker and Compose</b>, with each management request checked against the gateway capability</li>
+<li><b>Coding-client subscriptions</b>: Claude Code and Codex logins stay in the host vault and are renewed on the host</li>
+<li><b>Services hosted by other agents</b>, shared through the same gateway</li>
+<li><b>Your own APIs</b>, described in YAML, with optional effect models that assess what a permission could do</li>
+</ul>
+
+<div class="guarantees">
+<div><h3>What SafeYOLO guarantees</h3><ul><li>The real credential is never in the sandbox</li><li>A token works only for its agent, capability and destination</li><li>Unknown secrets in outbound requests need approval before they leave</li></ul></div>
+<div class="no"><h3>What it does not do</h3><ul><li>Override the service's own permissions for the account you chose</li><li>Make a capability safe if it can execute commands: approving it delegates that authority</li><li>Protect logins a host script copies into a guest, which is a separate, weaker option</li></ul></div>
+</div>

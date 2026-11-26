@@ -1,0 +1,39 @@
+---
+layout: explainer
+full_width: true
+permalink: /how-it-works/policy-and-approvals/
+title: Policy and approvals · How SafeYOLO works
+description: You write what agents may do as policy. When an agent needs something outside it, you get one specific question, and you choose how long the answer lasts.
+part_name: Policy and approvals
+headline: Decide once. Agents only ask about what is outside it.
+lede: You write what agents may do as policy. When an agent needs something outside it, you get one specific question, and you choose how long the answer lasts.
+lit: policy-and-approvals
+docs:
+- title: Settings and controls
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/settings.md
+- title: Delegated approvals
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/delegated-approvals.md
+- title: Policy snapshots
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/policy-snapshots.md
+- title: Policy feeds
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/policy-feeds.md
+journey:
+- title: API access without the secret
+  url: /journey/masked-apis/
+- title: The live software factory
+  url: /journey/software-factory/
+---
+<h2>Policy is a file you control</h2>
+<p><code>policy.toml</code> holds which hosts each agent may reach, its budgets, lists, grants and controls. <code>safeyolo policy check</code> validates a candidate without activating it, and <code>safeyolo policy apply</code> activates it and confirms the result. The running checkpoint reloads policy when the file changes.</p>
+<h2>Approvals arrive specific</h2>
+<p>A request outside policy returns 428 and records a pending approval with its exact scope: the agent, the destination and, for a service, the method and path. You decide in the CLI, in Command Centre on macOS, or through a delegated reviewer: a named agent that decides selected request types for named workers without gaining policy administration.</p>
+<h2>Answers that last as long as you choose</h2>
+<p>Service risk approvals can apply <b>once</b>, for the <b>session</b>, or be <b>remembered</b>. A grant never widens what a capability allows; it only approves risk inside what you already authorised.</p>
+<h2>Separate questions, by design</h2>
+<p>Network permission, credential permission, service authorisation, contract binding and risky-route approval are decided independently. Saying yes to one never quietly says yes to another.</p>
+<h2>Agents can propose, you adopt</h2>
+<p>An agent can submit a full proposed policy snapshot for your approval, and you review and adopt the exact change. Maintained host lists and signal feeds can update policy inputs, but receiving a signal never grants authority by itself.</p>
+<div class="guarantees">
+<div><h3>What this gives you</h3><ul><li>Agents that work unattended inside the boundary you set</li><li>Questions only when something is genuinely outside it</li><li>Approvals you can delegate without handing over policy</li></ul></div>
+<div class="no"><h3>What it does not do</h3><ul><li>Decide for you: an agent's request is a request until someone approves it</li><li>Widen a capability through a grant</li></ul></div>
+</div>

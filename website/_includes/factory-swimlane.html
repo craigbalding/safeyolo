@@ -1,0 +1,201 @@
+<div class="swim">
+<svg class="swim-svg" viewBox="0 0 1276 670" role="img" aria-label="Swimlane of one issue moving through the three-agent backlog factory: the operator activates the coordinator, the coordinator creates native Work which an admission gate job checks against GitHub, the owner builds using a model provider and a remote host executor, publishes an exact artifact that a verify gate checks, the independent reviewer decides acceptance, and an after-complete action posts to GitHub. All external calls pass through the proxy gateway, which injects credentials." xmlns="http://www.w3.org/2000/svg">
+<defs>
+<marker id="sw-mA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="sw-f-mag"/></marker>
+<marker id="sw-mG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="sw-f-gate"/></marker>
+<marker id="sw-mC" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="sw-f-ink"/></marker>
+<pattern id="sw-hatch" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="9" height="9" class="sw-f-sbx"/><line x1="0" y1="0" x2="0" y2="9" class="sw-hatchline"/></pattern>
+</defs>
+<rect x="0" y="78" width="1276" height="66" class="sw-l-host"/>
+<line x1="0" y1="144" x2="1276" y2="144" class="sw-sep"/>
+<text x="14" y="108" class="sw-ln" text-anchor="start">Operator</text>
+<text x="14" y="126" class="sw-ls" text-anchor="start">host · trusted</text>
+<rect x="0" y="144" width="1276" height="66" class="sw-l-sbx"/>
+<rect x="0" y="144" width="1276" height="66" fill="url(#sw-hatch)"/>
+<line x1="0" y1="210" x2="1276" y2="210" class="sw-sep"/>
+<text x="14" y="174" class="sw-ln" text-anchor="start">relay · coordinator</text>
+<text x="14" y="192" class="sw-ls" text-anchor="start">Codex · sandbox</text>
+<rect x="0" y="210" width="1276" height="66" class="sw-l-sbx"/>
+<rect x="0" y="210" width="1276" height="66" fill="url(#sw-hatch)"/>
+<line x1="0" y1="276" x2="1276" y2="276" class="sw-sep"/>
+<text x="14" y="240" class="sw-ln" text-anchor="start">forge · owner</text>
+<text x="14" y="258" class="sw-ls" text-anchor="start">Codex · sandbox</text>
+<rect x="0" y="276" width="1276" height="66" class="sw-l-sbx"/>
+<rect x="0" y="276" width="1276" height="66" fill="url(#sw-hatch)"/>
+<line x1="0" y1="342" x2="1276" y2="342" class="sw-sep"/>
+<text x="14" y="306" class="sw-ln" text-anchor="start">lens · reviewer</text>
+<text x="14" y="324" class="sw-ls" text-anchor="start">Codex · sandbox</text>
+<rect x="0" y="342" width="1276" height="66" class="sw-l-host"/>
+<line x1="0" y1="408" x2="1276" y2="408" class="sw-sep"/>
+<text x="14" y="372" class="sw-ln" text-anchor="start">Coord · room backlog</text>
+<text x="14" y="390" class="sw-ls" text-anchor="start">native Work, claims, checks</text>
+<rect x="0" y="408" width="1276" height="66" class="sw-l-gate"/>
+<line x1="0" y1="474" x2="1276" y2="474" class="sw-sep"/>
+<text x="14" y="438" class="sw-ln" text-anchor="start">Gate jobs</text>
+<text x="14" y="456" class="sw-ls" text-anchor="start">Hyperlight · work_bindings</text>
+<rect x="0" y="474" width="1276" height="66" class="sw-l-host"/>
+<line x1="0" y1="540" x2="1276" y2="540" class="sw-sep"/>
+<text x="14" y="504" class="sw-ln" text-anchor="start">Proxy gateway</text>
+<text x="14" y="522" class="sw-ls" text-anchor="start">credentials injected here</text>
+<rect x="0" y="540" width="1276" height="66" class="sw-l-ext"/>
+<line x1="0" y1="606" x2="1276" y2="606" class="sw-sep"/>
+<text x="14" y="570" class="sw-ln" text-anchor="start">Outside the host</text>
+<text x="14" y="588" class="sw-ls" text-anchor="start">third-party APIs · remote host</text>
+<line x1="190" y1="78" x2="190" y2="606" class="sw-sep2"/>
+<line x1="252" y1="78" x2="252" y2="606" class="sw-colline"/>
+<circle cx="252" cy="22" r="13" class="sw-num"/>
+<text x="252" y="27" class="sw-numt" text-anchor="middle">1</text>
+<text x="252" y="52" class="sw-ch" text-anchor="middle">Approve</text>
+<text x="252" y="66" class="sw-ch" text-anchor="middle">&amp; activate</text>
+<line x1="358" y1="78" x2="358" y2="606" class="sw-colline"/>
+<circle cx="358" cy="22" r="13" class="sw-num"/>
+<text x="358" y="27" class="sw-numt" text-anchor="middle">2</text>
+<text x="358" y="52" class="sw-ch" text-anchor="middle">Pick</text>
+<text x="358" y="66" class="sw-ch" text-anchor="middle">next work</text>
+<line x1="464" y1="78" x2="464" y2="606" class="sw-colline"/>
+<circle cx="464" cy="22" r="13" class="sw-num"/>
+<text x="464" y="27" class="sw-numt" text-anchor="middle">3</text>
+<text x="464" y="58" class="sw-ch" text-anchor="middle">Create Work</text>
+<line x1="570" y1="78" x2="570" y2="606" class="sw-colline"/>
+<circle cx="570" cy="22" r="13" class="sw-num"/>
+<text x="570" y="27" class="sw-numt" text-anchor="middle">4</text>
+<text x="570" y="52" class="sw-ch" text-anchor="middle">Admission</text>
+<text x="570" y="66" class="sw-ch" text-anchor="middle">gate</text>
+<line x1="676" y1="78" x2="676" y2="606" class="sw-colline"/>
+<circle cx="676" cy="22" r="13" class="sw-num"/>
+<text x="676" y="27" class="sw-numt" text-anchor="middle">5</text>
+<text x="676" y="52" class="sw-ch" text-anchor="middle">Claim</text>
+<text x="676" y="66" class="sw-ch" text-anchor="middle">&amp; build</text>
+<line x1="782" y1="78" x2="782" y2="606" class="sw-colline"/>
+<circle cx="782" cy="22" r="13" class="sw-num"/>
+<text x="782" y="27" class="sw-numt" text-anchor="middle">6</text>
+<text x="782" y="58" class="sw-ch" text-anchor="middle">Remote tests</text>
+<line x1="888" y1="78" x2="888" y2="606" class="sw-colline"/>
+<circle cx="888" cy="22" r="13" class="sw-num"/>
+<text x="888" y="27" class="sw-numt" text-anchor="middle">7</text>
+<text x="888" y="52" class="sw-ch" text-anchor="middle">Push &amp;</text>
+<text x="888" y="66" class="sw-ch" text-anchor="middle">open PR</text>
+<line x1="994" y1="78" x2="994" y2="606" class="sw-colline"/>
+<circle cx="994" cy="22" r="13" class="sw-num"/>
+<text x="994" y="27" class="sw-numt" text-anchor="middle">8</text>
+<text x="994" y="52" class="sw-ch" text-anchor="middle">Publish</text>
+<text x="994" y="66" class="sw-ch" text-anchor="middle">&amp; verify</text>
+<line x1="1100" y1="78" x2="1100" y2="606" class="sw-colline"/>
+<circle cx="1100" cy="22" r="13" class="sw-num"/>
+<text x="1100" y="27" class="sw-numt" text-anchor="middle">9</text>
+<text x="1100" y="52" class="sw-ch" text-anchor="middle">Independent</text>
+<text x="1100" y="66" class="sw-ch" text-anchor="middle">review</text>
+<line x1="1206" y1="78" x2="1206" y2="606" class="sw-colline"/>
+<circle cx="1206" cy="22" r="13" class="sw-num"/>
+<text x="1206" y="27" class="sw-numt" text-anchor="middle">10</text>
+<text x="1206" y="52" class="sw-ch" text-anchor="middle">Complete</text>
+<text x="1206" y="66" class="sw-ch" text-anchor="middle">&amp; notify</text>
+<line x1="252" y1="128.0" x2="252" y2="158.0" class="sw-eC" marker-end="url(#sw-mC)"/>
+<line x1="358" y1="194.0" x2="358" y2="488.0" class="sw-eA" marker-end="url(#sw-mA)"/>
+<line x1="358" y1="524.0" x2="358" y2="554.0" class="sw-eA" marker-end="url(#sw-mA)"/>
+<line x1="464" y1="194.0" x2="464" y2="356.0" class="sw-eC" marker-end="url(#sw-mC)"/>
+<line x1="570" y1="392.0" x2="570" y2="422.0" class="sw-eG" marker-end="url(#sw-mG)"/>
+<line x1="570" y1="458.0" x2="570" y2="488.0" class="sw-eG" marker-end="url(#sw-mG)"/>
+<line x1="570" y1="524.0" x2="570" y2="554.0" class="sw-eG" marker-end="url(#sw-mG)"/>
+<line x1="676" y1="260.0" x2="676" y2="488.0" class="sw-eA" marker-end="url(#sw-mA)"/>
+<line x1="676" y1="524.0" x2="676" y2="554.0" class="sw-eA" marker-end="url(#sw-mA)"/>
+<line x1="782" y1="260.0" x2="782" y2="488.0" class="sw-eA" marker-end="url(#sw-mA)"/>
+<line x1="782" y1="524.0" x2="782" y2="554.0" class="sw-eA" marker-end="url(#sw-mA)"/>
+<line x1="888" y1="260.0" x2="888" y2="488.0" class="sw-eA" marker-end="url(#sw-mA)"/>
+<line x1="888" y1="524.0" x2="888" y2="554.0" class="sw-eA" marker-end="url(#sw-mA)"/>
+<line x1="994" y1="260.0" x2="994" y2="356.0" class="sw-eC" marker-end="url(#sw-mC)"/>
+<line x1="994" y1="392.0" x2="994" y2="422.0" class="sw-eG" marker-end="url(#sw-mG)"/>
+<line x1="1100" y1="358.0" x2="1100" y2="328.0" class="sw-eC" marker-end="url(#sw-mC)"/>
+<line x1="1100" y1="292.0" x2="1100" y2="262.0" class="sw-eC" marker-end="url(#sw-mC)"/>
+<line x1="1206" y1="392.0" x2="1206" y2="422.0" class="sw-eG" marker-end="url(#sw-mG)"/>
+<line x1="1206" y1="458.0" x2="1206" y2="488.0" class="sw-eG" marker-end="url(#sw-mG)"/>
+<line x1="1206" y1="524.0" x2="1206" y2="554.0" class="sw-eG" marker-end="url(#sw-mG)"/>
+<rect x="204.0" y="94.0" width="96" height="34" rx="8" class="sw-n-op"/>
+<text x="252" y="108.0" class="sw-nt" text-anchor="middle">approve</text>
+<text x="252" y="122.0" class="sw-nt" text-anchor="middle">+ ACTIVATE</text>
+<rect x="204.0" y="160.0" width="96" height="34" rx="8" class="sw-n-ag"/>
+<text x="252" y="174.0" class="sw-nt" text-anchor="middle">wakes on</text>
+<text x="252" y="188.0" class="sw-nt" text-anchor="middle">attention</text>
+<rect x="310.0" y="160.0" width="96" height="34" rx="8" class="sw-n-ag"/>
+<text x="358" y="174.0" class="sw-nt" text-anchor="middle">read open</text>
+<text x="358" y="188.0" class="sw-nt" text-anchor="middle">issues</text>
+<rect x="310.0" y="490.0" width="96" height="34" rx="8" class="sw-n-px"/>
+<text x="358" y="504.0" class="sw-nt sw-inv" text-anchor="middle">github</text>
+<text x="358" y="518.0" class="sw-nt sw-inv" text-anchor="middle">token in</text>
+<rect x="310.0" y="556.0" width="96" height="34" rx="8" class="sw-n-ex"/>
+<text x="358" y="570.0" class="sw-nt" text-anchor="middle">GitHub</text>
+<text x="358" y="584.0" class="sw-nt" text-anchor="middle">API</text>
+<rect x="416.0" y="160.0" width="96" height="34" rx="8" class="sw-n-ag"/>
+<text x="464" y="181.0" class="sw-nt" text-anchor="middle">create_work</text>
+<rect x="416.0" y="358.0" width="96" height="34" rx="8" class="sw-n-co"/>
+<text x="464" y="372.0" class="sw-nt" text-anchor="middle">Work held</text>
+<text x="464" y="386.0" class="sw-nt" text-anchor="middle">pre-commit</text>
+<rect x="522.0" y="358.0" width="96" height="34" rx="8" class="sw-n-co"/>
+<text x="570" y="372.0" class="sw-nt" text-anchor="middle">revalidate</text>
+<text x="570" y="386.0" class="sw-nt" text-anchor="middle">then commit</text>
+<polygon points="520.0,441.0 532.0,424.0 608.0,424.0 620.0,441.0 608.0,458.0 532.0,458.0" class="sw-n-gate"/>
+<text x="570" y="445.0" class="sw-nt sw-inv" text-anchor="middle">admit_issue</text>
+<rect x="522.0" y="490.0" width="96" height="34" rx="8" class="sw-n-px"/>
+<text x="570" y="504.0" class="sw-nt sw-inv" text-anchor="middle">mediated</text>
+<text x="570" y="518.0" class="sw-nt sw-inv" text-anchor="middle">github</text>
+<rect x="522.0" y="556.0" width="96" height="34" rx="8" class="sw-n-ex"/>
+<text x="570" y="570.0" class="sw-nt" text-anchor="middle">GitHub</text>
+<text x="570" y="584.0" class="sw-nt" text-anchor="middle">user.id</text>
+<rect x="628.0" y="226.0" width="96" height="34" rx="8" class="sw-n-ag"/>
+<text x="676" y="240.0" class="sw-nt" text-anchor="middle">claim</text>
+<text x="676" y="254.0" class="sw-nt" text-anchor="middle">+ code</text>
+<rect x="628.0" y="490.0" width="96" height="34" rx="8" class="sw-n-px"/>
+<text x="676" y="504.0" class="sw-nt sw-inv" text-anchor="middle">model</text>
+<text x="676" y="518.0" class="sw-nt sw-inv" text-anchor="middle">gateway</text>
+<rect x="628.0" y="556.0" width="96" height="34" rx="8" class="sw-n-ex"/>
+<text x="676" y="570.0" class="sw-nt" text-anchor="middle">model</text>
+<text x="676" y="584.0" class="sw-nt" text-anchor="middle">provider</text>
+<rect x="734.0" y="226.0" width="96" height="34" rx="8" class="sw-n-ag"/>
+<text x="782" y="247.0" class="sw-nt" text-anchor="middle">run tests</text>
+<rect x="734.0" y="490.0" width="96" height="34" rx="8" class="sw-n-px"/>
+<text x="782" y="504.0" class="sw-nt sw-inv" text-anchor="middle">host_bindings</text>
+<text x="782" y="518.0" class="sw-nt sw-inv" text-anchor="middle">signs request</text>
+<rect x="734.0" y="556.0" width="96" height="34" rx="8" class="sw-n-ex"/>
+<text x="782" y="570.0" class="sw-nt" text-anchor="middle">host-executor</text>
+<text x="782" y="584.0" class="sw-nt" text-anchor="middle">remote target</text>
+<rect x="840.0" y="226.0" width="96" height="34" rx="8" class="sw-n-ag"/>
+<text x="888" y="240.0" class="sw-nt" text-anchor="middle">push branch</text>
+<text x="888" y="254.0" class="sw-nt" text-anchor="middle">open PR</text>
+<rect x="840.0" y="490.0" width="96" height="34" rx="8" class="sw-n-px"/>
+<text x="888" y="504.0" class="sw-nt sw-inv" text-anchor="middle">github</text>
+<text x="888" y="518.0" class="sw-nt sw-inv" text-anchor="middle">capability</text>
+<rect x="840.0" y="556.0" width="96" height="34" rx="8" class="sw-n-ex"/>
+<text x="888" y="570.0" class="sw-nt" text-anchor="middle">GitHub</text>
+<text x="888" y="584.0" class="sw-nt" text-anchor="middle">PR</text>
+<rect x="946.0" y="226.0" width="96" height="34" rx="8" class="sw-n-ag"/>
+<text x="994" y="240.0" class="sw-nt" text-anchor="middle">publish</text>
+<text x="994" y="254.0" class="sw-nt" text-anchor="middle">output</text>
+<rect x="946.0" y="358.0" width="96" height="34" rx="8" class="sw-n-co"/>
+<text x="994" y="372.0" class="sw-nt" text-anchor="middle">bytes +</text>
+<text x="994" y="386.0" class="sw-nt" text-anchor="middle">sha256</text>
+<polygon points="944.0,441.0 956.0,424.0 1032.0,424.0 1044.0,441.0 1032.0,458.0 956.0,458.0" class="sw-n-gate"/>
+<text x="994" y="445.0" class="sw-nt sw-inv" text-anchor="middle">verify_output</text>
+<rect x="1052.0" y="226.0" width="96" height="34" rx="8" class="sw-n-ag"/>
+<text x="1100" y="240.0" class="sw-nt" text-anchor="middle">repair if</text>
+<text x="1100" y="254.0" class="sw-nt" text-anchor="middle">changes</text>
+<rect x="1052.0" y="292.0" width="96" height="34" rx="8" class="sw-n-ag"/>
+<text x="1100" y="306.0" class="sw-nt" text-anchor="middle">answer_check</text>
+<text x="1100" y="320.0" class="sw-nt" text-anchor="middle">decide</text>
+<rect x="1052.0" y="358.0" width="96" height="34" rx="8" class="sw-n-co"/>
+<text x="1100" y="372.0" class="sw-nt" text-anchor="middle">exact-output</text>
+<text x="1100" y="386.0" class="sw-nt" text-anchor="middle">check</text>
+<rect x="1158.0" y="358.0" width="96" height="34" rx="8" class="sw-n-co"/>
+<text x="1206" y="379.0" class="sw-nt" text-anchor="middle">complete</text>
+<polygon points="1156.0,441.0 1168.0,424.0 1244.0,424.0 1256.0,441.0 1244.0,458.0 1168.0,458.0" class="sw-n-gate"/>
+<text x="1206" y="445.0" class="sw-nt sw-inv" text-anchor="middle">after_complete</text>
+<rect x="1158.0" y="490.0" width="96" height="34" rx="8" class="sw-n-px"/>
+<text x="1206" y="504.0" class="sw-nt sw-inv" text-anchor="middle">github</text>
+<text x="1206" y="518.0" class="sw-nt sw-inv" text-anchor="middle">capability</text>
+<rect x="1158.0" y="556.0" width="96" height="34" rx="8" class="sw-n-ex"/>
+<text x="1206" y="570.0" class="sw-nt" text-anchor="middle">issue</text>
+<text x="1206" y="584.0" class="sw-nt" text-anchor="middle">comment</text>
+<rect x="190" y="620" width="1078" height="38" rx="8" class="sw-evid"/>
+<text x="206" y="644" class="sw-ev" text-anchor="start">Every hop above is recorded: canonical audit JSONL · FlowStore flows · immutable Work revisions with automatic-evidence records · gate captures with digests</text>
+<text x="14" y="644" class="sw-ln" text-anchor="start">Evidence</text>
+</svg>
+</div>

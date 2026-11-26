@@ -1,0 +1,52 @@
+---
+layout: waypoint
+full_width: true
+permalink: /journey/software-factory/
+title: "The live software factory · SafeYOLO journey"
+description: "How SafeYOLO's own software factory works: three agents coordinate in one room, deterministic gates hold every handoff, and no agent can approve its own work."
+act: "Act 4"
+waypoint: 13
+headline: "Three agents ship fixes day and night. None can approve its own work."
+lede: "You want agents doing continuous, real work on a repository, with review you can trust and checks they cannot skip. This is how SafeYOLO builds itself."
+lit: "coord gates checkpoint credentials host-execution"
+swimlane: true
+swimlane_title: "One issue, from activation to a posted result"
+next:
+  title: "See the whole journey"
+  url: /journey/
+  blurb: "Earlier stops cover the agent's home and API access without the secret."
+---
+<h2>Three roles, one room</h2>
+<p>SafeYOLO's own factory is the shipped <code>backlog</code> factory, using native Work. Three Codex agents share one Coord room:</p>
+<table>
+<tr><th>Role</th><th>Agent</th><th>Does</th></tr>
+<tr><td>Coordinator</td><td>relay</td><td>Takes your direction, reads the backlog and creates Work. It is the only role you talk to.</td></tr>
+<tr><td>Owner</td><td>forge</td><td>Claims Work, implements it, runs tests and publishes the exact output.</td></tr>
+<tr><td>Reviewer</td><td>lens</td><td>Independently reviews that exact output and decides acceptance.</td></tr>
+</table>
+
+<h2>What you do</h2>
+<pre><code>safeyolo factory check docs/factories/backlog-native/backlog.toml
+safeyolo factory approve docs/factories/backlog-native/backlog.toml
+safeyolo factory prepare backlog --workspace coordinator=/work/relay --workspace owner=/work/forge --workspace reviewer=/work/lens
+safeyolo factory login backlog owner                  # once for each role
+safeyolo factory run backlog --confirm-fresh-identity # first run only
+safeyolo factory send backlog 'Work the backlog in priority order.'</code></pre>
+<p><code>approve</code> pins an immutable snapshot with the content identity of every role contract. Editing a contract changes nothing until you approve it again. <code>run</code> reports the factory started only after its runtime, logins, checkpoints and room checks pass.</p>
+
+<h2>What holds at every handoff</h2>
+<ul>
+<li><b>Admission gate.</b> Before forge starts, a job fetches the issue through a mediated GitHub call and checks its author's stable ID. A mismatch holds the Work.</li>
+<li><b>Verify gate.</b> When forge publishes, a job checks the exact bytes. Acceptance is held until that check passes for that exact output.</li>
+<li><b>Independent review.</b> lens must be a different participant from forge, and its decision cannot override an unmet gate.</li>
+<li><b>After completion.</b> A follow-up action reports the result on the issue. If it fails, the completion stands and the action is not retried blindly.</li>
+</ul>
+
+<h2>Real work, real reach</h2>
+<p>Every GitHub, model-provider and remote-host call passes the <a href="/how-it-works/checkpoint/">checkpoint</a>, which adds the real credential on the way out. When forge needs another operating system or more hardware, it calls a named operation on a <a href="/how-it-works/host-execution/">remote host executor</a>, signed with a key it never sees.</p>
+
+<div class="guarantees">
+<div><h3>What SafeYOLO guarantees</h3><ul><li>No agent approves its own work</li><li>Gates apply however the work was created</li><li>No agent holds a GitHub token, model key or signing key</li><li>Running roles use the snapshot you approved</li></ul></div>
+<div class="no"><h3>What it does not do</h3><ul><li>Judge whether a change is good: that is the reviewer's job, inside the gates</li><li>Interpret the role contracts: they instruct the agents, and policy enforces the rules</li></ul></div>
+</div>
+<ul class="linkrow"><li><a href="https://github.com/craigbalding/safeyolo/blob/master/docs/factories.md">Factories guide</a></li><li><a href="https://github.com/craigbalding/safeyolo/tree/master/docs/factories/backlog-native">The backlog contracts</a></li><li><a href="/how-it-works/gates/">How gates work</a></li></ul>

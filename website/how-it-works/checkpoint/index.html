@@ -1,0 +1,48 @@
+---
+layout: explainer
+full_width: true
+permalink: /how-it-works/checkpoint/
+title: Checkpoint · How SafeYOLO works
+description: The checkpoint is SafeYOLO's Rust proxy. It knows which agent sent each request, applies your policy, and refuses anything it cannot decide safely.
+part_name: Checkpoint
+headline: Every request passes one checkpoint, and it decides
+lede: The checkpoint is SafeYOLO's Rust proxy. It knows which agent sent each request, applies your policy, and refuses anything it cannot decide safely.
+lit: checkpoint
+docs:
+- title: 'Architecture: request path'
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/ARCHITECTURE.md#request-path
+- title: Protocol and inspection coverage
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/proxy-parity.md
+- title: Security model
+  url: https://github.com/craigbalding/safeyolo/blob/master/SECURITY.md
+journey:
+- title: A home for an agent
+  url: /journey/agent-home/
+- title: API access without the secret
+  url: /journey/masked-apis/
+---
+<h2>One process, operator-owned</h2>
+<p>Each SafeYOLO instance runs one checkpoint process under your own user account, not root. Every agent connects through its own socket, and the checkpoint fixes the agent's identity when the connection is accepted.</p>
+<h2>What it checks</h2>
+<p>The checkpoint terminates TLS with the instance's own certificate authority and understands HTTP/1.1, HTTP/2, CONNECT tunnels and WebSockets. Depending on the request, it applies:</p>
+<ul>
+<li><b>Network policy</b>: allowed destinations, lists and lookalike-domain checks</li>
+<li><b>Rate budgets and circuit breakers</b>: limits on runaway loops and failing upstreams</li>
+<li><b>Credential guard</b>: detects secrets and checks where they are going</li>
+<li><b>Service gateway</b>: swaps the agent's scoped token for your real credential</li>
+<li><b>Content inspection</b>: pattern scanning, including prompt-injection signals on model traffic</li>
+<li><b>Specialised paths</b>: Docker API mediation, coding-client routing and SSH</li>
+<li><b>Your own named checks</b>: rules you write over the request's facts</li>
+</ul>
+<h2>Four answers</h2>
+<table>
+<tr><th>Response</th><th>Meaning</th></tr>
+<tr><td>Allowed</td><td>The request reaches its destination, and the decision is recorded</td></tr>
+<tr><td>428</td><td>Approval required: the request is outside policy, and you can approve it</td></tr>
+<tr><td>403</td><td>Denied by policy</td></tr>
+<tr><td>429 or 503</td><td>A rate budget or circuit breaker stopped it</td></tr>
+</table>
+<div class="guarantees">
+<div><h3>What this gives you</h3><ul><li>A single place where every outbound request is decided</li><li>Policy validated before any agent can connect</li><li>No silent passthrough after a timeout or parse failure</li></ul></div>
+<div class="no"><h3>What it does not do</h3><ul><li>Inspect streamed bodies or TLS passthrough as deeply as ordinary requests</li><li>Replace a destination's own authentication</li></ul></div>
+</div>
