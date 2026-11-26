@@ -43,6 +43,17 @@ async fn native_watch_keeps_selected_input_arrivals_deferral_and_concurrent_outc
         .await;
     terminal.until(0, "agent=worker ").await;
     let attached = terminal.until(0, "agent=helper ").await;
+    assert!(
+        attached.contains(&format!(
+            "network_allow → {}",
+            worker_view["approval"]["target"].as_str().unwrap()
+        )),
+        "{attached}"
+    );
+    assert!(
+        !attached.contains("network_allow → unavailable"),
+        "{attached}"
+    );
     let worker_number = number(&attached, "worker");
     let helper_number = number(&attached, "helper");
     assert_ne!(worker_number, helper_number);
@@ -56,12 +67,19 @@ async fn native_watch_keeps_selected_input_arrivals_deferral_and_concurrent_outc
         )
         .await;
     terminal.send(&format!("{worker_number}\n"));
-    terminal
+    let reviewed = terminal
         .until(
             0,
             &format!("Request #{worker_number} [choice / d / r / l / q]"),
         )
         .await;
+    assert_eq!(
+        reviewed
+            .matches(worker_view["effect"].as_str().unwrap())
+            .count(),
+        1,
+        "permission should appear once in its displayed choice: {reviewed}"
+    );
     assert!(!terminal.output().contains("approve once"));
     assert!(!terminal.output().contains("approve run"));
     let empty = terminal.mark();

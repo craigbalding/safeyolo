@@ -65,7 +65,7 @@ impl PendingRequests {
                 },
                 safe(text(&view["agent"])),
                 safe(text(&view["action"]["kind"])),
-                safe(text(&view["target"]))
+                safe(text(&view["approval"]["target"]))
             ));
         }
         if self.current && self.numbered.is_empty() {
@@ -167,7 +167,14 @@ fn review(
             "Permission covers all ports, methods and paths at this host. Network and service controls remain."
         );
     } else {
-        println!("{}", safe(text(&view["effect"])));
+        let effect_is_choice = view["options"].as_array().is_some_and(|options| {
+            options
+                .iter()
+                .any(|option| option["status"] == "available" && option["effect"] == view["effect"])
+        });
+        if !effect_is_choice {
+            println!("{}", safe(text(&view["effect"])));
+        }
         if matches!(
             view["action"]["kind"].as_str(),
             Some("policy_change" | "policy_snapshot")
