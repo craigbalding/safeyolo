@@ -31,7 +31,7 @@ impl State {
             "approvals":if self.approvals.is_some() {"ready"} else {"unavailable"},
             "log":if self.log_readable {"following"} else {"unavailable"},
             "history_gap":self.gap.map(|(_, reason)| reason),
-            "history_gap_id":self.gap.map(|(id, _)| id)})
+            "history_gap_id":self.gap.map(|(id, _)| id.to_string())})
             .to_string(),
         )
     }
