@@ -164,22 +164,59 @@ def test_runtime_input_fails_before_host_changes(native_cli, tmp_path, component
     assert not settings.exists() and not (tmp_path / "fresh").exists()
 
 
-def test_relative_package_directory_selects_its_bundled_payload(native_cli, owned_stage):
+@pytest.mark.parametrize("decision", ["n\n", "", "y\n"], ids=["decline", "eof", "accept"])
+def test_bundled_runtime_access_preview_covers_new_paths_before_consent(native_cli, owned_stage, decision):
     parent, _stage = owned_stage
     bundle = parent / "bundle"
     payload(bundle / "libexec")
+    for path in (bundle / "libexec", bundle / "libexec/gvisor-bin", *(bundle / "libexec" / name for name in FILES)):
+        path.chmod(0o700)
     (bundle / "SHA256SUMS").write_text("".join(
         f"{hashlib.sha256((bundle / 'libexec' / name).read_bytes()).hexdigest()}  ./libexec/{name}\n"
         for name in FILES
     ))
-    root = parent / "instance"
-    result = command(native_cli, "--json", "--instance-dir", root, "host", "prepare", "--yes",
+    private = parent / "private 'parent"
+    private.mkdir(mode=0o700)
+    root = private / "new 'instance"
+    settings = parent / "prepared.toml"
+    before_acl = command("getfacl", "-ncp", private).stdout
+    result = command(native_cli, "--json", "--instance-dir", root, "host", "prepare",
                      "--package-root", "bundle", "--installed-root", root,
-                     "--write-settings", parent / "prepared.toml", cwd=parent)
+                     "--write-settings", settings, cwd=parent, input=decision)
+    preview, _ = result.stderr.split("Allow these host changes?", 1)
+    assert "mapped guest-root UID " in preview
+    assert "adds only missing access" in preview
+    for directory in (root, root / "libexec", root / "libexec/gvisor-bin"):
+        assert f"traverse directory (not list or read files): {directory}" in preview
+    for name in FILES:
+        assert f"read and execute runtime file: {root / 'libexec' / name}" in preview
+    assert "whole named directory" in preview and "ACLs persist until removed" in preview
+    assert "other principals keep their effective permissions" in preview
+    if decision != "y\n":
+        assert result.returncode != 0 and "declined" in result.stderr
+        assert "Host changes and attempted operations: none" in result.stderr
+        assert not root.exists() and not settings.exists()
+        assert command("getfacl", "-ncp", private).stdout == before_acl
+        return
     assert result.returncode == 0, result.stderr
     selected = json.loads(result.stdout)["linux"]
     assert selected["runsc"] == str(root / "libexec/runsc")
     assert selected["runsc_origin"] == "bundled"
+    assert f"mapped guest-root UID {selected['uid_base']}" in preview
+    assert not (root / "libexec").exists()
+    shutil.copytree(bundle / "libexec", root / "libexec")
+    initialized = command(native_cli, "--json", "--instance-dir", root, "init")
+    assert initialized.returncode == 0, initialized.stderr
+    with (root / "config.toml").open("a") as config:
+        config.write(settings.read_text())
+    granted = command(native_cli, "--json", "--instance-dir", root, "host", "grant-runtime-access")
+    assert granted.returncode == 0, granted.stderr
+    for path, rights in [(root, "--x"), (root / "libexec", "--x"), (root / "libexec/gvisor-bin", "--x"),
+                         *((root / "libexec" / name, "r-x") for name in FILES)]:
+        assert f"user:{selected['uid_base']}:{rights}" in command("getfacl", "-ncp", path).stdout
+    repeated = command(native_cli, "--json", "--instance-dir", root, "host", "grant-runtime-access")
+    assert repeated.returncode == 0, repeated.stderr
+    assert json.loads(repeated.stdout)["applied"] == []
 
 
 @pytest.mark.parametrize("namespace_status,audit_status", [(0, 0), (77, 0), (77, 61)])
