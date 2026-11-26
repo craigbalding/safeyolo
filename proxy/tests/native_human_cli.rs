@@ -194,6 +194,76 @@ fn empty_inventory_and_redirected_status_are_human_and_json_is_explicit() {
 }
 
 #[test]
+fn saved_mount_and_lifecycle_results_keep_the_agent_effect_and_activation() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().join("selected instance");
+    let shared = scratch.path().join("shared files");
+    fs::create_dir(&shared).unwrap();
+    stdout(cli(&root, &["init"]));
+    stdout(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "work",
+            "--workspace",
+            shared.to_str().unwrap(),
+        ],
+    ));
+    let mount = format!("{}:/mnt/shared:ro", shared.display());
+    let human = stdout(cli(&root, &["agent", "mounts", "add", "work", &mount]));
+    for fact in [
+        "Agent: work",
+        "Mount operation: add",
+        "Guest path: /mnt/shared",
+        "Saved configuration changed: yes",
+        "current sandbox is unchanged",
+    ] {
+        assert!(human.contains(fact), "{human}");
+    }
+    let unchanged: Value = serde_json::from_str(&stdout(cli(
+        &root,
+        &["agent", "mounts", "update", "work", &mount, "--json"],
+    )))
+    .unwrap();
+    assert_eq!(unchanged["saved_configuration_changed"], false);
+    assert_eq!(unchanged["saved_mounts"], serde_json::json!([mount]));
+
+    let empty = stdout(cli(&root, &["agent", "lifecycle", "work", "status"]));
+    assert!(
+        empty.contains("Agent: work") && empty.contains("No lifecycle configuration"),
+        "{empty}"
+    );
+    let configuration = scratch.path().join("lifecycle.json");
+    fs::write(&configuration, r#"{"mode":"on_demand","paused":false}"#).unwrap();
+    let configured = stdout(cli(
+        &root,
+        &[
+            "agent",
+            "lifecycle",
+            "work",
+            "configure",
+            configuration.to_str().unwrap(),
+        ],
+    ));
+    assert!(
+        configured.contains("Mode: on_demand")
+            && configured.contains("No sandbox was started or stopped"),
+        "{configured}"
+    );
+    let paused = stdout(cli(&root, &["agent", "lifecycle", "work", "pause"]));
+    assert!(paused.contains("Paused: yes"), "{paused}");
+    let observed: Value = serde_json::from_str(&stdout(cli(
+        &root,
+        &["agent", "lifecycle", "work", "status", "--json"],
+    )))
+    .unwrap();
+    assert_eq!(observed["name"], "work");
+    assert_eq!(observed["saved_configuration"]["paused"], true);
+    assert!(!root.join("data/proxy-process.json").exists());
+}
+
+#[test]
 fn stopped_agent_recovery_keeps_the_executable_and_selected_config() {
     let scratch = tempfile::tempdir().unwrap();
     let a = scratch.path().join("old instance");

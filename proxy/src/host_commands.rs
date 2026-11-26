@@ -78,7 +78,74 @@ pub(crate) fn print(value: &Value) -> Result<(), Error> {
     if json_requested() {
         return json(value);
     }
-    if let Some(agents) = value["agents"].as_array() {
+    if let Some(probe) = value.get("guest_probe") {
+        field("Instance", &json!(host_platform::config_dir()));
+        println!(
+            "Guest probe completed for agent {}.",
+            text(&value["lifecycle"]["name"])
+        );
+        field("Guest UID", &probe["result"]["uid"]);
+        field(
+            "SSH banner observed",
+            &probe["result"]["sshd_loopback"]["received"],
+        );
+        field(
+            "SSH observation",
+            &probe["result"]["sshd_loopback"]["error"],
+        );
+        print(&value["lifecycle"])?;
+        println!("The probe does not start or resume the coding agent.");
+        if probe["result"]["sshd_loopback"]["received"] != true {
+            println!(
+                "Inspect: {} agent diagnostics {}",
+                host_lifecycle::current_instance_command()?,
+                host_lifecycle::shell_quote(
+                    value["lifecycle"]["name"].as_str().unwrap_or_default()
+                )
+            );
+        }
+        println!("Use --json for the full probe and lifecycle observations.");
+    } else if value["saved_configuration_changed"].is_boolean() {
+        field("Instance", &value["root"]);
+        field("Agent", &value["agent"]);
+        field("Mount operation", &value["operation"]);
+        field("Completed", &value["ok"]);
+        field(
+            "Guest path",
+            value
+                .get("destination")
+                .unwrap_or(&value["share"]["guest_path"]),
+        );
+        field(
+            "Saved configuration changed",
+            &value["saved_configuration_changed"],
+        );
+        field("Activation", &value["scope"]);
+        field("Error", &value["error"]);
+        if value["ok"] != true {
+            println!(
+                "Inspect: {} agent status {}",
+                host_lifecycle::current_instance_command()?,
+                host_lifecycle::shell_quote(value["agent"].as_str().unwrap_or_default())
+            );
+        }
+        println!("Use --json for the saved, live and next-start mount details.");
+    } else if value.get("saved_configuration").is_some() {
+        field("Instance", &json!(host_platform::config_dir()));
+        field("Agent", &value["name"]);
+        field("Lifecycle", &value["state"]);
+        field("Mode", &value["saved_configuration"]["mode"]);
+        field("Paused", &value["saved_configuration"]["paused"]);
+        field("Activation", &value["activation"]);
+        field("Next occurrence", &value["next_occurrence"]["state"]);
+        field("Next occurrence at", &value["next_occurrence"]["at"]);
+        field("Observation", &value["next_occurrence"]["reason"]);
+        field("Error", &value["error"]);
+        if value["saved_configuration"].is_null() {
+            println!("No lifecycle configuration.");
+        }
+        println!("Use --json for the full lifecycle configuration and receipt.");
+    } else if let Some(agents) = value["agents"].as_array() {
         field("Instance", &value["root"]);
         field("Proxy", &value["proxy_state"]);
         if agents.is_empty() {
@@ -679,7 +746,12 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
             print(&host_lifecycle::scheduled::command(name, operation, Some(file)).await?)?;
         }
         [kind, group, name, operation] if kind == "agent" && group == "lifecycle" => {
-            print(&host_lifecycle::scheduled::command(name, operation, None).await?)?;
+            let mut result = host_lifecycle::scheduled::command(name, operation, None).await?;
+            if result.is_null() {
+                result = json!({"saved_configuration":null});
+            }
+            result["name"] = json!(name);
+            print(&result)?;
         }
         [kind, operation, name, id] if kind == "agent" && operation == "entrypoint" => {
             return host_lifecycle::run_entrypoint(name, id).await;
