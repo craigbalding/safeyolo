@@ -17,9 +17,9 @@ struct PendingRequests {
 }
 
 impl PendingRequests {
-    fn replace(&mut self, mut current: BTreeMap<String, Value>) -> bool {
+    fn replace(&mut self, mut current: BTreeMap<String, Value>, fresh: bool) -> bool {
         let before = self.numbered.clone();
-        let recovered = !self.current;
+        let recovered = fresh && !self.current;
         self.numbered.retain(|number, previous| {
             let id = text(&previous["approval_id"]);
             if let Some(value) = current.remove(id) {
@@ -34,7 +34,7 @@ impl PendingRequests {
             self.next_number += 1;
             self.numbered.insert(self.next_number, value);
         }
-        self.current = true;
+        self.current = fresh;
         recovered || self.numbered != before
     }
 
@@ -378,17 +378,28 @@ pub(crate) async fn run(config: &Path, no_color: bool) -> Result<(), Error> {
         let received_requests = requests.clone();
         let receiving_config = config.clone();
         let receiver = handle.spawn(async move {
+            let mut stream_current = true;
             follow(&receiving_config, false, |update| {
                 let output = {
                     let mut pending = received_requests.lock().map_err(|_| "pending view unavailable")?;
                     match update {
                         WatchUpdate::Display(output) => output,
                         WatchUpdate::Approvals { current, .. } => {
-                            if pending.replace(current) { pending.render(color)? } else { String::new() }
+                            if pending.replace(current, stream_current) { pending.render(color)? } else { String::new() }
                         }
-                        WatchUpdate::Stale(notice) => {
+                        WatchUpdate::StreamUnavailable(notice) => {
+                            stream_current = false;
                             pending.current = false;
                             notice.map(|notice| format!("{}: {notice}\n", cue("STALE / UNAVAILABLE", "31", color))).unwrap_or_default()
+                        }
+                        WatchUpdate::ApprovalsUnavailable(notice) => {
+                            pending.current = false;
+                            format!("{}: {notice}\n", cue("STALE / UNAVAILABLE", "31", color))
+                        }
+                        WatchUpdate::StreamRecovered(notice) => {
+                            stream_current = true;
+                            pending.current = true;
+                            format!("{notice}\n{}", pending.render(color)?)
                         }
                         WatchUpdate::Notice(notice) => format!("{notice}\n"),
                     }

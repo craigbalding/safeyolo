@@ -808,7 +808,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-factory-cli-py).
 - [tests/proxy_contracts/test_native_harness_attention.py](../tests/proxy_contracts/test_native_harness_attention.py#L87) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-harness-attention-py).
-- [tests/proxy_contracts/test_watch_stream_recovery.py](../tests/proxy_contracts/test_watch_stream_recovery.py#L89) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_watch_stream_recovery.py](../tests/proxy_contracts/test_watch_stream_recovery.py#L91) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-watch-stream-recovery-py).
 - [tests/blackbox/installed_access.py::main](../tests/blackbox/installed_access.py#L704) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `access`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `access`.
@@ -1090,7 +1090,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-factory-cli-py).
 - [tests/proxy_contracts/test_native_harness_attention.py](../tests/proxy_contracts/test_native_harness_attention.py#L87) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-harness-attention-py).
-- [tests/proxy_contracts/test_watch_stream_recovery.py](../tests/proxy_contracts/test_watch_stream_recovery.py#L89) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_watch_stream_recovery.py](../tests/proxy_contracts/test_watch_stream_recovery.py#L91) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-watch-stream-recovery-py).
 - [proxy/tests/native_coord/reviews.rs](../proxy/tests/native_coord/reviews.rs#L100) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real instances/NATS; controlled run adapters.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-reviews-rs).
@@ -2264,8 +2264,8 @@ Selection: optional: select `SAFEYOLO_HERMES_ATTENTION_MODEL` explicitly (select
 
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_watch_stream_recovery.py::test_watch_reports_stream_failure_episodes_and_keeps_retrying`](../tests/proxy_contracts/test_watch_stream_recovery.py#L89)
-- [`tests/proxy_contracts/test_watch_stream_recovery.py::test_native_feed_distinguishes_new_gaps_with_the_same_reason`](../tests/proxy_contracts/test_watch_stream_recovery.py#L186)
+- [`tests/proxy_contracts/test_watch_stream_recovery.py::test_watch_reports_stream_failure_episodes_and_keeps_retrying`](../tests/proxy_contracts/test_watch_stream_recovery.py#L91)
+- [`tests/proxy_contracts/test_watch_stream_recovery.py::test_native_feed_distinguishes_new_gaps_with_the_same_reason`](../tests/proxy_contracts/test_watch_stream_recovery.py#L210)
 
 <a id="witness-tests-proxy-contracts-test-native-ingress-observer-py"></a>
 ### [`tests/proxy_contracts/test_native_ingress_observer.py`](../tests/proxy_contracts/test_native_ingress_observer.py)

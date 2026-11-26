@@ -55,6 +55,8 @@ Changed failures and recovery remain visible. Every failed stream attachment
 or interrupted subscription marks the approval view stale, including when the
 repeated warning stays quiet. A successful handshake alone does not establish
 stream recovery; watch must receive an event after canonical state refresh.
+During a stream outage, successful snapshots can update the last observed list
+without announcing live recovery or redrawing an unchanged list on each retry.
 After a failed canonical read, watch retries attachment with one-second pacing.
 Log availability notices follow status changes. Watch reports a retained gap
 once, then reports each new gap ID even when the reason is unchanged.

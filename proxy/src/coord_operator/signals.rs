@@ -15,7 +15,9 @@ pub(crate) enum WatchUpdate {
         current: BTreeMap<String, Value>,
         changes: String,
     },
-    Stale(Option<String>),
+    StreamUnavailable(Option<String>),
+    ApprovalsUnavailable(String),
+    StreamRecovered(String),
     Notice(String),
 }
 
@@ -28,8 +30,11 @@ fn print_update(update: WatchUpdate) -> Result<(), Error> {
             print!("{output}");
             std::io::stdout().flush()?;
         }
-        WatchUpdate::Stale(Some(notice)) | WatchUpdate::Notice(notice) => eprintln!("{notice}"),
-        WatchUpdate::Stale(None) => {}
+        WatchUpdate::StreamUnavailable(Some(notice))
+        | WatchUpdate::ApprovalsUnavailable(notice)
+        | WatchUpdate::StreamRecovered(notice)
+        | WatchUpdate::Notice(notice) => eprintln!("{notice}"),
+        WatchUpdate::StreamUnavailable(None) => {}
     }
     Ok(())
 }
@@ -273,7 +278,7 @@ pub(crate) async fn follow(
             // A handshake followed by an immediate failure is still the same
             // outage. Recovery needs a real event after canonical snapshots.
             if stream_failure.take().is_some() {
-                emit(WatchUpdate::Notice("Operator stream recovered; live events resumed. Recorded history may still be missing.".into()))?;
+                emit(WatchUpdate::StreamRecovered("Operator stream recovered; live events resumed. Recorded history may still be missing.".into()))?;
             }
             if event["type"] == "operator_state" {
                 if event["log"] == "unavailable" {
@@ -326,7 +331,9 @@ fn stream_unavailable(
     // Every failure invalidates current state, including after a successful
     // snapshot on a short-lived attachment. Only the repeated text is quiet.
     let changed = previous.as_ref() != Some(&notice);
-    emit(WatchUpdate::Stale(changed.then(|| notice.clone())))?;
+    emit(WatchUpdate::StreamUnavailable(
+        changed.then(|| notice.clone()),
+    ))?;
     *previous = Some(notice);
     Ok(())
 }
@@ -362,7 +369,7 @@ async fn refresh_current(
             visible(&error.to_string())
         );
         if approval_failure.as_ref() != Some(&notice) {
-            emit(WatchUpdate::Stale(Some(notice.clone())))?;
+            emit(WatchUpdate::ApprovalsUnavailable(notice.clone()))?;
             *approval_failure = Some(notice);
         }
     } else if approval_failure.take().is_some() {

@@ -47,8 +47,10 @@ class StreamFailures(BaseHTTPRequestHandler):
             kind = "signals" if self.path.startswith("/admin/coord/signals?") else "approvals"
             assert self.path.startswith("/admin/coord/signals?") or self.path == "/admin/approvals"
             peer.reads[kind] += 1
-            body = json.dumps({"items": [], "next_after": None} if kind == "signals" else {"approvals": []}).encode()
-            self.send_response(200)
+            error = peer.approval_error if kind == "approvals" else None
+            body = json.dumps({"error": error} if error else
+                              {"items": [], "next_after": None} if kind == "signals" else {"approvals": []}).encode()
+            self.send_response(503 if error else 200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -99,6 +101,7 @@ def test_watch_reports_stream_failure_episodes_and_keeps_retrying(tmp_path, inte
     peer.mode = "interrupt"
     peer.attachments = 0
     peer.reads = {"signals": 0, "approvals": 0}
+    peer.approval_error = None
     peer.actions = queue.Queue()
     started = False
 
@@ -115,6 +118,11 @@ def test_watch_reports_stream_failure_episodes_and_keeps_retrying(tmp_path, inte
         wait_for(lambda: peer.attachments >= 3 and peer.reads["approvals"] >= 3)
         peer.mode = "live"
         output += until(b"Operator stream recovered;")
+        if interactive:
+            current = b"PENDING APPROVALS: 0 (current state refreshed)"
+            if current not in output:
+                output += until(current)
+            assert output.count(current) == 1, output
         assert output.count(b"Operator stream unavailable;") == 1, output
         assert output.count(b"Operator stream interrupted;") == 1, output
         assert output.count(b"Operator stream recovered;") == 1, output
@@ -127,6 +135,10 @@ def test_watch_reports_stream_failure_episodes_and_keeps_retrying(tmp_path, inte
         wait_for(lambda: peer.attachments >= before + 2)
         peer.mode = "live"
         repeated += until(b"Operator stream recovered;")
+        if interactive:
+            if current not in repeated:
+                repeated += until(current)
+            assert repeated.count(current) == 1, repeated
         assert repeated.count(b"Operator stream interrupted;") == 1, repeated
         assert repeated.count(b"Operator stream recovered;") == 1, repeated
         # Repeated state controls retain log status and the last gap. Neither
@@ -145,6 +157,18 @@ def test_watch_reports_stream_failure_episodes_and_keeps_retrying(tmp_path, inte
         notices = until(b"Recorded event feed recovered;")
         assert notices.count(b"Recorded event feed unavailable;") == 1, notices
         assert b"Recorded event history gap:" not in notices, notices
+        # An approvals-only read outage must recover independently. It must
+        # not leave the view waiting for a nonexistent stream-failure reset.
+        peer.approval_error = "canonical approvals unavailable"
+        peer.actions.put({"type": "operator_state", "log": "following"})
+        notices = until(b"Pending approvals unavailable;")
+        before = peer.reads["approvals"]
+        wait_for(lambda: peer.reads["approvals"] >= before + 2)
+        peer.approval_error = None
+        notices += until(b"Pending approvals recovered;")
+        assert notices.count(b"Pending approvals unavailable;") == 1, notices
+        if interactive:
+            assert current in notices, notices
         assert process.poll() is None
 
     try:
