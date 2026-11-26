@@ -267,7 +267,10 @@ pub(crate) async fn report(path: &Path) -> Value {
                 "Guest inputs",
                 "fail",
                 error,
-                "Run guest acquire through the matching installer to restore compatible inputs.",
+                &format!(
+                    "Use the matching installer with --instance-dir {} to restore compatible guest inputs.",
+                    crate::host_lifecycle::shell_quote(&root.to_string_lossy())
+                ),
                 Value::Null,
             ),
         }
