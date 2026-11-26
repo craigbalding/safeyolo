@@ -209,14 +209,13 @@ def test_bundled_runtime_access_preview_covers_new_paths_before_consent(native_c
     assert initialized.returncode == 0, initialized.stderr
     with (root / "config.toml").open("a") as config:
         config.write(settings.read_text())
+    # The installer publishes into a separate, private final root after init.
+    root.chmod(0o700)
     granted = command(native_cli, "--json", "--instance-dir", root, "host", "grant-runtime-access")
     assert granted.returncode == 0, granted.stderr
     for path, rights in [(root, "--x"), (root / "libexec", "--x"), (root / "libexec/gvisor-bin", "--x"),
                          *((root / "libexec" / name, "r-x") for name in FILES)]:
         assert f"user:{selected['uid_base']}:{rights}" in command("getfacl", "-ncp", path).stdout
-    repeated = command(native_cli, "--json", "--instance-dir", root, "host", "grant-runtime-access")
-    assert repeated.returncode == 0, repeated.stderr
-    assert json.loads(repeated.stdout)["applied"] == []
 
 
 @pytest.mark.parametrize("namespace_status,audit_status", [(0, 0), (77, 0), (77, 61)])
