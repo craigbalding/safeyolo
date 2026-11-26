@@ -1,4 +1,5 @@
 //! Gateway projections validate through the existing service-definition owner.
+mod authority_effects;
 pub(crate) mod gateway;
 pub mod semantics;
 #[cfg(test)]
