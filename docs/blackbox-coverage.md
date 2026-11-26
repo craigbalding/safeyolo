@@ -2093,14 +2093,16 @@ Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.ym
 - [`tests/proxy_contracts/test_first_agent_launch.py::test_codex_login_selection_uses_the_launch_config`](../tests/proxy_contracts/test_first_agent_launch.py#L521)
 - [`tests/proxy_contracts/test_first_agent_launch.py::test_codex_login_refusal_and_failed_selection_create_no_authority`](../tests/proxy_contracts/test_first_agent_launch.py#L545)
 - [`tests/proxy_contracts/test_first_agent_launch.py::test_codex_login_import_errors_preserve_owned_login_and_allow_cancellation`](../tests/proxy_contracts/test_first_agent_launch.py#L593)
-- [`tests/proxy_contracts/test_first_agent_launch.py::test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic`](../tests/proxy_contracts/test_first_agent_launch.py#L642)
-- [`tests/proxy_contracts/test_first_agent_launch.py::test_unsupported_launch_harness_is_rejected_before_instance_mutation`](../tests/proxy_contracts/test_first_agent_launch.py#L813)
-- [`tests/proxy_contracts/test_first_agent_launch.py::test_codex_launch_keeps_selected_authentication_on_setup_refusal`](../tests/proxy_contracts/test_first_agent_launch.py#L831)
-- [`tests/proxy_contracts/test_first_agent_launch.py::test_pending_credential_list_does_not_derive_authority_from_retained_audit`](../tests/proxy_contracts/test_first_agent_launch.py#L886)
-- [`tests/proxy_contracts/test_first_agent_launch.py::test_credential_retry_keeps_the_inspected_action`](../tests/proxy_contracts/test_first_agent_launch.py#L924)
-- [`tests/proxy_contracts/test_first_agent_launch.py::test_credential_selection_retains_its_authority_and_rechecks_policy`](../tests/proxy_contracts/test_first_agent_launch.py#L972)
-- [`tests/proxy_contracts/test_first_agent_launch.py::test_direct_credential_decision_keeps_the_selected_destination`](../tests/proxy_contracts/test_first_agent_launch.py#L1045)
-- [`tests/proxy_contracts/test_first_agent_launch.py::test_credential_policy_write_cannot_bypass_canonical_approval`](../tests/proxy_contracts/test_first_agent_launch.py#L1078)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_codex_auth_offers_only_actions_supported_by_inspected_sources`](../tests/proxy_contracts/test_first_agent_launch.py#L638)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_codex_authorization_failure_reports_and_retains_the_completed_copy`](../tests/proxy_contracts/test_first_agent_launch.py#L683)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic`](../tests/proxy_contracts/test_first_agent_launch.py#L713)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_unsupported_launch_harness_is_rejected_before_instance_mutation`](../tests/proxy_contracts/test_first_agent_launch.py#L884)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_codex_launch_keeps_selected_authentication_on_setup_refusal`](../tests/proxy_contracts/test_first_agent_launch.py#L902)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_pending_credential_list_does_not_derive_authority_from_retained_audit`](../tests/proxy_contracts/test_first_agent_launch.py#L957)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_credential_retry_keeps_the_inspected_action`](../tests/proxy_contracts/test_first_agent_launch.py#L995)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_credential_selection_retains_its_authority_and_rechecks_policy`](../tests/proxy_contracts/test_first_agent_launch.py#L1043)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_direct_credential_decision_keeps_the_selected_destination`](../tests/proxy_contracts/test_first_agent_launch.py#L1116)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_credential_policy_write_cannot_bypass_canonical_approval`](../tests/proxy_contracts/test_first_agent_launch.py#L1149)
 
 <a id="witness-tests-proxy-contracts-test-gateway-provider-py"></a>
 ### [`tests/proxy_contracts/test_gateway_provider.py`](../tests/proxy_contracts/test_gateway_provider.py)
@@ -3268,6 +3270,7 @@ Harness, presentation, reporting or diagnostic behavior; no additional BB contro
 - [`tests/proxy_contracts/test_heap_release.py`](../tests/proxy_contracts/test_heap_release.py)
 - [`tests/proxy_contracts/test_native_skill_trace.py`](../tests/proxy_contracts/test_native_skill_trace.py)
 - [`tests/proxy_contracts/test_observability_contract.py`](../tests/proxy_contracts/test_observability_contract.py)
+- [`tests/proxy_contracts/test_doctor_cli.py`](../tests/proxy_contracts/test_doctor_cli.py)
 
 Guest artifact publication, preparation, scheduling and supporting contracts; no additional running sandbox-control witness is claimed. These source and workflow tests remain selected by their maintained CI lanes.
 
