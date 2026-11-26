@@ -1,4 +1,4 @@
-# SafeYolo Developer Guide
+# SafeYOLO Developer Guide
 
 This guide is for developers who contribute to the host CLI, Rust proxy,
 agent sandbox, and operator integrations.
@@ -40,7 +40,7 @@ contract validation.
 ## Coord trust boundary
 
 Envelope attribution is authoritative; message bodies are untrusted data, and
-any SafeYolo-owned UI that presents provenance must keep the two separate when
+any SafeYOLO-owned UI that presents provenance must keep the two separate when
 rendering. Both spoofing bugs found in the Stage-1 dogfood were in the display
 layer with a correct envelope. See [coord-trust-boundary.md](coord-trust-boundary.md)
 for the contract and the per-sink obligations (terminal, web, log export).
@@ -59,7 +59,7 @@ for forensic analysis. These operator clients do not need a broker connection.
 
 ### Option 1: Consume JSONL Events
 
-On the host, use the account that owns the selected SafeYolo instance. The
+On the host, use the account that owns the selected SafeYOLO instance. The
 instance root defaults to `$HOME/.safeyolo`; `--instance-dir` or `SAFEYOLO_CONFIG_DIR`
 selects another instance. Its `config.toml` sets `audit_log_path`, which defaults
 to `logs/audit.jsonl` relative to that configuration file. Use that resolved path
@@ -734,7 +734,7 @@ the result is unconfirmed; the requested JSON remains for the next reload or
 start. It does not imply that the live configuration was rolled back. Processes
 launched before configuration-path recording need one restart to use live sync.
 
-The fresh SafeYolo installation has no backend switch or old-package rollback.
+The fresh SafeYOLO installation has no backend switch or old-package rollback.
 Historical comparator receipts remain in [state compatibility](state-compatibility.md).
 Stop waits for observed process exit and retains ownership state when an
 interrupted stop can be retried. Direct diagnosis and stopped-agent cleanup
@@ -793,7 +793,7 @@ environment. These tools contribute different evidence, and their findings are
 not automatic merge vetoes. In particular, compare static and complexity
 findings with the trusted base, and treat parallel or repeated tests as stress
 signals rather than proof that a race cannot exist. See `accept-safeyolo.yaml`
-in the bundled SafeYolo skill graphs for the trusted sources, invocations, and
+in the bundled SafeYOLO skill graphs for the trusted sources, invocations, and
 evidence to retain.
 
 The commit hooks mirror CI's fast static checks:
@@ -887,7 +887,7 @@ are added. Use this profile only where that local debugger authority is acceptab
 The retained package `doctor` reports the installed helper's build identity and
 warns when debugger access is enabled. `agent diagnostics` reports the
 running helper's private-control status. The helper's `version` and `--version`
-commands accept `--json`. Output includes the SafeYolo and helper versions, Git revision
+commands accept `--json`. Output includes the SafeYOLO and helper versions, Git revision
 and dirty state, profile, architecture, compiler, optimisation, symbol profile
 and running debug/hardened-runtime flags. Each VM startup also logs its identity.
 An older or unmanaged helper produces an explicit identity warning.
@@ -1016,7 +1016,7 @@ The operator-ux skill reads the authoritative interaction contract from the
 target checkout at the revision under review; it does not ship a second copy.
 
 The bundled Codex and Claude host setup scripts also stage discovery links in
-agent homes. SafeYolo copies the skill into the read-only `/safeyolo/skills/`
+agent homes. SafeYOLO copies the skill into the read-only `/safeyolo/skills/`
 share on each run. New agents receive the links through normal host setup.
 Existing agent homes outside this checkout need the bundled host setup reapplied
 once after upgrade: stop the agent, then use the run command’s `--host-script`
@@ -1230,7 +1230,7 @@ for the candidate; a successful analysis/upload job does not mean no findings.
 
 ### Acceptance tooling
 
-For SafeYolo, tracked lockfiles, package manifests, pre-commit and CI
+For SafeYOLO, tracked lockfiles, package manifests, pre-commit and CI
 configuration, and build/rootfs/install scripts form the dependency inventory
 until a unified software bill of materials (SBOM) manifest exists. An
 operator-bound acceptance graph supplies the separate validation-tool
@@ -1317,7 +1317,7 @@ establish integrity for custom-index exceptions.
 
 ### Independent review tools
 
-These SafeYolo project bindings apply to the reviewer in either the native or
+These SafeYOLO project bindings apply to the reviewer in either the native or
 message software workflow. The selected role contract owns the lifecycle and
 independent judgment. Repository instructions and a role-scoped brief locate
 these tools; a brief can bind an approved rule pack or environment without
@@ -1376,7 +1376,7 @@ while preserving required binaries, patches, commands, hashes, and results.
 
 ### Repository publication
 
-For SafeYolo GitHub records, use operator-provisioned authenticated `gh` for
+For SafeYOLO GitHub records, use operator-provisioned authenticated `gh` for
 repository/work-item identity, issue and pull-request metadata, checks and
 mutations. Use native Git for source transport, including fetch, branch,
 commit and push. Use the GitHub App Connector only when `gh` is unavailable,
@@ -1508,7 +1508,7 @@ See [contrib/README.md](../contrib/README.md) for the integration pattern and ho
 - **Dashboard** - Real-time visualization of proxy traffic
 - **Metrics exporter** - Push to Prometheus/Grafana
 - **CI integration** - Block builds if credentials leak in tests
-- **IDE plugin** - Show SafeYolo status in VS Code
+- **IDE plugin** - Show SafeYOLO status in VS Code
 
 ## Questions?
 

@@ -1,9 +1,9 @@
 # Security
 
-SafeYolo is a human-centric security control point for AI agents.
+SafeYOLO is a human-centric security control point for AI agents.
 
 Agents need controls that prevent accidents and limit the effects of prompt
-injection or malicious behavior. SafeYolo sits between agents and external
+injection or malicious behavior. SafeYOLO sits between agents and external
 systems. It gives the operator scoped control over local-data mounts and remote
 services, and it fails closed when a request is ambiguous or outside policy.
 
@@ -31,10 +31,10 @@ describes platform namespaces, UID mappings, storage, and the proxy route.
 ```
 
 - **Host** is the trust root. You run the CLI, own config, and control the sandbox runtime (Apple Virtualization.framework on macOS, gVisor on Linux).
-- **SafeYolo** enforces your policy through an unprivileged host Rust proxy
+- **SafeYOLO** enforces your policy through an unprivileged host Rust proxy
   process that runs as your user ID. Agent sandboxes cannot read arbitrary host
   files; they see only the host paths mounted into them.
-- **Agent sandboxes** have no direct internet access. Their only route to the outside world is through SafeYolo's policy enforcement.
+- **Agent sandboxes** have no direct internet access. Their only route to the outside world is through SafeYOLO's policy enforcement.
 - **Peer support** is isolated by default. An explicit operator-owned
   [local support grant](docs/peer-support.md) permits selected host-observed
   inspection, guest administration and saved-worker lifecycle actions for
@@ -48,7 +48,7 @@ describes platform namespaces, UID mappings, storage, and the proxy route.
 ### Minimize trust
 
 Grant the minimum access required. Agents run in isolated sandboxes with no
-external network interface. SafeYolo runs the packaged Rust proxy as an
+external network interface. SafeYOLO runs the packaged Rust proxy as an
 unprivileged host process. The Admin API binds directly to `127.0.0.1` and
 does not perform hostname or reverse-DNS resolution. The host-local boundary
 and proxy readiness therefore do not depend on the host resolver. Protected
@@ -78,9 +78,9 @@ before DNS or an upstream connection.
 
 ### Human-governed access
 
-You decide what gets through. SafeYolo enforces your decisions — agents request access, you approve or deny, and the policy builds up from there.
+You decide what gets through. SafeYOLO enforces your decisions — agents request access, you approve or deny, and the policy builds up from there.
 
-Think of agents like an eager intern: confident, fast, helpful, and occasionally wrong in ways that matter. An intern might email the wrong client or paste credentials into a public channel — not malicious, just moving fast without experience. AI agents have the same failure mode. SafeYolo ensures a human is in the loop for trust decisions, while giving agents clear machine-readable feedback (HTTP 428) so they can self-correct obvious mistakes without operator intervention.
+Think of agents like an eager intern: confident, fast, helpful, and occasionally wrong in ways that matter. An intern might email the wrong client or paste credentials into a public channel — not malicious, just moving fast without experience. AI agents have the same failure mode. SafeYOLO ensures a human is in the loop for trust decisions, while giving agents clear machine-readable feedback (HTTP 428) so they can self-correct obvious mistakes without operator intervention.
 
 Service capabilities scope what an agent can do within a service. Risky-route
 declarations identify actions such as deletion, data export and privilege
@@ -96,7 +96,7 @@ Behind the scenes, every request gets a unique ID. Every security decision — c
 ## Enforcement Layers
 
 **Granting agents access to your online data.**
-Agents call APIs on your behalf, but not every operation carries the same risk. Services are described in terms of capabilities — named groups of related operations like "manage categories" or "read feeds." You grant specific capabilities to each agent; everything else in that service is off-limits. Within a granted capability, a contract constrains exactly which endpoints, methods, and parameters the agent can use. Service files are generated from API specifications and ship with SafeYolo — you don't need to write them yourself, but you can if you like. If a service you use isn't covered yet, open a [GitHub issue](https://github.com/craigbalding/safeyolo/issues) or submit a PR.
+Agents call APIs on your behalf, but not every operation carries the same risk. Services are described in terms of capabilities — named groups of related operations like "manage categories" or "read feeds." You grant specific capabilities to each agent; everything else in that service is off-limits. Within a granted capability, a contract constrains exactly which endpoints, methods, and parameters the agent can use. Service files are generated from API specifications and ship with SafeYOLO — you don't need to write them yourself, but you can if you like. If a service you use isn't covered yet, open a [GitHub issue](https://github.com/craigbalding/safeyolo/issues) or submit a PR.
 
 **Credential isolation.**
 The service gateway keeps vaulted service credentials outside the agent
@@ -129,7 +129,7 @@ as an explicit decision to share the files that the selected script copies.
 **Network and transport controls.**
 Agents have no direct internet access. Each sandbox has no external network
 interface. Its only egress path is a host-owned, per-agent Unix domain socket
-that routes through SafeYolo. No host firewall rule participates in this
+that routes through SafeYOLO. No host firewall rule participates in this
 boundary.
 
 The host creates each managed proxy socket at
@@ -151,7 +151,7 @@ the ingress does not authenticate external clients. The existing operator-port
 shield prevents proxy egress from entering these listeners. See the
 [prototype's identity and lifecycle limits](docs/networking-vsock-uds.md#operator-bound-external-ingress-prototype).
 
-For a resolved service-gateway token, SafeYolo rejects a path spelling if
+For a resolved service-gateway token, SafeYOLO rejects a path spelling if
 service route normalization changes it. This includes dot segments, encoded
 separators, encoded unreserved characters, doubled slashes, and a trailing
 slash on a non-root path. Bound service contracts also reject duplicate
@@ -169,18 +169,18 @@ As a safety net, the credential guard detects credentials in request headers via
 
 | Limitation | Notes |
 |------------|-------|
-| **Prompt injection** | SafeYolo reduces prompt injection risk — through agent reflection prompts and limiting risky routes to prevent account takeover and credential theft — but doesn't eliminate it. |
-| **Non-HTTP exfiltration** | DNS is resolved by SafeYolo (no direct DNS from the sandbox) and raw sockets are unavailable, blocking most non-HTTP channels. Exotic covert channels (e.g. steganography in allowed HTTP traffic) are not addressed. |
+| **Prompt injection** | SafeYOLO reduces prompt injection risk — through agent reflection prompts and limiting risky routes to prevent account takeover and credential theft — but doesn't eliminate it. |
+| **Non-HTTP exfiltration** | DNS is resolved by SafeYOLO (no direct DNS from the sandbox) and raw sockets are unavailable, blocking most non-HTTP channels. Exotic covert channels (e.g. steganography in allowed HTTP traffic) are not addressed. |
 | **Host compromise** | If an attacker controls your host or `~/.safeyolo/`, all bets are off. |
 | **Credential guard in URL paths** | `/api/sk-proj-abc123/resource` — rare pattern, not currently scanned by the credential guard. |
 | **Credential guard in query/body** | The credential guard scans request headers. It also checks the JSON refresh credential at the supported Codex HTTPS token endpoint. Other request bodies and URL query parameters remain outside credential scanning. |
 
 ## Reporting Security Issues
 
-We welcome security research on SafeYolo.
+We welcome security research on SafeYOLO.
 
 **What we're looking for:**
-- Credential bypass techniques (leaking credentials past SafeYolo)
+- Credential bypass techniques (leaking credentials past SafeYOLO)
 - Policy isolation breaks (Agent A accessing Agent B's approvals)
 - Admin API auth bypass
 - Log injection or forgery

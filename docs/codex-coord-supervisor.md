@@ -5,7 +5,7 @@ The `@codex-coord`, `@pi-coord` and `@claude-coord` host setups run factory role
 interactive and have no supervisor. A role's factory TOML selects its harness;
 that choice does not create another queue or state machine.
 
-Use the installed SafeYolo and its matching Linux guest Coord executable.
+Use the installed SafeYOLO and its matching Linux guest Coord executable.
 Set up the worker's own login before enabling supervision, as described in
 [factory setup](factories.md#fresh-setup-check-approve-and-run).
 
@@ -30,7 +30,7 @@ unsupported. Retained room messages and the identity-wide attention feed are
 separate. Clearing room messages does not reset attention.
 
 Configure the rooms that the worker must receive from and the agent names that
-the operator designated as coordinators. Run from a trusted SafeYolo checkout
+the operator designated as coordinators. Run from a trusted SafeYOLO checkout
 outside the worker's writable shares. Stop the worker before applying setup:
 
 The first start below confirms the fresh identity or membership and creates
@@ -58,7 +58,7 @@ its work and inspect retained attention and history. There is no cursor
 migration or automatic start-from-now operation.
 
 Each supervised setup uses its normal harness setup first and preserves that
-agent's own subscription login, SafeYolo instructions, proxy, and TLS
+agent's own subscription login, SafeYOLO instructions, proxy, and TLS
 environment. Codex and Claude use the bundled Coord MCP adapter. Pi uses a small `send` and `read_room` extension. Supervised setups import no host credentials.
 The only changed boundary is the foreground command: the guest runs the common supervisor,
 which runs bounded JSON-mode harness turns.
@@ -404,7 +404,7 @@ turn. A restart after an interrupted turn cleans up the owned invocation and
 marks its work uncertain. The recovery prompt requires inspection of retained
 Coord history and the working tree before another write. A saved terminal
 checkpoint deduplicates the completed attention and does not dispatch it again.
-SafeYolo starts with fresh state. It does not convert Python-era
+SafeYOLO starts with fresh state. It does not convert Python-era
 checkpoints or import old credentials. This replacement does not upgrade or
 restart an already running factory.
 

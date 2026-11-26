@@ -164,7 +164,7 @@ code. Recheck affected consumers when adding host automation or another entry.
 
 ## SSH identities
 
-SafeYolo's existing `vm_ssh_key` serves the operator-to-guest connection. Its
+SafeYOLO's existing `vm_ssh_key` serves the operator-to-guest connection. Its
 default host location is `~/.safeyolo/data/vm_ssh_key`, with a `.pub` companion;
 `SAFEYOLO_CONFIG_DIR` can change the configuration root. The guest receives its
 public half in `~/.ssh/authorized_keys`. Keep that operator private key on the
@@ -388,15 +388,15 @@ launcher while the account still uses it as its login shell. Interrupted power o
 
 ## Approved SSH route
 
-**On the SafeYolo proxy host, use the operator's normal account with its
-configured SafeYolo CLI, from any directory.** Choose the Mac's reachable host
+**On the SafeYOLO proxy host, use the operator's normal account with its
+configured SafeYOLO CLI, from any directory.** Choose the Mac's reachable host
 and SSH port as seen **by the proxy**. `127.0.0.1` means the proxy host; use it only
-when SSH runs there. Obtain the client agent's SafeYolo name from its operator
+when SSH runs there. Obtain the client agent's SafeYOLO name from its operator
 configuration. This grant permits that agent's CONNECT requests to that endpoint
 and uses the global rate budget. It updates an existing matching endpoint entry.
 
 Replace `mac.example.net`, `22`, and `client-agent` below with the destination
-host, SSH port, and SafeYolo agent name you selected:
+host, SSH port, and SafeYOLO agent name you selected:
 
 ```sh
 safeyolo policy check reviewed-policy.toml
@@ -414,7 +414,7 @@ an unverified `ssh-keyscan` result.
 ## Client proxy options
 
 The README uses OpenSSH with a `socat` HTTP CONNECT transport. The standard
-SafeYolo guest image includes `socat`. The generated client configuration uses
+SafeYOLO guest image includes `socat`. The generated client configuration uses
 `http://127.0.0.1:8080`; for another HTTP proxy, substitute the host and
 `proxyport` from the client's configured `HTTPS_PROXY` or `HTTP_PROXY` URL.
 This transport connects only through that proxy. OpenSSH checks the Mac's
@@ -533,14 +533,14 @@ through the same shell launcher.
 
 The baseline contains no IP allowance. To obtain dependencies, either:
 
-1. Fetch them through the coding agent's existing SafeYolo proxy route, then
+1. Fetch them through the coding agent's existing SafeYOLO proxy route, then
    transfer the files into the macOS account; or
 2. Have the operator create one fixed loopback listener outside this account's
-   sandbox, bridged into an existing SafeYolo **per-agent** proxy socket.
+   sandbox, bridged into an existing SafeYOLO **per-agent** proxy socket.
 
 For the second option, **run on the target Mac in a trusted operator terminal,
 from any directory, outside the confined account**. Install `socat` first.
-Choose the existing SafeYolo per-agent proxy socket you intend to expose and
+Choose the existing SafeYOLO per-agent proxy socket you intend to expose and
 ensure loopback TCP port 18080 is available. The command prompts for the socket
 path and starts a foreground listener; leave that terminal open while using it.
 This listener has no client authentication, so account for other local users
@@ -569,7 +569,7 @@ port; it does not resolve a DNS hostname. Choose fresh SSH sessions after editin
 ```
 
 Inside a fresh confined Mac shell, set `HTTP_PROXY` and `HTTPS_PROXY` to
-`http://127.0.0.1:18080`. Transfer and configure the appropriate SafeYolo CA file
+`http://127.0.0.1:18080`. Transfer and configure the appropriate SafeYOLO CA file
 for each tool, including `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, and
 `NODE_EXTRA_CA_CERTS` where applicable. The shell launcher deliberately discards incoming
 client environment; configure these values in the confined account's startup
@@ -599,9 +599,9 @@ narrowing `sysctl-read`. The probe records outside task-info visibility separate
 from the boundaries it requires to pass. This risk acceptance leaves the
 measured limitation and existing policy restrictions unchanged.
 
-## SafeYolo as a worked workload
+## SafeYOLO as a worked workload
 
-Clone or transfer SafeYolo beneath this account's home. Its mutable state,
+Clone or transfer SafeYOLO beneath this account's home. Its mutable state,
 including `~/.safeyolo`, `~/.safeyolo-test`, `~/.local/state/safeyolo`, agent
 homes, overlays and logs, fits the home write rule. Per-agent proxy and shell
 sockets, and the private traffic tmux socket, fit the general home UDS rules.
@@ -622,7 +622,7 @@ The inherited Seatbelt profile still confines the compiler, manifest and build
 children. This flag is not an instruction to run unconfined builds elsewhere.
 
 For Apple Silicon VM work, use the confined Mac account and change to the
-SafeYolo checkout's `vm` directory. Build the Swift package and sign
+SafeYOLO checkout's `vm` directory. Build the Swift package and sign
 `.build/release/safeyolo-vm` using the supplied `safeyolo-vm.entitlements`.
 From that same directory, run `.build/release/safeyolo-vm check`, then prove a
 minimal boot on a physical Apple Silicon host. Inspect denials from a

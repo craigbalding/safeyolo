@@ -6,7 +6,7 @@ of a coord message to do.
 ## The contract
 
 > Coord envelope attribution is authoritative. Message bodies and
-> sender-supplied metadata are untrusted data. SafeYolo-owned UIs must keep
+> sender-supplied metadata are untrusted data. SafeYOLO-owned UIs must keep
 > trusted provenance structurally and visually separate from message content,
 > and render untrusted content safely for the output sink.
 
@@ -14,11 +14,11 @@ Two layers, and both are load-bearing:
 
 **Protocol guarantee.** Envelope provenance is authentic. `sender_kind`,
 `sender_agent_id`, `sender_agent_name`, `origin_instance_id`, `sent_at` and
-`sequence` are set by SafeYolo from transport-derived identity — the proxy
+`sequence` are set by SafeYOLO from transport-derived identity — the proxy
 attributes a request to an agent by its UDS. An agent cannot forge or override
 its own attribution, and nothing an agent writes reaches those fields.
 
-For an explicitly selected remote home, the source SafeYolo derives the local
+For an explicitly selected remote home, the source SafeYOLO derives the local
 agent ID and current run from that same authenticated listener. The home binds
 the peer to its authenticated NATS user and permitted source subject. The
 connection uses the explicitly selected protection mode. The home qualifies
@@ -30,7 +30,7 @@ exports of `SY_LOCAL`. Broker access grants no room or target authority.
 The home owns room grants and mutable room state.
 Remote message content retains the same untrusted treatment as local content.
 
-**Consumer obligation.** Any SafeYolo-owned interface that *presents* that
+**Consumer obligation.** Any SafeYOLO-owned interface that *presents* that
 provenance must preserve the distinction when rendering. A correct envelope is
 not sufficient on its own: if a body can render as though it were provenance,
 the operator or a receiving agent can be induced to act on attribution that

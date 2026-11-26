@@ -1,20 +1,20 @@
 ---
 name: safeyolo-lab-controller
-description: Run controlled, operator-visible experiments from inside a SafeYolo agent using persistent tmux shell panes, reversible fault injection, UTC evidence capture, baseline restoration, and explicit teardown. Use when the operator asks to set up, drive, observe, or retain evidence from an interactive lab; do not use for ordinary one-command shell work or SafeYolo troubleshooting that does not need a tmux lab.
+description: Run controlled, operator-visible experiments from inside a SafeYOLO agent using persistent tmux shell panes, reversible fault injection, UTC evidence capture, baseline restoration, and explicit teardown. Use when the operator asks to set up, drive, observe, or retain evidence from an interactive lab; do not use for ordinary one-command shell work or SafeYOLO troubleshooting that does not need a tmux lab.
 ---
 
-# SafeYolo lab controller
+# SafeYOLO lab controller
 
-Use tmux as an inspectable lab UI while SafeYolo remains the security boundary.
+Use tmux as an inspectable lab UI while SafeYOLO remains the security boundary.
 Keep the operator able to watch, intervene, authenticate interactively, and
 inspect every transition.
 
-When the work touches SafeYolo health, proxying, TLS, policy, credentials,
+When the work touches SafeYOLO health, proxying, TLS, policy, credentials,
 coord, guest privilege, or agent lifecycle, invoke the installed `safeyolo`
 skill and follow its current guidance. This skill controls the experiment; it
-does not replace SafeYolo's operational rules.
+does not replace SafeYOLO's operational rules.
 
-Lab is independent from the SafeYolo Demo. If an experiment needs a narrative
+Lab is independent from the SafeYOLO Demo. If an experiment needs a narrative
 or source surface, use the generic Lab panes and evidence helpers described
 below; do not invoke a Demo-specific workflow.
 
@@ -52,7 +52,7 @@ relaunching a controller.
 - Treat the requested experiment, mutations, and teardown as separate grants.
 - Do not modify product code unless the operator explicitly includes that work.
 - Keep lab configuration changes temporary, narrow, recorded, and reversible.
-- Fault injection never authorizes weakening the outer SafeYolo boundary.
+- Fault injection never authorizes weakening the outer SafeYOLO boundary.
 - Never print, inject, capture, or archive credential values. Record credential
   paths, ownership, mode, existence, provider, and authentication state only.
 - Pause for operator interaction when a subscription login is required. Do not

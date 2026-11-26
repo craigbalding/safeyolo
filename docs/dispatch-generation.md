@@ -1,14 +1,14 @@
-# SafeYolo Dispatch generation
+# SafeYOLO Dispatch generation
 
-The SafeYolo Dispatch is a concise public engineering digest selected and
-edited by Relay, SafeYolo's coordinator. The generation command produces
+The SafeYOLO Dispatch is a concise public engineering digest selected and
+edited by Relay, SafeYOLO's coordinator. The generation command produces
 repository Markdown only: it does not deploy, schedule, create issues, change
 factory policy, or approve its own output. Scheduling, operator approval, CI,
 and Pages deployment are separate plumbing described in
 [Dispatch delivery and publication](dispatch-publication.md).
 
 The intended reader understands ordinary software and security concepts but
-does not know SafeYolo internals. Sources own their terminology definitions;
+does not know SafeYOLO internals. Sources own their terminology definitions;
 the renderer supports any concise defined term and emits it only where the
 content uses it. Relay, Forge, and Lens are expanded in the standard editorial
 and attribution labels.
@@ -17,7 +17,7 @@ and attribution labels.
 
 Use an installed `safeyolo` executable on your command path. See
 [installation](installation.md#install-and-start) if it is not installed.
-Run generation from the SafeYolo repository root, using the checked-in source
+Run generation from the SafeYOLO repository root, using the checked-in source
 below or an independently edited public manifest. Generation needs neither a
 running proxy nor Coord, operator credentials, Python, or network access.
 
@@ -63,13 +63,13 @@ public issues, pull requests, exact-commit tests, and live-trial evidence.
 ## Operator editorial interaction
 
 Before Relay drafts a substantive item, Relay gives the operator a short,
-normal-language account of what SafeYolo was trying to do, what happened, and
+normal-language account of what SafeYOLO was trying to do, what happened, and
 why it may be interesting. When the significance needs operator judgment,
 Relay asks one focused question—not a questionnaire, writing assignment, or
 request to review repeated drafts. The response becomes source material for one
 authored item, or Relay omits the material if it is not worth publishing.
 
-The resulting item establishes what SafeYolo is doing and why before it
+The resulting item establishes what SafeYOLO is doing and why before it
 introduces internal mechanisms. Public evidence and attribution remain
 traceable without structuring the prose like an audit record.
 

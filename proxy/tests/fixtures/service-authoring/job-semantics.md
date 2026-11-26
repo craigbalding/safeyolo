@@ -30,7 +30,7 @@ verify the runner's credentials, external permissions or selected steps.
 | `status` | The operation is in the supplied inventory, but its effects are uncharacterised. |
 
 The upstream requirements and defaults are semantic facts of this controlled
-API. They do not add SafeYolo request enforcement. In particular, the native
+API. They do not add SafeYOLO request enforcement. In particular, the native
 request executor does not require a query or body field merely because OpenAPI
 marks it required.
 
@@ -42,7 +42,7 @@ with `executed` for the same project/job. The rule does not depend on an endpoin
 pair or permission-addition order. Its prerequisites include upstream execution
 access and steps that can perform the action in question.
 
-Definition edits persist in upstream storage after SafeYolo access expires.
+Definition edits persist in upstream storage after SafeYOLO access expires.
 Access expiry does not stop a launched run or reverse its external writes.
 A caller can retain a definition received through inspection. Preview avoids
 step execution under the represented API semantics; unmodeled upstream logging

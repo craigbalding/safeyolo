@@ -1,20 +1,20 @@
-# SafeYolo architecture overview
+# SafeYOLO architecture overview
 
 This is the map of the system: what runs where, who owns which decision, and
 where to find each piece in the source tree. Detailed behaviour stays in the
 linked reference documents; this page should only change when a boundary,
 process or owner changes.
 
-## What SafeYolo is
+## What SafeYOLO is
 
-SafeYolo runs coding agents (Claude Code, Codex, Pi and others) in isolated
+SafeYOLO runs coding agents (Claude Code, Codex, Pi and others) in isolated
 Linux sandboxes on an operator's host. The sandbox has no external network
 interface. Every outbound request goes through a host-owned, per-agent socket
 into one Rust proxy, which applies the operator's policy, keeps credentials on
 the host, records evidence and asks the operator when a request is outside
 policy.
 
-Around that core, SafeYolo has grown:
+Around that core, SafeYOLO has grown:
 
 - **Operator tooling**: a CLI, the macOS Command Centre, traffic inspection
   and exports, diagnostics and a Lab for controlled experiments.
@@ -30,7 +30,7 @@ Around that core, SafeYolo has grown:
 | Zone | Trust | Owns |
 |---|---|---|
 | Host and operator | Trusted root | `config.toml`, `policy.toml`, credentials, approvals, sandbox runtime |
-| SafeYolo proxy | Enforcement point, runs as the operator's UID (not root) | Policy evaluation, credential protection, evidence, Agent and Admin application programming interfaces (APIs) |
+| SafeYOLO proxy | Enforcement point, runs as the operator's UID (not root) | Policy evaluation, credential protection, evidence, Agent and Admin application programming interfaces (APIs) |
 | Agent sandboxes | Untrusted; may be prompt-injected or malicious | Nothing outside their mounts; guest `sudo` is not host privilege |
 | External services | Reachable only through policy | Their own authentication |
 
@@ -300,7 +300,7 @@ flows, declare test contexts and use Coord. The skills teach agents to use it.
 
 ## Coord and factories
 
-Coord is SafeYolo's coordination kernel.
+Coord is SafeYOLO's coordination kernel.
 
 - **Storage split**: SQLite owns control state (identity, membership, brief,
   work ownership, claims, attestations). NATS JetStream owns conversation

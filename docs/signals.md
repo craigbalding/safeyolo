@@ -258,7 +258,7 @@ For example, extend the `packages` rule above with the following host-owned
 configuration. The `/usr/local/sbin/web-os-*` commands represent your installed
 application-specific checkpoint, restart, health and recovery recipe: replace
 them with actual commands for that guest before adoption. They are not supplied
-SafeYolo commands. A checkpoint must preserve mutable OS state affected by the
+SafeYOLO commands. A checkpoint must preserve mutable OS state affected by the
 chosen package operation, including dependencies and configuration; restoring
 only a base selection is insufficient.
 

@@ -1,6 +1,6 @@
 # MicroVM Architecture
 
-SafeYolo runs AI coding agents in persistent Linux microVMs with hardware-level isolation and structural egress control.
+SafeYOLO runs AI coding agents in persistent Linux microVMs with hardware-level isolation and structural egress control.
 
 The microVM approach — guest image build, vsock terminal, openpty/setsid/TIOCSCTTY PTY pattern — was informed by [Shuru](https://github.com/superhq-ai/shuru/), an open-source microVM sandbox for AI agents.
 
@@ -278,7 +278,7 @@ mounts were checked against source at
 These are observations from one workload, not reservations or quotas.
 
 The offline workload selected prepared Node 22.23.2 and Python 3.12.12 with
-mise. It installed Make 4.4.1 and copied the SafeYolo source at `87382b0a`.
+mise. It installed Make 4.4.1 and copied the SafeYOLO source at `87382b0a`.
 It installed pytest 8.4.2 and httpx 0.28.1 in a project virtual environment,
 installed TypeScript 5.9.3, then compiled and ran a small TypeScript program.
 Runtime files came from prepared archives; Node's executable aliases were

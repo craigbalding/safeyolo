@@ -1,4 +1,4 @@
-# SafeYolo Guest Image Builds
+# SafeYOLO Guest Image Builds
 
 For host installation and prepared platform inputs, see the
 [installation reference](../cli/README.md#installation). For default guest tools
@@ -9,13 +9,13 @@ Guest preparation and ordinary execution need no host sudo after legitimate
 host preparation; the installation reference states its remaining exceptions.
 This guide is for optional custom-image builds, which use builder sudo.
 
-Builds the artifacts SafeYolo needs to run agent sandboxes:
+Builds the artifacts SafeYOLO needs to run agent sandboxes:
 
 - `out/Image` — Linux kernel (macOS Virtualization.framework only)
 - `out/initramfs.cpio.gz` — minimal initramfs (macOS only)
 - `out/rootfs-base.ext4` — Debian trixie base image (macOS VZ mounts this read-only as /dev/vda; runtime writes use a separate overlay)
 - `out/rootfs-tree/` — Debian trixie rootfs as an unpacked directory (Linux gVisor uses this as OCI `root.path`; guest IDs, named ACL principals and capability root identities use canonical base 100000)
-- `out/cache-paths.txt` — absolute in-rootfs paths SafeYolo bind-mounts to persistent per-agent cache dirs (apt cache, etc.)
+- `out/cache-paths.txt` — absolute in-rootfs paths SafeYOLO bind-mounts to persistent per-agent cache dirs (apt cache, etc.)
 - `out/build-base.txt` — the actual digest-pinned Debian manifest used for OCI publication provenance
 
 Every `build-rootfs.sh` run produces **both** the ext4 image and the tree on Linux (natively or inside the Lima VM on macOS). The tree is what gVisor uses on Linux hosts; without it, `safeyolo agent start` fails with a "Rootfs tree not found" error.
@@ -266,7 +266,7 @@ and privilege helpers; `busybox-static` for applets and shutdown; `xz-utils`
 for archive extraction; and `fd-find` for searches through the `fd` helper.
 The package rows exclude paths outside dpkg file lists, including the
 separately installed mise/gh files and licence notices. They do not total
-all rootfs files. SafeYolo uses its own guest init; an installed systemd
+all rootfs files. SafeYOLO uses its own guest init; an installed systemd
 dependency does not mean systemd runs as the guest's init.
 
 The three OpenSSH packages at version `1:10.0p1-7+deb13u4` account for
@@ -319,7 +319,7 @@ The publication workflow sets `TMPDIR` to disk-backed runner storage:
 1. `umoci unpack` — preserves real uid/gid ownership in the unpacked tree, which `mkfs.ext4 -d` needs to read back cleanly at packaging time.
 2. `chroot ... apt-get install` — installs runtime packages, including socat and openssh-server, inside the unpacked tree. Package maintainer scripts need root-in-chroot semantics to mknod device nodes, chown root, and run their own install hooks.
 3. `mkfs.ext4 -d` on the packaged output — reads the root-owned tree.
-4. The SafeYolo `rootfs-customize-hook.sh` (mise/gh install, sshd config, agent user creation, apt-proxy config) — also needs root-in-chroot for the same reasons as (2).
+4. The SafeYOLO `rootfs-customize-hook.sh` (mise/gh install, sshd config, agent user creation, apt-proxy config) — also needs root-in-chroot for the same reasons as (2).
 5. The CLI’s `host archive-profile-tree` operation on a private emitted tree — the same normalizer used by profile export preserves each guest ID and translates named ACLs and capability root identities to canonical base 100000. Guest root becomes 100000 and user 1000 becomes 101000; installation maps these to the consumer's selected host IDs. The macOS ext4 image is made from the original tree and retains ordinary guest IDs.
 
 The selected output directory retains the finished artifacts and download

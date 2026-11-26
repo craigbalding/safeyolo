@@ -1,6 +1,6 @@
 # Policy File Assurance: Threat-Model Decision
 
-This document records how SafeYolo should test `policy.toml` processing and why.
+This document records how SafeYOLO should test `policy.toml` processing and why.
 It applies the security model in [SECURITY.md](../SECURITY.md) to the policy
 parser, normalizer, compiler, persistence helpers, CLI commands, Admin API, and
 live reload behavior.
@@ -10,18 +10,18 @@ The executable trials and initial measurements are in
 
 ## Decision
 
-SafeYolo should prioritize **semantic policy-mutation assurance**, not generic
+SafeYOLO should prioritize **semantic policy-mutation assurance**, not generic
 TOML parser fuzzing.
 
 The host and `~/.safeyolo/` are trusted. Agent sandboxes are untrusted, but the
-SafeYolo configuration share is read-only and agents do not directly write
+SafeYOLO configuration share is read-only and agents do not directly write
 `policy.toml`. Host compromise, including an attacker who can arbitrarily
 replace files under `~/.safeyolo/`, is explicitly out of scope.
 
 The credible policy attack path is therefore indirect:
 
 1. An untrusted or prompt-injected agent shapes a request or access proposal.
-2. SafeYolo derives the security facts shown to the operator.
+2. SafeYOLO derives the security facts shown to the operator.
 3. The operator approves a narrowly understood change.
 4. A CLI, watch, Admin API, or addon persistence path mutates `policy.toml`.
 5. The loader normalizes and compiles the changed policy for enforcement.
@@ -100,20 +100,20 @@ and protection against accidentally deleting a denial or constraint.
 
 Agents cannot directly supply the contents of `policy.toml` under the current
 architecture. Raw parser fuzzing is useful dependency and reliability defense,
-but it is not the highest-value test of SafeYolo's authorization boundary.
+but it is not the highest-value test of SafeYOLO's authorization boundary.
 
 ### Symlink and path replacement by the host operator
 
 An attacker who controls the operator account or `~/.safeyolo/` already controls
-the SafeYolo trust root. Extensive symlink-race fuzzing is not justified by the
+the SafeYOLO trust root. Extensive symlink-race fuzzing is not justified by the
 current threat model. Basic regression coverage remains useful to prevent an
 accidental expansion of the agent's read-only boundary.
 
 ### TOML implementation conformance
 
-SafeYolo should rely primarily on the upstream TOML implementation's conformance
+SafeYOLO should rely primarily on the upstream TOML implementation's conformance
 testing. A pinned standards corpus or differential check can supplement that
-assurance, but it does not replace SafeYolo-specific authorization properties.
+assurance, but it does not replace SafeYOLO-specific authorization properties.
 
 ### Parser resource exhaustion
 
@@ -121,7 +121,7 @@ Very large or deeply nested TOML is principally a local reliability risk while
 the policy file remains host-controlled. Production size limits may still be
 worthwhile, but parser denial-of-service is secondary to permission integrity.
 
-If SafeYolo later accepts complete policies from agents, remote APIs, shared
+If SafeYOLO later accepts complete policies from agents, remote APIs, shared
 repositories, or other untrusted sources, these priorities must be revisited.
 
 ## Technique selection
@@ -172,7 +172,7 @@ handlers. Security-relevant mutants include removed conflict checks, reversed
 precedence, missing agent filters, permissive exception fallbacks, skipped
 locking, and retained revoked grants.
 
-SafeYolo's existing Atheris and ClusterFuzzLite pipeline can later host a
+SafeYOLO's existing Atheris and ClusterFuzzLite pipeline can later host a
 domain-aware policy target. That target should let unexpected exceptions and
 security-invariant violations escape as failures. It should not catch every
 exception and continue, because doing so hides precisely the defects the target
@@ -215,5 +215,5 @@ Review this decision whenever any of the following changes:
 - complete policy documents are accepted from a network API or integration;
 - policy files can be imported automatically from an untrusted repository;
 - the config share is no longer read-only;
-- SafeYolo expands its threat model to hostile same-host processes; or
+- SafeYOLO expands its threat model to hostile same-host processes; or
 - parser/resource exhaustion becomes remotely triggerable.

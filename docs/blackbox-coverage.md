@@ -1,4 +1,4 @@
-# SafeYolo Blackbox Test Coverage
+# SafeYOLO Blackbox Test Coverage
 
 Generated from authored control metadata, maintained Python/Rust witnesses and installed runner selections. Do not edit this document by hand.
 
@@ -3627,10 +3627,10 @@ to the protected management listener through the same agent socket.
 
 ### `tests/blackbox/host/security/test_firewall_structural.py`
 
-#### TestProcessSecrecy — Proxy process doesn't leak SafeYolo tokens via its cmdline.
+#### TestProcessSecrecy — Proxy process doesn't leak SafeYOLO tokens via its cmdline.
 
 **Threat:** Process command lines are readable by any local user via
-`ps aux` or `/proc/PID/cmdline`. If SafeYolo tokens appear in
+`ps aux` or `/proc/PID/cmdline`. If SafeYOLO tokens appear in
 the Rust proxy invocation, a non-root user on the host (or a
 process that escaped the sandbox) can read them and gain full
 admin control. Tokens must be passed via file or env var instead.
@@ -3662,7 +3662,7 @@ requests to the wrong agent. Policy and evidence need the correct identity.
 
 #### TestRootlessUidMapping — Linux sandbox identities map to non-root host identities.
 
-**Threat:** SafeYolo intentionally permits namespace-root for package
+**Threat:** SafeYOLO intentionally permits namespace-root for package
 installation. Its host safety depends on the enclosing user
 namespace mapping sandbox uid 0 to a subordinate uid while mapping
 sandbox uid 1000 to the operator for workspace access.
@@ -3931,15 +3931,15 @@ continue to authenticate upstream TLS with its own trust store.
 - **`test_guest_ca_change_does_not_change_proxy_validation`** — A guest-only trust anchor remains untrusted by the host proxy.
   - *Probe:* Install the sinkhole's self-signed leaf into the writable guest
 trust store, prove the guest bundle accepts it, then request that
-upstream through SafeYolo and require the host proxy to return 502.
+upstream through SafeYOLO and require the host proxy to return 502.
   - *Consequence if unasserted:* A successful upstream request would show that guest-controlled
 trust changed the proxy's host-side certificate validation boundary.
 
-#### TestGuestRootContainment — Guest root cannot cross the SafeYolo isolation boundary.
+#### TestGuestRootContainment — Guest root cannot cross the SafeYOLO isolation boundary.
 
 **Threat:** UID 0 is intentionally powerful inside the guest. It must still be
 unable to bypass proxy-only egress, reach host listeners, modify the
-host-backed SafeYolo share, or access a host virtualization device.
+host-backed SafeYOLO share, or access a host virtualization device.
 
 - **`test_root_direct_egress_blocked`** — Guest root cannot deliver bytes outside the proxy.
   - *Probe:* Send marked TCP, TLS and DNS/UDP probes to live owned IPv4/IPv6
@@ -3959,7 +3959,7 @@ proxy path is a working positive control for the same root process.
 and attempt a direct TCP connection to the host address.
   - *Consequence if unasserted:* Testing a live listener distinguishes real host isolation from a
 connection failure caused only by choosing an unused port.
-- **`test_root_cannot_modify_host_config_share`** — Guest root cannot write the host-backed SafeYolo config share.
+- **`test_root_cannot_modify_host_config_share`** — Guest root cannot write the host-backed SafeYOLO config share.
   - *Probe:* Attempt to create a probe beneath /safeyolo and require an
 operating-system error with no file left behind.
   - *Consequence if unasserted:* A writable share would let a root package maintainer script
@@ -4076,7 +4076,7 @@ default Linux lane checks both production 9090 and test 9190;
 the physical VZ lane checks its assigned live test port.
   - *Consequence if unasserted:* The admin API can change policy modes (block → warn),
 add allowlist entries, or approve credentials. Agent access
-to it would defeat every other control SafeYolo enforces —
+to it would defeat every other control SafeYOLO enforces —
 a single-request sandbox escape.
 - **`test_host_ssh_unreachable`** — Port 22 reachable from sandbox is its own sshd, not the host's.
   - *Probe:* Connect to port 22 on the resolved proxy host; if a
@@ -4127,7 +4127,7 @@ path, while treating namespace-root as host root would both
 break that feature and test the wrong security boundary.
 - **`test_sudo_reaches_guest_root`** — The standard sudo command reaches root only inside the guest.
   - *Probe:* Run `sudo -n id -u` as the agent and require uid 0. On
-gVisor the SafeYolo shim uses namespace capabilities; on a
+gVisor the SafeYOLO shim uses namespace capabilities; on a
 hardware microVM the distro's normal sudo transition applies.
   - *Consequence if unasserted:* Agents need a familiar, non-operator-mediated way to
 install native packages without confusing host root with
@@ -4149,7 +4149,7 @@ descriptor and check that the host canaries remain inaccessible.
   - *Consequence if unasserted:* EINVAL and bad pointers cannot establish refusal. Any nonnegative
 descriptor is success; a VZ guest kernel remains separate from its host.
 
-#### TestSandboxRootContainment — Linux namespace-root cannot cross SafeYolo's host boundary.
+#### TestSandboxRootContainment — Linux namespace-root cannot cross SafeYOLO's host boundary.
 
 **Threat:** Allowing agents to install distro packages intentionally
 grants root inside gVisor. The security property is therefore

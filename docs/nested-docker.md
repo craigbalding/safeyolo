@@ -63,7 +63,7 @@ sudo -n dockerd --host=unix:///run/safeyolo-nested-docker/docker.sock --data-roo
 ## Operate the example application
 
 Use a second shell in the same guest. This qualification example requires a
-SafeYolo checkout at `/workspace`. Copy its fixture to a new working directory.
+SafeYOLO checkout at `/workspace`. Copy its fixture to a new working directory.
 The copied CA is public trust material. It does not contain a private key.
 The hosting policy must allow the selected registry's actual authentication,
 manifest and blob destinations, plus `example.com` for the build/application

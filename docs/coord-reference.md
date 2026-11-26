@@ -20,14 +20,14 @@ safeyolo coord grant chat alice receive --operation-id chat-alice-receive
 safeyolo coord revoke chat alice --operation-id chat-alice-revoke
 ```
 
-Repeat the exact operation ID and input after an ambiguous response. SafeYolo
+Repeat the exact operation ID and input after an ambiguous response. SafeYOLO
 returns the original result, including its membership generation and transition
 time. Permission order and duplicates do not change grant input. Omitting
 permissions grants `receive`, `send` and `page_operator`. Explicit permissions
 replace that manual set; other valid approved sources remain effective.
 Changing the canonical input under the same ID returns a conflict. Grant and revoke have separate ID scopes.
 To request a new change after a later grant or revoke, choose a new ID.
-When you omit `--operation-id`, SafeYolo generates one and includes it in the
+When you omit `--operation-id`, SafeYOLO generates one and includes it in the
 result; a lost response then also loses that retry handle.
 
 Membership changes commit with immutable operation history and metadata-only
@@ -132,7 +132,7 @@ For external metadata, a room member calls `read_github_work` with `room_name`
 and `work_id`. The result separates canonical `work` from `external` metadata.
 Available metadata contains an external title excerpt, issue or pull request
 state, canonical URL and observation time. GitHub owns that description;
-SafeYolo owns the claim, runtime state and completion. The adapter does not copy
+SafeYOLO owns the claim, runtime state and completion. The adapter does not copy
 rich descriptions, assignees or commit identifiers. It never changes a
 candidate target or carries attestations to another target.
 
@@ -188,7 +188,7 @@ for fields, authority and uncertainty limits.
 
 Retain the external artifact before publication. Use a reference that identifies
 its actual immutable revision, such as an exact commit or a retained report's
-content digest. SafeYolo does not fetch the reference or detect changed bytes
+content digest. SafeYOLO does not fetch the reference or detect changed bytes
 behind a mutable URL. A final external action must check the expected revision
 at that system's authority.
 
@@ -795,7 +795,7 @@ assertion, eight sources per assertion and 64 distinct sources. Missing sources,
 unknown fields and invalid formats are rejected. Model output is inert text,
 with terminal controls made visible and every physical line kept inside a
 gutter. Generation, import and regeneration never create messages, claims,
-targets, attestations, acceptance or other operational changes. SafeYolo stores
+targets, attestations, acceptance or other operational changes. SafeYOLO stores
 no summary and launches no model for this command. If generation or import
 fails, use `coord status` normally; an import failure still leaves the fetched
 canonical state visible.
@@ -854,9 +854,9 @@ returns the original result, while changed input under that ID conflicts.
 They use the existing atomic operation ledger and audit outbox. Raw provider
 payloads and errors are never returned in room state or those audit events.
 
-## Collaborate through a home SafeYolo
+## Collaborate through a home SafeYOLO
 
-Each room has one home SafeYolo. Remote agents use that home's canonical
+Each room has one home SafeYOLO. Remote agents use that home's canonical
 messages, memberships, work, briefs and attention. Reconnection reads the home;
 it does not merge independent records. Delegated [peer support](peer-support.md)
 uses the same transport without requiring a room.
@@ -873,11 +873,11 @@ mode. `tls` is the default for existing broker files and home commands. Use TLS
 for remote endpoints without verified Tailscale protection. `tailscale` selects
 a node hosting NATS at its own assigned Tailscale address. `loopback` selects a
 literal loopback address on the same host. A failed protection check never
-selects another mode. Tailnet membership grants no SafeYolo authority.
+selects another mode. Tailnet membership grants no SafeYOLO authority.
 
 For TLS, obtain a dedicated broker certificate, key and public certificate
 authority (CA) file through trusted host setup. Keep broker material separate
-from SafeYolo's interception CA and key. The certificate must cover B's external
+from SafeYOLO's interception CA and key. The certificate must cover B's external
 broker name, `local_server_name` and any additional `server_names`. Install the
 public CA on A. Keep credentials, certificate keys, instance roots and broker
 configuration outside guest-writable mounts. Existing SSH access does not grant
@@ -950,7 +950,7 @@ current authority.
 
 On both host accounts, the installed `tailscale` command must reach the running
 Tailscale daemon. Tailscale must use a host network interface. Linux also needs
-`ip route get`; macOS uses `/sbin/route`. SafeYolo checks the selected stable node
+`ip route get`; macOS uses `/sbin/route`. SafeYOLO checks the selected stable node
 ID and its own assigned address, the host route through the Tailscale interface,
 and WireGuard reachability before sending NATS credentials. The authentication
 callback repeats these checks on reconnect. Client sockets bind a local
@@ -974,7 +974,7 @@ address is `100.64.10.20`, B's broker file can contain:
 Remove TLS-only fields when selecting this mode. Bind only B's selected
 Tailscale address. A private or carrier-grade NAT address alone is not proof of
 protection. An address behind a subnet router is refused; use TLS for that
-onward leg. Listener monitoring remains on loopback. SafeYolo ignores broker
+onward leg. Listener monitoring remains on loopback. SafeYOLO ignores broker
 advertisements and reconnects only to the configured literal endpoint.
 
 On A, save B's selected node ID and NATS endpoint with A's host-held credential:
@@ -1140,7 +1140,7 @@ context. Changing a route revision, destination, credential bytes or CA bytes
 invalidates reuse. Each proxy caches up to 32 connections. It admits 32 outgoing
 long waits and 32 outgoing commands or waits of at most one second. Cancellation
 keeps its slot until bounded cleanup finishes. A cached client reconnects its
-subscriptions; SafeYolo does not resubmit a possibly executed request.
+subscriptions; SafeYOLO does not resubmit a possibly executed request.
 
 The owner admits up to 64 ordinary requests, including at most 16 long waits.
 Each configured peer has 16 command/short-wait slots and eight long-wait slots.
@@ -1242,7 +1242,7 @@ The current runtime resolves Coord under the selected configuration's `data_dir`
 For the default instance this is `$HOME/.safeyolo/data/coord`. Select the
 instance with `--instance-dir` and its configuration.
 
-SafeYolo creates the Coord directory with mode `0700`. Its managed NATS runtime
+SafeYOLO creates the Coord directory with mode `0700`. Its managed NATS runtime
 reuses `nats/creds` across ordinary stop/start cycles. When that file is absent,
 startup creates it with mode `0600`. Generated `nats/server.conf` is also mode
 `0600` and contains the NATS password. Keep both files private; do not print,
@@ -1276,7 +1276,7 @@ updated CLI to start Coord before restarting the proxy. Keep the existing
 instance root, `v0.db`, NATS credentials and JetStream store together.
 
 The previous generated NATS configuration stored private streams in the global
-account, `$G`. At startup, SafeYolo moves that account directory to `SY_LOCAL`
+account, `$G`. At startup, SafeYOLO moves that account directory to `SY_LOCAL`
 while the broker is stopped and the runtime lock is held. This is an atomic
 directory rename on the existing filesystem. NATS places these accounts under
 `nats/jetstream/jetstream/`; the repeated directory name is intentional. Messages,

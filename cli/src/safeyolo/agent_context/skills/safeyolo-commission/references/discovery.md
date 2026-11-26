@@ -42,7 +42,7 @@ check establishes neither activation nor a provider's live behavior.
 
 ## Inside a guest
 
-Use the installed [SafeYolo skill](../../safeyolo/SKILL.md) and its
+Use the installed [SafeYOLO skill](../../safeyolo/SKILL.md) and its
 [Agent API reference](../../safeyolo/references/agent-api.md) for authenticated
 read shapes. Preserve the proxy and certificate authority configuration.
 Choose the [discovery surface](../../safeyolo/references/agent-api.md#discover-the-right-capability)

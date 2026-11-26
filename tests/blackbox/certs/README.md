@@ -2,10 +2,10 @@
 
 ## Rationale: Ground Truth Testing
 
-The blackbox test harness is **ground truth** — it mirrors SafeYolo's production TLS behavior exactly:
+The blackbox test harness is **ground truth** — it mirrors SafeYOLO's production TLS behavior exactly:
 
-- **Production**: SafeYolo verifies upstream certificates against system CAs (DigiCert, Let's Encrypt, etc.)
-- **Tests**: SafeYolo verifies sinkhole's certificate against the test CA
+- **Production**: SafeYOLO verifies upstream certificates against system CAs (DigiCert, Let's Encrypt, etc.)
+- **Tests**: SafeYOLO verifies sinkhole's certificate against the test CA
 
 No shortcuts:
 - No `ssl_insecure=true` flags
@@ -16,7 +16,7 @@ No shortcuts:
 
 Generated certificates and private keys are stored beneath the isolated test
 instance by `run-tests.sh`. They do not modify the checkout or the source/live
-SafeYolo instance, and private keys are never visible inside agent VMs (the
+SafeYOLO instance, and private keys are never visible inside agent VMs (the
 workspace is mounted via VirtioFS).
 
 | File | Location | Purpose |

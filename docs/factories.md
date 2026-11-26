@@ -4,7 +4,7 @@ For GitHub release planning, use the [issue-planning guide](issue-planning.md).
 Native Work records identify native assignments; supervisor checkpoints retain
 delivery and session recovery state.
 
-SafeYolo factory files are small, explicit bindings for existing supervised
+SafeYOLO factory files are small, explicit bindings for existing supervised
 agents. Markdown remains the role contract; TOML says which approved agent has
 each role, which one Coord room the factory uses, and which message handoffs
 or native work policy apply. Factory v1 does not interpret role prose at runtime and has
@@ -276,7 +276,7 @@ The declared operator types admit messages to the coordinator. The types do
 not define a workflow. Read the exact bound coordinator contract to determine
 what `ACTIVATE`, `RESUME`, `NEXT`, and `PRIORITY` mean. `factory check` prints
 the source path and hash for every role contract. Read each file directly;
-SafeYolo does not generate an interpretation of contract text.
+SafeYOLO does not generate an interpretation of contract text.
 
 For the shipped backlog factory, `ACTIVATE` and `RESUME` start continuous
 intake. Relay proactively discovers and prioritizes work in the
@@ -287,11 +287,11 @@ constraints, but the backlog factory does not require one.
 ## Guided setup
 
 Use `factory setup` on the owning host account with a prepared, installed
-SafeYolo instance. Supply your operator-authored Factory TOML. The entry uses
+SafeYOLO instance. Supply your operator-authored Factory TOML. The entry uses
 the declared agents, harnesses, contracts and room permissions. It does not
 write Factory policy or change the supervision protocol.
 
-The following example runs from the SafeYolo repository root. It selects the
+The following example runs from the SafeYOLO repository root. It selects the
 installation at `$HOME/.safeyolo`, the shipped backlog contract and three owned
 repository directories. Replace `/work/relay`, `/work/forge` and `/work/lens`
 with your selected workspaces. Keep the installation outside those workspaces.
@@ -370,7 +370,7 @@ owning host account. Its guest runtime must be prepared for that host.
 Preparation requires a running proxy; the `start` command below starts it.
 Select an operator-authored Factory TOML and the workspaces for its roles.
 Each role keeps its own home and authentication;
-SafeYolo does not copy the host's login or credentials.
+SafeYOLO does not copy the host's login or credentials.
 
 For a first supervised start, each role with a missing checkpoint must use a
 fresh agent identity or fresh room memberships that have never received
@@ -383,7 +383,7 @@ The commands in this guide use the installation at `$HOME/.safeyolo`. If your
 installed instance uses another root, replace that path in both the executable
 and `--instance-dir` argument. Keep using the same host account and instance.
 
-Run the example from the SafeYolo repository root containing
+Run the example from the SafeYOLO repository root containing
 `docs/factories/backlog.toml`. The example uses that contract and three existing
 owned repository workspaces at `/work/relay`, `/work/forge` and `/work/lens`. Replace
 those paths with your selected directories. Keep the installation outside the
@@ -687,7 +687,7 @@ stop NAME` first. Select the exact target URL from the retained assignment:
 
 The command shows the selected targets and matching record counts for each
 agent, then asks for confirmation. `--yes` confirms that same selection without
-prompting. Repeat `--target` to include related review targets. SafeYolo does
+prompting. Repeat `--target` to include related review targets. SafeYOLO does
 not infer relationships between an issue URL and a pull-request commit URL.
 If the records belong to a previous room, use `--room ORIGINAL_ROOM`; the
 approved factory still selects which agents to inspect.
@@ -726,7 +726,7 @@ new role contracts or establish runtime readiness.
 
 The following short template records the operator's standing selection rules.
 Replace every placeholder with an exact value. The template is Markdown for
-the operator and coordinator; SafeYolo does not parse it as workflow
+the operator and coordinator; SafeYOLO does not parse it as workflow
 configuration.
 
 ```markdown

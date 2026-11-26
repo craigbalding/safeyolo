@@ -1,6 +1,6 @@
 # Plan work with GitHub issues
 
-This guide explains how SafeYolo plans work that spans several issues. It
+This guide explains how SafeYOLO plans work that spans several issues. It
 applies to releases and other large efforts. It also applies when an agent
 factory helps with the work.
 

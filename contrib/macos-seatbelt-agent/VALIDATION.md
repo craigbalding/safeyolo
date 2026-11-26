@@ -9,7 +9,7 @@ Its reference profile was unchanged from `4472ce34bd53d0546c772f15f65b6fab377b8e
 The [native/account disposition](https://github.com/craigbalding/safeyolo/issues/622#issuecomment-6304513652)
 establishes the execution denials and account checks. The
 [developer/test disposition](https://github.com/craigbalding/safeyolo/issues/622#issuecomment-6304665613)
-adds seven maintained SafeYolo test cases under that policy, with no skips or
+adds seven maintained SafeYOLO test cases under that policy, with no skips or
 failures. These results retain their recorded source, runtime and platform limits.
 
 The final physical Virtualization.framework (VZ) observation used Bristol's
@@ -273,7 +273,7 @@ tested names.
 | Swift | 6.3.3, swiftlang-6.3.3.1.3 |
 | Python | 3.14.7, Homebrew |
 | tmux | 3.7c, official tmux-builds macos-arm64 release |
-| SafeYolo VM helper source | `d5ee2c369a9d2bf25f513f8a412aa77f55f650f5` |
+| SafeYOLO VM helper source | `d5ee2c369a9d2bf25f513f8a412aa77f55f650f5` |
 
 The entry was compiled with `clang -Wall -Wextra -Werror -O2`, overriding only
 the account and home macros. It was ad-hoc signed with `--options runtime` and
@@ -330,7 +330,7 @@ or excluding `kern.proc` selectors, also left it readable. The same process's
 signal check was denied. This profile does not promise full process metadata
 isolation; the result is deliberately an observation, not a passed denial test.
 
-The SafeYolo VM helper built and signed through the entry with:
+The SafeYOLO VM helper built and signed through the entry with:
 
 ```sh
 cd ~/vm
@@ -395,7 +395,7 @@ The following identities bind the observation:
 | Profile parameters | `AGENT_HOME=/Users/sy-agent`, `TOOLCHAIN_ROOT=/opt/homebrew` |
 | Guest | Linux 6.12.17; SSH user `agent` (UID 1000), data operations as guest root |
 
-The helper's startup and share-construction sources matched assigned SafeYolo
+The helper's startup and share-construction sources matched assigned SafeYOLO
 source `e85bea5eec2182bc6ad1b1b414baa896087a22c2`. The only intervening Swift
 changes were snapshot-restore diagnostics and their tests; snapshots were not
 exercised. The existing read-only base disk and SSH initramfs supplied a fresh
@@ -499,7 +499,7 @@ removing the account and files. A failed cleanup makes the suite fail.
 **Use a disposable Mac VM with Command Line Tools and SSH host keys provisioned.
 In an administrator terminal, change to this checkout's
 `contrib/macos-seatbelt-agent` directory. Set `native` below to the absolute path
-of an existing macOS native SafeYolo command-line interface (CLI) or Coord
+of an existing macOS native SafeYOLO command-line interface (CLI) or Coord
 executable with `ssh-proxy`. Preserve the configured proxy and certificate
 authority (CA) environment. This is the ordinary fresh
 fixture recipe; it is not a command to repeat the completed 2026-10-20 run.**
@@ -549,8 +549,8 @@ wrap the real `sshd` to reject final validation after activation.
 
 The native client test uses an isolated CONNECT relay to exercise real OpenSSH,
 the generated configuration and the Mac entry. It does not substitute that relay
-for evidence about SafeYolo policy. Separately, `tests/test_seatbelt_client.py`
-runs the actual SafeYolo network policy addon in mitmproxy inside Linux. It
+for evidence about SafeYOLO policy. Separately, `tests/test_seatbelt_client.py`
+runs the actual SafeYOLO network policy addon in mitmproxy inside Linux. It
 verifies SSH banner/binary traffic without `tcp_hosts` or `ignore_hosts`
 exceptions, port-scoped admission, zero upstream accepts on 403/428, approval
 diagnostics, and refusal to fall back when a proxy is missing or unsupported.
@@ -583,7 +583,7 @@ ecd2dbc98dd59e6be9610d668c29ced8bc5c70cb5a606c93aba1d5a65a80d5a7  test-client-li
 ## Client handoff with socat (2026-09-13)
 
 On Linux, the installed `socat` carried SSH banners and binary data through
-mitmproxy with SafeYolo's real network-policy addon. The check used disposable
+mitmproxy with SafeYOLO's real network-policy addon. The check used disposable
 loopback endpoints and port-scoped admission, with no TCP inspection exceptions.
 Denied and approval-required CONNECT requests produced `Forbidden` and
 `Precondition Required` respectively, with zero upstream accepts.

@@ -1,7 +1,7 @@
 # Configuration
 
 Select the installed instance with `safeyolo --instance-dir PATH COMMAND`, or set
-`SAFEYOLO_CONFIG_DIR`. The default root is `$HOME/.safeyolo`. SafeYolo
+`SAFEYOLO_CONFIG_DIR`. The default root is `$HOME/.safeyolo`. SafeYOLO
 reads `config.toml` and `policy.toml`. Paths resolve relative to the selected
 configuration or policy file. It does not search for project-local configuration,
 convert old state, read `config.yaml`/`addons.yaml` or select a Python fallback.
@@ -45,7 +45,7 @@ explicitly; the writer does not replay failed batches.
 
 Older generated configurations can contain `event_log`. The native TOML loader
 and the internal JSON launcher ignore that retired setting. Remove it when
-maintaining those configurations. SafeYolo does not open, append or delete the
+maintaining those configurations. SafeYOLO does not open, append or delete the
 old diagnostic file. Existing historical files remain available for manual
 inspection; the readers use the canonical log and its existing retention rules.
 
@@ -82,15 +82,15 @@ operator-selected TLS passthrough, use `ignore_hosts`. See
 
 To send selected agents through one shared parent, add the following top-level
 keys to the host's `config.toml`. The operator-provided parent must be listening
-on host port 18080. Restart SafeYolo to apply the saved settings:
+on host port 18080. Restart SafeYOLO to apply the saved settings:
 
 ```toml
 parent_proxy = "http://127.0.0.1:18080"
 parent_proxy_agents = ["zx"]
 ```
 
-Agent `zx` uses the parent. Other agents use SafeYolo's direct upstream
-connection. Every agent still sends traffic through SafeYolo. Names match the
+Agent `zx` uses the parent. Other agents use SafeYOLO's direct upstream
+connection. Every agent still sends traffic through SafeYOLO. Names match the
 host-assigned listener identity; request headers cannot select the route.
 An omitted or empty `parent_proxy_agents` list preserves global parent use.
 Removing the last name restores global use. Without `parent_proxy`, the list
@@ -136,7 +136,7 @@ independent of that capture setting.
 
 ### Select a target IP
 
-On the host, edit the active instance's `config.toml` and restart SafeYolo.
+On the host, edit the active instance's `config.toml` and restart SafeYOLO.
 Add `target_ip_mappings` as a top-level key. In this example, replace
 `example.com` and `203.0.113.42` with the permitted hostname and owned endpoint.
 The endpoint must serve a certificate valid for that hostname. Agent `zx`
@@ -146,7 +146,7 @@ must already exist:
 target_ip_mappings = [{host="example.com", ip="203.0.113.42", port=443, agents=["zx"]}]
 ```
 
-Agent `zx` can then make an ordinary `https://example.com/` request. SafeYolo
+Agent `zx` can then make an ordinary `https://example.com/` request. SafeYOLO
 uses that IP and retains `example.com` for TLS verification, inspection and
 hostname policy. A selected parent receives `CONNECT 203.0.113.42:443`.
 The parent needs no destination-reporting extension. IPv6 literals are also
@@ -168,7 +168,7 @@ configuration.
 Both the hostname and selected IP/port receive the applicable network checks.
 Credential and service checks retain their logical destination. Existing
 allow, deny and approval defaults apply. The selected IP can differ from DNS;
-SafeYolo does not require a DNS lookup to validate the selection. Reserved
+SafeYOLO does not require a DNS lookup to validate the selection. Reserved
 local destinations, protected Admin endpoints and provider routes retain
 their containment. A mapping does not redirect those routes.
 
@@ -235,7 +235,7 @@ Python desktop/web/command-centre wrappers are not installed.
 
 ### Preview through one SSH forward
 
-On the remote SafeYolo host, use the account that owns the instance. The agents
+On the remote SafeYOLO host, use the account that owns the instance. The agents
 must already exist. Their guest images must include the desktop capability.
 In the selected instance's `config.toml`, set the port before opening previews.
 If a `[desktop]` table exists, edit that table:
@@ -267,7 +267,7 @@ open `http://alice.localhost:6080/_safeyolo_desktop/` or
 `http://bob.localhost:6080/_safeyolo_desktop/`. Enter that agent's unlock code.
 The browser must resolve `*.localhost` to loopback. Browser and operating-system
 support varies; a client that does not resolve these names needs local hostname
-resolution support. No local SafeYolo installation is needed.
+resolution support. No local SafeYOLO installation is needed.
 
 Both agents use the same SSH forward. Later presentations on this port use the
 same forward. Each agent has a separate browser origin and host-only session
@@ -288,13 +288,13 @@ transport and ports.
 Use an ordinary writable directory mount at `/dropbox` for drafts and selected
 outputs that the operator and agent edit in turn. An agent dropbox is a shared
 working folder, unrelated to the Dropbox service. The files stay on the
-SafeYolo host. Local use needs no Tailscale setup. Remote access through
+SafeYOLO host. Local use needs no Tailscale setup. Remote access through
 Taildrive exposes those files; it does not create an independent copy or keep
 them available when the serving host is unreachable.
 
 ### Set up and inspect the local mount
 
-Run the following commands on either a Linux or macOS SafeYolo host, as the
+Run the following commands on either a Linux or macOS SafeYOLO host, as the
 account that owns the instance. Select that instance with `--instance-dir` or
 `SAFEYOLO_CONFIG_DIR` as described at the start of this guide. The example uses
 an existing agent named `dropbox-trial` and an instance directory name of
@@ -356,7 +356,7 @@ For local-only use, the operator opens files directly in
 
 ### Optional remote access from a Mac
 
-The SafeYolo host and the operator Mac must already belong to the same
+The SafeYOLO host and the operator Mac must already belong to the same
 Tailscale network, called a tailnet. Tailscale runs on those hosts. The guest
 receives only its local directory mount. It needs no Tailscale credentials,
 daemon socket or additional network route. [Taildrive](https://tailscale.com/docs/features/taildrive)
@@ -506,7 +506,7 @@ On a macOS serving host, remove only `agent_dropbox` in Tailscale's Choose
 Shared Folders list. Keep unrelated shares and grants. The local agent mount
 and files remain available.
 
-To disable the guest mount, run on the SafeYolo host:
+To disable the guest mount, run on the SafeYOLO host:
 
 ```sh
 safeyolo agent stop dropbox-trial
@@ -642,7 +642,7 @@ Unmount first removes the ordinary guest mount, then removes that mapping's
 backend export and owned helper, if present. Host files and unrelated shares
 are retained. Open files, a working directory in the share, memory mappings
 or child mounts can make normal unmount fail with a busy error. Close those
-uses and retry. SafeYolo does not force or lazily detach a mount, kill the
+uses and retry. SafeYOLO does not force or lazily detach a mount, kill the
 workload or restart the sandbox. A repeated identical add or completed remove
 does not create another export or remove another share.
 
@@ -656,7 +656,7 @@ If a command fails, inspect its error, current-run receipts and saved mounts.
 Partial states such as `exporting`, `exported`, `mounting`, `unmounting` and
 `unmounted` are not completed mounts or removals. Retry the same action when
 the error permits it. A lost Linux mount-control response can leave an
-uncertain attachment. SafeYolo retains that share's owned process and receipt
+uncertain attachment. SafeYOLO retains that share's owned process and receipt
 instead of creating a duplicate or killing a possibly mounted file server.
 An explicit stop/start safely releases that run. No failed command performs
 that restart automatically.

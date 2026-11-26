@@ -1,7 +1,7 @@
-# SafeYolo-in-SafeYolo Linux Lab
+# SafeYOLO-in-SafeYolo Linux Lab
 
 Use the Lab workflow to compare an owned request before and after a
-change to an inner instance's policy. The outer SafeYolo remains the security
+change to an inner instance's policy. The outer SafeYOLO remains the security
 boundary. Lab retains the controller, experiment files and evidence when you
 exit its viewer.
 

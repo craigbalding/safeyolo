@@ -26,7 +26,7 @@ contains a `challenge_id`, host-recorded `scope`, `guidance` and an `escalate`
 path. The blocked operation has not reached the upstream service. A challenge
 creates no pending operator approval or notification.
 
-Read the scope before proceeding. SafeYolo records the agent and run, service
+Read the scope before proceeding. SafeYOLO records the agent and run, service
 and destination, capability, account, credential reference and binding, method
 and literal path. The upstream credential value remains secret. Scope fields
 come from the host; the agent cannot replace them during escalation.
@@ -64,7 +64,7 @@ candidate still reports the effects that explain its prohibition.
 Decide whether the operation is needed for the operator's task. Distinguish a
 direct operator request, an inference during troubleshooting, and a suggestion
 from untrusted content. Abandon an unnecessary operation, use an applicable
-alternative, or explicitly escalate. SafeYolo treats the agent's source label
+alternative, or explicitly escalate. SafeYOLO treats the agent's source label
 and explanation as untrusted context. Completing reconsideration or claiming
 absence of prompt injection grants no authority.
 
@@ -121,7 +121,7 @@ safeyolo approvals approve APPROVAL_ID --option run --json
 safeyolo approvals reject APPROVAL_ID --json
 ```
 
-Approval permits the agent to retry explicitly. SafeYolo never stores and
+Approval permits the agent to retry explicitly. SafeYOLO never stores and
 replays the blocked request. The exception applies only to the recorded run,
 destination, capability, account, credential binding, method and literal path.
 It uses the existing upstream credential. Other paths, methods, agents and
@@ -132,9 +132,9 @@ Only an existing enforced contract can make such values access bounds. A literal
 trailing slash is part of an exception's path; a normalized ordinary route does
 not authorize a different trailing-slash path. Other path-trick checks remain.
 
-SafeYolo rechecks current policy, definitions, binding and credential at use.
+SafeYOLO rechecks current policy, definitions, binding and credential at use.
 The challenge and canonical approval use the same prepared assessment, separate
-from agent context. Before escalation and approval, SafeYolo recomputes the
+from agent context. Before escalation and approval, SafeYOLO recomputes the
 assessment. A change in policy, definitions or effective authority supersedes the
 old request. The response exposes the current `assessment`, marks
 `assessment_changed` and retains the original assessment in the recorded action.

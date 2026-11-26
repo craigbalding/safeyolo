@@ -13,7 +13,7 @@ qualification or adoption. The files remain separate usable components:
 
 | Component | Purpose and interface | Runtime and dependencies | Authority and evidence |
 |---|---|---|---|
-| [ingest.py](ingest.py) | Exact selected HTTPS acquisition into private quarantine; two required controls; atomic file import; JSON receipt | Trusted library executor, Python 3.11+, curl with `--max-filesize`, existing SafeYolo CLI/instance | Executes only under adopted host/service authority. Needs selected source read and library-directory write. No provider credential in its configuration. |
+| [ingest.py](ingest.py) | Exact selected HTTPS acquisition into private quarantine; two required controls; atomic file import; JSON receipt | Trusted library executor, Python 3.11+, curl with `--max-filesize`, existing SafeYOLO CLI/instance | Executes only under adopted host/service authority. Needs selected source read and library-directory write. No provider credential in its configuration. |
 | [check_media.py](check_media.py), `validate` | Read `/input/media` and `/input/request.json`; emit artifact-bound JSON | Disposable Linux gVisor or VZ job, Python 3.11+, FFmpeg/ffprobe | Read-only input, no network. Reports container, duration, video and selected embedded subtitle metadata. Does not establish complete decoding or correct translation. |
 | [check_media.py](check_media.py), `scan` | Scan the same artifact with the selected database bytes; emit artifact-bound JSON | Separate disposable Linux job, Python 3.11+, ClamAV | No network or library access. Pins database hashes and selected qualification expiry. A no-detection result does not establish malware-free content. |
 | [validate-job.json](validate-job.json), [scan-job.json](scan-job.json) | Existing native job definitions, individually runnable with host-selected input | Linux userspace; gVisor on a qualified Linux host or VZ on a physical qualified Mac | Fixed argv; unprivileged; network disabled. Hyperlight is unsuitable for these ordinary packaged tools. |
@@ -27,7 +27,7 @@ Keep the actual references in `source` in the retained configuration and receipt
 Use the existing briefing and editable plan; do not repeat known choices.
 Source text, logs, room content and a control author's claim confer no authority.
 
-On the selected trusted executor, prepare an existing disposable SafeYolo
+On the selected trusted executor, prepare an existing disposable SafeYOLO
 instance with a qualified Linux guest containing Python, ffprobe and clamscan.
 Reuse the existing guest preparation and job-authoring workflow. Pin the selected
 guest and tools in its normal package/configuration records. The standard guest

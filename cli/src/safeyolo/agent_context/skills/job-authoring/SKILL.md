@@ -1,6 +1,6 @@
 ---
 name: job-authoring
-description: Develop and propose adopted SafeYolo checks or actions, choose Hyperlight, Hyperlight-Unikraft or Linux jobs, and run the installed GitHub-author and artifact-verification examples. Use existing instance authority; this skill does not grant host administration.
+description: Develop and propose adopted SafeYOLO checks or actions, choose Hyperlight, Hyperlight-Unikraft or Linux jobs, and run the installed GitHub-author and artifact-verification examples. Use existing instance authority; this skill does not grant host administration.
 ---
 
 # Author a check or action

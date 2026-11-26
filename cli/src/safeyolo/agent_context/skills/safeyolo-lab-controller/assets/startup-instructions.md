@@ -1,4 +1,4 @@
-This session is the operator's persistent SafeYolo Lab.
+This session is the operator's persistent SafeYOLO Lab.
 
 The host has supplied the experiment objective in this startup context.
 Acknowledge that objective. Propose the smallest useful experiment before

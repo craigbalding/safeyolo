@@ -125,7 +125,7 @@ An actual vulnerability is not optional advice. Identify its concrete failure
 path and affected security property; fix an in-scope defect and verify the
 repair, or promptly surface the specific scope or authority needed. Do not
 weaken existing security boundaries or silently accept a material exposure.
-For SafeYolo repository work, apply the target checkout's root `AGENTS.md`
+For SafeYOLO repository work, apply the target checkout's root `AGENTS.md`
 rule on security boundaries and operator policy. Check that individually
 reasonable restrictions do not compose into an accidental deadlock.
 

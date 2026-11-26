@@ -10,7 +10,7 @@ external relay or gateway can provide the missing transport.
 
 ## Choose a transport
 
-In standard isolated SafeYolo sandboxes, external connections use the
+In standard isolated SafeYOLO sandboxes, external connections use the
 configured Hypertext Transfer Protocol (HTTP) proxy. CONNECT carries
 Transmission Control Protocol (TCP) streams. Direct User Datagram Protocol
 (UDP) and Domain Name System (DNS) egress are unavailable. See the
@@ -22,7 +22,7 @@ Check these conditions before choosing a service:
   proxy. Use explicit client support or a loopback adapter that issues CONNECT.
   Sending the remote hostname in CONNECT lets the proxy resolve it. Separate
   client DNS lookups still need a solution.
-- **Protocol handling:** SafeYolo classifies bytes after CONNECT. Binary
+- **Protocol handling:** SafeYOLO classifies bytes after CONNECT. Binary
   protocols can use opaque forwarding; text that resembles an HTTP request
   can enter the HTTP parser and fail. A successful CONNECT is not proof of
   application compatibility. Opaque payloads do not receive HTTP inspection or
@@ -31,7 +31,7 @@ Check these conditions before choosing a service:
 - **Encryption:** Transport Layer Security (TLS) does not imply HTTPS.
   When TLS starts immediately after CONNECT, non-HTTP payloads need the operator's
   [TLS passthrough setting](https://github.com/craigbalding/safeyolo/blob/master/docs/TLS_CERTIFICATE.md#certificate-pinning-and-passthrough).
-  Trusting SafeYolo's certificate alone does not make the payload HTTP.
+  Trusting SafeYOLO's certificate alone does not make the payload HTTP.
   Passthrough still needs destination permission and does not inspect payloads.
 - **Every connection:** Inventory signalling, data, media, discovery and
   callbacks separately. Prefer a protocol's TCP option or HTTPS/WebSocket
@@ -45,7 +45,7 @@ Address Translation (TURN) lets baresip send media to a relay over TCP; the
 relay exchanges UDP with the remote media server. The signalling and relay
 accounts can be independent.
 
-This topology was reported working in SafeYolo. The commands below are a
+This topology was reported working in SafeYOLO. The commands below are a
 reference recipe; live third-party integrations were not rerun for this guide.
 Verify the installed client and the actual call.
 
@@ -114,7 +114,7 @@ processes may use the same executable.
 
 ## Other practical adapters
 
-These are candidates with documented transport support, not a SafeYolo
+These are candidates with documented transport support, not a SafeYOLO
 compatibility matrix. Check the installed version, proxy support, DNS startup
 and TLS handling before relying on one.
 
@@ -133,7 +133,7 @@ and TLS handling before relying on one.
    check. Keep the working signalling path when only media needs repair.
 2. **Select:** prefer built-in proxy/TCP support, then a protocol-aware relay,
    then an adapter. Record who operates the relay, what data it receives and
-   who pays. The relay's onward reach is not constrained by SafeYolo's outer
+   who pays. The relay's onward reach is not constrained by SafeYOLO's outer
    hostname permission; use the relay's own access controls for that scope.
 3. **Configure:** preserve the supplied proxy and certificate environment.
    Use the public certificate authority (CA) certificate; keep the host's
@@ -145,7 +145,7 @@ and TLS handling before relying on one.
    relay for an explicit denial.
 4. **Verify:** check the application result in both directions. Report the
    observed result, remaining failures and untested assumptions separately.
-   SafeYolo health, an open socket and a relay allocation each prove less than
+   SafeYOLO health, an open socket and a relay allocation each prove less than
    a completed call, query or callback.
 5. **Clean up:** stop only temporary processes you started. Remove temporary
    credentials and test endpoints; preserve services requested for ongoing use.
