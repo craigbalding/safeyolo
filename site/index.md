@@ -1,7 +1,7 @@
 ---
 layout: default
 title: SafeYOLO Dispatch
-permalink: /
+permalink: /dispatch/
 ---
 
 # SafeYOLO Dispatch
