@@ -2633,6 +2633,570 @@ fn gateway_response(
     Ok(response)
 }
 
+/// Admits an allowed CONNECT and hands the upgraded client stream to the tunnel
+/// relay or the intercepting HTTP server. Network policy has already allowed it.
+#[allow(clippy::too_many_arguments)]
+async fn start_connect_tunnel<B>(
+    runtime: Arc<Runtime>,
+    state: RuntimeState,
+    upgrades: UpgradeTasks,
+    allow_upgrades: bool,
+    identity: &ConnectionIdentity,
+    request_id: &str,
+    request: &mut Request<B>,
+    recording: Arc<flow_recording::Recording>,
+    live: Option<Arc<crate::traffic_view::Exchange>>,
+    destination: &Destination,
+    protected_parent: bool,
+    decision: PolicyDecision,
+) -> Result<(Response<Body>, String), Error>
+where
+    B: HttpBody<Data = Bytes> + Unpin + Send + Sync + 'static,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    if runtime
+        .policy
+        .as_deref()
+        .and_then(crate::policy::Policy::gateway)
+        .and_then(|gateway| gateway.provider_for_host(&destination.policy_host))
+        .is_some()
+    {
+        // CONNECT has no authorized application route yet. Never open a
+        // provider stream (or fall through to DNS) for opaque tunnel bytes.
+        return Ok((
+            prior_block(gateway_response(
+                403,
+                "GATEWAY_AUTH_REQUIRED",
+                request_id,
+                None,
+            )?),
+            "deny".into(),
+        ));
+    }
+    if protected_parent {
+        return Ok((prior_block(admin_rejection()), "admin_port_access".into()));
+    }
+    // Only a numeric CONNECT with hostname-dependent routing needs to wait.
+    // Known routes retain their existing server-first establishment.
+    let deferred = selected_ip::route_needs_name(&runtime, identity, destination);
+    // Source logging selects a destination before DNS. Keep the existing
+    // later transport matcher, including its resolved-peer behavior.
+    // Freeze the generation used for admission before DNS/dial. The same
+    // snapshot must decide the post-resolution peer and whether this
+    // physical connection owns passthrough lifecycle events; an admin
+    // update during the dial cannot change an admitted connection.
+    let passthrough_matcher = runtime
+        .passthrough
+        .read()
+        .map_err(|_| "passthrough configuration unavailable")?
+        .clone();
+    let ignored = passthrough_matcher
+        .matches(&destination.host, destination.port, None)
+        .then_some(crate::ignored_host_logger::SelectedDestination {
+            host: &destination.host,
+            port: destination.port,
+        });
+    let connected = if deferred {
+        None
+    } else {
+        Some(
+            open_egress_for_flow(
+                &runtime,
+                &AllowedRequest {
+                    state: Some(&state),
+                    recording: Some(recording.as_ref()),
+                    tasks: &upgrades,
+                    destination,
+                    identity,
+                    request_id,
+                },
+                true,
+                Some(&passthrough_matcher),
+                ignored,
+                live.as_deref(),
+                None,
+            )
+            .await?,
+        )
+    };
+    let passthrough = !deferred
+        && passthrough_matcher.matches(
+            &destination.host,
+            destination.port,
+            connected.as_ref().and_then(|connection| connection.peer),
+        );
+    let mut waiting = selected_ip::RouteWaitAudit::new(
+        runtime.clone(),
+        identity,
+        request_id,
+        destination,
+        deferred,
+    );
+    let upgrade = hyper::upgrade::on(request);
+    let identity = identity.clone();
+    let mut destination = destination.clone();
+    let request_id = request_id.to_owned();
+    if !allow_upgrades {
+        return Err("nested CONNECT is unsupported".into());
+    }
+    let mut stop = upgrades.stop.clone();
+    let descendants = upgrades.clone();
+    upgrades.spawn_upgrade(async move {
+        let mut outbound_attempted = !deferred;
+        let result: Result<(), Error> = async {
+            if *stop.borrow() {
+                return Ok(());
+            }
+            let client: BoxStream = tokio::select! {
+                _ = stop.changed() => return Ok(()),
+                result = upgrade => Box::new(TokioIo::new(result?)),
+            };
+            let client = crate::tls_identity::observe_client(
+                client,
+                descendants.ingress.get().cloned(),
+                connected.as_ref().and_then(|connection| connection.network.clone()),
+            );
+            let (stream, connection_facts) = match connected {
+                Some(Connected { stream, h1_request_form, peer, observation, network }) => (Some(stream), Some((h1_request_form, peer, observation, network))),
+                None => (None, None),
+            };
+            let classification = if passthrough {
+                tunnels::Classification {
+                    protocol: Protocol::Opaque,
+                    client,
+                    server: stream,
+                    tls_server_name: None,
+                }
+            } else {
+                match tunnels::classify(client, stream, &mut stop).await {
+                    Ok(classification) => classification,
+                    Err(error) => {
+                        waiting.end(match error.downcast_ref::<tunnels::RouteWaitEnded>() {
+                            Some(tunnels::RouteWaitEnded::Timeout) => "timeout",
+                            Some(tunnels::RouteWaitEnded::Cancelled | tunnels::RouteWaitEnded::ClientClosed) => "cancelled",
+                            None => "failed",
+                        });
+                        return Err(error);
+                    }
+                }
+            };
+            let tunnels::Classification {
+                protocol: classified_protocol,
+                client,
+                server,
+                tls_server_name,
+            } = classification;
+            waiting.end("complete");
+            if classified_protocol == Protocol::Tls && selected_ip::bind_tls_name(&mut destination, tls_server_name.as_deref())? {
+                selected_ip::apply_mapping(&mut destination, &runtime, &identity)?;
+                if is_reserved(&destination.host) || probe::is_host(&destination.host) {
+                    return Err("reserved logical destination cannot use a selected IP".into());
+                }
+                if runtime.admin_shield.blocks_request_destination(&destination.host, destination.port) {
+                    return Err(AdminPortAccess.into());
+                }
+                if runtime.policy.as_deref().and_then(crate::policy::Policy::gateway)
+                    .and_then(|gateway| gateway.provider_for_host(&destination.policy_host)).is_some() {
+                    return Err("provider destination cannot use an ordinary selected-IP tunnel".into());
+                }
+                let decision = decide(&runtime, &identity, &PolicyRequest {
+                    agent_id: identity.request_agent().unwrap_or(""), connection_id: &identity.connection_id,
+                    request_id: &request_id, method: "CONNECT", scheme: "", host: &destination.policy_host,
+                    port: destination.port, path: "", header_names: Vec::new(), body_present: false, trace_requested: false,
+                }, None).await?;
+                if !decision.allow {
+                    return Err("logical hostname policy refused CONNECT".into());
+                }
+                selected_ip::record(&runtime, &identity, &request_id, &destination, "logical_target", "allowed", json!({"outbound": if deferred { "not_attempted" } else { "connected" }}));
+            }
+            if *stop.borrow() {
+                return Err(tunnels::RouteWaitEnded::Cancelled.into());
+            }
+            let (mut server, h1_request_form, peer, mut observation, network) = match (server, connection_facts) {
+                (Some(server), Some((form, peer, observation, network))) => (server, form, peer, observation, network),
+                (None, None) => {
+                    let ignored = passthrough_matcher.matches(&destination.host, destination.port, None)
+                        .then_some(crate::ignored_host_logger::SelectedDestination { host: &destination.host, port: destination.port });
+                    outbound_attempted = true;
+                    let Connected { stream, h1_request_form, peer, observation, network } = open_egress_for_flow(
+                        &runtime, &AllowedRequest { state: Some(&state), recording: Some(recording.as_ref()), tasks: &descendants, destination: &destination, identity: &identity, request_id: &request_id },
+                        true, Some(&passthrough_matcher), ignored, None, None,
+                    ).await?;
+                    (stream, h1_request_form, peer, observation, network)
+                }
+                _ => unreachable!("CONNECT classification preserves its upstream owner"),
+            };
+            let check_endpoint = (observation.route == crate::traffic_view::UpstreamRoute::Direct)
+                .then_some(observation.peer).flatten().map(|peer| peer.ip());
+            policy_checks::enforce(&runtime, &state, &identity, &request_id,
+                crate::policy::checks::Stage::Connect,
+                &policy_checks::request(&identity, &destination, "CONNECT", check_endpoint, false)).await?;
+            if destination.selected_ip.is_some() {
+                observation.target["logical_host"] = json!(destination.host);
+            }
+            let protocol = classified_protocol;
+            let sni_passthrough = !passthrough
+                && protocol == Protocol::Tls
+                && tls_server_name.as_deref().is_some_and(|name| {
+                    passthrough_matcher.matches(name, destination.port, None)
+                });
+            if sni_passthrough {
+                let name = tls_server_name
+                    .as_deref()
+                    .expect("SNI passthrough requires a captured name");
+                let mut audit = ignored_host::ConnectionAudit::new(
+                    runtime.audit.clone(),
+                    &identity,
+                    crate::ignored_host_logger::SelectedDestination {
+                        host: name,
+                        port: destination.port,
+                    },
+                );
+                audit.connected();
+                server = ignored_host::observe_stream(server, audit);
+            }
+            let passthrough = passthrough || sni_passthrough;
+            let protocol = if sni_passthrough {
+                Protocol::Opaque
+            } else {
+                protocol
+            };
+            if protocol == Protocol::Opaque {
+                policy_checks::enforce(&runtime, &state, &identity, &request_id,
+                    crate::policy::checks::Stage::Request,
+                    &policy_checks::request(&identity, &destination, "CONNECT", check_endpoint, false)).await?;
+                let started = std::time::Instant::now();
+                let result = tunnels::relay(client, server, stop).await;
+                runtime.audit.emit(identity.request_event(
+                    "traffic.tunnel",
+                    crate::audit::Kind::Traffic,
+                    &request_id,
+                    "Tunnel relay ended",
+                    json!({
+                    "host": destination.host,
+                    "port": destination.port,
+                    "coverage": if passthrough { "configured_passthrough" } else { "opaque" },
+                    "uploaded_bytes": result.uploaded,
+                    "downloaded_bytes": result.downloaded,
+                    "duration_ms": started.elapsed().as_millis(),
+                    "outcome": result.outcome,
+                    "error": result.error
+                    }),
+                ))?;
+                return Ok(());
+            }
+            let (client, http2, scheme): (BoxStream, bool, &str) = if protocol == Protocol::Tls
+            {
+                let config = runtime
+                    .certificate_authority
+                    .as_ref()
+                    .ok_or("TLS CA is not configured")?
+                    .server_config(&destination.host, time::OffsetDateTime::now_utc())?;
+                let handshake=descendants.ingress.get().and_then(|network|network.source().key_log());
+                let mut config=(*config).clone();
+                if let Some(handshake)=&handshake {config.key_log=handshake.logger();}
+                selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "pending", json!({"verification_name": destination.host}));
+                let tls = tokio::select! {
+                    _ = stop.changed() => Err("client TLS cancelled".into()),
+                    result = TlsAcceptor::from(Arc::new(config)).accept(client) => result.map_err(|error| -> Error { error.into() }),
+                };
+                drop(handshake);
+                let tls = match tls {
+                    Ok(tls) => tls,
+                    Err(error) => {
+                        selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "failed", json!({"reason": error.to_string(), "verification_name": destination.host}));
+                        return Err(error);
+                    }
+                };
+                selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "complete", json!({"verification_name": destination.host}));
+                let http2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
+                if let Some(name) = tls.get_ref().1.server_name()
+                    && let Some(connection) = descendants.ingress.get()
+                {
+                    connection.tls(name);
+                }
+                let stream: BoxStream = match descendants.ingress.get() {
+                    Some(network) => network.observe_tls(Box::new(tls), crate::observations::Point::ClientTls),
+                    None => Box::new(tls),
+                };
+                (stream, http2, "https")
+            } else {
+                (client, false, "http")
+            };
+            destination.scheme = scheme.into();
+            let tunnel = Arc::new(Tunnel {
+                connect_request_id: request_id.clone(),
+                destination: destination.clone(),
+                sessions: upstream_h2::Sessions::default(),
+                connected_runtime: Arc::downgrade(&runtime),
+                upstream: tokio::sync::Mutex::new(Some(Connected {
+                    stream: server,
+                    h1_request_form,
+                    peer,
+                    observation,
+                    network,
+                })),
+            });
+            serve_tunnel_http(state, identity.clone(), tunnel, client, http2, stop, descendants).await
+        }
+        .await;
+        if let Err(error) = result {
+            selected_ip::record(&runtime, &identity, &request_id, &destination, "connect_tunnel", "failed", json!({"reason": error.to_string(), "client_connect_status": 200, "outbound": if outbound_attempted { "attempted" } else { "not_attempted" }, "last_reached_stage": error.downcast_ref::<tunnels::RouteWaitEnded>().map(|_| "route_wait")}));
+            eprintln!("CONNECT {request_id} ended: {error}");
+            return Err(error);
+        }
+        Ok(())
+    });
+    Ok((Response::new(full(Bytes::new())), decision.decision))
+}
+
+/// Runs the credential guard over the ordered request headers and, for the Codex
+/// token endpoint, its refresh body. Returns a local reply when the request is
+/// blocked, needs approval, or must be retried after an approval decision.
+#[allow(clippy::too_many_arguments)]
+async fn enforce_request_credentials<B>(
+    runtime: &Arc<Runtime>,
+    state: &RuntimeState,
+    upgrades: &UpgradeTasks,
+    identity: &ConnectionIdentity,
+    request_id: &str,
+    request: &mut Request<B>,
+    ordered_headers: &crate::request_headers::RequestHeaders,
+    destination: &Destination,
+    traffic: Option<&Arc<traffic::Traffic>>,
+    trace: Option<&Arc<RequestTrace>>,
+    codex_vault: Option<&crate::credentials::Vault>,
+    codex_refresh: Option<&crate::credential_guard::codex::Refresh>,
+) -> Result<Option<(Response<Body>, String)>, Error>
+where
+    B: HttpBody<Data = Bytes> + Unpin + Send + Sync + 'static,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    if let Some(policy) = runtime.policy.as_ref() {
+        let guard = runtime.credential_guard.as_ref().ok_or_else(|| {
+            if let Some(hook) = trace.and_then(|trace| trace.hook("credential-guard", "request")) {
+                hook.not_loaded();
+            }
+            "credential guard is unavailable"
+        })?;
+        let guard_trace = trace.and_then(|trace| {
+            trace.hook(
+                "credential-guard",
+                if request.method() == Method::CONNECT {
+                    "http_connect"
+                } else {
+                    "request"
+                },
+            )
+        });
+        let guard = guard.clone().with_codex_vault(codex_vault.cloned());
+        let mut outcome = match guard.enforce_ordered(
+            crate::credential_guard::Pdp::Ready(policy),
+            identity.request_identity(),
+            &destination.policy_host,
+            destination.port,
+            request.method().as_str(),
+            &destination.path,
+            &destination.scheme,
+            Some(request_id),
+            &identity.connection_id,
+            false,
+            ordered_headers
+                .recording_pairs()
+                .filter(|(_, value)| !crate::services::has_gateway_token(value)),
+            crate::credential_guard::Options {
+                block: runtime.operator_modes.credential_block(),
+            },
+            crate::policy::current_time_ms(),
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                if let Some(hook) = &guard_trace {
+                    hook.error("CredentialGuardError");
+                }
+                // A decoder, matcher, or policy observation error is a
+                // terminal local failure. It cannot be interpreted as
+                // no-detection and cannot reach open_outbound.
+                return Err(error.into());
+            }
+        };
+        if outcome.response.is_none()
+            && let Some(refresh) = codex_refresh
+        {
+            let body = guard
+                .enforce_codex_refresh(
+                    crate::credential_guard::Pdp::Ready(policy),
+                    crate::credential_guard::Request {
+                        identity: identity.request_identity(),
+                        host: &destination.policy_host,
+                        port: destination.port,
+                        method: request.method().as_str(),
+                        path: &destination.path,
+                        scheme: &destination.scheme,
+                        request_id: Some(request_id),
+                        connection_id: &identity.connection_id,
+                        prior_response: false,
+                        headers: &[],
+                    },
+                    refresh,
+                    crate::credential_guard::Options {
+                        block: runtime.operator_modes.credential_block(),
+                    },
+                    crate::policy::current_time_ms(),
+                )
+                .inspect_err(|_| {
+                    if let Some(hook) = &guard_trace {
+                        hook.error("CredentialGuardError");
+                    }
+                })?;
+            outcome.audit.extend(body.audit);
+            outcome.trace.extend(body.trace);
+            outcome.evaluations.extend(body.evaluations);
+            if !matches!(
+                outcome.kind,
+                crate::credential_guard::OutcomeKind::Blocked
+                    | crate::credential_guard::OutcomeKind::Warned
+            ) {
+                outcome.kind = body.kind;
+            }
+            let refused = body.response.is_some();
+            if refused || body.kind == crate::credential_guard::OutcomeKind::Warned {
+                outcome.metadata = body.metadata;
+            }
+            if refused {
+                outcome.kind = body.kind;
+                outcome.response = body.response;
+            }
+        }
+        publish_credential_trace(guard_trace.as_ref(), &outcome.trace);
+        // Canonical audit is emitted exactly once per guard intent. The
+        // attribution is trusted UDS identity; no credential value enters it.
+        let mut events: Vec<_> = outcome
+            .audit
+            .iter()
+            .map(|intent| {
+                let mut event = intent.event(identity.audit_attribution());
+                if let Some(events) = &runtime.connection_events {
+                    events.bind_request(identity, &mut event);
+                }
+                event
+            })
+            .collect();
+        let pending = crate::approvals::pending::bind_credentials(
+            identity.current_agent_run(),
+            &runtime.audit,
+            policy,
+            &mut events,
+            &crate::policy::NetworkRequest {
+                agent: identity.request_agent(),
+                host: &destination.policy_host,
+                port: Some(destination.port),
+                method: request.method().as_str(),
+                path: &destination.path,
+            },
+            &destination.scheme,
+            outcome
+                .response
+                .as_ref()
+                .is_some_and(|reply| reply.status == 428),
+            &guard,
+        )
+        .await?;
+        for mut event in events {
+            crate::approvals::pending::correlate_credential(policy, &mut event);
+            if event.decision == Some(crate::audit::Decision::RequireApproval)
+                || (pending.is_some()
+                    && event
+                        .approval
+                        .as_ref()
+                        .is_some_and(|approval| approval.required))
+            {
+                runtime.audit.emit_confirmed(event).await?;
+            } else {
+                runtime.audit.emit(event)?;
+            }
+        }
+        if let Some(record) = pending.as_ref() {
+            crate::approvals::pending::delegation::notify(runtime, record).await;
+        }
+        let mut event = identity.request_event(
+            "security.credential_guard.evaluated",
+            crate::audit::Kind::Security,
+            request_id,
+            "Credential guard evaluated request",
+            json!({
+            "host": destination.policy_host,
+            "port": destination.port,
+            "outcome": outcome.kind,
+            "trace": outcome.trace,
+            "metadata": outcome.metadata,
+            "evaluations": outcome.evaluations,
+            "body_scope": if codex_refresh.is_some() { "codex_refresh_token" } else { "headers_only" },
+            "query_scope": "policy_context_only"
+            }),
+        );
+        if let Some(events) = &runtime.connection_events {
+            events.bind_request(identity, &mut event);
+        }
+        runtime.audit.emit(event)?;
+        if codex_routing::routing_discovery(request.method(), &destination.path)
+            && let Some(record) = pending.as_ref()
+            && codex_routing::wait_for_decision(state, &record.approval_id, upgrades.stop.clone())
+                .await?
+        {
+            // Codex follows same-origin redirects for this GET. Its new request
+            // goes through every current admission control and gets its own
+            // request ID and budget charge. This GET has not reached the API.
+            let mut retry = Response::builder()
+                .status(StatusCode::TEMPORARY_REDIRECT)
+                .header(header::LOCATION, &destination.path)
+                .header(header::CACHE_CONTROL, "no-store")
+                .header("x-safeyolo-approval-id", &record.approval_id)
+                .body(full(Bytes::new()))?;
+            traffic::local_reply(
+                traffic,
+                request,
+                &mut retry,
+                None,
+                None,
+                destination,
+                true,
+                trace,
+            )?;
+            return Ok(Some((prior_block(retry), "local".into())));
+        }
+        if let Some(enforcement) = outcome.response {
+            let body = enforcement.body_bytes();
+            let mut blocked = Response::builder()
+                .status(StatusCode::from_u16(enforcement.status)?)
+                .body(full(body))?;
+            for (name, value) in enforcement.headers {
+                blocked
+                    .headers_mut()
+                    .append(header::HeaderName::try_from(name)?, value.parse()?);
+            }
+            if let Some(record) = &pending {
+                blocked
+                    .headers_mut()
+                    .insert("x-safeyolo-approval-id", record.approval_id.parse()?);
+            }
+            strip_hop_headers(blocked.headers_mut());
+            traffic::local_reply(
+                traffic,
+                request,
+                &mut blocked,
+                outcome.metadata.get("blocked_by").cloned(),
+                outcome.metadata.get("block_reason").cloned(),
+                destination,
+                true,
+                trace,
+            )?;
+            return Ok(Some((prior_block(blocked), "deny".into())));
+        }
+    }
+    Ok(None)
+}
+
 // Keep the immutable request snapshot separate from the reloadable state used
 // by later requests inside CONNECT, and keep routing separate from identity.
 #[allow(clippy::too_many_arguments)]
@@ -2922,300 +3486,21 @@ where
         return Ok((prior_block(denied), decision.decision));
     }
     if request.method() == Method::CONNECT {
-        if runtime
-            .policy
-            .as_deref()
-            .and_then(crate::policy::Policy::gateway)
-            .and_then(|gateway| gateway.provider_for_host(&destination.policy_host))
-            .is_some()
-        {
-            // CONNECT has no authorized application route yet. Never open a
-            // provider stream (or fall through to DNS) for opaque tunnel bytes.
-            return Ok((
-                prior_block(gateway_response(
-                    403,
-                    "GATEWAY_AUTH_REQUIRED",
-                    request_id,
-                    None,
-                )?),
-                "deny".into(),
-            ));
-        }
-        if protected_parent {
-            return Ok((prior_block(admin_rejection()), "admin_port_access".into()));
-        }
-        // Only a numeric CONNECT with hostname-dependent routing needs to wait.
-        // Known routes retain their existing server-first establishment.
-        let deferred = selected_ip::route_needs_name(&runtime, identity, destination);
-        // Source logging selects a destination before DNS. Keep the existing
-        // later transport matcher, including its resolved-peer behavior.
-        // Freeze the generation used for admission before DNS/dial. The same
-        // snapshot must decide the post-resolution peer and whether this
-        // physical connection owns passthrough lifecycle events; an admin
-        // update during the dial cannot change an admitted connection.
-        let passthrough_matcher = runtime
-            .passthrough
-            .read()
-            .map_err(|_| "passthrough configuration unavailable")?
-            .clone();
-        let ignored = passthrough_matcher
-            .matches(&destination.host, destination.port, None)
-            .then_some(crate::ignored_host_logger::SelectedDestination {
-                host: &destination.host,
-                port: destination.port,
-            });
-        let connected = if deferred {
-            None
-        } else {
-            Some(
-                open_egress_for_flow(
-                    &runtime,
-                    &AllowedRequest {
-                        state: Some(&state),
-                        recording: Some(recording.as_ref()),
-                        tasks: &upgrades,
-                        destination,
-                        identity,
-                        request_id,
-                    },
-                    true,
-                    Some(&passthrough_matcher),
-                    ignored,
-                    live.as_deref(),
-                    None,
-                )
-                .await?,
-            )
-        };
-        let passthrough = !deferred
-            && passthrough_matcher.matches(
-                &destination.host,
-                destination.port,
-                connected.as_ref().and_then(|connection| connection.peer),
-            );
-        let mut waiting = selected_ip::RouteWaitAudit::new(
-            runtime.clone(),
+        return start_connect_tunnel(
+            runtime,
+            state,
+            upgrades,
+            allow_upgrades,
             identity,
             request_id,
+            &mut request,
+            recording,
+            live,
             destination,
-            deferred,
-        );
-        let upgrade = hyper::upgrade::on(&mut request);
-        let identity = identity.clone();
-        let mut destination = destination.clone();
-        let request_id = request_id.to_owned();
-        if !allow_upgrades {
-            return Err("nested CONNECT is unsupported".into());
-        }
-        let mut stop = upgrades.stop.clone();
-        let descendants = upgrades.clone();
-        upgrades.spawn_upgrade(async move {
-            let mut outbound_attempted = !deferred;
-            let result: Result<(), Error> = async {
-                if *stop.borrow() {
-                    return Ok(());
-                }
-                let client: BoxStream = tokio::select! {
-                    _ = stop.changed() => return Ok(()),
-                    result = upgrade => Box::new(TokioIo::new(result?)),
-                };
-                let client = crate::tls_identity::observe_client(
-                    client,
-                    descendants.ingress.get().cloned(),
-                    connected.as_ref().and_then(|connection| connection.network.clone()),
-                );
-                let (stream, connection_facts) = match connected {
-                    Some(Connected { stream, h1_request_form, peer, observation, network }) => (Some(stream), Some((h1_request_form, peer, observation, network))),
-                    None => (None, None),
-                };
-                let classification = if passthrough {
-                    tunnels::Classification {
-                        protocol: Protocol::Opaque,
-                        client,
-                        server: stream,
-                        tls_server_name: None,
-                    }
-                } else {
-                    match tunnels::classify(client, stream, &mut stop).await {
-                        Ok(classification) => classification,
-                        Err(error) => {
-                            waiting.end(match error.downcast_ref::<tunnels::RouteWaitEnded>() {
-                                Some(tunnels::RouteWaitEnded::Timeout) => "timeout",
-                                Some(tunnels::RouteWaitEnded::Cancelled | tunnels::RouteWaitEnded::ClientClosed) => "cancelled",
-                                None => "failed",
-                            });
-                            return Err(error);
-                        }
-                    }
-                };
-                let tunnels::Classification {
-                    protocol: classified_protocol,
-                    client,
-                    server,
-                    tls_server_name,
-                } = classification;
-                waiting.end("complete");
-                if classified_protocol == Protocol::Tls && selected_ip::bind_tls_name(&mut destination, tls_server_name.as_deref())? {
-                    selected_ip::apply_mapping(&mut destination, &runtime, &identity)?;
-                    if is_reserved(&destination.host) || probe::is_host(&destination.host) {
-                        return Err("reserved logical destination cannot use a selected IP".into());
-                    }
-                    if runtime.admin_shield.blocks_request_destination(&destination.host, destination.port) {
-                        return Err(AdminPortAccess.into());
-                    }
-                    if runtime.policy.as_deref().and_then(crate::policy::Policy::gateway)
-                        .and_then(|gateway| gateway.provider_for_host(&destination.policy_host)).is_some() {
-                        return Err("provider destination cannot use an ordinary selected-IP tunnel".into());
-                    }
-                    let decision = decide(&runtime, &identity, &PolicyRequest {
-                        agent_id: identity.request_agent().unwrap_or(""), connection_id: &identity.connection_id,
-                        request_id: &request_id, method: "CONNECT", scheme: "", host: &destination.policy_host,
-                        port: destination.port, path: "", header_names: Vec::new(), body_present: false, trace_requested: false,
-                    }, None).await?;
-                    if !decision.allow {
-                        return Err("logical hostname policy refused CONNECT".into());
-                    }
-                    selected_ip::record(&runtime, &identity, &request_id, &destination, "logical_target", "allowed", json!({"outbound": if deferred { "not_attempted" } else { "connected" }}));
-                }
-                if *stop.borrow() {
-                    return Err(tunnels::RouteWaitEnded::Cancelled.into());
-                }
-                let (mut server, h1_request_form, peer, mut observation, network) = match (server, connection_facts) {
-                    (Some(server), Some((form, peer, observation, network))) => (server, form, peer, observation, network),
-                    (None, None) => {
-                        let ignored = passthrough_matcher.matches(&destination.host, destination.port, None)
-                            .then_some(crate::ignored_host_logger::SelectedDestination { host: &destination.host, port: destination.port });
-                        outbound_attempted = true;
-                        let Connected { stream, h1_request_form, peer, observation, network } = open_egress_for_flow(
-                            &runtime, &AllowedRequest { state: Some(&state), recording: Some(recording.as_ref()), tasks: &descendants, destination: &destination, identity: &identity, request_id: &request_id },
-                            true, Some(&passthrough_matcher), ignored, None, None,
-                        ).await?;
-                        (stream, h1_request_form, peer, observation, network)
-                    }
-                    _ => unreachable!("CONNECT classification preserves its upstream owner"),
-                };
-                let check_endpoint = (observation.route == crate::traffic_view::UpstreamRoute::Direct)
-                    .then_some(observation.peer).flatten().map(|peer| peer.ip());
-                policy_checks::enforce(&runtime, &state, &identity, &request_id,
-                    crate::policy::checks::Stage::Connect,
-                    &policy_checks::request(&identity, &destination, "CONNECT", check_endpoint, false)).await?;
-                if destination.selected_ip.is_some() {
-                    observation.target["logical_host"] = json!(destination.host);
-                }
-                let protocol = classified_protocol;
-                let sni_passthrough = !passthrough
-                    && protocol == Protocol::Tls
-                    && tls_server_name.as_deref().is_some_and(|name| {
-                        passthrough_matcher.matches(name, destination.port, None)
-                    });
-                if sni_passthrough {
-                    let name = tls_server_name
-                        .as_deref()
-                        .expect("SNI passthrough requires a captured name");
-                    let mut audit = ignored_host::ConnectionAudit::new(
-                        runtime.audit.clone(),
-                        &identity,
-                        crate::ignored_host_logger::SelectedDestination {
-                            host: name,
-                            port: destination.port,
-                        },
-                    );
-                    audit.connected();
-                    server = ignored_host::observe_stream(server, audit);
-                }
-                let passthrough = passthrough || sni_passthrough;
-                let protocol = if sni_passthrough {
-                    Protocol::Opaque
-                } else {
-                    protocol
-                };
-                if protocol == Protocol::Opaque {
-                    policy_checks::enforce(&runtime, &state, &identity, &request_id,
-                        crate::policy::checks::Stage::Request,
-                        &policy_checks::request(&identity, &destination, "CONNECT", check_endpoint, false)).await?;
-                    let started = std::time::Instant::now();
-                    let result = tunnels::relay(client, server, stop).await;
-                    runtime.audit.emit(identity.request_event(
-                        "traffic.tunnel",
-                        crate::audit::Kind::Traffic,
-                        &request_id,
-                        "Tunnel relay ended",
-                        json!({
-                        "host": destination.host,
-                        "port": destination.port,
-                        "coverage": if passthrough { "configured_passthrough" } else { "opaque" },
-                        "uploaded_bytes": result.uploaded,
-                        "downloaded_bytes": result.downloaded,
-                        "duration_ms": started.elapsed().as_millis(),
-                        "outcome": result.outcome,
-                        "error": result.error
-                        }),
-                    ))?;
-                    return Ok(());
-                }
-                let (client, http2, scheme): (BoxStream, bool, &str) = if protocol == Protocol::Tls
-                {
-                    let config = runtime
-                        .certificate_authority
-                        .as_ref()
-                        .ok_or("TLS CA is not configured")?
-                        .server_config(&destination.host, time::OffsetDateTime::now_utc())?;
-                    let handshake=descendants.ingress.get().and_then(|network|network.source().key_log());
-                    let mut config=(*config).clone();
-                    if let Some(handshake)=&handshake {config.key_log=handshake.logger();}
-                    selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "pending", json!({"verification_name": destination.host}));
-                    let tls = tokio::select! {
-                        _ = stop.changed() => Err("client TLS cancelled".into()),
-                        result = TlsAcceptor::from(Arc::new(config)).accept(client) => result.map_err(|error| -> Error { error.into() }),
-                    };
-                    drop(handshake);
-                    let tls = match tls {
-                        Ok(tls) => tls,
-                        Err(error) => {
-                            selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "failed", json!({"reason": error.to_string(), "verification_name": destination.host}));
-                            return Err(error);
-                        }
-                    };
-                    selected_ip::record(&runtime, &identity, &request_id, &destination, "client_tls", "complete", json!({"verification_name": destination.host}));
-                    let http2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
-                    if let Some(name) = tls.get_ref().1.server_name()
-                        && let Some(connection) = descendants.ingress.get()
-                    {
-                        connection.tls(name);
-                    }
-                    let stream: BoxStream = match descendants.ingress.get() {
-                        Some(network) => network.observe_tls(Box::new(tls), crate::observations::Point::ClientTls),
-                        None => Box::new(tls),
-                    };
-                    (stream, http2, "https")
-                } else {
-                    (client, false, "http")
-                };
-                destination.scheme = scheme.into();
-                let tunnel = Arc::new(Tunnel {
-                    connect_request_id: request_id.clone(),
-                    destination: destination.clone(),
-                    sessions: upstream_h2::Sessions::default(),
-                    connected_runtime: Arc::downgrade(&runtime),
-                    upstream: tokio::sync::Mutex::new(Some(Connected {
-                        stream: server,
-                        h1_request_form,
-                        peer,
-                        observation,
-                        network,
-                    })),
-                });
-                serve_tunnel_http(state, identity.clone(), tunnel, client, http2, stop, descendants).await
-            }
-            .await;
-            if let Err(error) = result {
-                selected_ip::record(&runtime, &identity, &request_id, &destination, "connect_tunnel", "failed", json!({"reason": error.to_string(), "client_connect_status": 200, "outbound": if outbound_attempted { "attempted" } else { "not_attempted" }, "last_reached_stage": error.downcast_ref::<tunnels::RouteWaitEnded>().map(|_| "route_wait")}));
-                eprintln!("CONNECT {request_id} ended: {error}");
-                return Err(error);
-            }
-            Ok(())
-        });
-        return Ok((Response::new(full(Bytes::new())), decision.decision));
+            protected_parent,
+            decision,
+        )
+        .await;
     }
     let (circuit_block, circuit_evidence_failed, circuit_hook_failed) = circuit_admission(
         &state,
@@ -3298,230 +3583,23 @@ where
     // gateway selection below, rather than approved as upstream credentials.
     // The guard still sees every other original field. Combining repeated
     // values can hide a credential or change its approval fingerprint.
-    if let Some(policy) = runtime.policy.as_ref() {
-        let guard = runtime.credential_guard.as_ref().ok_or_else(|| {
-            if let Some(hook) = trace
-                .as_ref()
-                .and_then(|trace| trace.hook("credential-guard", "request"))
-            {
-                hook.not_loaded();
-            }
-            "credential guard is unavailable"
-        })?;
-        let guard_trace = trace.as_ref().and_then(|trace| {
-            trace.hook(
-                "credential-guard",
-                if request.method() == Method::CONNECT {
-                    "http_connect"
-                } else {
-                    "request"
-                },
-            )
-        });
-        let guard = guard.clone().with_codex_vault(codex_vault.clone());
-        let mut outcome = match guard.enforce_ordered(
-            crate::credential_guard::Pdp::Ready(policy),
-            identity.request_identity(),
-            &destination.policy_host,
-            destination.port,
-            request.method().as_str(),
-            &destination.path,
-            &destination.scheme,
-            Some(request_id),
-            &identity.connection_id,
-            false,
-            ordered_headers
-                .recording_pairs()
-                .filter(|(_, value)| !crate::services::has_gateway_token(value)),
-            crate::credential_guard::Options {
-                block: runtime.operator_modes.credential_block(),
-            },
-            crate::policy::current_time_ms(),
-        ) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                if let Some(hook) = &guard_trace {
-                    hook.error("CredentialGuardError");
-                }
-                // A decoder, matcher, or policy observation error is a
-                // terminal local failure. It cannot be interpreted as
-                // no-detection and cannot reach open_outbound.
-                return Err(error.into());
-            }
-        };
-        if outcome.response.is_none()
-            && let Some(refresh) = codex_refresh.as_ref()
-        {
-            let body = guard
-                .enforce_codex_refresh(
-                    crate::credential_guard::Pdp::Ready(policy),
-                    crate::credential_guard::Request {
-                        identity: identity.request_identity(),
-                        host: &destination.policy_host,
-                        port: destination.port,
-                        method: request.method().as_str(),
-                        path: &destination.path,
-                        scheme: &destination.scheme,
-                        request_id: Some(request_id),
-                        connection_id: &identity.connection_id,
-                        prior_response: false,
-                        headers: &[],
-                    },
-                    refresh,
-                    crate::credential_guard::Options {
-                        block: runtime.operator_modes.credential_block(),
-                    },
-                    crate::policy::current_time_ms(),
-                )
-                .inspect_err(|_| {
-                    if let Some(hook) = &guard_trace {
-                        hook.error("CredentialGuardError");
-                    }
-                })?;
-            outcome.audit.extend(body.audit);
-            outcome.trace.extend(body.trace);
-            outcome.evaluations.extend(body.evaluations);
-            if !matches!(
-                outcome.kind,
-                crate::credential_guard::OutcomeKind::Blocked
-                    | crate::credential_guard::OutcomeKind::Warned
-            ) {
-                outcome.kind = body.kind;
-            }
-            let refused = body.response.is_some();
-            if refused || body.kind == crate::credential_guard::OutcomeKind::Warned {
-                outcome.metadata = body.metadata;
-            }
-            if refused {
-                outcome.kind = body.kind;
-                outcome.response = body.response;
-            }
-        }
-        publish_credential_trace(guard_trace.as_ref(), &outcome.trace);
-        // Canonical audit is emitted exactly once per guard intent. The
-        // attribution is trusted UDS identity; no credential value enters it.
-        let mut events: Vec<_> = outcome
-            .audit
-            .iter()
-            .map(|intent| {
-                let mut event = intent.event(identity.audit_attribution());
-                if let Some(events) = &runtime.connection_events {
-                    events.bind_request(identity, &mut event);
-                }
-                event
-            })
-            .collect();
-        let pending = crate::approvals::pending::bind_credentials(
-            identity.current_agent_run(),
-            &runtime.audit,
-            policy,
-            &mut events,
-            &crate::policy::NetworkRequest {
-                agent: identity.request_agent(),
-                host: &destination.policy_host,
-                port: Some(destination.port),
-                method: request.method().as_str(),
-                path: &destination.path,
-            },
-            &destination.scheme,
-            outcome
-                .response
-                .as_ref()
-                .is_some_and(|reply| reply.status == 428),
-            &guard,
-        )
-        .await?;
-        for mut event in events {
-            crate::approvals::pending::correlate_credential(policy, &mut event);
-            if event.decision == Some(crate::audit::Decision::RequireApproval)
-                || (pending.is_some()
-                    && event
-                        .approval
-                        .as_ref()
-                        .is_some_and(|approval| approval.required))
-            {
-                runtime.audit.emit_confirmed(event).await?;
-            } else {
-                runtime.audit.emit(event)?;
-            }
-        }
-        if let Some(record) = pending.as_ref() {
-            crate::approvals::pending::delegation::notify(&runtime, record).await;
-        }
-        let mut event = identity.request_event(
-            "security.credential_guard.evaluated",
-            crate::audit::Kind::Security,
-            request_id,
-            "Credential guard evaluated request",
-            json!({
-            "host": destination.policy_host,
-            "port": destination.port,
-            "outcome": outcome.kind,
-            "trace": outcome.trace,
-            "metadata": outcome.metadata,
-            "evaluations": outcome.evaluations,
-            "body_scope": if codex_refresh.is_some() { "codex_refresh_token" } else { "headers_only" },
-            "query_scope": "policy_context_only"
-            }),
-        );
-        if let Some(events) = &runtime.connection_events {
-            events.bind_request(identity, &mut event);
-        }
-        runtime.audit.emit(event)?;
-        if codex_routing::routing_discovery(request.method(), &destination.path)
-            && let Some(record) = pending.as_ref()
-            && codex_routing::wait_for_decision(&state, &record.approval_id, upgrades.stop.clone())
-                .await?
-        {
-            // Codex follows same-origin redirects for this GET. Its new request
-            // goes through every current admission control and gets its own
-            // request ID and budget charge. This GET has not reached the API.
-            let mut retry = Response::builder()
-                .status(StatusCode::TEMPORARY_REDIRECT)
-                .header(header::LOCATION, &destination.path)
-                .header(header::CACHE_CONTROL, "no-store")
-                .header("x-safeyolo-approval-id", &record.approval_id)
-                .body(full(Bytes::new()))?;
-            traffic::local_reply(
-                traffic.as_ref(),
-                &mut request,
-                &mut retry,
-                None,
-                None,
-                destination,
-                true,
-                trace.as_ref(),
-            )?;
-            return Ok((prior_block(retry), "local".into()));
-        }
-        if let Some(enforcement) = outcome.response {
-            let body = enforcement.body_bytes();
-            let mut blocked = Response::builder()
-                .status(StatusCode::from_u16(enforcement.status)?)
-                .body(full(body))?;
-            for (name, value) in enforcement.headers {
-                blocked
-                    .headers_mut()
-                    .append(header::HeaderName::try_from(name)?, value.parse()?);
-            }
-            if let Some(record) = &pending {
-                blocked
-                    .headers_mut()
-                    .insert("x-safeyolo-approval-id", record.approval_id.parse()?);
-            }
-            strip_hop_headers(blocked.headers_mut());
-            traffic::local_reply(
-                traffic.as_ref(),
-                &mut request,
-                &mut blocked,
-                outcome.metadata.get("blocked_by").cloned(),
-                outcome.metadata.get("block_reason").cloned(),
-                destination,
-                true,
-                trace.as_ref(),
-            )?;
-            return Ok((prior_block(blocked), "deny".into()));
-        }
+    if let Some(reply) = enforce_request_credentials(
+        &runtime,
+        &state,
+        &upgrades,
+        identity,
+        request_id,
+        &mut request,
+        &ordered_headers,
+        destination,
+        traffic.as_ref(),
+        trace.as_ref(),
+        codex_vault.as_ref(),
+        codex_refresh.as_ref(),
+    )
+    .await?
+    {
+        return Ok(reply);
     }
     // Applicable contracts and request-body rules retain pre-egress buffering.
     // Other intercepted H2 requests deliver headers and prefixes progressively.
