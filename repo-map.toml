@@ -69,7 +69,9 @@ triggers = [
 ]
 advice = "Keep Coord transport identity and durable kernel objects authoritative. Attention is interruption, not visibility; do not infer assignment from retained room history or create a parallel work-state abstraction."
 paths = [
-  "cli/src/safeyolo/coord/",
+  "proxy/src/coord_rooms.rs",
+  "proxy/src/coord_rooms/",
+  "proxy/src/bin/safeyolo-coord.rs",
   "docs/coord-kernel-capabilities.md",
   "docs/coord-trust-boundary.md",
 ]
@@ -101,33 +103,36 @@ triggers = [
   "percent decoded",
   "credential pattern",
 ]
-advice = "Start with pattern_scanner.py for scan orchestration, detection/patterns.py for matching rules, and flow_store.py for retained evidence. Sanitize findings before operational publication."
+advice = "Start with proxy/src/inspection.rs for pattern matching and proxy/src/http.rs (enforce_request_inspection, scan_response_with_lifetime) for request and response enforcement. Credential detection is in proxy/src/credential_guard.rs; retained evidence is in proxy/src/flow_store.rs. Sanitize findings before operational publication."
 paths = [
-  "cli/src/safeyolo/mitm_addons/pattern_scanner.py",
-  "cli/src/safeyolo/detection/patterns.py",
-  "cli/src/safeyolo/storage/flow_store.py",
-  "tests/test_pattern_scanner.py",
+  "proxy/src/inspection.rs",
+  "proxy/src/http.rs",
+  "proxy/src/credential_guard.rs",
+  "proxy/src/flow_store.rs",
+  "proxy/tests/inspection.rs",
 ]
-source = "docs/ADDONS.md; docs/security-verification.md"
+source = "docs/ARCHITECTURE.md#request-path; docs/security-verification.md"
 
 [[hints]]
-id = "proxy-addon-flow"
+id = "proxy-request-flow"
 triggers = [
   "proxy startup",
-  "mitmproxy",
-  "addon chain",
+  "request pipeline",
   "request hook",
   "websocket",
+  "connect tunnel",
 ]
-advice = "Trace the request through proxy startup, addon configuration, the concrete mitmproxy hook, and FlowStore/audit publication. Sanitize before operational publication and keep policy decisions separate from detector findings."
+advice = "Trace the request through proxy startup (main.rs, lib.rs), the request driver http::forward and its decide stage, the network guard, and FlowStore/audit publication. Sanitize before operational publication and keep policy decisions separate from detector findings."
 paths = [
-  "cli/src/safeyolo/proxy.py",
-  "cli/src/safeyolo/mitm_addons/",
-  "cli/src/safeyolo/detection/",
-  "cli/src/safeyolo/storage/flow_store.py",
-  "docs/ADDONS.md",
+  "proxy/src/main.rs",
+  "proxy/src/http.rs",
+  "proxy/src/network_guard.rs",
+  "proxy/src/policy.rs",
+  "proxy/src/flow_store.rs",
+  "proxy/src/audit.rs",
+  "docs/ARCHITECTURE.md",
 ]
-source = "docs/DEVELOPERS.md; docs/ADDONS.md; docs/security-verification.md"
+source = "docs/ARCHITECTURE.md#request-path; docs/DEVELOPERS.md; docs/security-verification.md"
 
 [[hints]]
 id = "agent-lifecycle-platforms"
