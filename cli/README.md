@@ -1,4 +1,4 @@
-# SafeYolo CLI
+# SafeYOLO CLI
 
 The installed `safeyolo` command controls the proxy, agents, policy, operator
 evidence and Coord. It uses your default installation at `$HOME/.safeyolo`.
@@ -8,7 +8,7 @@ The configuration is `config.toml`; policy and agent settings are in
 
 ## Installation
 
-Use [SafeYolo installation](../docs/installation.md#install-and-start) on a
+Use [SafeYOLO installation](../docs/installation.md#install-and-start) on a
 supported host. The unpacked bundle and the repository's `install.sh` invoke
 the same installer. Supply a fresh root and either `--bundle UNPACKED_BUNDLE`
 or the prepared build inputs described in the

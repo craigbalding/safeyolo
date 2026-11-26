@@ -1,7 +1,7 @@
 # Historical Python addons reference
 
 This document records the former Python/mitmproxy addon design. It is not an
-exact source map for one rollback checkpoint. The current SafeYolo package
+exact source map for one rollback checkpoint. The current SafeYOLO package
 starts Rust and does not ship this addon chain. Use
 [configuration](CONFIGURATION.md) for current operator settings,
 [developer architecture](DEVELOPERS.md#architecture-overview) for the native
@@ -159,7 +159,7 @@ Identity for every action route is source-derived (`service-discovery`), never t
 )
 ```
 
-SafeYolo creates and mounts the per-agent bearer token. Do not print, persist,
+SafeYOLO creates and mounts the per-agent bearer token. Do not print, persist,
 or pass it in a URL.
 
 ---
@@ -175,7 +175,7 @@ Detects and breaks proxy loops using the RFC 7230 Via header mechanism.
 - If not found: inject `1.1 safeyolo` into `Via` so looped-back requests carry it
 
 **Why this matters:**
-When a request targets an address that resolves back to SafeYolo's own listen port (e.g. an agent that resolves the host loopback and re-enters the proxy), it creates an infinite request amplification loop — thousands of requests per second filling logs and consuming resources.
+When a request targets an address that resolves back to SafeYOLO's own listen port (e.g. an agent that resolves the host loopback and re-enters the proxy), it creates an infinite request amplification loop — thousands of requests per second filling logs and consuming resources.
 
 **Example blocked response:**
 ```json
@@ -756,7 +756,7 @@ replaces a watched context file while still printing the value. Repeat
 are rejected, not rewritten or slugged, and duplicate helper fields fail.
 
 The header's `agent=` value is declared test attribution. It does not replace
-the trusted SafeYolo agent principal derived from the sandbox connection.
+the trusted SafeYOLO agent principal derived from the sandbox connection.
 Context is immutable record-time provenance; mutable post-hoc annotations
 belong in flow tags.
 

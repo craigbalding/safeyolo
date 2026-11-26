@@ -55,7 +55,7 @@ its declared terminal response to Relay. Never ask Lens to originate
 independent PR acceptance with `REVIEW_READY`.
 
 Use the target repository's approved record and source-transport tools.
-For SafeYolo, follow the maintained
+For SafeYOLO, follow the maintained
 [repository publication guidance](../DEVELOPERS.md#repository-publication).
 
 The declared leading types remain optional compatibility shorthand:

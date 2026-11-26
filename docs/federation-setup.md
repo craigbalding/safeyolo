@@ -1,6 +1,6 @@
 # Connect instances and delegate support
 
-Connect two existing SafeYolo instances, grant inspection of one target, and
+Connect two existing SafeYOLO instances, grant inspection of one target, and
 verify that access. Use the operator accounts on the hosts that own those
 instances. Each instance must already be initialized with its agents configured.
 You need each owner's command-line interface (CLI) and, for different hosts,

@@ -20,7 +20,7 @@ Installation puts them in the selected instance's `assets/hyperlight`; it needs
 no source checkout, Rust, LLVM or upstream runtime build tools. Installing the
 bundle does not adopt policy or grant service access.
 
-For execution, select an existing SafeYolo instance with `--instance-dir`. Linux needs
+For execution, select an existing SafeYOLO instance with `--instance-dir`. Linux needs
 accessible Kernel-based Virtual Machine (KVM). Apple-silicon macOS needs
 Hypervisor.framework (HVF) support and the signed helper. A macOS VM without
 nested hypervisor support can build the
@@ -157,7 +157,7 @@ through the walkthrough.
 
 ## Contributor bundle builds
 
-Contributors building new runtime/checker bytes need a SafeYolo source checkout,
+Contributors building new runtime/checker bytes need a SafeYOLO source checkout,
 Rust 1.94, Clang/LLVM, Python 3.12 or newer, curl and cargo-hyperlight 0.1.15.
 Build on Linux x86_64/aarch64 or Apple-silicon macOS as an ordinary user.
 From the checkout root, with those tools on `PATH`:

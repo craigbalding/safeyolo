@@ -57,7 +57,7 @@ upstream line.
 ## Measured result
 
 The starting source is master
-`2342843cb8694f71eb05cbbac57c7dea01921860`. Counts exclude SafeYolo's root
+`2342843cb8694f71eb05cbbac57c7dea01921860`. Counts exclude SafeYOLO's root
 package and include normal/build packages selected by Cargo. They do not count
 all lockfile records as production code. All four targets retain 48 direct
 dependencies.
@@ -70,7 +70,7 @@ dependencies.
 | macOS AMD64 | 284 | 270 | 14 |
 
 The async-nats selection disables defaults and explicitly retains `jetstream`,
-`ring`, `nuid`, `server_2_10`, `server_2_11` and `server_2_12`. SafeYolo starts
+`ring`, `nuid`, `server_2_10`, `server_2_11` and `server_2_12`. SafeYOLO starts
 its own loopback TCP broker with password authentication and JetStream. The
 callers use neither NKeys nor WebSocket broker connections, service discovery,
 key/value stores or object stores. Retaining NUID preserves the current inbox
@@ -107,7 +107,7 @@ These hypothetical removals do not imply that the feature can be discarded.
 | Priority | Opportunity | Measurement and decision |
 | --- | --- | --- |
 | 1 | async-nats defaults | The bounded feature experiment removes 13 packages. Keep the maintained client and apply the feature reduction. |
-| 2 | OCI client | A direct knockout removes 36 packages before reduction. The required behavior includes registry authentication/challenges, redirects, media handling, streaming and errors. Replacing it with shared Hyper moves substantial protocol ownership to SafeYolo. Stop and retain. |
+| 2 | OCI client | A direct knockout removes 36 packages before reduction. The required behavior includes registry authentication/challenges, redirects, media handling, streaming and errors. Replacing it with shared Hyper moves substantial protocol ownership to SafeYOLO. Stop and retain. |
 | 3 | UUID glue | One exclusive package; shared system randomness remains. Exercise the small formatter/validator prototype below, then retain upstream ownership. |
 | 4 | Temporary files and mapping | Four exclusive packages for tempfile and one for memmap2. Race-resistant creation/cleanup and read-only mapping lifetime/platform rules outweigh the small call sites. Reading spill files into a Vec changes large-body memory behavior. Retain. |
 | 5 | Shared primitives and defaults | Percent encoding, direct Base64 and rand have zero exclusive closure. Direct-default knockouts for Base64 and futures-util also remove no activated feature: pem/reqwest and OCI retain them. Stop without code changes. |

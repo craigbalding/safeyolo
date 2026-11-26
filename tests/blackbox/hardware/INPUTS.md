@@ -54,7 +54,7 @@ harness jobs locally in that account.
 The harness must supply `_common.sh`, `list_guests.sh`, `provision.sh`,
 `ssh_exec.sh`, `ssh_fetch.sh` and `teardown.sh`, with its existing private SSH
 key and libvirt/pool permissions. The wrapper uses `--flavor bare --reuse`.
-The harness's `full` flavor builds SafeYolo and is not a valid retained consumer.
+The harness's `full` flavor builds SafeYOLO and is not a valid retained consumer.
 Bare provisions only the operating system and ordinary tools. The wrapper
 transfers the pinned controller and frozen host/guest bytes, prepares test
 dependencies, then invokes all maintained KVM sections once.

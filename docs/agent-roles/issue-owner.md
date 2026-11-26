@@ -24,7 +24,7 @@ or to all roles; a binding addressed to Relay or Lens neither grants Forge that
 resource nor implies that it exists in Forge's sandbox.
 
 Use the target repository's approved record and source-transport tools.
-For SafeYolo, follow the maintained
+For SafeYOLO, follow the maintained
 [repository publication guidance](../DEVELOPERS.md#repository-publication).
 
 The current role contract and trusted brief govern tooling. Retained task-level
@@ -122,7 +122,7 @@ Evidence requested as a repository deliverable belongs in the repository.
   to the issue.
 - Implement the change and update authoritative documentation when behaviour,
   interfaces, or contracts change.
-- For changes to SafeYolo operator journeys, use the
+- For changes to SafeYOLO operator journeys, use the
   [operator-ux skill](../../cli/src/safeyolo/agent_context/skills/operator-ux/SKILL.md)
   to apply the [operator interaction contract](../operator-interaction-contract.md)
   in the candidate and review handoff. Keep the evidence proportional to the

@@ -51,3 +51,6 @@ command-centre/macos/.build/
 
 # Runtime evidence emitted by tests/blackbox/run-lane.sh.
 tests/blackbox/artifacts/
+
+# Assembled public site (scripts/assemble_site.sh)
+/_assembled_site/

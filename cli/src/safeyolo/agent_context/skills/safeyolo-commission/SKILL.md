@@ -1,6 +1,6 @@
 ---
 name: safeyolo-commission
-description: Commission or revisit SafeYolo task workers through the operator's preferred agent. Discover the selected setup, consolidate missing choices, review an editable plan before building, and resume a protected trial from retained intent and results.
+description: Commission or revisit SafeYOLO task workers through the operator's preferred agent. Discover the selected setup, consolidate missing choices, review an editable plan before building, and resume a protected trial from retained intent and results.
 ---
 
 # Commission and revisit task workers
@@ -68,7 +68,7 @@ servicing, read [adoption and worker support](references/adoption.md). It connec
 those existing owners without granting the preferred agent administration.
 For supervised self-tasking, selected schedules, checked early stop and resumed
 work, read [worker lifecycle](references/lifecycle.md).
-For a selected host task, read the installed SafeYolo skill's
+For a selected host task, read the installed SafeYOLO skill's
 [host-operation workflow](../safeyolo/references/host-operations.md).
 It connects public first-trust preparation, the target's trusted bootstrap,
 the existing human policy review, and covered code adoption. Keep the service's

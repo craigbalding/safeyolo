@@ -1,6 +1,6 @@
 # Coding clients through WSL2
 
-Run SafeYolo's Linux host commands inside Windows Subsystem for Linux 2
+Run SafeYOLO's Linux host commands inside Windows Subsystem for Linux 2
 (WSL2). Windows and the WSL distribution are trusted host infrastructure;
 gVisor confines the agent. A shared writable workspace remains real host data.
 
@@ -28,7 +28,7 @@ The command selects the distribution and Linux user, then opens WSL Bash.
 Run the remaining commands in that Bash session. Keep Linux arguments there
 instead of embedding shell expressions or credentials in a Windows command.
 Select gVisor's systrap platform explicitly for this session before starting
-SafeYolo or preparing another installation:
+SafeYOLO or preparing another installation:
 
 ```sh
 export SAFEYOLO_RUNSC_PLATFORM=systrap
@@ -87,7 +87,7 @@ The selected instance must have its runtime and network prerequisites ready.
 The [installation reference](installation.md#guest-prerequisites) describes them.
 
 Read the selected host script first. It runs with your Linux host account's
-permissions and stages the client command and SafeYolo context in the agent's
+permissions and stages the client command and SafeYOLO context in the agent's
 persistent home. The workspace becomes writable by the agent at startup.
 Keep host scripts outside every agent-writable share. Existing script trust
 checks still refuse an unsafe location.
@@ -96,7 +96,7 @@ checks still refuse an unsafe location.
 "$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" agent create work --workspace "$HOME/code/my-project" --host-script "$HOME/.safeyolo/assets/contrib/codex-host-setup.sh"
 ```
 
-Creation runs host setup without starting a guest or Codex. SafeYolo supplies
+Creation runs host setup without starting a guest or Codex. SafeYOLO supplies
 `SAFEYOLO_AGENT_NAME`, `SAFEYOLO_AGENT_HOME` and `SAFEYOLO_AGENT_FOLDER` as Linux
 names and paths. Inside the guest, the shared project is `/workspace`.
 Do not invoke the setup script directly with Windows paths or substitute
@@ -124,7 +124,7 @@ approval and network rules remain applicable.
 
 For reproduction with the recorded prepared client, supply a disposable copy
 of the complete verified Codex package at `$HOME/wsl-inputs/codex-import`.
-Its source metadata must match the installed SafeYolo build and its target must
+Its source metadata must match the installed SafeYOLO build and its target must
 match the Linux guest. The following import moves that copy's payload into the
 new agent home. Keep the donor unchanged and separate from login material.
 The destination must not already contain a `codex-package` directory.

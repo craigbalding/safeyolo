@@ -1,7 +1,7 @@
 # Agent debugging facilities
 
 What an agent can observe about itself and the processes it owns inside a
-SafeYolo sandbox — and what it deliberately cannot.
+SafeYOLO sandbox — and what it deliberately cannot.
 
 For a stopped coding harness inside a ready sandbox, use `safeyolo agent
 diagnostics NAME` to inspect its recorded launch. `agent shell NAME` opens an independent
@@ -75,7 +75,7 @@ So the default posture is:
    against a guest PID. The agent should not ask the operator to do any of
    those things on its behalf.
    That last one — "please attach a debugger from the host side" — is
-   boundary erosion masquerading as delegation, and SafeYolo exists to
+   boundary erosion masquerading as delegation, and SafeYOLO exists to
    prevent it.
 
    Peers remain isolated by default. An operator can explicitly grant
@@ -86,7 +86,7 @@ So the default posture is:
 
 3. **Kernel-observability tooling is not a promise the sandbox makes.**
    `perf record`, `bpftrace`, ftrace, kprobes and uprobes need real
-   kernel subsystems exposed to the container. Some SafeYolo runtimes
+   kernel subsystems exposed to the container. Some SafeYOLO runtimes
    expose none of that. If a triage genuinely needs kernel-side
    observability, the correct move is to reproduce the workload against
    a real-kernel microVM, not to widen the sandbox.
@@ -167,7 +167,7 @@ sudo-capable and must not claim the documented `sudo -n` facility; agents see
 account tools and `visudo`: construction provisions the `sudo` group, adds
 `agent`, writes the direct user-scoped rule needed by pre-existing shells,
 sets it `root:root`/0440, and fails closed if validation cannot pass. This
-keeps Alpine's conventional `wheel` naming from changing the SafeYolo
+keeps Alpine's conventional `wheel` naming from changing the SafeYOLO
 contract. Distinguish the unsupported branch from a runtime drift with
 `ls /usr/bin/sudo /usr/local/bin/sudo` and the rootfs build output.
 
@@ -200,7 +200,7 @@ strace -f -o /tmp/tr.log ./my_worker
 
 - **Kernel-side observability.** No agent-facing `perf record`, no
   `bpftrace`, no ftrace, no kprobe/uprobe. If the triage requires these,
-  reproduce the workload against a real-kernel microVM outside SafeYolo.
+  reproduce the workload against a real-kernel microVM outside SafeYOLO.
 - **Undelegated cross-agent debugging.** Peers are isolated by default.
   Only an explicit operator-owned [support grant](peer-support.md) permits
   selected inspection, guest administration or lifecycle actions. A shared
@@ -348,7 +348,7 @@ to run a fixed guest health probe. PID 1 must still be responsive, and the
 guest must still see its home and configuration shares. This path does not
 use the helper control socket, shell relay or proxy relay.
 
-Use the installed CLI from the matching SafeYolo version on the host.
+Use the installed CLI from the matching SafeYOLO version on the host.
 Replace `ROOT` with the instance directory and `NAME` with an existing, booted
 agent. Its current configuration share must contain the matching
 `safeyolo-guest` Linux executable and `host-launch-context.json` with a current-run

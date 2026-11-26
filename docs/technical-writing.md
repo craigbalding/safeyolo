@@ -1,6 +1,6 @@
 # Technical writing
 
-SafeYolo uses principles from Simplified Technical English (STE) for
+SafeYOLO uses principles from Simplified Technical English (STE) for
 procedural, normative, command-line interface (CLI), configuration, security,
 and public engineering prose. This is a clarity standard. It is not a claim of
 formal ASD-STE100 compliance, and it does not impose a controlled vocabulary.

@@ -48,7 +48,7 @@ A component row alone does not prove an installed package return.
 The selected prior comparator is the Python proxy from repository commit
 `7e934a5470f1aa9b74052fea08c6bae9b5f32e8a` (2026-09-16), the baseline named by
 issue #638. It is a source checkpoint rather than a tagged wheel release. Its
-installed comparator uses Python 3.12.14, SafeYolo 0.1.0, and mitmproxy 12.2.3
+installed comparator uses Python 3.12.14, SafeYOLO 0.1.0, and mitmproxy 12.2.3
 from the locked `uv.lock`. The pre-cutover Rust binary baseline was built from
 `d229907079695cb464e81273f38d46c42522f57d`. The installed P1 candidate
 uses source revision `a1f85d90bacdb271fc9681847ad2202b46c0e4ad`. This

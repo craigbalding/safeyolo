@@ -400,7 +400,7 @@ destinations or secrets.
 
 On the operator host, select a native capture interface and explicitly enable
 packet payloads in `config.toml`. The host needs libpcap and permission to open
-that interface. SafeYolo does not elevate the proxy or change host permissions.
+that interface. SafeYOLO does not elevate the proxy or change host permissions.
 Use the interface that carries the selected upstream connection. For example,
 `lo0` captures loopback traffic on macOS; `en0` commonly carries external traffic.
 Linux libpcap also supports `any` for the host's interfaces.
@@ -442,7 +442,7 @@ They cannot become packet observations or feed the export stream. Packet
 observations carry the native connection ID and trusted source attribution.
 They have no inferred stream offset or application lineage. Stream behavioural
 metrics ignore packet records and continue to measure canonical stream reads
-and writes. Packet monotonic time describes ingestion into SafeYolo; packet wall
+and writes. Packet monotonic time describes ingestion into SafeYOLO; packet wall
 time and its resolution come from libpcap.
 
 The connection table is bounded by the capture queue's item limit and one entry
@@ -450,7 +450,7 @@ per 4096 bytes of its byte limit. Registration does not wait for table admission
 Closed entries remain for at most one second to correlate packets already
 buffered by libpcap. Their source timestamp bounds exclude later tuple reuse.
 The source polls at most 64 packets per acquisition turn. Kernel buffering is
-bounded separately by libpcap; SafeYolo requests the configured capture byte
+bounded separately by libpcap; SafeYOLO requests the configured capture byte
 budget, with a minimum 64 KiB kernel buffer. The source supports Ethernet
 (including two VLAN tags), native loopback, raw IP and Linux cooked link types.
 It follows at most eight IPv6 extension headers. Packets without a readable TCP

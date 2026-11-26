@@ -1,7 +1,7 @@
 # Docker management
 
 Configure a Docker Engine endpoint as a service, then use ordinary Docker and
-Compose commands inside the agent. SafeYolo checks the current gateway capability
+Compose commands inside the agent. SafeYOLO checks the current gateway capability
 before forwarding each management request. Exec and attach switch only the
 admitted operation to a raw input/output stream.
 
@@ -9,7 +9,7 @@ Whole-environment workload management preserves existing resource names and othe
 administrators. It permits supported operations across the selected daemon,
 subject to the adopted host-file and privilege bounds. It does not grant
 unrestricted daemon administration or project isolation. Configure a separate
-service for each endpoint; workloads need no SafeYolo naming convention or label.
+service for each endpoint; workloads need no SafeYOLO naming convention or label.
 
 The external lifecycle witness passed with Docker CLI 29.1.3, Compose 2.40.3
 and standalone Linux Engine 29.1.3, using Engine application programming
@@ -37,8 +37,8 @@ Before approving access, choose the environment the agent will control:
 
 | Environment | Authority delegated |
 |---|---|
-| External Engine with `workloads` | Supported workloads and existing resources within the adopted bounds. Workloads, builds and daemon fetches use the remote environment's networking. They may reach the internet, private services or the SafeYolo host when reachable there, including services the requesting agent cannot reach directly. SafeYolo does not enforce the requesting agent's network policy on that execution. |
-| Docker inside a SafeYolo sandbox | Workloads use the **hosting** sandbox's policy and network authority. Broad `sandbox_admin` access can reach its workspace, credentials, explicit host mounts and other inner workloads, including through privileged inner containers. It does not grant outer-host privilege or project isolation. See the demonstrated Linux/gVisor configuration in [nested Docker](nested-docker.md). |
+| External Engine with `workloads` | Supported workloads and existing resources within the adopted bounds. Workloads, builds and daemon fetches use the remote environment's networking. They may reach the internet, private services or the SafeYOLO host when reachable there, including services the requesting agent cannot reach directly. SafeYOLO does not enforce the requesting agent's network policy on that execution. |
+| Docker inside a SafeYOLO sandbox | Workloads use the **hosting** sandbox's policy and network authority. Broad `sandbox_admin` access can reach its workspace, credentials, explicit host mounts and other inner workloads, including through privileged inner containers. It does not grant outer-host privilege or project isolation. See the demonstrated Linux/gVisor configuration in [nested Docker](nested-docker.md). |
 
 A dedicated project sandbox is an option when its entire authority should match
 the delegation. Existing external environments can stay in place. Review their
@@ -48,7 +48,7 @@ management-request checks; inspect those paths too.
 
 ## Operator setup
 
-Start with an existing running SafeYolo instance, an agent such as `alice`, and
+Start with an existing running SafeYOLO instance, an agent such as `alice`, and
 an operator-managed authenticated Engine endpoint. Inspect the environment using
 the [read-only commands](#inspect-the-environment-before-approval) before choosing
 host-file bounds. Keep that inventory with the operator.
@@ -57,7 +57,7 @@ For an external daemon, use an authenticated HTTPS endpoint with a certificate
 that identifies the endpoint. One supported arrangement is an operator-managed
 TLS reverse proxy with bearer authentication in front of the daemon's private
 socket. Keep upstream administrative credentials and daemon client keys on the
-operator side. Configure SafeYolo's
+operator side. Configure SafeYOLO's
 [upstream CA trust](TLS_CERTIFICATE.md#additional-upstream-trust) for a private CA;
 do not disable certificate verification. Close unauthenticated alternative access
 to that daemon at the endpoint.
@@ -138,7 +138,7 @@ provider's configured HTTP port and `docker.execution_boundary` to `sandbox`.
 Omit `auth` when the provider needs no upstream credential. Bind the inner
 Engine's HTTP listener, or a TCP-to-socket relay, to guest loopback. Authorize
 the caller for the Docker capability through the existing service workflow.
-The caller still connects to SafeYolo's proxy; the provider route opens the
+The caller still connects to SafeYOLO's proxy; the provider route opens the
 selected port inside the hosting sandbox. The [internal management check](../contrib/docker/proof.md#internal-docker-management-connection)
 remains separate from installed containment qualification.
 
@@ -254,7 +254,7 @@ has independent acceptance at
 bypasses `HTTP_PROXY`. Set `DOCKER_HOST` to the existing
 plain HTTP proxy's host and port, using Docker's `tcp://` scheme. For example,
 `HTTP_PROXY=http://10.0.2.2:3128` means `DOCKER_HOST=tcp://10.0.2.2:3128`.
-Preserve the proxy and certificate environment. SafeYolo selects and verifies
+Preserve the proxy and certificate environment. SafeYOLO selects and verifies
 the separately configured upstream endpoint.
 
 Discover the agent's services through authenticated Agent API
@@ -507,12 +507,12 @@ null values and both supported mount encodings remain usable.
 
 For container creation with an omitted, empty or `default` network mode,
 [Moby resolves endpoint key `default` to Linux network `bridge`](https://github.com/moby/moby/blob/v26.1.5/api/server/router/container/container_routes.go#L474-L488).
-SafeYolo inspects `bridge` for that endpoint. Explicit network names, endpoint
+SafeYOLO inspects `bridge` for that endpoint. Explicit network names, endpoint
 `NetworkID` values and network API paths retain their own identity. Project
 access still requires the inspected bridge ID in the adopted project or shared
 network selection.
 
-Before defaulted creation or a classic build, SafeYolo checks the daemon's Linux
+Before defaulted creation or a classic build, SafeYOLO checks the daemon's Linux
 platform, default runtime, logging driver and actual default cgroup namespace.
 Docker must report `name=cgroupns` in its `SecurityOptions` for an omitted
 cgroup namespace or classic build. This reports a private default on the
@@ -534,7 +534,7 @@ already in use.
 
 Docker provides no atomic inspect-and-mutate API. Trusted administrators can
 change linked container names, volume references or network connections between
-inspection and dispatch. SafeYolo
+inspection and dispatch. SafeYOLO
 does not lock out those administrators or claim protection from a malicious
 daemon administrator. Operators must account for this upstream concurrency limit.
 These prerequisite reads do not authorize extra mutation routes or implement

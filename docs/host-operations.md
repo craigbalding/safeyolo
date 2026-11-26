@@ -1,7 +1,7 @@
 # Deploy and use host operations
 
-Use a standalone `safeyolo-host-executor` on the target and an issuing SafeYolo
-instance on a supported Linux or macOS host. The target needs no full SafeYolo
+Use a standalone `safeyolo-host-executor` on the target and an issuing SafeYOLO
+instance on a supported Linux or macOS host. The target needs no full SafeYOLO
 installation, Python, Rust toolchain or WSL. Windows starter operations use the
 inbox Windows PowerShell 5.1 and its named Windows modules. The server itself
 does not require PowerShell.

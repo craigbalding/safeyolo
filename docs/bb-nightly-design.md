@@ -2,7 +2,7 @@
 
 > [!WARNING]
 > This is an unimplemented historical design proposal, not current automation,
-> setup guidance, or test evidence. SafeYolo does not ship the sketched
+> setup guidance, or test evidence. SafeYOLO does not ship the sketched
 > `bb-nightly.sh`, GitHub App token helper, launchd job, credentials, Check Run
 > publisher, or badge. The example result text (including “31 passed”) is
 > illustrative and must not be cited as an executed run. Current automation is
