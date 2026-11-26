@@ -1,6 +1,6 @@
 //! Retained SQLite flow schema and synchronous record storage.
 //!
-//! Matches the shipped Python FlowStore's schema, lazy body settings and
+//! Keeps the former Python FlowStore's schema, lazy body settings and
 //! separate best-effort FTS updates. Failed row/tag writes roll back together:
 //! a subsequent successful record cannot publish a previously failed record.
 //! Callers must run filesystem/database operations off asynchronous workers.

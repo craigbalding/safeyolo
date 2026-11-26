@@ -3,7 +3,7 @@
 //! Context `agent` is a caller-supplied provenance claim, never trusted identity.
 //! The caller supplies authenticated source/agent identity and the existing trusted
 //! flow metadata separately. Only the declared fallback resolves/stamps identity
-//! in the Python addon; an explicit header uses preexisting metadata for its match
+//! in the former Python addon; an explicit header uses preexisting metadata for its match
 //! flag. Applied metadata contains no replacement for the trusted `agent` field.
 //!
 //! Target-host configuration reloads only when policy_hash changes. Declaration
