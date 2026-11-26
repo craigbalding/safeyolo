@@ -342,7 +342,7 @@ suite from the repository root with the pinned Rust toolchain and the target
 and reserve settings for that host:
 
 ```sh
-CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh test --manifest-path proxy/Cargo.toml \
+scripts/cargo_with_space.sh test --manifest-path proxy/Cargo.toml \
   --locked -p safeyolo-proxy --test host_semantics
 ```
 
@@ -1487,8 +1487,9 @@ uv run --frozen pytest -q cli/tests/test_config.py
 ```
 
 For changed Rust code, use the focused Cargo test and Ubuntu Clippy check through
-`scripts/cargo_with_space.sh`; keep `CARGO_BUILD_JOBS=1` on the configured factory
-host. Broaden testing when an observed result warrants it, not to obtain a
+`scripts/cargo_with_space.sh` with Cargo's available-CPU default on the configured
+factory host. Set a lower job limit when current memory or contention measurements
+require it. Broaden testing when an observed result warrants it, not to obtain a
 full-suite badge for each candidate.
 
 ### Pull Request Guidelines
