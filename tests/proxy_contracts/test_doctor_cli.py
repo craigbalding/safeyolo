@@ -8,6 +8,7 @@ import os
 import sqlite3
 import subprocess
 
+import pytest
 import tomlkit
 
 from tests.proxy_contracts.harness import request
@@ -99,6 +100,7 @@ def test_doctor_inspects_selected_storage_without_creating_or_repairing_it(tmp_p
         connection.execute("CREATE TABLE flows(id INTEGER PRIMARY KEY)")
         connection.executemany("INSERT INTO flows VALUES (?)", [(1,), (2,)])
     before = hashlib.sha256(database.read_bytes()).hexdigest()
+    database.chmod(0o400)
     populated = report()
     assert populated["Local logs"]["status"] == "warn"
     assert populated["Local logs"]["details"]["path"] == str(audit)
@@ -107,6 +109,7 @@ def test_doctor_inspects_selected_storage_without_creating_or_repairing_it(tmp_p
     assert populated["Retained flow store"]["details"]["count"] == 2
     assert populated["Retained flow store"]["details"]["enabled"] is False
     assert hashlib.sha256(database.read_bytes()).hexdigest() == before
+    database.chmod(0o600)
     database.write_bytes(b"unreadable SQLite content")
     corrupt = report()["Retained flow store"]
     assert corrupt["status"] == "unknown" and str(database) in corrupt["message"]
@@ -119,3 +122,42 @@ def test_doctor_inspects_selected_storage_without_creating_or_repairing_it(tmp_p
     assert (config.read_bytes(), (root / "policy.toml").read_bytes()) == original
     assert not (root / "data/proxy-process.json").exists()
     assert os.geteuid() != 0
+
+
+@pytest.mark.parametrize("kind", ["fifo", "directory"])
+@pytest.mark.parametrize("structured", [False, True])
+def test_doctor_reports_non_regular_flow_path_without_waiting_or_changing_it(tmp_path, kind, structured):
+    binary = native_inputs()[0] / "safeyolo"
+    root = tmp_path / "selected instance"
+    subprocess.run([str(binary), "--instance-dir", str(root), "init"],
+                   capture_output=True, text=True, check=True, timeout=15)
+    database = tmp_path / "unusable flows"
+    if kind == "fifo":
+        os.mkfifo(database, 0o600)
+    else:
+        database.mkdir()
+    config = root / "config.toml"
+    settings = tomlkit.parse(config.read_text())
+    settings.update(flow_store_db_path=str(database), flow_store_enabled=False)
+    config.write_text(tomlkit.dumps(settings))
+    original = config.read_bytes(), (root / "policy.toml").read_bytes(), database.stat()
+    result = subprocess.run(
+        [str(binary), "--instance-dir", str(root), "doctor", *(["--json"] if structured else [])],
+        capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 1, result.stderr
+    if structured:
+        report = json.loads(result.stdout)
+        rows = checks(report)
+        flow = rows["Retained flow store"]
+        assert flow["status"] == "unknown"
+        assert report["counts"]["unknown"] > 0
+        assert "Local logs" in rows
+        message = flow["message"]
+    else:
+        assert "UNKNOWN Retained flow store" in result.stdout
+        assert "Local logs" in result.stdout and "Overall:" in result.stdout
+        message = result.stdout
+    assert str(database) in message and "Not an ordinary flow database file" in message
+    assert (config.read_bytes(), (root / "policy.toml").read_bytes(), database.stat()) == original
+    assert not (root / "data/proxy-process.json").exists()

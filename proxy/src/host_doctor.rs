@@ -627,7 +627,7 @@ fn storage_checks(config: &crate::Config) -> Vec<Value> {
             return Err(std::io::Error::last_os_error().into());
         }
         let space = unsafe { space.assume_init() };
-        let free_bytes = (space.f_bavail as u64).saturating_mul(space.f_frsize as u64);
+        let free_bytes = space.f_bavail.saturating_mul(space.f_frsize);
         Ok(json!({"enabled":true,"path":path,"bytes":bytes,"free_bytes":free_bytes}))
     })();
     match logs {
@@ -683,7 +683,8 @@ fn storage_checks(config: &crate::Config) -> Vec<Value> {
     let path = &config.flow_store_db_path;
     let flows = (|| -> Result<Option<Value>, Error> {
         let meta = match fs::metadata(path) {
-            Ok(meta) => meta,
+            Ok(meta) if meta.is_file() => meta,
+            Ok(_) => return Err("Not an ordinary flow database file".into()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
