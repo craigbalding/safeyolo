@@ -32,7 +32,7 @@ guest_store = acquisition.guest_store
 
 
 def command(binary, root, environment, *arguments):
-    return subprocess.run([str(binary), "--instance-dir", str(root), *arguments], env=environment,
+    return subprocess.run([str(binary), "--instance-dir", str(root), "--json", *arguments], env=environment,
                           capture_output=True, text=True, timeout=30)
 
 

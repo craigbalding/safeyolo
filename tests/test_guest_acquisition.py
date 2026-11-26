@@ -468,7 +468,7 @@ def test_copied_instance_keeps_installed_guest_binding(native_cli, registry, pac
 
     root = tmp_path / "section"
     prepare_native_instance(source, root)
-    selected = subprocess.run([str(root / "bin/safeyolo"), "--instance-dir", str(root), "guest", "rollback"],
+    selected = subprocess.run([str(root / "bin/safeyolo"), "--instance-dir", str(root), "--json", "guest", "rollback"],
                               env=environment, capture_output=True, text=True, timeout=10)
     assert selected.returncode == 0, selected.stderr
     assert json.loads(selected.stdout) == json.loads(selection)
@@ -1258,7 +1258,7 @@ def test_verified_bundle_installer_and_proxy_restart_retain_guest(native_cli, re
     cli = root / "bin/safeyolo"
 
     def command(*arguments):
-        return subprocess.run([str(cli), "--instance-dir", str(root), *arguments], env=environment,
+        return subprocess.run([str(cli), "--instance-dir", str(root), "--json", *arguments], env=environment,
                               capture_output=True, text=True, timeout=20)
 
     before = len(requests)

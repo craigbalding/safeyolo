@@ -568,11 +568,11 @@ def test_host_only_reuses_guest_and_retains_complete_pair_and_upgrader(
     assert os.readlink(root / "current") == link
     helper = root / "safeyolo-upgrade"
     # The retained native helper still works when the selected host predates it.
-    helper_status = subprocess.run([str(helper), "status"], env=environment,
+    helper_status = subprocess.run([str(helper), "status", "--json"], env=environment,
                                    capture_output=True, text=True, timeout=30)
     assert helper_status.returncode == 0, helper_status.stderr
     assert json.loads(helper_status.stdout) == selected
-    rolled_back = subprocess.run([str(helper), "rollback"], env=environment,
+    rolled_back = subprocess.run([str(helper), "rollback", "--json"], env=environment,
                                 capture_output=True, text=True, timeout=30)
     assert rolled_back.returncode == 0, rolled_back.stderr
     assert json.loads(rolled_back.stdout)["current"] == selected["previous"]

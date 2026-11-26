@@ -952,7 +952,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-test-guest-upgrade-py).
 - [tests/test_component_upgrade.py](../tests/test_component_upgrade.py#L117) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-component-upgrade-py).
-- [tests/test_linux_host.py](../tests/test_linux_host.py#L55) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
+- [tests/test_linux_host.py](../tests/test_linux_host.py#L53) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-linux-host-py).
 - [tests/blackbox/installed_storage.py::qualify](../tests/blackbox/installed_storage.py#L99) — Prepared native Linux installation; acquisition or prepared-guest reuse and two systrap boots with root/user persistence. Evidence: Rootless --boot uses the maintained pytest receipt and unavailable host sudo; standalone acquisition keeps its original scope. Both record actual package/guest/maps and owned cleanup; manual selection establishes no recurring cadence.
   Selection: manual; no recurring selector resolved.
@@ -1127,7 +1127,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-test-guest-upgrade-py).
 - [tests/test_component_upgrade.py](../tests/test_component_upgrade.py#L117) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-component-upgrade-py).
-- [tests/test_linux_host.py](../tests/test_linux_host.py#L55) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
+- [tests/test_linux_host.py](../tests/test_linux_host.py#L53) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-linux-host-py).
 - [tests/blackbox/rootless_preparation.py::observe](../tests/blackbox/rootless_preparation.py#L50) — Retained native Linux storage observations; recorded ordinary host identity and systrap guest root/user. Evidence: Manual run-controls.sh rootless-preparation; canonical source/digest supplied separately; recorded operands checked without command replay or independent product acceptance.
   Selection: manual; no recurring selector resolved.
@@ -2550,18 +2550,18 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
 
-- [`tests/test_linux_host.py::test_retained_systrap_caller_remaps_only_its_private_copy`](../tests/test_linux_host.py#L55)
-- [`tests/test_linux_host.py::test_runtime_input_fails_before_host_changes`](../tests/test_linux_host.py#L147)
-- [`tests/test_linux_host.py::test_relative_package_directory_selects_its_bundled_payload`](../tests/test_linux_host.py#L169)
-- [`tests/test_linux_host.py::test_namespace_failure_keeps_original_result_and_observes_only_its_audit`](../tests/test_linux_host.py#L188)
-- [`tests/test_linux_host.py::test_runtime_access_preserves_other_acl_rights_and_honors_named_denial`](../tests/test_linux_host.py#L245)
-- [`tests/test_linux_host.py::test_runtime_access_keeps_mapped_uid_read_access_before_after_and_repeat`](../tests/test_linux_host.py#L279)
-- [`tests/test_linux_host.py::test_mapping_remap_keeps_modes_links_and_guest_user_ids`](../tests/test_linux_host.py#L315)
-- [`tests/test_linux_host.py::test_remap_preserves_unchanged_inode_metadata`](../tests/test_linux_host.py#L361)
-- [`tests/test_linux_host.py::test_remap_nested_attributes_and_links_preserve_external_target`](../tests/test_linux_host.py#L386)
-- [`tests/test_linux_host.py::test_remap_refuses_live_tree_and_bad_owner_before_changing_files`](../tests/test_linux_host.py#L421)
-- [`tests/test_linux_host.py::test_denied_runtime_permission_reports_changes_and_retry_is_idempotent`](../tests/test_linux_host.py#L441)
-- [`tests/test_linux_host.py::test_doctor_keeps_selected_system_identity_when_runtime_disappears`](../tests/test_linux_host.py#L501)
+- [`tests/test_linux_host.py::test_retained_systrap_caller_remaps_only_its_private_copy`](../tests/test_linux_host.py#L53)
+- [`tests/test_linux_host.py::test_runtime_input_fails_before_host_changes`](../tests/test_linux_host.py#L145)
+- [`tests/test_linux_host.py::test_relative_package_directory_selects_its_bundled_payload`](../tests/test_linux_host.py#L167)
+- [`tests/test_linux_host.py::test_namespace_failure_keeps_original_result_and_observes_only_its_audit`](../tests/test_linux_host.py#L186)
+- [`tests/test_linux_host.py::test_runtime_access_preserves_other_acl_rights_and_honors_named_denial`](../tests/test_linux_host.py#L243)
+- [`tests/test_linux_host.py::test_runtime_access_keeps_mapped_uid_read_access_before_after_and_repeat`](../tests/test_linux_host.py#L277)
+- [`tests/test_linux_host.py::test_mapping_remap_keeps_modes_links_and_guest_user_ids`](../tests/test_linux_host.py#L313)
+- [`tests/test_linux_host.py::test_remap_preserves_unchanged_inode_metadata`](../tests/test_linux_host.py#L359)
+- [`tests/test_linux_host.py::test_remap_nested_attributes_and_links_preserve_external_target`](../tests/test_linux_host.py#L384)
+- [`tests/test_linux_host.py::test_remap_refuses_live_tree_and_bad_owner_before_changing_files`](../tests/test_linux_host.py#L419)
+- [`tests/test_linux_host.py::test_denied_runtime_permission_reports_changes_and_retry_is_idempotent`](../tests/test_linux_host.py#L439)
+- [`tests/test_linux_host.py::test_doctor_keeps_selected_system_identity_when_runtime_disappears`](../tests/test_linux_host.py#L499)
 - [`tests/test_linux_host.py::test_profile_load_failure_retains_only_its_complete_profile`](../tests/test_linux_host.py#L556)
 - [`tests/test_linux_host.py::test_host_prepare_retries_retained_runtime_profile`](../tests/test_linux_host.py#L585)
 - [`tests/test_linux_host.py::test_scoped_namespace_entry_with_both_apparmor_restrictions`](../tests/test_linux_host.py#L683)
