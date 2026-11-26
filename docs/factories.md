@@ -172,7 +172,7 @@ decision about the current output.
 For the existing backlog instance, the
 [native adoption proposal](factories/backlog-native-adoption.md) supplies a
 complete TOML/role set and stopped-boundary application and rollback steps.
-It is a review candidate, not a claim that the live factory uses that selection.
+SafeYOLO's own autonomous software factory runs this selection.
 
 For a new or stopped Factory, add `[work]` to its operator-authored TOML before
 approval. The following complete example supervises only Bob as reviewer.
