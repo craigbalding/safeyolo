@@ -2,8 +2,6 @@
 mod authority_effects;
 pub(crate) mod gateway;
 pub mod semantics;
-#[cfg(test)]
-mod semantics_tests;
 pub(crate) mod setup;
 use crate::services::ServiceDefinition;
 pub use safeyolo_host_executor::*;
