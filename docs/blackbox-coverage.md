@@ -313,7 +313,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-credentials-cli-py).
 - [tests/proxy_contracts/test_native_onepassword_cli.py](../tests/proxy_contracts/test_native_onepassword_cli.py#L39) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-onepassword-cli-py).
-- [tests/proxy_contracts/test_codex_approval_fallback.py](../tests/proxy_contracts/test_codex_approval_fallback.py#L132) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_codex_approval_fallback.py](../tests/proxy_contracts/test_codex_approval_fallback.py#L131) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-codex-approval-fallback-py).
 - [tests/blackbox/installed_workloads.py::main](../tests/blackbox/installed_workloads.py#L286) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `workloads`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `kvm` section `workloads`.
@@ -412,7 +412,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-credentials-cli-py).
 - [tests/proxy_contracts/test_native_onepassword_cli.py](../tests/proxy_contracts/test_native_onepassword_cli.py#L39) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-onepassword-cli-py).
-- [tests/proxy_contracts/test_codex_approval_fallback.py](../tests/proxy_contracts/test_codex_approval_fallback.py#L132) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_codex_approval_fallback.py](../tests/proxy_contracts/test_codex_approval_fallback.py#L131) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-codex-approval-fallback-py).
 - [tests/blackbox/installed_ingress_pair.py::main](../tests/blackbox/installed_ingress_pair.py#L115) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `ingress`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections).
@@ -1577,11 +1577,11 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_codex_approval_fallback.py::test_codex_routing_continues_after_explicit_approval`](../tests/proxy_contracts/test_codex_approval_fallback.py#L132)
-- [`tests/proxy_contracts/test_codex_approval_fallback.py::test_codex_routing_wait_keeps_refusal_and_cancellation`](../tests/proxy_contracts/test_codex_approval_fallback.py#L166)
-- [`tests/proxy_contracts/test_codex_approval_fallback.py::test_codex_routing_wait_timeout_leaves_approval_pending_without_replay`](../tests/proxy_contracts/test_codex_approval_fallback.py#L203)
-- [`tests/proxy_contracts/test_codex_approval_fallback.py::test_codex_routing_waits_for_active_approval_after_saved_receipt`](../tests/proxy_contracts/test_codex_approval_fallback.py#L223)
-- [`tests/proxy_contracts/test_codex_approval_fallback.py::test_codex_fallback_approves_each_replacement_at_one_destination`](../tests/proxy_contracts/test_codex_approval_fallback.py#L271)
+- [`tests/proxy_contracts/test_codex_approval_fallback.py::test_codex_routing_continues_after_explicit_approval`](../tests/proxy_contracts/test_codex_approval_fallback.py#L131)
+- [`tests/proxy_contracts/test_codex_approval_fallback.py::test_codex_routing_wait_keeps_refusal_and_cancellation`](../tests/proxy_contracts/test_codex_approval_fallback.py#L165)
+- [`tests/proxy_contracts/test_codex_approval_fallback.py::test_codex_routing_wait_timeout_leaves_approval_pending_without_replay`](../tests/proxy_contracts/test_codex_approval_fallback.py#L202)
+- [`tests/proxy_contracts/test_codex_approval_fallback.py::test_codex_routing_waits_for_active_approval_after_saved_receipt`](../tests/proxy_contracts/test_codex_approval_fallback.py#L245)
+- [`tests/proxy_contracts/test_codex_approval_fallback.py::test_codex_fallback_approves_each_replacement_at_one_destination`](../tests/proxy_contracts/test_codex_approval_fallback.py#L293)
 
 <a id="witness-tests-proxy-contracts-test-gateway-scope-py"></a>
 ### [`tests/proxy_contracts/test_gateway_scope.py`](../tests/proxy_contracts/test_gateway_scope.py)
