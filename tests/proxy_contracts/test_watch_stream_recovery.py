@@ -1,7 +1,7 @@
 """Real watch commands distinguish failed attachments, recovery and new gaps.
 
 The stream-failure control uses an owned HTTP/WebSocket peer. The gap control
-uses the installed native proxy and its actual audit reader. No guest starts.
+uses the selected native proxy and its actual audit reader. No guest starts.
 """
 
 from __future__ import annotations
@@ -23,8 +23,9 @@ from types import SimpleNamespace
 import pytest
 from websockets.sync.client import connect
 
+from tests.proxy_contracts.harness import launch_proxy
 from tests.proxy_contracts.test_native_coord_operator import terminal
-from tests.proxy_contracts.test_native_policy_cli import native_inputs, native_instance
+from tests.proxy_contracts.test_native_policy_cli import native_inputs
 
 
 def wait_for(condition):
@@ -183,9 +184,15 @@ def test_watch_reports_stream_failure_episodes_and_keeps_retrying(tmp_path, inte
 
 
 def test_native_feed_distinguishes_new_gaps_with_the_same_reason(tmp_path):
-    with native_instance(tmp_path) as instance:
-        with connect(f"ws://127.0.0.1:{instance.port}/admin/events",
-                     additional_headers={"Authorization": f"Bearer {instance.token}"}, proxy=None) as events:
+    token = "synthetic-gap-observer-token"
+    token_file = tmp_path / "admin-token"
+    token_file.write_text(token)
+    policy = '[[permissions]]\naction="network:request"\nresource="*"\neffect="deny"\n'
+    with launch_proxy("rust", tmp_path / "gap", policy, native_product=True,
+                      admin_port=0, admin_api_token_file=token_file) as proxy:
+        port = json.loads(proxy.readiness_file.read_text())["admin_port"]
+        with connect(f"ws://127.0.0.1:{port}/admin/events",
+                     additional_headers={"Authorization": f"Bearer {token}"}, proxy=None) as events:
             def gap(previous=None):
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
@@ -194,13 +201,13 @@ def test_native_feed_distinguishes_new_gaps_with_the_same_reason(tmp_path):
                         return state
                 pytest.fail("native audit reader did not report the new gap")
 
-            audit = instance.root / "logs/audit.jsonl"
+            audit = proxy.audit_log
             with audit.open("a") as output:
                 output.write("invalid first audit record\n")
             first = gap()
             # A fresh subscriber sees the retained observation, not a new gap.
-            with connect(f"ws://127.0.0.1:{instance.port}/admin/events",
-                         additional_headers={"Authorization": f"Bearer {instance.token}"}, proxy=None) as other:
+            with connect(f"ws://127.0.0.1:{port}/admin/events",
+                         additional_headers={"Authorization": f"Bearer {token}"}, proxy=None) as other:
                 retained = json.loads(other.recv(timeout=5))
                 assert retained["history_gap_id"] == first["history_gap_id"]
             with audit.open("a") as output:
