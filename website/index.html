@@ -133,11 +133,13 @@ description: "SafeYOLO runs Claude Code, Codex, Pi and other agents in isolated 
     <div>
       <p class="kicker">Install</p>
       <p>SafeYOLO is pre-v1. Installation uses prebuilt release artifacts; no guest build is needed.</p>
-      <p>On Ubuntu 24.04 (x86_64), one command installs SafeYOLO and launches your first agent.</p>
-      <p>On Apple Silicon macOS 26 or later, Linux arm64 and Windows through WSL2, download the release archive for your host and follow the installation guide.</p>
-      <div class="actions"><a class="btn dark" href="https://github.com/craigbalding/safeyolo/blob/master/docs/installation.md">Installation guide</a><a class="btn dark" href="https://github.com/craigbalding/safeyolo/blob/master/docs/windows-wsl2.md">Windows (WSL2)</a></div>
+      <p>On Ubuntu 24.04 (x86_64), follow the complete Quick start from your own project directory with an ordinary sudo-enabled account. Read its workspace, login and installation context before running the two commands.</p>
+      <div class="actions"><a class="btn dark" href="https://github.com/craigbalding/safeyolo#quick-start">Quick start</a></div>
     </div>
-    <div class="term"><div><span class="prompt">$</span> curl -fLO https://github.com/craigbalding/safeyolo/releases/latest/download/install-safeyolo.sh</div><div><span class="prompt">$</span> bash install-safeyolo.sh --launch</div></div>
+    <div>
+      <p>For Apple Silicon macOS 26 or later and Linux arm64, use the multi-platform prerelease linked in the <a href="https://github.com/craigbalding/safeyolo/blob/master/docs/installation.md#install-and-start">archive installation guide</a>. GitHub Latest currently contains only Linux x86_64 packages.</p>
+      <p>For Windows, the <a href="https://github.com/craigbalding/safeyolo/blob/master/docs/windows-wsl2.md">Windows Subsystem for Linux 2 (WSL2) guide</a> starts with an operator-prepared distribution and qualified Linux host and guest inputs. It does not provision Windows or WSL2, or acquire those inputs.</p>
+    </div>
   </div>
 </section>
 
