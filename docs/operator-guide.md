@@ -177,7 +177,7 @@ the publication gate does not authenticate you to the app. HTTP streaming and
 WebSocket connections use the same bound guest-port transport.
 
 No desktop or graphical packages are needed. The default lifetime is 900
-seconds; `--ttl SECONDS` selects up to 86400 seconds. `--tailnet-port PORT`
+seconds; `--ttl SECONDS` selects another positive lifetime. `--tailnet-port PORT`
 selects a different unused HTTPS port when the agent's reserved port is already
 occupied. Use the same optional tailnet port when stopping that publication.
 Stop, expiry or a changed guest run disconnects its viewers and removes only
