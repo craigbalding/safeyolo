@@ -29,10 +29,8 @@ for the warning, limits and diagnostics.
 ## Install and start
 
 Use your ordinary host account on Ubuntu 24.04 or Apple Silicon macOS 26.0
-or later. Download the production archive that matches your host. The current
-[stable release](https://github.com/craigbalding/safeyolo/releases/latest)
-contains only `linux-amd64` packages. For `linux-arm64` or `darwin-arm64`, use
-the [multi-platform prerelease](https://github.com/craigbalding/safeyolo/releases/tag/host-57c9f9606b6f5fa98869811d4282f8d80c1fa429).
+or later. Download the production archive that matches your host from the
+[latest release](https://github.com/craigbalding/safeyolo/releases/latest).
 Normal installation uses prebuilt host and guest artifacts and needs no Linux
 guest build. Source builds are an [optional alternative](#build-a-bundle).
 A bundle's `package-info` records its source, profile, platform and actual
