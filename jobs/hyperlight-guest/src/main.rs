@@ -58,6 +58,67 @@ fn network_check(_argv: String) -> Result<String> {
     Ok(alloc::format!("{result}\n"))
 }
 
+#[host_function("InvocationContext")]
+fn invocation_context() -> Result<String>;
+
+#[host_function("InitializationWitness")]
+fn initialization_witness() -> Result<u64>;
+
+#[host_function("HostPrint")]
+fn host_print(text: String) -> Result<i32>;
+
+static INITIALIZED_AT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn hyperlight_main() {
+    // This callback runs only in the loader's initialization entry. The
+    // public witness has no invocation input, credential or capability.
+    INITIALIZED_AT.store(
+        initialization_witness().expect("initialization witness"),
+        Ordering::Relaxed,
+    );
+}
+
+/// Operator-selected restore witness; this is not an adopted predicate.
+#[guest_function("TemplateProbe")]
+fn template_probe(_argv: String) -> Result<String> {
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    let calls = CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+    let input = read_input(String::from("request.json"))?;
+    let request: Value = serde_json::from_slice(&input)?;
+    if request["mode"] == "fail" {
+        return Err(HyperlightGuestError::new(
+            ErrorCode::GuestError,
+            "requested predecessor failure".into(),
+        ));
+    }
+    if request["mode"] == "spin" {
+        host_print(String::from("template-spin-entered\n"))?;
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+    let context: Value = serde_json::from_str(&invocation_context()?)?;
+    if request["mode"] == "hold" {
+        let until = context["unix_ms"].as_u64().expect("host clock") + 1000;
+        loop {
+            let current: Value = serde_json::from_str(&invocation_context()?)?;
+            if current["unix_ms"].as_u64().expect("host clock") >= until {
+                break;
+            }
+        }
+    }
+    let completed: Value = serde_json::from_str(&invocation_context()?)?;
+    Ok(alloc::format!(
+        "{}\n",
+        serde_json::json!({
+            "initialized_at":INITIALIZED_AT.load(Ordering::Relaxed),
+            "calls":calls,
+            "context":context,"input":input,"completed_unix_ms":completed["unix_ms"],
+        })
+    ))
+}
+
 #[guest_function("ServiceCheck")]
 fn service_check(_argv: String) -> Result<String> {
     let bytes = read_input(String::from("request.json"))?;

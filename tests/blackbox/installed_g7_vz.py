@@ -2,7 +2,7 @@
 """Observe one installed native VZ setup, supervised marker and guest API exchange.
 
 Run as the approved physical Mac account from this trusted checkout with
-Python 3.11 or later. Supply a fresh, short disposable --root prepared by the
+Python 3.11 or later. Supply a fresh, short disposable --instance-dir prepared by the
 native installer, an empty owned --workspace, matching --commit/--profile
 host and Linux guest artifacts, and owned pinned NATS inputs. No proxy or guest
 may already be running in that root. Set the approved VZ test runner/deadline,
@@ -194,7 +194,7 @@ def run(args) -> dict:
     cli = root / "bin/safeyolo"
 
     def command(*parts, timeout=90, check=True):
-        return subprocess.run([str(cli), "--root", str(root), *parts], check=check,
+        return subprocess.run([str(cli), "--instance-dir", str(root), "--json", *parts], check=check,
                               capture_output=True, text=True, timeout=timeout)
 
     identities = {}
@@ -356,7 +356,7 @@ def run(args) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--instance-dir", dest="root", required=True, type=Path)
     parser.add_argument("--workspace", required=True, type=Path)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--profile", required=True, choices=("debug", "production"))

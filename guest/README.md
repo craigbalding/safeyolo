@@ -81,7 +81,7 @@ uses `$HOME/.safeyolo`; choose another explicit root if it already contains
 instance configuration. It does not change an existing installation:
 
 ```sh
-./install.sh --root "$HOME/.safeyolo" --runtime-artifacts /usr/bin --platform-assets "$PWD/guest/out"
+./install.sh --instance-dir "$HOME/.safeyolo" --runtime-artifacts /usr/bin --platform-assets "$PWD/guest/out"
 ```
 
 Supply matching guest/VM artifacts as described in the

@@ -494,7 +494,7 @@ def test_access_preparation_carries_desktop_and_offline_inputs_through_guest_sud
     monkeypatch.setattr(guest_exec.subprocess, "run", lambda command, **_options: calls.append(command))
     guest_exec.prepare_guest_tests("native", "owned", env={"SAFEYOLO_CONFIG_DIR": "/selected",
         "SAFEYOLO_GUEST_TEST_INPUTS": "/workspace/offline inputs", "SAFEYOLO_BLACKBOX_DESKTOP": "1"})
-    assert calls[0][:7] == ["native", "--root", "/selected", "agent", "shell", "owned", "-c"]
+    assert calls[0][:7] == ["native", "--instance-dir", "/selected", "agent", "shell", "owned", "-c"]
     sudo = shlex.split(calls[0][-1])
     assert sudo[:5] == ["exec", "sudo", "-n", "/bin/bash", "-lc"]
     assert shlex.split(sudo[-1]) == ["bash", "/workspace/tests/blackbox/prepare-guest-tests.sh", "/workspace/offline inputs", "--desktop"]
@@ -529,7 +529,7 @@ if 'shell' in sys.argv:
     assert commands[0] == ["agent", "start", "worker", "--sandbox-only"]
     assert len(commands) == (1 if python_tests is False else 2)
     if python_tests is not False:
-        assert commands[1][:6] == ["--root", str(tmp_path), "agent", "shell", "worker", "-c"]
+        assert commands[1][:6] == ["--instance-dir", str(tmp_path), "agent", "shell", "worker", "-c"]
         assert "prepare-guest-tests.sh" in commands[1][-1]
     # Native-only startup must still reject a missing listener.
     if python_tests is False:

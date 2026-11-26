@@ -386,7 +386,7 @@ struct ModelTests: App {
             name: "probe", remote: false, terminalTarget: "ignored", adminURL: adminURL, hostUser: "operator",
             hostExecutable: executablePath, hostRoot: "/opt/safeyolo"
         )
-        precondition(local == "'/opt/safeyolo/bin/safeyolo' --root '/opt/safeyolo' agent attach -- 'probe'")
+        precondition(local == "'/opt/safeyolo/bin/safeyolo' --instance-dir '/opt/safeyolo' agent attach -- 'probe'")
         do {
             _ = try agentTerminalCommand(
                 name: "probe", remote: true, terminalTarget: nil,
@@ -430,7 +430,7 @@ struct ModelTests: App {
         let sshArgs = try shellArguments(command, function: "ssh")
         precondition(sshArgs.count == 4 && sshArgs[0] == "-t" && sshArgs[1] == "--" && sshArgs[2] == target)
         let attachArgs = try shellArguments(sshArgs[3])
-        precondition(attachArgs == ["--root", root.path, "agent", "attach", "--", name])
+        precondition(attachArgs == ["--instance-dir", root.path, "agent", "attach", "--", name])
         let selectedFile = root.appendingPathComponent("selected config.toml").path
         let selectedCommand = try agentTerminalCommand(name: name, remote: true, terminalTarget: target,
             hostExecutable: executable.path, hostRoot: root.path, hostConfigPath: selectedFile)
@@ -441,10 +441,10 @@ struct ModelTests: App {
                                                    hostExecutable: executable.path, hostRoot: root.path, action: .shell)
         let shellSSHArgs = try shellArguments(shellCommand, function: "ssh")
         let shellArgs = try shellArguments(shellSSHArgs[3])
-        precondition(shellArgs == ["--root", root.path, "agent", "shell", "--persistent", "--", name])
+        precondition(shellArgs == ["--instance-dir", root.path, "agent", "shell", "--persistent", "--", name])
         let localShell = try agentTerminalCommand(name: "probe", remote: false, terminalTarget: nil,
             hostExecutable: executablePath, hostRoot: "/opt/safeyolo", action: .shell)
-        precondition(localShell == "'/opt/safeyolo/bin/safeyolo' --root '/opt/safeyolo' agent shell --persistent -- 'probe'")
+        precondition(localShell == "'/opt/safeyolo/bin/safeyolo' --instance-dir '/opt/safeyolo' agent shell --persistent -- 'probe'")
         do {
             _ = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: "operator@host")
             preconditionFailure("A missing installation must not fall back to the remote shell's PATH")
@@ -608,7 +608,7 @@ struct ModelTests: App {
         precondition(degraded.runtimeError == "holder missing")
         let local = try agentTerminalCommand(name: "probe", remote: false, terminalTarget: nil,
                                             hostExecutable: "/opt/safeyolo/bin/safeyolo", hostRoot: "/opt/safeyolo")
-        precondition(local == "'/opt/safeyolo/bin/safeyolo' --root '/opt/safeyolo' agent attach -- 'probe'")
+        precondition(local == "'/opt/safeyolo/bin/safeyolo' --instance-dir '/opt/safeyolo' agent attach -- 'probe'")
         let remote = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: "operator@host", hostExecutable: "/opt/safeyolo/bin/safeyolo", hostRoot: "/opt/safeyolo")
         precondition(remote.hasPrefix("ssh -t -- 'operator@host' "))
         precondition(!remote.contains("agent run"))

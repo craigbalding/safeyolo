@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import http.client
 import json
 import os
@@ -159,12 +160,14 @@ def peer_boundary(peer_socket: str, peer_state: str, own_state: str, value: str)
         try:
             other.connect(peer_socket)
         except OSError as error:
+            assert error.errno in (errno.ENOENT, errno.EACCES, errno.EPERM), "peer socket probe failed for an unrelated reason"
             refusals.append({"socket": peer_socket, "errno": error.errno, "error": str(error)})
         else:
             raise AssertionError("guest reached the peer's private socket")
     try:
         Path(peer_state).read_bytes()
     except OSError as error:
+        assert error.errno in (errno.ENOENT, errno.EACCES, errno.EPERM), "peer file probe failed for an unrelated reason"
         refusals.append({"state": peer_state, "errno": error.errno, "error": str(error)})
     else:
         raise AssertionError("guest read the peer's private state")

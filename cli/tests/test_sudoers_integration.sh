@@ -215,10 +215,10 @@ run_negative_tests() {
     expect_deny "umount arbitrary path" \
         /usr/bin/umount /home
 
-    # -- runsc with wrong --root or without --host-uds=open --
+    # -- runsc with wrong --instance-dir or without --host-uds=open --
     expect_deny "runsc --root /tmp/evil" \
         /usr/bin/runsc --root /tmp/evil state foo
-    expect_deny "runsc without --root" \
+    expect_deny "runsc without --instance-dir" \
         /usr/bin/runsc state foo
 
     # -- generic escalation --

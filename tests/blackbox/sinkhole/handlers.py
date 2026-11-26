@@ -1,6 +1,7 @@
 """Response handlers for different simulated hosts."""
 
 import json
+import re
 from dataclasses import dataclass, field
 
 if __name__ != "__main__":
@@ -70,6 +71,26 @@ class AnthropicHandler:
         return Response.json_response({"error": "not found"}, 404)
 
 
+class SubscriptionHandler:
+    """Rotate synthetic Codex credentials at an owned TLS provider."""
+
+    def handle(self, request: "CapturedRequest") -> Response:
+        if request.method != "POST" or request.path != "/oauth/token":
+            return Response.json_response({"error": "unsupported synthetic request"}, 400)
+        try:
+            body = json.loads(request.body)
+        except (ValueError, TypeError):
+            return Response.json_response({"error": "invalid synthetic request"}, 400)
+        if not isinstance(body, dict):
+            return Response.json_response({"error": "invalid synthetic request"}, 400)
+        match = re.fullmatch(r"bbsubscription-refresh-([0-9a-f]{32})-([0-9]+)", str(body.get("refresh_token", "")))
+        if not match or body.get("client_id") != "app_EMoamEEZ73f0CkXaXp7hrann" or body.get("grant_type") != "refresh_token":
+            return Response.json_response({"error": "invalid synthetic subscription"}, 400)
+        nonce, index = match.group(1), int(match.group(2)) + 1
+        return Response.json_response({"access_token": f"bbsubscription-access-{nonce}-{index}",
+                                       "refresh_token": f"bbsubscription-refresh-{nonce}-{index}"})
+
+
 class GenericHandler:
     """Returns 200 OK with request echo for any request."""
 
@@ -105,6 +126,8 @@ class FailingHandler:
 
 # Handler registry - maps hostnames to handlers
 HANDLERS: dict[str, object] = {
+    "auth.openai.com": SubscriptionHandler(),
+    "chatgpt.com": GenericHandler(),
     "api.openai.com": OpenAIHandler(),
     "api.anthropic.com": AnthropicHandler(),
     "evil.com": GenericHandler(),

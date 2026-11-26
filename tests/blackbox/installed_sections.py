@@ -1,8 +1,8 @@
 """Prepare one installed product and run sections with separate writable state.
 
-Use a disposable host from a clean checkout. systrap runs isolation, workloads,
-access, peer support, approvals, providers, federation, lifecycle and host
-continuity, with optional two-agent ingress.
+Use a disposable host from a clean checkout. systrap runs isolation, two-agent
+ingress with synthetic subscription renewal, workloads, access, peer support,
+approvals, providers, federation, lifecycle and host continuity.
 KVM runs isolation, guest ingress and workloads. Physical Apple Silicon VZ runs isolation, access, lifecycle and
 host continuity. All three also select disposable jobs, job network authority
 and live mounts. Systrap additionally selects nested Docker/gateway controls.
@@ -47,7 +47,7 @@ def copy_prepared_nats(source: Path, root: Path) -> None:
 
 def prepare_native_instance(source: Path, root: Path, *, log=None) -> None:
     """Create fresh native state and reuse the prepared immutable inputs."""
-    subprocess.run([str(source / "bin/safeyolo"), "--root", str(root), "init"],
+    subprocess.run([str(source / "bin/safeyolo"), "--instance-dir", str(root), "init"],
                    check=True, timeout=10, stdout=log, stderr=log)
     for name in ("bin", "assets", "lib", "libexec", "share", "host"):
         if not (source / name).exists():
@@ -127,14 +127,14 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
         for agent in agents:
             if (root / "agents" / agent).is_dir():
                 try:
-                    result = subprocess.run([str(cli), "--root", str(root), "agent", "stop", agent], env=env,
+                    result = subprocess.run([str(cli), "--instance-dir", str(root), "--json", "agent", "stop", agent], env=env,
                                             capture_output=True, timeout=60, check=False)
                     if result.returncode:
                         failures.append(f"agent stop {agent} exited {result.returncode}")
                 except (OSError, subprocess.SubprocessError) as exc:
                     failures.append(f"agent stop {agent}: {exc}")
         try:
-            result = subprocess.run([str(cli), "--root", str(root), "stop"], env=env, capture_output=True,
+            result = subprocess.run([str(cli), "--instance-dir", str(root), "--json", "stop"], env=env, capture_output=True,
                                     timeout=60, check=False)
             if result.returncode:
                 failures.append(f"proxy stop exited {result.returncode}")
@@ -256,15 +256,15 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                          "--nats-monitor-port", "46372"]
         if section in {"peer-support", "shared-approvals"}:
             args = [str(REPOSITORY / ".venv/bin/python"), "-m", "tests.blackbox.installed_authority",
-                    "--section", section, "--prepared-config", str(source), "--root", str(instance),
+                    "--section", section, "--prepared-config", str(source), "--instance-dir", str(instance),
                     "--revision", revision, "--output", str(section_artifacts)]
         if section == "provider":
             args = [str(REPOSITORY / ".venv/bin/python"), "-m", "tests.blackbox.installed_provider",
-                    "--prepared-config", str(source), "--root", str(instance), "--revision", revision,
+                    "--prepared-config", str(source), "--instance-dir", str(instance), "--revision", revision,
                     "--output", str(section_artifacts), "--admin-port", "0"]
         if section == "federation":
             args = [str(REPOSITORY / ".venv/bin/python"), "-m", "tests.blackbox.installed_federation",
-                    "--prepared-config", str(source), "--root", str(instance), "--revision", revision,
+                    "--prepared-config", str(source), "--instance-dir", str(instance), "--revision", revision,
                     "--output", str(section_artifacts)]
         if section == "claude":
             # The operator prepares the subscription in this dedicated host
@@ -272,7 +272,7 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
             instance = source
             args = [str(REPOSITORY / ".venv/bin/python"),
                     str(REPOSITORY / "tests/blackbox/claude_smoke.py"),
-                    "--root", str(source), "--workspace", str(directory / "claude-workspace"),
+                    "--instance-dir", str(source), "--workspace", str(directory / "claude-workspace"),
                     "--credential", os.environ.get("SAFEYOLO_CLAUDE_SMOKE_CREDENTIAL", ""),
                     "--output", str(section_artifacts / "claude-smoke.json")]
         if section in BOUNDARY_SECTIONS:
@@ -282,7 +282,7 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
             args = [str(REPOSITORY / ".venv/bin/python"),
                     str(REPOSITORY / "tests/blackbox/installed_boundaries.py"),
                     "--section", section, "--lane", lane, "--prepared-config", str(source),
-                    "--root", str(instance), "--revision", revision, "--output", str(section_artifacts)]
+                    "--instance-dir", str(instance), "--revision", revision, "--output", str(section_artifacts)]
             for option, port in (("--admin-port", boundary_admin_port),
                                  ("--upstream-port", boundary_upstream_port),
                                  ("--nats-client-port", boundary_nats_client_port),
@@ -338,11 +338,24 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
         if error is not None:
             row["error"] = error
         if section != "claude":
+            if section == "isolation" and not failures:
+                # Observers and canaries remain outside the guest's mounts.
+                # Export their reports only after the owned guest has stopped.
+                for phase in ("guest-agent", "guest-root"):
+                    observation = instance / "data" / f"containment-{phase}.json"
+                    if observation.is_file():
+                        try:
+                            shutil.copy2(observation, section_artifacts / observation.name)
+                        except OSError as exc:
+                            section_exit = 2
+                            row.update(exit=2, result="preparation_failure", error=f"containment report export: {exc}")
             row["execution"] = section_execution(section_artifacts, section, lane, run_id,
                                                   listener_restart=listener_restart and section == "isolation")
             if section_exit == 0 and not row["execution"]["complete"]:
                 section_exit = 2
-                row.update(exit=2, result="incomplete")
+                row["exit"] = 2
+                if not failures:
+                    row["result"] = "incomplete"
             stages = {stage for phase in row["execution"]["phases"] for stage in phase.get("failed_stages", [])}
             if not failures and stages:
                 row["result"] = ("cleanup_failure" if "teardown" in stages else

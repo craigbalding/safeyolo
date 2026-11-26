@@ -1,0 +1,12 @@
+#!/bin/sh
+# The native helper is staged by the existing host/guest package owner.
+helper=/run/safeyolo/safeyolo-guest
+[ -x "$helper" ] || helper=/safeyolo/safeyolo-guest
+if [ ! -x "$helper" ]; then
+    echo 'Guest state helper is absent; use the existing agent diagnostics/recovery route.' >&2
+    exit 1
+fi
+if [ "$(id -u)" != 0 ]; then
+    exec sudo -n "$helper" retained-state "$@"
+fi
+exec "$helper" retained-state "$@"

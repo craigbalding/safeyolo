@@ -1622,6 +1622,80 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         };
         return Ok(command_centre_agent_response(result));
     }
+    if let Some(agent_id) = path
+        .strip_prefix("/admin/agents/")
+        .and_then(|value| value.strip_suffix("/web"))
+        && !agent_id.contains('/')
+    {
+        let method = method.clone();
+        if !crate::desktop_present::valid_agent_id(agent_id) {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"invalid agent id"}),
+            ));
+        }
+        let parameters = if method == Method::GET {
+            None
+        } else {
+            let data = match read_json(request).await? {
+                ParsedBody::Terminal(outcome) => return Ok(outcome),
+                ParsedBody::Absent => Value::Null,
+                ParsedBody::Value(data) => data.0.clone(),
+            };
+            let parameters: crate::desktop_present::web::Parameters = match serde_json::from_value(
+                data,
+            ) {
+                Ok(value) => value,
+                Err(_) => {
+                    return Ok(response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error":"supply guest_port, audience and optional ttl_seconds/tailnet_port"}),
+                    ));
+                }
+            };
+            if let Err(error) = parameters.validate() {
+                return Ok(response(StatusCode::BAD_REQUEST, json!({"error":error})));
+            }
+            Some(parameters)
+        };
+        let publication = async {
+            match method {
+                Method::GET => Ok(crate::desktop_present::web::list(agent_id).await),
+                Method::POST => {
+                    crate::desktop_present::web::present(
+                        agent_id,
+                        parameters.as_ref().unwrap(),
+                        None,
+                    )
+                    .await
+                }
+                Method::DELETE => Ok(crate::desktop_present::web::stop(
+                    agent_id,
+                    parameters.as_ref().unwrap(),
+                )
+                .await),
+                _ => {
+                    return response(
+                        StatusCode::METHOD_NOT_ALLOWED,
+                        json!({"error":"use GET, POST or DELETE"}),
+                    );
+                }
+            }
+            .map_or_else(
+                |error| {
+                    response(
+                        StatusCode::CONFLICT,
+                        json!({"error":error.operator_json(),"agent_id":agent_id}),
+                    )
+                },
+                |value| response(StatusCode::OK, value),
+            )
+        };
+        return Ok(match command_centre {
+            Some(host) => host.scope(publication).await,
+            None => publication.await,
+        });
+    }
     if method == Method::POST
         && let Some(agent_id) = path
             .strip_prefix("/admin/agents/")

@@ -9,8 +9,9 @@ use std::{
 
 fn cli(root: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(root)
+        .arg("--json")
         .args(args)
         .env_remove("PYTHONPATH")
         .env("PATH", "/usr/bin:/bin")

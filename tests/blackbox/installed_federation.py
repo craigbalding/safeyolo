@@ -49,7 +49,7 @@ def run(args):
                             "SAFEYOLO_NATIVE_CONFIG_PATH": str(selected / "config.toml"),
                             "SAFEYOLO_COORD_DATA_DIR": str(selected / "data/coord"),
                             "SAFEYOLO_NATS_TEST_INSTANCE": str(selected), "SAFEYOLO_RUNSC_PLATFORM": "systrap"}
-        return checked([str(cli), "--root", str(selected), *words], env=env, diagnostics=output / "native.log")
+        return checked([str(cli), "--instance-dir", str(selected), "--json", *words], env=env, diagnostics=output / "native.log")
 
     def observe():
         raw = native(destination, "coord", "watch", "shared", "--history", "100", "--once", "--json")
@@ -188,7 +188,7 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepared-config", required=True, type=Path)
-    parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--instance-dir", dest="root", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--revision", required=True)
     run(parser.parse_args())

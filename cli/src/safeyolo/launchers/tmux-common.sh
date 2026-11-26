@@ -16,7 +16,7 @@ tmux_target=("$tmux_binary" -S "$SAFEYOLO_TMUX_SOCKET")
 pane=${SAFEYOLO_LAUNCH_PANE:-}
 case "${1:-}" in
     launch)
-        exec "$SAFEYOLO_EXECUTABLE" --config "$SAFEYOLO_NATIVE_CONFIG_PATH" \
+        exec "$SAFEYOLO_EXECUTABLE" --config "$SAFEYOLO_NATIVE_CONFIG_PATH" --json \
             agent launcher-session "$SAFEYOLO_AGENT_NAME" "$SAFEYOLO_LAUNCH_ID"
         ;;
     attach|status)

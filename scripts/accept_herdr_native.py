@@ -196,7 +196,7 @@ class Journey:
         self.preparation, self.output = preparation, output
         self.deadline = time.monotonic() + timeout
         route = preparation["route"]
-        self.command = [route["cli"], "--root", route["root"]]
+        self.command = [route["cli"], "--instance-dir", route["root"]]
         self.binary = preparation["herdr"]["path"]
         self.agents = prepared_agents(preparation)
         self.panes = {}
@@ -282,7 +282,7 @@ class Journey:
             self.panes[name] = pane
             wrapper = Path(__file__).with_name("safeyolo_herdr.py")
             command = shlex.join([sys.executable, str(wrapper), name, "--safeyolo", self.command[0],
-                                  "--root", self.command[2]])
+                                  "--instance-dir", self.command[2]])
             subprocess.run([self.binary, "pane", "run", pane, command], env=self.environment,
                            check=True, capture_output=True, timeout=15)
 

@@ -1005,12 +1005,27 @@ impl IssuedAccess {
             ));
         }
         if kind == "operator_action" {
-            let parameters: crate::desktop_present::Parameters =
-                serde_json::from_value(self.action["parameters"].clone())
-                    .map_err(|_| invalid("invalid desktop parameters"))?;
-            parameters.validate().map_err(invalid)?;
+            match self.action["action_id"].as_str() {
+                Some(crate::operator_actions::DESKTOP_PRESENT) => {
+                    let parameters: crate::desktop_present::Parameters =
+                        serde_json::from_value(self.action["parameters"].clone())
+                            .map_err(|_| invalid("invalid desktop parameters"))?;
+                    parameters.validate().map_err(invalid)?;
+                }
+                Some(crate::operator_actions::WEB_PRESENT) => {
+                    let parameters: crate::desktop_present::web::Parameters =
+                        serde_json::from_value(self.action["parameters"].clone())
+                            .map_err(|_| invalid("invalid web publication parameters"))?;
+                    parameters.validate().map_err(invalid)?;
+                    if serde_json::to_value(parameters.audience).ok().as_ref()
+                        != Some(&self.action["presentation"])
+                    {
+                        return Err(invalid("web publication audience changed"));
+                    }
+                }
+                _ => return Err(invalid("unsupported operator action")),
+            }
             if self.option != "once"
-                || self.action["action_id"] != crate::operator_actions::DESKTOP_PRESENT
                 || serde_json::from_value::<crate::desktop_present::Route>(
                     self.action["presentation"].clone(),
                 )

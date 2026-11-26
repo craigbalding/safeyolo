@@ -212,7 +212,7 @@ def section_rows(sections: list[dict], lane: str) -> list[dict]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=("begin", "finish", "publish", "ports"))
-    parser.add_argument("--root", type=Path)
+    parser.add_argument("--instance-dir", dest="root", type=Path)
     parser.add_argument("--lane", choices=("kvm", "vz"))
     parser.add_argument("--trigger", choices=("overnight", "on-demand"))
     parser.add_argument("--attempt", type=Path)
@@ -226,7 +226,7 @@ def main() -> int:
         return 0
     if args.operation == "begin":
         if args.root is None or args.lane is None or args.trigger is None:
-            parser.error("begin requires --root, --lane and --trigger")
+            parser.error("begin requires --instance-dir, --lane and --trigger")
         begin(args.root, args.lane, args.trigger)
         return 0
     if args.attempt is None:

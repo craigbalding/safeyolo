@@ -1,6 +1,7 @@
 //! Host-side signal evidence. Receipt never confers effect authority.
 pub mod control_updates;
 mod guest_inventory;
+mod maintenance;
 mod responses;
 mod transport;
 pub(crate) fn approval_revision(policy: &crate::policy::Policy, action: &Value) -> Option<String> {
@@ -44,7 +45,7 @@ use std::{
 };
 use transport::Source;
 
-pub const HELP: &str = "safeyolo [--root ROOT] signals configure FILE\nsafeyolo [--root ROOT] signals status\nsafeyolo [--root ROOT] signals assess RULE\nsafeyolo [--root ROOT] signals publish SOURCE KEY FILE\nsafeyolo signals keygen-update PRIVATE_KEY.der\nsafeyolo signals sign-update BUNDLE.json PRIVATE_KEY.der SIGNED.json\n\nconfigure validates and saves private host sources and response rules. The running proxy follows NATS KV current state and reconciles responses through its existing control loop. No proxy means no automatic response. assess requests current Debian package collection for an explicitly adopted rule; read status for completion. It starts no stopped agent. status shows retained evidence, freshness, authority and action results; delivery is not verification. publish validates an evidence envelope and writes through the selected host-held NATS credential; broker ACLs own publication authority. keygen-update creates a private Ed25519 PKCS#8 key and reports its public key. sign-update writes a signed immutable native check/challenge bundle without executing or adopting it. Source credentials, publisher private keys and endpoints stay outside guests. See docs/signals.md.";
+pub const HELP: &str = "safeyolo [--instance-dir PATH] signals configure FILE\nsafeyolo [--instance-dir PATH] signals status\nsafeyolo [--instance-dir PATH] signals assess RULE\nsafeyolo [--instance-dir PATH] signals publish SOURCE KEY FILE\nsafeyolo signals keygen-update PRIVATE_KEY.der\nsafeyolo signals sign-update BUNDLE.json PRIVATE_KEY.der SIGNED.json\n\nconfigure validates and saves private host sources and response rules. The running proxy follows NATS KV current state and reconciles responses through its existing control loop. No proxy means no automatic response. assess requests current Debian package collection for an explicitly adopted rule; read status for completion. It starts no stopped agent. status shows retained evidence, freshness, authority and action results; delivery is not verification. publish validates an evidence envelope and writes through the selected host-held NATS credential; broker ACLs own publication authority. keygen-update creates a private Ed25519 PKCS#8 key and reports its public key. sign-update writes a signed immutable native check/challenge bundle without executing or adopting it. Source credentials, publisher private keys and endpoints stay outside guests. See docs/signals.md.";
 
 fn now() -> u64 {
     time::OffsetDateTime::now_utc().unix_timestamp().max(0) as u64
@@ -84,6 +85,33 @@ fn configuration(root: &Path) -> Result<Configuration, Error> {
         return Ok(Configuration::default());
     }
     parse(&fs::read_to_string(path).map_err(|_| "cannot read signal configuration")?)
+}
+
+pub(crate) fn stage_startup(root: &Path, agent: &str, run: &str) -> Result<(), Error> {
+    let rules = responses::startup_rules(root, agent)?;
+    save(
+        &root
+            .join("agents")
+            .join(agent)
+            .join("config-share/startup-maintenance.json"),
+        &json!({"run_id":run,"rules":rules,"allowed":rules.is_empty()}),
+    )
+}
+
+pub(crate) async fn before_work(root: &Path, agent: &str) -> Result<(), Error> {
+    let run = crate::host_runs::read(agent)?.ok_or("startup guest record missing")?;
+    let run_id = run["run_id"]
+        .as_str()
+        .ok_or("startup guest generation missing")?;
+    stage_startup(root, agent, run_id)?;
+    responses::before_work(root, agent).await?;
+    save(
+        &root
+            .join("agents")
+            .join(agent)
+            .join("config-share/startup-maintenance.json"),
+        &json!({"run_id":run_id,"allowed":true,"verified_at":now()}),
+    )
 }
 fn parse(text: &str) -> Result<Configuration, Error> {
     let value = crate::policy::parse_toml_document(text)
@@ -464,6 +492,8 @@ impl Drop for Follow {
 }
 
 pub async fn command(root: &Path, args: &[String]) -> Result<(), Error> {
+    let selected_arguments = crate::operator_output::without_json(args);
+    let args = selected_arguments.as_slice();
     match args {
         [help] if help == "--help" => println!("{HELP}"),
         [configure, file] if configure == "configure" => {
@@ -482,7 +512,7 @@ pub async fn command(root: &Path, args: &[String]) -> Result<(), Error> {
                 root.display()
             );
         }
-        [show] if show == "status" => println!("{}", serde_json::to_string_pretty(&status(root)?)?),
+        [show] if show == "status" => show_status(&status(root)?)?,
         [assess, rule] if assess == "assess" => {
             let _lock = crate::approvals::lock_policy(&root.join("policy.toml"))?;
             let config = configuration(root)?;
@@ -495,11 +525,15 @@ pub async fn command(root: &Path, args: &[String]) -> Result<(), Error> {
             let request =
                 json!({"request_id":uuid::Uuid::new_v4().to_string(),"requested_at":now()});
             save(&guest_inventory::request_path(root, rule), &request)?;
-            println!(
-                "{}",
-                json!({"root":root,"rule":rule,"agents":selected.agents,"request":request,
-                "status":"requested","next_action":"Read signals status after the running proxy's next control pass. This request does not start stopped agents or establish assessment completion."})
-            );
+            let value = json!({"root":root,"rule":rule,"agents":selected.agents,"request":request,
+                "status":"requested","next_action":"Read signals status after the running proxy's next control pass. This request does not start stopped agents or establish assessment completion."});
+            if crate::operator_output::json_requested() {
+                crate::operator_output::json(&value)?;
+            } else {
+                println!(
+                    "Assessment requested for {rule}. Read signals status after the next control pass; no stopped agent was started and completion is not yet observed."
+                );
+            }
         }
         [sign, bundle, key, output] if sign == "sign-update" => {
             control_updates::sign(Path::new(bundle), Path::new(key), Path::new(output))?;
@@ -540,10 +574,16 @@ pub async fn command(root: &Path, args: &[String]) -> Result<(), Error> {
             } else {
                 kv.create(key, bytes.into()).await?
             };
-            println!(
-                "{}",
-                json!({"publication":"accepted_by_broker","kv_revision":revision,"signal_revision":update.revision,"response":"not_verified"})
-            );
+            if crate::operator_output::json_requested() {
+                crate::operator_output::json(
+                    &json!({"publication":"accepted_by_broker","kv_revision":revision,"signal_revision":update.revision,"response":"not_verified"}),
+                )?;
+            } else {
+                println!(
+                    "Broker accepted signal revision {} at KV revision {revision}. Response execution is unverified; inspect signals status.",
+                    update.revision
+                );
+            }
         }
         _ => return Err("see signals --help".into()),
     }
@@ -683,5 +723,32 @@ pub(crate) async fn distribute_list(
             kv.create(&publication.key, bytes.into()).await?;
         }
     }
+    Ok(())
+}
+
+fn show_status(value: &Value) -> Result<(), Error> {
+    if crate::operator_output::json_requested() {
+        return crate::operator_output::json(value);
+    }
+    crate::operator_output::field("Instance", &value["root"]);
+    if let Some(sources) = value["sources"].as_object() {
+        if sources.is_empty() {
+            println!("No signal sources configured.");
+        }
+        for (name, source) in sources {
+            println!(
+                "{name}: {} accepted records; {}",
+                source["accepted"].as_array().map_or(0, Vec::len),
+                if source["health"].is_null() {
+                    "source health unavailable"
+                } else {
+                    "recorded source health; inspect --json for freshness"
+                }
+            );
+        }
+    }
+    println!(
+        "Reading status does not collect guest state. Responses and control updates retain recorded evidence; use --json for full records and freshness."
+    );
     Ok(())
 }

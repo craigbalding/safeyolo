@@ -105,12 +105,12 @@ def test_candidate_evaluation_reports_actions_without_destination_contact(tmp_pa
                 "finding": finding,
             }]))
             checked = subprocess.run(
-                [str(executable), "--root", str(root), "policy", "check", str(policy)],
+                [str(executable), "--instance-dir", str(root), "--json", "policy", "check", str(policy)],
                 capture_output=True, text=True, timeout=15,
             )
             assert checked.returncode == 0, checked.stderr
             evaluated = subprocess.run(
-                [str(executable), "--root", str(root), "policy", "evaluate", str(policy), str(request_file)],
+                [str(executable), "--instance-dir", str(root), "--json", "policy", "evaluate", str(policy), str(request_file)],
                 capture_output=True, text=True, timeout=15,
             )
             assert evaluated.returncode == 0, evaluated.stderr
@@ -199,7 +199,7 @@ def test_candidate_evaluation_preserves_captured_scores(tmp_path):
             # 1e400 is valid JSON syntax but cannot represent a finite f64.
             evidence_file.write_text(json.dumps(records).replace("Infinity", "1e400"))
             evaluated = subprocess.run(
-                [str(executable), "--root", str(root), "policy", "evaluate", str(policy), str(request_file)],
+                [str(executable), "--instance-dir", str(root), "--json", "policy", "evaluate", str(policy), str(request_file)],
                 capture_output=True, text=True, timeout=15,
             )
             assert evaluated.returncode == 0, evaluated.stderr
@@ -283,7 +283,7 @@ def test_candidate_evaluation_uses_time_after_all_evidence_reads(tmp_path, case)
             "hosts": hosts, "controls": {"network": {"homoglyph": False}},
             "checks": checks, "check_rules": rules,
         }))
-        command = [str(executable), "--root", str(root), "policy", "evaluate", str(policy), str(request_file)]
+        command = [str(executable), "--instance-dir", str(root), "--json", "policy", "evaluate", str(policy), str(request_file)]
         control = subprocess.run(command, capture_output=True, text=True, timeout=15)
         assert control.returncode == 0, control.stderr
         initial = json.loads(control.stdout)["result"]
@@ -351,7 +351,7 @@ class NativeInstance:
 
     def cli(self, *arguments, timeout=15):
         return subprocess.run(
-            [str(self.root / "bin/safeyolo"), "--root", str(self.root), *arguments],
+            [str(self.root / "bin/safeyolo"), "--instance-dir", str(self.root), "--json", *arguments],
             cwd=self.root.parent, env=self.environment, capture_output=True, text=True, timeout=timeout,
         )
 
@@ -419,7 +419,7 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
         if source_fixture:
             # A controlled guest transport needs native commands and source
             # assets, but consumes neither an installed package nor runsc.
-            subprocess.run([str(artifacts / "safeyolo"), "--root", str(root), "init"],
+            subprocess.run([str(artifacts / "safeyolo"), "--instance-dir", str(root), "init"],
                            check=True, capture_output=True, timeout=15)
             (root / "bin").mkdir()
             for binary in HOST_BINARIES:
@@ -441,7 +441,7 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
             shutil.copy2(REPO / "guest/rootfs/safeyolo-sudo", assets / "guest/guest-sudo")
         else:
             installation = subprocess.run(
-                [str(REPO / "scripts/install_native.sh"), "--root", str(root), "--command-dir", str(root / "commands"), "--yes", *inputs],
+                [str(REPO / "scripts/install_native.sh"), "--instance-dir", str(root), "--command-dir", str(root / "commands"), "--yes", *inputs],
                 capture_output=True, text=True, timeout=15,
             )
             assert installation.returncode == 0, installation.stderr
@@ -654,14 +654,16 @@ def test_installed_lab_stages_skills_without_the_optional_python_checker(tmp_pat
     workspace.mkdir()
     try:
         result = subprocess.run(
-            [str(artifacts / "safeyolo"), "--root", str(instance.root), "lab", "--agent", "lab-staging",
+            [str(artifacts / "safeyolo"), "--instance-dir", str(instance.root), "lab", "--agent", "lab-staging",
              "--workspace", str(workspace), "--objective", "inspect installed Lab assets", "--yes"],
             cwd=tmp_path, env=instance.environment, capture_output=True, text=True, timeout=15,
         )
         assert result.returncode != 0
         staged = instance.root / "agents/lab-staging/config-share/skills"
         assert (staged / "safeyolo/SKILL.md").read_bytes() == instructions
-        assert not list(staged.rglob("*.py"))
+        host_client = Path("safeyolo/scripts/host-operation.py")
+        assert {path.relative_to(staged) for path in staged.rglob("*.py")} == {host_client}
+        assert (staged / host_client).read_bytes() == (skill / "scripts/host-operation.py").read_bytes()
         assert not (staged / "safeyolo/references/github-checks.md").exists()
         assert (staged / "safeyolo-lab-controller/scripts/safeyolo-lab").is_file()
         assert (home / ".agents/skills/safeyolo").readlink() == Path("/safeyolo/skills/safeyolo")
@@ -1332,12 +1334,17 @@ def test_native_check_rejects_replaced_policy_fields(tmp_path, old_field):
 
 def test_installed_config_help_and_named_diagnostics(tmp_path):
     with native_instance(tmp_path, agent_api=True) as instance:
-        for arguments in (("--help",), ("test-context", "--help")):
+        for arguments, discovery in (
+            (("--help",), "helpers --help"),
+            (("helpers", "--help"), "test-context --help"),
+            (("test-context", "--help"), "trusted listener"),
+        ):
             result = instance.cli(*arguments)
-            assert result.returncode == 0 and "trusted listener" in result.stdout
+            assert result.returncode == 0 and discovery in result.stdout
             assert "addon" not in result.stdout.lower()
         checked = instance.cli("config", "check", str(instance.root / "config.toml"))
-        assert checked.returncode == 0 and "Configuration is valid" in checked.stdout
+        assert checked.returncode == 0, checked.stderr
+        assert json.loads(checked.stdout) == {"valid": True, "config": str(instance.root / "config.toml")}
         candidate = tmp_path / "invalid-config.toml"
         candidate.write_text("[addons.network_guard]\nenabled=false\n")
         rejected = instance.cli("config", "check", str(candidate))
@@ -1466,7 +1473,9 @@ def test_installed_agent_override_precedence(tmp_path, global_effect, agent_effe
         with restarted_proxy(instance):
             assert instance.policy.read_bytes() == saved
             assert instance.show()["saved_matches_active"]
-            assert json.loads(instance.cli("doctor").stdout)["agents"] == []
+            inventory = instance.cli("agent", "list")
+            assert inventory.returncode == 0, inventory.stderr
+            assert json.loads(inventory.stdout)["agents"] == []
             delivered(instance, origin, "override.invalid:8123", status=status)
             delivered(instance, origin, "override.invalid:8123", agent="bob", status=403 if status == 200 else 200)
             assert instance.policy.read_bytes() == saved

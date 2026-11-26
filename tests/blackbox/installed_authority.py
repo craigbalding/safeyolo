@@ -54,7 +54,7 @@ def prepare_authority_guests(base, root, native):
 
 def run(args):
     root, base, output = args.root.resolve(), args.prepared_config.resolve(), args.output.resolve()
-    assert not root.exists(), "--root must be new"
+    assert not root.exists(), "--instance-dir must be new"
     output.mkdir(parents=True, exist_ok=True)
     assert not any(output.iterdir()), "--output must be empty"
     output.chmod(0o700)
@@ -68,7 +68,7 @@ def run(args):
                         "SAFEYOLO_LOGS_DIR": str(root / "logs"), "TMPDIR": str(root / "data/tmp")}
 
     def native(*arguments):
-        return checked([str(cli), "--root", str(root), *arguments], env=env,
+        return checked([str(cli), "--instance-dir", str(root), "--json", *arguments], env=env,
                        diagnostics=output / "native.log")
 
     capture_failures = []
@@ -79,7 +79,7 @@ def run(args):
             (root / "services/delegated-approval-service.yaml").write_bytes(fixture.read_bytes())
         native("start")
         if args.section == "peer-support":
-            command = ["-m", "tests.blackbox.installed_peer_support", "--cli", str(cli), "--root", str(root),
+            command = ["-m", "tests.blackbox.installed_peer_support", "--cli", str(cli), "--instance-dir", str(root),
                        "--support", "bbpeer", "--target", "bbtest", "--scratch", str(root / "support-scratch"),
                        "--output", str(output / "result.json"), "--platform", "systrap"]
         else:
@@ -147,7 +147,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--section", choices=("peer-support", "shared-approvals"), required=True)
     parser.add_argument("--prepared-config", type=Path, required=True)
-    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--instance-dir", dest="root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--revision", required=True)
     run(parser.parse_args())

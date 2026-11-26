@@ -18,7 +18,7 @@ the read-only identity and status commands:
 selected_cli=/absolute/path/to/installed/bin/safeyolo
 selected_root=/absolute/path/to/selected/instance
 "$selected_cli" --version
-"$selected_cli" --root "$selected_root" status
+"$selected_cli" --instance-dir "$selected_root" status
 ```
 
 Status reports the selected root, proxy state and configured agents. Verify
@@ -45,7 +45,10 @@ check establishes neither activation nor a provider's live behavior.
 Use the installed [SafeYolo skill](../../safeyolo/SKILL.md) and its
 [Agent API reference](../../safeyolo/references/agent-api.md) for authenticated
 read shapes. Preserve the proxy and certificate authority configuration.
-Useful reads include `/health`, `/status`, `/agents` and `/operator-actions`.
+Choose the [discovery surface](../../safeyolo/references/agent-api.md#discover-the-right-capability)
+for the task. Installed policy capabilities and current support grants expose
+product paths beyond external services and typed operator actions.
+Useful reads also include `/health`, `/status`, `/agents` and `/operator-actions`.
 The Agent API's `/agents` reports discovered agents and last-seen information;
 it is not the host's saved configured-agent list. Its visible inventory is
 scoped discovery, not proof of all configured workers. `/operator-actions`
@@ -61,10 +64,15 @@ operations. Membership or a capability declaration establishes neither peer
 administration nor a working integration. Current grants and actual consumer
 results determine the next usable operation.
 
-A missing host view stays unavailable. Keep the exact selected target and
-needed operand in an existing request to its authorized owner. Do not ask for
-Admin credentials or substitute arbitrary host commands. Reuse an already
-authorized servicing/configuration path when it supplies the required effect.
+A missing host view stays unavailable. Reuse an already authorized servicing or
+configuration path when it supplies the required effect. If an operator step
+is necessary, prepare the documented command or approval request for the exact
+selected target, explain what it enables, and resume after effective access
+changes. For creation and support of another worker, use the
+[agent handoff](../../safeyolo/references/agent-launchers.md).
+Do not ask for Admin credentials or substitute arbitrary host execution for a
+denied operation. A missing grant is not evidence that the product lacks a
+supported way to grant it.
 
 ## Saved choices and evidence
 

@@ -277,8 +277,8 @@ async fn perform(
         return Err(error("HTTP(S) URL required"));
     }
     let config = call(json!({"kind":"proxy_config"})).map_err(error)?;
-    let token = if let Some(service) = inputs["service"].as_str() {
-        Some(call(json!({"kind":"gateway_token","service":service})).map_err(error)?)
+    let service_header = if let Some(service) = inputs["service"].as_str() {
+        Some(call(json!({"kind":"gateway_header","service":service})).map_err(error)?)
     } else {
         None
     };
@@ -294,16 +294,15 @@ async fn perform(
     } else {
         format!("{}:{}", parsed.host(), parsed.port_or_default())
     };
-    let authorization;
     let mut headers = vec![("Connection", "close")];
-    if let Some(token) = token {
-        authorization = format!(
-            "Bearer {}",
-            token["token"]
-                .as_str()
-                .ok_or_else(|| error("service grant unavailable"))?
-        );
-        headers.push(("Authorization", authorization.as_str()));
+    if let Some(header) = service_header.as_ref() {
+        let name = header["name"]
+            .as_str()
+            .ok_or_else(|| error("service header unavailable"))?;
+        let value = header["value"]
+            .as_str()
+            .ok_or_else(|| error("service grant unavailable"))?;
+        headers.push((name, value));
     }
     let mut buffer = vec![0; TLS_BUFFER];
     let status = if parsed.scheme() == UrlScheme::HTTPS {

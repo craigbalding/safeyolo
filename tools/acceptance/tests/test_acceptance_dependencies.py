@@ -298,6 +298,48 @@ get_logger_provider().shutdown()
         self.assertTrue({"/input", "/v1/traces", "/v1/logs"} <= set(paths), paths)
 
 
+class SemgrepPathDependencies(unittest.TestCase):
+    def test_actual_matcher_handles_adversarial_filename(self):
+        # Exercise Semgrep's consumer, including its preprocessing and flags.
+        probe = """
+from semgrep.target_manager import TargetManager
+assert not TargetManager._globmatch('/' + '_' * 255, '**/*_*_*_*_*.csv')
+assert TargetManager._globmatch('/nested/.hidden.py', '**/*.py')
+"""
+        run = subprocess.run([sys.executable, "-I", "-c", probe],
+                             capture_output=True, text=True, timeout=20)
+        self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_scanner_cli_and_rule_path_filters(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ("keep.py", ".hidden.py", "nested/keep.py", "skip.py", "other.txt"):
+                path = root / "files" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("dependency_control\n")
+            rule = {"id": "dependency-control", "languages": ["generic"],
+                    "message": "dependency control", "severity": "INFO",
+                    "pattern": "dependency_control"}
+            for rule_paths in (False, True):
+                with self.subTest(rule_paths=rule_paths):
+                    config = root / "rule.json"
+                    config.write_text(json.dumps({"rules": [{**rule, **(
+                        {"paths": {"include": ["*.py"], "exclude": ["skip.py"]}}
+                        if rule_paths else {})}]}))
+                    command = [str(Path(sys.executable).with_name("semgrep")), "scan", "--metrics=off",
+                               "--disable-version-check", "--json", "--no-git-ignore", "--jobs=1",
+                               "--config", str(config)]
+                    if not rule_paths:
+                        command.extend(["--include", "*.py", "--exclude", "skip.py"])
+                    run = subprocess.run([*command, "files"], cwd=root,
+                                         capture_output=True, text=True, timeout=45)
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    result = json.loads(run.stdout)
+                    self.assertEqual(result["errors"], [])
+                    self.assertEqual({item["path"] for item in result["results"]},
+                                     {"files/keep.py", "files/.hidden.py", "files/nested/keep.py"})
+
+
 class CacheDependencies(unittest.TestCase):
     def test_pip_audit_cache_round_trip_survives_new_session(self):
         from pip_audit._service import PyPIService

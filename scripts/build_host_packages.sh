@@ -82,7 +82,7 @@ fi
 [[ ! -e $directory ]] || { package_error "bundle directory already exists: $directory"; exit 1; }
 mkdir -p "$directory/bin" "$directory/libexec" "$directory/lib" "$directory/assets/guest" "$directory/assets/launchers" "$directory/assets/contrib/lib" "$directory/assets/docs"
 if [[ -n $hyperlight_artifacts ]]; then
-  hyperlight_files=(safeyolo-hyperlight runtime.json python.cpio core.elf checker.py service_checker.py artifact_checker.py network_checker.py
+  hyperlight_files=(safeyolo-hyperlight runtime.json python.cpio core.elf checker.py service_checker.py artifact_checker.py network_checker.py template_probe.py
     hyperlight.json hyperlight-unikraft.json hyperlight-service.json hyperlight-unikraft-service.json
     hyperlight-artifact.json hyperlight-unikraft-artifact.json hyperlight-network.json hyperlight-unikraft-network.json)
   for artifact in "${hyperlight_files[@]}"; do
@@ -190,7 +190,7 @@ if [[ $platform == linux-* ]] && command -v dpkg-query >/dev/null 2>&1; then
 fi
 cp "$repository/docs/AGENTS.md" "$repository/docs/signals.md" "$directory/assets/docs/"
 cp "$repository/repo-map.toml" "$directory/assets/"
-for asset in claude-host-setup codex-host-setup codex-command codex-coord-host-setup pi-host-setup pi-coord-host-setup mise-shell-host-setup coord-mcp-bootstrap safeyolo-coord-mcp-launcher; do
+for asset in claude-host-setup claude-coord-host-setup codex-host-setup codex-command codex-coord-host-setup pi-host-setup pi-coord-host-setup mise-shell-host-setup coord-mcp-bootstrap safeyolo-coord-mcp-launcher; do
   cp "$repository/contrib/$asset.sh" "$directory/assets/contrib/"
 done
 cp "$repository/contrib/pi-coord-extension.ts" "$directory/assets/contrib/"

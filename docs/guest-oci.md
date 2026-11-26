@@ -256,13 +256,13 @@ the unpacked bundle directory, `ROOT` to the new installation directory, and
 installer from the qualified source checkout:
 
 ```sh
-scripts/install_native.sh --bundle "$HOST_BUNDLE" --root "$ROOT" --guest-index "$INDEX" --yes
+scripts/install_native.sh --bundle "$HOST_BUNDLE" --instance-dir "$ROOT" --guest-index "$INDEX" --yes
 ```
 
 The installer selects the current host platform explicitly and verifies the
 published bytes. It does not repeat the distro build. For an existing
 compatible installation, select the same digest with
-`safeyolo --root "$ROOT" guest upgrade --index "$INDEX"`, then stop and start
+`safeyolo --instance-dir "$ROOT" guest upgrade --index "$INDEX"`, then stop and start
 the agent to use it. Publication success alone does not prove either installed
 workflow or complete the custom-profile acceptance criteria.
 
@@ -451,7 +451,7 @@ Replace `sha256:DIGEST` with the complete index digest from the guest release's
 publication. The package metadata stays unchanged.
 
 ```sh
-safeyolo --root /owned/fresh-root guest acquire --package-info /path/to/host-package/package-info --write-selection /owned/fresh-root/share/guest-selection.json --store /owned/guest-store --index sha256:DIGEST
+safeyolo --instance-dir /owned/fresh-root guest acquire --package-info /path/to/host-package/package-info --write-selection /owned/fresh-root/share/guest-selection.json --store /owned/guest-store --index sha256:DIGEST
 ```
 
 Success prints the prepared asset directory and writes the selection as JSON.
@@ -506,7 +506,7 @@ the restored selection. Stop and start the affected agent to boot that guest,
 using the existing `safeyolo agent stop NAME` and `safeyolo agent start NAME`
 commands with its configured name.
 
-For another instance, put `--root /absolute/instance/path` before `guest`.
+For another instance, put `--instance-dir /absolute/instance/path` before `guest`.
 For a specific release, pass `--index sha256:DIGEST` to `guest upgrade`, replacing
 `sha256:DIGEST` with the complete OCI index digest from that guest's publication.
 The Rust consumer verifies that index and pins its selected child and blob;
@@ -539,7 +539,7 @@ safeyolo agent stop NAME
 safeyolo agent start NAME
 ```
 
-For another instance, put `--root /absolute/instance/path` before each subcommand.
+For another instance, put `--instance-dir /absolute/instance/path` before each subcommand.
 A harness restart, or `agent start` on an already-running sandbox, does not
 replace its guest. A compatible host-only upgrade retains the selected guest
 unless a guest change is explicitly selected.
@@ -560,11 +560,22 @@ gVisor runtime and the separately supplied VZ boot kernel need their own updates
 For already-running Debian agents, [adopted signal assessment](signals.md#assess-running-debian-guests)
 can collect actual installed packages on explicit request or at a selected
 interval. It reassesses retained advisories without waiting for republication
-and uses the selected notification, approval or maintenance-Work response.
-It does not patch packages, enforce a check before harness startup, select a
-guest, restart processes, restore customisations or verify repair. Those effects
-remain with their authorised maintenance and lifecycle owners. A notification
-or dispatched Work is not completed maintenance.
+and uses the selected notification, approval, maintenance recipe or Work response.
+An [adopted Debian maintenance recipe](signals.md#execute-adopted-debian-maintenance)
+can retain advisory requirements, restore customisations, patch the selected
+guest, run its chosen service restart/health/recovery commands and verify the
+effective package and file state. Optional startup ordering gates ordinary work
+while leaving the maintenance transport available. Unconfigured instances keep
+manual operation. A notification or dispatched Work remains distinct from
+executed maintenance.
+
+Guest-image acquisition and default selection still use the explicit commands
+above. Recipe recovery must preserve the mutable state it changes; `guest
+rollback` supplies no such snapshot. In-place changes to either Linux overlay
+remain temporary unless the adopted recipe restores retained requirements at
+the next boot. On VZ, verify the actual overlay's files and package state even
+after selecting a new base. The host runtime and separately supplied boot kernel
+remain outside guest package maintenance.
 
 ## Prepare and publish a default guest release
 

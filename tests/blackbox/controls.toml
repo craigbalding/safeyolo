@@ -7,7 +7,7 @@ control = "Direct network egress"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_vm_isolation.py"
 what = "TCP, IPv6 and metadata routes cannot bypass the proxy."
 existing = "Guest BB; nightly."
-conformance = "Repair uncontrolled endpoints and curl-exit-code oracles: use live owned receivers and prove zero unauthorized delivery."
+conformance = "Host TCP receivers compare delivered bytes with independent before/after controls. Assigned non-loopback destinations and actual network context are retained. User/root IPv4/IPv6 and owned metadata delivery checks have [independent Linux systrap acceptance at 91f805e0](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7141516865). KVM/VZ delivery remains unproved."
 effort = "M"
 comments = "Exercise ordinary agent and guest root."
 owner = "#1560"
@@ -19,7 +19,7 @@ control = "DNS/UDP egress"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_vm_isolation.py"
 what = "Queries/datagrams cannot leak even when no response returns."
 existing = "Guest BB; nightly."
-conformance = "Repair NXDOMAIN/gaierror/no-reply oracles with owned receivers, unique markers and positive controls."
+conformance = "Owned UDP/TCP receivers record unique DNS payloads independently of replies. The disposable guest selects the owned libc resolver temporarily and restores the prior file state. Raw datagram observations retain their 91f805e0 scope. The corrected libc resolver has [independent Linux systrap acceptance at cd86f5d7](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7142642432). KVM/VZ delivery remains unproved."
 effort = "M"
 comments = "Share receiver infrastructure with BB-01."
 owner = "#1560"
@@ -30,8 +30,8 @@ id = "BB-03"
 control = "Guest-root containment"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_vm_isolation.py"
 what = "Guest administration cannot modify host configuration or access host processes/devices."
-existing = "Guest BB; nightly; partly conformant."
-conformance = "Retain live UID mapping/read-only checks; replace invalid syscall arguments and host-PID-1-name assumptions with valid probes and host canaries."
+existing = "Guest BB; nightly."
+conformance = "UID mapping/read-only checks remain. Host file/process canaries replace PID-name and null-pointer inferences. BPF uses valid architecture-specific attributes and nonnegative-FD semantics; device creation and use are distinct. The corrected elevated device/canary probe has [independent Linux systrap acceptance at cd86f5d7](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7142642432). KVM/VZ containment remains unproved."
 effort = "M"
 comments = "Guest root is intentionally allowed; device-node creation and device use are different claims."
 owner = "#1560"
@@ -42,8 +42,8 @@ id = "BB-04"
 control = "Agent identity / peer isolation"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_ingress_pair.py"
 what = "Forged claims cannot select another agent; peer sockets/private files remain inaccessible as user and root."
-existing = "Strong two-guest BB exists but is optional; basic peer checks run by default."
-conformance = "Wire the existing ingress-pair witness into nightly selection; retire guessed-neighbour probes and SSH checks accepting either outcome."
+existing = "Two real peers are selected by the default systrap ingress section."
+conformance = "Default systrap selects the pair, forged claims, authorized peer context, user/root private-file/socket refusals and restart. The extended journey has [independent Linux systrap acceptance at 91f805e0](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7141516865). This does not establish KVM/VZ coverage."
 effort = "S"
 comments = "Existing pair covers guest root and proxy restart; retain its actual platform scope."
 owner = "#1560"
@@ -103,7 +103,7 @@ control = "Host-secret custody"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/isolation/test_key_isolation.py"
 what = "Guest and guest root cannot directly read host CA/vault secrets."
 existing = "Scans and injection checks exist; partial."
-conformance = "Extend with unique synthetic secret canaries across relevant guest files, environment and scoped APIs."
+conformance = "Installed access fingerprints its unique signing key and synthetic encrypted-store credential. User/root scans cover relevant files, environment and scoped APIs after authorized TLS/injection; unauthorized origins must not receive the value. Custody has [independent Linux systrap acceptance at 91f805e0](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7141516865); KVM/VZ remains unproved."
 effort = "M"
 comments = "Preserve deliberately provisioned client credentials and authorized operator views."
 owner = "#1560"
@@ -115,7 +115,7 @@ control = "Subscription credential adoption / renewal"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/proxy/tests/credential_http/codex.rs"
 what = "Refresh/import cannot change identity or resurrect revoked authority."
 existing = "Strong native HTTP tests; run-lifetime backend is synthetic."
-conformance = "Extend with one real guest and controlled provider: adoption, refresh, restart, revocation and wrong guest."
+conformance = "Default systrap pair composes explicit run-scoped import, two controlled-provider renewals, proxy restart, revocation and wrong-guest attempts. Exact provider effects and sanitized fingerprints have [independent Linux systrap acceptance at 91f805e0](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7141516865). This does not establish KVM/VZ coverage."
 effort = "M"
 comments = "No paid model service needed; retain existing native cases."
 owner = "#1560"
@@ -174,8 +174,8 @@ id = "BB-15"
 control = "Restart / abrupt-failure recovery"
 source = "https://github.com/craigbalding/safeyolo/blob/c9543b5c68fd86d218e61e32320864b337c52b9d/tests/blackbox/installed_shared_approvals.py"
 what = "Outages cannot bypass enforcement, revive authority or replay effects."
-existing = "Orderly guest lifecycle nightly; SIGKILL witness on demand."
-conformance = "Wire and extend abrupt failure: guest non-delivery during outage; consumed/revoked authority stays unusable after recovery."
+existing = "Graceful lifecycle stays selected; installed access also selects the shared owned-process SIGKILL witness."
+conformance = "Access checks outage non-delivery, no automatic replay, revoked service and consumed risk-grant refusal after recovery, then an allowed origin control. This journey has [independent Linux systrap acceptance at 91f805e0](https://github.com/craigbalding/safeyolo/issues/1560#issuecomment-7141516865). KVM/VZ and deployed cadence remain unproved."
 effort = "M"
 comments = "Preserve graceful drain and admitted-stream semantics."
 owner = "#1560"
@@ -446,6 +446,70 @@ owner = "#889"
 decisions = []
 
 
+[[controls]]
+id = "BB-38"
+control = "Host-operation authority and native execution"
+source = "https://github.com/craigbalding/safeyolo/issues/1677"
+what = "Authenticated host operations retain exact scope and revision checks; native execution has observable bounds and cleanup."
+existing = "Native protocol and installed Unix fixtures, including adaptive application reads, fixed-service control, retained configuration effects, quiet/reviewed updates and dependency swaps. The Windows fixture selects packaged starters, machine/workload-user registry views, path aliases/reparse points, inherited handles, signed API isolation, catalogue updates/withdrawal, executable swaps, revocation/expiry, native bounds, controller crash recovery and storage limits. It retains canonical output and independent Windows service, file-identity and Job Object observations; platform results remain separate."
+conformance = "Qualify all eight witness groups through installed interfaces. Independent acceptance at PR #1695/41b29878 covers useful progress and refused expansion, quiet updates and the selected fallback, measured cleanup/recovery, and real Windows starter categories, modes and advertised bounds. Complete native deployment/composition evidence and maintained coverage remain open."
+effort = "L"
+comments = "The separately installed executor and independent host observers retain actual source, operating system, account, mode and output limits. Accepted evidence joins a real Linux sandbox to its co-located Linux target and a standalone macOS target over HTTPS, plus native Python-free Windows foreground and Windows Service runs. Windows proves every documented starter category, service status/start/stop/restart, Job Object memory/process/output/deadline bounds, protected paths, registry views, encoding and inherited handles; it does not claim disk/network containment, containment of delegated service effects, another architecture or a full Windows host stack. Linux adds whole-API scope refusals, cancellation/descendants, duplicate/lost-reply and crash reconciliation, expiry/revocation, adaptive investigation and stored-binding repair. Reuse the accepted #1675 finite Hyperlight/model and real-gVisor required-check evidence at their recorded limits; no general provider/platform cross-product is implied. An installed approved-stale journey now refuses both the original revisions and a fresh preparation carrying the earlier exact approval, with no new native job. Private assessment retains an unresolved full grant when four fixture operations lack annotations; the isolated characterised service pair reports same-resource match and different-resource non-match. A fresh four-job Windows continuation observes actual service consumption after each restart: the same-service edit is consumed; the different-resource edit changes only the other file, while a new service PID consumes the unchanged application bytes. The original 66 native rows remain preserved in the 70-row ledger, and both owned services stop afterward. Prior persistent effects and the original missing middle observation remain identified rather than reconstructed. A co-located physical macOS proxy/VZ guest/target reaches authenticated discovery, proposal and admission, but its required Seatbelt child exits71 with sandbox_apply denied; useful native execution there remains incomplete. Keep that actual facility failure visible without changing the host profile or claiming containment. Preserve the original uncertain results, persistent effects and explicit platform exceptions. See [the criterion disposition](https://github.com/craigbalding/safeyolo/issues/1677#issuecomment-7099825211). Missing required facilities leave the affected run incomplete."
+owner = "#1677"
+decisions = ["authorization", "other_sinks_and_launch"]
+
+[[witnesses]]
+paths = ["host-executor/tests/unix_native.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+manifest = "host-executor/Cargo.toml"
+target = "unix_native"
+module = ""
+owner = "host-executor/tests/unix_native.rs"
+scope = "Real Unix installed executor; local authenticated HTTP; explicit native prerequisites"
+adapter = "Independent file and socket observations plus canonical job/output and owned cgroup/service checks; ignored unless explicitly selected; no Windows or whole-workflow acceptance"
+
+[[witnesses]]
+paths = ["proxy/tests/host_execution.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+target = "host_execution"
+module = ""
+owner = "proxy/tests/host_execution.rs"
+helpers = { durable_crash_child = "Executed by durable_process_failure_after_committed_admission with its private child environment; no separate phase obligation." }
+scope = "Controlled authenticated protocol, signatures, ledger and HTTP fixtures"
+adapter = "Protocol/component evidence; simulated dispatch does not establish native containment"
+
+[[witnesses]]
+paths = ["proxy/src/policy_adoption_tests.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+target = "lib"
+module = "policy_adoption_tests"
+owner = "proxy/src/lib.rs"
+scope = "Controlled saved/runtime catalogue and gateway binding adoption"
+adapter = "Exact binding snapshots, rejected announcement stability and policy transaction rollback; no native execution claim"
+
+[[witnesses]]
+paths = ["proxy/src/host_execution/gateway/tests.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+target = "lib"
+module = "host_execution::gateway::tests"
+owner = "proxy/src/host_execution/gateway.rs"
+scope = "Controlled gateway authentication, scope, dispatch and reply-loss fixtures"
+adapter = "Real gateway request parsing and controlled upstream; not a deployed target or native boundary"
+
+[[witnesses]]
+paths = ["proxy/src/host_execution/gateway/task_action_tests.rs"]
+controls = ["BB-38"]
+kind = "cargo"
+target = "lib"
+module = "host_execution::gateway::tests::configured_task_action"
+owner = "proxy/src/host_execution/gateway/tests.rs"
+scope = "Configured task/action admission and bounded checker fixtures"
+adapter = "Controlled check results and upstream dispatch counts; model measurements remain separate supplementary evidence"
+
 [[witnesses]]
 paths = ["tests/proxy_contracts/test_local_api_authorization.py", "tests/proxy_contracts/test_agent_api_contract.py", "tests/proxy_contracts/test_agent_egress_scope.py", "tests/proxy_contracts/test_agent_api_test_context.py"]
 controls = ["BB-04", "BB-05"]
@@ -473,6 +537,13 @@ controls = ["BB-08", "BB-19"]
 kind = "pytest"
 scope = "Native process; Linux/macOS; host identity"
 adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_media_recipe_gateway.py"]
+controls = ["BB-08"]
+kind = "pytest"
+scope = "Native process; owned loopback dispatch origin"
+adapter = "Shipped recipe service/policy; no installed library or job proof"
 
 [[witnesses]]
 paths = ["tests/proxy_contracts/test_control_updates.py"]
@@ -531,7 +602,7 @@ scope = "Native process; Linux/macOS; host identity"
 adapter = "Owned HTTP origins; real native executable"
 
 [[witnesses]]
-paths = ["tests/proxy_contracts/test_native_coord_operator.py", "tests/proxy_contracts/test_installed_coord_events.py", "tests/proxy_contracts/test_native_factory_cli.py", "tests/proxy_contracts/test_native_harness_attention.py"]
+paths = ["tests/proxy_contracts/test_native_coord_operator.py", "tests/proxy_contracts/test_installed_coord_events.py", "tests/proxy_contracts/test_native_factory_cli.py", "tests/proxy_contracts/test_native_harness_attention.py", "tests/proxy_contracts/test_watch_stream_recovery.py"]
 controls = ["BB-24", "BB-32"]
 kind = "pytest"
 scope = "Native process; Linux/macOS; host identity"
@@ -552,7 +623,7 @@ scope = "Native process; Linux/macOS; host identity"
 adapter = "Owned HTTP origins; real native executable"
 
 [[out_of_scope]]
-paths = ["tests/proxy_contracts/test_event_log_reader.py", "tests/proxy_contracts/test_heap_release.py", "tests/proxy_contracts/test_native_skill_trace.py", "tests/proxy_contracts/test_observability_contract.py"]
+paths = ["tests/proxy_contracts/test_event_log_reader.py", "tests/proxy_contracts/test_heap_release.py", "tests/proxy_contracts/test_native_skill_trace.py", "tests/proxy_contracts/test_observability_contract.py", "tests/proxy_contracts/test_doctor_cli.py"]
 reason = "Harness, presentation, reporting or diagnostic behavior; no additional BB control assertion is claimed. Existing tests remain selected by the native-contract runner."
 
 [[witnesses]]
@@ -560,7 +631,7 @@ paths = ["tests/blackbox/isolation/test_vm_isolation.py"]
 controls = ["BB-01", "BB-02", "BB-03", "BB-04"]
 kind = "pytest"
 scope = "Linux guest; gVisor systrap/KVM or VZ; ordinary user and setpriv subprocesses"
-adapter = "Real guest; audited uncontrolled network endpoints remain under #1560"
+adapter = "Host-owned Linux delivery observers and live host canaries; named VZ delivery exclusions and metadata limits remain explicit"
 
 [[witnesses]]
 paths = ["tests/blackbox/isolation/test_root_containment.py"]
@@ -574,7 +645,7 @@ paths = ["tests/blackbox/isolation/test_key_isolation.py"]
 controls = ["BB-09"]
 kind = "pytest"
 scope = "Linux guest; gVisor systrap/KVM or VZ; user and private-key root selection"
-adapter = "Real guest scans; synthetic canary extension remains #1560"
+adapter = "Generic scans retain existing scope; exact CA/vault canaries run through the installed access driver"
 
 [[witnesses]]
 paths = ["tests/blackbox/isolation/test_agent_api_scope.py"]
@@ -714,7 +785,7 @@ adapter = "Real installed process/guest where the driver boots one; owned endpoi
 
 [[witnesses]]
 paths = ["tests/blackbox/installed_ingress_pair.py::main"]
-controls = ["BB-04", "BB-15"]
+controls = ["BB-04", "BB-10", "BB-15"]
 kind = "procedure"
 scope = "Installed driver; actual backend and identities recorded in its own report"
 adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
@@ -728,7 +799,7 @@ adapter = "Real installed process/guest where the driver boots one; owned endpoi
 
 [[witnesses]]
 paths = ["tests/blackbox/installed_access.py::main"]
-controls = ["BB-08", "BB-19", "BB-23", "BB-24"]
+controls = ["BB-08", "BB-09", "BB-15", "BB-19", "BB-23", "BB-24"]
 kind = "procedure"
 scope = "Installed driver; actual backend and identities recorded in its own report"
 adapter = "Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs"
@@ -784,10 +855,10 @@ adapter = "The actual deterministic controller, typed decisions and independentl
 
 [[witnesses]]
 paths = ["tests/blackbox/native_authority.py::main"]
-controls = ["BB-24", "BB-25"]
+controls = ["BB-24", "BB-25", "BB-38"]
 kind = "procedure"
-scope = "Curated native Coord cases on Linux with real NATS and isolated instance roots"
-adapter = "Per-control procedure receipts and exact executed cases; process evidence, without a real guest or live tailnet"
+scope = "Curated Coord cases on Linux or explicitly selected installed host-executor cases on Unix"
+adapter = "Per-control procedure receipts and exact executed cases with separate test/product/probe identities; process evidence without whole-workflow or Windows acceptance"
 
 [[witnesses]]
 paths = ["tests/blackbox/installed_federation.py::main"]
@@ -1203,7 +1274,7 @@ module = "ghcr"
 owner = "proxy/tests/credential_http.rs"
 
 [[out_of_scope]]
-paths = ["tests/test_guest_helper_build.py", "tests/test_guest_inputs.py", "tests/test_guest_oci_publisher.py", "tests/test_guest_promotion.py", "tests/test_guest_release_auth.py", "tests/test_guest_scheduling.py", "tests/test_guest_signatures.py", "tests/test_guest_smoke_upload.py", "tests/test_guest_test_packages.py"]
+paths = ["tests/test_guest_helper_build.py", "tests/test_guest_inputs.py", "tests/test_guest_maintenance_probe.py", "tests/test_guest_oci_publisher.py", "tests/test_guest_promotion.py", "tests/test_guest_release_auth.py", "tests/test_guest_scheduling.py", "tests/test_guest_signatures.py", "tests/test_guest_smoke_upload.py", "tests/test_guest_test_packages.py"]
 reason = "Guest artifact publication, preparation, scheduling and supporting contracts; no additional running sandbox-control witness is claimed. These source and workflow tests remain selected by their maintained CI lanes."
 
 [[witnesses]]
@@ -1215,6 +1286,13 @@ adapter = "Controlled runtime, artifact and credential fixtures; real native cap
 target = "lib"
 module = "jobs::mediated::tests"
 owner = "proxy/src/jobs/mediated.rs"
+
+[[witnesses]]
+paths = ["tests/test_blackbox_containment.py"]
+controls = ["BB-01", "BB-02", "BB-03", "BB-04", "BB-09"]
+kind = "pytest"
+scope = "Isolated checker sensitivity; host identity; no installed-guest claim"
+adapter = "Live TCP/UDP receivers, exposed canaries and controlled syscall returns; source checks do not establish deployed cadence"
 
 [[witnesses]]
 paths = ["proxy/src/policy/checks.rs"]

@@ -1,8 +1,12 @@
 """Exercise both real Hyperlight engines in one owned, disposable instance.
 
 Use --unikraft-lifetimes-only to run just the four Unikraft lifetime controls.
+Use --unikraft-remaining-only for spin cancellation, recovery, overlap,
+changed artifacts, corrupt templates and held calls, after two fresh setup runs.
+Use --template-boundaries-only for fresh service authority across principals,
+equivalent cold/restore measurements and template eviction/expiry/shutdown.
 
-Requires matching candidate CLI/proxy, a protocol-3 bundle built on this host's
+Requires matching candidate CLI/proxy, a protocol-4 bundle built on this host's
 architecture, Python with tomlkit, and accessible KVM or entitled Apple-silicon
 HVF. The operator supplies an existing GitHub read credential in a private file.
 Only the new instance's standing grant is changed. Artifacts, captures and
@@ -13,6 +17,8 @@ import argparse
 import base64
 import contextlib
 import copy
+import ctypes
+import errno
 import hashlib
 import http.client
 import json
@@ -23,6 +29,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -52,6 +59,150 @@ def stop(child):
         child.kill()
         child.wait()
         raise
+
+
+def resident_bytes(pid):
+    """Read a process's current resident memory without invoking ps."""
+    if sys.platform == "linux":
+        pages = int(Path(f"/proc/{pid}/statm").read_text().split()[1])
+        return pages * os.sysconf("SC_PAGE_SIZE")
+    if sys.platform == "darwin":
+        # sys/resource.h: rusage_info_v0 is a UUID followed by ten uint64_t
+        # fields. ri_resident_size is the seventh field after that UUID.
+        usage = (ctypes.c_uint64 * 12)()
+        library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        if library.proc_pid_rusage(ctypes.c_int(pid), ctypes.c_int(0), ctypes.byref(usage)):
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+        return usage[8]
+    raise OSError(f"resident memory sampling unavailable on {sys.platform}")
+
+
+class DarwinBsdInfo(ctypes.Structure):
+    # Darwin sys/proc_info.h, PROC_PIDTBSDINFO (3); the ABI is 136 bytes.
+    _fields_ = [(name, ctypes.c_uint32) for name in (
+        "flags", "status", "exit_status", "pid", "parent_pid", "uid", "gid",
+        "real_uid", "real_gid", "saved_uid", "saved_gid", "reserved",
+    )] + [("command", ctypes.c_char * 16), ("name", ctypes.c_char * 32)] + [
+        (name, ctypes.c_uint32) for name in (
+            "file_count", "process_group", "job_count", "device", "terminal_group",
+        )
+    ] + [("nice", ctypes.c_int32), ("started_seconds", ctypes.c_uint64),
+         ("started_microseconds", ctypes.c_uint64)]
+
+
+def darwin_children(library, pid, deadline):
+    """Read child PIDs without truncating a full libproc buffer."""
+    capacity = 32
+    while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Darwin process enumeration exceeded five seconds")
+        children = (ctypes.c_int * capacity)()
+        ctypes.set_errno(0)
+        count = library.proc_listchildpids(pid, children, ctypes.sizeof(children))
+        error = ctypes.get_errno()
+        if count < 0 or (count == 0 and error):
+            raise OSError(error or errno.EIO, f"proc_listchildpids({pid}) failed")
+        # libproc returns PID counts, whereas its buffer length is in bytes.
+        if count < capacity:
+            return list(children[:count])
+        capacity *= 2
+
+
+def darwin_process_rows(roots):
+    """Observe selected trees through the same libproc used for resident bytes."""
+    library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    library.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                                     ctypes.c_void_p, ctypes.c_int]
+    library.proc_pidinfo.restype = ctypes.c_int
+    library.proc_listchildpids.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    library.proc_listchildpids.restype = ctypes.c_int
+    deadline = time.monotonic() + 5
+    pending = [(pid, None) for pid in roots]
+    observed, rows = set(), []
+    while pending:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Darwin process enumeration exceeded five seconds")
+        pid, expected_parent = pending.pop()
+        if pid in observed:
+            continue
+        try:
+            info = DarwinBsdInfo()
+            ctypes.set_errno(0)
+            size = library.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+            if size != ctypes.sizeof(info):
+                raise OSError(ctypes.get_errno() or errno.EIO, f"proc_pidinfo({pid}) returned {size} bytes")
+            if expected_parent is not None and info.parent_pid != expected_parent:
+                continue  # Exited/reparented/reused since child enumeration.
+            rss = resident_bytes(pid)
+            children = darwin_children(library, pid, deadline)
+        except ProcessLookupError:
+            continue  # The selected process exited during this sample.
+        observed.add(pid)
+        rows.append((pid, info.parent_pid, rss))
+        pending.extend((child, pid) for child in children)
+    return rows
+
+
+def process_memory(roots):
+    """Sample selected process trees; processes can disappear during a sample."""
+    if sys.platform == "darwin":
+        rows = darwin_process_rows(roots)
+    else:
+        table = subprocess.check_output(["ps", "-axo", "pid=,ppid=,rss="], text=True, timeout=5)
+        parsed = [tuple(map(int, row.split())) for row in table.splitlines() if row.strip()]
+        rows = [(pid, parent, rss * 1024) for pid, parent, rss in parsed]
+    selected = set(roots)
+    while True:
+        children = {pid for pid, parent, _rss in rows if parent in selected}
+        expanded = selected | children
+        if expanded == selected:
+            break
+        selected = expanded
+    processes = [{"pid": pid, "parent_pid": parent, "rss_bytes": rss}
+                 for pid, parent, rss in rows if pid in selected]
+    return {"unix_ms": time.time_ns() // 1_000_000, "processes": processes,
+            "rss_sum_bytes": sum(row["rss_bytes"] for row in processes)}
+
+
+@contextlib.contextmanager
+def sample_job_memory(child, proxy, prefix):
+    """Retain a sampled CLI/helper/proxy peak and the idle proxy after reaping."""
+    finished = threading.Event()
+    samples = {"peak": None, "active_peak": None, "sample_count": 0, "error": None,
+               "job_pid": child.pid, "proxy_pid": proxy.pid,
+               "limits": "20ms sampling can miss peaks; summed RSS double-counts shared pages and excludes file page cache"}
+
+    def observe():
+        try:
+            while not finished.is_set():
+                roots = ([child.pid] if child.poll() is None else [])
+                if proxy.poll() is None:
+                    roots.append(proxy.pid)
+                current = process_memory(roots)
+                samples["sample_count"] += 1
+                if samples["peak"] is None or current["rss_sum_bytes"] > samples["peak"]["rss_sum_bytes"]:
+                    samples["peak"] = current
+                if (any(row["parent_pid"] == child.pid for row in current["processes"])
+                        and (samples["active_peak"] is None
+                             or current["rss_sum_bytes"] > samples["active_peak"]["rss_sum_bytes"])):
+                    samples["active_peak"] = current
+                finished.wait(0.02)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            samples["error"] = str(error)
+
+    thread = threading.Thread(target=observe)
+    thread.start()
+    try:
+        yield
+    finally:
+        finished.set()
+        thread.join()
+        try:
+            samples["idle"] = process_memory([proxy.pid] if proxy.poll() is None else [])
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            samples["idle"], samples["error"] = None, str(error)
+        save(prefix.with_suffix(".memory.json"), samples)
 
 
 def job_result(prefix, engine, mode, *, expected_outcome=None):
@@ -90,7 +241,7 @@ class Instance:
         self.index = 0
 
     def command(self, *arguments, input=None):
-        return subprocess.run([str(self.args.cli), "--root", str(self.root), *arguments],
+        return subprocess.run([str(self.args.cli), "--instance-dir", str(self.root), "--json", *arguments],
                               input=input, check=True, capture_output=True)
 
     def prepare(self, port):
@@ -191,13 +342,15 @@ class Instance:
         return status, value
 
     @contextlib.contextmanager
-    def job(self, engine, request, *, probe=False, timeout=30, limits=None, retain=16384):
+    def job(self, engine, request, *, probe=False, timeout=30, limits=None, retain=16384, definition=None,
+            console=False):
         self.index += 1
         prefix = self.scratch / f"job-{self.index}"
         inputs = prefix.with_suffix(".input")
         inputs.mkdir()
         save(inputs / "request.json", request)
-        spec = json.loads((self.scratch / f"{engine}-adopted.json").read_bytes())
+        spec = (json.loads((self.scratch / f"{engine}-adopted.json").read_bytes())
+                if definition is None else copy.deepcopy(definition))
         spec.update(timeout_seconds=timeout, retain_bytes=retain, max_input_bytes=100_000)
         if limits:
             spec["mediated_services"].update(limits)
@@ -208,14 +361,24 @@ class Instance:
                 spec["argv"].append("--isolation-probe" if probe == "isolation" else "--probe")
         path = prefix.with_suffix(".spec.json")
         save(path, spec)
+        arguments = [str(self.args.cli), "--instance-dir", str(self.root), "--json", "job", "run", str(path),
+                     "--input", str(inputs)]
+        if console:
+            console_path = prefix.with_suffix(".console")
+            assert not console_path.exists(), f"console path already exists: {console_path}"
+            arguments.extend(["--console-file", str(console_path)])
         with prefix.with_suffix(".stdout").open("wb") as stdout, prefix.with_suffix(".stderr").open("wb") as stderr:
-            child = subprocess.Popen([str(self.args.cli), "--root", str(self.root), "job", "run", str(path),
-                                      "--input", str(inputs)], stdout=stdout, stderr=stderr)
-            try:
-                yield child, prefix
-            finally:
-                stop(child)
-                save(prefix.with_suffix(".status.json"), {"returncode": child.returncode})
+            started = time.perf_counter_ns()
+            child = subprocess.Popen(arguments, stdout=stdout, stderr=stderr)
+            sampling = (sample_job_memory(child, self.proxy, prefix)
+                        if getattr(self.args, "template_boundaries_only", False) else contextlib.nullcontext())
+            with sampling:
+                try:
+                    yield child, prefix
+                finally:
+                    stop(child)
+                    save(prefix.with_suffix(".status.json"), {"returncode": child.returncode,
+                         "command_wall_ms": (time.perf_counter_ns() - started) / 1_000_000})
 
     def run_job(self, engine, request, *, expected_outcome=None, **options):
         with self.job(engine, request, **options) as (child, prefix):
@@ -231,10 +394,10 @@ def output(result):
     return json.loads(data)
 
 
-def captured(result):
+def captured(result, principal="gate:hyperlight-service-check"):
     assert result["observation_error"] is None, result
     assert result["outcome"] == {"kind": "exit", "code": 0}, result
-    assert result["gate_principal"] == result["authorization_principal"] == "gate:hyperlight-service-check"
+    assert result["gate_principal"] == result["authorization_principal"] == principal
     assert result["runtime_report"]["error"] is None
     assert result["rootfs"]["service_access"] == "mediated"
     for key in ("runtime_manifest_sha256", "artifact_sha256"):
@@ -374,10 +537,316 @@ def held_lifetimes(instance, engine, origin, port):
         assert output(instance.run_job(engine, next_request, probe=True))[0]["ok"] is True
 
 
+def template_probe_spec(instance, engine):
+    """Select the existing diagnostic without changing its installed artifacts."""
+    spec = json.loads((instance.args.bundle / f"{engine}.json").read_bytes())
+    for name in ("runtime", "guest", "checker"):
+        if name in spec["engine"]:
+            spec["engine"][name]["path"] = str(instance.args.bundle / spec["engine"][name]["path"])
+    if engine == "hyperlight":
+        spec["engine"]["function"] = "TemplateProbe"
+    else:
+        path = instance.args.bundle / "template_probe.py"
+        spec["engine"]["checker"] = {"path": str(path), "sha256": digest(path)}
+    return spec
+
+
+def warm_templates(instance, engine, *, remaining_only=False):
+    """Observe actual construction, restored state, fresh calls and cold costs."""
+    spec = template_probe_spec(instance, engine)
+    observations = []
+
+    def measured(request, definition, expected=None, timeout=30):
+        with instance.job(engine, request, definition=definition, timeout=timeout) as (child, prefix):
+            child.wait(timeout=60)
+        result = job_result(prefix, engine, "warm-template", expected_outcome=expected)
+        status = json.loads(prefix.with_suffix(".status.json").read_bytes())
+        try:
+            idle_proxy_bytes, memory_error = resident_bytes(instance.proxy.pid), None
+        except OSError as error:
+            idle_proxy_bytes, memory_error = None, str(error)
+        observations.append({"full_invocation_ms": status["command_wall_ms"],
+                             "result": result, "provider_latency_ms": 0,
+                             "idle_proxy_rss_bytes": idle_proxy_bytes,
+                             "memory_observation_error": memory_error})
+        save(instance.scratch / f"{engine}-templates.json", {
+            "observations": observations,
+            "memory_limit": ("helper_max_rss_bytes is one helper's active peak; idle_proxy_rss_bytes is "
+                             "the proxy after that command. Total process-tree and page-cache memory remain unmeasured"),
+            "latency_limit": "offline workload, no provider; preparation and cache save/load remain included",
+        })
+        return result
+
+    first = measured({"value": "first"}, spec)
+    initialized = first["runtime_report"]["initialization"]
+    assert initialized["mode"] == "constructed", first
+    assert initialized["initialization_events"] == 1, first
+    first_output = output(first)
+    assert first_output["calls"] == 1
+    if engine == "hyperlight-unikraft":
+        assert first_output["initialized_random_state_inherited"] is False, first_output
+    runtime_random = ({first_output["context"]["runtime_random"]}
+                      if engine == "hyperlight-unikraft" else set())
+    spec["gate_id"] = "another-template-principal"
+    second = measured({"value": "second"}, spec)
+    restored = second["runtime_report"]["initialization"]
+    assert restored["mode"] == "restored" and restored["initialization_events"] == 0, second
+    assert initialized["template_key"] == restored["template_key"]
+    assert initialized["snapshot_digest"] == restored["snapshot_digest"]
+
+    def fresh(result):
+        value = output(result)
+        assert value["calls"] == 1 and not value.get("inherited_file", False), value
+        assert value["context"]["invocation_id"] == result["run_id"], value
+        assert result["started_unix_ms"] <= value["context"]["unix_ms"] <= result["ended_unix_ms"], value
+        assert value["context"]["random"] != first_output["context"]["random"], value
+        if engine == "hyperlight-unikraft":
+            if result["runtime_report"]["initialization"]["mode"] != "cold":
+                assert value["initialized_random_state_inherited"] is False, value
+            current_random = value["context"]["runtime_random"]
+            assert current_random not in runtime_random, value
+            runtime_random.add(current_random)
+        if result["runtime_report"]["initialization"]["mode"] == "restored":
+            assert value["initialized_at"] == first_output["initialized_at"], value
+        return value
+
+    assert fresh(second)["input"] != first_output["input"]
+    assert second["run_id"] != first["run_id"] and second["gate_principal"] != first["gate_principal"]
+    if not remaining_only:
+        cold = copy.deepcopy(spec)
+        cold["engine"]["reuse_initialization"] = False
+        cold_result = measured({"value": "cold"}, cold)
+        assert cold_result["runtime_report"]["initialization"]["mode"] == "cold", cold_result
+        fresh(cold_result)
+    template_predecessors(instance, engine, spec, measured, fresh, remaining_only=remaining_only)
+    # All readers have exited. Alter an actual saved manifest, then require an
+    # explicit cold run of this engine instead of stale or unchecked bytes.
+    directory = instance.root / "data/hyperlight-templates"
+    matches = [path for path in directory.glob("template-*")
+               if json.loads((path / "receipt.json").read_bytes())["key"] == restored["template_key"]]
+    assert len(matches) == 1, matches
+    manifest = matches[0] / "blobs/sha256" / restored["snapshot_digest"].split(":")[1]
+    manifest.write_bytes(manifest.read_bytes() + b"corrupt")
+    invalid = measured({"value": "corrupt template"}, spec)
+    diagnostic = invalid["runtime_report"]["initialization"]
+    assert diagnostic["mode"] == "cold" and "invalid or incompatible" in diagnostic["cold_reason"], invalid
+    fresh(invalid)
+    assert invalid["engine"] == engine
+    return observations
+
+
+def template_pending_principals(instance, engine, origin, spec, concurrent_call):
+    """Complete a second principal's call before cancelling a held predecessor."""
+    origin.entered.clear()
+    origin.release.clear()
+    request = {"call": {"kind": "service", "service": "held", "method": "GET",
+                        "url": f"http://127.0.0.1:{origin.server_address[1]}/hold"}}
+    try:
+        with instance.job(engine, request, probe=True, definition=spec) as (child, prefix):
+            assert origin.entered.wait(20), "first principal never reached the provider"
+            assert child.poll() is None
+            concurrent_call()
+            assert child.poll() is None, "pending predecessor ended before cancellation"
+            child.send_signal(signal.SIGINT)
+            child.wait(timeout=10)
+        cancelled = job_result(prefix, engine, "cross-principal predecessor", expected_outcome={
+            "kind": "interrupted", "signal": int(signal.SIGINT)})
+        assert all(row["response_sha256"] is None for row in cancelled["service_evidence"])
+        return cancelled
+    finally:
+        # Deliver late success only after job() has stopped and reaped its child.
+        origin.release.set()
+
+
+def template_authority(instance, engine, origin, port):
+    """Share initialized bytes while changing live principals, policy and captures."""
+    spec = json.loads((instance.scratch / f"{engine}-adopted.json").read_bytes())
+    other = "gate:hyperlight-template-other"
+    original_policy = copy.deepcopy(instance.policy)
+    observations, evidence_ids = [], set()
+    request = {"call": {"kind": "service", "service": "held", "method": "GET",
+                        "url": f"http://127.0.0.1:{port}/value"}}
+
+    def invoke(label, definition, value=None, *, allowed=True):
+        value = request if value is None else value
+        result = instance.run_job(engine, value, probe=True, definition=definition)
+        observations.append({"case": label, "result": result})
+        save(instance.scratch / f"{engine}-template-authority.json", observations)
+        assert output(result)[0]["ok"] is allowed, result
+        records = captured(result, "gate:" + definition["gate_id"])
+        ids = {row["id"] for row in records}
+        assert not ids & evidence_ids, "another invocation donated captured evidence"
+        evidence_ids.update(ids)
+        if allowed:
+            assert len(records) == 1 and records[0]["url"] == request["call"]["url"], result
+        else:
+            assert all(row["response_sha256"] is None for row in records), result
+        return result
+
+    first = invoke("initial authority", spec)
+    alternate = copy.deepcopy(spec)
+    alternate["gate_id"] = other.removeprefix("gate:")
+    instance.policy["agents"][other] = {"services": {"held": copy.deepcopy(
+        instance.policy["agents"]["gate:hyperlight-service-check"]["services"]["held"])}}
+    try:
+        instance.apply()
+        second = invoke("changed principal and policy", alternate)
+        assert second["rootfs"]["policy_hash"] != first["rootfs"]["policy_hash"]
+        cancelled = template_pending_principals(instance, engine, origin, spec, lambda: invoke(
+            "other principal while predecessor is pending", alternate))
+        observations.append({"case": "cancelled other principal", "result": cancelled})
+        save(instance.scratch / f"{engine}-template-authority.json", observations)
+        invoke("after cancelled predecessor", alternate)
+        invoke("foreign evidence handle", alternate, {"call": {
+            "kind": "read", "id": first["service_evidence"][0]["id"], "offset": 0, "length": 1}}, allowed=False)
+        instance.policy["agents"][other]["services"].pop("held")
+        instance.apply()
+        denied = invoke("grant removed with reusable template", alternate, allowed=False)
+        assert denied["rootfs"]["policy_hash"] != second["rootfs"]["policy_hash"]
+        expected = first["runtime_report"]["initialization"]
+        for row in observations:
+            if row["case"] == "cancelled other principal":
+                continue
+            actual = row["result"]["runtime_report"]["initialization"]
+            assert actual["template_key"] == expected["template_key"]
+            assert actual["snapshot_digest"] == expected["snapshot_digest"]
+            if row["case"] != "initial authority":
+                assert actual["mode"] == "restored" and actual["initialization_events"] == 0
+    finally:
+        origin.release.set()
+        instance.policy = original_policy
+        instance.apply()
+
+
+def template_cache(instance):
+    """Observe actual retained files after all current invocation readers exit."""
+    entries = []
+    for path in sorted((instance.root / "data/hyperlight-templates").glob("template-*")):
+        receipt = json.loads((path / "receipt.json").read_bytes())
+        entries.append({"path": str(path), "receipt": receipt,
+                        "file_bytes": sum(file.stat().st_size for file in path.rglob("*") if file.is_file())})
+    return {"entries": entries, "file_bytes": sum(row["file_bytes"] for row in entries),
+            "reserved_bytes": sum(row["receipt"]["bytes"] for row in entries)}
+
+
+def template_comparison(instance, engine):
+    """Compare identical offline work, then observe real capacity and expiry."""
+    spec = template_probe_spec(instance, engine)
+    request = {"value": "equivalent comparison"}
+    observations = []
+
+    def measured(label, definition):
+        with instance.job(engine, request, definition=definition) as (child, prefix):
+            child.wait(timeout=60)
+        result = job_result(prefix, engine, label)
+        status = json.loads(prefix.with_suffix(".status.json").read_bytes())
+        memory = json.loads(prefix.with_suffix(".memory.json").read_bytes())
+        cache = template_cache(instance)
+        observations.append({"case": label, "result": result, "cache": cache, "memory": memory,
+                             "full_invocation_ms": status["command_wall_ms"], "provider_latency_ms": 0})
+        save(instance.scratch / f"{engine}-template-boundaries.json", {
+            "observations": observations,
+            "limits": "same input/spec/principal; offline provider latency is zero; installed build profile must be recorded by caller; RSS sampling excludes file page cache"})
+        assert memory["error"] is None and memory["sample_count"] > 0, memory
+        assert memory["active_peak"] is not None, "no live helper descendant was sampled"
+        assert cache["file_bytes"] <= cache["reserved_bytes"] <= 1 << 30, cache
+        assert len(cache["entries"]) <= 4, cache
+        assert not list((instance.root / "data").glob("job-hyperlight-*"))
+        return result, cache
+
+    first, initial_cache = measured("construction", spec)
+    restored, _cache = measured("restored comparison", spec)
+    cold = copy.deepcopy(spec)
+    cold["engine"]["reuse_initialization"] = False
+    cold_result, _cache = measured("cold comparison", cold)
+    assert first["runtime_report"]["initialization"]["mode"] == "constructed"
+    assert restored["runtime_report"]["initialization"]["mode"] == "restored"
+    assert cold_result["runtime_report"]["initialization"]["mode"] == "cold"
+    assert first["input_sha256"] == restored["input_sha256"] == cold_result["input_sha256"]
+    initial_key = first["runtime_report"]["initialization"]["template_key"]
+    assert restored["runtime_report"]["initialization"]["template_key"] == initial_key
+    assert restored["runtime_report"]["initialization"]["snapshot_digest"] == first["runtime_report"]["initialization"]["snapshot_digest"]
+    # Five distinct initialization layouts exceed the existing four-entry cap.
+    # These are new retention witnesses, not repeats of predecessor/lifetime cases.
+    for index in range(1, 6):
+        variant = copy.deepcopy(spec)
+        variant["memory_mb"] += index
+        result, cache = measured(f"capacity layout {index}", variant)
+        assert result["runtime_report"]["initialization"]["template_key"] != initial_key
+    assert not {row["path"] for row in initial_cache["entries"]} & {row["path"] for row in cache["entries"]}
+    key = result["runtime_report"]["initialization"]["template_key"]
+    selected = [row for row in cache["entries"] if row["receipt"]["key"] == key]
+    assert len(selected) == 1, selected
+    expired = Path(selected[0]["path"])
+    receipt = selected[0]["receipt"]
+    save(instance.scratch / f"{engine}-before-expiry.json", receipt)
+    save(expired / "receipt.json", {**receipt, "created_seconds": int(time.time()) - 3600})
+    result, _cache = measured("expired layout reconstructed", variant)
+    assert result["runtime_report"]["initialization"]["mode"] == "constructed"
+    assert not expired.exists(), "expired disk template survived selection"
+
+
+def wait_spin_entry(child, prefix, timeout=20):
+    """Wait for this invocation's console marker while the job is still live."""
+    path = prefix.with_suffix(".console")
+    deadline = time.monotonic() + timeout
+    while child.poll() is None:
+        try:
+            data = path.read_bytes()
+        except FileNotFoundError:
+            # The CLI creates the file after validating its arguments.
+            data = b""
+        if b"template-spin-entered" in data:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"spin entry was not observed within {timeout}s: {path}")
+        time.sleep(0.02)
+    raise RuntimeError(f"job exited before live spin entry was observed: {path}")
+
+
+def template_predecessors(instance, engine, spec, measured, fresh, *, remaining_only=False):
+    """A failed, expired, cancelled or overlapping call cannot donate state."""
+    if not remaining_only:
+        measured({"mode": "fail"}, spec, {"kind": "exit", "code": 1})
+        fresh(measured({"value": "after failure"}, spec))
+        timed = measured({"mode": "spin"}, spec, {"kind": "timeout"}, timeout=5)
+        assert b"template-spin-entered" in base64.b64decode(timed["stdout"]["retained_base64"], validate=True), timed
+        fresh(measured({"value": "after deadline"}, spec))
+    with instance.job(engine, {"mode": "spin"}, definition=spec, console=True) as (child, prefix):
+        wait_spin_entry(child, prefix)
+        assert child.poll() is None, "spin predecessor ended before cancellation"
+        child.send_signal(signal.SIGINT)
+        child.wait(timeout=10)
+    cancelled = job_result(prefix, engine, "cancelled template", expected_outcome={"kind": "interrupted", "signal": int(signal.SIGINT)})
+    assert b"template-spin-entered" in base64.b64decode(cancelled["stdout"]["retained_base64"], validate=True), cancelled
+    fresh(measured({"value": "after cancellation"}, spec))
+    # Two helper lifetimes share only immutable template files and reader leases.
+    with instance.job(engine, {"mode": "hold", "value": "concurrent one"}, definition=spec) as (one, prefix_one):
+        with instance.job(engine, {"mode": "hold", "value": "concurrent two"}, definition=spec) as (two, prefix_two):
+            assert one.poll() is None and two.poll() is None
+            one.wait(timeout=60)
+            two.wait(timeout=60)
+    overlapping = [fresh(job_result(prefix, engine, "concurrent template")) for prefix in (prefix_one, prefix_two)]
+    assert max(row["context"]["unix_ms"] for row in overlapping) < min(row["completed_unix_ms"] for row in overlapping), overlapping
+    # A usable template cannot bypass verification of the selected code. Alter
+    # only an owned scratch copy, preserving the original artifact and pin.
+    changed = copy.deepcopy(spec)
+    code = changed["engine"]["guest" if engine == "hyperlight" else "checker"]
+    path = instance.scratch / f"{engine}-changed-artifact"
+    path.write_bytes(b"changed after adoption")
+    code["path"] = str(path)
+    with instance.job(engine, {"value": "changed artifact"}, definition=changed) as (child, prefix):
+        child.wait(timeout=60)
+    assert json.loads(prefix.with_suffix(".status.json").read_bytes())["returncode"] != 0
+    assert "digest mismatch" in prefix.with_suffix(".stderr").read_text(), prefix
+    fresh(measured({"value": "after rejected artifact"}, spec))
+
+
 def exercise(args):
     instance = Instance(args)
     observations = []
-    engines = ("hyperlight-unikraft",) if args.unikraft_lifetimes_only else ("hyperlight", "hyperlight-unikraft")
+    engines = (("hyperlight-unikraft",) if args.unikraft_lifetimes_only or args.unikraft_remaining_only
+               else ("hyperlight", "hyperlight-unikraft"))
     receipt = ProcedureReceipt("hyperlight-services", args.scratch / "result.json")
     receipt.document.update(boundary="real-hyperlight-engines", selected_engines=engines, agent="driver", guest=None,
                             controller_sha256=digest(Path(__file__)),
@@ -414,7 +883,7 @@ def exercise(args):
         def log_message(self, *_args):
             pass  # Only sanitized, private observations are retained.
 
-    with ThreadingHTTPServer(("127.0.0.1", 0), Provider) as origin:
+    with ThreadingHTTPServer(("127.0.0.1", args.provider_port), Provider) as origin:
         origin.entered, origin.release = threading.Event(), threading.Event()
         port = origin.server_address[1]
         thread = threading.Thread(target=origin.serve_forever)
@@ -428,6 +897,19 @@ def exercise(args):
                                                       stdout=log, stderr=log)
                     try:
                         wait_ready(instance.proxy, args.root, args.admin_port)
+                        if getattr(args, "template_boundaries_only", False):
+                            template_comparison(instance, engine)
+                            template_authority(instance, engine, origin, port)
+                            engine_case(engine, "template-identity-authority-retention-comparison")
+                            continue
+                        if args.warm_templates_only or args.unikraft_remaining_only:
+                            receipt.document.setdefault("warm_templates", {})[engine] = warm_templates(
+                                instance, engine, remaining_only=args.unikraft_remaining_only)
+                            save(receipt.path, receipt.document)
+                            held_lifetimes(instance, engine, origin, port)
+                            engine_case(engine, "remaining-state-and-lifetimes" if args.unikraft_remaining_only
+                                        else "warm-templates-and-lifetimes")
+                            continue
                         if args.unikraft_lifetimes_only:
                             held_lifetimes(instance, engine, origin, port)
                             engine_case(engine, "lifetimes")
@@ -477,6 +959,10 @@ def exercise(args):
                     finally:
                         origin.release.set()
                         stop(instance.proxy)
+                        if getattr(args, "template_boundaries_only", False):
+                            retained = template_cache(instance)
+                            save(args.scratch / f"{engine}-template-shutdown.json", retained)
+                            assert not retained["entries"], "normal shutdown retained idle templates"
                         save(args.scratch / "provider-observations.json", observations)
         finally:
             origin.release.set()
@@ -488,7 +974,10 @@ def exercise(args):
     assert not (args.root / "data/ready.json").exists()
     assert not list((args.root / "data").glob("job-hyperlight-*"))
     receipt.checkpoint("cleanup")
-    checks = ("held deadline/cancel/revoke/shutdown lifetimes" if args.unikraft_lifetimes_only else
+    checks = ("template authority, equivalent comparisons, capacity, expiry and shutdown" if getattr(args, "template_boundaries_only", False) else
+              "remaining Unikraft state and held-call lifetimes" if args.unikraft_remaining_only else
+              "initialized templates, cold comparison and held lifetimes" if args.warm_templates_only else
+              "held deadline/cancel/revoke/shutdown lifetimes" if args.unikraft_lifetimes_only else
               "live GitHub, standing grant/removal, named input/typed mismatch, scope/limits, held lifetimes")
     save(args.scratch / "result.json", {"engines": engines, "checks": checks,
                                       "bundle": digest(args.bundle / "runtime.json"),
@@ -496,7 +985,7 @@ def exercise(args):
     receipt.checkpoint("finished")
     print(f"PASS {', '.join(engines)}: {checks}")
     if not receipt.document["complete"]:
-        print("Incomplete two-engine receipt: only the selected Unikraft lifetimes were exercised")
+        print("Incomplete two-engine receipt: only the selected focused controls were exercised")
 
 
 def main():
@@ -508,14 +997,25 @@ def main():
     parser.add_argument("--expected-author-id", required=True)
     parser.add_argument("--parent-proxy")
     parser.add_argument("--admin-port", type=int, required=True)
-    parser.add_argument("--unikraft-lifetimes-only", action="store_true",
+    parser.add_argument("--provider-port", type=int, default=0,
+                        help="select an authorized loopback provider port; zero asks the OS on unrestricted test hosts")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--unikraft-lifetimes-only", action="store_true",
                         help="run only the remaining Unikraft deadline/cancel/revoke/shutdown controls in a fresh instance")
+    modes.add_argument("--warm-templates-only", action="store_true",
+                        help="exercise initialized restores, fresh state, cold comparison and existing held lifetimes")
+    modes.add_argument("--unikraft-remaining-only", action="store_true",
+                       help="run remaining Unikraft state/lifetime windows; construct and restore one fresh setup template")
+    modes.add_argument("--template-boundaries-only", action="store_true",
+                       help="compare equivalent cold/restored work and exercise changed-principal authority and cache release")
     args = parser.parse_args()
     for name in ("cli", "proxy", "bundle", "github_token_file", "scratch"):
         setattr(args, name, getattr(args, name).resolve(strict=True))
     args.root = args.root.absolute()
     if not 1 <= args.admin_port <= 65535:
         parser.error("--admin-port must be a nonzero authorized port")
+    if not 0 <= args.provider_port <= 65535:
+        parser.error("--provider-port must be zero or an authorized port")
     if args.root.exists() or any(args.scratch.iterdir()):
         parser.error("--root must be new and --scratch must be empty")
     args.scratch.chmod(0o700)

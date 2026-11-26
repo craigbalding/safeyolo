@@ -1,5 +1,6 @@
 //! Diagnose actual native request execution through each configured agent UDS.
 
+use rustls::pki_types::pem::PemObject;
 use std::path::Path;
 
 use hyper::Method;
@@ -8,6 +9,780 @@ use serde_json::{Value, json};
 use crate::{
     Error, native_client, native_config, policy::native::control_label, trace::REQUEST_CONTROLS,
 };
+
+fn check(
+    checks: &mut Vec<Value>,
+    name: &str,
+    status: &str,
+    message: impl ToString,
+    next: &str,
+    details: Value,
+) {
+    checks.push(json!({"name":name,"status":status,"message":message.to_string(),"next_action":next,"details":details}));
+}
+
+/// Diagnose prerequisites before their dependents. These are observations;
+/// doctor never starts a service, unlocks a store or rewrites host state.
+pub(crate) async fn report(path: &Path) -> Value {
+    use std::{
+        fs,
+        os::unix::fs::{MetadataExt, PermissionsExt},
+        time::Duration,
+    };
+    let root = path.parent().unwrap_or(Path::new("."));
+    let command = crate::host_lifecycle::current_instance_command().unwrap_or_else(|_| {
+        format!(
+            "the installed CLI with --config {}",
+            crate::host_lifecycle::shell_quote(&path.to_string_lossy())
+        )
+    });
+    let mut checks = Vec::new();
+    let config = match native_config::read(path) {
+        Ok(config) => {
+            check(
+                &mut checks,
+                "Configuration",
+                "pass",
+                path.display(),
+                "",
+                Value::Null,
+            );
+            Some(config)
+        }
+        Err(error) => {
+            check(
+                &mut checks,
+                "Configuration",
+                "fail",
+                format!("{}: {error}", path.display()),
+                &format!(
+                    "Restore the selected configuration, or run {command} init for a new instance."
+                ),
+                Value::Null,
+            );
+            None
+        }
+    };
+    if let Some(config) = &config {
+        let policy = config
+            .policy_file
+            .as_deref()
+            .ok_or_else(|| -> Error { "policy path is absent".into() })
+            .and_then(|path| {
+                crate::policy::Policy::from_native_path(path)
+                    .map(|_| ())
+                    .map_err(Error::from)
+            });
+        match policy {
+            Ok(()) => check(
+                &mut checks,
+                "Saved policy",
+                "pass",
+                "Valid native policy",
+                "",
+                Value::Null,
+            ),
+            Err(error) => check(
+                &mut checks,
+                "Saved policy",
+                "fail",
+                error,
+                &format!(
+                    "Run {command} policy check {} and repair the reported rule.",
+                    config.policy_file.as_deref().map_or_else(
+                        || "FILE".to_owned(),
+                        |path| crate::host_lifecycle::shell_quote(&path.to_string_lossy())
+                    )
+                ),
+                Value::Null,
+            ),
+        }
+        let ca = config
+            .tls_ca_file
+            .as_deref()
+            .ok_or_else(|| "TLS CA path is absent".into())
+            .and_then(crate::tls::CertificateAuthority::load);
+        match ca {
+            Ok(_) => check(
+                &mut checks,
+                "TLS certificate",
+                "pass",
+                "CA certificate and private key can be loaded",
+                "",
+                Value::Null,
+            ),
+            Err(error) => check(
+                &mut checks,
+                "TLS certificate",
+                "fail",
+                error,
+                &format!(
+                    "Inspect {command} tls ca and restore the selected instance's CA; existing guests trust that identity."
+                ),
+                Value::Null,
+            ),
+        }
+        if let Some(path) = &config.upstream_ca_file {
+            let certificates = fs::read(path)
+                .map_err(crate::Error::from)
+                .and_then(|bytes| {
+                    let certs = rustls::pki_types::CertificateDer::pem_slice_iter(&bytes)
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if certs.is_empty() {
+                        return Err("no PEM certificates found".into());
+                    }
+                    let mut store = rustls::RootCertStore::empty();
+                    for cert in certs {
+                        store.add(cert)?;
+                    }
+                    Ok(())
+                });
+            match certificates {
+                Ok(()) => check(
+                    &mut checks,
+                    "Upstream CA trust",
+                    "pass",
+                    path.display(),
+                    "",
+                    Value::Null,
+                ),
+                Err(error) => check(
+                    &mut checks,
+                    "Upstream CA trust",
+                    "fail",
+                    error,
+                    &format!(
+                        "Use {command} tls upstream to inspect or select a valid PEM CA bundle."
+                    ),
+                    Value::Null,
+                ),
+            }
+        } else {
+            check(
+                &mut checks,
+                "Upstream CA trust",
+                "pass",
+                "Packaged public roots; no additional CA selected",
+                "",
+                Value::Null,
+            );
+        }
+        let token_result =
+            ["admin_token", "agent_token"]
+                .iter()
+                .try_for_each(|name| -> Result<(), Error> {
+                    let path = config.data_dir().join(name);
+                    let meta = fs::symlink_metadata(&path)?;
+                    if !meta.is_file()
+                        || meta.uid() != unsafe { libc::geteuid() }
+                        || meta.permissions().mode() & 0o077 != 0
+                    {
+                        return Err(format!(
+                            "{} must be an ordinary private file owned by your UID",
+                            path.display()
+                        )
+                        .into());
+                    }
+                    if fs::read(&path)?.is_empty() {
+                        return Err(format!("{} is empty", path.display()).into());
+                    }
+                    Ok(())
+                });
+        match token_result {
+            Ok(()) => check(
+                &mut checks,
+                "Local API tokens",
+                "pass",
+                "Private token files are readable; contents withheld",
+                "",
+                Value::Null,
+            ),
+            Err(error) => check(
+                &mut checks,
+                "Local API tokens",
+                "fail",
+                error,
+                "Inspect the named file's ownership and mode; restore its original token before retrying.",
+                Value::Null,
+            ),
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let mut runtime = crate::linux_host::runsc_report();
+            if runtime["state"] != "ready" {
+                runtime["next_action"] = json!(format!(
+                    "Run {command} host prepare, then retry {command} doctor."
+                ));
+            }
+            check(
+                &mut checks,
+                "Linux runtime and namespaces",
+                if runtime["state"] == "ready" {
+                    "pass"
+                } else {
+                    "fail"
+                },
+                runtime["version"]
+                    .as_str()
+                    .unwrap_or("Runtime prerequisites unavailable"),
+                runtime["next_action"].as_str().unwrap_or(""),
+                runtime.clone(),
+            );
+        }
+        #[cfg(target_os = "macos")]
+        for (name, file) in [
+            ("Virtualization helper", "bin/safeyolo-vm"),
+            ("Interactive terminal", "bin/vsock-term"),
+        ] {
+            let ready = root.join(file).is_file();
+            check(
+                &mut checks,
+                name,
+                if ready { "warn" } else { "fail" },
+                if ready {
+                    "Installed input present; execution capability is established by agent diagnostics"
+                } else {
+                    "Packaged helper absent"
+                },
+                &format!(
+                    "Inspect {command} agent list, then {command} agent diagnostics NAME for actual guest/control capability; reinstall a matching package if the helper is absent."
+                ),
+                Value::Null,
+            );
+        }
+        match crate::guest_acquisition::inspect_boot_inputs(root) {
+            Ok(inputs) => check(
+                &mut checks,
+                "Guest inputs",
+                "pass",
+                format!(
+                    "Selected guest inputs and mapped ownership validated at {}",
+                    inputs.display()
+                ),
+                "",
+                Value::Null,
+            ),
+            Err(error) => check(
+                &mut checks,
+                "Guest inputs",
+                "fail",
+                error,
+                &format!(
+                    "Use the matching installer with --instance-dir {} to restore compatible guest inputs.",
+                    crate::host_lifecycle::shell_quote(&root.to_string_lossy())
+                ),
+                Value::Null,
+            ),
+        }
+        let storage_config = config.clone();
+        match tokio::task::spawn_blocking(move || storage_checks(&storage_config)).await {
+            Ok(storage) => checks.extend(storage),
+            Err(error) => check(
+                &mut checks,
+                "Local storage",
+                "unknown",
+                error,
+                "Retry doctor; local storage was not inspected.",
+                Value::Null,
+            ),
+        }
+    } else {
+        for name in [
+            "Saved policy",
+            "TLS certificate",
+            "Upstream CA trust",
+            "Local API tokens",
+            "Guest inputs",
+            "Sandbox runtime",
+            "Local logs",
+            "Retained flow store",
+        ] {
+            check(
+                &mut checks,
+                name,
+                "skip",
+                "Configuration prerequisite failed",
+                "",
+                Value::Null,
+            );
+        }
+    }
+    let live = config.is_some() && crate::host_commands::proxy_live();
+    let start = format!("Inspect the checks above, then run {command} start when ready.");
+    check(
+        &mut checks,
+        "Proxy process",
+        if config.is_none() {
+            "skip"
+        } else if live {
+            "pass"
+        } else {
+            "warn"
+        },
+        if live {
+            "Owned current process verified; this does not prove agent readiness"
+        } else {
+            "No verified running proxy"
+        },
+        if live { "" } else { &start },
+        Value::Null,
+    );
+    // Probe the authenticated API even when the launch record is unavailable.
+    // A record is ownership evidence, not a substitute for capability health.
+    let admin = if config.is_some() {
+        match native_client::admin(
+            path,
+            "/admin/runtime-identity",
+            Method::GET,
+            Value::Null,
+            Duration::from_secs(5),
+        )
+        .await
+        {
+            Ok(value) if value["state"] == "active" => {
+                check(
+                    &mut checks,
+                    "Admin API and runtime identity",
+                    "pass",
+                    "Authenticated current runtime responded",
+                    "",
+                    value,
+                );
+                true
+            }
+            Ok(value) => {
+                check(
+                    &mut checks,
+                    "Admin API and runtime identity",
+                    "unknown",
+                    "Runtime did not confirm its identity",
+                    &format!("Inspect {command} logs before retrying."),
+                    value,
+                );
+                false
+            }
+            Err(error) => {
+                check(
+                    &mut checks,
+                    "Admin API and runtime identity",
+                    if live { "fail" } else { "warn" },
+                    error,
+                    &format!(
+                        "Inspect {} and the selected configuration's Admin API endpoint. No service was started.",
+                        crate::host_lifecycle::shell_quote(
+                            &root.join("logs/proxy.log").to_string_lossy()
+                        )
+                    ),
+                    Value::Null,
+                );
+                false
+            }
+        }
+    } else {
+        check(
+            &mut checks,
+            "Admin API and runtime identity",
+            "skip",
+            "Requires a verified running proxy",
+            "",
+            Value::Null,
+        );
+        false
+    };
+    if admin {
+        let result = pipeline(path).await;
+        let verdict = result["verdict"].as_str().unwrap_or("unknown").to_owned();
+        let no_listeners = result["agents"].as_array().is_some_and(Vec::is_empty);
+        check(
+            &mut checks,
+            "Request pipeline and egress controls",
+            &verdict,
+            if no_listeners {
+                "No agent proxy listeners are configured; no requests were probed"
+            } else {
+                "Local requests exercise the configured listeners and control trace; no external test traffic"
+            },
+            &if no_listeners {
+                format!(
+                    "Run {command} agent launch from your workspace, then rerun {command} doctor."
+                )
+            } else {
+                format!(
+                    "Inspect failed pipeline findings with {command} doctor --json; repair the named control or listener."
+                )
+            },
+            result,
+        );
+        for (name, endpoint) in [
+            ("Coord message plane", "/admin/coord/diagnostics"),
+            ("Credential store", "/admin/credentials/status"),
+            ("Pending approvals", "/admin/approvals"),
+            ("Live traffic view", "/admin/traffic/flows"),
+        ] {
+            match native_client::admin(
+                path,
+                endpoint,
+                Method::GET,
+                Value::Null,
+                Duration::from_secs(5),
+            )
+            .await
+            {
+                Ok(value) => {
+                    if name == "Pending approvals" {
+                        match value["approvals"].as_array() {
+                            Some(approvals) => check(
+                                &mut checks,
+                                name,
+                                if approvals.is_empty() { "pass" } else { "warn" },
+                                format!("{} pending operator decisions", approvals.len()),
+                                if approvals.is_empty() { String::new() } else {
+                                    format!("Run {command} watch to review the agent, destination and requested authority before deciding.")
+                                }.as_str(),
+                                json!({"count":approvals.len()}),
+                            ),
+                            None => check(
+                                &mut checks,
+                                name,
+                                "unknown",
+                                "The current approvals response has no decision list",
+                                &format!("Retry {command} approvals; an unavailable list is not an empty queue."),
+                                Value::Null,
+                            ),
+                        }
+                        continue;
+                    }
+                    if name == "Coord message plane" {
+                        let connected = value["local_connection"] == "Connected";
+                        let next = format!(
+                            "Inspect {command} coord status and its current endpoints before sending messages."
+                        );
+                        check(
+                            &mut checks,
+                            name,
+                            if connected { "pass" } else { "warn" },
+                            if connected {
+                                "Local NATS connection is connected"
+                            } else {
+                                "No connected local NATS client observed; saved room records are separate"
+                            },
+                            if connected { "" } else { &next },
+                            value,
+                        );
+                        continue;
+                    }
+                    let availability = value["availability"]
+                        .as_str()
+                        .unwrap_or("available")
+                        .to_owned();
+                    let status = if matches!(availability.as_str(), "locked" | "absent") {
+                        "warn"
+                    } else if availability == "unavailable" {
+                        "unknown"
+                    } else {
+                        "pass"
+                    };
+                    check(
+                        &mut checks,
+                        name,
+                        status,
+                        availability,
+                        if name == "Credential store" && status == "warn" {
+                            "Only operations needing stored credentials require selection or unlock; other traffic remains available."
+                        } else {
+                            ""
+                        },
+                        value,
+                    );
+                }
+                Err(error) => check(
+                    &mut checks,
+                    name,
+                    "unknown",
+                    error,
+                    &format!(
+                        "Inspect {command} diagnose and {command} logs; unavailable data is not an empty result."
+                    ),
+                    Value::Null,
+                ),
+            }
+        }
+    } else {
+        for name in [
+            "Request pipeline and egress controls",
+            "Coord message plane",
+            "Credential store",
+            "Pending approvals",
+            "Live traffic view",
+        ] {
+            check(
+                &mut checks,
+                name,
+                "skip",
+                "Requires the authenticated Admin API",
+                "",
+                Value::Null,
+            );
+        }
+    }
+    if config.is_some() {
+        match crate::host_lifecycle::operate("list", None).await {
+            Ok(value) => {
+                let uncertain = value["agents"].as_array().is_none_or(|agents| {
+                    agents.iter().any(|agent| {
+                        agent["runtime_state"] == "unknown" || !agent["runtime_error"].is_null()
+                    })
+                });
+                let commands = value["agents"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|agent| {
+                        agent["runtime_state"] == "unknown" || !agent["runtime_error"].is_null()
+                    })
+                    .filter_map(|agent| agent["name"].as_str())
+                    .map(|name| {
+                        format!(
+                            "{command} agent diagnostics {}",
+                            crate::host_lifecycle::shell_quote(name)
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let next = if commands.is_empty() {
+                    format!("Inspect {command} agent list for the affected agent.")
+                } else {
+                    format!("Run {}.", commands.join("; "))
+                };
+                check(
+                    &mut checks,
+                    "Agent runtimes",
+                    if uncertain { "unknown" } else { "pass" },
+                    "Current backend observations; stopped agents do not need to be started",
+                    if uncertain { &next } else { "" },
+                    value,
+                );
+            }
+            Err(error) => check(
+                &mut checks,
+                "Agent runtimes",
+                "unknown",
+                error,
+                &format!("Inspect {command} agent list and {command} policy show."),
+                Value::Null,
+            ),
+        }
+    } else {
+        check(
+            &mut checks,
+            "Agent runtimes",
+            "skip",
+            "Configuration prerequisite failed",
+            "",
+            Value::Null,
+        );
+    }
+    let counts: serde_json::Map<String, Value> = ["pass", "warn", "fail", "skip", "unknown"]
+        .iter()
+        .map(|status| {
+            (
+                (*status).to_owned(),
+                json!(
+                    checks
+                        .iter()
+                        .filter(|check| check["status"] == *status)
+                        .count()
+                ),
+            )
+        })
+        .collect();
+    let failed = counts["fail"].as_u64().unwrap_or(0) + counts["unknown"].as_u64().unwrap_or(0) > 0;
+    json!({"root":root,"checks":checks,"counts":counts,"exit_code":i32::from(failed),
+        "verdict":if failed { "fail" } else if counts["warn"].as_u64().unwrap_or(0) > 0 { "warn" } else { "pass" }})
+}
+
+fn storage_checks(config: &crate::Config) -> Vec<Value> {
+    use std::{fs, os::fd::AsRawFd};
+    let mut checks = Vec::new();
+    let logs = (|| -> Result<Value, Error> {
+        let Some(path) = &config.audit_log_path else {
+            return Ok(json!({"enabled":false}));
+        };
+        let bytes = match fs::metadata(path) {
+            Ok(meta) if meta.is_file() => Some(meta.len()),
+            Ok(_) => return Err(format!("{} is not an ordinary audit file", path.display()).into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let mut parent = path.parent().unwrap_or(Path::new("."));
+        while !parent.exists() {
+            parent = parent
+                .parent()
+                .ok_or("No existing audit parent directory")?;
+        }
+        let directory = fs::File::open(parent)?;
+        let mut space = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // fstatvfs initializes the complete structure on success. The open
+        // directory keeps this observation bound to the selected filesystem.
+        if unsafe { libc::fstatvfs(directory.as_raw_fd(), space.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let space = unsafe { space.assume_init() };
+        let free_bytes = space.f_bavail.saturating_mul(space.f_frsize);
+        Ok(json!({"enabled":true,"path":path,"bytes":bytes,"free_bytes":free_bytes}))
+    })();
+    match logs {
+        Ok(value) if value["enabled"] == false => check(
+            &mut checks,
+            "Local logs",
+            "pass",
+            "Audit file output is disabled",
+            "",
+            value,
+        ),
+        Ok(value) => {
+            let low = value["free_bytes"].as_u64().unwrap_or(0) < 1_000_000_000;
+            let large = value["bytes"].as_u64().unwrap_or(0) > 100_000_000;
+            check(
+                &mut checks,
+                "Local logs",
+                if low {
+                    "fail"
+                } else if large {
+                    "warn"
+                } else {
+                    "pass"
+                },
+                format!(
+                    "{}: {}; {} bytes free",
+                    value["path"].as_str().unwrap_or_default(),
+                    value["bytes"].as_u64().map_or_else(
+                        || "not created yet".to_owned(),
+                        |bytes| format!("{bytes} bytes")
+                    ),
+                    value["free_bytes"]
+                ),
+                if low {
+                    "Free space on the audit filesystem; preserve logs needed for current work."
+                } else if large {
+                    "Inspect the configured audit rotation and retain needed events before removing old logs."
+                } else {
+                    ""
+                },
+                value,
+            );
+        }
+        Err(error) => check(
+            &mut checks,
+            "Local logs",
+            "unknown",
+            error,
+            "Inspect the configured audit path and its parent permissions; unavailable logs are not an empty history.",
+            Value::Null,
+        ),
+    }
+    let path = &config.flow_store_db_path;
+    let flows = (|| -> Result<Option<Value>, Error> {
+        let meta = match fs::metadata(path) {
+            Ok(meta) if meta.is_file() => meta,
+            Ok(_) => return Err("Not an ordinary flow database file".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let connection = rusqlite::Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        connection.busy_timeout(std::time::Duration::from_millis(500))?;
+        let count: i64 =
+            connection.query_row("SELECT COUNT(*) FROM flows", [], |row| row.get(0))?;
+        Ok(Some(
+            json!({"path":path,"bytes":meta.len(),"count":count,"enabled":config.flow_store_enabled}),
+        ))
+    })();
+    match flows {
+        Ok(Some(value)) => {
+            let large = value["bytes"].as_u64().unwrap_or(0) > 500_000_000;
+            check(
+                &mut checks,
+                "Retained flow store",
+                if large { "warn" } else { "pass" },
+                format!(
+                    "{} flows, {} bytes at {}; capture {}",
+                    value["count"],
+                    value["bytes"],
+                    path.display(),
+                    if config.flow_store_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                ),
+                if large {
+                    "Inspect retained flows and configured retention before pruning needed evidence."
+                } else {
+                    ""
+                },
+                value,
+            );
+        }
+        Ok(None) => check(
+            &mut checks,
+            "Retained flow store",
+            "pass",
+            if config.flow_store_enabled {
+                "No retained database yet; it is created when capture starts"
+            } else {
+                "Capture disabled; no retained database"
+            },
+            "",
+            json!({"path":path,"enabled":config.flow_store_enabled,"exists":false}),
+        ),
+        Err(error) => check(
+            &mut checks,
+            "Retained flow store",
+            "unknown",
+            format!("{}: {error}", path.display()),
+            "Inspect the configured flow database and its permissions; doctor did not create or repair it.",
+            Value::Null,
+        ),
+    }
+    checks
+}
+
+pub(crate) fn show(report: &Value) {
+    use crate::operator_output::{field, text};
+    field("Instance", &report["root"]);
+    if let Some(checks) = report["checks"].as_array() {
+        for check in checks {
+            println!(
+                "{:<7} {:<30} {}",
+                text(&check["status"]).to_uppercase(),
+                text(&check["name"]),
+                text(&check["message"])
+            );
+            if check["status"] != "pass" && check["status"] != "skip" && check["next_action"] != ""
+            {
+                println!(
+                    "        {}",
+                    crate::network_guard::sanitize_with_limit(
+                        check["next_action"].as_str().unwrap_or_default(),
+                        usize::MAX
+                    )
+                );
+            }
+        }
+    }
+    let counts = &report["counts"];
+    println!(
+        "\n{} passed, {} warnings, {} failed, {} skipped, {} unknown. Overall: {}.",
+        counts["pass"],
+        counts["warn"],
+        counts["fail"],
+        counts["skip"],
+        counts["unknown"],
+        text(&report["verdict"])
+    );
+}
 
 pub(crate) async fn pipeline(config_path: &Path) -> Value {
     let config = match native_config::read(config_path) {

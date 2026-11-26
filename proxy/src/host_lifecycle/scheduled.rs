@@ -13,7 +13,7 @@ use std::{path::Path, time::Duration};
 
 pub(crate) use broker::Follow;
 
-pub(crate) const HELP: &str = "safeyolo [--root ROOT] agent lifecycle NAME configure FILE.json\nsafeyolo [--root ROOT] agent lifecycle NAME status|pause|resume\nLifecycle configuration selects on_demand, continuous or scheduled operation, an optional native NATS calendar/timezone, elapsed operating window and stop boundary, and an adopted completion check. The running proxy reconciles schedules. pause disables future scheduled starts; agent stop ends the current run and preserves its schedule. An active run retains its captured cutoff. See docs/worker-lifecycle.md.";
+pub(crate) const HELP: &str = "safeyolo [--instance-dir PATH] agent lifecycle NAME configure FILE.json\nsafeyolo [--instance-dir PATH] agent lifecycle NAME status|pause|resume\nLifecycle configuration selects on_demand, continuous or scheduled operation, an optional native NATS calendar/timezone, elapsed operating window and stop boundary, and an adopted completion check. The running proxy reconciles schedules. pause disables future scheduled starts; agent stop ends the current run and preserves its schedule. An active run retains its captured cutoff. See docs/worker-lifecycle.md.";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

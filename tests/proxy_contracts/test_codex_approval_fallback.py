@@ -39,10 +39,9 @@ agent_id="ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 
 @contextmanager
-def _routing_run(instance):
+def _routing_run(instance, generation="0123456789abcdef0123456789abcdef"):
     # This existing sentry-shaped process contract supplies a controlled run
     # identity. It does not claim a booted guest or namespace isolation.
-    generation = "0123456789abcdef0123456789abcdef"
     agent = instance.root / "agents/alice"
     (agent / "config-share").mkdir(parents=True)
     backend = subprocess.Popen(
@@ -66,7 +65,7 @@ def _routing_run(instance):
         backend.communicate(timeout=5)
         # Retain the controlled identity records without making the installed
         # fixture keep runtime copies for a guest that was never booted.
-        agent.rename(instance.root / "controlled-run")
+        agent.rename(instance.root / f"controlled-run-{generation}")
         agent.parent.rmdir()
 
 
@@ -205,18 +204,41 @@ def test_codex_routing_wait_timeout_leaves_approval_pending_without_replay(tmp_p
         tmp_path, source=ROUTING_POLICY,
         parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
         extra_config=f'upstream_ca_file={json.dumps(str(trust))}\ntls_ca_file="certs/mitmproxy-ca.pem"\n',
-    ) as instance, _routing_run(instance), _routing_client(instance, "http") as client:
-        started = time.monotonic()
-        identifier = _routing_pending(instance, client)
-        stdout, stderr = client.communicate(timeout=35)
-        assert time.monotonic() - started >= 29
-        assert client.returncode == 0, stderr
-        assert stdout.splitlines()[-1].split()[:2] == ["428", "0"]
-        view = instance.admin("GET", f"/admin/approvals/{identifier}")
-        assert view["status"] == "pending"
-        decided = instance.cli("approvals", "approve", identifier, "--option", "run", "--json")
-        assert decided.returncode == 0, decided.stderr
-        assert not any(origin.requests for origin in origins)
+    ) as instance:
+        target = "http://allowed.invalid/backend-api/codex/responses"
+        original = {"Authorization": "Bearer routing-login-secret"}
+        with _routing_run(instance), _routing_client(instance, "http") as client:
+            started = time.monotonic()
+            identifier = _routing_pending(instance, client)
+            stdout, stderr = client.communicate(timeout=35)
+            assert time.monotonic() - started >= 29
+            assert client.returncode == 0, stderr
+            assert stdout.splitlines()[-1].split()[:2] == ["428", "0"]
+            view = instance.admin("GET", f"/admin/approvals/{identifier}")
+            assert view["status"] == "pending"
+            decided = instance.cli("approvals", "approve", identifier, "--option", "run", "--json")
+            assert decided.returncode == 0, decided.stderr
+            assert not any(origin.requests for origin in origins)
+            # After the ended request, only an explicit retry reaches the origin.
+            assert request(instance.paths["alice"], target, headers=original)[0] == 200
+            assert sum(len(origin.requests) for origin in origins) == 1
+            replacement = {"Authorization": "Bearer replacement-login-secret"}
+            assert request(instance.paths["alice"], target, headers=replacement)[0] == 428
+            assert sum(len(origin.requests) for origin in origins) == 1
+        # Replace the controlled backend process and its current run together.
+        # The old run's permission must not authorize this new run implicitly.
+        with _routing_run(instance, generation="1" * 32):
+            assert request(instance.paths["alice"], target, headers=original)[0] == 428
+            pending = instance.admin("GET", "/admin/approvals")["approvals"]
+            current = [item for item in pending if item["action"]["run"]["run_id"] == "1" * 32]
+            assert len(current) == 1
+            decided = instance.cli("approvals", "approve", current[0]["approval_id"], "--option", "run", "--json")
+            assert decided.returncode == 0, decided.stderr
+            assert sum(len(origin.requests) for origin in origins) == 1
+            assert request(instance.paths["alice"], target, headers=original)[0] == 200
+            assert request(instance.paths["bob"], target, headers=original)[0] == 428
+            assert request(instance.paths["alice"], target, headers=replacement)[0] == 428
+            assert sum(len(origin.requests) for origin in origins) == 2
 
 
 @pytest.mark.parametrize("option", ["run", "persistent"])

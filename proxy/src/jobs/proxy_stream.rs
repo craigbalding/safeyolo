@@ -3,7 +3,6 @@
 
 use super::{network, now};
 use crate::Error;
-use crate::credentials::Secret;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::Deserialize;
@@ -21,7 +20,7 @@ const CHUNK_BYTES: usize = 16 * 1024;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Call {
     ProxyConfig {},
-    GatewayToken { service: String },
+    GatewayHeader { service: String },
     ProxyOpen {},
     ProxyRead { id: u64, length: usize },
     ProxyWrite { id: u64, data_base64: String },
@@ -34,7 +33,7 @@ pub(super) struct Bridge {
     listener: UnixListener,
     proxy: PathBuf,
     config: Value,
-    tokens: BTreeMap<String, Secret>,
+    service_headers: network::ServiceHeaders,
     streams: BTreeMap<u64, UnixStream>,
     next_id: u64,
 }
@@ -45,12 +44,12 @@ impl Bridge {
         client: &network::Client,
         ca_pem: String,
     ) -> Result<Self, Error> {
-        let (proxy, tokens) = client.service_access()?;
+        let (proxy, service_headers) = client.service_access()?;
         Ok(Self {
             listener,
             proxy,
             config: json!({"ca_pem":ca_pem}),
-            tokens,
+            service_headers,
             streams: BTreeMap::new(),
             next_id: 0,
         })
@@ -88,12 +87,12 @@ impl Bridge {
     async fn call(&mut self, call: Call) -> Result<Value, Error> {
         match call {
             Call::ProxyConfig {} => Ok(self.config.clone()),
-            Call::GatewayToken { service } => {
-                let token = self
-                    .tokens
+            Call::GatewayHeader { service } => {
+                let (name, value) = self
+                    .service_headers
                     .get(&service)
                     .ok_or("service grant unavailable")?;
-                Ok(json!({"token":token.expose_secret()}))
+                Ok(json!({"name":name,"value":value.expose_secret()}))
             }
             Call::ProxyOpen {} => {
                 let id = self
@@ -154,6 +153,7 @@ mod tests {
             json!({"kind":"proxy_open","url":"https://example.com"}),
             json!({"kind":"proxy_open","gate_id":"other","run_id":"other"}),
             json!({"kind":"proxy_config","path":"/host/certificate"}),
+            json!({"kind":"gateway_header","service":"github","name":"forged"}),
             json!({"kind":"time","unix_seconds":0}),
             json!({"kind":"service","service":"github","method":"GET","url":"https://example.com"}),
         ] {
@@ -165,6 +165,44 @@ mod tests {
         assert!(chunk(0).is_err());
         assert!(chunk(CHUNK_BYTES + 1).is_err());
         assert!(chunk(CHUNK_BYTES).is_ok());
+    }
+
+    #[tokio::test]
+    async fn gateway_header_preserves_the_services_selected_authentication() {
+        let root = tempfile::tempdir().unwrap();
+        let mut bridge = Bridge {
+            listener: UnixListener::bind(root.path().join("bridge.sock")).unwrap(),
+            proxy: root.path().join("proxy.sock"),
+            config: json!({}),
+            service_headers: BTreeMap::new(),
+            streams: BTreeMap::new(),
+            next_id: 0,
+        };
+        for (name, value) in [
+            ("Authorization", "Bearer scoped-fixture"),
+            ("X-Api-Key", "scoped-fixture"),
+            ("Authorization", "Basic scoped-fixture"),
+        ] {
+            bridge.service_headers.insert(
+                "selected".into(),
+                (name.into(), crate::credentials::Secret::new(value)),
+            );
+            let header = bridge
+                .call(Call::GatewayHeader {
+                    service: "selected".into(),
+                })
+                .await
+                .unwrap();
+            assert_eq!(header, json!({"name": name, "value": value}));
+            assert!(
+                bridge
+                    .call(Call::GatewayHeader {
+                        service: "other".into()
+                    })
+                    .await
+                    .is_err()
+            );
+        }
     }
 
     #[tokio::test]
@@ -226,7 +264,7 @@ action = 'warn'
         .unwrap();
         assert!(
             bridge
-                .call(Call::GatewayToken {
+                .call(Call::GatewayHeader {
                     service: "github".into()
                 })
                 .await

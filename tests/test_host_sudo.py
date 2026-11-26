@@ -60,7 +60,7 @@ def test_command_install_discloses_literal_arguments_and_reuses_matching_link(
     sudo.chmod(0o755)
     parent.chmod(0o555)
     environment = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}"}
-    arguments = [str(bundle / "install.sh"), "--root", str(root), "--command-dir", str(commands)]
+    arguments = [str(bundle / "install.sh"), "--instance-dir", str(root), "--command-dir", str(commands)]
     try:
         result = subprocess.run(arguments, env=environment, capture_output=True, text=True, timeout=30)
         previews, calls = disclosed_calls(result.stderr)
@@ -136,7 +136,7 @@ int {name}(const char *path, int flags, ...) {{
     subprocess.run(["cc", "-shared", "-fPIC", "-Wall", "-Werror", "-x", "c", "-", "-ldl", "-o", str(shim)],
                    input=source, text=True, check=True, timeout=15)
     root, settings = tmp_path / "instance", tmp_path / "settings.toml"
-    arguments = [str(native_cli), "--root", str(root), "host", "prepare", "--system-runsc", str(runtime), "--write-settings", str(settings)]
+    arguments = [str(native_cli), "--instance-dir", str(root), "host", "prepare", "--system-runsc", str(runtime), "--write-settings", str(settings)]
     if decision == "yes":
         arguments.append("--yes")
     result = subprocess.run(arguments, input={"decline": "n\n", "interactive": "y\n"}.get(decision, ""),
@@ -172,7 +172,7 @@ def test_acl_sudo_preview_precedes_authentication_and_prepared_retry_is_a_noop(n
     private.mkdir(mode=0o700)
     runtime = payload(private / "runtime")
     settings = parent / "settings.toml"
-    arguments = ("--root", parent / "instance", "host", "prepare", "--system-runsc", runtime, "--write-settings", settings)
+    arguments = ("--instance-dir", parent / "instance", "host", "prepare", "--system-runsc", runtime, "--write-settings", settings)
     # Prepare profiles, namespaces and mappings before introducing the ACL gap.
     # Otherwise an earlier host prerequisite consumes the controlled password
     # or refusal before this test reaches the ACL operation it observes.

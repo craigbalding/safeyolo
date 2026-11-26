@@ -18,16 +18,16 @@ executable script outside all agent-writable shares. Agent creation runs setup
 without starting the sandbox:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent create work --workspace ~/code --host-script /absolute/path/to/my-host-setup.sh
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" agent create work --workspace ~/code --host-script /absolute/path/to/my-host-setup.sh
 ```
 
 For an existing agent, stop it before reapplying or changing host setup.
 Select an executable host script outside every agent-writable share:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent stop work
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent configure work --host-script /absolute/path/to/my-host-setup.sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent start work
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" agent stop work
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" agent configure work --host-script /absolute/path/to/my-host-setup.sh
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" agent start work
 ```
 
 SafeYolo does not interpret a template, domain-specific language (DSL), or
@@ -126,7 +126,7 @@ it running and open a guest shell from a second host terminal. Replace `work`
 with the agent name:
 
 ```sh
-"$HOME/.safeyolo/bin/safeyolo" --root "$HOME/.safeyolo" agent shell work
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" agent shell work
 ```
 
 Inside the guest, log in and record that this login belongs to this agent:
@@ -385,7 +385,7 @@ This `sudo` is guest-only. On rootless Linux, SafeYolo's compatibility helper
 uses `setpriv` to reach namespace uid 0, which maps to a subordinate host uid;
 on hardware microVMs it delegates to ordinary distro sudo. Host scripts should
 use `sudo -n` for noninteractive guest package setup and must not instruct the
-operator to run `safeyolo agent shell --root` for routine installs.
+operator to run `safeyolo agent shell --instance-dir` for routine installs.
 
 ## Idempotency
 

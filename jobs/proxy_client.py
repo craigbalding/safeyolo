@@ -135,7 +135,8 @@ def open_url(url, method="GET", *, headers=None, body=None, service=None):
     request_headers = dict(headers or {})
     request_headers.setdefault("Host", parsed.netloc)
     if service is not None:
-        request_headers["Authorization"] = "Bearer " + call({"kind": "gateway_token", "service": service})["token"]
+        header = call({"kind": "gateway_header", "service": service})
+        request_headers[header["name"]] = header["value"]
     connection = ProxyConnection("delegated-proxy")
     response = None
     try:

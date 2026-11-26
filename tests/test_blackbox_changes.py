@@ -45,7 +45,7 @@ class Source:
 @pytest.fixture
 def sources():
     controls = "\n".join(f'[[controls]]\nid = "BB-{number:02}"\ndecisions = ["test"]\n'
-                         for number in range(1, 38))
+                         for number in range(1, 39))
     controls += f'[[witnesses]]\npaths = ["{TEST}"]\ncontrols = ["BB-01"]\nkind = "pytest"\n'
     controls += f'[[witnesses]]\npaths = ["{RUST}"]\ncontrols = ["BB-10"]\nkind = "cargo"\n'
     return {changes.CATALOGUE: controls, changes.MAP: '[[decisions]]\nid = "test"\ntests = []\n',
@@ -682,6 +682,23 @@ def test_stale_or_failed_untrusted_report_cannot_publish(sources, github):
         notices.publish(report, event(), "schedule")
 
 
+def test_all_current_controls_reach_publisher(sources, github):
+    files = sources | {changes.MAP: f'[[decisions]]\nid = "test"\ntests = ["{TEST}"]\n'}
+    report = compare(files, {TEST: ORIGINAL.replace("== 0", "== 1")})
+    assert report["changes"][0]["controls"] == [f"BB-{number:02}" for number in range(1, 39)]
+    assert notices.publish(report, event(), "pull_request_target")["status"] == "published"
+    assert "BB-38" in github.posts[0][1]["body"]
+
+
+@pytest.mark.parametrize("controls", [None, "BB-38", ["BB-00"], ["BB-39"], ["BB-038"], [38], ["BB-01"] * 39])
+def test_invalid_report_controls_cannot_publish(sources, github, controls):
+    report = compare(sources, {TEST: ORIGINAL.replace("== 0", "== 1")})
+    report["changes"][0]["controls"] = controls
+    with pytest.raises(ValueError, match="invalid change record"):
+        notices.publish(report, event(), "pull_request_target")
+    assert not github.posts
+
+
 def test_workflow_does_not_execute_candidate_with_publication_token():
     workflow = yaml.load((ROOT / changes.WORKFLOW).read_text(), Loader=yaml.BaseLoader)
     assert set(workflow["on"]) == {"pull_request_target", "push"}
@@ -725,6 +742,48 @@ def analyze_cli(root, base, head, output):
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     return json.loads(report.read_text())
+
+
+def test_current_catalogue_and_bb38_witness_reach_publisher(tmp_path, git_sources, github):
+    root, git = git_sources
+    witness = "proxy/tests/host_execution.rs"
+    for name in (changes.CATALOGUE, changes.MAP, witness):
+        (root / name).write_bytes((ROOT / name).read_bytes())
+    git("add", ".")
+    git("commit", "-qm", "current catalogue and BB-38 witness")
+    base = git("rev-parse", "HEAD")
+    unchanged = analyze_cli(root, base, base, tmp_path)
+    assert unchanged["status"] == "complete"
+    assert unchanged["changes"] == []
+    assert unchanged["delta_id"] is None
+
+    (root / "README.md").write_text("Documentation-only change.\n")
+    git("add", ".")
+    git("commit", "-qm", "documentation only")
+    quiet = analyze_cli(root, base, git("rev-parse", "HEAD"), tmp_path)
+    assert quiet["status"] == "complete"
+    assert quiet["delta_id"] is None
+    assert not any(row["status"] == "material" for row in quiet["changes"])
+    push = event("push") | {"before": base, "after": quiet["head"]}
+    assert notices.publish(quiet, push, "push")["status"] == "quiet"
+    assert not github.posts
+
+    path = root / witness
+    original = path.read_text()
+    assert original.count("assert!(first.dispatch);") == 1
+    path.write_text(original.replace("assert!(first.dispatch);", "assert!(!first.dispatch);"))
+    git("add", ".")
+    git("commit", "-qm", "BB-38 oracle change")
+    material = analyze_cli(root, base, git("rev-parse", "HEAD"), tmp_path)
+    assert material["status"] == "complete"
+    assert material["delta_id"]
+    assert [(row["path"], row["controls"]) for row in material["changes"] if row["status"] == "material"] == [
+        (witness, ["BB-38"])]
+    push = event("push") | {"before": base, "after": material["head"]}
+    assert notices.publish(material, push, "push")["status"] == "published"
+    assert notices.publish(material, push, "push")["status"] == "duplicate"
+    assert len(github.posts) == 1
+    assert "BB-38" in github.posts[0][1]["body"]
 
 
 def test_trusted_workflow_bootstrap_runs_selected_interpreters(tmp_path, git_sources):
@@ -1102,7 +1161,7 @@ def test_yaml_alias_bomb_and_invalid_python_are_analysis_failures(sources):
     with pytest.raises(SyntaxError):
         compare(sources, {TEST: "def invalid syntax\n"})
     with pytest.raises(ValueError, match="catalogue"):
-        compare(sources | {changes.CATALOGUE: sources[changes.CATALOGUE].replace('id = "BB-37"', 'id = "BB-38"')}, {})
+        compare(sources | {changes.CATALOGUE: sources[changes.CATALOGUE].replace('id = "BB-38"', 'id = "BB-39"')}, {})
 
 
 def test_report_cannot_inject_another_mention(sources):

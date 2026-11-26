@@ -1137,7 +1137,7 @@ def run(args, receipt=None):
     original_policy = None
 
     def native(*arguments, timeout=90, instance=root):
-        return checked([cli, "--root", str(instance), *arguments], env=env, timeout=timeout,
+        return checked([cli, "--instance-dir", str(instance), *arguments], env=env, timeout=timeout,
                        diagnostics=output / "native.log")
 
     def guest(command, label, *, timeout=90, agent="notes"):
@@ -1431,7 +1431,7 @@ def recurring_journey(args, receipt):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepared-config", required=True, type=Path)
-    parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--instance-dir", dest="root", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--guest-revision")

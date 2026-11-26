@@ -12,21 +12,27 @@ pub enum Definition {
     Delegation,
     SupportOperation,
     DesktopPresent,
+    WebPublish,
     EvidenceReads,
     ServiceEffects,
     ServiceDefinition,
+    HostExecutionPackage,
+    HostExecutionBinding,
 }
 
 impl Definition {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 11] = [
         Self::Controls,
         Self::SupportGrant,
         Self::Delegation,
         Self::SupportOperation,
         Self::DesktopPresent,
+        Self::WebPublish,
         Self::EvidenceReads,
         Self::ServiceEffects,
         Self::ServiceDefinition,
+        Self::HostExecutionPackage,
+        Self::HostExecutionBinding,
     ];
 
     fn schema(self) -> Value {
@@ -36,6 +42,7 @@ impl Definition {
             Self::Delegation => json!(schema_for!(super::delegation::Delegation)),
             Self::SupportOperation => json!(schema_for!(crate::peer_support::operations::Action)),
             Self::DesktopPresent => json!(schema_for!(crate::desktop_present::Parameters)),
+            Self::WebPublish => json!(schema_for!(crate::desktop_present::web::Parameters)),
             Self::EvidenceReads => {
                 let item = json!(schema_for!(super::evidence::EvidenceRead));
                 let mut schema = json!(schema_for!(Vec<super::evidence::EvidenceRead>));
@@ -53,6 +60,10 @@ impl Definition {
             Self::ServiceEffects => json!(schema_for!(crate::services::effects::EffectModel)),
             // This owner parses a dynamic document. Do not invent a second schema.
             Self::ServiceDefinition => crate::services::ServiceDefinition::capability_schema(),
+            Self::HostExecutionPackage => json!(schema_for!(crate::host_execution::Package)),
+            Self::HostExecutionBinding => {
+                json!(schema_for!(crate::host_execution::gateway::Binding))
+            }
         }
     }
 
@@ -63,9 +74,12 @@ impl Definition {
             Self::Delegation => "policy::delegation::Delegation::valid",
             Self::SupportOperation => "peer_support::operations::Action",
             Self::DesktopPresent => "desktop_present::Parameters::validate",
+            Self::WebPublish => "desktop_present::web::Parameters::validate",
             Self::EvidenceReads => "policy::evidence::validate_reads",
             Self::ServiceEffects => "services::effects::EffectModel",
             Self::ServiceDefinition => "services::ServiceDefinition::from_value",
+            Self::HostExecutionPackage => "host_execution::Package::validate",
+            Self::HostExecutionBinding => "host_execution::gateway::Binding::validate",
         }
     }
 
@@ -123,12 +137,23 @@ pub fn validate(input: Candidate) -> Result<Value, Error> {
         Definition::DesktopPresent => {
             serde_json::from_value::<crate::desktop_present::Parameters>(input.value)?.validate()?
         }
+        Definition::WebPublish => {
+            serde_json::from_value::<crate::desktop_present::web::Parameters>(input.value)?
+                .validate()?
+        }
         Definition::EvidenceReads => super::evidence::validate_reads(Some(&input.value))?,
         Definition::ServiceEffects => {
             let _: crate::services::effects::EffectModel = serde_json::from_value(input.value)?;
         }
         Definition::ServiceDefinition => {
             crate::services::ServiceDefinition::from_value(input.value)?;
+        }
+        Definition::HostExecutionPackage => {
+            serde_json::from_value::<crate::host_execution::Package>(input.value)?.validate()?;
+        }
+        Definition::HostExecutionBinding => {
+            serde_json::from_value::<crate::host_execution::gateway::Binding>(input.value)?
+                .validate()?;
         }
     }
     Ok(

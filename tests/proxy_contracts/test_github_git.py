@@ -242,13 +242,13 @@ effect_model:
     monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "fixture-host-op-auth-312")
     proxy_binary = Path(os.environ.get("SAFEYOLO_RUST_PROXY", REPO / "proxy/target/release/safeyolo-proxy"))
     binary = native_cli(Path(os.environ.get("SAFEYOLO_NATIVE_CLI", proxy_binary.with_name("safeyolo"))), proxy=proxy_binary)
-    subprocess.run([str(binary), "--root", str(directory), "init"], capture_output=True, check=True, timeout=15)
+    subprocess.run([str(binary), "--instance-dir", str(directory), "init"], capture_output=True, check=True, timeout=15)
     host = tmp_path / "host"
     host.mkdir()
     data = directory / "data"
     data.mkdir(exist_ok=True)
     (host / "config.toml").write_text(f"data_dir={json.dumps(str(data))}\n")
-    subprocess.run([str(binary), "--root", str(host), "credentials", "reference", "git-pat", "--storage", "local",
+    subprocess.run([str(binary), "--instance-dir", str(host), "credentials", "reference", "git-pat", "--storage", "local",
                     "--provider", "onepassword", "--reference", "op://fixture/github/pat"],
                    capture_output=True, check=True, timeout=15)
     operator_token = directory / "operator-token"
@@ -337,7 +337,7 @@ decision="require_approval"
         assert canonical["action"]["github_repository"] == "owner/allowed"
         assert canonical["action"]["path"] == "/owner/allowed.git/git-receive-pack"
         instance = SimpleNamespace(root=directory, environment=dict(os.environ, TERM="xterm-256color"))
-        with terminal(instance, command=[str(binary), "--root", str(directory), "watch", "--no-color"]) as (watch, master, until):
+        with terminal(instance, command=[str(binary), "--instance-dir", str(directory), "watch", "--no-color"]) as (watch, master, until):
             output = until(b"alice wants to push to owner/allowed")
             if b"watch>" not in output:
                 until(b"watch>")
@@ -375,7 +375,7 @@ decision="require_approval"
                                  headers={"Authorization": padding_alias(basic(opaque, username))})
             assert code == 200, "accepted padding aliases must substitute the host credential"
         # Current modeled-effect prohibitions still apply before a grant lookup.
-        subprocess.run([str(binary), "--root", str(directory), "services", "approve", "alice", "github-git",
+        subprocess.run([str(binary), "--instance-dir", str(directory), "services", "approve", "alice", "github-git",
                         "POST", "/owner/allowed.git/git-receive-pack", "--lifetime", "session"],
                        capture_output=True, check=True, timeout=10)
         policy_file = Path(json.loads((directory / "proxy.json").read_text())["policy_file"])

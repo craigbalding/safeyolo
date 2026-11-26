@@ -69,7 +69,8 @@ pub(crate) fn read_state_bounded(path: &Path, limit: u64) -> Result<Option<Value
         return Err("command state must be a regular file; completion is unverified".into());
     }
     let mut source = Vec::new();
-    file.take(limit + 1).read_to_end(&mut source)?;
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut source)?;
     if source.len() as u64 > limit {
         return Err("command state exceeds the diagnostic limit".into());
     }

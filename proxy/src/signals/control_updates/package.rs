@@ -1,8 +1,7 @@
 //! Immutable native check definitions and sandbox job specifications.
 use super::*;
 use crate::policy::checks::{
-    Check, EvidenceSource, Finding, ResultType, Subject, SubjectKind,
-    challenges::{Challenge, Step},
+    Check, EvidenceSource, Finding, ResultType, Subject, SubjectKind, challenges::Challenge,
 };
 use std::io::{Read, Write};
 
@@ -152,7 +151,7 @@ impl Bundle {
             job.validate()?;
         }
         for step in &self.challenge.steps {
-            if let Step::Check { check, .. } = step
+            if let Some(check) = step.check_name()
                 && !self.checks.contains_key(check)
             {
                 return Err("challenge references a check outside its coherent revision".into());

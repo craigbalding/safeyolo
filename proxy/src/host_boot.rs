@@ -258,6 +258,7 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
     for path in [&directory, &home, &share, &status] {
         fs::create_dir_all(path)?;
     }
+    crate::signals::stage_startup(&root, &agent.name, run_id)?;
     let workspace = workspace(
         Path::new(agent.folder.as_deref().ok_or("missing workspace")?),
         agent.dangerously_allow_unowned,
@@ -552,7 +553,7 @@ fn oci(
         json!([{"names":["unshare"],"action":"SCMP_ACT_ERRNO","errnoRet":1}])
     };
     Ok(
-        json!({"ociVersion":"1.0.0","root":{"path":rootfs,"readonly":false},"hostname":format!("safeyolo-{name}"),
+        json!({"ociVersion":"1.0.0","root":{"path":rootfs,"readonly":false},"hostname":name,
         "process":{"terminal":false,"user":{"uid":0,"gid":0},"cwd":"/",
             "args":["/bin/bash","-c","while [ ! -f /safeyolo/per-run-go ]; do /bin/sleep 0.1; done; export BASH_ENV=/etc/mise-activate.sh; mkdir -p /var/log /safeyolo-status && : > /safeyolo-status/boot.log && ln -sf /safeyolo-status/boot.log /var/log/safeyolo-boot.log && exec /safeyolo/guest-init >> /safeyolo-status/boot.log 2>&1"],
             "env":["PATH=/home/agent/.mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin","HOME=/home/agent","USER=agent","TERM=xterm-256color","BASH_ENV=","MISE_DATA_DIR=/home/agent/.mise","MISE_CONFIG_DIR=/home/agent/.mise","MISE_CACHE_DIR=/home/agent/.mise/cache","MISE_OVERRIDE_CONFIG_FILENAMES=/etc/safeyolo/mise-project-config-disabled.toml","MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=none"],
@@ -574,6 +575,7 @@ mod mount_tests {
         let directory = root.join("agents/alice");
         fs::create_dir_all(&directory).unwrap();
         let ordinary = oci(root, &directory, root, root, root, &[], false, false).unwrap();
+        assert_eq!(ordinary["hostname"], "alice");
         let nested = oci(root, &directory, root, root, root, &[], false, true).unwrap();
         let mut expected_mounts = ordinary["mounts"].as_array().unwrap().clone();
         expected_mounts.push(json!({"destination":"/sys/fs/cgroup","type":"cgroup","source":"cgroup","options":["nosuid","noexec","nodev","rw"]}));

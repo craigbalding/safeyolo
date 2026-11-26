@@ -155,12 +155,12 @@ files and normal instance backups; keep credentials and private logs private.
    is required for this retained instance.
 
    ```sh
-   safeyolo --root "$ROOT" factory check "$PROPOSAL"
-   safeyolo --root "$ROOT" factory stop backlog
-   safeyolo --root "$ROOT" factory approve "$PROPOSAL" --yes
-   safeyolo --root "$ROOT" factory prepare backlog
-   safeyolo --root "$ROOT" factory run backlog
-   safeyolo --root "$ROOT" factory doctor backlog
+   safeyolo --instance-dir "$ROOT" factory check "$PROPOSAL"
+   safeyolo --instance-dir "$ROOT" factory stop backlog
+   safeyolo --instance-dir "$ROOT" factory approve "$PROPOSAL" --yes
+   safeyolo --instance-dir "$ROOT" factory prepare backlog
+   safeyolo --instance-dir "$ROOT" factory run backlog
+   safeyolo --instance-dir "$ROOT" factory doctor backlog
    ```
 
    The expected result is the new approved/staged identity, the same durable

@@ -214,7 +214,7 @@ def test_completed_check_survives_run_approval_and_receipt(tmp_path_factory, mon
                 replace_policy(fixture.proxy, "rust", fixture.directory, source.replace(
                     'configuration_version = "1"', 'configuration_version = "2"'))
             if outcome == "success":
-                cli = [str(native_cli()), "--root", str(fixture.directory), "approvals"]
+                cli = [str(native_cli()), "--instance-dir", str(fixture.directory), "approvals"]
                 explanation = subprocess.run([*cli, "explain", challenge["challenge_id"], "--option", "run"],
                                              capture_output=True, text=True, timeout=10, check=False)
                 assert explanation.returncode == 0, explanation.stderr

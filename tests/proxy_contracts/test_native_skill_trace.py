@@ -176,20 +176,22 @@ def test_doctor_command_runs_native_pipeline_for_every_agent(tmp_path, mode):
                        readiness_file=readiness, expected_backend="rust-m2")
             if mode == "one-unavailable":
                 paths["bob"].unlink()
-            result = subprocess.run([str(binaries / "safeyolo"), "--config", str(config), "doctor"],
+            result = subprocess.run([str(binaries / "safeyolo"), "--config", str(config), "--json", "doctor"],
                                     cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=20)
             (tmp_path / "doctor-stdout.json").write_text(result.stdout)
-            assert result.returncode == (1 if mode in ("truncated", "one-unavailable", "blocked") else 0), result.stderr
+            complete_report = json.loads(result.stdout)
+            assert result.returncode == complete_report["exit_code"], result.stderr
+            assert result.returncode == int(any(check["status"] in {"fail", "unknown"} for check in complete_report["checks"]))
             if mode == "healthy" and sys.platform == "linux":
                 assert len(result.stdout) > installed_host_smoke.OUTPUT_LIMIT
-                selected = json.loads(result.stdout)["linux"]
+                selected = next(check["details"] for check in complete_report["checks"] if check["name"] == "Linux runtime and namespaces")
                 observed = installed_host_smoke._substrate_identity(tmp_path)
                 assert observed.get("path") == selected.get("path"), observed
                 assert observed["status"] == ("discovered" if selected["state"] == "ready" else "unavailable")
                 if selected["state"] != "ready":
                     assert observed["reason"] == selected["error"]
-            report = json.loads(result.stdout)["pipeline"]
-            assert report["verdict"] == ("fail" if result.returncode else "pass"), report
+            report = next(check["details"] for check in complete_report["checks"] if check["name"] == "Request pipeline and egress controls")
+            assert report["verdict"] == ("fail" if mode in ("truncated", "one-unavailable", "blocked") else "pass"), report
             assert [agent["agent"] for agent in report["agents"]] == ["alice", "bob"]
             if mode == "one-unavailable":
                 assert [agent["verdict"] for agent in report["agents"]] == ["pass", "fail"]

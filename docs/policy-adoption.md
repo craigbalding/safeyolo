@@ -52,7 +52,7 @@ A retry with changed content under the same operation ID is refused.
 
 ## Review and decide on the owning host
 
-Select the intended instance with the ordinary `--root` or `--config` option.
+Select the intended instance with the ordinary `--instance-dir` or `--config` option.
 Use its existing `watch` interface, or these explicit commands:
 
 ```sh

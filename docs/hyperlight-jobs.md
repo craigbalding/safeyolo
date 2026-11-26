@@ -20,7 +20,7 @@ Installation puts them in the selected instance's `assets/hyperlight`; it needs
 no source checkout, Rust, LLVM or upstream runtime build tools. Installing the
 bundle does not adopt policy or grant service access.
 
-For execution, select an existing SafeYolo instance with `--root`. Linux needs
+For execution, select an existing SafeYolo instance with `--instance-dir`. Linux needs
 accessible Kernel-based Virtual Machine (KVM). Apple-silicon macOS needs
 Hypervisor.framework (HVF) support and the signed helper. A macOS VM without
 nested hypervisor support can build the
@@ -32,15 +32,26 @@ instance, replace that path throughout. With
 and run the installed core definition:
 
 ```sh
-safeyolo --root "$HOME/.safeyolo" job validate "$HOME/.safeyolo/assets/hyperlight/hyperlight.json"
-safeyolo --root "$HOME/.safeyolo" job run "$HOME/.safeyolo/assets/hyperlight/hyperlight.json" --input /absolute/path/to/input
+safeyolo job validate "$HOME/.safeyolo/assets/hyperlight/hyperlight.json"
+safeyolo job run "$HOME/.safeyolo/assets/hyperlight/hyperlight.json" --input /absolute/path/to/input --json
 ```
 
 The example's decoded stdout is `{"input_bytes":N}`, where `N` is the byte
 length of `request.json`. The command prints the complete execution result as
-JSON, with bounded retained output encoded in Base64. Use
+JSON because this example selects `--json`, with bounded retained output
+encoded in Base64. Without that option, the command prints a human-readable
+execution summary. Use
 `hyperlight-unikraft.json` to run the equivalent Python workload. These examples
 measure a small offline workload; they are not authoritative policy predicates.
+
+For either Hyperlight engine, append `--console-file /absolute/path/to/new.console`
+to `job run` to observe stdout while that invocation runs. The command creates
+the file with mode 0600 and refuses an existing path. It copies at most
+`retain_bytes` into that file; the final JSON result still includes the output
+count, digest and retained bytes. Console text comes from the guest. It does not
+establish authority or successful execution. A diagnostic workload can emit an
+entry marker so a caller can select cancellation after that workload begins,
+instead of assuming entry after a fixed delay.
 
 The bundle also includes `hyperlight-service.json`,
 `hyperlight-unikraft-service.json` and `service_checker.py`. These use the same
@@ -73,6 +84,33 @@ selected host. Its `--help` lists the required existing GitHub credential and
 owned instance paths. It changes only that disposable instance's test grants
 and retains private results before assertions. It needs real KVM or HVF;
 source tests and bundle preparation do not establish VM behavior.
+After a partial Unikraft warm run, `--unikraft-remaining-only` selects spin
+cancellation and recovery, concurrent calls, changed-artifact refusal,
+corrupt-template fallback and held-call lifetimes. It first constructs and
+restores one template in the new disposable instance. It skips Core, the
+Unikraft cold comparison, failed predecessor and completed spin deadline case.
+To exercise the remaining authority, retention and comparison boundaries, use
+`--template-boundaries-only` with the same prerequisites. Run it separately on
+each selected KVM or HVF host. It uses the installed diagnostic workloads and
+the loopback provider; it makes no GitHub request. Keep the supplied credential
+input private as required by the existing instance setup.
+
+This mode compares identical input, principal, artifact pins and limits for
+construction, restore and explicit cold execution. It records full command
+latency, the existing stage reports, zero offline provider latency, sampled
+CLI/helper/proxy resident memory and idle proxy memory after reaping. Record
+the installed build profile alongside the run. Sampling can miss short peaks;
+summed resident memory counts shared pages more than once and excludes the
+file page cache. Process sampling adds observation overhead to the comparison.
+
+Five additional memory layouts exercise the four-entry and one-GiB cache
+limits. The driver expires one owned receipt and checks reconstruction. It
+also checks normal shutdown removal. The service probe shares one template
+across principals and policy changes, including overlapping work, a cancelled
+predecessor, a foreign capture handle and removal of a service grant. This mode
+skips the completed offline predecessor, corruption and held-lifetime matrices.
+These selected controls do not establish initialization/load/restore phase
+interruption or complete issue acceptance.
 
 Discovery checks the selected artifact digests, host architecture, runtime
 versions and hypervisor availability. A missing device, entitlement, artifact
@@ -89,7 +127,7 @@ establish execution on another platform.
 
 The installed `package-info` identifies the source commit, platform and build
 profile. `SHA256SUMS` covers the packaged Hyperlight files and examples.
-`runtime.json` records the host architecture, Hyperlight 0.19.0 guest ABI,
+`runtime.json` records protocol 4, the host architecture, Hyperlight 0.19.0 guest ABI,
 Unikraft integration 0.21.0, embedded kernel contract, runtime source and helper
 and Python runtime digests. Example definitions pin that manifest and their
 checker/guest bytes. A release tag is never resolved during execution.
@@ -99,7 +137,7 @@ On the selected owning host:
 ```sh
 cat "$HOME/.safeyolo/package-info"
 cat "$HOME/.safeyolo/assets/hyperlight/runtime.json"
-safeyolo --root "$HOME/.safeyolo" upgrade status
+safeyolo upgrade status
 ```
 
 Use the [existing host upgrade](installation.md#upgrade-host-and-guest-components)
@@ -149,8 +187,8 @@ trusted definition, so copying the complete bundle preserves its bindings.
 | Privilege | No Unix privilege model | Guest user IDs do not supply full Linux privilege semantics |
 | Networking | Bounded byte I/O to the delegated proxy; optional separate mediated service host call | Same byte I/O; host-socket passthrough stays disabled |
 | Memory | `memory_mb` selects scratch size | `memory_mb` selects scratch size |
-| Cancellation | Stop the owning helper process group and reap the helper | Same |
-| State reuse | No snapshots or warm templates | No snapshots or warm templates |
+| Cancellation | Kill the owning helper process group, then reap the helper | Same |
+| State reuse | Clean initialized snapshots; fresh helper and sandbox per call | Clean initialized interpreter snapshots; fresh helper, mounts and sandbox per call |
 
 Both engines reject `privilege=guest-root`. Core is not an
 ordinary Linux executable environment. Unikraft does not implement every Linux
@@ -199,11 +237,94 @@ Unikraft console decodes invalid UTF-8 with replacement before forwarding it;
 forwarded bytes, not an assertion about original binary guest writes.
 
 Measure full command latency and peak memory on the actual host. Separate
-input preparation and artifact copying from VM execution and any future
-provider latency. Compare with the host's existing engine using the same input,
-authority and output retention. Cold invocation currently starts a fresh
-helper and VM each time; there is no implemented warm lane or universal
-performance advantage.
+input preparation, artifact copying, template construction/save, load/restore,
+payload execution and provider latency. Compare equivalent workloads on the
+same host with the same authority and output retention. There is no universal
+performance advantage. Prior cold measurements do not measure restoration.
+
+## Reuse initialized workloads
+
+Both Hyperlight engines default to `reuse_initialization=true` in the selected
+`engine` object. The first call constructs a clean template and restores a new
+sandbox from that initialization. Later calls load its verified snapshot and
+restore another sandbox. Every call uses a new helper process. A completed,
+failed or cancelled call is never the source of the next template.
+
+Core freezes after the guest loader and `hyperlight_main` return. During that
+phase, input, invocation context and service host calls return errors. Unikraft
+freezes after its Python driver boots, imports the common standard-library
+modules and prepares `/work`. It has no input/checker mounts or service callback
+during construction. The checker script runs only after restoration. Template
+construction never imports arbitrary checker code.
+
+Each call attaches current input, identity, deadline and capability handles.
+Unikraft refreshes its mounts, environment, clock and supported runtime random
+generators on restore. Initialization imports Python's module-level `random`
+generator. The restore probe compares its state with the frozen state before
+drawing a value, as well as comparing values across calls. `SY_INVOCATION_ID`
+and `SY_DEADLINE_MONOTONIC_MS` identify
+the current call. Core's `InvocationContext()` host function returns the current
+invocation ID, Unix time in milliseconds, deadline and 32 fresh random bytes.
+Code that keeps a private generator or startup-time value in its own initialized
+state must refresh that state from current context before use. The bundled core
+checker retains no such generator. Python's custom generators and startup hash
+seeds are not reseeded by this integration; construct invocation generators after
+restore. The template contains no invocation credentials or usable delegation.
+
+Template identity binds the selected runtime manifest, helper/kernel/runtime,
+checker or guest digest, architecture and effective memory/transport layout.
+The helper's digest binds its initialization code and configuration. Templates
+are local to one host boot. The supported loader checks compatibility and all
+snapshot blob digests against the retained manifest digest. Artifact verification
+still runs for each call. The cache and its receipts stay in the trusted host's
+private instance directory, outside job mounts. Digest checks detect changed
+bytes; they do not authenticate a cache supplied by an untrusted writer.
+Current policy is checked separately: changing a
+principal or service grant does not itself change initialized bytes or preserve
+the previous call's authority.
+
+The private instance directory `data/hyperlight-templates` retains at most 4
+idle templates within a 1 GiB byte budget. Selection removes entries older than
+60 minutes and evicts older unused entries when capacity is needed. Expiration
+is checked on cache access; no idle worker runs a timer. Reader leases protect
+mapped blobs until their helper exits. Normal proxy shutdown removes idle
+entries after check tasks drain. An independent CLI call that still holds a
+reader lease keeps its files until a later access or shutdown can remove them.
+No VM, interpreter, callback or delegated handle remains idle in the cache.
+The operating system can retain file pages in its own page cache.
+After saving a new snapshot, admission uses its measured size. The helper
+evicts idle entries until the new snapshot fits. Active reader leases remain
+protected. If the snapshot exceeds the whole budget, or active readers prevent
+admission, the current call uses its initialized snapshot without retaining it.
+
+`runtime_report.initialization` reports `constructed`, `restored` or `cold`, the
+template key and snapshot digest, an explicit cold reason, and stage times in
+milliseconds. A missing template is constructed. A busy cache, invalid or
+incompatible template, or unavailable cache causes explicit cold execution of
+the same engine. An oversized initialized template is used for the current
+call without retention. No path changes engines or selects older approved code.
+The existing deadline/watchdog covers construction, loading, resume, guest code
+and host callbacks. `helper_max_rss_bytes` reports one helper's peak resident
+memory; it excludes the CLI, proxy and file page cache.
+
+To compare a cold call, set `"reuse_initialization": false` in a copy of the
+same trusted job's `engine` object. Keep its artifact pins, input and limits
+unchanged. The disabled option changes initialization reuse, not policy access.
+The installed core `TemplateProbe` function and `template_probe.py` expose a
+construction witness, per-call state, input and fresh context. They are
+diagnostics, not adopted policy predicates.
+
+On an owned Linux x86_64/KVM or physical Apple-silicon/HVF host, the existing
+two-engine driver accepts `--warm-templates-only` with its normal prerequisites.
+On a confined host, select authorized `--admin-port` and `--provider-port`
+values and preserve its existing parent-proxy route.
+That mode records cold and restored observations, corrupt-template fallback,
+concurrent/failing predecessors and the existing held-call lifetime controls.
+Its complete command interval starts at process launch and ends after reaping;
+fixture input/spec preparation is outside that interval. The offline comparison
+has no provider latency. Service evidence retains separate request spans.
+Installed warm measurements and independent acceptance must identify the actual
+runtime artifacts and build profile; source tests alone establish neither.
 
 ## Network access through the delegated proxy
 
@@ -234,8 +355,8 @@ Create `/absolute/path/to/input/request.json` on that host:
 From the same host, run either pinned example against that input directory:
 
 ```sh
-safeyolo --root "$HOME/.safeyolo" job run "$HOME/.safeyolo/assets/hyperlight/hyperlight-network.json" --input /absolute/path/to/input
-safeyolo --root "$HOME/.safeyolo" job run "$HOME/.safeyolo/assets/hyperlight/hyperlight-unikraft-network.json" --input /absolute/path/to/input
+safeyolo --instance-dir "$HOME/.safeyolo" job run "$HOME/.safeyolo/assets/hyperlight/hyperlight-network.json" --input /absolute/path/to/input
+safeyolo --instance-dir "$HOME/.safeyolo" job run "$HOME/.safeyolo/assets/hyperlight/hyperlight-unikraft-network.json" --input /absolute/path/to/input
 ```
 
 Both examples return a typed finding that compares the HTTP status with

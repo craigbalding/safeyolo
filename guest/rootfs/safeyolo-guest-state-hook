@@ -1,0 +1,15 @@
+#!/bin/sh
+# Recording is recovery information, not permission to prevent package use.
+case "${1:-}" in
+    apt-pre|dpkg-status)
+        # Keep the package manager's pipe open when recording fails or is skipped.
+        trap 'cat >/dev/null' 0
+        ;;
+esac
+[ "${SAFEYOLO_RESTORE_ACTIVE:-}" != 1 ] || exit 0
+helper=/run/safeyolo/safeyolo-guest
+[ -x "$helper" ] || helper=/safeyolo/safeyolo-guest
+[ -x "$helper" ] || exit 0
+if ! "$helper" retained-state "$@"; then
+    echo 'SafeYolo guest state capture failed; inspect safeyolo-guest-state status.' >&2
+fi

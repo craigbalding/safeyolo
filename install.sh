@@ -18,12 +18,12 @@ while (($#)); do
       launch=true; shift
       launch_arguments=("$@")
       break;;
-    --root|--release|--download-only)
+    --instance-dir|--release|--download-only)
       option=$1
       (($# >= 2)) || { echo "$option requires a value" >&2; exit 2; }
       [[ -n $2 ]] || { echo "$option requires a nonempty value" >&2; exit 2; }
       case "$option" in
-        --root) root=$2;; --release) release=$2;;
+        --instance-dir) root=$2;; --release) release=$2;;
         --download-only) download_only=$2;;
       esac
       shift 2;;
@@ -37,7 +37,7 @@ while (($#)); do
       [[ $1 != --no-guest-download ]] || download_guest=false
       install_arguments+=("$1"); shift;;
     --help)
-      echo 'Usage: bash install-safeyolo.sh [--root DIRECTORY] [--release host-COMMIT] [--command-dir DIRECTORY] [--platform-assets DIRECTORY | --no-guest-download] [--system-runsc PATH] [--yes] [--launch [WORKSPACE] [AGENT_LAUNCH_OPTIONS...]]'
+      echo 'Usage: bash install-safeyolo.sh [--instance-dir DIRECTORY] [--release host-COMMIT] [--command-dir DIRECTORY] [--platform-assets DIRECTORY | --no-guest-download] [--system-runsc PATH] [--yes] [--launch [WORKSPACE] [AGENT_LAUNCH_OPTIONS...]]'
       echo 'Downloads the production host package from the official GitHub release and runs its installer. The default instance is HOME/.safeyolo (or SAFEYOLO_CONFIG_DIR). Repeat uses the installed package without checking Latest or upgrading.'
       echo 'Trust source: HTTPS from the official github.com/craigbalding/safeyolo release, including its install-safeyolo.sh bootstrap. Same-release SHA256SUMS checks integrity; it is not independent publisher authentication.'
       echo 'Ubuntu AMD64/ARM64 and Apple Silicon macOS use the same download-and-run route. No package manager or build toolchain is needed for host acquisition. Host preparation, runtime and first-agent launch must also be available in the selected release.'
@@ -68,7 +68,7 @@ if [[ -n $release && ! $release =~ ^host-[0-9a-f]{40}$ ]]; then
 fi
 [[ $root == /* ]] || root=$PWD/$root
 install_and_launch() {
-  "$@" --root "$root" ${install_arguments[@]+"${install_arguments[@]}"}
+  SAFEYOLO_INSTALL_LAUNCH=$launch "$@" --instance-dir "$root" ${install_arguments[@]+"${install_arguments[@]}"}
   if $launch; then
     if [[ -n $codex_pid ]]; then
       wait "$codex_pid" || echo 'SafeYolo: early Codex acquisition did not complete; the guest will use its ordinary installer.' >&2
@@ -78,7 +78,7 @@ install_and_launch() {
       # Keep this private handoff until setup consent lets launch move the
       # payload into the new agent home. Cleanup also covers refusal/failure.
       echo 'SafeYolo: launching the first agent from the installed instance.' >&2
-      SAFEYOLO_CODEX_PACKAGE="$stage/codex" "$root/bin/safeyolo" --root "$root" agent launch ${launch_arguments[@]+"${launch_arguments[@]}"}
+      SAFEYOLO_CODEX_PACKAGE="$stage/codex" "$root/bin/safeyolo" --instance-dir "$root" agent launch ${launch_arguments[@]+"${launch_arguments[@]}"}
       return
     fi
     if [[ -n $stage ]]; then
@@ -86,7 +86,7 @@ install_and_launch() {
       trap - EXIT
     fi
     echo 'SafeYolo: launching the first agent from the installed instance.' >&2
-    exec "$root/bin/safeyolo" --root "$root" agent launch ${launch_arguments[@]+"${launch_arguments[@]}"}
+    exec "$root/bin/safeyolo" --instance-dir "$root" agent launch ${launch_arguments[@]+"${launch_arguments[@]}"}
   fi
 }
 start_codex_prefetch() {
@@ -118,11 +118,11 @@ fi
 # roots are preserved rather than converted or replaced with Latest.
 if [[ -z $download_only ]] && [[ -e $root/config.toml || -L $root/config.toml || -e $root/policy.toml || -L $root/policy.toml || -e $root/data/admin_token ]]; then
   if [[ ! -f $root/install_native.sh || ! -f $root/native_package.sh ]]; then
-    echo "Existing installation at $root was preserved. Use its installed command, or choose a separate --root and --command-dir; this installer does not convert older state." >&2
+    echo "Existing installation at $root was preserved. Use its installed command, or choose a separate --instance-dir and --command-dir; this installer does not convert older state." >&2
     exit 1
   fi
   if [[ -n $release ]] && ! grep -qx "source_commit=${release#host-}" "$root/package-info"; then
-    echo "Release differs from the installed host at $root. Repeat is not an upgrade; use the installed command or a separate --root and --command-dir." >&2; exit 1
+    echo "Release differs from the installed host at $root. Repeat is not an upgrade; use the installed command or a separate --instance-dir and --command-dir." >&2; exit 1
   fi
   install_and_launch "$root/install_native.sh" --bundle "$root"
   exit
@@ -229,7 +229,7 @@ if [[ ! -f $archive ]] || [[ $(archive_sha256 "$archive") != "$expected" ]]; the
     if "$early/bin/safeyolo" guest download --help | grep -F -- '--prepare' >/dev/null; then
       guest_arguments+=(--prepare)
     fi
-    "$early/bin/safeyolo" --root "$root" guest download --package-info "$early/package-info" ${guest_arguments[@]+"${guest_arguments[@]}"} > "$stage/guest-index" &
+    "$early/bin/safeyolo" --instance-dir "$root" guest download --package-info "$early/package-info" ${guest_arguments[@]+"${guest_arguments[@]}"} > "$stage/guest-index" &
     guest_pid=$!
   fi
   native_decoder=false stream_verified=false

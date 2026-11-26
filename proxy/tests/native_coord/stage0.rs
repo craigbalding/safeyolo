@@ -10,7 +10,7 @@ pub(super) async fn base(root: &Path, args: &[&str]) -> Value {
             std::env::var_os("SAFEYOLO_COORD_BASE_BINARY")
                 .expect("set the retained current-master CLI"),
         )
-        .arg("--root")
+        .arg("--instance-dir")
         .arg(root)
         .args(args)
         .env("SAFEYOLO_NATS_TEST_INSTANCE", root)
@@ -467,7 +467,7 @@ async fn native_stage0_replay_and_delivery_survive_current_master_and_process_cr
     if base_version < 10 {
         let old = std::env::var("SAFEYOLO_COORD_BASE_BINARY").expect("set current-base executable");
         let refused = tokio::process::Command::new(old)
-            .arg("--root")
+            .arg("--instance-dir")
             .arg(root)
             .args(["coord", "brief", "show", "shared"])
             .output()

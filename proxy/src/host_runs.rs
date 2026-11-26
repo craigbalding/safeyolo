@@ -12,17 +12,7 @@ pub(crate) fn read(name: &str) -> Result<Option<Value>, Error> {
     crate::guest_commands::read_state(&path(name))
 }
 
-/// Host-owned ingress binding. A stopped or replaced generation is never a
-/// source of current-run authority, even while an old client socket is open.
-#[derive(
-    schemars::JsonSchema, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize,
-)]
-#[serde(deny_unknown_fields)]
-pub struct AgentRun {
-    pub agent: String,
-    pub agent_id: String,
-    pub run_id: String,
-}
+pub use safeyolo_host_executor::AgentRun;
 
 pub(crate) fn authority(root: &std::path::Path, name: &str, agent_id: &str) -> Option<AgentRun> {
     let run =
@@ -77,12 +67,13 @@ pub(crate) fn authority(root: &std::path::Path, name: &str, agent_id: &str) -> O
     })
 }
 
-impl AgentRun {
-    pub(crate) fn current(&self, policy: &crate::policy::Policy) -> bool {
-        policy.evidence_agent_id(&self.agent) == Some(self.agent_id.as_str())
-            && policy.agent_run(&self.agent).as_ref() == Some(self)
+impl safeyolo_host_executor::AgentRunPolicy for crate::policy::Policy {
+    fn run_is_current(&self, run: &AgentRun) -> bool {
+        self.evidence_agent_id(&run.agent) == Some(run.agent_id.as_str())
+            && self.agent_run(&run.agent).as_ref() == Some(run)
     }
 }
+
 pub(crate) fn save(name: &str, value: &Value) -> Result<(), Error> {
     crate::guest_commands::write_json(&path(name), value)
 }

@@ -68,6 +68,13 @@ servicing, read [adoption and worker support](references/adoption.md). It connec
 those existing owners without granting the preferred agent administration.
 For supervised self-tasking, selected schedules, checked early stop and resumed
 work, read [worker lifecycle](references/lifecycle.md).
+For a selected host task, read the installed SafeYolo skill's
+[host-operation workflow](../safeyolo/references/host-operations.md).
+It connects public first-trust preparation, the target's trusted bootstrap,
+the existing human policy review, and covered code adoption. Keep the service's
+intended function and audience separate from derived authority, actual binding,
+application readiness and observed reach. Use scoped endpoint facts before
+selecting an address or port; retain an intentionally broader authorised audience.
 
 ## Retain intent and reach the next useful result
 
@@ -128,6 +135,20 @@ controls, evidence and cost. Reuse unchanged authority. A changed target,
 disclosure, scope or expired grant needs the existing authority owner's
 decision only when current authority does not cover it. An unavailable read
 holds the affected operation without erasing reusable work.
+
+When no relevant condition changed, do not repeat optional suggestions, request
+another approval or create a new signal. State whether a new action is needed;
+existing Work and its unfinished obligations can remain. Distinguish no new
+Work from no existing Work. Do not suppress a new failure by calling it
+unchanged, or turn absent observations into a success report.
+
+For feedback, fixed behavior, source selection or adding a cooperating worker,
+read [evolve the retained task](references/evolution.md). It connects those
+changes to the existing proposal, policy and Coord owners while preserving the
+original worker. Read [operational receipts and assurance](references/operations.md)
+when explaining deployed behavior, an incomplete result or changed protection.
+Use the existing task, configuration and evidence records; these references
+add no task store or assurance service.
 
 Keep concise setup intent alongside the task note. Guest restoration uses the
 installed package/configuration capture guidance when available; discover its

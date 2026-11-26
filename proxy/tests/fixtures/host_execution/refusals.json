@@ -1,0 +1,23 @@
+[
+  {"name":"wrong target", "pointer":"/target_id", "value":"target-other", "code":"target"},
+  {"name":"wrong issuer", "pointer":"/issuer_id", "value":"sy-other", "code":"issuer"},
+  {"name":"wrong principal", "pointer":"/principal/run/agent_id", "value":"ag-other", "code":"principal"},
+  {"name":"wrong run", "pointer":"/principal/run/run_id", "value":"22222222222222222222222222222222", "code":"principal"},
+  {"name":"wrong task", "pointer":"/principal/task_id", "value":"task-other", "code":"principal"},
+  {"name":"expired request", "pointer":"/expires_at", "value":100, "code":"expired"},
+  {"name":"stale trust", "pointer":"/expected/trust", "value":"old", "code":"stale"},
+  {"name":"stale authority", "pointer":"/expected/authority", "value":"old", "code":"stale"},
+  {"name":"stale ceiling", "pointer":"/expected/ceiling", "value":"old", "code":"stale"},
+  {"name":"stale assessment", "pointer":"/expected/assessment", "value":"old", "code":"stale"},
+  {"name":"unknown feature", "pointer":"/required_features/0", "value":"arbitrary-host-shell-v1", "code":"protocol"},
+  {"name":"unknown version", "pointer":"/version", "value":"safeyolo.host-execution/v2", "code":"protocol"},
+  {"name":"operation traversal", "pointer":"/action/invocation/operation_id", "value":"../restart", "code":"selector"},
+  {"name":"resource pattern", "pointer":"/action/invocation/resource_id", "value":"service:*", "code":"selector"},
+  {"name":"unadopted operation", "pointer":"/action/invocation/operation_id", "value":"replace", "code":"selector"},
+  {"name":"ungranted resource", "pointer":"/action/invocation/resource_id", "value":"service:other", "code":"authority"},
+  {"name":"stale operation", "pointer":"/action/invocation/operation_sha256", "value":"old", "code":"stale"},
+  {"name":"stale implementation", "pointer":"/action/invocation/implementation_sha256", "value":"old", "code":"stale"},
+  {"name":"wrong argument type", "pointer":"/action/invocation/arguments/wait", "value":"5", "code":"arguments"},
+  {"name":"argument outside authority", "pointer":"/action/invocation/arguments/wait", "value":6, "code":"authority"},
+  {"name":"rationale adds no authority", "pointer":"/action/invocation/arguments/wait", "value":99, "code":"authority"}
+]

@@ -191,7 +191,7 @@ def main():
         checks = [{"work_id": r["work_id"], "version": read(r["work_id"])["version"]} for r in current["checks"]]
         # The operator selects this objection explicitly. An unselected advisory
         # challenge is not a universal veto, and Alice cannot amend this policy.
-        run([host, "--root", root, "coord", "work", "set-requirements", "shared", work_id,
+        run([host, "--instance-dir", root, "coord", "work", "set-requirements", "shared", work_id,
              "--expected-version", work["version"], "--expected-generation", work["claim_generation"],
              "--expected-requirements-version", current["version"], "--authorities", json.dumps(current["authorities"]),
              "--deciders", json.dumps(current["deciders"]), "--independent", "true", "--checks", json.dumps(checks),

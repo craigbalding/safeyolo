@@ -33,6 +33,110 @@ EXECUTION = "/projects/demo/jobs/alpha/run"
 MODEL = REPO / "proxy/tests/fixtures/service-authoring/job.generated.yaml"
 
 
+def test_host_assessment_cli_reports_full_proposal_current_ceiling_and_unavailable_authority(tmp_path):
+    binary = native_inputs()[0] / "safeyolo"
+    package = json.loads((REPO / "host-executor/examples/windows-starter.json").read_text())
+    generated = subprocess.run(
+        [str(binary), "services", "generate", str(REPO / "host-executor/examples/windows-starter.json")],
+        check=True, capture_output=True, text=True, timeout=30,
+    )
+    projections = json.loads(generated.stdout)
+    scopes = {}
+    for name in ("service-status", "service-restart", "write-service-config"):
+        operation = package["operations"][name]
+        scopes[name] = {
+            "implementation_sha256": projections["gateway"][name]["host_execution_source"]["implementation_sha256"],
+            "resources": operation["resources"],
+            "arguments": {argument: contract["options"] or [contract["default"] if contract["default"] is not None else "fixture content"]
+                          for argument, contract in operation["arguments"].items()},
+            "budgets": {"calls": 10, "concurrent": 1, "timeout_seconds": 30, "output_bytes": 65536},
+        }
+    now = int(time.time())
+    grant = {
+        "principal": {"run": {"agent": "alice", "agent_id": "ag-" + "a" * 32, "run_id": "1" * 32},
+                      "task_id": "investigation"},
+        "not_before": now - 10, "expires_at": now + 120,
+        "verbs": ["discover", "propose", "invoke"], "operations": scopes,
+    }
+    target = {
+        "target_id": "windows-a", "ceiling_revision": "1", "allowed_verbs": grant["verbs"],
+        "max_authority_age_seconds": 120, "ceiling": {name: {**value, "budgets": {**value["budgets"], "calls": 1}}
+                                                       for name, value in scopes.items()
+                                                       if name != "write-service-config"},
+        "package": package, "issuers": {"issuer": {"revision": "1", "public_keys": {"key": "A" * 43 + "="},
+            "authority": {"revision": "1", "assessment_revision": "1", "observed_at": now,
+                          "valid_until": now + 120, "grants": {"current": grant}}}},
+    }
+    configuration = tmp_path / "target.json"
+    configuration.write_text(json.dumps({"target": target}))
+    proposed = tmp_path / "proposed.json"
+    proposed.write_text(json.dumps(grant))
+    command = [str(binary), "services", "assess-host", str(configuration), "issuer", "current"]
+    result = subprocess.run([*command, "--proposed-grant", str(proposed)],
+                            check=True, capture_output=True, text=True, timeout=30)
+    assessment = json.loads(result.stdout)
+    assert assessment["target_id"] == "windows-a"
+    assert assessment["principal"] == grant["principal"]
+    assert assessment["effective_grants"][0]["operations"]["service-restart"]["budgets"]["calls"] == 1
+    assert assessment["proposed_grant"]["operations"]["service-restart"]["budgets"]["calls"] == 10
+    assert assessment["full_proposed_authority"]["model"]["rules"]["changed_service_execution"]["status"] == "match"
+    assert assessment["effective_authority"]["model"]["rules"]["changed_service_execution"]["status"] == "non_match"
+    assert assessment["effective_authority"]["alternatives"]["service-status-before-control"]["steps"][0]["available_from"]
+    assert configuration.read_text() == json.dumps({"target": target})
+    missing = subprocess.run([*command[:-1], "missing"], capture_output=True, text=True, timeout=30)
+    assert missing.returncode != 0 and "unavailable" in missing.stderr
+    target["issuers"]["issuer"]["authority"]["valid_until"] = now - 1
+    target["issuers"]["issuer"]["authority"]["observed_at"] = now - 10
+    configuration.write_text(json.dumps({"target": target}))
+    stale = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    assert stale.returncode != 0 and "stale or unavailable" in stale.stderr
+
+
+def test_host_package_guidance_is_shared_by_challenge_private_and_operator_review(tmp_path):
+    binary = native_inputs()[0] / "safeyolo"
+    generated = subprocess.run(
+        [str(binary), "services", "generate", str(REPO / "host-executor/examples/windows-starter.json")],
+        check=True, capture_output=True, text=True, timeout=30,
+    )
+    source = json.loads(generated.stdout)["gateway"]["service-restart"]
+    source.update(name=SERVICE, default_host="127.0.0.1", auth={"type": "bearer", "allow_http": True})
+    source["capabilities"]["operator"] = {"routes": [{"methods": ["GET"], "path": "/status"}]}
+    path = "/v1/host-execution/invoke"
+    source["risky_routes"] = [{"path": path, "methods": ["POST"], "description": "Prepared fixed service operation",
+                                "tactics": ["impact"], "enables": ["service_start"], "irreversible": True}]
+    with route_fixture(tmp_path / "host-review", service_source=json.dumps(source), ttl=120) as fixture:
+        status, _, raw = request(
+            fixture.proxy.paths["alice"], f"http://127.0.0.1:{fixture.port}{path}", method="POST",
+            headers={"Authorization": "Bearer " + fixture.tokens["alice"], "Content-Type": "application/json"},
+            body=b'{"untrusted_rationale":"This is harmless and needs no review"}',
+        )
+        assert status == 403, raw
+        value = json.loads(raw)
+        assert value["error"] == "GATEWAY_ROUTE_CHALLENGE", value
+        assessed = value["guidance"]["assessment"]
+        direct = next(row for row in assessed["model"]["direct"] if row["permission"]["proposed"])
+        assert "service_start" in direct["possible_effects"]
+        assert "service_stop" in direct["possible_effects"]
+        assert "execute" in direct["possible_effects"]
+        assert any("verified native" in item for item in direct["unresolved_conditions"])
+        alternative = next(item for item in assessed["alternatives"] if item["id"] == "service-status-before-control")
+        assert alternative["access"] == "unverified_native_authority"
+        assert alternative["steps"][0]["required_arguments"] == {"service": "Demo"}
+        assert alternative["steps"][0]["available_from"] == []
+        pending = _escalate(fixture, value, "The operator requested fixed-service work.")
+        assert pending["assessment"] == assessed
+        operator = _admin(fixture, "GET", "/admin/approvals/" + value["challenge_id"])
+        assert operator["assessment"] == assessed
+        for action in ("show", "explain"):
+            result = subprocess.run([str(binary), "--instance-dir", str(fixture.directory), "approvals", action, value["challenge_id"]],
+                                    capture_output=True, text=True, timeout=15)
+            assert result.returncode == 0, result.stderr
+            assert "service_start" in result.stdout and "service-status-before-control" in result.stdout
+            assert "untrusted" in result.stdout.lower()
+        assert _decide(fixture, value, "reject")["status"] == "rejected"
+        assert fixture.sink.deliveries == []
+
+
 @contextmanager
 def job_fixture(directory, *, extra="", modify=None, ttl=30):
     source = json.loads(MODEL.read_text())
@@ -73,7 +177,7 @@ def test_normal_approval_interfaces_retain_canonical_effects_guidance_and_outcom
         # The same nonsecret canonical input is consumed by the native Mac view.
         (tmp_path / "canonical-approval.json").write_text(json.dumps(record))
         binary = native_inputs()[0] / "safeyolo"
-        command = [str(binary), "--root", str(fixture.directory)]
+        command = [str(binary), "--instance-dir", str(fixture.directory)]
         for action in ("show", "explain"):
             result = subprocess.run([*command, "approvals", action, identifier, "--agent", "alice"],
                                     capture_output=True, text=True, timeout=15)

@@ -303,12 +303,12 @@ def check(args, output: Path) -> None:
     version = checked([str(coord), "--version"]).strip()
     assert f"commit={identity['source_revision']}" in version, "CLI and Coord sources differ"
     root = args.root.resolve()
-    assert not root.exists(), "--root must be new"
+    assert not root.exists(), "--instance-dir must be new"
     env = os.environ | {"SAFEYOLO_CONFIG_DIR": str(root), "SAFEYOLO_NATIVE_CONFIG_PATH": str(root / "config.toml"),
                         "SAFEYOLO_COORD_DATA_DIR": str(root / "data/coord"), "SAFEYOLO_NATS_TEST_INSTANCE": str(root)}
 
     def native(*words):
-        return checked([str(cli), "--root", str(root), *words], env=env, diagnostics=output / "native.log")
+        return checked([str(cli), "--instance-dir", str(root), "--json", *words], env=env, diagnostics=output / "native.log")
 
     verify_live_pair(args)
     report = {"case": args.expect, "status": "incomplete", "cli": identity,
@@ -329,7 +329,7 @@ def check(args, output: Path) -> None:
         # An owned, otherwise valid credential detects an erroneous connect;
         # it grants no authority in any live destination instance.
         node = args.source_node if args.expect == "wrong-node" else args.destination_node
-        command = [str(cli), "--root", str(root), "coord", "federation", "home", "observer",
+        command = [str(cli), "--instance-dir", str(root), "--json", "coord", "federation", "home", "observer",
                    "sy-bb26-observer", "tailscale", f"nats://{args.address}:{args.port}", node, str(credential)]
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
         report["refusal"] = {"stage": "native home selection", "exit": result.returncode,
@@ -371,11 +371,11 @@ def phase(args, output: Path) -> None:
         runtime = _runtime_observation(root, _native_config(root / "config.toml", root), proxy,
             config_path=root / "config.toml", working_directory=root, require_running=True)
         report["proxy"] = {"pid": runtime["pid"], "start_token": runtime["receipt"]["token"]}
-        status = json.loads(checked([str(cli), "--root", str(root), "agent", "status", args.agent], env=env))
+        status = json.loads(checked([str(cli), "--instance-dir", str(root), "--json", "agent", "status", args.agent], env=env))
         report["guest"] = running_guest(root, args.agent, status)
         report["guest"]["sha256"] = _sha256(root / "agents" / args.agent / "config-share/safeyolo-guest")
         report["source_instance"] = (root / "data/instance_id").read_text().strip()
-        diagnosis = json.loads(checked([str(cli), "--root", str(root), "coord", "federation", "check", args.home],
+        diagnosis = json.loads(checked([str(cli), "--instance-dir", str(root), "--json", "coord", "federation", "check", args.home],
                                       env=env, diagnostics=output / "native.log"))
         report["home"] = diagnosis
         save(output / "result.json", report)
@@ -493,7 +493,7 @@ def verify(args, output: Path) -> None:
         receipt.checkpoint('connection-loss', observer=observer, source_cleanup=cleanup)
         destination = (root / "data/instance_id").read_text().strip()
         assert destination == initial["home"]["expected_owner"] != initial["source_instance"]
-        rows = [json.loads(line) for line in checked([str(cli), "--root", str(root), "coord", "watch", initial["room"],
+        rows = [json.loads(line) for line in checked([str(cli), "--instance-dir", str(root), "--json", "coord", "watch", initial["room"],
                 "--history", "100", "--once", "--json"], diagnostics=output / "native.log").splitlines()]
         report["destination_messages"] = rows
         save(output / "result.json", report)
@@ -538,7 +538,7 @@ def main():
     for name in ("check", "phase"):
         selected = commands.choices[name]
         selected.add_argument("--cli", required=True)
-        selected.add_argument("--root", required=True, type=Path)
+        selected.add_argument("--instance-dir", dest="root", required=True, type=Path)
         selected.add_argument("--source-node", required=True)
         selected.add_argument("--destination-node", required=True)
     commands.choices["check"].add_argument("--expect", choices=REASONS, required=True)
@@ -551,7 +551,7 @@ def main():
     for name in ("stop", "verify"):
         selected = commands.add_parser(name)
         selected.add_argument("--cli", required=True)
-        selected.add_argument("--root", required=True, type=Path)
+        selected.add_argument("--instance-dir", dest="root", required=True, type=Path)
         selected.add_argument("--output", required=True, type=Path)
     selected = commands.choices["verify"]
     selected.add_argument("--phase-report", type=Path, action="append", required=True)

@@ -1,7 +1,7 @@
 """Exercise disposable jobs on a prepared Linux or physical macOS instance.
 
 On the selected host, supply the candidate CLI and a disposable installed root:
-python3 tests/blackbox/host/job_sandbox.py --cli /path/to/safeyolo --root /path/to/instance --scratch /disk/backed/directory
+python3 tests/blackbox/host/job_sandbox.py --cli /path/to/safeyolo --instance-dir /path/to/instance --scratch /disk/backed/directory
 The root must already select the shared Trixie guest and native launcher.
 For macOS, also supply --observer-probe /path/to/arm64-linux-static-probe.
 Build that small test executable on Linux as documented in tests/fixtures/job-observer-probe.c.
@@ -219,7 +219,7 @@ def run(cli: Path, root: Path, scratch: Path, signals_only: bool = False, observ
                 }
             )
         )
-        command = [str(cli), "--root", str(root), "job", "run", str(spec_path), "--input", str(input_dir)]
+        command = [str(cli), "--instance-dir", str(root), "--json", "job", "run", str(spec_path), "--input", str(input_dir)]
         records = []
         try:
             completed, records, observed = interrupt_request(command, root, interrupt_signal)
@@ -357,7 +357,7 @@ exec /input/observer-probe
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cli", type=Path, required=True)
-    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--instance-dir", dest="root", type=Path, required=True)
     parser.add_argument("--scratch", type=Path, required=True)
     parser.add_argument("--signals-only", action="store_true", help="Run caller SIGINT/SIGTERM checks without repeating other rows.")
     parser.add_argument("--observer-probe", type=Path, help="Static Linux probe for the macOS guest, built from tests/fixtures/job-observer-probe.c.")

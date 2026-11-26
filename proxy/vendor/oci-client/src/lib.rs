@@ -8,6 +8,8 @@ mod blob;
 pub mod client;
 #[cfg(feature = "image-config")]
 pub mod config;
+#[cfg(feature = "image-config")]
+mod timestamp;
 pub(crate) mod digest;
 pub mod errors;
 pub mod manifest;

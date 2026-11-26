@@ -1,7 +1,7 @@
 # Supervised factory workers
 
-The `@codex-coord` and `@pi-coord` host setups run factory roles under the same
-`safeyolo-coord supervise` command. The ordinary `@codex` and `@pi` setups stay
+The `@codex-coord`, `@pi-coord` and `@claude-coord` host setups run factory roles under the same
+`safeyolo-coord supervise` command. The ordinary `@codex`, `@pi` and `@claude` setups stay
 interactive and have no supervisor. A role's factory TOML selects its harness;
 that choice does not create another queue or state machine.
 
@@ -12,10 +12,10 @@ Set up the worker's own login before enabling supervision, as described in
 For a Factory, use the [Factory preparation](factories.md#fresh-setup-check-approve-and-run); it provisions these declared inputs. For a standalone supervised worker, configure its agent through the host commands, then create a room and grant access:
 
 ```bash
-safeyolo --root INSTANCE coord start
-safeyolo --root INSTANCE coord room create backlog
-safeyolo --root INSTANCE coord grant backlog relay
-safeyolo --root INSTANCE coord grant backlog worker
+safeyolo --instance-dir INSTANCE coord start
+safeyolo --instance-dir INSTANCE coord room create backlog
+safeyolo --instance-dir INSTANCE coord grant backlog relay
+safeyolo --instance-dir INSTANCE coord grant backlog worker
 ```
 
 Room grants use the configured agent identities. The guest client uses the
@@ -59,7 +59,7 @@ migration or automatic start-from-now operation.
 
 Each supervised setup uses its normal harness setup first and preserves that
 agent's own subscription login, SafeYolo instructions, proxy, and TLS
-environment. Codex uses the bundled Coord MCP adapter. Pi uses a small `send` and `read_room` extension. Neither setup imports a host credential.
+environment. Codex and Claude use the bundled Coord MCP adapter. Pi uses a small `send` and `read_room` extension. Supervised setups import no host credentials.
 The only changed boundary is the foreground command: the guest runs the common supervisor,
 which runs bounded JSON-mode harness turns.
 
@@ -186,7 +186,7 @@ selected instance root and `AGENT` with the configured supervised agent name.
 Open its activity view in an ordinary terminal or tmux pane on Linux or macOS:
 
 ```bash
-safeyolo --root ROOT agent watch AGENT
+safeyolo --instance-dir PATH agent watch AGENT
 ```
 
 The command selects the activity room from the staged supervisor configuration.
@@ -218,7 +218,7 @@ the existing continuation gutter. Ctrl-C detaches the observer. Starting and
 stopping it does not start or stop the agent, send messages, consume attention,
 advance supervision cursors, or write a checkpoint or lock file.
 
-For direct room observation, use `safeyolo --root ROOT coord watch ROOM`.
+For direct room observation, use `safeyolo --instance-dir PATH coord watch ROOM`.
 That command renders a mixed operator and agent timeline. Use
 `--raw` to show each message body without event summarization, or `--json` to emit canonical
 Coord messages as JSONL. The rendered view uses colour on a terminal; use
@@ -485,7 +485,7 @@ the same declared role routes and exact task correlation.
 The host setup writes the private, non-secret configuration file
 `~/.safeyolo/coord-supervisor.json`. In factory mode that configuration
 also binds the immutable operator edge and handoff table from the approved
-snapshot. Its `harness` value is exactly the role's approved `codex` or `pi`
+snapshot. Its `harness` value is exactly the role's approved `codex`, `pi` or `claude`
 selection. It contains no inferred workflow state. The defaults are:
 
 | Setting | Default | Purpose |

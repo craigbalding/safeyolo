@@ -5,7 +5,8 @@ Prepare running bbtest and bbpeer agents with this checkout mounted at /workspac
 Supply their dedicated instance, attached runtime report and installed package
 revision. Reuse installed inputs; this probe installs nothing. It sends forged
 identity claims, checks both private mounts as ordinary guest and guest root,
-and replaces the proxy while retaining the guests. Finally it stops this
+and composes synthetic subscription import/renewal with proxy replacement while
+retaining the guests. Finally it stops this
 instance's two guests and proxy. The section runner owns the origin and Coord.
 """
 
@@ -41,6 +42,7 @@ if __package__:
         stop_guest,
     )
     from .installed_sections import surviving_processes
+    from .installed_subscription import SubscriptionJourney
 else:
     from execution_receipt import ProcedureReceipt
     from guest_exec import guest_command_args
@@ -62,6 +64,7 @@ else:
         stop_guest,
     )
     from installed_sections import surviving_processes
+    from installed_subscription import SubscriptionJourney
 
 AGENTS = ("bbtest", "bbpeer")
 
@@ -69,7 +72,7 @@ AGENTS = ("bbtest", "bbpeer")
 def live_guest(cli: str, config_dir: Path, agent: str) -> dict:
     """Read the current run, rejecting dead or reused backend and holder PIDs."""
     run = json.loads((config_dir / "agents" / agent / "runtime.json").read_text())
-    status = json.loads(checked([cli, "--root", str(config_dir), "agent", "status", agent]).stdout)
+    status = json.loads(checked([cli, "--instance-dir", str(config_dir), "--json", "agent", "status", agent]).stdout)
     value = running_guest(config_dir, agent, status)
     holder, token = run["holder_pid"], run["holder_token"]
     assert token and _process_start_token(holder) == token, "namespace holder birth no longer matches"
@@ -148,6 +151,8 @@ def main() -> None:
     save()
     state_files = []
     sinkhole = SinkholeClient(os.environ.get("SINKHOLE_API", "http://127.0.0.1:19999"))
+    subscription = SubscriptionJourney(cli, config_dir, AGENTS[0], AGENTS[1], sinkhole)
+    report["subscription"] = subscription.report
 
     def observe(phase: str) -> None:
         report[phase] = {}
@@ -166,6 +171,9 @@ def main() -> None:
     try:
         sinkhole.wait_for_receiver_ready(timeout=10)
         observe("initial")
+        subscription.prepare()
+        receipt.checkpoint('subscription-adoption')
+        save()
         marker = "p1-" + uuid.uuid4().hex
         filename = ".ingress-" + marker
         states = {agent: config_dir / "agents" / agent / "home" / filename for agent in AGENTS}
@@ -184,7 +192,7 @@ def main() -> None:
                 report["boundaries"][agent].append(value)
                 save()
                 assert value["uid"] == (0 if root else 1000), "boundary probe ran as the wrong guest user"
-        checked([cli, "--root", str(config_dir), "stop"], timeout=45)
+        checked([cli, "--instance-dir", str(config_dir), "--json", "stop"], timeout=45)
         report["stopped"] = {"guests": {agent: live_guest(cli, config_dir, agent) for agent in AGENTS}, "refusals": {}}
         save()
         assert report["stopped"]["guests"] == before, "proxy stop replaced a guest generation"
@@ -198,7 +206,7 @@ def main() -> None:
             report["stopped"]["refusals"][agent] = {"host_connect_errno": refused, "guest": value}
             save()
             assert refused != 0, "stopped private listener still accepts"
-        checked([cli, "--root", str(config_dir), "start"], timeout=45)
+        checked([cli, "--instance-dir", str(config_dir), "--json", "start"], timeout=45)
         restarted = runtime_identity(config_dir, cli, identity["candidate"]["path"], None,
                                      args.output.with_name("ingress-pair-restarted-runtime.json"),
                                      AGENTS[0], args.install_commit)
@@ -209,14 +217,18 @@ def main() -> None:
         assert report["restarted"]["guests"] == before, "proxy restart replaced a guest generation"
         assert {row["agent_id"]: row for row in _agent_listeners(config_dir)} == listeners
         observe("recovery")
+        subscription.after_restart()
+        receipt.checkpoint('subscription-renewal-revocation')
+        save()
         receipt.checkpoint('restart')
         report["status"] = "ingress_pair_checks_passed"
         save()
     finally:
+        save()
         sinkhole.close()
         for agent in AGENTS:
             stop_guest(cli, config_dir, agent)
-        checked([cli, "--root", str(config_dir), "stop"], timeout=45)
+        checked([cli, "--instance-dir", str(config_dir), "--json", "stop"], timeout=45)
         for row in listeners.values():
             assert_proxy_stopped(config_dir, Path(row["path"]), active_runtime)
         births = [{"pid": row[pid], "start_token": row[token]} for row in before.values()
@@ -227,6 +239,7 @@ def main() -> None:
             report["status"] = "ingress_pair_cleanup_failed"
         for path in state_files:
             path.unlink(missing_ok=True)
+        subscription.cleanup()
         save()
         assert not report["cleanup_failures"], report["cleanup_failures"]
     report["status"] = "ingress_pair_passed"

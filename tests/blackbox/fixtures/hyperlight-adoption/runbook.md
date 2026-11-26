@@ -69,10 +69,10 @@ creator_id=ag-ba78f4c34ded4a0295c682f4061adbf6
 owner_id=ag-a8f92b091dae4fa08da0fb2835ff0956
 reviewer_id=ag-2dc62d4650ea4ec981151bcef62308e0
 snapshot=$(cat "$root/factories/ha1552/approved")
-"$cli" --root "$root" status
-"$cli" --root "$root" factory doctor "$factory"
-"$cli" --root "$root" coord status "$room" --json
-"$cli" --root "$root" services authorized gate:hyperlight-service-check
+"$cli" --instance-dir "$root" status
+"$cli" --instance-dir "$root" factory doctor "$factory"
+"$cli" --instance-dir "$root" coord status "$room" --json
+"$cli" --instance-dir "$root" services authorized gate:hyperlight-service-check
 for listener in "$creator_socket" "$owner_socket" "$reviewer_socket"; do
   test -S "$listener"
 done
@@ -152,9 +152,9 @@ and the corrected grant. These commands make no activation:
 
 ```bash
 engine=hyperlight-unikraft
-"$cli" --root "$root" services show github > "$stage/diagnostics/catalogue-current.json"
-"$cli" --root "$root" policy show
-"$cli" --root "$root" services authorized gate:hyperlight-service-check
+"$cli" --instance-dir "$root" services show github > "$stage/diagnostics/catalogue-current.json"
+"$cli" --instance-dir "$root" policy show
+"$cli" --instance-dir "$root" services authorized gate:hyperlight-service-check
 ```
 
 The loaded definition must contain GET /repos/craigbalding/safeyolo/issues/*
@@ -244,10 +244,10 @@ fd=os.open(sys.argv[2],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
 with os.fdopen(fd,'w') as stream:
     stream.write(tomlkit.dumps(policy))
 BUDGET
-"$cli" --root "$root" policy check "$budget_policy"
-"$cli" --root "$root" policy apply "$budget_policy"
-"$cli" --root "$root" policy show
-"$cli" --root "$root" services authorized gate:hyperlight-service-check
+"$cli" --instance-dir "$root" policy check "$budget_policy"
+"$cli" --instance-dir "$root" policy apply "$budget_policy"
+"$cli" --instance-dir "$root" policy show
+"$cli" --instance-dir "$root" services authorized gate:hyperlight-service-check
 ```
 
 Expected: saved_matches_active=true, 15-second selected job definitions and
@@ -268,7 +268,7 @@ memory and uses the existing per-agent Unix route. No token enters argv or
 retained request/response files. Scratch is new, private and disk-backed.
 
 ```bash
-common=(--root "$root" --room "$room" --factory "$factory" --snapshot "$snapshot"
+common=(--instance-dir "$root" --room "$room" --factory "$factory" --snapshot "$snapshot"
   --creator-socket "$creator_socket" --creator-id "$creator_id"
   --owner-socket "$owner_socket" --owner-id "$owner_id"
   --repository craigbalding/safeyolo --author-id 123607 --issue 1552)
@@ -331,13 +331,13 @@ baseline=$budget_policy
 revoked=$stage/diagnostics/revoked-$engine.toml
 python3 "$recipes/revoke_example_grant.py" \
   --baseline "$baseline" --output "$revoked"
-"$cli" --root "$root" policy check "$revoked"
-"$cli" --root "$root" policy apply "$revoked"
-"$cli" --root "$root" policy show
+"$cli" --instance-dir "$root" policy check "$revoked"
+"$cli" --instance-dir "$root" policy apply "$revoked"
+"$cli" --instance-dir "$root" policy show
 python3 "$recipes/hyperlight_adoption.py" admit "${common[@]}" --expect-denied \
   --run-id "1552-$engine-revoked-1" --scratch "$stage/diagnostics/$engine-revoked"
-"$cli" --root "$root" policy apply "$baseline"
-"$cli" --root "$root" services authorized gate:hyperlight-service-check
+"$cli" --instance-dir "$root" policy apply "$baseline"
+"$cli" --instance-dir "$root" services authorized gate:hyperlight-service-check
 ```
 
 Expected: automatic admission is held while the grant is revoked, and no new
@@ -355,7 +355,7 @@ owner; use a new private refresh_dir and choose refresh_operation before writing
 umask 077
 refresh_dir=$stage/diagnostics/$engine-refresh
 mkdir "$refresh_dir"
-"$cli" --root "$root" coord work show "$room" "$work" > "$refresh_dir/before.json"
+"$cli" --instance-dir "$root" coord work show "$room" "$work" > "$refresh_dir/before.json"
 mapfile -t expectations < <(python3 - "$refresh_dir/before.json" <<'STATE'
 import json,sys
 value=json.load(open(sys.argv[1]))
@@ -365,7 +365,7 @@ print(value['claim_generation'])
 STATE
 )
 refresh_operation=1552-$engine-refreshed-delegation-1
-"$cli" --root "$root" coord work reassign "$room" "$work" --agent-id "$owner_id" \
+"$cli" --instance-dir "$root" coord work reassign "$room" "$work" --agent-id "$owner_id" \
   --expected-version "${expectations[0]}" --expected-generation "${expectations[1]}" \
   --operation-id "$refresh_operation" > "$refresh_dir/receipt.json"
 python3 "$recipes/hyperlight_adoption.py" inspect "${common[@]}" --work-id "$work" \
@@ -389,7 +389,7 @@ Run after positive admission with the restored scoped grant:
 
 ```bash
 python3 "$recipes/probe_scopes.py" \
-  --root "$root" --packet-source "$packet_source" --engine "$engine" \
+  --instance-dir "$root" --packet-source "$packet_source" --engine "$engine" \
   --scratch "$stage/diagnostics/$engine-scopes"
 ```
 

@@ -63,7 +63,7 @@ def stage_runtime(cli: Path, proxy: Path, base: Path, root: Path):
 def prepare(cli: Path, proxy: Path, base: Path, root: Path, port: int, upstream: int):
     """Reuse installed runtime inputs without changing the original instance."""
     root.mkdir(mode=0o755)
-    subprocess.run([str(cli), "--root", str(root), "init"], check=True)
+    subprocess.run([str(cli), "--instance-dir", str(root), "--json", "init"], check=True)
     stage_runtime(cli, proxy, base, root)
     config = {
         "admin_port": port,
@@ -99,7 +99,7 @@ enabled = false
 action = "warn"
 ''')
     subprocess.run(
-        [str(cli), "--root", str(root), "credentials", "add", "job-secret", "--stdin", "--storage", "local"],
+        [str(cli), "--instance-dir", str(root), "--json", "credentials", "add", "job-secret", "--stdin", "--storage", "local"],
         input=b"synthetic-job-provider-secret\n", check=True,
     )
     create_upstream_certificate(root)
@@ -170,7 +170,7 @@ def job(cli: Path, root: Path, scratch: Path, port: int, index: int):
     output_path = scratch / f"job-{index}.stdout"
     try:
         completed, _records, observed = interrupt_request(
-            [str(cli), "--root", str(root), "job", "run", str(spec)], root, None, umask=0o022)
+            [str(cli), "--instance-dir", str(root), "--json", "job", "run", str(spec)], root, None, umask=0o022)
     except subprocess.TimeoutExpired as error:
         output_path.write_bytes(error.stdout or b"")
         (scratch / f"job-{index}.stderr").write_bytes(error.stderr or b"")
@@ -273,7 +273,7 @@ def lifecycle_job(args, mode, observations):
                                                            program(args.upstream_port) + "\nexec sleep 300"],
                                 "network": True, "timeout_seconds": 25 if mode == "expiry" else 90,
                                 "memory_mb": 512, "max_input_bytes": 0, "max_input_entries": 1, "retain_bytes": 4096}))
-    command = [str(args.cli), "--root", str(args.root), "job", "run", str(spec)]
+    command = [str(args.cli), "--instance-dir", str(args.root), "--json", "job", "run", str(spec)]
     connection = None
     with (args.scratch / f"{mode}.stdout").open("wb") as stdout, (args.scratch / f"{mode}.stderr").open("wb") as stderr:
         with subprocess.Popen(command, stdout=stdout, stderr=stderr, umask=0o022) as child:
@@ -293,13 +293,13 @@ def lifecycle_job(args, mode, observations):
                 # Only this fixture's scoped token enters memory. Never retain
                 # the services response or put the token in a command argument.
                 authorized = json.loads(subprocess.check_output(
-                    [str(args.cli), "--root", str(args.root), "services", "authorized", "gate:proof"], timeout=10))
+                    [str(args.cli), "--instance-dir", str(args.root), "--json", "services", "authorized", "gate:proof"], timeout=10))
                 token = authorized["services"]["simple"]["token"]
                 connection = delegated_connection(paths[0], args.upstream_port, args.root / "certs/mitmproxy-ca-cert.pem")
                 assert scoped_request(connection, token) == (200, b"ok")
                 assert len(observations) == count + 2
                 if mode == "revocation":
-                    subprocess.run([str(args.cli), "--root", str(args.root), "services", "revoke", "gate:proof", "simple"],
+                    subprocess.run([str(args.cli), "--instance-dir", str(args.root), "services", "revoke", "gate:proof", "simple"],
                                    check=True, capture_output=True, timeout=10)
                     assert scoped_request(connection, token)[0] == 403
                     assert len(observations) == count + 2, "revoked authority reached the origin"
@@ -325,7 +325,7 @@ def lifecycle_job(args, mode, observations):
                 if connection is not None:
                     connection.close()
                 if mode == "revocation":
-                    subprocess.run([str(args.cli), "--root", str(args.root), "services", "authorize", "gate:proof", "simple",
+                    subprocess.run([str(args.cli), "--instance-dir", str(args.root), "services", "authorize", "gate:proof", "simple",
                                     "--capability", "reader", "--credential", "job-secret"],
                                    check=True, capture_output=True, timeout=10)
 

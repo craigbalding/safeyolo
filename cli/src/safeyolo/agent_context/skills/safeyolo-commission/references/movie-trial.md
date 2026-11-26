@@ -36,7 +36,26 @@ Discovery is an early result, not a completed ingestion deployment. Later
 acquisition requires authorized media and required protection before the
 effect. Scanning and verified library import remain separate obligations.
 
+For the optional protected acquisition/import composition, discover the
+[versioned media recipe](../recipes/media-ingestion/v1/recipe.md). Its components,
+adoption boundary and installed evidence requirements remain separate from this
+discovery trial. The example files confer no service or library access.
+
 Record actual decisions, manual steps, interruptions and cold/warm time in
 the ordinary result. Label simulated operator actions, controlled catalogue
 fixtures and unavailable effort measurements. A fixture or conversation alone
 does not establish installed adoption or real library behavior.
+
+On a later return, use [task evolution](evolution.md) for a preference/source
+change or the small website collaborator. Preserve the movie worker and its
+existing results. A reviewed batch can include a useful new catalogue, an
+excluded source and an unavailable source; exercise the operator's selected
+automatic rule without treating a blacklist non-member as safe or granting
+acquisition. Fixed behavior remains selectable.
+
+Share the selected title/edition, matching reason, subtitle claim, source and
+observation time with the website worker through explicit access. Verify the
+served website against that shared revision. Keep unavailable playback and
+separately owned ingestion proof visible. Use the
+[operational receipt](operations.md) to explain the actual result and affected
+assurance, including a selected control/configuration drift and recheck.

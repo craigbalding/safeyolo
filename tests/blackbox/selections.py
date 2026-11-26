@@ -5,11 +5,11 @@ the same names. Platform exclusions are explicit and do not hide missing setup.
 """
 
 SECTIONS = {
-    "systrap": ("isolation", "workloads", "access", "peer-support", "shared-approvals", "provider", "federation", "lifecycle", "continuity", "job-sandbox", "job-network", "mounts", "docker"),
+    "systrap": ("isolation", "ingress", "workloads", "access", "peer-support", "shared-approvals", "provider", "federation", "lifecycle", "continuity", "job-sandbox", "job-network", "mounts", "docker"),
     "kvm": ("isolation", "ingress", "workloads", "job-sandbox", "job-network", "mounts"),
     "vz": ("isolation", "access", "lifecycle", "continuity", "job-sandbox", "job-network", "mounts"),
 }
-OPTIONAL_SECTIONS = {"systrap": ("claude", "ingress"), "kvm": (), "vz": ()}
+OPTIONAL_SECTIONS = {"systrap": ("claude",), "kvm": (), "vz": ()}
 
 PYTEST_PHASES = {
     "native": ("host", ("tests/blackbox/host/native",)),
@@ -75,15 +75,17 @@ NATIVE_PHASES = {
     "managed-feeds": (("native_policy_feeds", ""),),
     "before-after": (("lib", "coord_rooms::work::tests::automatic_tests"),),
     "mediated-services": (("lib", "jobs::mediated::tests"),),
+    "host-execution": (("host_execution", ""),
+                       ("lib", "host_execution::gateway::tests")),
 }
 
 # A completed procedure records these names after the corresponding assertions.
 # A terminal status or zero exit without every named checkpoint is insufficient.
 PROCEDURES = {
     "ingress": ("installed_ingress.py", ("identity", "policy", "guest", "origin", "finished")),
-    "ingress-pair": ("installed_ingress_pair.py", ("identity", "user-and-root", "restart", "finished")),
+    "ingress-pair": ("installed_ingress_pair.py", ("identity", "subscription-adoption", "user-and-root", "subscription-renewal-revocation", "restart", "finished")),
     "workloads": ("installed_workloads.py", ("identity", "package-repo", "sse", "wss-ssh", "origin", "finished")),
-    "access": ("installed_access.py", ("identity", "service", "contract", "flow-ownership", "coord", "origin", "desktop-sharing", "finished")),
+    "access": ("installed_access.py", ("identity", "service", "contract", "flow-ownership", "coord", "host-secret-custody", "origin", "desktop-sharing", "abrupt-failure", "finished")),
     "lifecycle": ("installed_lifecycle.py", ("identity", "listener", "tls", "restart", "drain", "recovery", "finished")),
     "continuity": ("installed_state_transition.py", ("initial", "restart", "replacement", "return", "cleanup", "finished")),
     "peer-support": ("installed_peer_support.py", ("identity", "scope", "permitted-effect", "replay", "stale-run", "narrow-expire-revoke", "finished")),
@@ -144,9 +146,33 @@ NATIVE_AUTHORITY = {
     ),
 }
 
+# These cases drive the installed executor over its authenticated local HTTP
+# interface. The fixture executable and workload probe are separate inputs.
+# Service control needs an explicitly prepared owned service on the target.
+HOST_EXECUTION_AUTHORITY = {
+    "BB-38": (
+        "installed_catalogue_adoption_persists_and_stale_preparation_cannot_launch",
+        "installed_check_serve_and_reload_share_ledger_validation",
+        "installed_unix_read_paths_resolve_without_sibling_contents",
+        "installed_unix_bounds_lifecycle_reload_and_lost_reply",
+        "installed_storage_exhaustion_preserves_output_replay_and_restart",
+        "installed_user_service_profiles_and_channel_refusals",
+        "installed_executable_swaps_preserve_size_and_mtime_but_cannot_launch",
+        "installed_api_authentication_and_cross_principal_reads_cannot_change_authority",
+        "installed_adaptive_investigation_and_retained_configuration_effects",
+        "installed_quiet_updates_execute_new_bytes_without_inheriting_expanded_authority",
+        "installed_dependency_swaps_preserve_metadata_but_cannot_launch",
+    ),
+}
+
 # These checks assert gVisor-specific behavior. VZ has a real guest kernel.
 # Match only named cases, never every skip on a platform.
 PLATFORM_EXCLUSIONS = (
+    *(("vz", "guest-agent", "*::" + name, "Owned TCP/UDP/DNS delivery receivers are currently maintained on Linux hosts; no VZ delivery claim.")
+      for name in ("test_direct_http_blocked", "test_direct_https_blocked", "test_direct_alt_port_blocked",
+                   "test_ipv6_egress_blocked", "test_dns_udp_blocked", "test_libc_resolver_blocked",
+                   "test_dns_tunnel_subdomain_blocked", "test_metadata_ips_unreachable")),
+    ("vz", "guest-root", "*::test_root_direct_egress_blocked", "Owned TCP/UDP/DNS delivery receivers are currently maintained on Linux hosts; no VZ delivery claim."),
     ("vz", "identity", "*::test_sandbox_root_maps_to_subordinate_host_uid", "VZ uses a separate guest kernel, not a host user namespace."),
     ("vz", "guest-agent", "*::TestSandboxRootContainment::*", "The setpriv/user-namespace controls apply to gVisor."),
     ("vz", "guest-root", "*::test_gvisor_root_cannot_access_host_kvm_device", "The host KVM device control applies to gVisor."),
@@ -177,6 +203,7 @@ OPTIONAL_CASES = (
     ('tests/proxy_contracts/test_tunnel_contract.py::test_real_openssh_preserves_server_first_output_and_client_input', 'SAFEYOLO_RUN_SSH_CONTRACT', '1', 'Opt-in owned OpenSSH daemon; requires installed ssh, ssh-keygen and sshd'),
     ('tests/proxy_contracts/test_native_skill_trace.py::test_untraced_request_timing_against_prepared_baseline', 'SAFEYOLO_TRACE_OVERHEAD_BASELINE', '', 'manual ordinary-request comparison needs a prepared baseline executable'),
     ('tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_executes_staged_worker_commands', 'SAFEYOLO_FACTORY_ACCEPTANCE_ROOT', '', 'Explicit disposable installed Factory acceptance root.'),
+    ('tests/proxy_contracts/test_native_factory_cli.py::test_factory_pending_claude_work_survives_restart', 'SAFEYOLO_FACTORY_ACCEPTANCE_ROOT', '', 'Explicit disposable installed Factory acceptance root.'),
     ('tests/proxy_contracts/test_native_factory_cli.py::test_factory_setup_interruption_preserves_prepared_roles', 'SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE', '', 'Explicit disposable installed guided-setup acceptance root.'),
     ('tests/proxy_contracts/test_native_provider_recovery.py::test_authorized_provider_survives_only_its_holder_loss', 'SAFEYOLO_971_RUNSC', '', 'Explicit prepared provider-recovery Linux venue.'),
 )

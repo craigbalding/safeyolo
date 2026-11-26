@@ -312,7 +312,7 @@ printf '%s' '{{"completion":{{"kind":"guest_call_completed","reported_status":0}
     fs::write(&marker, "").unwrap();
     fs::write(root.join("fixture.cpio"), "fixture, no VM").unwrap();
     fs::write(root.join("checker.py"), "fixture, no Python execution").unwrap();
-    let manifest = json!({"protocol":3,"os":std::env::consts::OS,"architecture":std::env::consts::ARCH,
+    let manifest = json!({"protocol":4,"os":std::env::consts::OS,"architecture":std::env::consts::ARCH,
         "hyperlight":"0.19.0","unikraft":"0.21.0","kernel_contract":"fixture",
         "helper":{"file":"counted-helper","sha256":checks::content_digest(script.as_bytes())},
         "rootfs":{"file":"fixture.cpio","sha256":checks::content_digest(b"fixture, no VM")},"rootfs_source":"fixture"});

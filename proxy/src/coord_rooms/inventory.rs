@@ -7,7 +7,7 @@ use crate::agent_api::coord::{
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 
-pub const HELP: &str = "safeyolo [--root ROOT] coord state ROOM\nsafeyolo [--root ROOT] coord inventory advertise-capability|unadvertise-capability ROOM AGENT LABEL [--operation-id ID]\nsafeyolo [--root ROOT] coord inventory advertise-resource|unadvertise-resource ROOM PROVIDER RESOURCE [--operation-id ID]\n\nAdvertisements select public collaboration labels; current host service grants authorize them. Only fresh provider evidence establishes availability or lease ownership. Agent declarations remain separate. Identical operation-ID retries return the original result; changed input conflicts. Unadvertising a removed agent also accepts its durable agent ID.";
+pub const HELP: &str = "safeyolo [--instance-dir PATH] coord state ROOM\nsafeyolo [--instance-dir PATH] coord inventory advertise-capability|unadvertise-capability ROOM AGENT LABEL [--operation-id ID]\nsafeyolo [--instance-dir PATH] coord inventory advertise-resource|unadvertise-resource ROOM PROVIDER RESOURCE [--operation-id ID]\n\nAdvertisements select public collaboration labels; current host service grants authorize them. Only fresh provider evidence establishes availability or lease ownership. Agent declarations remain separate. Identical operation-ID retries return the original result; changed input conflicts. Unadvertising a removed agent also accepts its durable agent ID.";
 
 pub(crate) fn run(root: &Path, arguments: &[String]) -> Result<Value, Error> {
     let (arguments, operation) = match arguments {

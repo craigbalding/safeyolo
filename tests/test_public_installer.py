@@ -533,7 +533,7 @@ def test_bootstrap_forwards_literal_launch_arguments_and_exit_status(public_rele
     arguments = [str(tmp_path / "workspace with spaces; literal"), "--name", "chosen", "--harness", "claude"]
     result = run("bash", str(bootstrap), "--launch", *arguments, env=environment)
     assert result.returncode == status, result.stderr
-    assert marker.read_text().splitlines() == ["--root", str(root), "agent", "launch", *arguments]
+    assert marker.read_text().splitlines() == ["--instance-dir", str(root), "agent", "launch", *arguments]
     assert (root / "bin/safeyolo").is_file()
     assert requests.count(f"{base}/{archive.name}") == 1
     assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
@@ -824,11 +824,11 @@ def test_bootstrap_consumes_complete_guest_help_and_preserves_failure(public_rel
     options = []
     if custom_root:
         root = tmp_path / "selected instance"
-        options = ["--root", str(root)]
+        options = ["--instance-dir", str(root)]
     result = run("bash", str(bootstrap), *options, env={**environment, "PACKAGE_GUEST_DOWNLOAD_CLI": str(helper)})
     assert result.returncode == 0, result.stderr
     assert completed.exists(), result.stderr
-    assert arguments.read_text().splitlines()[:4] == ["--root", str(root), "guest", "download"]
+    assert arguments.read_text().splitlines()[:4] == ["--instance-dir", str(root), "guest", "download"]
     assert "BrokenPipeError" not in result.stderr
     assert ("--prepare" in arguments.read_text().splitlines()) == (help_result == "supported")
     assert (root / "config.toml").is_file()
@@ -1245,7 +1245,7 @@ def test_download_then_install_and_launch_keeps_host_consent_and_repeat_state(pu
 def test_downloaded_composition_launches_from_relative_root_starting_with_dash(public_release, tmp_path):
     _contents, requests, _faults, environment, bootstrap, default_root, base, archive = public_release
     root = tmp_path / "-instance"
-    arguments = ["bash", str(bootstrap), "--root", root.name, "--no-guest-download", "--launch", "--help"]
+    arguments = ["bash", str(bootstrap), "--instance-dir", root.name, "--no-guest-download", "--launch", "--help"]
     result = run(*arguments, cwd=tmp_path, env=environment)
     assert result.returncode == 0, result.stderr
     assert "agent launch [WORKSPACE]" in result.stdout
@@ -1296,7 +1296,7 @@ def test_contributor_composition_uses_the_selected_installed_root(public_release
     before = list(requests)
     selected = root.parent / "separate instance"
     entrypoint = REPO / "install.sh" if entry == "source" else bootstrap
-    result = run("bash", str(entrypoint), "--root", str(selected),
+    result = run("bash", str(entrypoint), "--instance-dir", str(selected),
                  "--bundle", str(archive.parent / archive.name.removesuffix(".tar.gz")),
                  "--no-guest-download", "--launch", "--help", env=environment)
     assert result.returncode == 0, result.stderr
@@ -1346,13 +1346,13 @@ def test_product_acquisition_and_repeat_preserve_state_and_guest(public_release,
     contents.update(replacement)
     separate_root = root.parent / "second-instance"
     separate_commands = root.parent / "second-commands"
-    refused = run("bash", str(bootstrap), "--yes", "--root", str(separate_root),
+    refused = run("bash", str(bootstrap), "--yes", "--instance-dir", str(separate_root),
                   "--command-dir", str(separate_commands), env=environment)
     assert refused.returncode != 0 and "Guest acquisition failed" in refused.stderr
     assert not separate_root.exists() and not separate_commands.exists()
     assert all((root / name).read_bytes() == data for name, data in preserved.items())
     contents[blob_path] = original_blob
-    retry = run("bash", str(bootstrap), "--yes", "--root", str(separate_root),
+    retry = run("bash", str(bootstrap), "--yes", "--instance-dir", str(separate_root),
                 "--command-dir", str(separate_commands), env=environment)
     assert retry.returncode == 0, retry.stderr
     assert (separate_root / "config.toml").exists()
@@ -1380,7 +1380,7 @@ def test_state_created_during_guest_download_is_preserved(public_release, guest_
         assert faults["entered"].wait(timeout=15), "installer did not reach guest download"
         if conflict == "instance":
             cli = archive.parent / archive.name.removesuffix(".tar.gz") / "bin/safeyolo"
-            initialized = run(str(cli), "--root", str(root), "init", env=environment)
+            initialized = run(str(cli), "--instance-dir", str(root), "init", env=environment)
             assert initialized.returncode == 0, initialized.stderr
             state_root = root
         elif conflict == "command":
@@ -1478,7 +1478,7 @@ def test_unsupported_target_refuses_before_download_or_root_changes(tmp_path, sy
     environment = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}", "HOME": str(tmp_path / "home")}
     environment.pop("BASH_ENV", None)
     result = run("bash", str(REPO / "install.sh"), "--release", "host-" + "a" * 40,
-                 "--root", str(root), env=environment)
+                 "--instance-dir", str(root), env=environment)
     assert result.returncode != 0 and "Unsupported host" in result.stderr
     assert not root.exists() and not marker.exists()
     assert not Path(environment["HOME"]).exists()

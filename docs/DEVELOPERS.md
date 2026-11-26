@@ -17,6 +17,11 @@ read-only terminal inspector. The CLI reads and updates instance configuration,
 uses the authenticated Admin API, and displays JSON Lines (JSONL) audit events.
 The instance policy file is the source of truth for durable permissions.
 
+The [host execution contract](host-execution-contract.md) defines the shared
+issuer/target protocol, versioned operation package and executable contract
+witness. Native platform execution and gateway adoption remain separate from
+contract validation.
+
 ## Repository Structure
 
 - `proxy/src/` contains the Rust proxy and its policy, inspection, API, and
@@ -55,7 +60,7 @@ for forensic analysis. These operator clients do not need a broker connection.
 ### Option 1: Consume JSONL Events
 
 On the host, use the account that owns the selected SafeYolo instance. The
-instance root defaults to `$HOME/.safeyolo`; `--root` or `SAFEYOLO_CONFIG_DIR`
+instance root defaults to `$HOME/.safeyolo`; `--instance-dir` or `SAFEYOLO_CONFIG_DIR`
 selects another instance. Its `config.toml` sets `audit_log_path`, which defaults
 to `logs/audit.jsonl` relative to that configuration file. Use that resolved path
 when consuming records. `SAFEYOLO_LOGS_DIR` and the former XDG `safeyolo.jsonl`
@@ -308,8 +313,11 @@ Overnight test compilation prepares the library test, then binary tests and
 host binaries selected by the version integration test. A separate step prepares
 the agent API and native integration tests. The final compilation step keeps
 the complete default target selection, including examples, and reuses those
-outputs. All steps use the unchanged release profile and flags. The dependency
-cache does not supply these workspace executables. Completed Cargo timing
+outputs. macOS contract-test compilation and execution select package
+optimization level 1 through the same command-specific Cargo override. Linux
+tests, dependencies and production builds keep their release settings.
+The post-test production build restores the normal optimized executables.
+The dependency cache does not supply these workspace executables. Completed Cargo timing
 reports are retained even when a later compilation step fails; an interrupted
 compiler can leave no report for its unfinished command. The verbose job log
 still identifies the targets started before interruption.
@@ -478,7 +486,7 @@ publisher.
 If process ownership or shutdown cannot be verified, cleanup preserves the
 root and reports its recovery command. Inspect the reported instance, correct
 the specific ownership or configuration problem, then use
-`safeyolo --root ROOT instance cleanup` with that retained root. Cleanup refuses
+`safeyolo --instance-dir PATH instance cleanup` with that retained root. Cleanup refuses
 to remove an instance whose runner is still live. SIGKILL and a host crash
 cannot run cleanup; use the same retained-root command after recovery.
 
@@ -496,10 +504,10 @@ format or a backend-selection adapter.
 After installing into `$HOME/sy-development`, run from a host terminal:
 
 ```sh
-"$HOME/sy-development/bin/safeyolo" --root "$HOME/sy-development" start
-"$HOME/sy-development/bin/safeyolo" --root "$HOME/sy-development" status
-"$HOME/sy-development/bin/safeyolo" --root "$HOME/sy-development" doctor
-"$HOME/sy-development/bin/safeyolo" --root "$HOME/sy-development" stop
+"$HOME/sy-development/bin/safeyolo" --instance-dir "$HOME/sy-development" start
+"$HOME/sy-development/bin/safeyolo" --instance-dir "$HOME/sy-development" status
+"$HOME/sy-development/bin/safeyolo" --instance-dir "$HOME/sy-development" doctor
+"$HOME/sy-development/bin/safeyolo" --instance-dir "$HOME/sy-development" stop
 ```
 
 Start waits for readiness. Status and doctor use the owned process

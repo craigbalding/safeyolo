@@ -167,7 +167,7 @@ async fn commissioning_configuration_uses_exact_policy_adoption_without_peer_adm
     assert_eq!(f.source(), proposed);
     assert_eq!(live(&f).await["saved_matches_active"], true);
     let status = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-        .args(["--root", f.root.path().to_str().unwrap(), "status"])
+        .args(["--instance-dir", f.root.path().to_str().unwrap(), "status"])
         .output()
         .await
         .unwrap();

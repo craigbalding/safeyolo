@@ -10,6 +10,11 @@ HTTP parser before HeaderMap normalization. Its Debug output contains only a
 field count. It does not parse headers again or change request admission.
 
 SafeYolo consumes the extension before header hygiene and credential inspection.
+The standalone test manifest selects pretty_env_logger 0.6, whose env_logger
+dependency uses jiff instead of unmaintained humantime. Test logging still
+uses `pretty_env_logger::try_init()`; production dependencies are unchanged.
+Standalone tests select the matching `../h2` patch, as the production proxy
+already does. The local HTTP/2 observation methods require that patch.
 H1 capture requires `preserve_header_case(true)`. H2 captures decoded HPACK
 fields and attaches them to accepted server requests; response/trailer decoding
 also incurs temporary reference-vector storage. Pseudo-headers are excluded.

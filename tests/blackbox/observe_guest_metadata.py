@@ -147,7 +147,7 @@ def compare(observation, members, cache):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--root', type=Path, required=True)
+    parser.add_argument('--instance-dir', dest='root', type=Path, required=True)
     parser.add_argument('--store', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()

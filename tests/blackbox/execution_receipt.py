@@ -261,6 +261,15 @@ def section_execution(artifacts: Path, section: str, lane: str, run_id: str,
                 problems.append("controller source is not a clean recorded revision")
         if phase in PYTEST_PHASES:
             problems += pytest_problems(report, phase, lane, root=root)
+            if phase in {"guest-agent", "guest-root"}:
+                try:
+                    observer = read_json(artifacts / f"containment-{phase}.json")
+                except (OSError, ValueError):
+                    problems.append("missing/unreadable independent containment observer")
+                else:
+                    if (observer.get("status") != "passed" or observer.get("run_id") != run_id
+                            or observer.get("phase") != phase or observer.get("guest") != context):
+                        problems.append("independent containment observer incomplete or from another phase/run/guest")
             valid_fields = "invalid pytest outcome fields" not in problems
             cases = report.get("collected", []) if valid_fields else []
             outcomes = report.get("tests", {}) if valid_fields else {}
@@ -342,6 +351,14 @@ class PytestReceipt:
     def pytest_runtest_logreport(self, report):
         node = self.nodes[report.nodeid]
         self.document["tests"].setdefault(node, {})[report.when] = report.outcome
+        if report.when == "call":
+            observations = []
+            for line in getattr(report, "capstdout", "").splitlines():
+                kind, separator, data = line.partition("=")
+                if separator and kind in {"CONTAINMENT_ATTEMPTS", "CONTAINMENT_RESOLVER", "HOST_CANARY_REFUSAL"}:
+                    observations.append({"kind": kind, "value": json.loads(data)})
+            if observations:
+                self.document.setdefault("containment_observations", {})[node] = observations
         save(self.path, self.document)
 
     def pytest_sessionfinish(self, exitstatus):
@@ -399,9 +416,14 @@ def native_cases(phase: str, root: Path) -> list[tuple[str, str, list[str]]]:
     for target, module in NATIVE_PHASES[phase]:
         names = []
         for witness in witnesses:
-            if witness["kind"] == "cargo" and (witness["target"], witness["module"]) == (target, module):
+            # Rust's module filter also executes child modules. Include their
+            # separately maintained sources in the same expected result set.
+            if (witness["kind"] == "cargo" and witness["target"] == target
+                    and (witness["module"] == module
+                         or module and witness["module"].startswith(module + "::"))):
                 for reference in witness["paths"]:
-                    names += [node["node"] for node in resolve(witness, reference, root)]
+                    names += [node["node"] for node in resolve(witness, reference, root)
+                              if node["node"] not in witness.get("helpers", {})]
         if not names or len(names) != len(set(names)):
             raise ValueError(f"missing or duplicate native identities: {target}/{module}")
         groups.append((target, module, sorted(names)))
@@ -496,7 +518,7 @@ def main() -> int:
     parser.add_argument("--lane", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--root", type=Path, default=ROOT)
+    parser.add_argument("--instance-dir", dest="root", type=Path, default=ROOT)
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     root = args.root.resolve()

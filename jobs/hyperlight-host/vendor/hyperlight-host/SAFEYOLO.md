@@ -1,4 +1,4 @@
-# Build metadata without a wall-clock timestamp
+# Hyperlight host patches
 
 Source: the Apache-2.0-licensed crates.io `hyperlight-host` 0.19.0 package,
 upstream commit `a03088470d822b538d2525ef9a5ae9e29daea1e8`.
@@ -18,16 +18,30 @@ compiler, target, profile and available Git metadata still use the existing
 build script. A local checkout can supply Git metadata from its containing
 repository; a source archive can have no Git metadata.
 
-Runtime code, backend selection, guest ABI and SafeYolo's helper identity are
-unchanged. Optional crashdump and upstream development features can still
-select chrono. The copied standalone lockfile includes those dependencies;
-it is separate from SafeYolo's selected normal/build feature graph.
+Optional crashdump filenames use Jiff's local clock and retain the
+`hl_core_YYYYMMDD_THHMMSS.mmm.elf` form. Development tracing selects the local
+`../tracing-forest` patch, which retains timestamped context trees using
+maintained `time`. The standalone lockfile includes these optional and
+development dependencies; it is separate from SafeYolo's selected normal/build
+feature graph. The patch does not change backend selection, the guest ABI,
+or the helper's identity format.
 Upstream integration tests require their own guest fixtures and tools; the
 SafeYolo helper's focused tests do not require those fixtures or a guest boot.
 
 The standalone `Cargo.lock` is locally refreshed from the published archive.
 It selects libz-sys 1.1.33 and rustix 1.1.6 to address the patchable advisories
 in those selections. The source, license and notice remain those identified
-above. The optional and development chrono maintenance notice remains.
+above. The optional and development date consumers no longer require chrono.
+It also selects url 2.5.9 and form_urlencoded 1.2.3 to address the nested
+`blob:` origin stack overflow in RUSTSEC-2026-0592.
 SafeYolo's helper dependencies use `jobs/hyperlight-host/Cargo.lock`, separately
 from this standalone lock.
+
+Optional crashdump output uses exclusive file creation. An existing file or
+symlink causes an error without opening or truncating its target. Concurrent
+requests for the same timestamp filename have one successful creator; the
+others return an error. New dump files use mode `0600` on Unix, subject to a
+more restrictive process umask. Directory selection, timestamp filenames and
+the ELF dump format are unchanged. Creation and write failures reach the caller
+instead of returning success. A failed write can leave a partial private dump.
+SafeYolo's normal helper features do not enable crashdump.

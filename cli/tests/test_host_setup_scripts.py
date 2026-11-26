@@ -714,7 +714,7 @@ def test_coord_bootstrap_help_describes_the_native_installed_workflow():
                             capture_output=True, text=True, check=True)
     for expected in ("--home DIRECTORY", "--harness claude|codex", "--require-agent-local",
                      "SAFEYOLO_COORD_EXECUTABLE", "SAFEYOLO_COORD_GUEST_BINARY",
-                     "ROOT/bin/safeyolo --root ROOT agent start NAME"):
+                     "ROOT/bin/safeyolo --instance-dir PATH agent start NAME"):
         assert expected in result.stdout
     for obsolete in ("agent run", "agent add", "get_agent_home_dir", "vm.py", "set -euo", "while [", "show_help()"):
         assert obsolete not in result.stdout
@@ -901,10 +901,17 @@ def test_pi_setup_is_agent_local_and_launches_with_reviewed_flags(tmp_path: Path
     assert "value with spaces" in actual_args
 
 
-def test_pi_coord_setup_stages_the_common_factory_supervisor(tmp_path: Path) -> None:
+@pytest.mark.parametrize("harness_name", ["pi", "claude"])
+def test_pi_coord_setup_stages_the_common_factory_supervisor(tmp_path: Path, harness_name) -> None:
     operator_home = tmp_path / "operator"
     agent_home = tmp_path / "agent"
     operator_home.mkdir()
+    if harness_name == "claude":
+        (operator_home / ".claude").mkdir()
+        (operator_home / ".claude/.credentials.json").write_text("host-login-must-not-copy")
+        (agent_home / ".claude").mkdir(parents=True, mode=0o700)
+        (agent_home / ".claude/.credentials.json").write_text("retained-agent-local-login")
+        (agent_home / ".claude/settings.json").write_text('{"model":"retained-model"}')
     contract = "# Pi owner\n\nOwn the delegated work.\n"
     snapshot = {
         "schema": "safeyolo.factory/v1",
@@ -921,7 +928,7 @@ def test_pi_coord_setup_stages_the_common_factory_supervisor(tmp_path: Path) -> 
             },
             "owner": {
                 "agent": "test-agent",
-                "harness": "pi",
+                "harness": harness_name,
                 "contract": "owner.md",
                 "contract_bytes": len(contract.encode()),
                 "contract_sha256": hashlib.sha256(contract.encode()).hexdigest(),
@@ -942,7 +949,7 @@ def test_pi_coord_setup_stages_the_common_factory_supervisor(tmp_path: Path) -> 
     snapshot_path.write_text(json.dumps(snapshot))
 
     result = _run_setup(
-        "pi-coord-host-setup.sh",
+        f"{harness_name}-coord-host-setup.sh",
         operator_home,
         agent_home,
         tmp_path,
@@ -954,20 +961,24 @@ def test_pi_coord_setup_stages_the_common_factory_supervisor(tmp_path: Path) -> 
 
     assert result.returncode == 0, result.stderr
     config = json.loads((agent_home / ".safeyolo/coord-supervisor.json").read_text())
-    assert config["harness"] == "pi"
+    assert config["harness"] == harness_name
     interactive_command = agent_home / ".safeyolo-interactive-command"
     assert interactive_command.stat().st_mode & 0o111
     assert interactive_command.read_bytes() != (agent_home / ".safeyolo-command").read_bytes()
-    assert "safeyolo-coord" not in interactive_command.read_text()
+    assert " supervise " not in interactive_command.read_text()
     assert config["agent_name"] == "test-agent"
     assert config["rooms"] == ["pi-backlog"]
     assert config["factory"]["role"] == "owner"
     assert (agent_home / ".safeyolo/AGENTS.md").read_text().endswith(contract.lstrip())
-    assert (
-        agent_home / ".pi/agent/extensions/safeyolo-coord.ts"
-    ).read_bytes() == PI_COORD_EXTENSION_SOURCE.read_bytes()
+    if harness_name == "pi":
+        assert (agent_home / ".pi/agent/extensions/safeyolo-coord.ts").read_bytes() == PI_COORD_EXTENSION_SOURCE.read_bytes()
+    else:
+        assert (agent_home / ".claude/.credentials.json").read_text() == "retained-agent-local-login"
+        assert json.loads((agent_home / ".claude/settings.json").read_text())["model"] == "retained-model"
+        assert json.loads((agent_home / ".claude.json").read_text())["mcpServers"]["safeyolo-coord"]["command"] == "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher"
     command = (agent_home / ".safeyolo-command").read_text()
-    assert 'export SAFEYOLO_PI_BIN="$pi_bin"' in command
+    if harness_name == "pi":
+        assert 'export SAFEYOLO_PI_BIN="$pi_bin"' in command
     assert '"$HOME/.safeyolo/safeyolo-coord"' in command
     assert "--mode json" not in command
     assert not (agent_home / ".codex/config.toml").exists()

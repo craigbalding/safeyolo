@@ -3,7 +3,7 @@
 
 use super::{
     HelperProcessStatus, JobEngine, JobResult, JobSpec, Outcome, PinnedArtifact, Privilege,
-    collect, digest, input, now,
+    collect, collect_console, digest, input, now,
 };
 use crate::Error;
 use ring::digest::{Context, SHA256};
@@ -57,14 +57,30 @@ enum Completion {
 struct RuntimeReport {
     completion: Option<Completion>,
     error: Option<String>,
+    initialization: Option<Value>,
+    helper_max_rss_bytes: Option<u64>,
 }
 
 fn artifacts(engine: &JobEngine) -> Option<(&PinnedArtifact, &PinnedArtifact)> {
     match engine {
         JobEngine::Platform => None,
         JobEngine::Hyperlight { runtime, guest, .. } => Some((runtime, guest)),
-        JobEngine::HyperlightUnikraft { runtime, checker } => Some((runtime, checker)),
+        JobEngine::HyperlightUnikraft {
+            runtime, checker, ..
+        } => Some((runtime, checker)),
     }
+}
+
+fn template_key(spec: &JobSpec) -> Result<String, Error> {
+    let (manifest, artifact) = artifacts(&spec.engine).ok_or("not a Hyperlight engine")?;
+    // The manifest digest transitively binds the verified helper, rootfs,
+    // runtime/ABI versions and host architecture. The helper includes the
+    // kernel, initialization code and fixed transport layout. Policy, input,
+    // principal and entry function do not determine frozen bytes.
+    Ok(digest(&serde_json::to_vec(&json!({
+        "engine":spec.engine.name(),"runtime":manifest.sha256,
+        "artifact":artifact.sha256,"memory_mb":spec.memory_mb,
+    }))?))
 }
 
 fn sha256(value: &str) -> bool {
@@ -141,7 +157,7 @@ async fn bundle(runtime: &PinnedArtifact) -> Result<Bundle, Error> {
         return Err("Hyperlight runtime manifest digest mismatch".into());
     }
     let bundle: Bundle = serde_json::from_slice(&bytes)?;
-    if bundle.protocol != 3 || bundle.hyperlight != "0.19.0" || bundle.unikraft != "0.21.0" {
+    if bundle.protocol != 4 || bundle.hyperlight != "0.19.0" || bundle.unikraft != "0.21.0" {
         return Err(
             "incompatible Hyperlight runtime/guest ABI version; rebuild a matching bundle".into(),
         );
@@ -285,6 +301,9 @@ impl Drop for Helper {
     fn drop(&mut self) {
         // Abort of the caller's future must also stop synchronous callbacks.
         // The unreaped leader pins this group ID until wait has completed.
+        if self.child.id().is_none() {
+            return;
+        }
         if let Some(group) = self.group {
             unsafe {
                 libc::kill(-(group as i32), libc::SIGKILL);
@@ -312,29 +331,103 @@ fn monotonic_ms() -> Result<u64, Error> {
     Ok(time.tv_sec as u64 * 1000 + time.tv_nsec as u64 / 1_000_000)
 }
 
-async fn stop(helper: &mut Helper) -> Result<HelperProcessStatus, Error> {
-    if let Some(group) = helper.group
-        && unsafe { libc::kill(-(group as i32), libc::SIGKILL) } != 0
-    {
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::ESRCH) {
-            let failure =
-                format!("could not SIGKILL Hyperlight helper process group {group}: {error}");
-            // Darwin can deny group signalling while the helper is exiting.
-            // Closing the bridge starts exit; it need not be waitable yet.
-            // Reuse the bounded stop wait, then prove the group is absent.
-            // DOC: docs/hyperlight-jobs.md
-            if error.raw_os_error() == Some(libc::EPERM) {
-                return reap_after_denied_group_kill(helper)
-                    .await
-                    .map_err(|cleanup| format!("{failure}; {cleanup}").into());
-            }
-            return Err(failure.into());
+/// Normal proxy shutdown releases idle disk templates after check tasks drain.
+/// A separate CLI invocation may still hold a mapped reader; preserve its lease.
+pub(crate) fn clear_templates(config: &Path) -> Result<(), Error> {
+    let directory = config
+        .parent()
+        .ok_or("job config has no parent")?
+        .join("data/hyperlight-templates");
+    let entries = match fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join("lock"))?;
+    lock.try_lock()?;
+    for entry in entries {
+        let entry = entry?;
+        if !entry
+            .file_name()
+            .as_encoded_bytes()
+            .starts_with(b"template-")
+            || !entry.file_type()?.is_dir()
+        {
+            continue;
+        }
+        let lease = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(entry.path().join("lease"))?;
+        match lease.try_lock() {
+            Ok(()) => fs::remove_dir_all(entry.path())?,
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(error) => return Err(error.into()),
         }
     }
-    let status = tokio::time::timeout(Duration::from_secs(5), helper.child.wait())
-        .await
-        .map_err(|_| "Hyperlight helper did not stop after SIGKILL; VM cleanup is unproved")??;
+    Ok(())
+}
+
+async fn stop(helper: &mut Helper) -> Result<HelperProcessStatus, Error> {
+    // Only an already reaped child has released its process-group identity.
+    // An exited but unreaped leader can still own live descendants.
+    if helper.child.id().is_none() {
+        helper.group = None;
+        return observed_status(helper.child.wait().await?);
+    }
+    let mut errors = Vec::new();
+    let group_signal = helper.group.map(kill_helper_group);
+    if let Some(group) = helper.group
+        && let Some(Err(error)) = &group_signal
+    {
+        errors.push(format!(
+            "Hyperlight helper process group {group} SIGKILL failed: {error}"
+        ));
+        // A group signal can race with exit before the child becomes waitable.
+        // Try the owned child explicitly, then confirm disposal by waiting.
+        let recheck = helper.child.try_wait();
+        if let Err(error) = &recheck {
+            errors.push(format!("Hyperlight helper status check failed: {error}"));
+        }
+        let fallback = if matches!(recheck, Ok(Some(_))) {
+            None
+        } else {
+            Some(kill_helper_child(&mut helper.child))
+        };
+        if let Some(Err(error)) = &fallback {
+            errors.push(format!(
+                "Hyperlight helper direct-child SIGKILL failed: {error}"
+            ));
+        }
+        // A refused group signal does not prove that descendants stopped.
+        // Reap the owned child and inspect the group without signalling again.
+        return reap_after_denied_group_kill(helper)
+            .await
+            .map_err(|error| format!("{}; {error}", errors.join("; ")).into());
+    }
+    let wait = tokio::time::timeout(Duration::from_secs(5), helper.child.wait()).await;
+    let status = match wait {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => {
+            errors.push(format!(
+                "Hyperlight helper wait failed: {error}; VM cleanup is unproved"
+            ));
+            return Err(errors.join("; ").into());
+        }
+        Err(_) => {
+            errors.push(
+                "Hyperlight helper did not stop after SIGKILL; VM cleanup is unproved".into(),
+            );
+            return Err(errors.join("; ").into());
+        }
+    };
     helper.group = None;
     observed_status(status)
 }
@@ -356,6 +449,25 @@ async fn reap_after_denied_group_kill(helper: &mut Helper) -> Result<HelperProce
         }
     }
     observed_status(status)
+}
+
+fn kill_helper_group(group: u32) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(errno) = tests::GROUP_KILL_ERROR.with(|error| error.take()) {
+        return Err(std::io::Error::from_raw_os_error(errno));
+    }
+    if unsafe { libc::kill(-(group as i32), libc::SIGKILL) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn kill_helper_child(child: &mut Child) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(errno) = tests::CHILD_KILL_ERROR.with(|error| error.take()) {
+        return Err(std::io::Error::from_raw_os_error(errno));
+    }
+    child.start_kill()
 }
 
 pub(super) async fn discover(config: &Path, spec: &JobSpec) -> Result<Option<Value>, Error> {
@@ -407,6 +519,7 @@ pub(super) async fn run(
     source_input: Option<&Path>,
     mut cancel: Option<tokio::sync::watch::Receiver<bool>>,
     checks: &[String],
+    console: Option<tokio::fs::File>,
 ) -> Result<JobResult, Error> {
     let config = config.canonicalize()?;
     let parent = config
@@ -416,7 +529,7 @@ pub(super) async fn run(
     tokio::fs::create_dir_all(&parent).await?;
     let temporary = tempfile::Builder::new()
         .prefix("job-hyperlight-")
-        .tempdir_in(parent)?;
+        .tempdir_in(&parent)?;
     let root = temporary.path().to_owned();
     let input_sha256 = input::copy(
         source_input,
@@ -445,8 +558,11 @@ pub(super) async fn run(
     let mut bridge_task = None;
     let mut policy_hash = None;
     let mut socket_directory = None;
+    let mut preparation_ms = None;
     let work = async {
+        let preparation_started = std::time::Instant::now();
         let bundle = prepare(spec, &root).await?;
+        preparation_ms = Some(preparation_started.elapsed().as_millis());
         if spec.network || spec.mediated_services.is_some() {
             // Only two sockets use TMPDIR. Artifacts and captured inputs stay
             // on disk under the instance; deep instance paths need not fit the
@@ -495,11 +611,25 @@ pub(super) async fn run(
         } else {
             None
         };
+        let reuse = match &spec.engine {
+            JobEngine::Hyperlight {
+                reuse_initialization,
+                ..
+            }
+            | JobEngine::HyperlightUnikraft {
+                reuse_initialization,
+                ..
+            } => *reuse_initialization,
+            JobEngine::Platform => unreachable!(),
+        };
+        let template_key = template_key(spec)?;
         let invocation = json!({"engine":spec.engine.name(),"artifact":root.join("code/checker"),
             "input":root.join("input"),"argv":spec.argv,"memory_mb":spec.memory_mb,
             "max_input_bytes":spec.max_input_bytes,"function":function,
             "parent_pid":std::process::id(),"deadline_monotonic_ms":deadline_monotonic_ms,
+            "invocation_id":format!("job-{generation}"),
             "service_bridge":socket_directory.as_ref().map(|directory| directory.path().join("s.sock")),
+            "template":if reuse {Some(json!({"directory":parent.join("hyperlight-templates"),"key":template_key}))} else {None},
             "rootfs":if function.is_some() {None} else {Some(root.join("python.cpio"))}});
         tokio::fs::write(
             root.join("invocation.json"),
@@ -511,9 +641,10 @@ pub(super) async fn run(
             .arg(root.join("invocation.json"))
             .arg(root.join("report.json"))
             .spawn()?;
-        stdout = Some(tokio::spawn(collect(
+        stdout = Some(tokio::spawn(collect_console(
             helper.stdout.take().ok_or("missing helper stdout")?,
             spec.retain_bytes,
+            console,
         )));
         stderr = Some(tokio::spawn(collect(
             helper.stderr.take().ok_or("missing helper stderr")?,
@@ -564,18 +695,18 @@ pub(super) async fn run(
         match task.await {
             Err(error) if error.is_cancelled() => {}
             Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                cleanup_errors.push(format!("Hyperlight proxy bridge stop failed: {error}"))
-            }
+            Ok(Err(error)) => cleanup_errors.push(format!(
+                "Hyperlight callback bridge cleanup failed: {error}"
+            )),
             Err(error) => {
-                cleanup_errors.push(format!("Hyperlight proxy bridge task failed: {error}"))
+                cleanup_errors.push(format!("Hyperlight callback bridge join failed: {error}"))
             }
         }
     }
     if let Some(client) = delegation
         && let Err(error) = client.close().await
     {
-        cleanup_errors.push(format!("Hyperlight delegation close failed: {error}"));
+        cleanup_errors.push(format!("Hyperlight delegation cleanup failed: {error}"));
     }
     if let Some(directory) = socket_directory {
         let path = directory.path().to_owned();
@@ -678,6 +809,7 @@ pub(super) async fn run(
         service_evidence,
         rootfs: json!({"kind":spec.engine.name(),"runtime_manifest_sha256":manifest.sha256,
             "artifact_sha256":artifact.sha256,"bundle":runtime,"policy_hash":policy_hash,
+            "artifact_preparation_ms":preparation_ms,
             "network":spec.network,
             "service_access":if spec.mediated_services.is_some() {"mediated"} else if spec.network {"in_guest"} else {"disabled"},
             "console_encoding":if matches!(spec.engine,JobEngine::Hyperlight {..}) {"utf-8"} else {"utf-8-with-replacement"}}),

@@ -2,6 +2,8 @@
 
 ## Contents
 
+- [Discover the right capability](#discover-the-right-capability)
+- [Policy capabilities](#policy-capabilities)
 - [Model](#model)
 - [Calling the API](#calling-the-api)
 - [Diagnostics and policy](#diagnostics-and-policy)
@@ -14,6 +16,25 @@
 - [Flow inspection](#flow-inspection)
 - [Service gateway](#service-gateway)
 - [Approved collaboration rooms](#approved-collaboration-rooms)
+
+## Discover the right capability
+
+Choose discovery for the operator's goal. These interfaces answer different
+questions; none is a universal list of everything an agent can help arrange.
+
+| Question | Interface and limits |
+|---|---|
+| What policy and operation forms does this installation support? | `discover_policy_capabilities` or `GET /policy/capabilities`. Generic definitions are available before policy disclosure; they grant no execution authority. |
+| What relevant access is visible now? | Capability discovery with `observe:true` adds caller-authorized support, service and operator-action observations. Failed or undisclosed reads remain unknown. |
+| Can I inspect, repair or start/stop another agent? | `support_grants` or `GET /support/grants`, then the [peer-support workflow](#delegated-local-peer-support). An empty grant list is an access gap, not proof that support is absent. |
+| Which services can I use or request? | [Service gateway](#service-gateway). `/gateway/services` includes external and sandbox-hosted services. It describes service access, not host or peer administration. Its scoped tokens are credentials; do not print the response wholesale. Capability observations omit secret fields. |
+| Which typed operator actions are offered here? | `GET /operator-actions`. Discover its bounded action vocabulary, such as desktop preview. It does not enumerate peer support or host agent creation. |
+| Which agents have been seen? | `GET /agents` reports discovered agents and last-seen information, not the host's complete saved configured-agent list. |
+
+For a new worker or missing support rights, follow
+[agent creation and support](agent-launchers.md). Prepare the concrete operator
+step and resume after it; do not stop at the absence of a local host CLI.
+Use only operations and scopes actually offered by the installed version.
 
 ## Feed-driven responses
 
@@ -29,7 +50,7 @@ assertion grant no execution or policy-change authority. Use the existing
 effect owner and its current access. A Work request for repair is not proof of
 repair. Unknown or stale inventory does not establish safety.
 
-The operator's host commands are `safeyolo --root ROOT signals status` and
+The operator's host commands are `safeyolo --instance-dir PATH signals status` and
 `approvals show ID`. Status separates source freshness, local applicability,
 standing authority or pending approval, attempted effects and verified local
 policy capture. An operator decides scoped approval through the existing
@@ -77,9 +98,34 @@ revision and submission through the existing policy owner.
 
 `GET /operator-actions` discovers the bounded SafeYolo action vocabulary for
 the requesting agent. `POST /operator-actions` accepts `action_id`, typed
-`parameters` and optional untrusted `reason`. The first action is
-`desktop.present`. See [Desktop and operator preview](desktop.md) for the
-request and its local or configured tailnet prerequisites.
+`parameters` and optional untrusted `reason`. `desktop.present` starts a
+graphical presentation; see [Desktop and operator preview](desktop.md).
+`web.publish` publishes one HTTP port without starting a desktop. Discover the
+installed vocabulary before choosing either action.
+
+For an app in your current guest, read `/safeyolo/agent-name` and the host-staged
+`/safeyolo/host-launch-context.json` when identity is uncertain. Keep the known
+instance, agent, app and port. Guest loopback, the SafeYolo host's loopback and
+the operator's computer are separate targets. Ordinary work on your own app
+does not require a peer-support grant.
+
+Submit `action_id: "web.publish"` with typed parameters
+`{"guest_port":3000,"audience":"tailnet","ttl_seconds":900}` through the
+existing authenticated `POST /operator-actions`. `audience` is `local` or
+`tailnet`; optional `tailnet_port` selects an unused HTTPS port. The request is
+bound to your current run and cannot select another agent. The existing
+approval owner decides this exposure and receives the URL and unlock code.
+Retain its action request ID, read its canonical result, and tell the operator
+what is ready or exactly which transport or publisher capability is missing.
+Do not retry a refused or interrupted publication with another reason.
+
+The owning host also has `safeyolo agent publish NAME --port PORT --audience
+local|tailnet`, `agent publications NAME` and `agent unpublish NAME --port PORT
+--audience local|tailnet`. Preserve the operator's selected executable and
+instance when preparing that handoff. Use its installed help to verify syntax.
+The operator opens the URL on the intended device; an in-guest health check or
+desktop port6080 does not establish that access. Keep app authentication,
+streaming/WebSocket behavior and scoped stop/expiry verification in the task.
 
 `GET /operator-actions/ACTION_REQUEST_ID` reads the requesting agent's result.
 Use the stable ID returned by the request. The operator decides through the
@@ -793,14 +839,20 @@ returns 500 without releasing the flow response.
 
 ## Service gateway
 
-The gateway lets an agent call an approved service without seeing the upstream
-credential.
+The gateway lets an agent call an approved external or sandbox-hosted service.
+When an upstream credential is needed, the gateway keeps it outside the caller.
+For a service hosted by another SafeYolo agent, use
+[gateway sharing](web-services.md#share-with-other-agents-through-the-gateway).
+Service access does not require a peer-support grant.
 
-1. List authorized and available services:
+1. Discover service metadata without printing gateway tokens:
 
    ```sh
-   sy_api /gateway/services | jq
+   sy_api '/policy/capabilities?observe=true' | jq
    ```
+
+   Use the service observations. Read `/gateway/services` privately when the
+   calling client needs its current token; do not display that response wholesale.
 
 2. If a capability is available but not authorized, request the narrow
    capability and explain the purpose:
@@ -827,10 +879,14 @@ credential.
      -d '{"service":"gmail","capability":"read_messages","bindings":{"approved_category":"CATEGORY_PROMOTIONS"},"purpose_code":"summarise"}' | jq
    ```
 
-5. After operator approval, fetch `/gateway/services` again. Use the returned
-   `sgw_` token in the service's configured auth header. SafeYolo validates the
-   agent, host, capability, route, risk grants, and contract before replacing
-   that token with the vaulted credential. Credential injection is HTTPS-only.
+5. After operator approval and activation, fetch `/gateway/services` privately
+   again. Use the returned `sgw_` token in the configured auth header. With no
+   upstream `auth` block, use `Authorization: Bearer TOKEN`; the caller still
+   needs its own scoped token. SafeYolo validates the agent, host, capability,
+   route, risk grants and contract. When an upstream credential is configured,
+   the gateway injects it under the service's transport rules: HTTPS is required
+   unless the service explicitly allows HTTP. A credential-free sandbox
+   provider requires no upstream credential injection.
 
 Never print, persist, or send an `sgw_` token to another agent.
 
@@ -1050,7 +1106,10 @@ through the configured proxy. Local calls require no shared room, target
 model/terminal participation or working Coord/NATS notifications. They still
 need the owning API, policy and required runtime controls. Remote support is
 outside this local interface. Ask the operator to preview or change the
-support grant when an action lacks authority. Do not substitute host access.
+support grant when an action lacks authority. Use the
+[guided support handoff](agent-launchers.md#create-a-worker-and-delegate-support)
+with the selected identities and required rights, then recheck the grant and
+continue. Do not substitute host access.
 
 The operator can select operational event kinds in the same support-grant
 preview. Selected references arrive as `operational_event` objects through

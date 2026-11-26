@@ -43,8 +43,8 @@ examples. The default source file is `ROOT/policy-feeds.toml`, written with mode
 data belong to that policy file's directory.
 
 ```sh
-safeyolo --root /path/to/instance policy feeds configure sources.toml
-safeyolo --root /path/to/instance policy feeds status
+safeyolo --instance-dir /path/to/instance policy feeds configure sources.toml
+safeyolo --instance-dir /path/to/instance policy feeds status
 ```
 
 A usable first result has a non-null `snapshot` with a `version`, source digest,
@@ -77,9 +77,9 @@ egress = "deny"
 With the proxy running, validate and activate the candidate:
 
 ```sh
-safeyolo --root /path/to/instance policy check /path/to/instance/research-policy.toml
-safeyolo --root /path/to/instance policy apply /path/to/instance/research-policy.toml
-safeyolo --root /path/to/instance policy show
+safeyolo --instance-dir /path/to/instance policy check /path/to/instance/research-policy.toml
+safeyolo --instance-dir /path/to/instance policy apply /path/to/instance/research-policy.toml
+safeyolo --instance-dir /path/to/instance policy show
 ```
 
 `policy show` reports the active source version under
@@ -170,7 +170,7 @@ A rejected update preserves the last accepted snapshot. When the cause is fixed,
 the running proxy retries automatically. To attempt one adopted source now:
 
 ```sh
-safeyolo --root /path/to/instance policy feeds refresh hagezi
+safeyolo --instance-dir /path/to/instance policy feeds refresh hagezi
 ```
 
 This explicit command does not change source boundaries or validation limits.
@@ -182,7 +182,7 @@ membership change, inspect the upstream change before deliberately revising
 To select the previous accepted snapshot for the same source definition:
 
 ```sh
-safeyolo --root /path/to/instance policy feeds rollback hagezi
+safeyolo --instance-dir /path/to/instance policy feeds rollback hagezi
 ```
 
 Rollback preserves the snapshot's evidence time and refresh schedule. It does

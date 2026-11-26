@@ -1,0 +1,17 @@
+# Selected-worker example. Merge with the existing authored policy through its
+# current assessment/adoption owner; this is not a complete instance policy.
+[hosts."rundeck.example.test"]
+egress = "allow"
+service = "media-ingestion"
+allow = ["media-ingestion:*"]
+
+[agents.movie-worker.services.media-ingestion]
+capability = "import_selected_media"
+token = "operator-owned-media-job-credential"
+
+[[agents.movie-worker.contract_bindings]]
+service = "media-ingestion"
+capability = "import_selected_media"
+template = "media-ingestion.v1"
+bound_values = {}
+grantable_operations = ["import_selected_media"]

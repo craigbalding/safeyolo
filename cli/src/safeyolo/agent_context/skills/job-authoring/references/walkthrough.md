@@ -56,17 +56,27 @@ Before adoption, inspect the actual instance and saved/current authority:
 replace `example` with the existing factory name before running its doctor.
 
 ```sh
-safeyolo --root "$HOME/.safeyolo" status
-safeyolo --root "$HOME/.safeyolo" policy show
-safeyolo --root "$HOME/.safeyolo" services show github
-safeyolo --root "$HOME/.safeyolo" credentials list
-safeyolo --root "$HOME/.safeyolo" factory doctor example
-safeyolo --root "$HOME/.safeyolo" job validate "$HOME/.safeyolo/assets/hyperlight/hyperlight-service.json"
+safeyolo status
+safeyolo policy show
+safeyolo services show github
+safeyolo credentials list
+safeyolo factory doctor example
+safeyolo job validate "$HOME/.safeyolo/assets/hyperlight/hyperlight-service.json"
 ```
 
 For Python, validate `hyperlight-unikraft-service.json` instead. Missing
 artifacts, runtime/architecture mismatches or unavailable virtualization stop
 the run; there is no engine fallback. A validation pass is not a VM execution.
+
+Repeated jobs restore a clean initialized template by default. Every call still
+uses current adopted inputs and service grants, a fresh helper and new capability
+handles. Inspect `runtime_report.initialization` for `constructed`, `restored`
+or an explicit `cold` reason and the template identity. Grant revocation takes
+effect even when that template remains reusable. To compare cold execution of
+the same engine, set `reuse_initialization=false` in a copy of the trusted
+definition's engine object. See the engine guide for retention, time/randomness
+limits and measurement scope. Preparing or installing a bundle alone does not
+establish warm runtime behavior on that host.
 
 The core examples have a five-second job deadline; the Unikraft examples have
 a fifteen-second deadline. The helper gives each named check five additional
@@ -183,7 +193,7 @@ second uses the developed Python bundle. Both write `candidate`, so run only
 the selected variant before validation.
 
 ```sh
-uv run --script "$HOME/.safeyolo/assets/skills/job-authoring/scripts/prepare.py" --root "$HOME/.safeyolo" --engine hyperlight --repository OWNER/REPOSITORY --author-id STABLE_USER_ID --issue ISSUE_NUMBER --room engineering --factory example --credential factory-github --output candidate
+uv run --script "$HOME/.safeyolo/assets/skills/job-authoring/scripts/prepare.py" --instance-dir "$HOME/.safeyolo" --engine hyperlight --repository OWNER/REPOSITORY --author-id STABLE_USER_ID --issue ISSUE_NUMBER --room engineering --factory example --credential factory-github --output candidate
 ```
 
 Select `--engine hyperlight-unikraft` for the Python implementation. Preparation
@@ -202,7 +212,7 @@ command above. Use the same selected instance, room, factory and credential
 choices. The source bundle must be at its reviewed host path during preparation:
 
 ```sh
-uv run --script "$HOME/.safeyolo/assets/skills/job-authoring/scripts/prepare.py" --root "$HOME/.safeyolo" --bundle proposed-bundle --engine hyperlight-unikraft --repository OWNER/REPOSITORY --author-id STABLE_USER_ID --issue ISSUE_NUMBER --room engineering --factory example --credential factory-github --output candidate
+uv run --script "$HOME/.safeyolo/assets/skills/job-authoring/scripts/prepare.py" --instance-dir "$HOME/.safeyolo" --bundle proposed-bundle --engine hyperlight-unikraft --repository OWNER/REPOSITORY --author-id STABLE_USER_ID --issue ISSUE_NUMBER --room engineering --factory example --credential factory-github --output candidate
 ```
 
 `--bundle` selects the proposed definitions and digest-checked checker bytes;
@@ -218,8 +228,8 @@ Review `candidate.toml`, `github.yaml` and the printed root, policy and service
 target. Then validate the selected proposal:
 
 ```sh
-safeyolo --root "$HOME/.safeyolo" services check candidate/github.yaml
-safeyolo --root "$HOME/.safeyolo" policy check candidate/candidate.toml
+safeyolo services check candidate/github.yaml
+safeyolo policy check candidate/candidate.toml
 ```
 
 `policy check` compiles; offline `policy evaluate` cannot execute a
@@ -236,7 +246,7 @@ activation. First observe the new capability in the loaded catalogue:
 
 ```sh
 cp candidate/github.yaml "$HOME/.safeyolo/data/services/github.yaml"
-safeyolo --root "$HOME/.safeyolo" services show github
+safeyolo services show github
 ```
 
 Continue when `definition.capabilities.read_example_issues.routes` shows only
@@ -249,9 +259,9 @@ Then apply the reviewed candidate. Policy apply saves and activates against
 the loaded catalogue. Neither operation changes factory contracts:
 
 ```sh
-safeyolo --root "$HOME/.safeyolo" policy apply candidate/candidate.toml
-safeyolo --root "$HOME/.safeyolo" policy show
-safeyolo --root "$HOME/.safeyolo" services authorized gate:hyperlight-service-check
+safeyolo policy apply candidate/candidate.toml
+safeyolo policy show
+safeyolo services authorized gate:hyperlight-service-check
 ```
 
 Expected: active policy, `saved_matches_active=true` and the selected read-only
@@ -271,7 +281,7 @@ The host can import the selected existing issue. Replace the repository, issue
 and room with the prepared values before this command:
 
 ```sh
-safeyolo --root "$HOME/.safeyolo" coord work import-github engineering https://github.com/OWNER/REPOSITORY/issues/ISSUE_NUMBER --operation-id author-example-1
+safeyolo coord work import-github engineering https://github.com/OWNER/REPOSITORY/issues/ISSUE_NUMBER --operation-id author-example-1
 ```
 
 This performs the required read before Work creation, even though import does

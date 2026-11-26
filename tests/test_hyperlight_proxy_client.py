@@ -77,6 +77,7 @@ def head(stream):
 class ProxyBytes:
     def __init__(self, ca, context, *, https, deny=False):
         self.ca, self.context, self.https, self.deny = ca, context, https, deny
+        self.gateway_header = ("Authorization", "Bearer sgw_test_scoped")
         self.streams, self.threads, self.calls, self.requests, self.errors = {}, [], [], [], []
         self.next_id = 0
 
@@ -107,9 +108,9 @@ class ProxyBytes:
         kind = value["kind"]
         if kind == "proxy_config":
             return {"ca_pem": self.ca}
-        if kind == "gateway_token":
+        if kind == "gateway_header":
             assert value["service"] == "example"
-            return {"token": "sgw_test_scoped"}
+            return dict(zip(("name", "value"), self.gateway_header, strict=True))
         if kind == "time":
             return {"unix_seconds": int(datetime.now(UTC).timestamp())}
         if kind == "proxy_open":
@@ -213,6 +214,22 @@ def test_maintained_clients_use_fragmented_proxy_streams(tmp_path, monkeypatch, 
         target = path_query.encode() if https else ("http://example.test" + path_query).encode()
         assert request.startswith(b"GET " + target + b" HTTP/1.1\r\n")
         assert (b"Authorization: Bearer sgw_test_scoped" in request) == service
+    finally:
+        bridge.close()
+
+
+@pytest.mark.parametrize("client", ["python", "core", "unikraft"])
+@pytest.mark.parametrize("header", [("X-Api-Key", "sgw_test_scoped"), ("Authorization", "Basic scoped-fixture")])
+def test_guest_client_preserves_the_services_selected_authentication(tmp_path, monkeypatch, client, header):
+    ca, context = certificates(tmp_path)
+    bridge = ProxyBytes(ca, context, https=True)
+    bridge.gateway_header = header
+    try:
+        result = run_client(client, bridge, tmp_path, monkeypatch, https=True, service=True)
+        assert result["Ok"]["finding"]["positive"] is True, result
+        name, value = header
+        assert f"{name}: {value}\r\n".encode() in bridge.requests[0]
+        assert b"Authorization: Bearer" not in bridge.requests[0]
     finally:
         bridge.close()
 

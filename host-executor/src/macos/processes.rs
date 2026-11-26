@@ -1,0 +1,115 @@
+//! Observe only a job's original process group, not its full descendant tree.
+use super::*;
+
+// <sys/proc_info.h>; the pinned libc exposes proc_listpids but omits this selector.
+const PROC_PGRP_ONLY: u32 = 2;
+
+fn list(group: u32, buffer: *mut libc::c_void, bytes: i32) -> Result<usize, Refusal> {
+    // libproc returns zero both for an empty list and for failure. Clear errno
+    // before the call so a failed read cannot be reported as quiescence.
+    unsafe {
+        *libc::__error() = 0;
+    }
+    let result = unsafe { libc::proc_listpids(PROC_PGRP_ONLY, group, buffer, bytes) };
+    let error = std::io::Error::last_os_error();
+    if result < 0 || result == 0 && error.raw_os_error() != Some(0) {
+        return Err(unavailable(error));
+    }
+    Ok(result as usize)
+}
+
+fn group_pids(group: u32) -> Result<Vec<u32>, Refusal> {
+    // proc_listpids returns bytes, not a PID count. Allow growth between the
+    // sizing and data calls; a filled buffer is incomplete and is never empty.
+    for _ in 0..3 {
+        let bytes = list(group, std::ptr::null_mut(), 0)?;
+        let capacity = (bytes / std::mem::size_of::<u32>()).saturating_add(64);
+        let mut pids = vec![0u32; capacity];
+        let bytes = list(
+            group,
+            pids.as_mut_ptr().cast(),
+            (capacity * std::mem::size_of::<u32>())
+                .try_into()
+                .map_err(unavailable)?,
+        )?;
+        let count = bytes / std::mem::size_of::<u32>();
+        if count >= capacity {
+            continue;
+        }
+        pids.truncate(count);
+        pids.retain(|pid| *pid != 0);
+        return Ok(pids);
+    }
+    Err(unavailable(
+        "process group changed faster than a complete observation",
+    ))
+}
+
+pub(super) fn group_quiescent(group: u32) -> Result<bool, Refusal> {
+    let mut pids = group_pids(group)?;
+    pids.sort_unstable();
+    let mut zombies = Vec::new();
+    for pid in &pids {
+        match process_info(*pid)? {
+            Some(info) if info.pbi_status == 5 => zombies.push(Some(process_birth(&info))),
+            Some(_) => return Ok(false),
+            // On Darwin PROC_PIDTBSDINFO returns ESRCH for unreaped zombies,
+            // although proc_listpids still includes them. Other errors remain
+            // unavailable. Require this same absence in both passes below.
+            None => zombies.push(None),
+        }
+    }
+    // Zombies cannot execute or retain output writers, but can remain until
+    // their parent is reaped. Require the same raw membership after observing
+    // every member dead: an exit during the first pass could have forked a new
+    // descendant. Check births again to exclude PID reuse between passes.
+    let mut after = group_pids(group)?;
+    after.sort_unstable();
+    if pids != after {
+        return Ok(false);
+    }
+    for (pid, zombie) in pids.into_iter().zip(zombies) {
+        match (zombie, process_info(pid)?) {
+            (None, None) => (),
+            (Some(before), Some(info))
+                if info.pbi_status == 5 && same(&before, &process_birth(&info)) => {}
+            _ => return Ok(false),
+        }
+    }
+    Ok(true)
+}
+
+pub(super) fn group_members(group: u32) -> Result<Vec<NativeProcess>, Refusal> {
+    let mut members = Vec::new();
+    for pid in group_pids(group)? {
+        if let Some(process) = birth(pid)?
+            && process.process_group == group
+        {
+            members.push(process);
+        }
+    }
+    Ok(members)
+}
+
+pub(super) fn group_memory(members: &[NativeProcess]) -> Result<u64, Refusal> {
+    let mut memory = 0u64;
+    for process in members {
+        let mut info = std::mem::MaybeUninit::<libc::proc_taskinfo>::uninit();
+        let size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
+        let bytes = unsafe {
+            libc::proc_pidinfo(
+                process.pid as i32,
+                libc::PROC_PIDTASKINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        if bytes == size {
+            memory = memory.saturating_add(unsafe { info.assume_init() }.pti_resident_size);
+        } else if birth(process.pid)?.is_some_and(|current| same(&current, process)) {
+            return Err(unavailable("live group member memory observation failed"));
+        }
+    }
+    Ok(memory)
+}

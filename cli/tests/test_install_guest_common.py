@@ -607,7 +607,7 @@ def test_guest_installer_does_not_hide_agent_creation_failure() -> None:
 
 
 def test_guest_installer_unlocks_root_for_pubkey_auth() -> None:
-    """`safeyolo agent shell --root` SSHes to root@sandbox on the
+    """`safeyolo agent shell --instance-dir` SSHes to root@sandbox on the
     macOS microVM. Debian bases ship root with pw="!" (locked), and
     OpenSSH on Alpine (9.7+) refuses pubkey auth against locked
     accounts. Unlocking root at rootfs build time mirrors the

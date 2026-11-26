@@ -482,7 +482,7 @@ def test_attached_checks_current_runtime_and_retains_future_launch_diagnosis(att
         if diagnosis["helper"] == "not-executable":
             helper.chmod(0o600)
     cli = _executable(instance.root / "bin/safeyolo",
-                      f"safeyolo 0.1.0 commit={instance.revision} profile=debug", doctor={"linux": diagnosis})
+                      f"safeyolo 0.1.0 commit={instance.revision} profile=debug", doctor={"checks":[{"name":"Linux runtime and namespaces","details":diagnosis}],"exit_code":0})
     output = instance.root / "report.json"
     arguments = [sys.executable, str(SCRIPT), "--cli", str(cli), "--rust-bin", str(instance.candidate),
                  "--rust-config", str(instance.config), "--config-dir", str(instance.root),
@@ -518,7 +518,7 @@ def test_attached_refuses_invalid_current_runtime_despite_future_launch_failure(
     instance = attached_instance
     cli = _executable(instance.root / "bin/safeyolo",
                       f"safeyolo 0.1.0 commit={instance.revision} profile=debug",
-                      doctor={"linux": {"state": "unavailable", "error": "mapped root access denied"}})
+                      doctor={"checks":[{"name":"Linux runtime and namespaces","details":{"state":"unavailable","error":"mapped root access denied"}}],"exit_code":0})
     candidate = instance.candidate
     if defect == "stale-receipt":
         (instance.data / "proxy-process.json").write_text(json.dumps({**instance.receipt, "token": "stale"}))
@@ -548,7 +548,7 @@ def test_substrate_uses_installed_runtime_diagnosis_without_path_fallback(tmp_pa
                 "version": "release-20261005.0-safeyolo.1", "origin": "bundled", "error": "missing companion"}
     monkeypatch.setattr(smoke_module.platform, "system", lambda: "Linux")
     monkeypatch.setattr(smoke_module, "_run", lambda argv, **kwargs: subprocess.CompletedProcess(
-        argv, 0, json.dumps({"linux": selected}), ""))
+        argv, 0, json.dumps({"checks":[{"name":"Linux runtime and namespaces","details":selected}],"exit_code":0}), ""))
     monkeypatch.setattr(smoke_module.shutil, "which", lambda name: pytest.fail("ambient runtime lookup"))
     observed = smoke_module._substrate_identity(tmp_path)
     assert observed["status"] == ("discovered" if ready else "unavailable")
@@ -561,9 +561,9 @@ def test_substrate_uses_installed_runtime_diagnosis_without_path_fallback(tmp_pa
 def test_substrate_parses_complete_doctor_stdout_strictly(tmp_path, smoke_module, monkeypatch, defect):
     selected = {"state": "ready", "path": "/owned/libexec/runsc",
                 "version": "release-20261005.0-safeyolo.1", "origin": "bundled"}
-    report = {"linux": selected, "pipeline": {"detail": "x" * (smoke_module.OUTPUT_LIMIT * 2)}}
+    report = {"checks":[{"name":"Linux runtime and namespaces","details":selected}],"exit_code":0,"pipeline_detail":"x" * (smoke_module.OUTPUT_LIMIT * 2)}
     if defect == "shape":
-        report["linux"] = []
+        report["checks"][0]["details"] = []
     output = json.dumps(report)
     if defect == "prefix":
         output = "diagnostic message\n" + output
