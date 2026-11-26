@@ -1,5 +1,5 @@
-//! Content-pattern scanner, corresponding to detection/patterns.py and
-//! mitm_addons/pattern_scanner.py. It inspects one complete message at a time.
+//! Content-pattern scanner, ported from the former Python detection/patterns.py
+//! and mitm_addons/pattern_scanner.py. It inspects one complete message at a time.
 //!
 //! This is a native engine compatibility candidate. `compatibility_gaps()` is
 //! deliberately nonempty: fancy-regex is not an exact Python `re` replacement.
@@ -46,10 +46,10 @@
 //! VM loops cooperate; opaque delegated searches delay cancellation until return.
 //! The caller checks its connection flag again before publishing any evidence.
 //!
-//! Request/response hooks in Python do not call should_bypass or short-circuit
+//! The former Python request/response hooks did not call should_bypass or short-circuit
 //! prior responses. This module adds no policy bypass. WS errors drop the current
 //! message, including in log mode; with no rules, decoding is bypassed entirely.
-//! General HTTP matching errors return Error. The old HTTP hook propagates those
+//! General HTTP matching errors return Error. The old HTTP hook propagated those
 //! exceptions; only URL inspection failures have a shipped unconditional block.
 
 use fancy_regex::{Regex, RegexBuilder, RegexInput};
