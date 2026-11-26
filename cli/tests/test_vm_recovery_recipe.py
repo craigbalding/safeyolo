@@ -91,12 +91,17 @@ def test_recipe_collects_real_probe_and_matching_guest_acknowledgement(staged_gu
         assert "Guest probe completed for agent demo." in response.stdout
         assert f"Guest UID: {os.getuid()}" in response.stdout
         assert "SSH banner observed: no" in response.stdout
-        assert "Agent demo: runtime stopped" in response.stdout
+        # A completed guest probe does not verify this fixture's synthetic run.
+        assert "Agent demo: runtime unknown" in response.stdout
+        assert "Runtime observation: invalid sandbox generation" in response.stdout
         assert "The probe does not start or resume the coding agent." in response.stdout
         inspect = response.stdout.split("Inspect: ", 1)[1].splitlines()[0]
         followup = subprocess.run(inspect + " --json", shell=True, capture_output=True, text=True, timeout=3)
         assert followup.returncode == 0, followup.stderr
-        assert json.loads(followup.stdout)["name"] == "demo"
+        lifecycle = json.loads(followup.stdout)
+        assert lifecycle["name"] == "demo"
+        assert lifecycle["runtime_state"] == "unknown"
+        assert f"coding agent {lifecycle['agent_state']}; terminal {lifecycle['terminal_state']}." in response.stdout
         assert str(staged_guest["root"]) in inspect
     else:
         observed = json.loads(response.stdout)["guest_probe"]
