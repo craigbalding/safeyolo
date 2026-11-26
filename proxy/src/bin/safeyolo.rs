@@ -633,7 +633,7 @@ async fn run() -> Result<(), Error> {
                 }
             }
         }
-        _ => Err("usage: safeyolo --help".into()),
+        _ => Err(help::usage_error(&arguments).into()),
     }
 }
 

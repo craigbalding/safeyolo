@@ -4,6 +4,7 @@ use safeyolo_proxy as sy;
 use std::ffi::OsString;
 
 const VERSION_USAGE: &str = "safeyolo --version";
+const CONFIG: &str = "safeyolo config check FILE\nValidate a TOML configuration without activating it.\nExample: safeyolo config check ./config.toml";
 
 const CORE_USAGE: &str =
     "safeyolo [--instance-dir PATH | --config FILE] [--json] start|stop|status|doctor";
@@ -207,9 +208,7 @@ pub fn show(arguments: &[OsString]) -> bool {
         "init" => {
             "safeyolo init\nCreate configuration, a fresh instance identity and local TLS CA. Existing configuration is preserved and refused; the installer supplies packaged runtime inputs.\nExample: safeyolo init"
         }
-        "config" => {
-            "safeyolo config check FILE\nValidate a TOML configuration without activating it.\nExample: safeyolo config check ./config.toml"
-        }
+        "config" => CONFIG,
         "coord" if words.len() == 1 => {
             println!("{COORD}");
             return true;
@@ -324,6 +323,14 @@ pub fn show(arguments: &[OsString]) -> bool {
         }
     );
     true
+}
+
+pub fn usage_error(arguments: &[String]) -> String {
+    match arguments.first().map(String::as_str) {
+        Some("config") => format!("unknown or incomplete configuration command\n{CONFIG}"),
+        Some("policy") => format!("unknown or incomplete policy command\n{POLICY}"),
+        _ => "unknown or incomplete command; use safeyolo --help".to_owned(),
+    }
 }
 
 fn print_wrapped(line: &str) {
