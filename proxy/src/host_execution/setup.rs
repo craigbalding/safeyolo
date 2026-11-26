@@ -270,37 +270,13 @@ pub(crate) async fn submit(
             &work_operation,
             &setup_revision,
             |source| {
-                let (mut document, context) = crate::policy::parse_toml_for_edit(source)?;
-                if document["host_bindings"].get(&binding_name).is_some() {
-                    return Err(
-                        "selected host binding already exists; inspect it before another setup"
-                            .into(),
-                    );
-                }
-                document["host_bindings"][&binding_name] =
-                    toml_edit::value(serde_json::to_string(&binding)?);
-                document["host_catalogues"][&enrolment.catalogue.policy.package_name] =
-                    toml_edit::value(serde_json::to_string(&enrolment.catalogue)?);
-                let mut permission = toml_edit::Table::new();
-                permission["action"] = toml_edit::value("gateway:request");
-                permission["resource"] =
-                    toml_edit::value(format!("{}:/v1/host-execution/*", binding.service));
-                permission["effect"] = toml_edit::value("allow");
-                let mut condition = toml_edit::InlineTable::new();
-                condition.insert("agent", agent_name.clone().into());
-                permission["condition"] = toml_edit::value(condition);
-                if document.get("permissions").is_none() {
-                    document["permissions"] =
-                        toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
-                }
-                document["permissions"]
-                    .as_array_of_tables_mut()
-                    .ok_or("policy permissions are not a table array")?
-                    .push(permission);
-                Ok(crate::policy::restore_large_toml_integers(
-                    &document.to_string(),
-                    &context,
-                ))
+                host_setup_policy(
+                    source,
+                    &binding_name,
+                    &binding,
+                    &enrolment.catalogue,
+                    &agent_name,
+                )
             },
         )
     })
@@ -320,4 +296,64 @@ pub(crate) async fn submit(
         "Review this exact request in safeyolo watch or the explicit approvals interface. After it is active, resume the returned binding and use authenticated discovery. A saved target receipt is not current application readiness or reach."
     );
     Ok(view)
+}
+
+pub(super) fn host_setup_policy(
+    source: &str,
+    binding_name: &str,
+    binding: &gateway::Binding,
+    catalogue: &CatalogueAdoption,
+    agent_name: &str,
+) -> Result<String, Error> {
+    let (mut document, context) = crate::policy::parse_toml_for_edit(source)?;
+    if document
+        .get("host_bindings")
+        .and_then(|bindings| bindings.get(binding_name))
+        .is_some()
+    {
+        return Err("selected host binding already exists; inspect it before another setup".into());
+    }
+    document["host_bindings"][binding_name] = toml_edit::value(serde_json::to_string(binding)?);
+    document["host_catalogues"][&catalogue.policy.package_name] =
+        toml_edit::value(serde_json::to_string(catalogue)?);
+    let mut permission = toml_edit::Table::new();
+    permission["action"] = toml_edit::value("gateway:request");
+    permission["resource"] = toml_edit::value(format!("{}:/v1/host-execution/*", binding.service));
+    permission["effect"] = toml_edit::value("allow");
+    let mut condition = toml_edit::InlineTable::new();
+    condition.insert("agent", agent_name.into());
+    permission["condition"] = toml_edit::value(condition);
+    let permissions = if document.get("hosts").is_some() {
+        // Host-form policies compile IAM rules here, rather than from the
+        // top-level permissions field. Keep the permission scoped to this agent.
+        let hosts = document["hosts"]
+            .as_table_like_mut()
+            .ok_or("policy hosts are not a table")?;
+        let host = hosts
+            .entry("*")
+            .or_insert(toml_edit::value(toml_edit::InlineTable::new()))
+            .as_table_like_mut()
+            .ok_or("wildcard host policy is not a table")?;
+        host.entry("rules")
+            .or_insert(toml_edit::value(toml_edit::Array::new()))
+    } else {
+        if document.get("permissions").is_none() {
+            document["permissions"] =
+                toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
+        }
+        &mut document["permissions"]
+    };
+    if let Some(tables) = permissions.as_array_of_tables_mut() {
+        tables.push(permission);
+    } else if let Some(values) = permissions.as_array_mut() {
+        values.push(toml_edit::Value::InlineTable(
+            permission.into_inline_table(),
+        ));
+    } else {
+        return Err("host gateway permissions are not an array".into());
+    }
+    Ok(crate::policy::restore_large_toml_integers(
+        &document.to_string(),
+        &context,
+    ))
 }
