@@ -638,8 +638,8 @@ def test_codex_login_import_errors_preserve_owned_login_and_allow_cancellation(c
     ["rootfs-base.ext4", "Image", "initramfs.cpio.gz", "helper"]
     if os.uname().sysname == "Darwin" else ["rootfs-tree"]
 ))
-@pytest.mark.parametrize("harness", ["claude", "codex"])
-def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(missing_input, harness):
+@pytest.mark.parametrize("harness,host_settings", [("claude", False), ("claude", True), ("codex", False)])
+def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(missing_input, harness, host_settings):
     policy = 'budget=12000\n[hosts]\n"*"={egress="allow",unknown_creds="allow"}\n'
     # Agent listeners use the installed root, not the fixture's separate proxy
     # socket directory. A normal Darwin pytest path can fail before boot entry.
@@ -648,6 +648,11 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
         tmp_path = Path(directory)
         workspace = tmp_path / "workspace"
         workspace.mkdir()
+        host_home = tmp_path / "host-home"
+        host_home.mkdir()
+        if host_settings:
+            (host_home / ".claude").mkdir()
+            (host_home / ".claude/settings.json").write_text('{"model":"selected-fixture-model"}\n')
         if os.uname().sysname == "Darwin":
             agent_socket = instance.root.resolve() / "data/sockets/10.200.0.1_first/proxy.sock"
             assert len(os.fsencode(agent_socket)) < 104, agent_socket
@@ -665,7 +670,7 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
                 diagnostic = f"missing agent boot input: {share / missing_input}".encode()
         else:
             diagnostic = f"installed rootfs tree is missing: {instance.root / 'share/rootfs-tree'}".encode()
-        instance.environment.update(PATH=f"{instance.root / 'bin'}:/usr/bin:/bin",
+        instance.environment.update(HOME=str(host_home), PATH=f"{instance.root / 'bin'}:/usr/bin:/bin",
                                     TERM="xterm-256color", SAFEYOLO_NATS_TEST_INSTANCE=f"launch-{tmp_path.name}")
         arguments = ["coord", "start"]
         if binary := os.environ.get("SAFEYOLO_COORD_NATS_BINARY"):
@@ -685,10 +690,13 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
                     os.write(master, b"y\n")
                     until(b"Authentication [host-vault/client")
                     os.write(master, b"client\n")
-                    if harness == "claude":
-                        until(b"Copy this selected host authentication and settings?")
+                    if host_settings:
+                        until(b"Copy these available host inputs?")
                         os.write(master, b"n\n")
-                    until(b"First-agent host setup failed", timeout=30)
+                    output = until(b"First-agent host setup failed", timeout=30)
+                    if harness == "claude" and not host_settings:
+                        assert b"no host inputs will be copied" in output
+                        assert b"Copy these available host inputs?" not in output
                     assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
                 assert instance.policy.read_bytes() == policy_before_setup
                 assert instance.process.poll() is None
@@ -699,8 +707,8 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
                 os.write(master, b"y\n")
                 until(b"Authentication [host-vault/client")
                 os.write(master, b"client\n")
-                if harness == "claude":
-                    until(b"Copy this selected host authentication and settings?")
+                if host_settings:
+                    until(b"Copy these available host inputs?")
                     os.write(master, b"n\n")
                 output = b""
                 if harness == "codex":
@@ -710,7 +718,7 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
                 assert b"Preparing the shipped harness setup" in output
                 if harness == "codex":
                     assert b"Codex uses authentication and settings" in output
-                    assert b"Copy this selected host authentication" not in output
+                    assert b"Copy these available host inputs?" not in output
                 assert diagnostic in output, output
                 assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
             runtime = instance.root / "agents/first/runtime.json"
@@ -765,8 +773,8 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
                 os.write(master, b"y\n")
                 until(b"Authentication [host-vault/client")
                 os.write(master, b"client\n")
-                if harness == "claude":
-                    until(b"Copy this selected host authentication and settings?")
+                if host_settings:
+                    until(b"Copy these available host inputs?")
                     os.write(master, b"n\n")
                 if harness == "codex":
                     until(b"Codex login [displayed action / file PATH")
@@ -853,7 +861,7 @@ def test_codex_launch_keeps_selected_authentication_on_setup_refusal(tmp_path, a
             output = until(b"First-agent host setup failed", timeout=30)
             assert diagnostic in output
             assert original_auth not in output
-            assert b"Copy this selected host authentication" not in output
+            assert b"Copy these available host inputs?" not in output
             assert b"Starting or reusing the installed services" not in output
             assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
         assert instance.policy.read_bytes() == policy

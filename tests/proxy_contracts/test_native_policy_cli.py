@@ -1334,9 +1334,13 @@ def test_native_check_rejects_replaced_policy_fields(tmp_path, old_field):
 
 def test_installed_config_help_and_named_diagnostics(tmp_path):
     with native_instance(tmp_path, agent_api=True) as instance:
-        for arguments in (("--help",), ("test-context", "--help")):
+        for arguments, discovery in (
+            (("--help",), "helpers --help"),
+            (("helpers", "--help"), "test-context --help"),
+            (("test-context", "--help"), "trusted listener"),
+        ):
             result = instance.cli(*arguments)
-            assert result.returncode == 0 and "trusted listener" in result.stdout
+            assert result.returncode == 0 and discovery in result.stdout
             assert "addon" not in result.stdout.lower()
         checked = instance.cli("config", "check", str(instance.root / "config.toml"))
         assert checked.returncode == 0 and "Configuration is valid" in checked.stdout
@@ -1468,7 +1472,9 @@ def test_installed_agent_override_precedence(tmp_path, global_effect, agent_effe
         with restarted_proxy(instance):
             assert instance.policy.read_bytes() == saved
             assert instance.show()["saved_matches_active"]
-            assert json.loads(instance.cli("doctor").stdout)["agents"] == []
+            inventory = instance.cli("agent", "list")
+            assert inventory.returncode == 0, inventory.stderr
+            assert json.loads(inventory.stdout)["agents"] == []
             delivered(instance, origin, "override.invalid:8123", status=status)
             delivered(instance, origin, "override.invalid:8123", agent="bob", status=403 if status == 200 else 200)
             assert instance.policy.read_bytes() == saved

@@ -1092,7 +1092,8 @@ def entered(phase, seconds, connected=False, operator_fd=None):
                 for label, prompt, answer in [
                     ("host", "Allow these host changes? [y/N]", "y\n"),
                     ("setup", "Run this setup and share this workspace? [y/N]", "y\n"),
-                    ("auth", "Copy this selected host authentication and settings? [y/N]", "y\n" if connected else "n\n"),
+                    ("custody", "Authentication [host-vault/client, Enter: client]: ", "client\n"),
+                    ("auth", "Copy these available host inputs? [y/N]", "y\n" if connected else "n\n"),
                 ]:
                     if console_active and label not in completed and prompt.encode() in pending:
                         seen = stamp()
