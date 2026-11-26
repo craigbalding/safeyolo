@@ -627,7 +627,9 @@ fn storage_checks(config: &crate::Config) -> Vec<Value> {
             return Err(std::io::Error::last_os_error().into());
         }
         let space = unsafe { space.assume_init() };
-        let free_bytes = space.f_bavail.saturating_mul(space.f_frsize);
+        // Available blocks are u32 on macOS and u64 on Linux.
+        #[allow(clippy::useless_conversion)]
+        let free_bytes = u64::from(space.f_bavail).saturating_mul(space.f_frsize);
         Ok(json!({"enabled":true,"path":path,"bytes":bytes,"free_bytes":free_bytes}))
     })();
     match logs {

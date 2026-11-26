@@ -1,4 +1,4 @@
-//! Compact operator transcript, matching the updated Python agent-room watcher.
+//! Compact operator transcript, matching the former Python agent-room watcher.
 
 use super::*;
 use unicode_width::UnicodeWidthStr;

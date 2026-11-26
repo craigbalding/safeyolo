@@ -3,8 +3,7 @@
 //! Room membership and instance identity remain authoritative in the
 //! versioned SQLite store owned by the CLI.  Message history remains in the
 //! per-room JetStream stream.  This module is deliberately a client of those
-//! stores: it does not maintain a second room database or proxy through the
-//! Python Agent API.
+//! stores: it does not maintain a second room database.
 
 use std::{
     collections::{HashMap, HashSet},

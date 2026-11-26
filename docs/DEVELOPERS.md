@@ -1413,7 +1413,7 @@ tests start only owned local fixtures. The contract test also needs the matching
 native CLI for its gateway credential fixture:
 
 ```sh
-CARGO_TARGET_DIR="$PWD/proxy/target" CARGO_BUILD_JOBS=1 SAFEYOLO_CARGO_RESERVE_GIB=10 scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --release --locked --bins
+CARGO_TARGET_DIR="$PWD/proxy/target" SAFEYOLO_CARGO_RESERVE_GIB=10 scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --release --locked --bins
 SAFEYOLO_NATIVE_CLI="$PWD/proxy/target/release/safeyolo" uv run --frozen --no-sync pytest -q tests/proxy_contracts/test_http2_gate.py tests/proxy_contracts/test_http2_gate_timing.py tests/proxy_contracts/test_http2_contract.py
 ```
 
@@ -1471,9 +1471,11 @@ uv run --frozen pytest -q cli/tests/test_config.py
 ```
 
 For changed Rust code, use the focused Cargo test and Ubuntu Clippy check through
-`scripts/cargo_with_space.sh`; keep `CARGO_BUILD_JOBS=1` on the configured factory
-host. Broaden testing when an observed result warrants it, not to obtain a
-full-suite badge for each candidate.
+`scripts/cargo_with_space.sh`. Unset `CARGO_BUILD_JOBS` for normal development so
+Cargo uses the available CPUs. Lower parallelism requires current measurements.
+Preserve build serialization, resource observation and the configured disk guard.
+Broaden testing when an observed result warrants it, not to obtain a full-suite
+badge for each candidate.
 
 ### Pull Request Guidelines
 
