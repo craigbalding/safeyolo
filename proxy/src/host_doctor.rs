@@ -30,6 +30,12 @@ pub(crate) async fn report(path: &Path) -> Value {
         time::Duration,
     };
     let root = path.parent().unwrap_or(Path::new("."));
+    let command = crate::host_lifecycle::current_instance_command().unwrap_or_else(|_| {
+        format!(
+            "the installed CLI with --config {}",
+            crate::host_lifecycle::shell_quote(&path.to_string_lossy())
+        )
+    });
     let mut checks = Vec::new();
     let config = match native_config::read(path) {
         Ok(config) => {
@@ -49,7 +55,9 @@ pub(crate) async fn report(path: &Path) -> Value {
                 "Configuration",
                 "fail",
                 format!("{}: {error}", path.display()),
-                "Select the installed instance with --instance-dir PATH. For a new instance, run the installer or init.",
+                &format!(
+                    "Restore the selected configuration, or run {command} init for a new instance."
+                ),
                 Value::Null,
             );
             None
@@ -79,7 +87,13 @@ pub(crate) async fn report(path: &Path) -> Value {
                 "Saved policy",
                 "fail",
                 error,
-                "Run policy check FILE and repair the reported rule.",
+                &format!(
+                    "Run {command} policy check {} and repair the reported rule.",
+                    config.policy_file.as_deref().map_or_else(
+                        || "FILE".to_owned(),
+                        |path| crate::host_lifecycle::shell_quote(&path.to_string_lossy())
+                    )
+                ),
                 Value::Null,
             ),
         }
@@ -102,7 +116,9 @@ pub(crate) async fn report(path: &Path) -> Value {
                 "TLS certificate",
                 "fail",
                 error,
-                "Inspect tls ca and restore the selected instance's CA; existing guests trust that identity.",
+                &format!(
+                    "Inspect {command} tls ca and restore the selected instance's CA; existing guests trust that identity."
+                ),
                 Value::Null,
             ),
         }
@@ -135,7 +151,9 @@ pub(crate) async fn report(path: &Path) -> Value {
                     "Upstream CA trust",
                     "fail",
                     error,
-                    "Use tls upstream to inspect or select a valid PEM CA bundle.",
+                    &format!(
+                        "Use {command} tls upstream to inspect or select a valid PEM CA bundle."
+                    ),
                     Value::Null,
                 ),
             }
@@ -190,7 +208,12 @@ pub(crate) async fn report(path: &Path) -> Value {
         }
         #[cfg(target_os = "linux")]
         {
-            let runtime = crate::linux_host::runsc_report();
+            let mut runtime = crate::linux_host::runsc_report();
+            if runtime["state"] != "ready" {
+                runtime["next_action"] = json!(format!(
+                    "Run {command} host prepare, then retry {command} doctor."
+                ));
+            }
             check(
                 &mut checks,
                 "Linux runtime and namespaces",
@@ -221,7 +244,9 @@ pub(crate) async fn report(path: &Path) -> Value {
                 } else {
                     "Packaged helper absent"
                 },
-                "Inspect agent diagnostics NAME for actual guest/control capability; reinstall a matching package if the helper is absent.",
+                &format!(
+                    "Inspect {command} agent list, then {command} agent diagnostics NAME for actual guest/control capability; reinstall a matching package if the helper is absent."
+                ),
                 Value::Null,
             );
         }
@@ -285,6 +310,7 @@ pub(crate) async fn report(path: &Path) -> Value {
         }
     }
     let live = config.is_some() && crate::host_commands::proxy_live();
+    let start = format!("Inspect the checks above, then run {command} start when ready.");
     check(
         &mut checks,
         "Proxy process",
@@ -300,11 +326,7 @@ pub(crate) async fn report(path: &Path) -> Value {
         } else {
             "No verified running proxy"
         },
-        if live {
-            ""
-        } else {
-            "Inspect the checks above, then run start when ready."
-        },
+        if live { "" } else { &start },
         Value::Null,
     );
     // Probe the authenticated API even when the launch record is unavailable.
@@ -336,7 +358,7 @@ pub(crate) async fn report(path: &Path) -> Value {
                     "Admin API and runtime identity",
                     "unknown",
                     "Runtime did not confirm its identity",
-                    "Inspect logs and selected instance before retrying.",
+                    &format!("Inspect {command} logs before retrying."),
                     value,
                 );
                 false
@@ -347,7 +369,12 @@ pub(crate) async fn report(path: &Path) -> Value {
                     "Admin API and runtime identity",
                     if live { "fail" } else { "warn" },
                     error,
-                    "Inspect logs/proxy.log and the selected configuration's Admin API endpoint. No service was started.",
+                    &format!(
+                        "Inspect {} and the selected configuration's Admin API endpoint. No service was started.",
+                        crate::host_lifecycle::shell_quote(
+                            &root.join("logs/proxy.log").to_string_lossy()
+                        )
+                    ),
                     Value::Null,
                 );
                 false
@@ -372,7 +399,9 @@ pub(crate) async fn report(path: &Path) -> Value {
             "Request pipeline and egress controls",
             &verdict,
             "Local requests exercise the configured listeners and control trace; no external test traffic",
-            "Inspect failed pipeline findings with doctor --json; repair the named control or listener.",
+            &format!(
+                "Inspect failed pipeline findings with {command} doctor --json; repair the named control or listener."
+            ),
             result,
         );
         for (name, endpoint) in [
@@ -393,6 +422,9 @@ pub(crate) async fn report(path: &Path) -> Value {
                 Ok(value) => {
                     if name == "Coord message plane" {
                         let connected = value["local_connection"] == "Connected";
+                        let next = format!(
+                            "Inspect {command} coord status and its current endpoints before sending messages."
+                        );
                         check(
                             &mut checks,
                             name,
@@ -402,11 +434,7 @@ pub(crate) async fn report(path: &Path) -> Value {
                             } else {
                                 "No connected local NATS client observed; saved room records are separate"
                             },
-                            if connected {
-                                ""
-                            } else {
-                                "Inspect coord status and its current endpoints before sending messages."
-                            },
+                            if connected { "" } else { &next },
                             value,
                         );
                         continue;
@@ -440,7 +468,9 @@ pub(crate) async fn report(path: &Path) -> Value {
                     name,
                     "unknown",
                     error,
-                    "Inspect diagnose and logs for this instance; unavailable data is not an empty result.",
+                    &format!(
+                        "Inspect {command} diagnose and {command} logs; unavailable data is not an empty result."
+                    ),
                     Value::Null,
                 ),
             }
@@ -471,16 +501,32 @@ pub(crate) async fn report(path: &Path) -> Value {
                         agent["runtime_state"] == "unknown" || !agent["runtime_error"].is_null()
                     })
                 });
+                let commands = value["agents"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|agent| {
+                        agent["runtime_state"] == "unknown" || !agent["runtime_error"].is_null()
+                    })
+                    .filter_map(|agent| agent["name"].as_str())
+                    .map(|name| {
+                        format!(
+                            "{command} agent diagnostics {}",
+                            crate::host_lifecycle::shell_quote(name)
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let next = if commands.is_empty() {
+                    format!("Inspect {command} agent list for the affected agent.")
+                } else {
+                    format!("Run {}.", commands.join("; "))
+                };
                 check(
                     &mut checks,
                     "Agent runtimes",
                     if uncertain { "unknown" } else { "pass" },
                     "Current backend observations; stopped agents do not need to be started",
-                    if uncertain {
-                        "Run agent diagnostics NAME for the affected agent."
-                    } else {
-                        ""
-                    },
+                    if uncertain { &next } else { "" },
                     value,
                 );
             }
@@ -489,7 +535,7 @@ pub(crate) async fn report(path: &Path) -> Value {
                 "Agent runtimes",
                 "unknown",
                 error,
-                "Inspect agent list and the saved policy.",
+                &format!("Inspect {command} agent list and {command} policy show."),
                 Value::Null,
             ),
         }

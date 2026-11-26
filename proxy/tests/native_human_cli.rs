@@ -252,6 +252,73 @@ fn stopped_agent_recovery_keeps_the_executable_and_selected_config() {
 }
 
 #[test]
+fn doctor_recovery_keeps_the_selected_config_with_conflicting_environment() {
+    let scratch = tempfile::tempdir().unwrap();
+    let old = scratch.path().join("old instance");
+    let selected = scratch.path().join("selected 'instance");
+    for root in [&old, &selected] {
+        stdout(cli(root, &["init"]));
+    }
+    let config = selected.join("selected config.toml");
+    fs::rename(selected.join("config.toml"), &config).unwrap();
+    let run = |arguments: &[&str]| {
+        Command::new(executable())
+            .arg("--config")
+            .arg(&config)
+            .args(arguments)
+            .env("SAFEYOLO_NATIVE_CONFIG_PATH", old.join("config.toml"))
+            .env("SAFEYOLO_CONFIG_DIR", &old)
+            .env("SAFEYOLO_HOME", &old)
+            // No runtime is installed in this fixture. Keep PATH independent
+            // of any system runsc so its recovery advice is exercised too.
+            .env("PATH", scratch.path().join("absent tools"))
+            .output()
+            .unwrap()
+    };
+    let output = run(&["doctor", "--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["root"], selected.to_str().unwrap());
+    let checks = report["checks"].as_array().unwrap();
+    let start = checks
+        .iter()
+        .find(|check| check["name"] == "Proxy process")
+        .unwrap();
+    assert!(start["next_action"].as_str().unwrap().contains("--config"));
+    #[cfg(target_os = "linux")]
+    {
+        let runtime = checks
+            .iter()
+            .find(|check| check["name"] == "Linux runtime and namespaces")
+            .unwrap();
+        let next = runtime["next_action"].as_str().unwrap();
+        assert_eq!(runtime["details"]["next_action"], next);
+        let retry = next
+            .split("then retry ")
+            .nth(1)
+            .unwrap()
+            .strip_suffix('.')
+            .unwrap();
+        assert!(retry.contains("--config"), "{next}");
+        let output = Command::new("/bin/sh")
+            .args(["-c", &format!("{retry} --json")])
+            .env("SAFEYOLO_NATIVE_CONFIG_PATH", old.join("config.toml"))
+            .env("SAFEYOLO_CONFIG_DIR", &old)
+            .env("SAFEYOLO_HOME", &old)
+            .env("PATH", scratch.path().join("absent tools"))
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let retried: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(retried["root"], report["root"]);
+        let human = String::from_utf8(run(&["doctor"]).stdout).unwrap();
+        assert!(human.contains(next));
+    }
+    assert!(!old.join("data/proxy-process.json").exists());
+    assert!(!selected.join("data/proxy-process.json").exists());
+}
+
+#[test]
 fn doctor_explains_failed_prerequisites_and_counts_skips_without_starting() {
     let scratch = tempfile::tempdir().unwrap();
     let root = scratch.path().join("uninstalled instance");
