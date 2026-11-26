@@ -23,6 +23,22 @@ def checks(report):
     return {row["name"]: row for row in report["checks"]}
 
 
+def test_doctor_names_missing_listeners_without_claiming_requests_were_probed(tmp_path):
+    with native_instance(tmp_path, agent_addresses={}) as instance:
+        result = instance.cli("doctor")
+        report = json.loads(result.stdout)
+        assert result.returncode == report["exit_code"]
+        pipeline = checks(report)["Request pipeline and egress controls"]
+        assert pipeline["status"] == "warn" and pipeline["details"]["agents"] == []
+        assert "no requests were probed" in pipeline["message"]
+        assert "agent launch" in pipeline["next_action"]
+        with terminal(instance, ["doctor"]) as (process, master, until):
+            output = until(b"Overall:")
+            assert b"no requests were probed" in output and b"agent launch" in output
+            assert b"Inspect failed pipeline findings" not in output
+            assert wait_terminal_exit(process, master, bytearray(), timeout=5) in (0, 1)
+
+
 def test_doctor_surfaces_current_pending_decisions_and_keeps_review_read_only(tmp_path):
     with origin_server() as origin, native_instance(tmp_path, source=CREDENTIAL_RETRY_POLICY) as instance:
         def report():

@@ -392,14 +392,25 @@ pub(crate) async fn report(path: &Path) -> Value {
     if admin {
         let result = pipeline(path).await;
         let verdict = result["verdict"].as_str().unwrap_or("unknown").to_owned();
+        let no_listeners = result["agents"].as_array().is_some_and(Vec::is_empty);
         check(
             &mut checks,
             "Request pipeline and egress controls",
             &verdict,
-            "Local requests exercise the configured listeners and control trace; no external test traffic",
-            &format!(
-                "Inspect failed pipeline findings with {command} doctor --json; repair the named control or listener."
-            ),
+            if no_listeners {
+                "No agent proxy listeners are configured; no requests were probed"
+            } else {
+                "Local requests exercise the configured listeners and control trace; no external test traffic"
+            },
+            &if no_listeners {
+                format!(
+                    "Run {command} agent launch from your workspace, then rerun {command} doctor."
+                )
+            } else {
+                format!(
+                    "Inspect failed pipeline findings with {command} doctor --json; repair the named control or listener."
+                )
+            },
             result,
         );
         for (name, endpoint) in [

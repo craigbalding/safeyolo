@@ -178,6 +178,7 @@ def codex_login_launch(tmp_path, _binary_cache):
     instance.arguments = ["agent", "launch", str(workspace), "--name", "first", "--harness", "codex"]
     instance.login = login
     instance.config_path = root / "config.toml"
+    instance.policy = root / "policy.toml"
 
     def cli(*args):
         result = subprocess.run([str(binary), "--instance-dir", str(root), "--json", *args],
@@ -646,6 +647,9 @@ def test_codex_auth_offers_only_actions_supported_by_inspected_sources(codex_log
     if sources in ("agent", "both"):
         auth.write_bytes(login)
         auth.chmod(0o600)
+        artifacts, _, _ = native_inputs()
+        subprocess.run([str(artifacts / "safeyolo-coord"), "codex-state", "--home",
+                        str(auth.parent.parent), "adopt"], check=True, capture_output=True, text=True, timeout=15)
     if sources in ("absent", "agent"):
         instance.login.unlink()
     elif sources == "unsupported":
