@@ -136,6 +136,37 @@ fn forwarded_program_help_reaches_agent_lookup_instead_of_cli_help() {
 }
 
 #[test]
+fn incomplete_configuration_and_policy_commands_show_scoped_help_without_state() {
+    let scratch = tempfile::tempdir().unwrap();
+    let absent = scratch.path().join("absent instance");
+    for (arguments, syntax) in [
+        (vec!["config", "check"], "safeyolo config check FILE"),
+        (vec!["config", "misspelled"], "safeyolo config check FILE"),
+        (vec!["policy", "check"], "check FILE"),
+        (vec!["policy", "evaluate"], "evaluate FILE REQUEST"),
+        (vec!["policy", "apply"], "apply FILE"),
+        (vec!["policy", "misspelled"], "policy check ./policy.toml"),
+    ] {
+        for structured in [false, true] {
+            let mut arguments = arguments.clone();
+            if structured {
+                arguments.insert(0, "--json");
+            }
+            let output = cli(&absent, &arguments);
+            assert!(!output.status.success(), "{arguments:?}");
+            assert!(output.stdout.is_empty(), "diagnostics belong on stderr");
+            let error = String::from_utf8(output.stderr).unwrap();
+            assert!(
+                error.contains("unknown or incomplete") && error.contains(syntax),
+                "{error}"
+            );
+            assert!(error.lines().count() < 20, "{error}");
+            assert!(!absent.exists(), "incomplete command created state");
+        }
+    }
+}
+
+#[test]
 fn factory_preview_has_human_results_and_explicit_full_contracts() {
     let scratch = tempfile::tempdir().unwrap();
     let root = scratch.path();

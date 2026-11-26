@@ -370,13 +370,13 @@ def smoke_result(reports: Path, gate_url: str) -> dict:
             raise ValueError("smoke requires either original runner reports or a continuation observation")
         return continuation_result(frozen, json.loads(continuation.read_bytes()), gate_url)
     run = json.loads((reports / "retained-run.json").read_bytes())
-    installed = json.loads((reports / "installed-inputs.json").read_bytes())
-    sections = json.loads((reports / "guest/installed-sections.json").read_bytes())
     platform = frozen["platform"]
     if (frozen["status"] != "selected" or run["exit"] != 0 or run["lane"] not in SMOKE_LANES[platform]
             or run["controller_dirty"] or re.fullmatch(r"[0-9a-f]{40}", run["controller_revision"] or "") is None
             or not run["host_id"] or not gate_url):
         raise ValueError("smoke requires a successful retained installed guest run and its result link")
+    installed = json.loads((reports / "installed-inputs.json").read_bytes())
+    sections = json.loads((reports / "guest/installed-sections.json").read_bytes())
     system, architectures = ("Darwin", {"arm64", "aarch64"}) if platform == "darwin-arm64" else (
         "Linux", {"x86_64", "amd64"} if platform == "linux-amd64" else {"arm64", "aarch64"})
     if run["host_system"] != system or run["host_architecture"] not in architectures:
