@@ -176,8 +176,9 @@ impl Enrolment {
             &operation.execution.executable,
             &operation.execution.executable_sha256,
         )?;
+        let inspection = task_inspection(expected.clone());
         require(
-            revision(operation) == revision(&expected)
+            revision(operation) == revision(&inspection)
                 && self.target.package.name == request.target_id
                 && self.target.target_id == request.target_id
                 && self.hostname == request.plan.hostname
@@ -208,7 +209,7 @@ impl Enrolment {
             agent_dependency_bytes: request.plan.dependency_bytes,
         };
         let expected_scope = OperationScope {
-            implementation_sha256: expected.implementation_sha256(),
+            implementation_sha256: inspection.implementation_sha256(),
             resources: expected.resources.clone(),
             arguments: BTreeMap::new(),
             budgets: request.plan.budgets.clone(),
@@ -216,7 +217,7 @@ impl Enrolment {
             checks: BTreeSet::new(),
         };
         let mut expected_operations: BTreeMap<String, Operation> =
-            BTreeMap::from([("task:inspect".into(), expected.clone())]);
+            BTreeMap::from([("task:inspect".into(), inspection.clone())]);
         let mut expected_ceiling: BTreeMap<String, OperationScope> =
             BTreeMap::from([("task:inspect".into(), expected_scope.clone())]);
         let mut expected_rules: BTreeMap<String, UpdateRule> =
@@ -228,7 +229,7 @@ impl Enrolment {
                 .operations
                 .get("endpoint-inspect")
                 .ok_or_else(|| failure("selected endpoint inspection is absent"))?;
-            let mut helper = expected.clone();
+            let mut helper = inspection.clone();
             helper.execution.executable = received.execution.executable.clone();
             helper.execution.executable_sha256 = received.execution.executable_sha256.clone();
             let helper = crate::endpoints::inspection_operation(helper, selection);
@@ -301,10 +302,11 @@ impl Enrolment {
                 && revision(&self.catalogue.policy.operations) == revision(&expected_rules)
                 && self.enrolled_at >= request.not_before
                 && self.enrolled_at <= now()
-                && self
-                    .network_enforcement
+                && self.network_enforcement.len() == expected_operations.len() + 1
+                && self.network_enforcement.contains_key("task:*")
+                && expected_operations
                     .keys()
-                    .eq(expected_operations.keys())
+                    .all(|name| self.network_enforcement.contains_key(name))
                 && self
                     .network_enforcement
                     .values()
@@ -418,6 +420,7 @@ pub fn prepare(
         allow_agent_code: request.plan.allow_agent_code,
         agent_dependency_bytes: request.plan.dependency_bytes,
     };
+    let operation = task_inspection(operation);
     let scope = OperationScope {
         implementation_sha256: operation.implementation_sha256(),
         resources: operation.resources.clone(),
@@ -663,6 +666,14 @@ fn finish(
             .operations
             .iter()
             .map(|(name, operation)| (name.clone(), settings.native.network_enforcement(operation)))
+            // The seed inspection is narrower than the standing code class.
+            // Keep the full class's native exposure visible before approval.
+            .chain(std::iter::once((
+                "task:*".into(),
+                settings
+                    .native
+                    .network_enforcement(&settings.target.families[0].rule.ceiling),
+            )))
             .collect(),
     };
     result.validate()?;
@@ -710,6 +721,16 @@ pub(crate) fn command(args: &[String]) -> Result<bool, Refusal> {
         ])?;
     }
     Ok(true)
+}
+
+fn task_inspection(mut operation: Operation) -> Operation {
+    // The initial pinned `pwd` recipe uses no children. Keep the full task
+    // ceiling in its update rule/family for subsequent adopted programs.
+    if cfg!(target_os = "macos") {
+        operation.execution.resources.processes = 1;
+        operation.execution.broader.remove(&BroaderBound::Processes);
+    }
+    operation
 }
 
 fn task_operation(

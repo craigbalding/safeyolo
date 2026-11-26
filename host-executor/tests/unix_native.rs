@@ -80,6 +80,9 @@ impl Fixture {
         call_bytes(&self.root, verb, body)
     }
     fn signed(&mut self, action: Action) -> Vec<u8> {
+        self.signed_with_grant("grant", action)
+    }
+    fn signed_with_grant(&mut self, grant_id: &str, action: Action) -> Vec<u8> {
         self.counter += 1;
         let request = Request {
             version: VERSION.into(),
@@ -87,14 +90,14 @@ impl Fixture {
             request_id: format!("request-{}", self.counter),
             target_id: self.target.target_id.clone(),
             issuer_id: "issuer".into(),
-            grant_id: "grant".into(),
-            principal: self.target.issuers["issuer"].authority.grants["grant"]
+            grant_id: grant_id.into(),
+            principal: self.target.issuers["issuer"].authority.grants[grant_id]
                 .principal
                 .clone(),
             expires_at: self.target.issuers["issuer"].authority.valid_until,
             expected: Some(
                 self.target
-                    .request_revisions("issuer", "grant", &action)
+                    .request_revisions("issuer", grant_id, &action)
                     .unwrap(),
             ),
             action,
@@ -105,6 +108,11 @@ impl Fixture {
     fn call(&mut self, action: Action) -> Response {
         let verb = action.verb();
         let bytes = self.signed(action);
+        self.call_bytes(verb, &bytes)
+    }
+    fn call_with_grant(&mut self, grant_id: &str, action: Action) -> Response {
+        let verb = action.verb();
+        let bytes = self.signed_with_grant(grant_id, action);
         self.call_bytes(verb, &bytes)
     }
     fn invocation(&self, mode: &str) -> Invocation {
@@ -143,11 +151,17 @@ impl Fixture {
         self.terminal_with_timeout(id, Duration::from_secs(15))
     }
     fn terminal_with_timeout(&mut self, id: &str, timeout: Duration) -> Receipt {
+        self.terminal_with_grant("grant", id, timeout)
+    }
+    fn terminal_with_grant(&mut self, grant_id: &str, id: &str, timeout: Duration) -> Receipt {
         let deadline = Instant::now() + timeout;
         loop {
-            let receipt = self.job(id);
+            let response = self.call_with_grant(grant_id, Action::Job { job_id: id.into() });
+            let Response::Job { receipt } = response else {
+                panic!("job refused for {grant_id}: {response:?}")
+            };
             if receipt.state.terminal() {
-                return receipt;
+                return *receipt;
             }
             assert!(Instant::now() < deadline, "job did not settle: {receipt:?}");
             std::thread::sleep(Duration::from_millis(10));
@@ -331,8 +345,8 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
     let key = Ed25519KeyPair::from_seed_unchecked(&[43; 32]).unwrap();
     let (read_paths, broader) = if cfg!(target_os = "macos") {
         (
-            vec!["/usr/lib", "/System/Library"],
-            vec!["memory", "executor_restart", "network_ipc"],
+            vec!["/bin", "/usr/lib", "/System/Library"],
+            vec!["memory", "processes", "executor_restart", "network_ipc"],
         )
     } else {
         (
@@ -356,16 +370,16 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
             "duration_seconds":301,"allow_agent_code":true,"allow_run_refresh":true,
             "executable_bytes":16777216,"dependency_bytes":16777216}
     });
-    let prepare = |request: &serde_json::Value| {
+    let prepare = |request: &serde_json::Value, directory: &Path| {
         Command::new(executor())
             .args(["enrol", "--request-base64"])
             .arg(STANDARD.encode(serde_json::to_vec(request).unwrap()))
             .arg("--directory")
-            .arg(&control)
+            .arg(directory)
             .output()
             .unwrap()
     };
-    let first = prepare(&request);
+    let first = prepare(&request, &control);
     assert!(
         first.status.success(),
         "retained {}: {}",
@@ -374,6 +388,33 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
     );
     let enrolled: enrolment::Enrolment = serde_json::from_slice(&first.stdout).unwrap();
     enrolled.validate().unwrap();
+    #[cfg(target_os = "macos")]
+    {
+        let mut without_broader = request.clone();
+        without_broader["plan"]["broader"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|bound| bound != "processes");
+        let result = prepare(&without_broader, &root.join("without-broader"));
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let narrower: enrolment::Enrolment = serde_json::from_slice(&result.stdout).unwrap();
+        narrower.validate().unwrap();
+        let facts = &narrower.network_enforcement["task:*"];
+        assert!(
+            facts
+                .iter()
+                .any(|fact| fact.contains("UNSUPPORTED DESCENDANT BOUND"))
+        );
+        assert!(
+            !facts
+                .iter()
+                .any(|fact| fact.contains("EXPLICIT BROADER PROCESSES"))
+        );
+    }
     let checked = Command::new(executor())
         .args(["check", "--config"])
         .arg(&enrolled.configuration)
@@ -389,6 +430,34 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
     let mut settings: server::Configuration =
         serde_json::from_slice(&fs::read(&enrolled.configuration).unwrap()).unwrap();
     let helper = &enrolled.target.package.operations["endpoint-inspect"];
+    assert_eq!(
+        enrolled.target.package.operations["task:inspect"]
+            .execution
+            .resources
+            .processes,
+        if cfg!(target_os = "macos") { 1 } else { 8 }
+    );
+    assert!(
+        !enrolled.target.package.operations["task:inspect"]
+            .execution
+            .broader
+            .contains(&BroaderBound::Processes)
+    );
+    assert_eq!(
+        enrolled.target.families[0]
+            .rule
+            .ceiling
+            .execution
+            .resources
+            .processes,
+        8
+    );
+    #[cfg(target_os = "macos")]
+    assert!(
+        enrolled.network_enforcement["task:*"]
+            .iter()
+            .any(|fact| fact.contains("escaped descendants may outlive"))
+    );
     assert!(
         helper.execution.filesystem.read.is_empty() && helper.execution.filesystem.write.is_empty()
     );
@@ -416,7 +485,7 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
         assert!(controllers.split_whitespace().any(|name| name == "memory"));
         assert!(controllers.split_whitespace().any(|name| name == "pids"));
     }
-    let again = prepare(&request);
+    let again = prepare(&request, &control);
     assert!(
         again.status.success(),
         "{}",
@@ -425,7 +494,7 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
     assert_eq!(first.stdout, again.stdout);
     let mut changed = request;
     changed["plan"]["duration_seconds"] = serde_json::json!(600);
-    let refused = prepare(&changed);
+    let refused = prepare(&changed, &control);
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("another enrolment request"));
 
@@ -502,13 +571,26 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
                 panic!("task receipt");
             };
             if receipt.state.terminal() {
-                assert_eq!(receipt.state, JobState::Completed, "{receipt:?}");
+                let uncertain_tree =
+                    cfg!(target_os = "macos") && operation.execution.resources.processes > 1;
+                assert_eq!(
+                    receipt.state,
+                    if uncertain_tree {
+                        JobState::Uncertain
+                    } else {
+                        JobState::Completed
+                    },
+                    "{receipt:?}"
+                );
                 assert_eq!(
                     receipt.native.as_ref().unwrap().exit_code,
                     Some(0),
                     "{receipt:?}"
                 );
-                assert!(receipt.native.as_ref().unwrap().processes_stopped);
+                assert_eq!(
+                    receipt.native.as_ref().unwrap().processes_stopped,
+                    !uncertain_tree
+                );
                 break;
             }
             assert!(
@@ -561,23 +643,67 @@ fn installed_enrolment_runs_inspection_and_staging_and_recovers_preparation() {
         matches!(response, Response::Adoption { .. }),
         "{response:?}"
     );
-    let adopted = server::load(&enrolled.configuration, &enrolled.state)
-        .unwrap()
-        .target;
+    // The real executor qualifies its own endpoint helper before saving each
+    // adoption. Read that target here; this test binary has another current_exe
+    // and cannot repeat the helper's native self-identity qualification.
+    let saved_target = || {
+        serde_json::from_slice::<Configuration>(&fs::read(&enrolled.configuration).unwrap())
+            .unwrap()
+            .target
+    };
+    let adopted = saved_target();
     run(&mut call, &adopted, "task:stage");
-    assert_eq!(fs::read(output).unwrap(), [0, 255, b'\n', b'\'']);
+    assert_eq!(fs::read(&output).unwrap(), [0, 255, b'\n', b'\'']);
+    #[cfg(target_os = "macos")]
+    {
+        // Revise code through the same adopted task family. An external tool
+        // and background shell use the prepared interpreter and standing scope.
+        // The fixed staging recipe narrowed its process use; general adopted
+        // code still selects the full, explicitly broader task ceiling.
+        stage.execution.resources.processes = enrolled.request.plan.execution_limits.processes;
+        stage.execution.broader.insert(BroaderBound::Processes);
+        stage.execution.argv[1] = Word::Literal {
+            value: format!(
+                "/bin/echo external-child > '{}'; ( /bin/sleep 0.1; printf 'revised-background\\n' >> '{}' ) &",
+                output.display(),
+                output.display()
+            ),
+        };
+        let package = adopted.revised_package("task:stage", &stage).unwrap();
+        let response = call(
+            &adopted,
+            Action::Adopt {
+                operation_id: "task:stage".into(),
+                operation: Box::new(stage.clone()),
+                base_package_sha256: revision(&adopted.package),
+                package_sha256: revision(&package),
+                observed_at: enrolled.request.not_before,
+            },
+        );
+        assert!(
+            matches!(response, Response::Adoption { .. }),
+            "{response:?}"
+        );
+        let revised = saved_target();
+        run(&mut call, &revised, "task:stage");
+        assert_eq!(
+            fs::read(&output).unwrap(),
+            b"external-child\nrevised-background\n"
+        );
+    }
     stage
         .execution
         .filesystem
         .write
         .push(control.to_string_lossy().into_owned());
-    let package = adopted.revised_package("task:stage", &stage).unwrap();
+    let current = saved_target();
+    let package = current.revised_package("task:stage", &stage).unwrap();
     let refused = call(
-        &adopted,
+        &current,
         Action::Adopt {
             operation_id: "task:stage".into(),
             operation: Box::new(stage),
-            base_package_sha256: revision(&adopted.package),
+            base_package_sha256: revision(&current.package),
             package_sha256: revision(&package),
             observed_at: enrolled.request.not_before,
         },
@@ -758,7 +884,7 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
                     timeout_seconds: if mode == "deadline" { 1 } else { 5 },
                     output_bytes: 4096,
                     memory_bytes: 64 * 1024 * 1024,
-                    processes: 12,
+                    processes: if cfg!(target_os = "macos") { 1 } else { 12 },
                 },
                 delegated_services: vec![],
             },
@@ -910,6 +1036,272 @@ fn fixture(jobs: u64, output_bytes: u64) -> Fixture {
     };
     fixture.assert_no_side_effects();
     fixture
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires native macOS Seatbelt and the existing native fixture"]
+fn installed_macos_children_run_and_escaped_cleanup_remains_uncertain() {
+    let mut f = fixture(24, 128 * 1024);
+    let work = f.root.join("work");
+    fs::create_dir(&work).unwrap();
+    let mut settings: Configuration =
+        serde_json::from_slice(&fs::read(f.root.join("target.json")).unwrap()).unwrap();
+    let mut operations = BTreeMap::new();
+    for (name, script) in [
+        (
+            "children",
+            format!(
+                "/bin/echo external-child > '{0}/result'; ( /bin/sleep 0.3; printf 'background-result\\n' >> '{0}/result' ) &",
+                work.display()
+            ),
+        ),
+        (
+            "cancel",
+            format!(
+                "( printf 'persistent-result\\n' > '{0}/cancel'; exec /bin/sleep 30 ) & printf 'launcher-exit\\n'",
+                work.display()
+            ),
+        ),
+        (
+            "timeout",
+            format!(
+                "( printf 'timeout-result\\n' > '{0}/timeout'; exec /bin/sleep 30 ) &",
+                work.display()
+            ),
+        ),
+        (
+            "restart",
+            format!(
+                "( printf 'restart-result\\n' > '{0}/restart'; exec /bin/sleep 1.5 ) &",
+                work.display()
+            ),
+        ),
+        (
+            "limit",
+            "for ((i=0;i<16;i++)); do (while :; do :; done) & done; wait".into(),
+        ),
+        (
+            "denied",
+            format!(
+                "if /usr/bin/true; then exit 1; fi; if /bin/bash -c 'read x < \"{}\"'; then exit 2; fi; printf 'child-boundaries-refused\\n'",
+                f.root.join("forbidden").display()
+            ),
+        ),
+    ] {
+        let mut operation = f.target.package.operations["observe"].clone();
+        let e = &mut operation.execution;
+        e.executable = "/bin/bash".into();
+        e.executable_sha256 = hash(Path::new("/bin/bash"));
+        e.argv = vec![
+            Word::Literal { value: "-c".into() },
+            Word::Literal { value: script },
+        ];
+        e.filesystem.read.push("/bin".into());
+        e.filesystem.write = vec![work.to_string_lossy().into_owned()];
+        e.broader.insert(BroaderBound::Processes);
+        e.resources.processes = if name == "limit" { 2 } else { 8 };
+        e.resources.timeout_seconds = if name == "timeout" { 2 } else { 5 };
+        operations.insert(name.into(), operation);
+    }
+    let mut escape = operations["children"].clone();
+    escape.execution.executable = f.root.join("probe").to_string_lossy().into_owned();
+    escape.execution.executable_sha256 = hash(&f.root.join("probe"));
+    escape.execution.argv = vec![
+        Word::Literal {
+            value: "mac-group-escapes".into(),
+        },
+        Word::Literal {
+            value: work.to_string_lossy().into_owned(),
+        },
+        Word::Literal {
+            value: f.network_listener.local_addr().unwrap().port().to_string(),
+        },
+    ];
+    operations.insert("escape".into(), escape);
+    settings.target = common::target(f.target.target_id.clone(), operations, &f.key);
+    f.target = settings.target.clone();
+    f.server.kill().unwrap();
+    f.server.wait().unwrap();
+    let mut missing = settings.clone();
+    missing
+        .target
+        .package
+        .operations
+        .get_mut("children")
+        .unwrap()
+        .execution
+        .broader
+        .remove(&BroaderBound::Processes);
+    missing.target = common::target(
+        missing.target.target_id.clone(),
+        missing.target.package.operations.clone(),
+        &f.key,
+    );
+    fs::write(
+        f.root.join("target.json"),
+        serde_json::to_vec_pretty(&missing).unwrap(),
+    )
+    .unwrap();
+    let refused = Command::new(executor())
+        .args(["check", "--config"])
+        .arg(f.root.join("target.json"))
+        .arg("--state")
+        .arg(f.root.join("state"))
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("broader processes authority"));
+    fs::write(
+        f.root.join("target.json"),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    f.server = start(&f.root);
+    f.check_file_results();
+
+    for mode in ["children", "escape", "denied"] {
+        let (job, _) = f.invoke(mode);
+        let result = f.terminal(&job.job_id);
+        eprintln!("{mode}: {result:?}");
+        assert_eq!(result.state, JobState::Uncertain, "{result:?}");
+        assert!(result.process.as_ref().unwrap().descendants_may_escape);
+        let native = result.native.as_ref().unwrap();
+        assert_eq!(native.exit_code, Some(0), "{result:?}");
+        assert!(!native.processes_stopped);
+        assert!(
+            native
+                .dependencies
+                .iter()
+                .any(|fact| fact.contains("escaped descendants may outlive"))
+        );
+        if mode == "escape" {
+            let escaped: Vec<u32> = fs::read_to_string(work.join("escaped-pid"))
+                .unwrap()
+                .split_whitespace()
+                .map(|value| value.parse().unwrap())
+                .collect();
+            assert_ne!(escaped[1], result.process.as_ref().unwrap().process_group);
+            let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+            let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+            assert_eq!(
+                unsafe {
+                    libc::proc_pidinfo(
+                        escaped[0] as i32,
+                        libc::PROC_PIDTBSDINFO,
+                        0,
+                        info.as_mut_ptr().cast(),
+                        size,
+                    )
+                },
+                size
+            );
+            let info = unsafe { info.assume_init() };
+            assert_ne!(info.pbi_status, 5, "escaped process must actually be live");
+            assert_eq!(info.pbi_pgid, escaped[1]);
+            eprintln!(
+                "live escaped child pid={} group={} birth={}.{}; selected writes work, outside file/TCP/IPC controls refused",
+                info.pbi_pid, info.pbi_pgid, info.pbi_start_tvsec, info.pbi_start_tvusec
+            );
+            assert!(
+                native.output_truncated,
+                "escaped writer must be reported as partial"
+            );
+            let Response::Output { data_base64, .. } = f.call(Action::Output {
+                job_id: job.job_id.clone(),
+                offset: 0,
+                max_bytes: 4096,
+            }) else {
+                panic!("signed child output");
+            };
+            assert!(
+                String::from_utf8_lossy(&STANDARD.decode(data_base64).unwrap())
+                    .contains("ordinary-posix-spawn-child")
+            );
+            f.restart();
+            assert_eq!(f.job(&job.job_id).state, JobState::Uncertain);
+            let deadline = Instant::now() + Duration::from_secs(4);
+            while !work.join("escaped-done").exists() {
+                assert!(
+                    Instant::now() < deadline,
+                    "owned escaped probe did not finish"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            f.restart();
+            let retained = f.job(&job.job_id);
+            assert!(
+                !retained.detail.contains("observed quiescence"),
+                "{retained:?}"
+            );
+            let invocation = f.invocation("escape");
+            let refused = f.call(Action::Invoke { invocation });
+            assert!(
+                matches!(refused, Response::Refused { refusal } if refusal.code == RefusalCode::Budget),
+                "uncertain tree must retain its concurrency reservation"
+            );
+        }
+    }
+    assert_eq!(
+        fs::read(work.join("result")).unwrap(),
+        b"external-child\nbackground-result\n"
+    );
+    for (mode, state, reason) in [
+        ("cancel", JobState::Uncertain, "cancelled"),
+        ("timeout", JobState::Uncertain, "timeout"),
+        ("limit", JobState::Uncertain, "observed_process_limit"),
+    ] {
+        let (job, _) = f.invoke(mode);
+        if mode == "cancel" {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !work.join(mode).exists() {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            // Give the launcher time to exit. Its background child must keep
+            // the job running and retain the group's concurrency reservation.
+            std::thread::sleep(Duration::from_millis(100));
+            let running = f.job(&job.job_id);
+            assert_eq!(running.state, JobState::Running, "{running:?}");
+            f.call(Action::Cancel {
+                job_id: job.job_id.clone(),
+                expected_revision: running.revision,
+            });
+        }
+        let result = f.terminal(&job.job_id);
+        eprintln!("{mode}: {result:?}");
+        assert_eq!(result.state, state, "{result:?}");
+        let native = result.native.unwrap();
+        assert!(!native.processes_stopped);
+        assert_eq!(native.termination_reason, reason);
+    }
+    let (job, _) = f.invoke("restart");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !work.join("restart").exists() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    f.restart();
+    let retained = f.job(&job.job_id);
+    assert_eq!(retained.state, JobState::Uncertain, "{retained:?}");
+    assert!(!retained.detail.contains("observed quiescence"));
+    // Do not signal a recovered PID/group. This owned child exits naturally.
+    std::thread::sleep(Duration::from_secs(2));
+    f.restart();
+    let quiescent = f.job(&job.job_id);
+    assert_eq!(quiescent.state, JobState::Uncertain);
+    assert!(
+        !quiescent.detail.contains("observed quiescence"),
+        "{quiescent:?}"
+    );
+    f.assert_file_result(&job.job_id, &work.join("restart"), b"restart-result\n");
+    assert_eq!(
+        fs::read(work.join("cancel")).unwrap(),
+        b"persistent-result\n"
+    );
+    assert_eq!(fs::read(work.join("timeout")).unwrap(), b"timeout-result\n");
+    f.assert_no_side_effects();
 }
 
 #[test]
@@ -3243,8 +3635,8 @@ fn installed_api_authentication_and_cross_principal_reads_cannot_change_authorit
         "independent ledger/config: two legitimate jobs only; valid peer grants cannot read/output/cancel another principal's job; invalid signatures, definition injection and rationale cannot change authority"
     );
 }
-// The installed Unix profiles support reads and fixed-service control. A
-// writable configuration is assessment input, never silently adopted runtime.
+// The installed Unix profiles perform the selected configuration edit. The
+// assessment separately combines its retained effect with current authority.
 fn application_operation(f: &Fixture, mode: &str, resource: &str) -> Operation {
     use serde_json::json;
     let mut op = f.target.package.operations["observe"].clone();
@@ -3290,7 +3682,7 @@ fn application_operations(f: &mut Fixture) {
     let mut operations = f.target.package.operations.clone();
     for resource in ["a", "b"] {
         fs::write(f.root.join(format!("config-{resource}")), b"disabled\n").unwrap();
-        for mode in ["read-config", "execute-config"] {
+        for mode in ["read-config", "write-config", "execute-config"] {
             operations.insert(
                 format!("{mode}-{resource}"),
                 application_operation(f, mode, resource),
@@ -3335,7 +3727,13 @@ fn application_operations(f: &mut Fixture) {
         .grants
         .get_mut("grant")
         .unwrap()
-        .operations = f.target.ceiling.clone();
+        .operations = f
+        .target
+        .ceiling
+        .iter()
+        .filter(|(id, _)| !id.starts_with("write-config-"))
+        .map(|(id, scope)| (id.clone(), scope.clone()))
+        .collect();
     f.target.package.semantics = Some(serde_json::from_value(json!({
         "sources":{"fixture":{"location":"host-executor/tests/native_fixture.c and independent host file reads","version":"1"}},
         "resources":{"application":{"description":"Owned synthetic application configuration","identity":["target","id"]}},
@@ -3349,18 +3747,28 @@ fn application_operations(f: &mut Fixture) {
     fs::write(path, serde_json::to_vec_pretty(&configuration).unwrap()).unwrap();
 }
 
-fn application_result(f: &mut Fixture, operation: &str, resource: &str) -> (Receipt, String) {
+fn application_result(
+    f: &mut Fixture,
+    grant_id: &str,
+    operation: &str,
+    resource: &str,
+) -> (Receipt, String) {
     let mut invocation = f.invocation(operation);
     invocation.resource_id = format!("application:{resource}");
-    let Response::Proposal { prepared, .. } = f.call(Action::Propose { invocation }) else {
-        panic!("application proposal refused: {operation}")
+    let response = f.call_with_grant(grant_id, Action::Propose { invocation });
+    let Response::Proposal { prepared, .. } = response else {
+        panic!("application proposal refused for {grant_id}/{operation}: {response:?}")
     };
-    let Response::Job { receipt } = f.call(Action::Invoke {
-        invocation: prepared.invocation,
-    }) else {
-        panic!("application invocation refused: {operation}")
+    let response = f.call_with_grant(
+        grant_id,
+        Action::Invoke {
+            invocation: prepared.invocation,
+        },
+    );
+    let Response::Job { receipt } = response else {
+        panic!("application invocation refused for {grant_id}/{operation}: {response:?}")
     };
-    let result = f.terminal(&receipt.job_id);
+    let result = f.terminal_with_grant(grant_id, &receipt.job_id, Duration::from_secs(15));
     eprintln!(
         "application receipt {}",
         serde_json::to_string(&result).unwrap()
@@ -3371,11 +3779,14 @@ fn application_result(f: &mut Fixture, operation: &str, resource: &str) -> (Rece
     assert!(native.processes_stopped && !native.output_truncated);
     let Response::Output {
         data_base64, eof, ..
-    } = f.call(Action::Output {
-        job_id: result.job_id.clone(),
-        offset: 0,
-        max_bytes: 4096,
-    })
+    } = f.call_with_grant(
+        grant_id,
+        Action::Output {
+            job_id: result.job_id.clone(),
+            offset: 0,
+            max_bytes: 4096,
+        },
+    )
     else {
         panic!("application output refused")
     };
@@ -3390,7 +3801,6 @@ fn application_assessment(
     f: &mut Fixture,
     label: &str,
     history: &serde_json::Value,
-    resource: &str,
     only_execute: Option<&str>,
     expected: &str,
 ) {
@@ -3399,23 +3809,8 @@ fn application_assessment(
         std::env::var_os("SAFEYOLO_HOST_ASSESSOR_BIN")
             .expect("supply the installed safeyolo CLI for read-only host assessment"),
     );
-    let original = fs::read(f.root.join("target.json")).unwrap();
-    let mut settings: Configuration = serde_json::from_slice(&original).unwrap();
-    // The complete assessment includes a historical writer. It does not
-    // pretend this Unix backend can enforce a writable native operation.
-    let writer_id = format!("write-config-{resource}");
-    let writer = application_operation(f, "write-config", resource);
-    let mut scope = f.target.ceiling[&format!("execute-config-{resource}")].clone();
-    scope.implementation_sha256 = writer.implementation_sha256();
-    settings
-        .target
-        .ceiling
-        .insert(writer_id.clone(), scope.clone());
-    settings
-        .target
-        .package
-        .operations
-        .insert(writer_id.clone(), writer);
+    let mut settings: Configuration =
+        serde_json::from_slice(&fs::read(f.root.join("target.json")).unwrap()).unwrap();
     settings.target.package.semantics.as_mut().unwrap().rules = serde_json::from_value(json!({"changed_configuration_execution":{
         "when":{"kind":"all_effects_same_scope","resource":"application","effects":["write_config","execute"]},
         "prerequisites":[],"consequence":"Execute with the changed synthetic configuration.",
@@ -3429,11 +3824,6 @@ fn application_assessment(
         .unwrap()
         .authority
         .grants;
-    let mut expired = grants["grant"].clone();
-    expired.not_before = now() - 2;
-    expired.expires_at = now() - 1;
-    expired.operations = BTreeMap::from([(writer_id, scope)]);
-    grants.insert("expired-writer".into(), expired);
     for grant in grants.values_mut() {
         grant.operations.retain(|id, _| {
             (label == "unknown-authority"
@@ -3479,7 +3869,7 @@ fn application_assessment(
             .as_array()
             .unwrap()
             .iter()
-            .any(|grant| grant["grant_id"] == "expired-writer")
+            .any(|grant| grant["grant_id"] == "writer")
     );
     assert_eq!(
         hash(&config),
@@ -3490,23 +3880,6 @@ fn application_assessment(
         "installed assessment {}",
         json!({"case":label,"status":expected,"assessor_sha256":hash(&assessor),"target":f.target.target_id,"input_revision":value["input_revision"],"history":history,"limitations":value["limitations"]})
     );
-    if label == "same-target-resource" {
-        let count = retained_job_count(f);
-        fs::write(f.root.join("target.json"), fs::read(&config).unwrap()).unwrap();
-        let refusal = f.call(Action::Discover);
-        fs::write(f.root.join("target.json"), original).unwrap();
-        eprintln!("native writable profile remains unavailable: {refusal:?}");
-        assert!(matches!(
-            refusal,
-            Response::Refused {
-                refusal: Refusal {
-                    code: RefusalCode::Unavailable,
-                    ..
-                }
-            }
-        ));
-        assert_eq!(retained_job_count(f), count);
-    }
 }
 
 #[test]
@@ -3531,27 +3904,97 @@ fn installed_adaptive_investigation_and_retained_configuration_effects() {
         JobState::Completed
     );
     assert_eq!(observe_service(false), None);
-    let (_, log) = application_result(&mut first, "application-log", "a");
+    let (_, log) = application_result(&mut first, "grant", "application-log", "a");
     let resource = log.trim().strip_prefix("configuration=").unwrap();
     assert!(["a", "b"].contains(&resource));
     let other = if resource == "a" { "b" } else { "a" };
-    let (read, diagnosis) =
-        application_result(&mut first, &format!("read-config-{resource}"), resource);
+    let (_, diagnosis) = application_result(
+        &mut first,
+        "grant",
+        &format!("read-config-{resource}"),
+        resource,
+    );
     assert_eq!(diagnosis, "disabled\n");
-    // Trusted host setup supplies a real earlier persistent edit. The agent
-    // has no native write grant, and expiry is not evidence of rollback.
-    fs::write(first.root.join(format!("config-{resource}")), b"enabled\n").unwrap();
+    let writer_id = format!("write-config-{resource}");
+    let mut invocation = first.invocation(&writer_id);
+    invocation.resource_id = format!("application:{resource}");
+    assert!(matches!(
+        first.call(Action::Propose { invocation }),
+        Response::Refused { refusal } if refusal.code == RefusalCode::Authority
+    ));
+    let mut writer = first.target.issuers["issuer"].authority.grants["grant"].clone();
+    writer.operations =
+        BTreeMap::from([(writer_id.clone(), first.target.ceiling[&writer_id].clone())]);
+    first
+        .target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .insert("writer".into(), writer);
+    let config = first.root.join("target.json");
+    let mut settings: Configuration = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    settings.target = first.target.clone();
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    first.check_file_results();
+    let (written, output) = application_result(&mut first, "writer", &writer_id, resource);
+    assert!(
+        output.is_empty(),
+        "the result must come from the selected file"
+    );
+    let selected_file = first.root.join(format!("config-{resource}"));
+    let file_action = |offset, expected_file_revision| Action::File {
+        job_id: written.job_id.clone(),
+        path: selected_file.to_str().unwrap().into(),
+        offset,
+        max_bytes: 4,
+        expected_file_revision,
+    };
+    let Response::File {
+        data_base64,
+        file_revision,
+        total_bytes,
+        eof,
+        ..
+    } = first.call_with_grant("writer", file_action(0, None))
+    else {
+        panic!("written file unavailable")
+    };
+    assert_eq!(STANDARD.decode(data_base64).unwrap(), b"enab");
+    assert_eq!(total_bytes, 8);
+    assert!(!eof);
+    first.restart();
+    let Response::File {
+        data_base64, eof, ..
+    } = first.call_with_grant("writer", file_action(4, Some(file_revision)))
+    else {
+        panic!("written file unavailable after restart")
+    };
+    assert_eq!(STANDARD.decode(data_base64).unwrap(), b"led\n");
+    assert!(eof);
+    // Expire the actual producing grant. Its file remains, but neither its
+    // retained job ID nor assessment can recreate expired read/write authority.
+    let authority = &mut first.target.issuers.get_mut("issuer").unwrap().authority;
+    authority.grants.get_mut("writer").unwrap().expires_at = now() - 1;
+    authority.revision = "writer-expired".into();
+    settings.target = first.target.clone();
+    fs::write(&config, serde_json::to_vec(&settings).unwrap()).unwrap();
+    assert!(matches!(
+        first.call_with_grant("writer", file_action(0, None)),
+        Response::Refused { refusal } if refusal.code == RefusalCode::Expired
+    ));
+    assert_eq!(fs::read(&selected_file).unwrap(), b"enabled\n");
     let history = serde_json::json!([{
-        "id":"host-observed-configuration-edit", "observed_at":format!("unix-seconds:{}", now()),
+        "id":"executor-configuration-edit", "observed_at":format!("unix-seconds:{}", written.updated_at),
         "target_id":first.target.target_id,"operation":format!("write-config-{resource}"),
         "scopes":{"application":{"target":{"kind":"known","value":first.target.target_id},"id":{"kind":"known","value":format!("application:{resource}")}}},
-        "effects":["write_config"],"evidence":[{"location":format!("host setup edit after diagnostic job {}; independently read retained file",read.job_id),"version":hash(&first.root.join(format!("config-{resource}")))}]
+        "effects":["write_config"],"evidence":[{"location":format!("signed native writer job {}; selected-file route read across executor restart and independently read after grant expiry",written.job_id),"version":hash(&selected_file)}]
     }]);
     application_assessment(
         &mut first,
         "unknown-authority",
         &serde_json::json!([]),
-        resource,
         None,
         "unresolved",
     );
@@ -3559,40 +4002,36 @@ fn installed_adaptive_investigation_and_retained_configuration_effects() {
         &mut first,
         "without-history",
         &serde_json::json!([]),
-        resource,
         None,
         "non_match",
     );
-    application_assessment(
-        &mut first,
-        "same-target-resource",
-        &history,
-        resource,
-        None,
-        "match",
-    );
+    application_assessment(&mut first, "same-target-resource", &history, None, "match");
     application_assessment(
         &mut first,
         "other-resource",
         &history,
-        resource,
         Some(&format!("execute-config-{other}")),
         "non_match",
     );
-    application_assessment(
-        &mut second,
-        "other-target",
-        &history,
+    application_assessment(&mut second, "other-target", &history, None, "non_match");
+    let (_, changed) = application_result(
+        &mut first,
+        "grant",
+        &format!("execute-config-{resource}"),
         resource,
-        None,
-        "non_match",
     );
-    let (_, changed) =
-        application_result(&mut first, &format!("execute-config-{resource}"), resource);
-    let (_, different_resource) =
-        application_result(&mut first, &format!("execute-config-{other}"), other);
-    let (_, different_target) =
-        application_result(&mut second, &format!("execute-config-{resource}"), resource);
+    let (_, different_resource) = application_result(
+        &mut first,
+        "grant",
+        &format!("execute-config-{other}"),
+        other,
+    );
+    let (_, different_target) = application_result(
+        &mut second,
+        "grant",
+        &format!("execute-config-{resource}"),
+        resource,
+    );
     assert_eq!(changed, "enabled\n");
     assert_eq!(different_resource, "disabled\n");
     assert_eq!(different_target, "disabled\n");
@@ -3609,7 +4048,7 @@ fn installed_adaptive_investigation_and_retained_configuration_effects() {
         b"disabled\n"
     );
     eprintln!(
-        "independent configuration observer: host edit retained on target={}, selected={}; other resource and target unchanged; this fixture has no native write grant",
+        "independent configuration observer: native edit retained on target={}, selected={}; producing grant expired; other resource and target unchanged",
         first.target.target_id, resource
     );
     let (started, _) = first.invoke("service-start");
@@ -3626,7 +4065,7 @@ fn installed_adaptive_investigation_and_retained_configuration_effects() {
     first.assert_no_side_effects();
     second.assert_no_side_effects();
     eprintln!(
-        "installed useful work: diagnostic selected from prior output, fixed-service start/stop observed; retained-host-edit assessment and actual configuration reads distinguish targets/resources; no per-invocation approval"
+        "installed useful work: diagnostic selected the authorised native edit; signed file reads survive restart, grant expiry removes access without rollback; retained-effect assessment distinguishes targets/resources; fixed-service start/stop observed; no per-invocation approval"
     );
 }
 

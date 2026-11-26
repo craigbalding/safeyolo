@@ -1,5 +1,6 @@
 //! Guest-local recovery information. This does not confer maintenance authority.
 mod configuration;
+mod maintenance;
 mod packages;
 mod watch;
 
@@ -157,12 +158,39 @@ pub(super) fn run(args: &[OsString]) -> Result<i32, Error> {
     }
     if args.is_empty() || args == ["--help"] {
         println!(
-            "safeyolo-guest-state status | capture | paths [add|remove /absolute/path] | require PACKAGE OP VERSION DISTRO ADVISORY | forget PACKAGE | resolve /path | restore [--apply] | history\nPersistent state: /home/agent/.local/state/safeyolo-guest. Use guest sudo for private contents. restore previews changes; --apply performs them within existing authority. OP is a dpkg comparison (ge, gt, eq, le, lt). DISTRO is ID:VERSION_CODENAME. No shutdown capture or security attestation."
+            "safeyolo-guest-state status | capture | paths [add|remove /absolute/path] | require PACKAGE OP VERSION DISTRO ADVISORY | forget PACKAGE | resolve /path | restore [--apply] | history | maintain | maintenance-status OPERATION | maintenance-recover OPERATION\nPersistent state: /home/agent/.local/state/safeyolo-guest. Use guest sudo for private contents. restore previews changes; --apply performs them within existing authority. maintain reads an adopted maintenance request from stdin; maintenance-status reads its retained result without repeating effects. After inspecting an interrupted operation, maintenance-recover selects its unused completed checkpoint once. OP is a dpkg comparison (ge, gt, eq, le, lt). DISTRO is ID:VERSION_CODENAME. No shutdown capture or security attestation."
         );
         return Ok(0);
     }
+    if args == ["startup-allowed"] {
+        let gate = store.actual("/safeyolo/startup-maintenance.json");
+        if !gate.try_exists()? {
+            return Ok(0);
+        }
+        let gate = read_json(&gate, 128 * 1024)?;
+        let context = read_json(
+            &store.actual("/safeyolo/host-launch-context.json"),
+            128 * 1024,
+        )?;
+        return Ok(
+            if gate["allowed"] == true && gate["run_id"] == context["generation"] {
+                0
+            } else {
+                1
+            },
+        );
+    }
     fs::create_dir_all(&store.directory)?;
     fs::set_permissions(&store.directory, fs::Permissions::from_mode(0o700))?;
+    if args == ["maintain"] {
+        return maintenance::run(&store);
+    }
+    if let ["maintenance-status", operation] = args.as_slice() {
+        return maintenance::status(&store, operation);
+    }
+    if let ["maintenance-recover", operation] = args.as_slice() {
+        return maintenance::recover_selected(&store, operation);
+    }
     if args == ["watch"] {
         let result = watch::run(&store);
         if let Err(error) = &result {
@@ -217,7 +245,7 @@ pub(super) fn run(args: &[OsString]) -> Result<i32, Error> {
                     "last_completed_capture":value["last_completed_capture"],"configuration_commit":value["configuration_commit"],"capture_error":value["capture_error"],
                     "coverage":value["coverage"],"paths_without_original_baseline":coverage(&value)?.iter().filter(|path|
                         value["baseline_known"] != true || !(path.as_str()=="/etc" || path.starts_with("/etc/") || path.as_str()=="/usr/local/etc" || path.starts_with("/usr/local/etc/"))).collect::<Vec<_>>(),"transactions":value["transactions"],"requirements":value["requirements"],
-                    "restore":value["restore"],"watch":value["watch"],"watch_alive":value["watch_alive"]})
+                    "restore":value["restore"],"maintenance":value["maintenance"],"watch":value["watch"],"watch_alive":value["watch_alive"]})
                 );
                 Ok(0)
             }

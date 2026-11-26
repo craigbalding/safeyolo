@@ -116,7 +116,8 @@ def test_code_adoption_uses_a_separate_class_and_never_invokes(tmp_path, transpo
     script = tmp_path / "task.sh"
     script.write_text("printf 'selected task'\n")
     ceiling = {"execution": {"argv": [{"kind": "literal", "value": "-c"}, {"kind": "literal", "value": "pwd"}],
-                             "filesystem": {"write": ["/selected"]}, "dependencies": {}}}
+                             "filesystem": {"write": ["/selected"]}, "resources": {"processes": 8},
+                             "broader": ["processes"], "dependencies": {}}}
     responses.extend([
         {"host_bindings": [{"binding": "case", "task_active": True, "agent_code_classes": [
             {"prefix": "task:", "excluded": [], "rule": {"ceiling": ceiling}}]}]},
@@ -131,6 +132,8 @@ def test_code_adoption_uses_a_separate_class_and_never_invokes(tmp_path, transpo
     assert posted["action"]["base_package_sha256"] == "exact-base"
     assert posted["action"]["operation"]["execution"]["filesystem"] == {"write": ["/selected"]}
     assert posted["action"]["operation"]["execution"]["argv"][1]["value"] == script.read_text()
+    assert posted["action"]["operation"]["execution"]["resources"]["processes"] == 8
+    assert posted["action"]["operation"]["execution"]["broader"] == ["processes"]
     assert [json.loads(call.data)["action"]["kind"] for call in calls if call.data] == ["discover", "adopt"]
 
 
@@ -204,7 +207,7 @@ def test_interleaved_staging_refuses_another_calls_adopted_program(tmp_path, mon
     first_adopted, second_adopted = Event(), Event()
     current = {}
     invoked = []
-    ceiling = {"execution": {"argv": [{"kind": "literal", "value": "-c"}]}}
+    ceiling = {"execution": {"argv": [{"kind": "literal", "value": "-c"}], "resources": {"processes": 8}}}
 
     class AgentAPI(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -463,14 +466,17 @@ def test_undecodable_read_error_is_unavailable(transport, action):
     assert len(calls) == 1
 
 
-def test_stage_does_not_reserve_the_service_listener(tmp_path, transport):
+@pytest.mark.parametrize("broader_processes", [False, True])
+def test_stage_does_not_reserve_the_service_listener(tmp_path, transport, broader_processes):
     calls, responses = transport
     source = tmp_path / "selected"
     source.write_bytes(b"selected bytes")
     network = {"destinations": [], "listeners": [{"address": "0.0.0.0", "port": 8080, "transport": "tcp"}],
                "listener_handoff": {"candidates": [{"address": "0.0.0.0", "port": 8080}]}, "ipc": []}
+    broader = ["network_ipc", "memory"] + (["processes"] if broader_processes else [])
     ceiling = {"execution": {"argv": [{"kind": "literal", "value": "-c"}, {"kind": "literal", "value": "pwd"}],
-                             "network": network, "broader": ["network_ipc"], "dependencies": {}}}
+                             "network": network, "broader": broader,
+                             "resources": {"processes": 8}, "dependencies": {}}}
     responses.extend([
         {"host_bindings": [{"binding": "case", "agent_code_classes": [
             {"prefix": "task:", "excluded": [], "rule": {"ceiling": ceiling}}]}]},
@@ -484,5 +490,7 @@ def test_stage_does_not_reserve_the_service_listener(tmp_path, transport):
     client.stage(argparse.Namespace(binding="case", request_id="req-stage", file=str(source), path="/selected/input"))
     execution = json.loads(calls[2].data)["action"]["operation"]["execution"]
     assert execution["network"] == {"destinations": [], "listeners": [], "ipc": []}
-    assert execution["broader"] == []
+    assert execution["broader"] == ["memory"]
+    assert execution["resources"]["processes"] == (1 if broader_processes else 8)
+    assert ceiling["execution"]["resources"]["processes"] == 8
     assert ceiling["execution"]["network"] == network

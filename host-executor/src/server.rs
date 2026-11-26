@@ -194,7 +194,7 @@ pub fn command(args: Vec<String>) -> Result<(), Refusal> {
         );
         #[cfg(unix)]
         println!(
-            "serve uses STATE/control.sock for the shared signed HTTP routes.\nLinux requires pinned bubblewrap and delegated cgroup v2 memory/pids controls, with permission to place jobs from the executor's current cgroup.\nmacOS requires Seatbelt and explicit broader memory and executor_restart authority; a controller crash can leave an orphan with unknown cleanup."
+            "serve uses STATE/control.sock for the shared signed HTTP routes.\nLinux requires pinned bubblewrap and delegated cgroup v2 memory/pids controls, with permission to place jobs from the executor's current cgroup.\nmacOS requires Seatbelt and explicit broader memory and executor_restart authority; a controller crash can leave processes with unknown cleanup. Multi-process operations also require broader processes authority: fork/exec and posix_spawn work, but escaped descendants can outlive cancellation or deadline. Complete tree cleanup and concurrency release remain unconfirmed, including after restart."
         );
         #[cfg(windows)]
         println!(
@@ -231,10 +231,19 @@ pub fn command(args: Vec<String>) -> Result<(), Refusal> {
             if !operation.execution.network.destinations.is_empty()
                 || !operation.execution.network.listeners.is_empty()
                 || operation.execution.network.listener_handoff.is_some()
+                || operation
+                    .execution
+                    .broader
+                    .contains(&BroaderBound::Processes)
             {
                 for fact in settings.native.network_enforcement(operation) {
                     println!("operation {id}: {fact}");
                 }
+            }
+        }
+        for family in &settings.target.families {
+            for fact in settings.native.network_enforcement(&family.rule.ceiling) {
+                println!("standing task-code class {}: {fact}", family.prefix);
             }
         }
         if let Some(status) = &settings.target.catalogue {

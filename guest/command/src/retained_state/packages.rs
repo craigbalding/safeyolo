@@ -20,7 +20,7 @@ fn parse_snapshot(input: &str) -> Result<Value, Error> {
     Ok(Value::Object(result))
 }
 
-fn snapshot(store: &GuestState) -> Result<Value, Error> {
+pub(super) fn snapshot(store: &GuestState) -> Result<Value, Error> {
     parse_snapshot(&output(
         Command::new("dpkg-query")
             .arg(format!(
@@ -31,7 +31,7 @@ fn snapshot(store: &GuestState) -> Result<Value, Error> {
     )?)
 }
 
-fn package<'a>(snapshot: &'a Value, name: &str, architecture: &str) -> &'a Value {
+pub(super) fn package<'a>(snapshot: &'a Value, name: &str, architecture: &str) -> &'a Value {
     if !snapshot[name].is_null() {
         &snapshot[name]
     } else {
@@ -39,7 +39,7 @@ fn package<'a>(snapshot: &'a Value, name: &str, architecture: &str) -> &'a Value
     }
 }
 
-fn architecture() -> Result<String, Error> {
+pub(super) fn architecture() -> Result<String, Error> {
     Ok(output(Command::new("dpkg").arg("--print-architecture"))?
         .trim()
         .to_string())
@@ -54,7 +54,7 @@ fn base_snapshot(store: &GuestState) -> Result<Value, Error> {
     }
 }
 
-fn installed(value: &Value) -> bool {
+pub(super) fn installed(value: &Value) -> bool {
     value["status"]
         .as_str()
         .is_some_and(|x| x.as_bytes().get(1) == Some(&b'i') && x.as_bytes().get(2) == Some(&b' '))
@@ -236,7 +236,7 @@ fn package_choices(args: &[String]) -> Vec<(String, Value)> {
     choices
 }
 
-fn satisfies(version: &str, requirement: &Value) -> Result<bool, Error> {
+pub(super) fn satisfies(version: &str, requirement: &Value) -> Result<bool, Error> {
     Ok(Command::new("dpkg")
         .args([
             "--compare-versions",
@@ -252,7 +252,7 @@ fn satisfies(version: &str, requirement: &Value) -> Result<bool, Error> {
         .success())
 }
 
-fn distribution(store: &GuestState) -> Result<String, Error> {
+pub(super) fn distribution(store: &GuestState) -> Result<String, Error> {
     let text = fs::read_to_string(store.actual("/etc/os-release"))?;
     let field = |name: &str| {
         text.lines()

@@ -31,10 +31,28 @@ authority](host-execution-contract.md#macos-writable-paths-and-broader-network-a
 The operator selects the actual write roots and assesses Seatbelt's loopback or
 all-address class at each permitted port. The existing issuer and target scopes
 bind that operation; covered invocations need no recurring human decision.
-The macOS adapter still denies fork to ordinary programs. Resolving an adopted
+For a macOS operation with more than one process, select explicit broader
+`processes` authority as well as `memory` and `executor_restart`. The adapter
+polls memory and process count in the original group. Fork/exec and ordinary
+`posix_spawn` children can execute in selected read/write paths and inherit
+Seatbelt. Single-process grants retain fork denial. Children can change groups
+or sessions and outlive cancellation or the deadline. Only background children
+in the original group keep the job running until group quiescence. Cancellation
+and timeout stop that group. Every multi-process result remains `Uncertain`
+with `processes_stopped=false`; its concurrency reservation and executable
+snapshot remain retained, even after restart. Group quiescence and output
+end-of-file cannot prove tree cleanup. Output capture ends with the original
+group; an open writer is reported as truncated. Complete tree cancellation and
+automatic reservation release are unsupported in this backend. Choose an
+enforced-tree backend when required. Restart never signals recovered PIDs or
+groups. Resolving an adopted
 read/write path permits metadata reads of its ancestors, with no sibling file
 contents or ancestor directory listing. File results remain at the selected
 host paths; the Output route returns stdout/stderr.
+On macOS, built-in task inspection and byte-staging select one interpreter
+process. The standing task-code class keeps the operator's full process ceiling
+for subsequently adopted programs. Check output and enrolment's `task:*` facts
+explain that full class's native exposure before approval.
 
 A program that already supports an inherited listening socket can instead use
 [Unix listener handoff](host-execution-contract.md#retained-listener-handoff-on-unix).

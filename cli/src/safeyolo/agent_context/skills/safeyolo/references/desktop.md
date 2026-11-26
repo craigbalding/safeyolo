@@ -4,9 +4,18 @@ SafeYolo owns the lifecycle and security boundary for its optional graphical
 desktop. The guest components listen only on loopback; the operator reaches
 noVNC through a token-gated SafeYolo preview.
 
+Guest browsers are a supported choice for webapp security testing and other
+browser tasks. Use this reference when the task needs a graphical session
+inside the guest or the operator wants to interact with that guest browser.
+`desktop.present` with `browser_url` opens that URL in the guest browser.
+The desktop can itself be presented locally, through SSH or over the configured
+tailnet route. To share an app's HTTP service with other agents or with an
+operator's own browser, use [the service access choices](web-services.md).
+Those routes can coexist with guest-browser use.
+
 ## Request a preview during agent work
 
-Offer a preview when it helps the operator use the application. Use the normal
+Offer a desktop preview when the task needs that graphical session. Use the normal
 Agent API with your own token to inspect availability and request approval.
 An eligible delegated reviewer can decide inside its operator-approved envelope
 without another human confirmation:
@@ -91,7 +100,7 @@ was interrupted, read the saved result before requesting again. A saved
 
 ## Divide host and guest responsibilities
 
-The preferred operator command is:
+For a graphical desktop, the preferred operator command is:
 
 ```sh
 safeyolo agent present AGENT

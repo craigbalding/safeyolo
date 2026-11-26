@@ -64,6 +64,24 @@ Its returned `enrolment.json` comes back through the same trusted transfer route
 the human does not assemble keys, identity documents, scopes or bindings.
 Automatic `enrol` is implemented for Linux and macOS. Windows retains the
 explicit native preparation/installation path in the operator guide.
+On macOS the prepared task interpreter is pinned directly to `/bin/bash`.
+For a task with more than one process, its plan must explicitly select broader
+`processes` authority alongside `memory` and `executor_restart`. Selected
+read/write paths also bound child executables. Fork/exec and `posix_spawn`
+children inherit Seatbelt but can change groups or sessions. Only the original
+group is counted, memory-polled and stopped on cancellation or deadline.
+Escaped children can outlive both, even without a controller crash. Every
+multi-process result remains `Uncertain` with `processes_stopped=false` and a
+retained concurrency reservation and executable snapshot, including after
+restart. Group quiescence and output end-of-file cannot prove tree cleanup.
+Output capture ends with the original group; an open writer is reported as
+truncated. Complete tree cancellation and automatic reservation release are
+unsupported. Use an enforced-tree backend when required. Restart never signals
+recovered PIDs or groups. Preserve that uncertainty during recovery.
+On macOS, built-in inspection and byte-staging use one interpreter process.
+Adopted task code still uses the full standing task-code class selected by the
+operator; fixed preparation does not narrow that class. Check output and the
+enrolment's `task:*` boundary facts expose that full class before approval.
 
 Inside the issuing agent, after the trusted owner returns that original file, run:
 

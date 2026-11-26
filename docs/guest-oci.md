@@ -560,11 +560,22 @@ gVisor runtime and the separately supplied VZ boot kernel need their own updates
 For already-running Debian agents, [adopted signal assessment](signals.md#assess-running-debian-guests)
 can collect actual installed packages on explicit request or at a selected
 interval. It reassesses retained advisories without waiting for republication
-and uses the selected notification, approval or maintenance-Work response.
-It does not patch packages, enforce a check before harness startup, select a
-guest, restart processes, restore customisations or verify repair. Those effects
-remain with their authorised maintenance and lifecycle owners. A notification
-or dispatched Work is not completed maintenance.
+and uses the selected notification, approval, maintenance recipe or Work response.
+An [adopted Debian maintenance recipe](signals.md#execute-adopted-debian-maintenance)
+can retain advisory requirements, restore customisations, patch the selected
+guest, run its chosen service restart/health/recovery commands and verify the
+effective package and file state. Optional startup ordering gates ordinary work
+while leaving the maintenance transport available. Unconfigured instances keep
+manual operation. A notification or dispatched Work remains distinct from
+executed maintenance.
+
+Guest-image acquisition and default selection still use the explicit commands
+above. Recipe recovery must preserve the mutable state it changes; `guest
+rollback` supplies no such snapshot. In-place changes to either Linux overlay
+remain temporary unless the adopted recipe restores retained requirements at
+the next boot. On VZ, verify the actual overlay's files and package state even
+after selecting a new base. The host runtime and separately supplied boot kernel
+remain outside guest package maintenance.
 
 ## Prepare and publish a default guest release
 
