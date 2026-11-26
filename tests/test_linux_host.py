@@ -182,7 +182,7 @@ def test_bundled_runtime_access_preview_covers_new_paths_before_consent(native_c
     before_acl = command("getfacl", "-ncp", private).stdout
     result = command(native_cli, "--json", "--instance-dir", root, "host", "prepare",
                      "--package-root", "bundle", "--installed-root", root,
-                     "--write-settings", settings, cwd=parent, input=decision)
+                     "--write-settings", settings, cwd=parent, input=decision, umask=0o077)
     preview, _ = result.stderr.split("Allow these host changes?", 1)
     assert "mapped guest-root UID " in preview
     assert "adds only missing access" in preview
