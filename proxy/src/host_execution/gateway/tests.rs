@@ -1663,3 +1663,27 @@ async fn https_target_identity_precedes_signed_dispatch_and_keeps_native_receipt
     relay.abort();
     f.stop().await;
 }
+
+#[tokio::test]
+async fn shared_review_assesses_unannotated_native_authority_without_dispatch() {
+    let f = Fixture::new("").await;
+    assert!(f.binding.target.package.semantics.is_none());
+    {
+        let runtime = f.proxy.runtime.read().unwrap();
+        let rows = assess(runtime.policy.as_ref().unwrap()).unwrap();
+        let row = &rows[0];
+        let effects =
+            &row["enforcement_and_effects"]["effective_authority"]["native_authority"]["model"];
+        assert!(!effects["direct"].as_array().unwrap().is_empty(), "{row}");
+        assert_eq!(
+            row["service_readiness_and_reach"]["audience_reach"],
+            "unverified"
+        );
+        assert_eq!(
+            row["enforcement_and_effects"]["effective_authority"]["model"]["status"],
+            "uncharacterised"
+        );
+    }
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    f.stop().await;
+}

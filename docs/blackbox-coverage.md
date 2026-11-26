@@ -1362,6 +1362,7 @@ Selection: manual native phase `host-execution` (named execution receipt; ignore
 - [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::completed_task_action_checks_allow_new_operations_and_retain_refusals -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1426)
 - [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::task_action_check_binds_canonical_task_and_bounds_unavailable_reconsideration -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1504)
 - [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::https_target_identity_precedes_signed_dispatch_and_keeps_native_receipts -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1588)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib host_execution::gateway::tests::shared_review_assesses_unannotated_native_authority_without_dispatch -- --exact`](../proxy/src/host_execution/gateway/tests.rs#L1665)
 
 <a id="witness-proxy-src-host-execution-gateway-task-action-tests-rs"></a>
 ### [`proxy/src/host_execution/gateway/task_action_tests.rs`](../proxy/src/host_execution/gateway/task_action_tests.rs)

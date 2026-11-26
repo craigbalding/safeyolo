@@ -59,6 +59,225 @@ fn permission(package: &Package, grant: &str, target: &str, operation: &str) -> 
     }
 }
 
+fn task_package() -> Package {
+    let mut package = package();
+    let mut operation = package.operations["fixed-executable"].clone();
+    operation.arguments.clear();
+    operation.resources = ["task:workspace".into()].into();
+    operation.execution.argv = vec![Word::Literal {
+        value: "untrusted task".into(),
+    }];
+    operation.execution.environment.clear();
+    operation.execution.identity.principal = "task-account".into();
+    operation.execution.resources.processes = 2;
+    operation.execution.filesystem = Filesystem {
+        read: vec!["/selected/input".into()],
+        write: vec!["/selected/work".into()],
+    };
+    operation.execution.network = Network {
+        destinations: vec![NetworkDestination {
+            host: "selected.example".into(),
+            port: 443,
+            transport: NetworkTransport::Tcp,
+        }],
+        listeners: vec![NetworkListener {
+            address: "0.0.0.0".parse().unwrap(),
+            port: 8080,
+            transport: NetworkTransport::Tcp,
+        }],
+        listener_handoff: None,
+        ipc: vec![],
+    };
+    operation.execution.broader = [BroaderBound::NetworkIpc].into();
+    operation.execution.delegated_services.clear();
+    operation.effects.clear();
+    operation.semantics = None;
+    package.operations = BTreeMap::from([("task:inspect".into(), operation)]);
+    package.semantics = None;
+    package.validate().unwrap();
+    package
+}
+
+#[test]
+fn native_task_authority_is_assessed_without_program_annotations_or_intent() {
+    let mut package = task_package();
+    let grants = [permission(
+        &package,
+        "current",
+        "selected-host",
+        "task:inspect",
+    )];
+    let result = assess(&package, &grants);
+    assert_eq!(result["model"]["status"], "uncharacterised");
+    let model = &result["native_authority"]["model"];
+    let effects = model["direct"][0]["possible_effects"].as_array().unwrap();
+    for effect in [
+        "read_files",
+        "write_files",
+        "execute",
+        "connect",
+        "listen",
+        "children",
+    ] {
+        assert!(effects.contains(&json!(effect)), "{model}");
+    }
+    assert_eq!(
+        model["rules"]["file_disclosure_listener"]["status"],
+        "match"
+    );
+    assert_eq!(
+        model["direct"][0]["scopes"]["account"]["target"],
+        json!({"kind":"known","value":"selected-host"})
+    );
+    assert!(
+        model["direct"][0]["execution_authority"]
+            .as_str()
+            .unwrap()
+            .contains("/selected/input")
+    );
+    assert!(
+        model["direct"][0]["unresolved_conditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str().unwrap().contains("reach remain unobserved"))
+    );
+    // Empty or favorable program annotations cannot remove native potential.
+    package.semantics = Some(HostSemantics {
+        sources: Default::default(),
+        resources: Default::default(),
+        rules: Default::default(),
+        alternatives: Default::default(),
+        gaps: vec![],
+    });
+    let annotated = assess(
+        &package,
+        &[permission(
+            &package,
+            "current",
+            "selected-host",
+            "task:inspect",
+        )],
+    );
+    assert_eq!(annotated["native_authority"], result["native_authority"]);
+    package
+        .operations
+        .get_mut("task:inspect")
+        .unwrap()
+        .execution
+        .filesystem
+        .read
+        .push("/changed/input".into());
+    assert!(
+        semantics::assess(&package, &grants, &[])
+            .unwrap_err()
+            .to_string()
+            .contains("stale operation pin")
+    );
+}
+
+#[test]
+fn native_task_composition_preserves_target_account_and_disconnected_bounds() {
+    let mut package = task_package();
+    let mut reader = package.operations["task:inspect"].clone();
+    reader.execution.filesystem.write.clear();
+    reader.execution.network.destinations.clear();
+    reader.execution.network.listeners.clear();
+    reader.execution.broader.clear();
+    reader.execution.resources.processes = 1;
+    let mut listener = reader.clone();
+    listener.execution.filesystem.read.clear();
+    listener.execution.network = package.operations["task:inspect"].execution.network.clone();
+    listener.execution.network.destinations.clear();
+    listener.execution.broader.insert(BroaderBound::NetworkIpc);
+    package.operations = BTreeMap::from([("read".into(), reader), ("listen".into(), listener)]);
+    let mut grants = vec![
+        permission(&package, "reader", "host-a", "read"),
+        permission(&package, "listener", "host-a", "listen"),
+    ];
+    let rule = |package: &Package, grants: &[Authority]| {
+        assess(package,grants)["native_authority"]["model"]["rules"]["file_disclosure_listener"]["status"].clone()
+    };
+    assert_eq!(rule(&package, &grants), "match");
+    grants[1].target_id = "host-b".into();
+    assert_eq!(rule(&package, &grants), "non_match");
+    grants[1].target_id = "host-a".into();
+    package
+        .operations
+        .get_mut("listen")
+        .unwrap()
+        .execution
+        .identity
+        .principal = "other-account".into();
+    grants[1]
+        .operations
+        .insert("listen".into(), scope(&package, "listen"));
+    assert_eq!(rule(&package, &grants), "non_match");
+    let disconnected = assess(&package, &grants[..1]);
+    assert_eq!(
+        disconnected["native_authority"]["model"]["direct"][0]["possible_effects"],
+        json!(["execute", "read_files"])
+    );
+    assert_eq!(rule(&package, &[]), "non_match");
+}
+
+#[test]
+fn unannotated_future_task_class_is_included_without_an_adopted_member() {
+    let mut target = target();
+    target.package = task_package();
+    let mut ceiling = target.package.operations["task:inspect"].clone();
+    let ceiling_scope = scope(&target.package, "task:inspect");
+    let family = OperationFamily {
+        prefix: "task:".into(),
+        excluded: Default::default(),
+        rule: UpdateRule {
+            ceiling: ceiling.clone(),
+            allow_narrower: true,
+            allow_implementation_updates: false,
+            allow_agent_code: true,
+            agent_dependency_bytes: 1024,
+        },
+        scope: ceiling_scope,
+    };
+    ceiling.execution.network.destinations.clear();
+    ceiling.execution.network.listeners.clear();
+    ceiling.execution.broader.clear();
+    target
+        .package
+        .operations
+        .insert("task:inspect".into(), ceiling);
+    let current_scope = scope(&target.package, "task:inspect");
+    target.ceiling = BTreeMap::from([("task:inspect".into(), current_scope.clone())]);
+    target.families = vec![family.clone()];
+    let trust = target.issuers.get_mut("issuer").unwrap();
+    let grant = trust.authority.grants.get_mut("current").unwrap();
+    grant.operations = target.ceiling.clone();
+    grant.families = vec![family];
+    let result = semantics::assess_target(&target, "issuer", &principal(), None, &[], 100).unwrap();
+    assert_eq!(
+        result["future_family_ceilings"].as_array().unwrap().len(),
+        1
+    );
+    assert!(result["effective_authority"]["native_authority"]["model"]["rules"]["file_disclosure_listener"].is_null());
+    assert_eq!(
+        result["standing_potential_authority"]["native_authority"]["model"]["rules"]["file_disclosure_listener"]
+            ["status"],
+        "match"
+    );
+    assert_ne!(
+        result["effective_authority"]["native_authority"]["model_revision"],
+        result["standing_potential_authority"]["native_authority"]["model_revision"]
+    );
+    assert!(semantics::assess_target(&target, "issuer", &principal(), None, &[], 126).is_err());
+    assert!(
+        target
+            .package
+            .operations
+            .keys()
+            .all(|name| !name.starts_with("assessment:"))
+    );
+}
+
 fn assess(package: &Package, grants: &[Authority]) -> Value {
     semantics::assess(package, grants, &[]).unwrap()
 }
