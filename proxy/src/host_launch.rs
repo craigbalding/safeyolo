@@ -343,9 +343,12 @@ async fn codex_login(
         );
     }
     loop {
-        let Some(choice) =
-            input("Codex login [displayed action / file PATH / Enter: continue / q: cancel]: ")?
-        else {
+        let prompt = if agent_present {
+            "Codex login [displayed action / Enter: continue / q: cancel]: "
+        } else {
+            "Codex login [displayed action / file PATH / Enter: continue / q: cancel]: "
+        };
+        let Some(choice) = input(prompt)? else {
             return Ok(CodexLogin::Cancelled);
         };
         let source = match choice.as_str() {

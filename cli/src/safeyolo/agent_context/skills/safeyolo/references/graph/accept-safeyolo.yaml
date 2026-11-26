@@ -272,9 +272,9 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: 09661b6cadf5306856fdb99956967e29c264971f60bb3fa848e710e7e43a0143
         - path: proxy/src/lib.rs
-          sha256: 2211a18b8164a62540a514554c755f4ed2ed06316cbe76bc769343be768e5c26
+          sha256: 04d4362fec8030f653bc9f69d21fa887b54bbfcb43ac915d39e96b459bf15824
         - path: proxy/src/bin/safeyolo.rs
-          sha256: 0c13c7522324cb4c2e1b6a5c912333051ec12ab27a071150b3729f5ef80c6c24
+          sha256: eb294529aeb71cf9e68c6fa6f3f5c8d0206d15ad69895a53b7776bc1b97f1f1c
         - path: scripts/run_claude_blackbox.py
           sha256: b876d251146193e999b4a8d163ccfedab2e5cb295220e92f169c64674fc530d6
         - path: tests/blackbox/claude_smoke.py
@@ -371,9 +371,9 @@ nodes:
         - path: proxy/Cargo.lock
           sha256: 09661b6cadf5306856fdb99956967e29c264971f60bb3fa848e710e7e43a0143
         - path: proxy/src/lib.rs
-          sha256: 2211a18b8164a62540a514554c755f4ed2ed06316cbe76bc769343be768e5c26
+          sha256: 04d4362fec8030f653bc9f69d21fa887b54bbfcb43ac915d39e96b459bf15824
         - path: proxy/src/bin/safeyolo.rs
-          sha256: 0c13c7522324cb4c2e1b6a5c912333051ec12ab27a071150b3729f5ef80c6c24
+          sha256: eb294529aeb71cf9e68c6fa6f3f5c8d0206d15ad69895a53b7776bc1b97f1f1c
         - path: proxy/src/jobs/vz-guest-init.sh
           sha256: 7fc4a7442ccf50eea20dad24b7bb5659f69875f7853f11da2bb96665fc25dc4b
         - path: proxy/src/jobs/vz-exec.sh
@@ -699,7 +699,7 @@ nodes:
         - path: proxy/tests/native_coord/federation.rs
           sha256: 7bfc83e871c120479782f1e0d027a6346de321b819e823d7f985a4d4509edcb7
         - path: proxy/src/agent_api/coord.rs
-          sha256: 288bd7872c898b3fea19a8d4b18d524fecbca1ce5698ba3d809f48e9faee5ba1
+          sha256: 8cf445b43bc0b2b32ff093ded13675ccde4950c68fc335f58569a0b94d5fec89
         - path: proxy/src/agent_api/coord/federation.rs
           sha256: 699b6103139e178606c5280d0e8ecd887de4629f13894edd69eb479e49991aef
         - path: proxy/src/agent_api/coord/federation/tests.rs

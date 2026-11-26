@@ -274,21 +274,15 @@ pub(crate) async fn report(path: &Path) -> Value {
                 Value::Null,
             ),
         }
-        match fs::read_dir(root.join("logs")) {
-            Ok(_) => check(
-                &mut checks,
-                "Local logs",
-                "pass",
-                "Log directory is readable",
-                "",
-                Value::Null,
-            ),
+        let storage_config = config.clone();
+        match tokio::task::spawn_blocking(move || storage_checks(&storage_config)).await {
+            Ok(storage) => checks.extend(storage),
             Err(error) => check(
                 &mut checks,
-                "Local logs",
-                "warn",
+                "Local storage",
+                "unknown",
                 error,
-                "Inspect the selected instance's logs directory and permissions.",
+                "Retry doctor; local storage was not inspected.",
                 Value::Null,
             ),
         }
@@ -301,6 +295,7 @@ pub(crate) async fn report(path: &Path) -> Value {
             "Guest inputs",
             "Sandbox runtime",
             "Local logs",
+            "Retained flow store",
         ] {
             check(
                 &mut checks,
@@ -397,14 +392,25 @@ pub(crate) async fn report(path: &Path) -> Value {
     if admin {
         let result = pipeline(path).await;
         let verdict = result["verdict"].as_str().unwrap_or("unknown").to_owned();
+        let no_listeners = result["agents"].as_array().is_some_and(Vec::is_empty);
         check(
             &mut checks,
             "Request pipeline and egress controls",
             &verdict,
-            "Local requests exercise the configured listeners and control trace; no external test traffic",
-            &format!(
-                "Inspect failed pipeline findings with {command} doctor --json; repair the named control or listener."
-            ),
+            if no_listeners {
+                "No agent proxy listeners are configured; no requests were probed"
+            } else {
+                "Local requests exercise the configured listeners and control trace; no external test traffic"
+            },
+            &if no_listeners {
+                format!(
+                    "Run {command} agent launch from your workspace, then rerun {command} doctor."
+                )
+            } else {
+                format!(
+                    "Inspect failed pipeline findings with {command} doctor --json; repair the named control or listener."
+                )
+            },
             result,
         );
         for (name, endpoint) in [
@@ -423,6 +429,29 @@ pub(crate) async fn report(path: &Path) -> Value {
             .await
             {
                 Ok(value) => {
+                    if name == "Pending approvals" {
+                        match value["approvals"].as_array() {
+                            Some(approvals) => check(
+                                &mut checks,
+                                name,
+                                if approvals.is_empty() { "pass" } else { "warn" },
+                                format!("{} pending operator decisions", approvals.len()),
+                                if approvals.is_empty() { String::new() } else {
+                                    format!("Run {command} watch to review the agent, destination and requested authority before deciding.")
+                                }.as_str(),
+                                json!({"count":approvals.len()}),
+                            ),
+                            None => check(
+                                &mut checks,
+                                name,
+                                "unknown",
+                                "The current approvals response has no decision list",
+                                &format!("Retry {command} approvals; an unavailable list is not an empty queue."),
+                                Value::Null,
+                            ),
+                        }
+                        continue;
+                    }
                     if name == "Coord message plane" {
                         let connected = value["local_connection"] == "Connected";
                         let next = format!(
@@ -569,6 +598,155 @@ pub(crate) async fn report(path: &Path) -> Value {
     let failed = counts["fail"].as_u64().unwrap_or(0) + counts["unknown"].as_u64().unwrap_or(0) > 0;
     json!({"root":root,"checks":checks,"counts":counts,"exit_code":i32::from(failed),
         "verdict":if failed { "fail" } else if counts["warn"].as_u64().unwrap_or(0) > 0 { "warn" } else { "pass" }})
+}
+
+fn storage_checks(config: &crate::Config) -> Vec<Value> {
+    use std::{fs, os::fd::AsRawFd};
+    let mut checks = Vec::new();
+    let logs = (|| -> Result<Value, Error> {
+        let Some(path) = &config.audit_log_path else {
+            return Ok(json!({"enabled":false}));
+        };
+        let bytes = match fs::metadata(path) {
+            Ok(meta) if meta.is_file() => Some(meta.len()),
+            Ok(_) => return Err(format!("{} is not an ordinary audit file", path.display()).into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let mut parent = path.parent().unwrap_or(Path::new("."));
+        while !parent.exists() {
+            parent = parent
+                .parent()
+                .ok_or("No existing audit parent directory")?;
+        }
+        let directory = fs::File::open(parent)?;
+        let mut space = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // fstatvfs initializes the complete structure on success. The open
+        // directory keeps this observation bound to the selected filesystem.
+        if unsafe { libc::fstatvfs(directory.as_raw_fd(), space.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let space = unsafe { space.assume_init() };
+        let free_bytes = space.f_bavail.saturating_mul(space.f_frsize);
+        Ok(json!({"enabled":true,"path":path,"bytes":bytes,"free_bytes":free_bytes}))
+    })();
+    match logs {
+        Ok(value) if value["enabled"] == false => check(
+            &mut checks,
+            "Local logs",
+            "pass",
+            "Audit file output is disabled",
+            "",
+            value,
+        ),
+        Ok(value) => {
+            let low = value["free_bytes"].as_u64().unwrap_or(0) < 1_000_000_000;
+            let large = value["bytes"].as_u64().unwrap_or(0) > 100_000_000;
+            check(
+                &mut checks,
+                "Local logs",
+                if low {
+                    "fail"
+                } else if large {
+                    "warn"
+                } else {
+                    "pass"
+                },
+                format!(
+                    "{}: {}; {} bytes free",
+                    value["path"].as_str().unwrap_or_default(),
+                    value["bytes"].as_u64().map_or_else(
+                        || "not created yet".to_owned(),
+                        |bytes| format!("{bytes} bytes")
+                    ),
+                    value["free_bytes"]
+                ),
+                if low {
+                    "Free space on the audit filesystem; preserve logs needed for current work."
+                } else if large {
+                    "Inspect the configured audit rotation and retain needed events before removing old logs."
+                } else {
+                    ""
+                },
+                value,
+            );
+        }
+        Err(error) => check(
+            &mut checks,
+            "Local logs",
+            "unknown",
+            error,
+            "Inspect the configured audit path and its parent permissions; unavailable logs are not an empty history.",
+            Value::Null,
+        ),
+    }
+    let path = &config.flow_store_db_path;
+    let flows = (|| -> Result<Option<Value>, Error> {
+        let meta = match fs::metadata(path) {
+            Ok(meta) if meta.is_file() => meta,
+            Ok(_) => return Err("Not an ordinary flow database file".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let connection = rusqlite::Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        connection.busy_timeout(std::time::Duration::from_millis(500))?;
+        let count: i64 =
+            connection.query_row("SELECT COUNT(*) FROM flows", [], |row| row.get(0))?;
+        Ok(Some(
+            json!({"path":path,"bytes":meta.len(),"count":count,"enabled":config.flow_store_enabled}),
+        ))
+    })();
+    match flows {
+        Ok(Some(value)) => {
+            let large = value["bytes"].as_u64().unwrap_or(0) > 500_000_000;
+            check(
+                &mut checks,
+                "Retained flow store",
+                if large { "warn" } else { "pass" },
+                format!(
+                    "{} flows, {} bytes at {}; capture {}",
+                    value["count"],
+                    value["bytes"],
+                    path.display(),
+                    if config.flow_store_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                ),
+                if large {
+                    "Inspect retained flows and configured retention before pruning needed evidence."
+                } else {
+                    ""
+                },
+                value,
+            );
+        }
+        Ok(None) => check(
+            &mut checks,
+            "Retained flow store",
+            "pass",
+            if config.flow_store_enabled {
+                "No retained database yet; it is created when capture starts"
+            } else {
+                "Capture disabled; no retained database"
+            },
+            "",
+            json!({"path":path,"enabled":config.flow_store_enabled,"exists":false}),
+        ),
+        Err(error) => check(
+            &mut checks,
+            "Retained flow store",
+            "unknown",
+            format!("{}: {error}", path.display()),
+            "Inspect the configured flow database and its permissions; doctor did not create or repair it.",
+            Value::Null,
+        ),
+    }
+    checks
 }
 
 pub(crate) fn show(report: &Value) {

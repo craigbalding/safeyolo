@@ -331,6 +331,17 @@ def test_smoke_receipt_uses_existing_installed_reports(tmp_path, fault):
         assert result["host_id"] == "physical-test-mac" and result["lane"] == "vz"
 
 
+def test_failed_install_reports_its_run_before_requiring_installed_reports(tmp_path):
+    reports = tmp_path / "failed-install"
+    _, _, run, _ = report_files(reports)
+    run["exit"] = 2
+    (reports / "retained-run.json").write_text(json.dumps(run))
+    (reports / "installed-inputs.json").unlink()
+    (reports / "guest/installed-sections.json").unlink()
+    with pytest.raises(ValueError, match="successful retained installed guest run"):
+        release.smoke_result(reports, "https://example.test/failed-run")
+
+
 def test_receipt_retry_looks_up_the_original_stage_attempt(monkeypatch):
     monkeypatch.setenv("GITHUB_RUN_ID", "123")
     monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "3")

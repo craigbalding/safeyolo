@@ -178,6 +178,7 @@ def codex_login_launch(tmp_path, _binary_cache):
     instance.arguments = ["agent", "launch", str(workspace), "--name", "first", "--harness", "codex"]
     instance.login = login
     instance.config_path = root / "config.toml"
+    instance.policy = root / "policy.toml"
 
     def cli(*args):
         result = subprocess.run([str(binary), "--instance-dir", str(root), "--json", *args],
@@ -213,7 +214,7 @@ def _codex_choice(until, master, *, new=True, subscription=True):
         os.write(master, b"y\n")
         until(b"Authentication [host-vault/client")
         os.write(master, b"client\n")
-    output = until(b"Codex login [displayed action / file PATH")
+    output = until(b"Codex login [")
     assert b"client-held (readable by this guest)" in output
     if subscription:
         assert b"does not change explicit network/credential denials" in output
@@ -264,7 +265,7 @@ def test_return_launch_reuses_saved_codex_without_repeating_the_harness(codex_lo
     # Both workspace lookup and explicit name retain generated/custom names.
     for selection in ([workspace], [workspace, "--name", name], ["--name", name]):
         with terminal(instance, ["agent", "launch", *selection]) as (process, master, until):
-            output = until(b"Codex login [displayed action / file PATH")
+            output = until(b"Codex login [")
             assert f"Reusing agent {name} ({identifier})".encode() in output
             assert b"Run this setup" not in output
             os.write(master, b"q\n")
@@ -297,12 +298,12 @@ def test_return_launch_resolves_ambiguity_and_respects_explicit_harness(codex_lo
         output = until(b"Agent name")
         assert b"first" in output and b"other" in output
         os.write(master, b"first\n")
-        until(b"Codex login [displayed action / file PATH")
+        until(b"Codex login [")
         os.write(master, b"q\n")
         assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
     # An explicit harness selects the matching saved binding before any default.
     with terminal(instance, ["agent", "launch", workspace, "--harness", "codex"]) as (process, master, until):
-        output = until(b"Codex login [displayed action / file PATH")
+        output = until(b"Codex login [")
         assert b"Reusing agent first" in output and b"Agent name" not in output
         os.write(master, b"q\n")
         assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
@@ -565,7 +566,7 @@ def test_codex_login_refusal_and_failed_selection_create_no_authority(codex_logi
         else:
             if choice == "bad_input":
                 os.write(master, b"file /no/such/login.json\n")
-                output = until(b"Codex login [displayed action / file PATH")
+                output = until(b"Codex login [")
                 assert b"Selected input is missing" in output
             os.write(master, b"q\n")
             until(b"Launch cancelled")
@@ -612,7 +613,7 @@ def test_codex_login_import_errors_preserve_owned_login_and_allow_cancellation(c
         original = instance.login.read_bytes()
         os.write(master, ("file " + str(source)).encode() + b"\n")
         recoverable = failure in ("malformed", "directory")
-        output = until(b"Codex login [displayed action / file PATH" if recoverable else diagnostic)
+        output = until(b"Codex login [" if recoverable else diagnostic)
         assert diagnostic in output
         for secret in (b"synthetic-first-launch-access", b"synthetic-first-launch-refresh", b"invalid-synthetic-login"):
             assert secret not in output
@@ -631,6 +632,80 @@ def test_codex_login_import_errors_preserve_owned_login_and_allow_cancellation(c
         assert auth.is_symlink()
     else:
         assert not auth.exists()
+    assert not (instance.root / "data/proxy-process.json").exists()
+
+
+@pytest.mark.parametrize("sources", ["absent", "host", "agent", "both", "unsupported", "unreadable"])
+def test_codex_auth_offers_only_actions_supported_by_inspected_sources(codex_login_launch, sources):
+    instance = codex_login_launch
+    login = instance.login.read_bytes()
+    with terminal(instance, instance.arguments) as (process, master, until):
+        _codex_choice(until, master)
+        os.write(master, b"q\n")
+        assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
+    auth = instance.root / "agents/first/home/.codex/auth.json"
+    if sources in ("agent", "both"):
+        auth.write_bytes(login)
+        auth.chmod(0o600)
+        artifacts, _, _ = native_inputs()
+        subprocess.run([str(artifacts / "safeyolo-coord"), "codex-state", "--home",
+                        str(auth.parent.parent), "adopt"], check=True, capture_output=True, text=True, timeout=15)
+    if sources in ("absent", "agent"):
+        instance.login.unlink()
+    elif sources == "unsupported":
+        instance.login.write_text('{"tokens":"unsupported-input"}\n')
+    elif sources == "unreadable":
+        instance.login.chmod(0)
+    original_policy = instance.policy.read_bytes()
+    with terminal(instance, ["agent", "auth", "first"]) as (process, master, until):
+        until(b"Authentication [client/host-vault")
+        os.write(master, b"client\n")
+        output = until(b"q: cancel]: ")
+        expected_agent = b"found" if sources in ("agent", "both") else b"missing"
+        expected_host = {"absent": b"missing", "agent": b"missing", "unsupported": b"unsupported",
+                         "unreadable": b"unreadable"}.get(sources, b"found")
+        assert b"Agent login: " + expected_agent in output
+        assert b"Host login: " + expected_host in output
+        assert (b"  h  Copy" in output) == (sources == "host")
+        assert (b"  a  Authorize" in output) == (sources in ("agent", "both"))
+        assert (b"file PATH" in output) == (sources not in ("agent", "both"))
+        assert b"synthetic-first-launch-access" not in output
+        if sources in ("agent", "both"):
+            assert b"does not force a new sign-in" in output
+        os.write(master, b"q\n")
+        assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
+    if sources == "unreadable":
+        instance.login.chmod(0o600)
+    assert auth.exists() == (sources in ("agent", "both"))
+    if auth.exists():
+        assert auth.read_bytes() == login
+    assert instance.policy.read_bytes() == original_policy
+    assert instance.cli("credentials", "list") == []
+    assert not (instance.root / "data/proxy-process.json").exists()
+
+
+def test_codex_authorization_failure_reports_and_retains_the_completed_copy(codex_login_launch):
+    instance = codex_login_launch
+    original = instance.login.read_bytes()
+    with terminal(instance, instance.arguments) as (process, master, until):
+        _codex_choice(until, master)
+        # A failed storage write happens after the actual selected-login copy.
+        # This owned directory supplies that failure without changing the source.
+        policy = instance.policy.read_bytes()
+        os.write(master, b"h\n")
+        until(b"Choose credential storage")
+        (instance.root / "data/credentials.enc").mkdir()
+        os.write(master, b"local\n")
+        output = until(b"no failed authorization is retried automatically")
+        assert b"Any completed copy is retained" in output
+        assert b"agent auth first --json" in output
+        assert b"synthetic-first-launch-access" not in output
+        assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
+    auth = instance.root / "agents/first/home/.codex/auth.json"
+    assert auth.read_bytes() == original == instance.login.read_bytes()
+    assert auth.stat().st_mode & 0o777 == 0o600
+    assert instance.policy.read_bytes() == policy
+    assert (instance.root / "data/credentials.enc").is_dir()
     assert not (instance.root / "data/proxy-process.json").exists()
 
 
@@ -712,7 +787,7 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
                     os.write(master, b"n\n")
                 output = b""
                 if harness == "codex":
-                    output = until(b"Codex login [displayed action / file PATH")
+                    output = until(b"Codex login [")
                     os.write(master, b"\n")
                 output += until(b"First-agent sandbox/harness startup failed", timeout=30)
                 assert b"Preparing the shipped harness setup" in output
@@ -756,7 +831,7 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
             with terminal(instance, ["agent", "launch", str(workspace), "--launcher", "tmux-window", *harness_args]) as (process, master, until):
                 output = b""
                 if harness == "codex":
-                    output = until(b"Codex login [displayed action / file PATH")
+                    output = until(b"Codex login [")
                     os.write(master, b"\n")
                 output += until(b"First-agent sandbox/harness startup failed", timeout=30)
                 assert b"Reusing agent first" in output
@@ -777,7 +852,7 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
                     until(b"Copy these available host inputs?")
                     os.write(master, b"n\n")
                 if harness == "codex":
-                    until(b"Codex login [displayed action / file PATH")
+                    until(b"Codex login [")
                     os.write(master, b"\n")
                 output = until(b"First-agent sandbox/harness startup failed", timeout=30)
                 assert diagnostic in output, output

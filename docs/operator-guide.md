@@ -39,6 +39,13 @@ probes and reports pass, warning, failure, skip and unknown counts. Its exit
 status is 1 for a failed or unknown required check, and 0 otherwise. It does not
 start or repair services. A skipped check is not a pass.
 
+Doctor reads the configured audit path and retained flow database, including
+when the proxy is stopped. It reports log size, available audit disk space,
+retained flow count and unreadable storage. These checks do not create a missing
+database or repair damaged evidence. A successful current approvals read reports
+the number of pending decisions; review them with `safeyolo watch` before deciding.
+The live traffic view and retained database are separate observations.
+
 Keep the operator credential in the instance's `data/admin_token` on the host.
 
 For connections between instances and separately scoped support, notices,
@@ -170,7 +177,7 @@ the publication gate does not authenticate you to the app. HTTP streaming and
 WebSocket connections use the same bound guest-port transport.
 
 No desktop or graphical packages are needed. The default lifetime is 900
-seconds; `--ttl SECONDS` selects up to 86400 seconds. `--tailnet-port PORT`
+seconds; `--ttl SECONDS` selects another positive lifetime. `--tailnet-port PORT`
 selects a different unused HTTPS port when the agent's reserved port is already
 occupied. Use the same optional tailnet port when stopping that publication.
 Stop, expiry or a changed guest run disconnects its viewers and removes only
