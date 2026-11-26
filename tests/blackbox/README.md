@@ -1,6 +1,6 @@
 # Installed blackbox tests
 
-Use this suite to check the installed SafeYolo package, real guest isolation,
+Use this suite to check the installed SafeYOLO package, real guest isolation,
 agent workloads, access approvals and lifecycle. Rust proxy process and
 protocol contracts live in [`tests/proxy_contracts`](../proxy_contracts/).
 A hosted process or package result does not prove KVM or Apple VZ isolation.
@@ -201,7 +201,7 @@ installation; the source scripts and examples do not establish deployment.
 ### Native Claude tool smoke
 
 The optional `claude` section checks shipped Claude setup, the native executable,
-baseline, configuration and readable SafeYolo skill. It runs one headless task
+baseline, configuration and readable SafeYOLO skill. It runs one headless task
 through the unchanged staged command and the `claude` / `inference` gateway.
 The task reads a fresh marker and the skill, then writes a known workspace file.
 Success requires completed client and tool results, independently checked file
@@ -834,7 +834,7 @@ return. This is operator test tooling, not another user setup command or a
 product acceptance result.
 
 Use one newly owned OS-only Ubuntu 24.04 AMD64 host as its ordinary user.
-No SafeYolo proxy or sandbox must already run. Stage only this observer and
+No SafeYOLO proxy or sandbox must already run. Stage only this observer and
 `harness/process_identity.py` outside the product checkout, as in the
 `public-install` job in `.github/workflows/installed-arm64.yml`. Python and any
 outer terminal tooling are observer inputs. Preserve the product's normal
@@ -929,7 +929,7 @@ platform inputs above before running:
 ./tests/blackbox/run-lane.sh systrap --verbose
 ```
 
-If SafeYolo and platform inputs are already prepared, run a section without
+If SafeYOLO and platform inputs are already prepared, run a section without
 reinstalling. `SAFEYOLO_CONFIG_DIR` names the prepared source instance;
 `SAFEYOLO_TEST_CONFIG_DIR` names the separate live test instance:
 

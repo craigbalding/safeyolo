@@ -66,7 +66,7 @@ contract binding and credential permission remain separate checks.
 
 The gateway can limit routes even when the provider token has broader access.
 A provider-scoped token adds an independent limit at the upstream service.
-The service's `scopes` list describes provider permissions; SafeYolo does not
+The service's `scopes` list describes provider permissions; SafeYOLO does not
 reduce a token's provider permissions from those labels.
 
 Agents can discover services through `GET /gateway/services` and submit a

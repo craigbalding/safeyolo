@@ -1,4 +1,4 @@
-# SafeYolo Contrib
+# SafeYOLO Contrib
 
 Example integrations. Copy and adapt for your own use.
 
@@ -22,7 +22,7 @@ Example integrations. Copy and adapt for your own use.
 | `../proxy/src/bin/safeyolo-coord.rs` | Coord client, Model Context Protocol (MCP) adapter, bounded Codex/Pi supervision and checkpoint recovery |
 | `codex-coord-supervisor-fake-codex.sh` | Observable no-model Codex substitute for nested supervisor labs |
 | `coord-mcp-bootstrap.sh` | Shared idempotent coord MCP staging/registration helper used by the bundled Claude and Codex setup scripts |
-| `safeyolo-coord-mcp-launcher.sh` | SafeYolo-owned launcher that restores the current proxy/TLS environment before starting the coord adapter |
+| `safeyolo-coord-mcp-launcher.sh` | SafeYOLO-owned launcher that restores the current proxy/TLS environment before starting the coord adapter |
 | `mise-shell-host-setup.sh` | Minimal BYOA -- drops into an interactive shell with mise ready; install whatever tools you want with `mise use -g ...` |
 | `lib/stage-safeyolo-context.sh` | Shared idempotent baseline/skill staging used by the bundled host scripts |
 | `lib/stage-coord-native.sh` | Stages the checked Linux Coord executable and invokes role/context setup |

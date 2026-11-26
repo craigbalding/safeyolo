@@ -1,6 +1,6 @@
 # Log inspection
 
-The optional Python `logtail.py` example was removed with SafeYolo's
+The optional Python `logtail.py` example was removed with SafeYOLO's
 Python retirement. Its custom summaries and dashboard are retired.
 
 Use the installed `logs` and `traffic` commands described in

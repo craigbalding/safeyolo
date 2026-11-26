@@ -1,12 +1,12 @@
 ---
 name: safeyolo
-description: Help the operator use SafeYolo and complete product tasks, including creating or launching agents, granting peer support, configuring workers, sharing guest services with agents or operators, connecting services, discovering capabilities, changing policy through its approval owner, and coordinating work. Also use for proxy/TLS failures; non-HTTP transports, UDP media, relays or gateways; policy or credential blocks; HTTP 403/428/429/503/508 or X-Blocked-By responses; surprising guest package, sudo, setpriv, apt, apk, pip, or mise behavior; debugger/profiler denials; recovery shells; guest-browser and desktop use; Agent API flows, budgets, circuit breakers and approvals; and sandbox introspection. Do not invoke merely because the repository is SafeYolo, or for ordinary healthy sandbox commands, routine factory handoffs, or GitHub App Connector work already specified by injected instructions.
+description: Help the operator use SafeYOLO and complete product tasks, including creating or launching agents, granting peer support, configuring workers, sharing guest services with agents or operators, connecting services, discovering capabilities, changing policy through its approval owner, and coordinating work. Also use for proxy/TLS failures; non-HTTP transports, UDP media, relays or gateways; policy or credential blocks; HTTP 403/428/429/503/508 or X-Blocked-By responses; surprising guest package, sudo, setpriv, apt, apk, pip, or mise behavior; debugger/profiler denials; recovery shells; guest-browser and desktop use; Agent API flows, budgets, circuit breakers and approvals; and sandbox introspection. Do not invoke merely because the repository is SafeYOLO, or for ordinary healthy sandbox commands, routine factory handoffs, or GitHub App Connector work already specified by injected instructions.
 ---
 
-# Help the operator use SafeYolo
+# Help the operator use SafeYOLO
 
-Help the operator reach the requested result through SafeYolo's existing
-interfaces and authority. Treat SafeYolo as the outer security boundary;
+Help the operator reach the requested result through SafeYOLO's existing
+interfaces and authority. Treat SafeYOLO as the outer security boundary;
 do not try to bypass or weaken it.
 
 ## Carry the task through
@@ -181,7 +181,7 @@ for filters, pagination, retention and attribution limits.
   [access choices](references/web-services.md#choose-the-consumer-and-access-path).
   Offer the normal typed `desktop.present` operator action when a preview
   helps the task. Use `GET /operator-actions` to discover its availability.
-  Agent reasons remain untrusted; SafeYolo owns the consequences and approval.
+  Agent reasons remain untrusted; SafeYOLO owns the consequences and approval.
   After a typed action is denied or unavailable, do not automatically substitute
   an equivalent privileged host command or retry with different reasons to get
   another prompt. Read the canonical result and report the unmet need. This
@@ -190,22 +190,22 @@ for filters, pagination, retention and attribution limits.
 - Read [Schedule guest shell work](references/scheduling.md) for cron/at,
   current execution environment, Coord and exact tmux-pane examples, job state,
   diagnostics and image rollout.
-- Read [Contributing to the SafeYolo repo](references/contributing-to-safeyolo.md)
-  when editing files in the SafeYolo checkout itself: any pre-commit or CI
+- Read [Contributing to the SafeYOLO repo](references/contributing-to-safeyolo.md)
+  when editing files in the SafeYOLO checkout itself: any pre-commit or CI
   drift check firing (`check_skill_markers`, `check_doc_cli_flags`,
   `check_doc_constants`, `check_doc_links`, `check_doc_forbidden`); adding
   claims to user-facing docs (`README.md`, `SECURITY.md`, `docs/*`, `guest/README.md`,
   `cli/README.md`, `contrib/*.md`); or generally "why is CI red after I only
   changed docs / do I need `pre-commit install` here". Not for unrelated
-  project work — SafeYolo being the sandbox boundary does not make every
-  in-sandbox task SafeYolo development.
+  project work — SafeYOLO being the sandbox boundary does not make every
+  in-sandbox task SafeYOLO development.
 
 Read only the reference needed for the current task.
 
 ## Troubleshooting and acceptance graphs
 
 Use the graphs in [`references/graph/`](references/graph/) as decision aids
-rather than re-deriving SafeYolo's plane and acceptance stories every time.
+rather than re-deriving SafeYOLO's plane and acceptance stories every time.
 Each `.yaml` is the source of truth; the sibling `.mmd` is a mermaid render
 for a human operator watching over my shoulder. Every symptom node carries a
 `keywords:` list so binding an observation or claim to an entry can be
@@ -216,7 +216,7 @@ inside it:
 
 | Graph | Entry question |
 |---|---|
-| [`triage-request-failing.yaml`](references/graph/triage-request-failing.yaml) | "A request through SafeYolo failed / was blocked / behaved weirdly" |
+| [`triage-request-failing.yaml`](references/graph/triage-request-failing.yaml) | "A request through SafeYOLO failed / was blocked / behaved weirdly" |
 | [`triage-credential-guard.yaml`](references/graph/triage-credential-guard.yaml) | "Why is credential-guard questioning my credential?" |
 | [`triage-approval-required.yaml`](references/graph/triage-approval-required.yaml) | "The proxy said `wait_for_approval` — what now?" |
 | [`triage-flow-inspection.yaml`](references/graph/triage-flow-inspection.yaml) | "Why isn't `/api/flows/search` returning what I expect?" |
@@ -225,7 +225,7 @@ inside it:
 | [`triage-guest-tools-and-sudo.yaml`](references/graph/triage-guest-tools-and-sudo.yaml) | "sudo / apt / mise / package install failing" |
 | [`triage-kernel-observability.yaml`](references/graph/triage-kernel-observability.yaml) | "perf / eBPF / bpftrace / ftrace / kprobe / uprobe doesn't work inside the guest" |
 | [`triage-desktop-preview.yaml`](references/graph/triage-desktop-preview.yaml) | "The graphical guest desktop or its browser is not working" |
-| [`accept-safeyolo.yaml`](references/graph/accept-safeyolo.yaml) | "Which trusted tool proves this SafeYolo acceptance claim?" |
+| [`accept-safeyolo.yaml`](references/graph/accept-safeyolo.yaml) | "Which trusted tool proves this SafeYOLO acceptance claim?" |
 
 Graphs cross-reference each other via a top-level `see_also:` block when a
 symptom overlaps concerns — check the target graph before authoring a new
@@ -246,7 +246,7 @@ edge in the current one.
    checks supported by the available evidence and existing authority.
 
 An installed skill does not include the repository's graph renderer. In a
-SafeYolo source checkout, an agent may contribute a missing node or edge to
+SafeYOLO source checkout, an agent may contribute a missing node or edge to
 the YAML and regenerate its `.mmd` with `scripts/render_skill_graph.py`.
 Repository maintenance is optional and is not a prerequisite for diagnosis.
 
@@ -262,6 +262,6 @@ Repository maintenance is optional and is not a prerequisite for diagnosis.
   only its actual host authority; this skill grants none.
 - Guest `sudo` is an intended capability, not host elevation. Keep its effects
   inside the declared writable mounts and do not confuse it with permission to
-  alter host policy or SafeYolo's security boundary.
+  alter host policy or SafeYOLO's security boundary.
 - When operator action is needed, explain why and carry the goal through the
   concrete handoff and subsequent verification.

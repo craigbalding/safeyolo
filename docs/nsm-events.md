@@ -17,7 +17,7 @@ issue #581.
 
 All native audit families use `schema_version: 2`: security, gateway, traffic,
 operations, admin, agent, Coord and network events. This number identifies
-an audit format generation, not a SafeYolo product release. Event prefixes match
+an audit format generation, not a SafeYOLO product release. Event prefixes match
 their kind. A current control event does not become scoped NSM evidence merely
 because it uses the same envelope generation.
 
@@ -449,7 +449,7 @@ character, and substitutes `9` for a non-ASCII endpoint. An absent ALPN uses
 `00`. This is separate from the JA4 client hexadecimal fallback.
 
 JA4S is subject to [FoxIO License 1.1](../proxy/licenses/ja4s-FoxIO-1.1.txt),
-with its [JA4S notice](../proxy/licenses/ja4s-NOTICE.txt), alongside SafeYolo's
+with its [JA4S notice](../proxy/licenses/ja4s-NOTICE.txt), alongside SafeYOLO's
 MIT license. FoxIO restricts direct and indirect monetization, hosted or managed
 services for others, and maintenance, support or development services. These
 notices do not grant OEM or other commercial rights. Native bundles include the
@@ -486,7 +486,7 @@ of a handshake. The observer holds at most one bounded ServerHello message and
 one record header transiently. It drops raw bytes after classification and
 stores no extension payloads. Observation does not reject or change traffic.
 
-The server responds to SafeYolo's upstream ClientHello. This fingerprint does
+The server responds to SafeYOLO's upstream ClientHello. This fingerprint does
 not describe the intercepted agent's original ClientHello. The outer parent's
 TLS handshake cannot supply `tls_server_hello`; its negotiated evidence stays
 in the separate parent session. A provider route can supply observed TLS bytes

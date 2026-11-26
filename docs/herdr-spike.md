@@ -1,7 +1,7 @@
 # Herdr terminals and claimed work
 
 Use Herdr **terminal user interface (TUI) 0.9.5** on the trusted Linux operator
-host to group separately sandboxed SafeYolo conversations. Each pane runs the
+host to group separately sandboxed SafeYOLO conversations. Each pane runs the
 existing native terminal command. Names select panes, and native identities
 identify the corresponding agents and launches. Herdr client reattachment
 retains those foreground conversations.
@@ -139,7 +139,7 @@ name focus and pane reader. It checks the claim tokens at the display limits,
 clears them, and renders titles and references with the documented layout.
 The rendered control also checks the count and warning at the default 26-column
 sidebar width for incomplete room pages,
-omitted display rows and unavailable reads. It starts no SafeYolo sandbox or model.
+omitted display rows and unavailable reads. It starts no SafeYOLO sandbox or model.
 Without the variable, only the live protocol control is skipped. The remaining
 controls exercise wrapper terminal behavior, ownership selection, claim
 release/completion, unavailable and malformed reads, and projection limits.

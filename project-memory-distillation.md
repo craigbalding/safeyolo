@@ -2,7 +2,7 @@
 
 ## Summary
 
-SafeYolo needs a lightweight way to preserve durable decisions without stuffing
+SafeYOLO needs a lightweight way to preserve durable decisions without stuffing
 future agent context with chat transcripts.
 
 Most important decisions are not made inside agent-to-agent Coord discussions. They
@@ -25,7 +25,7 @@ The right model is loosely coupled:
 - Avoid treating raw chat logs as operational truth.
 - Support decisions made in operator-agent coding sessions, Coord discussions,
   reviews, commits, and investigations.
-- Keep the first version simple enough to use without new SafeYolo machinery.
+- Keep the first version simple enough to use without new SafeYOLO machinery.
 
 ## Non-Goals
 
@@ -62,7 +62,7 @@ agents to read before working in the repo.
 Other scopes can use different homes later:
 
 - agent-specific memory: agent home
-- global ways of working: SafeYolo config/data directory
+- global ways of working: SafeYOLO config/data directory
 - organization/team memory: external docs or a shared repo
 
 The first implementation should focus on repo-local memory.
@@ -145,7 +145,7 @@ operator reviews as part of normal code/doc review
 future agents read memory before working
 ```
 
-Later SafeYolo features could formalize this:
+Later SafeYOLO features could formalize this:
 
 - `safeyolo memory propose`
 - `safeyolo memory approve`

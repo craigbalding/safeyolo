@@ -160,7 +160,7 @@ return HTTP 503; any pending action still requires reconciliation.
 
 On a fresh or self-hosted Mattermost deployment, a Mattermost System Admin may
 first need to enable **System Console > Integrations > Bot Accounts > Enable
-Bot Account Creation**. Create a dedicated SafeYolo bot, add it directly as a
+Bot Account Creation**. Create a dedicated SafeYOLO bot, add it directly as a
 normal member of every mapped channel, and do not grant it System Admin.
 
 Keep these operator-owned files outside the repository:
@@ -231,7 +231,7 @@ Run any operator-owned HTTPS reverse proxy that preserves the path and forwards
 only to `http://127.0.0.1:8765`. Its public origin/path must exactly equal
 `public_callback_base_url`. Keep the adapter bound to loopback; do not expose
 its port directly. Tunnel and certificate lifecycle belong to that external
-proxy or host supervisor, not SafeYolo core.
+proxy or host supervisor, not SafeYOLO core.
 
 ### Tailscale Funnel recipe
 

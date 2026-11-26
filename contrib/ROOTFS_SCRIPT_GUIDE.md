@@ -1,6 +1,6 @@
 # Rootfs scripts
 
-Rootfs scripts replace SafeYolo's default Debian-trixie base rootfs with a
+Rootfs scripts replace SafeYOLO's default Debian-trixie base rootfs with a
 custom distribution. The source can be an Open Container Initiative (OCI)
 image or a rootfs tarball. Prepare the custom image on a Linux builder with the shell inputs below,
 then supply the result to an installed instance. The CLI does
@@ -38,7 +38,7 @@ for selection, assessment and rollback limits.
 You don't need a custom rootfs unless you actually want a different
 distro. The default base (Debian trixie with `mise` plus a compact
 agent-oriented Unix toolkit) covers the
-common agent workflows and ships with SafeYolo. Reach for a rootfs-script
+common agent workflows and ships with SafeYOLO. Reach for a rootfs-script
 when you're building something specialised — a pentest toolbox, a
 scientific-Python stack with native libs, a minimal shell over a weird
 distro.
@@ -57,7 +57,7 @@ chooses outputs and owns their temporary work directory and cleanup:
 | `SAFEYOLO_GUEST_SRC_DIR` | Absolute path to the source checkout's `guest/` directory. Contains `rootfs/safeyolo-guest-init`, `rootfs/safeyolo-sudo`, and `install-guest-common.sh`. |
 | `SAFEYOLO_TARGET_ARCH` | `arm64` or `amd64`. Your script must pull or build binaries for this arch. |
 | `SAFEYOLO_ROOTFS_BASE` | The profile runner's declared pinned registry input, without `docker://`. Kali uses this value ahead of its direct-shell `KALI_IMAGE` override. |
-| `SAFEYOLO_ROOTFS_OUT_CACHE_PATHS` | Absolute path of a host-side file where the script declares per-distro package cache dirs (one absolute in-rootfs path per line, e.g. `/var/cache/apt`). SafeYolo bind-mounts each path to a persistent per-agent dir so runtime `apt install` / `apk add` doesn't re-download on restart. Write an empty file if the distro has no cache worth persisting. |
+| `SAFEYOLO_ROOTFS_OUT_CACHE_PATHS` | Absolute path of a host-side file where the script declares per-distro package cache dirs (one absolute in-rootfs path per line, e.g. `/var/cache/apt`). SafeYOLO bind-mounts each path to a persistent per-agent dir so runtime `apt install` / `apk add` doesn't re-download on restart. Write an empty file if the distro has no cache worth persisting. |
 
 Exactly one output variable is set for each invocation:
 
@@ -143,10 +143,10 @@ Inside that guest, `/safeyolo/guest-desktop check` reports missing inputs and
 
 ## What the rootfs must contain
 
-SafeYolo boots the rootfs without the distribution's init system. The rootfs
+SafeYOLO boots the rootfs without the distribution's init system. The rootfs
 must meet these requirements:
 
-1. **`/usr/local/bin/safeyolo-guest-init`** — SafeYolo's boot orchestrator
+1. **`/usr/local/bin/safeyolo-guest-init`** — SafeYOLO's boot orchestrator
    executes this file as process ID 1. On macOS, the initramfs reaches it through
    `switch_root`. On Linux, the OCI entrypoint executes it directly.
 2. **Compatible guest executables** — boot stages `safeyolo-guest`;
@@ -156,14 +156,14 @@ must meet these requirements:
    guest executables as well as the image's shell and packages.
 3. **The right architecture** — use `$SAFEYOLO_TARGET_ARCH` to pull the
    matching image or bootstrap the right package set.
-4. **These runtime packages**, which SafeYolo's boot scripts rely on:
+4. **These runtime packages**, which SafeYOLO's boot scripts rely on:
    - `bash` (shebang on our init stubs + default shell)
    - `socat` 1.8+ (used by `guest-proxy-forwarder` and
      `guest-shell-bridge`; the 1.8 release added `VSOCK-LISTEN` /
      `VSOCK-CONNECT`, which these pumps require on macOS. Debian trixie,
      Alpine 3.22, Fedora 40+, Arch, and RHEL 9 all ship ≥ 1.8.)
    - `openssh-server` (sshd — entrypoint for `safeyolo agent shell`)
-   - `ca-certificates` (trust store — SafeYolo's man-in-the-middle certificate
+   - `ca-certificates` (trust store — SafeYOLO's man-in-the-middle certificate
      authority (CA) certificate is appended at
      boot by `guest-init-static`)
    - `shadow` or equivalent (provides `useradd`, `usermod`, and `groupadd`;
@@ -171,7 +171,7 @@ must meet these requirements:
    - `sudo` (the distro implementation used for standard command-line
      semantics and hardware-microVM guest elevation; it must include
      `visudo` so the generated policy can be validated)
-   - `setpriv` and `prlimit` from `util-linux` (the SafeYolo sudo shim uses
+   - `setpriv` and `prlimit` from `util-linux` (the SafeYOLO sudo shim uses
      the agent's existing namespace capabilities on rootless Linux gVisor;
      PID 1 uses `prlimit` to set the open-file limit on its numeric process)
 
@@ -189,7 +189,7 @@ distro's.
 
 ### The helper library
 
-`install-guest-common.sh` installs the SafeYolo guest bits into an unpacked
+`install-guest-common.sh` installs the SafeYOLO guest bits into an unpacked
 rootfs tree. Source it from your script:
 
 ```sh
@@ -204,7 +204,7 @@ the official signed checksum before installation. An existing mise executable
 does not skip resolution. Set `GUEST_INPUTS` to an explicit frozen build record
 to reuse its identities; resolution or verification errors fail the build.
 
-The helper also pre-creates SafeYolo's host bind-mount destinations before
+The helper also pre-creates SafeYOLO's host bind-mount destinations before
 Linux remaps the finished tree to its subordinate UID range. Custom builders
 should not defer creation of `/workspace`, `/safeyolo`, `/safeyolo-status`, or
 the CA certificate mount target to agent startup.
@@ -240,7 +240,7 @@ The helper is idempotent — safe to re-run. A custom rootfs that omits the
 helper is skipped, so its agents must not be documented as having
 `sudo -n`. A rootfs that includes sudo but lacks its validation or account
 tools fails during construction rather than producing a partially usable
-image. Alpine may conventionally use `wheel`; SafeYolo still provisions the
+image. Alpine may conventionally use `wheel`; SafeYOLO still provisions the
 named `sudo` group so fresh shells have a consistent contract, while the
 direct user rule is what makes the capability work in pre-existing shells.
 
@@ -436,7 +436,7 @@ boot inputs. Installation does not copy another agent's mutable state.
 ## Using an agent to write rootfs scripts
 
 Writing a rootfs script for a new distro is a good use of an existing
-SafeYolo agent. Share this guide and the existing examples
+SafeYOLO agent. Share this guide and the existing examples
 (`contrib/alpine-minimal/`, `contrib/kali-pentest/`) with it and ask:
 
 > Write a rootfs script for Arch Linux that pulls the official bootstrap

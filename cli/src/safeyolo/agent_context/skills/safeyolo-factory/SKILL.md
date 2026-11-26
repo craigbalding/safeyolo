@@ -1,9 +1,9 @@
 ---
 name: safeyolo-factory
-description: Design, review, prove, troubleshoot, and dogfood SafeYolo supervised factories with an operator. Use before changing a running factory's brief, contract, routes, supervisor, capabilities, recovery, or agent direction, and when an operator wants to create or revise a factory, define roles and handoffs, review factory TOML or role contracts, investigate runtime behavior, estimate a nested factory, test a factory in a controlled nested lab, capture product friction during ordinary use, or exercise features from an agent or human-operator perspective. Apply annotated graphs, cross-contract review, and evidence-led diagnosis without unnecessary gates or factory-specific architecture.
+description: Design, review, prove, troubleshoot, and dogfood SafeYOLO supervised factories with an operator. Use before changing a running factory's brief, contract, routes, supervisor, capabilities, recovery, or agent direction, and when an operator wants to create or revise a factory, define roles and handoffs, review factory TOML or role contracts, investigate runtime behavior, estimate a nested factory, test a factory in a controlled nested lab, capture product friction during ordinary use, or exercise features from an agent or human-operator perspective. Apply annotated graphs, cross-contract review, and evidence-led diagnosis without unnecessary gates or factory-specific architecture.
 ---
 
-# SafeYolo factory operator copilot
+# SafeYOLO factory operator copilot
 
 Help the operator shape and improve a productive, resilient factory. Be the
 design and troubleshooting copilot, not a new controller, runner, queue, or
@@ -131,7 +131,7 @@ selects another attempt after rejection, a signal resolution or an approval.
 - When a controlled tmux lab is appropriate, invoke
   the `safeyolo-lab-controller` skill for the lab mechanics. Say when that
   skill changes or pauses the work.
-- For SafeYolo Agent API, proxy, Coord, approval, or in-sandbox diagnostics,
+- For SafeYOLO Agent API, proxy, Coord, approval, or in-sandbox diagnostics,
   invoke the `safeyolo` skill and follow its security boundary.
 
 Use each harness's native skill invocation: `$skill-name` in Codex or
@@ -174,7 +174,7 @@ obtain any applicable live brief and, for a running factory, approved and
 supervisor-staged snapshot identity or `factory doctor` evidence.
 
 If those sources are not mounted or reachable, ask the operator to mount the
-SafeYolo checkout or provide the exact files. A clearly bounded partial review
+SafeYOLO checkout or provide the exact files. A clearly bounded partial review
 is useful, but label its missing scope and conclusions.
 
 For a live investigation, offer this once and neutrally when it would improve

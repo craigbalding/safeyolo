@@ -1,7 +1,7 @@
-# SafeYolo repository agents
+# SafeYOLO repository agents
 
-This file governs agents working on the SafeYolo repository. It complements,
-and does not replace, the [sandbox baseline](docs/AGENTS.md) that SafeYolo host
+This file governs agents working on the SafeYOLO repository. It complements,
+and does not replace, the [sandbox baseline](docs/AGENTS.md) that SafeYOLO host
 scripts stage into running agents.
 
 Keep `/tmp` for small, throwaway files; use disk-backed storage for repositories
@@ -10,7 +10,7 @@ and large build or test artifacts, then clean them up.
 ## Security boundaries and operator policy
 
 Follow the existing [security model](SECURITY.md#security-model): the host and
-operator are trusted; agent code may be compromised. SafeYolo enforces sandbox
+operator are trusted; agent code may be compromised. SafeYOLO enforces sandbox
 isolation, explicit host mounts, mediated network access, agent identity,
 authorization, and credential protection. Do not weaken those boundaries.
 Within the operator-approved workspace and capabilities, support autonomous
@@ -127,7 +127,7 @@ work into a naming cleanup.
 
 ## Roles
 
-SafeYolo keeps implementation and independent acceptance separate:
+SafeYOLO keeps implementation and independent acceptance separate:
 
 - For native Factory assignments, follow the selected snapshot's role contract.
   The maintained software contracts are in
@@ -147,7 +147,7 @@ its materially relevant discussion define the requested outcome and acceptance
 criteria; the selected role contract defines how the agent works.
 
 Existing repository documentation, [security boundaries](SECURITY.md), operator
-instructions, and SafeYolo sandbox instructions still apply. Identify the exact
+instructions, and SafeYOLO sandbox instructions still apply. Identify the exact
 branch and commit, and the PR when one exists, for work implemented or reviewed.
 
 ## Technical writing
@@ -158,7 +158,7 @@ issues and comments. Use Project fields to show estimates and progress.
 
 For README, quickstart, and onboarding work, use the
 [readme-usability skill](cli/src/safeyolo/agent_context/skills/readme-usability/SKILL.md).
-It includes a reference for SafeYolo owner priorities.
+It includes a reference for SafeYOLO owner priorities.
 
 Apply the project [technical-writing rule and lossless review
 checklist](docs/technical-writing.md) to every authoritative prose change. Treat
@@ -175,14 +175,14 @@ to silence an alert.
 
 ## Acceptance tooling
 
-Use the [SafeYolo acceptance graph](cli/src/safeyolo/agent_context/skills/safeyolo/references/graph/accept-safeyolo.yaml)
+Use the [SafeYOLO acceptance graph](cli/src/safeyolo/agent_context/skills/safeyolo/references/graph/accept-safeyolo.yaml)
 to select tools and environments for the behavior under review. Its annotations
 explain how to obtain the tools and use them to create and run focused tests.
-Use the [SafeYolo acceptance tooling guidance](docs/DEVELOPERS.md#acceptance-tooling)
+Use the [SafeYOLO acceptance tooling guidance](docs/DEVELOPERS.md#acceptance-tooling)
 for the dependency inventories and focused Python complexity check. Factory
 contracts define the responsibilities; this repository supplies its specific
 tools, and the operator brief can bind their current resource locations.
-SafeYolo's [review-tool procedures](docs/DEVELOPERS.md#independent-review-tools)
+SafeYOLO's [review-tool procedures](docs/DEVELOPERS.md#independent-review-tools)
 and [repository publication bindings](docs/DEVELOPERS.md#repository-publication)
 apply to both protocols. Native reusable responsibilities do not embed these
 project-specific procedures.
@@ -190,7 +190,7 @@ project-specific procedures.
 ## Coordination
 
 Repository agents using Coord first follow their selected native or message
-contract. The SafeYolo
+contract. The SafeYOLO
 [low-chatter work-coordination](cli/src/safeyolo/agent_context/skills/safeyolo/references/coord.md)
 guidance explains both entry points: native assignments use canonical mutations;
 message assignments use only their declared replies. Targeted handoffs are

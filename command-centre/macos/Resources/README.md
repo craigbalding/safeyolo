@@ -1,6 +1,6 @@
 # Command Centre artwork
 
-`AppIcon.svg` uses the SafeYolo rails-and-switch artwork published at:
+`AppIcon.svg` uses the SafeYOLO rails-and-switch artwork published at:
 
 <https://safeyolo.com/assets/images/image02.svg>
 

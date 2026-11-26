@@ -221,7 +221,7 @@ After observation:
 
 The helper prints the assigned annotation ID. Refer to that ID and pane from
 the controller, for example: “`A2` in pane `%1` marks the destination response.
-SafeYolo made its route decision before this line appeared.”
+SafeYOLO made its route decision before this line appeared.”
 
 Use these operator controls:
 

@@ -96,7 +96,7 @@ revision and submission through the existing policy owner.
 
 ## Operator actions
 
-`GET /operator-actions` discovers the bounded SafeYolo action vocabulary for
+`GET /operator-actions` discovers the bounded SafeYOLO action vocabulary for
 the requesting agent. `POST /operator-actions` accepts `action_id`, typed
 `parameters` and optional untrusted `reason`. `desktop.present` starts a
 graphical presentation; see [Desktop and operator preview](desktop.md).
@@ -105,7 +105,7 @@ installed vocabulary before choosing either action.
 
 For an app in your current guest, read `/safeyolo/agent-name` and the host-staged
 `/safeyolo/host-launch-context.json` when identity is uncertain. Keep the known
-instance, agent, app and port. Guest loopback, the SafeYolo host's loopback and
+instance, agent, app and port. Guest loopback, the SafeYOLO host's loopback and
 the operator's computer are separate targets. Ordinary work on your own app
 does not require a peer-support grant.
 
@@ -135,7 +135,7 @@ remain authoritative. Preview access material is returned only to the operator.
 
 ## Model
 
-SafeYolo runs three separate planes. Endpoints on the Agent API are windows
+SafeYOLO runs three separate planes. Endpoints on the Agent API are windows
 into different planes, and misreading which plane an endpoint reports on is
 the most common cause of wrong-diagnosis loops.
 
@@ -172,7 +172,7 @@ Endpoints in this reference by plane:
 - Runtime: `/health`, `/memory`, `/agents`, `/circuits`.
 
 When triaging, ask which plane you actually need to inspect before choosing
-the endpoint. A 401 from an upstream host is not a SafeYolo action of any
+the endpoint. A 401 from an upstream host is not a SafeYOLO action of any
 plane; a 428 with `X-Blocked-By` is a policy-plane action; a `/api/flows/search`
 `count: 0` is an observability-plane gap.
 
@@ -274,7 +274,7 @@ controls remain available when reviewer access or attention is unavailable.
 ## Approval context
 
 The host operator can ask the requesting agent for context while its original
-approval remains pending. This does not grant permission. SafeYolo sends a fixed
+approval remains pending. This does not grant permission. SafeYOLO sends a fixed
 question to the existing private Coord room, such as `work-agent`, with trusted
 operator attribution. The question includes the canonical approval ID, context
 request ID and a response example. Use your own Agent API token to answer.
@@ -303,7 +303,7 @@ other context fields are optional. Each field is limited to 2048 UTF-8 bytes.
 
 The response is untrusted task context. Do not supply authority, sender fields,
 credentials, commands for the host to execute, or a replacement security
-explanation. SafeYolo rejects unknown fields and cannot change the bound
+explanation. SafeYOLO rejects unknown fields and cannot change the bound
 authority through this endpoint. Different authority requires a new traffic or
 gateway request and a new approval.
 
@@ -312,7 +312,7 @@ If the native client is installed in your guest, you can use
 `safeyolo helper respond APPROVAL_ID --reason 'Why the operation helps'` to
 answer. These commands use `/app/agent_token` and the configured proxy route.
 The host's `safeyolo approvals context` command displays the attributed reply
-under an untrusted label, separate from SafeYolo explanation.
+under an untrusted label, separate from SafeYOLO explanation.
 
 Replies are accepted for 120 seconds while the approval remains pending.
 An identical repeated reply is idempotent. A different reply cannot overwrite
@@ -426,7 +426,7 @@ information and `outbound: not_attempted`, including timeout/cancellation.
 `direct_connect` records the actual `direct_peer`. `parent_tcp` and
 `parent_connect` distinguish reaching the configured parent from its CONNECT
 response. The latter retains `parent_requested_target` and
-`parent_connect_status`. Through a parent, `direct_peer` is null: SafeYolo
+`parent_connect_status`. Through a parent, `direct_peer` is null: SafeYOLO
 does not observe the parent's origin-side socket. `origin_tls` records the
 verification name and result. `http_response` records the observed HTTP
 status. A pending stage alone does not establish completion. A failed stage
@@ -512,7 +512,7 @@ the control name alone.
 | `success_recorded` | Response hook ran the success path for a 2xx (or <4xx) response. Existing circuit state is updated when present; this outcome alone does not prove a stored mutation. |
 | `failure_recorded` | Response hook recorded a 5xx or 429 failure against the circuit. |
 | `status_no_action` | Response hook saw a 4xx (non-429); circuit state unchanged. |
-| `prior_block` | Response hook saw a `blocked_by` flow (an earlier SafeYolo response). |
+| `prior_block` | Response hook saw a `blocked_by` flow (an earlier SafeYOLO response). |
 
 **test_context**:
 | Literal | Meaning |
@@ -816,7 +816,7 @@ The proxy accepts only a private regular file, rejects symlinks, and compares
 the token in constant time. It reads the file again for every request, so
 rotation and revocation need no proxy restart.
 
-For a client explicitly given the token, with a working SafeYolo HTTP proxy,
+For a client explicitly given the token, with a working SafeYOLO HTTP proxy,
 set `flow_token_file` to the provisioned secret file or its private copy. Set
 `request_id` to the proxy response header value. The command keeps the token
 out of the curl argument list and retrieves a retained cross-owner or
@@ -841,7 +841,7 @@ returns 500 without releasing the flow response.
 
 The gateway lets an agent call an approved external or sandbox-hosted service.
 When an upstream credential is needed, the gateway keeps it outside the caller.
-For a service hosted by another SafeYolo agent, use
+For a service hosted by another SafeYOLO agent, use
 [gateway sharing](web-services.md#share-with-other-agents-through-the-gateway).
 Service access does not require a peer-support grant.
 
@@ -868,7 +868,7 @@ Service access does not require a peer-support grant.
    - `202` with `status: pending`: ask the operator to review `safeyolo inspect`.
    - `decision: needs_contract_binding`: submit only the requested binding
      variables to `/gateway/submit-binding`.
-   - `decision: contract_not_enforceable`: explain that SafeYolo cannot safely
+   - `decision: contract_not_enforceable`: explain that SafeYOLO cannot safely
      grant this contract; do not attempt a broader capability.
 
 4. Submit a contract binding when requested:
@@ -882,7 +882,7 @@ Service access does not require a peer-support grant.
 5. After operator approval and activation, fetch `/gateway/services` privately
    again. Use the returned `sgw_` token in the configured auth header. With no
    upstream `auth` block, use `Authorization: Bearer TOKEN`; the caller still
-   needs its own scoped token. SafeYolo validates the agent, host, capability,
+   needs its own scoped token. SafeYOLO validates the agent, host, capability,
    route, risk grants and contract. When an upstream credential is configured,
    the gateway injects it under the service's transport rules: HTTPS is required
    unless the service explicitly allows HTTP. A credential-free sandbox
@@ -893,7 +893,7 @@ Never print, persist, or send an `sgw_` token to another agent.
 ## Approved collaboration rooms
 
 Use `request_collaboration` when the intended participants do not yet share a
-room. All participants must have current SafeYolo agent identities. The requester
+room. All participants must have current SafeYOLO agent identities. The requester
 must use its trusted current ingress. The request includes the requester and
 binds each participant name to its durable ID before operator review.
 

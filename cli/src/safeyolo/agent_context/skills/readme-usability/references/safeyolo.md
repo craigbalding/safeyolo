@@ -1,6 +1,6 @@
-# SafeYolo README notes
+# SafeYOLO README notes
 
-Apply these notes only to SafeYolo documentation, selecting the points relevant
+Apply these notes only to SafeYOLO documentation, selecting the points relevant
 to the document. Seatbelt-specific points concern `contrib/macos-seatbelt-agent`
 and its integration docs. These are project owner priorities, not a template for
 unrelated READMEs. Repository paths below are relative to the target checkout.
@@ -37,7 +37,7 @@ contribution, use its `README.md`, `REFERENCE.md`, implementation, and
   value and first-use flow. Read first use and the return path together.
   Relay requires that verdict before integration. Checks support the verdict;
   skill reads, passing checks and word counts do not establish usability.
-- **Use one product name.** Under #1053, the product is SafeYolo. Use
+- **Use one product name.** Under #1053, the product is SafeYOLO. Use
   `SafeYolo`, `proxy`, `installer`, `release` and `settings` as appropriate.
   Do not describe a separate “native” edition. This owner decision takes
   precedence over the generic instruction to preserve existing terminology.

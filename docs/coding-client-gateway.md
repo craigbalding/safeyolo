@@ -7,14 +7,14 @@ on the host. Browser and device login run on the host.
 
 Native Codex 0.163.0 and Claude Code 2.1.306 completed real subscription
 requests after host-owned renewal on Ubuntu AMD64. The recorded proof uses
-SafeYolo production source `3215530dceadadd98cfe6063bf14490fd983aff7`;
+SafeYOLO production source `3215530dceadadd98cfe6063bf14490fd983aff7`;
 [#1219](https://github.com/craigbalding/safeyolo/issues/1219) records the evidence
 and source acceptance. These results cover the selected subscriptions and
 client versions. This route does not substitute separately billed API access.
 
 ## Choose authentication at launch
 
-On the operator host, use the installed SafeYolo instance and a workspace that
+On the operator host, use the installed SafeYOLO instance and a workspace that
 the selected agent may read and write. For a new agent, `agent launch` asks you
 to choose client-held or host-vault authentication before any optional host
 credential copying. You can select the same choice explicitly. Replace
@@ -100,7 +100,7 @@ explicit credential deny or an approval requirement.
 ## Configure the guest client
 
 The shipped setup owners preserve the selected model, unrelated settings and
-explicit denies. Codex selects the SafeYolo subscription provider with
+explicit denies. Codex selects the SafeYOLO subscription provider with
 `forced_chatgpt_auth = false`, `requires_openai_auth = false`, Responses over
 HTTP, and WebSockets disabled. Its scoped token is passed as
 `SAFEYOLO_CODEX_GATEWAY_TOKEN`. The host supplies `ChatGPT-Account-ID` from the
@@ -151,7 +151,7 @@ Claude's remote managed-settings fetch uses the same authentication route.
 If startup reports a failure, inspect `Managed settings (remote)` in
 `claude doctor` or `/status` before changing authentication. A policy-fetch
 failure alone does not establish that inference authentication failed.
-For a SafeYolo refusal, inspect the request's `X-Blocked-By` header and its
+For a SafeYOLO refusal, inspect the request's `X-Blocked-By` header and its
 approval through the host workflow below. Claude's
 [server-managed settings documentation](https://code.claude.com/docs/en/server-managed-settings#platform-availability)
 describes which authentication configurations fetch policy.
@@ -224,7 +224,7 @@ scoped token. Gateway inputs include service bindings, agent identities, host
 routing and contract bindings. An ordinary credential or network approval keeps
 the token when those inputs stay unchanged. A running client can be interrupted
 by invalidation; continuous token replacement in that client is not provided.
-Check any prior task's effects before retrying it. SafeYolo does not replay model
+Check any prior task's effects before retrying it. SafeYOLO does not replay model
 requests. A passphrase vault remains locked after proxy restart until an
 explicit `credentials unlock` or the launch guide's explicit unlock choice.
 

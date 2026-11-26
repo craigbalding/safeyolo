@@ -1,4 +1,4 @@
-# SafeYolo lab record
+# SafeYOLO lab record
 
 ## Experiment identity
 
@@ -9,7 +9,7 @@
 | Pass condition | |
 | Started UTC | |
 | Finished UTC | |
-| SafeYolo agent/instance | |
+| SafeYOLO agent/instance | |
 | Workspace | |
 | Evidence root | |
 | Tmux layer | guest-lab |
@@ -34,7 +34,7 @@
 | application tmux (optional) | |
 | controller pane | |
 | worker pane | |
-| SafeYolo worker/agent | |
+| SafeYOLO worker/agent | |
 | harness process | |
 
 ## Pane registry
@@ -65,9 +65,9 @@
 
 ## Findings
 
-### SafeYolo product findings
+### SafeYOLO product findings
 
-### Expected SafeYolo behavior
+### Expected SafeYOLO behavior
 
 ### Provider or harness behavior
 

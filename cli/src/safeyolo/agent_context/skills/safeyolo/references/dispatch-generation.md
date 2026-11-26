@@ -48,7 +48,7 @@ available for exceptions.
 
 Before drafting a substantive public item:
 
-1. Tell the operator in normal language what SafeYolo was trying to do, what
+1. Tell the operator in normal language what SafeYOLO was trying to do, what
    happened, and why it may be interesting. Give enough technical context for
    an informed reaction; do not send publication copy as the prompt.
 2. When the significance needs operator judgment, ask one focused question.
@@ -57,7 +57,7 @@ Before drafting a substantive public item:
 3. Use the response as source material and author one item. If the material is
    not worth publishing, omit it instead of manufacturing a takeaway or hook.
 
-Orient the resulting item around what SafeYolo is doing and why before
+Orient the resulting item around what SafeYOLO is doing and why before
 introducing internal mechanisms. Keep evidence and attribution traceable
 without making the prose read like an audit record.
 
@@ -68,7 +68,7 @@ without making the prose read like an audit record.
   snippet, mechanism, lesson, and public evidence.
 - Omit empty `worth_knowing` and `factory_pulse` sections. A fully quiet source
   emits no Dispatch.
-- Expand SafeYolo-specific terms for a generally software/security-literate
+- Expand SafeYOLO-specific terms for a generally software/security-literate
   public audience; do not explain ordinary concepts without a mechanism-specific
   reason.
 - Link every material claim to authoritative public evidence. Match known

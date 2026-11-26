@@ -1,4 +1,4 @@
-# SafeYolo security testing design
+# SafeYOLO security testing design
 
 Installed blackbox tests exercise the installed native proxy, actual guest
 bridge, host/operator APIs, origins and lifecycle. Native process/protocol

@@ -1,12 +1,12 @@
 ---
 name: operator-ux
-description: Design, implement, or independently review SafeYolo operator workflows. Use for changes to command-line interface (CLI) interactions, approvals, configuration, recovery, Command Centre or browser actions, and their help or documentation.
+description: Design, implement, or independently review SafeYOLO operator workflows. Use for changes to command-line interface (CLI) interactions, approvals, configuration, recovery, Command Centre or browser actions, and their help or documentation.
 ---
 
 # Operator UX
 
 Read `AGENTS.md`, `SECURITY.md` and `docs/operator-interaction-contract.md` from
-the target SafeYolo checkout at the revision being implemented or reviewed.
+the target SafeYOLO checkout at the revision being implemented or reviewed.
 The contract owns the requirements and sources; this skill applies them.
 Installed copies also read that checkout, not a bundled or remote replacement.
 If the checkout or contract is unavailable, report the missing review basis.
@@ -31,7 +31,7 @@ If the checkout or contract is unavailable, report the missing review basis.
   examples and errors. Check whether the system can carry context or supply
   inputs that the proposed design asks the operator to reconstruct.
 - Keep explicit commands and application programming interfaces (APIs) complete.
-  Do not copy generic confirmation or force flags into SafeYolo's authorization
+  Do not copy generic confirmation or force flags into SafeYOLO's authorization
   model. Use the existing authority and the operator's stated policy.
 - Exercise the interaction through the actual terminal or browser, using an
   isolated fixture or other authorized environment. Check the affected scripted
