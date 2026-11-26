@@ -321,7 +321,8 @@ async fn run_inner(root: &Path, arguments: &[OsString]) -> Result<(), Error> {
             Ok(choices) => choices,
             Err(error) => {
                 components::show_status(
-                    &json!({"root":root,"state":"unavailable","error":error.to_string()}),
+                    &json!({"root":root,"state":"unavailable","error":error.to_string(),
+                        "explicit_selection":"upgrade --release host-COMMIT or --bundle DIRECTORY"}),
                 )?;
                 return Err(error);
             }

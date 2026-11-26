@@ -775,6 +775,7 @@ pub(super) fn show_status(value: &Value) -> Result<(), Error> {
     field("State", &value["state"]);
     field("Outcome", &value["outcome"]);
     field("Error", &value["error"]);
+    field("Explicit selection", &value["explicit_selection"]);
     for (label, pair) in [
         (
             "Selected",

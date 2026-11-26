@@ -82,7 +82,7 @@ pub(crate) fn check_rollback_store(root: &Path, prior: &Path) -> Result<fs::File
         let output = std::process::Command::new(prior)
             .arg("--instance-dir")
             .arg(snapshot.path())
-            .args(["coord", "room", "list"])
+            .args(["coord", "room", "list", "--json"])
             .output()?;
         if !output.status.success() {
             return Err(format!(

@@ -2540,10 +2540,10 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 - [`tests/test_component_upgrade.py::test_guided_discovery_preview_and_failed_acquisition_reuse_verified_target`](../tests/test_component_upgrade.py#L802)
 - [`tests/test_component_upgrade.py::test_guided_preview_pins_discovered_compatible_guest_and_reports_unknown_discovery`](../tests/test_component_upgrade.py#L850)
 - [`tests/test_component_upgrade.py::test_guided_unavailable_host_discovery_retains_explicit_bundle_path`](../tests/test_component_upgrade.py#L895)
-- [`tests/test_component_upgrade.py::test_guided_activation_failure_reports_selected_pair_and_retained_rollback`](../tests/test_component_upgrade.py#L920)
-- [`tests/test_component_upgrade.py::test_terminal_upgrade_can_defer_activation_after_choosing_a_release`](../tests/test_component_upgrade.py#L969)
-- [`tests/test_component_upgrade.py::test_guided_invalid_agent_choice_does_not_select_or_interrupt`](../tests/test_component_upgrade.py#L1001)
-- [`tests/test_component_upgrade.py::test_guided_installed_upgrade_keeps_other_instance_live_and_recovers_failed_start`](../tests/test_component_upgrade.py#L1017)
+- [`tests/test_component_upgrade.py::test_guided_activation_failure_reports_selected_pair_and_retained_rollback`](../tests/test_component_upgrade.py#L928)
+- [`tests/test_component_upgrade.py::test_terminal_upgrade_can_defer_activation_after_choosing_a_release`](../tests/test_component_upgrade.py#L977)
+- [`tests/test_component_upgrade.py::test_guided_invalid_agent_choice_does_not_select_or_interrupt`](../tests/test_component_upgrade.py#L1009)
+- [`tests/test_component_upgrade.py::test_guided_installed_upgrade_keeps_other_instance_live_and_recovers_failed_start`](../tests/test_component_upgrade.py#L1025)
 
 <a id="witness-tests-test-linux-host-py"></a>
 ### [`tests/test_linux_host.py`](../tests/test_linux_host.py)

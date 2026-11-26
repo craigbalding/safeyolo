@@ -910,6 +910,14 @@ def test_guided_unavailable_host_discovery_retains_explicit_bundle_path(
         assert unavailable["state"] == "unavailable"
         assert unavailable["root"] == str(root)
         assert "--bundle" in unavailable["explicit_selection"]
+        human = subprocess.run(
+            [str(native_cli), "--instance-dir", str(root), "upgrade", "releases"],
+            env=environment, capture_output=True, text=True, timeout=30,
+        )
+        assert human.returncode != 0
+        assert str(root) in human.stdout and "unavailable" in human.stdout
+        assert "Explicit selection: upgrade --release host-COMMIT or --bundle DIRECTORY" in human.stdout
+        assert not human.stdout.lstrip().startswith("{")
         assert upgrade(native_cli, root, environment, "status") == original
     preview = upgrade(native_cli, root, environment, "--bundle", target, "--preview")
     assert preview["selected"] == original
