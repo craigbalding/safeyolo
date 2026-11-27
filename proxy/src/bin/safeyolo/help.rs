@@ -57,6 +57,8 @@ Instance selection (optional, before the command)
   --config FILE             Select its TOML configuration instead
 Explicit selection overrides SAFEYOLO_NATIVE_CONFIG_PATH, SAFEYOLO_CONFIG_DIR,
 SAFEYOLO_HOME, then ~/.safeyolo. Status and help never start services.
+SafeYolo does not create an instance or start the proxy as root. Use your
+ordinary host account; --dangerously-allow-root overrides this.
 
 Examples
   safeyolo agent launch

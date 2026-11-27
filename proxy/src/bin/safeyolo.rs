@@ -266,6 +266,13 @@ async fn context_command(arguments: &[String]) -> Result<(), Error> {
 
 async fn run() -> Result<(), Error> {
     let mut arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
+    if let Some(index) = arguments
+        .iter()
+        .position(|argument| argument == safeyolo_proxy::host_root::FLAG)
+    {
+        arguments.remove(index);
+        safeyolo_proxy::host_root::allow_by_flag();
+    }
     let upgrade_command = std::env::args_os().next().is_some_and(|path| {
         Path::new(&path)
             .file_name()
@@ -464,7 +471,10 @@ async fn run() -> Result<(), Error> {
         [command, host, port] if command == "ssh-proxy" => {
             safeyolo_proxy::ssh_proxy::run(host, port.parse()?).await
         }
-        [command] if command == "init" => initialize(&root, &config),
+        [command] if command == "init" => {
+            safeyolo_proxy::host_root::refuse_root("create an instance")?;
+            initialize(&root, &config)
+        }
         [version] if version == "--version" => {
             println!(
                 "safeyolo {} commit={} profile={}",
