@@ -871,6 +871,7 @@ fn probe_namespace(root: &Path) -> Result<(), Error> {
 fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Settings, Error> {
     let mut bundle = root.to_owned();
     let mut installed_root = root.to_owned();
+    let mut system_runsc = None;
     let mut platform_assets = None;
     let mut yes = false;
     let mut options = args.iter();
@@ -885,6 +886,7 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
         match option.as_str() {
             "--package-root" => bundle = PathBuf::from(value),
             "--installed-root" => installed_root = PathBuf::from(value),
+            "--system-runsc" if system_runsc.is_none() => system_runsc = Some(PathBuf::from(value)),
             "--platform-assets" if platform_assets.is_none() => {
                 platform_assets = Some(PathBuf::from(value))
             }
@@ -926,10 +928,30 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
     } else {
         None
     };
-    let bundle = bundle.canonicalize()?;
-    let source = bundle.join("libexec/runsc");
-    let destination = installed_root.join("libexec/runsc");
-    super::runsc::verify_bundle_payload(&bundle)?;
+    let (source, destination, origin) = if let Some(path) = system_runsc {
+        let path = path.canonicalize()?;
+        (path.clone(), path, "system")
+    } else if let Some(settings) = &saved {
+        (
+            settings.runsc.clone(),
+            settings.runsc.clone(),
+            settings.runsc_origin.as_str(),
+        )
+    } else {
+        (
+            bundle.canonicalize()?.join("libexec/runsc"),
+            installed_root.join("libexec/runsc"),
+            "bundled",
+        )
+    };
+    if origin == "bundled" {
+        super::runsc::verify_bundle_payload(
+            source
+                .parent()
+                .and_then(Path::parent)
+                .ok_or("bundled runtime has no package directory")?,
+        )?;
+    }
     linux_host::check_runtime(&source)?;
     let uid_ranges = linux_host::host_ranges("/etc/subuid", &owner, uid)?;
     let gid_ranges = linux_host::host_ranges("/etc/subgid", &owner, uid)?;
@@ -1297,7 +1319,7 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
         uid_base: mapping.uid_base,
         gid_base: mapping.gid_base,
         runsc: destination,
-        runsc_origin: "bundled".into(),
+        runsc_origin: origin.into(),
         apparmor_profile: apparmor.then_some(name),
     })
 }

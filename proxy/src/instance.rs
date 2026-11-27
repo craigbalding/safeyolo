@@ -249,6 +249,9 @@ fn check_socket_path(path: &Path, capacity: usize) -> Result<(), Error> {
 }
 
 fn scoped(command: &mut Command, root: &Path) -> Result<(), Error> {
+    if crate::host_root::allowed() {
+        command.env(crate::host_root::ENVIRONMENT, "1");
+    }
     // Preserve unrelated client, proxy and CA settings. Replace the independent
     // historical path overrides so a caller's live selection cannot leak in.
     for name in [
@@ -333,7 +336,9 @@ fn stage(root: &Path, runtime: &Path, reuse: Option<&Path>) -> Result<(), Error>
         );
         #[cfg(target_os = "linux")]
         if let Some(mut settings) = source_settings.linux {
-            settings.runsc = runtime.join("libexec/runsc").canonicalize()?;
+            if settings.runsc_origin == "bundled" {
+                settings.runsc = runtime.join("libexec/runsc").canonicalize()?;
+            }
             let source_document: toml_edit::DocumentMut =
                 fs::read_to_string(source.join("config.toml"))?.parse()?;
             config["linux"] = source_document["linux"].clone();
@@ -637,6 +642,7 @@ pub async fn run(source: &Path, args: &[OsString]) -> Result<i32, Error> {
     if !ephemeral {
         return Err("instance run requires --ephemeral".into());
     }
+    crate::host_root::refuse_root("create an ephemeral instance")?;
     let runtime = runtime.canonicalize()?;
     let directory = tempfile::Builder::new().prefix("sy-").tempdir_in(&parent)?;
     let root = directory.path().canonicalize()?;

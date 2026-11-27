@@ -17,6 +17,7 @@ mod owned_run;
 
 fn cli(root: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
         .arg("--instance-dir")
         .arg(root)
         .arg("--json")
@@ -251,6 +252,7 @@ fn initialization_makes_only_the_public_ca_world_readable() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("instance");
     let initialized = Command::new("sh")
+        .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
         .args(["-c", "umask 077; exec \"$@\"", "init-test"])
         .arg(env!("CARGO_BIN_EXE_safeyolo"))
         .arg("--instance-dir")
@@ -741,6 +743,7 @@ esac
     let log = root.join("process.log");
     let _stop = StopOnDrop(&config);
     let mut proxy = Command::new(env!("CARGO_BIN_EXE_safeyolo-proxy"))
+        .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
         .args(["--config", config.to_str().unwrap()])
         .env("SAFEYOLO_CONFIG_DIR", &root)
         .env("PATH", root.join("bin"))
@@ -1621,6 +1624,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     let _stop = StopOnDrop(&config_path);
     value(
         Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
             .arg("--json")
             .args(["--instance-dir", root.to_str().unwrap(), "start"])
             .env(
@@ -1733,6 +1737,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     fs::write(&acl, b"#!/bin/sh\nexit 17\n").unwrap();
     fs::set_permissions(&acl, fs::Permissions::from_mode(0o755)).unwrap();
     let retried = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
         .args([
             "--instance-dir",
             root.to_str().unwrap(),
@@ -1789,6 +1794,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
             args.push("--sandbox-only");
         }
         let failed = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
             .args(args)
             .env(
                 "PATH",
@@ -1844,6 +1850,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     // prove absence, so preserve the uncertain run and refuse stop and retry.
     fs::write(&acl, b"#!/bin/sh\nexit 0\n").unwrap();
     let failed = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
         .args([
             "--instance-dir",
             root.to_str().unwrap(),
@@ -3797,6 +3804,7 @@ fn host_setup_keeps_the_explicit_config_and_failed_setup_does_not_publish() {
     fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
     let call = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
             .arg("--json")
             .arg("--config")
             .arg(&selected)
@@ -3937,6 +3945,7 @@ fn fresh_proxy_uses_the_explicit_toml_and_keeps_the_other_instance_unchanged() {
     let b_default = fs::read(b.join("config.toml")).unwrap();
     let selected_cli = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
             .arg("--json")
             .env("SAFEYOLO_NATIVE_CONFIG_PATH", &selected)
             .env("SAFEYOLO_CONFIG_DIR", &b)
@@ -4248,6 +4257,7 @@ fn native_demo_is_discoverable_and_early_cancellation_preserves_workspace() {
     );
     let original = fs::read(root.path().join("policy.toml")).unwrap();
     let mut cancel = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
         .arg("--instance-dir")
         .arg(root.path())
         .arg("demo")

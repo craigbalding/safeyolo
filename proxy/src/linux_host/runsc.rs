@@ -56,7 +56,7 @@ pub(crate) fn check_runtime(path: &Path) -> Result<String, Error> {
         .next()
         .unwrap_or_default();
     if !output.status.success() || version != format!("runsc version {VERSION}") {
-        return Err(format!("selected gVisor runtime is incompatible: expected {VERSION}, observed {version:?}; install the complete tested runtime or use the bundled runtime").into());
+        return Err(format!("selected gVisor runtime is incompatible: expected {VERSION}, observed {version:?}; repair the complete runtime at {}", path.display()).into());
     }
     Ok(VERSION.into())
 }
@@ -112,6 +112,17 @@ pub(crate) fn verify_selected_runtime() -> Result<String, Error> {
 
 pub(crate) fn runtime_path() -> Result<PathBuf, IoError> {
     let settings = crate::native_config::host_settings().map_err(IoError::other)?;
+    if let Some(settings) = &settings.linux
+        && settings.runsc_origin == "system"
+    {
+        if !settings.runsc.is_file() {
+            return Err(IoError::other(format!(
+                "selected gVisor executable is missing: {}; repair this installation's runtime; no other runtime was selected",
+                settings.runsc.display()
+            )));
+        }
+        return Ok(settings.runsc.clone());
+    }
     let path = settings.linux.map_or_else(
         || crate::host_platform::config_dir().join("libexec/runsc"),
         |settings| settings.runsc,
@@ -126,8 +137,8 @@ pub(crate) fn runtime_path() -> Result<PathBuf, IoError> {
             path.display()
         )));
     }
-    // Every caller, including namespace helpers and live-mount gofers, checks
-    // the complete executable set before launching any part of it.
+    // Every bundled caller, including namespace helpers and live-mount gofers,
+    // checks the complete executable set before launching any part of it.
     verify_bundle_payload(package).map_err(|error| {
         IoError::other(format!(
             "bundled gVisor runtime at {} is missing or invalid: {error}; reinstall the complete SafeYolo host package",
@@ -150,7 +161,10 @@ pub(crate) fn report() -> Value {
         }
         let path = runtime_path()?;
         unavailable["path"] = json!(path);
-        unavailable["origin"] = json!("bundled");
+        let origin = settings
+            .as_ref()
+            .map_or("bundled", |s| s.runsc_origin.as_str());
+        unavailable["origin"] = json!(origin);
         let version = check_runtime(&path)?;
         unavailable["version"] = json!(version);
         let mapping = super::selected_mapping()?;
@@ -160,7 +174,7 @@ pub(crate) fn report() -> Value {
             mapping,
         )?;
         Ok(
-            json!({"state":"ready", "path":path,"version":version,"origin":"bundled",
+            json!({"state":"ready", "path":path,"version":version,"origin":origin,
             "platform_selection":platform_selection,
             "uid_base":mapping.uid_base,"gid_base":mapping.gid_base,
             "host_uid":mapping.host_uid,"host_gid":mapping.host_gid,

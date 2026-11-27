@@ -44,11 +44,12 @@ root=${SAFEYOLO_CONFIG_DIR:-${SAFEYOLO_HOME:-$HOME/.safeyolo}}
 bundle= platform_assets= command_dir= guest_index=
 download_guest=true
 move_bundle=false
+runtime_override=false
 host_arguments=()
 build_arguments=()
 while (($#)); do
   case "$1" in
-    --instance-dir|--bundle|--platform-assets|--guest-index|--command-dir|--artifacts|--guest-artifacts|--runtime-artifacts|--vm-artifacts|--profile)
+    --instance-dir|--bundle|--platform-assets|--guest-index|--command-dir|--artifacts|--guest-artifacts|--runtime-artifacts|--vm-artifacts|--profile|--system-runsc)
       option=$1
       (($# >= 2)) || { echo "$option requires a value" >&2; exit 2; }
       [[ -n $2 ]] || { echo "$option requires a nonempty value" >&2; exit 2; }
@@ -56,15 +57,16 @@ while (($#)); do
         --instance-dir) root=$2;; --bundle) bundle=$2;; --platform-assets) platform_assets=$2;;
         --command-dir) command_dir=$2;;
         --guest-index) guest_index=$2;;
+        --system-runsc) host_arguments+=("$option" "$2"); runtime_override=true;;
         *) build_arguments+=("$option" "$2");;
       esac
       shift 2;;
     --help)
-      echo 'Usage: install_native.sh [--instance-dir PATH] [--bundle UNPACKED_BUNDLE] [--guest-index sha256:DIGEST | --platform-assets DIRECTORY | --no-guest-download] [--command-dir DIRECTORY] [--yes]'
+      echo 'Usage: install_native.sh [--instance-dir PATH] [--bundle UNPACKED_BUNDLE] [--guest-index sha256:DIGEST | --platform-assets DIRECTORY | --no-guest-download] [--command-dir DIRECTORY] [--system-runsc PATH] [--yes]'
       echo 'From source: scripts/install_native.sh --instance-dir PATH --runtime-artifacts DIRECTORY [--artifacts HOST_BIN_DIRECTORY] [--guest-artifacts LINUX_BIN_DIRECTORY] [--vm-artifacts DIRECTORY] [--profile production|debug]'
       echo 'The public bootstrap uses --move-bundle to consume its temporary extraction. Ordinary --bundle input is copied and remains reusable.'
       echo 'Installation checks the bundle, acquires its compatible default guest and creates configuration, trust and tokens internally. The default instance directory is HOME/.safeyolo (or SAFEYOLO_CONFIG_DIR). Repeat preserves a matching installation without upgrading. Conflicting or older state requires a separate instance directory. --platform-assets uses prepared/offline guest inputs; --no-guest-download supports contributor or proxy-only installation.'
-      echo 'Linux launches use only the verified bundled gVisor runtime. Host preparation shows exact commands and explains required packages, unused UID/GID allocations, private-runtime access and AppArmor changes before consent. --yes accepts those changes. Proxy-only --no-guest-download skips preparation.'
+      echo 'New Linux bundles include the complete pinned gVisor runtime. Host preparation shows exact commands and explains required packages, unused UID/GID allocations, private-runtime access and AppArmor changes before consent. --yes accepts those changes; --system-runsc selects a complete compatible system payload. Proxy-only --no-guest-download skips preparation unless --system-runsc explicitly selects a runtime.'
       echo 'Installs the safeyolo command in HOME/.local/bin when that directory is already on PATH, otherwise /usr/local/bin (using sudo if needed). --command-dir selects another command location. Existing unrelated commands are preserved.'
       echo 'Every host sudo command and its effects are shown before execution, including cached/passwordless authorization. Guest extraction and cleanup need no host sudo. A user-writable --command-dir avoids command-link sudo.'
       echo '--guest-index pins first acquisition to an exact compatible OCI index. Repeated installation retains its installed guest; use guest upgrade for a later change.'
@@ -197,7 +199,7 @@ if ((${#command_install[@]})); then
   if [[ ! -L $command_entry ]]; then preview_command_install "$command_purpose" "${command_link[@]}"; fi
 fi
 if $existing; then
-  if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]]; }; then
+  if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]] || $runtime_override; }; then
     "$root/bin/safeyolo" --instance-dir "$root" host prepare ${host_arguments[@]+"${host_arguments[@]}"} >/dev/null
   fi
   if [[ -f $root/share/guest-selection.json ]]; then
@@ -217,7 +219,7 @@ if ! $existing; then
   install_lock=$lock_path
   staged_root=$(mktemp -d "$(dirname -- "$root")/safeyolo-install.XXXXXX")
   guest_host_arguments=(--namespace-root "$root")
-  if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]]; }; then
+  if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]] || $runtime_override; }; then
     echo 'SafeYolo: checking and preparing the Linux host.' >&2
     "$bundle/bin/safeyolo" --instance-dir "$root" host prepare --package-root "$bundle" --installed-root "$root" \
       --write-settings "$staged_root/host-settings.toml" ${host_arguments[@]+"${host_arguments[@]}"} >/dev/null
@@ -291,7 +293,7 @@ if ! $existing; then
       move_install_input "$input" "$root"
     fi
   done
-  if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]]; }; then
+  if [[ $(uname -s) == Linux ]] && { $download_guest || [[ -n $platform_assets ]] || $runtime_override; }; then
     # The staged config selects the final runtime paths. Grant access only
     # after those files exist, while keeping config publication last.
     "$root/bin/safeyolo" --instance-dir "$staged_root" host grant-runtime-access >/dev/null

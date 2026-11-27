@@ -307,7 +307,7 @@ def test_prepared_configuration_is_readable_by_native_cli(tmp_path):
     """Use the real config reader without starting a proxy, broker or sandbox."""
     cli = native_cli()
     base, root = tmp_path / "base", tmp_path / "instance"
-    subprocess.run([str(cli), "--instance-dir", str(base), "init"], check=True, capture_output=True)
+    subprocess.run([str(cli), "--dangerously-allow-root", "--instance-dir", str(base), "init"], check=True, capture_output=True)
     (base / "bin").mkdir()
     (base / "bin/safeyolo").symlink_to(cli)
     (base / "host").mkdir()
@@ -315,7 +315,7 @@ def test_prepared_configuration_is_readable_by_native_cli(tmp_path):
     (base / "data/coord/nats/bin").mkdir(parents=True)
     config = tomlkit.parse((base / "config.toml").read_text())
     config["linux"] = {"host_uid": os.getuid(), "host_gid": os.getgid(), "uid_base": 100000,
-                       "gid_base": 100000, "runsc": shutil.which("true"), "runsc_origin": "bundled"}
+                       "gid_base": 100000, "runsc": shutil.which("true"), "runsc_origin": "system"}
     (base / "config.toml").write_text(tomlkit.dumps(config))
     prepare(base, root, 19437, 19438)
     assert (root / "host").resolve() == base / "host"

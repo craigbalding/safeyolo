@@ -737,11 +737,20 @@ identity appears in the existing agent run metadata. A missing or invalid
 selected payload stops startup with a repair action; it does not select
 another runtime silently.
 
-Every Linux runtime launch uses the bundled payload. SafeYOLO checks all four
-runtime executables against the package's `SHA256SUMS` before launching the
-runtime or an extra-mount gofer. An unrelated `runsc` on `PATH` is never selected.
-If a required file is missing or its checksum differs, reinstall the complete
-host package for the selected instance. There is no system-runtime override.
+For bundled selection, every runtime launch checks all four executables against
+the package's `SHA256SUMS`, including launches through namespace helpers and
+extra-mount gofers. An unrelated `runsc` on `PATH` is never selected. If a
+required bundled file is missing or its checksum differs, reinstall the complete
+host package for the selected instance.
+
+An explicit `--system-runsc /absolute/path/to/runsc` installer or host-prepare
+option selects a system installation of the same tested release. It must have
+the complete payload beside that executable, including `gvisor-bin`. Its
+administrator remains responsible for those bytes and security updates.
+Selecting a system runtime does not remove the bundled payload from the host
+archive or the installed package.
+A cold system comparison must count that common package cost and the separate
+runtime download, verification and administrator setup.
 Bundled runtime fixes arrive through normal SafeYOLO host-package updates;
 there is no separate runtime updater. Current source bundles ship `runsc`,
 `gvisor_sentry`, `gvisor-sentry-prewarmer` and `runsc-fd-parking`. They omit
@@ -761,8 +770,76 @@ sizes precede the removal of unused executables and production debug data.
 The host package's compressed size also includes the SafeYOLO host
 executables and assets; the upstream tar size is not the increase in the host
 archive size. Bundling avoids an extra package source, changes to an unrelated
-system runtime and system-package version drift. See the upstream
+system runtime and system-package version drift. A system installation can
+share its runtime across SafeYOLO instances, but its package updates and
+installation remain host administration. See the upstream
 [distribution instructions](https://gvisor.dev/docs/user_guide/install/).
+
+SafeYOLO keeps the private pinned payload as its default. It avoids separate
+runtime acquisition and administrator installation. The cold observations below
+support that choice for the shipped package. The explicit system override remains
+useful when an administrator needs to own or share the runtime.
+
+Cold acquisition and setup were measured on 18 October 2026 on Ubuntu 24.04.4
+AMD64 and Debian 13 ARM64. Both used the
+[production host package at `c9ecb66b`](https://github.com/craigbalding/safeyolo/releases/tag/host-c9ecb66b462c2ba0c499f2322f6cfc5c142012da)
+and the [public bootstrap at `85da60cf`](https://github.com/craigbalding/safeyolo/blob/85da60cf0da03a6356f9617d01e0e69abebdeb23/install.sh).
+The package installer and executables were from `c9ecb66b`.
+Each host used systrap as account UID/GID 1000, with prepared host tools,
+subordinate bases 100000 and the same prepared guest tree for both controls.
+Each control used new download, installation and command destinations with a
+separate empty local cache. The system control downloaded and verified the same
+pinned upstream payload. Its administrator installed all six executables and
+notices under a new root-owned directory before selecting its absolute `runsc`
+path with `--system-runsc`.
+
+| Phase (seconds) | Ubuntu bundled | Ubuntu system | Debian bundled | Debian system |
+| --- | ---: | ---: | ---: | ---: |
+| Bootstrap download | 0.328 | 0.116 | 0.423 | 0.219 |
+| Host archive acquisition and checksum | 2.590 | 4.362 | 14.533 | 13.488 |
+| Host unpack and package verification | 5.856 | 7.554 | 1.930 | 1.958 |
+| Separate upstream runtime download | — | 10.536 | — | 11.102 |
+| Upstream checksum, unpack, payload check and administrator install | — | 10.472 | — | 0.521 |
+| Installer package recheck and setup | 0.575 | 1.104 | 0.236 | 0.896 |
+| Linux host preparation and file staging | 1.841 | 8.251 | 0.377 | 0.138 |
+| Configuration, trust and activation | 0.658 | 0.691 | 0.310 | 0.202 |
+| Doctor | 0.266 | 0.119 | 0.170 | 0.019 |
+| Total from before acquisition through doctor | 12.317 | 43.445 | 18.099 | 28.683 |
+
+Both controls acquired the full host archive: 190,882,862 bytes on AMD64 and
+176,869,006 bytes on ARM64. The system control also acquired 129,604,888 upstream
+runtime bytes on AMD64 and 120,770,227 on ARM64. Archive byte counts exclude the
+bootstrap, checksum text and protocol overhead. All 18 observed commands on each
+host exited successfully. All four doctor results reported Linux ready,
+`release-20261005.0`, and the expected selected path and bundled or system origin.
+Ubuntu installed a profile for each selected executable path. The bundled
+controls also needed private runtime access grants; the administrator-owned
+system payload needed no such grant. Debian needed no AppArmor profile.
+
+These are single paired observations on prepared hosts. Required packages,
+account allocations and guest assets were already available; their initial
+setup is outside these totals. Host preparation still checked those inputs and
+applied the path-specific profile and access changes above. File staging links
+the prepared guest tree and copies host files. The Ubuntu guest fixture occupied
+16 KiB; the Debian fixture occupied 719,436 KiB. These different fixtures do not
+support an architecture performance comparison.
+
+Upstream and content delivery network caches and operating system page caches
+were not controlled. Phase times use a monotonic clock and sampled command
+output. The phase rows omit some command and observation overhead; the total
+includes that overhead. The system total was 31.128 seconds longer on Ubuntu and
+10.584 seconds longer on Debian. The separate runtime download and setup cost
+was 21.007 seconds on Ubuntu and 11.623 seconds on Debian. The common host-package
+phases also varied, so the total differences cannot be attributed to runtime
+distribution alone. These observations support avoiding the extra download and
+setup; they do not establish a general speed ratio.
+
+Both system totals include the bundled host archive. These results do not
+measure a runtime-free host package or use of an already installed runtime.
+Guest acquisition, proxy and guest startup, and first-task work were outside
+this measurement. The approximately 15-second first-task target remains
+unchanged. The full observations and accepted startup and isolation results
+are recorded in [#240](https://github.com/craigbalding/safeyolo/issues/240).
 
 A declined consent prompt makes no host changes. If sudo, allocation, namespace
 or profile setup fails, the command reports the failed operation and any
@@ -777,7 +854,8 @@ Explicit `--platform-assets` inputs must already use a valid mapping for your
 account. Preparation checks and retains that mapping. It preserves shared
 prepared trees and refuses a conflicting saved mapping. Omit this option to
 acquire a separate tree for the selected account mapping. `--no-guest-download`
-retains contributor and proxy-only installation without host preparation.
+retains contributor and proxy-only installation without host preparation,
+unless you explicitly select `--system-runsc`.
 
 ## Configure and use an agent
 

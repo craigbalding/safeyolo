@@ -788,7 +788,7 @@ def test_shared_approval_transport_keeps_owned_selection_when_preparation_fails(
     owned, unrelated = tmp_path / "owned", tmp_path / "unrelated"
     identities = {}
     for root in (owned, unrelated):
-        installed_shared_approvals.checked([binary, "--instance-dir", str(root), "init"])
+        installed_shared_approvals.checked([binary, "--dangerously-allow-root", "--instance-dir", str(root), "init"])
         for name in ("worker", "helper"):
             created = installed_shared_approvals.checked([
                 binary, "--instance-dir", str(root), "agent", "create", name,
@@ -1879,7 +1879,7 @@ def test_blackbox_coord_binding_reaches_real_native_start_and_restart(tmp_path):
     env = {key: value for key, value in os.environ.items()
            if key not in {"SAFEYOLO_NATS_TEST_INSTANCE", "SAFEYOLO_COORD_DATA_DIR", "SAFEYOLO_NATIVE_CONFIG_PATH"}}
     env.update(SAFEYOLO_TEST_CONFIG_DIR=str(root), SELECTED_NATIVE_CLI=cli, SELECTED_NATS=nats)
-    subprocess.run([cli, "--instance-dir", str(root), "init"], env=env,
+    subprocess.run([cli, "--dangerously-allow-root", "--instance-dir", str(root), "init"], env=env,
                    capture_output=True, text=True, timeout=10, check=True)
     try:
         for _ in range(2):

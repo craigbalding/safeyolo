@@ -193,10 +193,12 @@ records for recovery; it must not be reported as successfully stopped.
 
 #### Bundled, patched gVisor
 
-Linux bundles carry a private gVisor runtime. Every runtime launch checks all
-four bundled executables against the package checksums. SafeYOLO never selects
-a system or `PATH` copy. Missing or invalid required bytes stop the launch with
-a host-package repair action. The runtime is built from the pinned upstream release
+Linux bundles carry a private gVisor runtime. Every bundled runtime launch checks
+all four executables against the package checksums. SafeYOLO defaults to this
+runtime and never silently selects a system or `PATH` copy. Operators can select
+a complete tested runtime explicitly with `--system-runsc`. Missing or invalid
+required bundled bytes stop the launch with a host-package repair action.
+The runtime is built from the pinned upstream release
 `release-20261005.0` with three patches. The runtime reports
 `release-20261005.0-safeyolo.2`, and the installer verifies its files against
 the bundle's checksums.

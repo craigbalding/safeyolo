@@ -264,19 +264,27 @@ async fn context_command(arguments: &[String]) -> Result<(), Error> {
     Ok(())
 }
 
+fn take_global_flags(arguments: &mut Vec<OsString>) {
+    // Stop at the command or an option with a value. Its arguments, including
+    // literal flag names and everything after `--`, belong to that parser.
+    while let Some(argument) = arguments.first() {
+        if argument == safeyolo_proxy::host_root::FLAG {
+            safeyolo_proxy::host_root::allow_by_flag();
+        } else if argument != "--json" {
+            break;
+        }
+        arguments.remove(0);
+    }
+}
+
 async fn run() -> Result<(), Error> {
     let mut arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
+    take_global_flags(&mut arguments);
     let upgrade_command = std::env::args_os().next().is_some_and(|path| {
         Path::new(&path)
             .file_name()
             .is_some_and(|name| name == "safeyolo-upgrade")
     });
-    if arguments
-        .first()
-        .is_some_and(|argument| argument == "--json")
-    {
-        arguments.remove(0);
-    }
     let explicit_config = arguments.first().is_some_and(|value| value == "--config");
     let explicit_root = arguments
         .first()
@@ -337,12 +345,7 @@ async fn run() -> Result<(), Error> {
     // A global output option lets automation select structured output even
     // where a leaf command has no other options. Existing leaf --json remains
     // accepted by its owner. Neither form changes terminal interaction.
-    if arguments
-        .first()
-        .is_some_and(|argument| argument == "--json")
-    {
-        arguments.remove(0);
-    }
+    take_global_flags(&mut arguments);
     if !upgrade_command && help::show(&arguments) {
         return Ok(());
     }
@@ -464,7 +467,10 @@ async fn run() -> Result<(), Error> {
         [command, host, port] if command == "ssh-proxy" => {
             safeyolo_proxy::ssh_proxy::run(host, port.parse()?).await
         }
-        [command] if command == "init" => initialize(&root, &config),
+        [command] if command == "init" => {
+            safeyolo_proxy::host_root::refuse_root("create an instance")?;
+            initialize(&root, &config)
+        }
         [version] if version == "--version" => {
             println!(
                 "safeyolo {} commit={} profile={}",

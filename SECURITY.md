@@ -54,7 +54,9 @@ does not perform hostname or reverse-DNS resolution. The host-local boundary
 and proxy readiness therefore do not depend on the host resolver. Protected
 Admin API routes require a bearer token and check it with Rust's
 `subtle::ConstantTimeEq`.
-Host processes run as the operator's user ID. On Linux, `safeyolo agent start`
+Host processes run as the operator's user ID. Creating an instance, starting the
+proxy and `safeyolo-proxy` itself refuse to run as root unless the operator
+passes `--dangerously-allow-root` or sets `SAFEYOLO_DANGEROUSLY_ALLOW_ROOT=1`. On Linux, `safeyolo agent start`
 does not use host `sudo`.
 
 Prebuilt Linux guest preparation uses a delegated user namespace containing the

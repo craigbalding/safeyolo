@@ -116,14 +116,14 @@ def test_launch_refusal_has_no_setup_service_or_agent_effect(tmp_path, choice, h
     root, workspace = tmp_path / "installed", tmp_path / "workspace"
     workspace.mkdir()
     # This control stops before staging. No guest or provider input is used.
-    initialized = subprocess.run([str(binary), "--instance-dir", str(root), "init"], capture_output=True, text=True, timeout=15)
+    initialized = subprocess.run([str(binary), "--dangerously-allow-root", "--instance-dir", str(root), "init"], capture_output=True, text=True, timeout=15)
     assert initialized.returncode == 0, initialized.stderr
     (root / "bin").mkdir()
     (root / "bin/safeyolo").symlink_to(binary.resolve())
     scripts = root / "assets/contrib"
     scripts.mkdir(parents=True)
     shutil.copy2(REPO / f"contrib/{harness}-host-setup.sh", scripts)
-    instance = SimpleNamespace(root=root, environment={**os.environ, "TERM": "xterm-256color"})
+    instance = SimpleNamespace(root=root, environment={**os.environ, "SAFEYOLO_DANGEROUSLY_ALLOW_ROOT": "1", "TERM": "xterm-256color"})
     policy = (root / "policy.toml").read_bytes()
     # Keep the default Claude caller as well as explicit Codex selection.
     arguments = ["agent", "launch"] + (["--harness", harness] if harness == "codex" else [])
@@ -151,7 +151,7 @@ def codex_login_launch(tmp_path, _binary_cache):
     binary = (artifacts / "safeyolo").resolve()
     root, workspace = tmp_path / "installed", tmp_path / "workspace"
     workspace.mkdir()
-    initialized = subprocess.run([str(binary), "--instance-dir", str(root), "init"],
+    initialized = subprocess.run([str(binary), "--dangerously-allow-root", "--instance-dir", str(root), "init"],
                                  capture_output=True, text=True, timeout=15)
     assert initialized.returncode == 0, initialized.stderr
     (root / "bin").mkdir()
@@ -174,7 +174,7 @@ def codex_login_launch(tmp_path, _binary_cache):
         "access_token": 'synthetic-first-launch-access.eyJleHAiOjIwMDAwMDAwMDB9.signature', "refresh_token": "synthetic-first-launch-refresh",
     }}) + "\n")
     login.chmod(0o600)
-    instance = SimpleNamespace(root=root, environment={**os.environ, "TERM": "xterm-256color",
+    instance = SimpleNamespace(root=root, environment={**os.environ, "SAFEYOLO_DANGEROUSLY_ALLOW_ROOT": "1", "TERM": "xterm-256color",
                                                      "CODEX_HOME": str(host_codex),
                                                      "SAFEYOLO_NATS_TEST_INSTANCE": str(root)})
     instance.arguments = ["agent", "launch", str(workspace), "--name", "first", "--harness", "codex"]
@@ -922,7 +922,7 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
 def test_unsupported_launch_harness_is_rejected_before_instance_mutation(tmp_path):
     artifacts, _, _ = native_inputs()
     root = tmp_path / "installed"
-    initialized = subprocess.run([str(artifacts / "safeyolo"), "--instance-dir", str(root), "init"],
+    initialized = subprocess.run([str(artifacts / "safeyolo"), "--dangerously-allow-root", "--instance-dir", str(root), "init"],
                                  capture_output=True, text=True, timeout=15)
     assert initialized.returncode == 0, initialized.stderr
     saved = {name: (root / name).read_bytes() for name in ("policy.toml", "config.toml")}

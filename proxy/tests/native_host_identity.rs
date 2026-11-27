@@ -14,6 +14,7 @@ fn install_configuration() -> TempDir {
     let directory = TempDir::new().unwrap();
     let root = directory.path();
     let initialized = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
         .arg("--instance-dir")
         .arg(root)
         .arg("init")

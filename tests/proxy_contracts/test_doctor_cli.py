@@ -69,7 +69,7 @@ def test_doctor_surfaces_current_pending_decisions_and_keeps_review_read_only(tm
 def test_doctor_inspects_selected_storage_without_creating_or_repairing_it(tmp_path):
     binary = native_inputs()[0] / "safeyolo"
     root = tmp_path / "instance with spaces"
-    subprocess.run([str(binary), "--instance-dir", str(root), "init"],
+    subprocess.run([str(binary), "--dangerously-allow-root", "--instance-dir", str(root), "init"],
                    capture_output=True, text=True, check=True, timeout=15)
     audit = tmp_path / "separate audit" / "current.jsonl"
     database = tmp_path / "separate flows" / "current.sqlite3"
@@ -129,7 +129,7 @@ def test_doctor_inspects_selected_storage_without_creating_or_repairing_it(tmp_p
 def test_doctor_reports_non_regular_flow_path_without_waiting_or_changing_it(tmp_path, kind, structured):
     binary = native_inputs()[0] / "safeyolo"
     root = tmp_path / "selected instance"
-    subprocess.run([str(binary), "--instance-dir", str(root), "init"],
+    subprocess.run([str(binary), "--dangerously-allow-root", "--instance-dir", str(root), "init"],
                    capture_output=True, text=True, check=True, timeout=15)
     database = tmp_path / "unusable flows"
     if kind == "fifo":
