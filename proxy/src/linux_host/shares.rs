@@ -695,7 +695,12 @@ pub(crate) async fn attach(
         ])
         .arg(&source)
         .arg(super::runtime_path()?)
-        .args(["--host-uds=open", "gofer", "--bundle"])
+        .args([
+            "--host-uds=open",
+            "--host-uds-paths=/safeyolo/proxy",
+            "gofer",
+            "--bundle",
+        ])
         .arg(&bundle)
         .arg("--gofer-mount-confs=lisafs:none")
         .arg(format!("--spec-fd={}", config.as_raw_fd()))

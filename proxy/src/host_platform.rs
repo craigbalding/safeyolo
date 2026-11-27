@@ -1283,6 +1283,8 @@ async fn start_prepared_linux_sandbox(
             .arg(&overlay)
             .args([
                 "--host-uds=open",
+                // Host sockets in the workspace or other mounts stay out of reach.
+                "--host-uds-paths=/safeyolo/proxy",
                 // The patched version suffix is outside upstream's release
                 // pattern. Preserve its release-build companion checks.
                 "--sidecar-release-enforcement-policy=ALWAYS",

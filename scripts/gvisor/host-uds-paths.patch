@@ -1,0 +1,240 @@
+diff --git a/runsc/cmd/gofer.go b/runsc/cmd/gofer.go
+index 456c6de..1283982 100644
+--- a/runsc/cmd/gofer.go
++++ b/runsc/cmd/gofer.go
+@@ -443,6 +443,7 @@ func (g *Gofer) serve(spec *specs.Spec, conf *config.Config, root string, ruid i
+ 	// These are global fsgofer configurations.
+ 	fsgoferConf := &fsgofer.Config{
+ 		HostUDS:            conf.GetHostUDS(),
++		HostUDSPaths:       conf.GetHostUDSPaths(),
+ 		HostFifo:           conf.HostFifo,
+ 		CharDevicePolicy:   conf.CharacterDevicePolicy,
+ 		DonateMountPointFD: conf.DirectFS,
+diff --git a/runsc/config/config.go b/runsc/config/config.go
+index 1e56534..a83ee14 100644
+--- a/runsc/config/config.go
++++ b/runsc/config/config.go
+@@ -111,6 +111,11 @@ type Config struct {
+ 	// DO NOT call it directly, use GetHostUDS() instead.
+ 	HostUDS HostUDS `flag:"host-uds"`
+ 
++	// HostUDSPaths is a comma-separated list of absolute container paths.
++	// When set, host-uds access applies only to sockets at or below one of
++	// these paths. DO NOT call it directly, use GetHostUDSPaths() instead.
++	HostUDSPaths string `flag:"host-uds-paths"`
++
+ 	// HostFifo controls permission to access host FIFO (or named pipes).
+ 	HostFifo HostFifo `flag:"host-fifo"`
+ 
+@@ -562,6 +567,11 @@ func (c *Config) Validate() error {
+ 		// Deprecated flag was used together with flag that replaced it.
+ 		return fmt.Errorf("fsgofer-host-uds has been replaced with host-uds flag")
+ 	}
++	for _, allowed := range c.GetHostUDSPaths() {
++		if !filepath.IsAbs(allowed) {
++			return fmt.Errorf("host-uds-paths entry %q must be an absolute path", allowed)
++		}
++	}
+ 	if len(c.ProfilingMetrics) > 0 && len(c.ProfilingMetricsLog) == 0 {
+ 		return fmt.Errorf("profiling-metrics flag requires defining a profiling-metrics-log for output")
+ 	}
+@@ -634,6 +644,18 @@ func (c *Config) GetHostUDS() HostUDS {
+ 	return c.HostUDS
+ }
+ 
++// GetHostUDSPaths returns the cleaned container paths that host-uds access is
++// restricted to. An empty result applies host-uds to every gofer mount.
++func (c *Config) GetHostUDSPaths() []string {
++	var paths []string
++	for _, entry := range strings.Split(c.HostUDSPaths, ",") {
++		if entry != "" {
++			paths = append(paths, filepath.Clean(entry))
++		}
++	}
++	return paths
++}
++
+ // GetOverlay2 returns the overlay configuration, taking into consideration all
+ // flags that affect the result.
+ func (c *Config) GetOverlay2() Overlay2 {
+diff --git a/runsc/config/flags.go b/runsc/config/flags.go
+index 535e01e..1004977 100644
+--- a/runsc/config/flags.go
++++ b/runsc/config/flags.go
+@@ -144,6 +144,7 @@ func RegisterFlags(flagSet *flag.FlagSet) {
+ 		"    'medium' can be 'memory', 'self' or 'dir=/abs/dir/path' in which filestore will be created\n"+
+ 		"    'size' optional parameter overrides default overlay upper layer size\n")
+ 	flagSet.Var(hostUDSPtr(HostUDSNone), flagHostUDS, "controls permission to access host Unix-domain sockets. Values: none|open|create|all, default: none")
++	flagSet.String("host-uds-paths", "", "comma-separated list of absolute container paths. When set, --host-uds access applies only to sockets at or below these paths and other host sockets are refused. Empty applies --host-uds to every gofer mount.")
+ 	flagSet.Var(hostFifoPtr(HostFifoNone), "host-fifo", "controls permission to access host FIFOs (or named pipes). Values: none|open, default: none")
+ 	flagSet.Var(charDevicePolicyPtr(CharDevEmulatedOnly), "character-device-policy", "controls how character device files on gofer mounts (rootfs and bind mounts) are handled. 'emulated-only' serves devices implemented by the sentry and fails opens of other devices with ENXIO (default and more secure); 'prefer-emulated' serves sentry-implemented devices from the sentry and opens the rest through the host; 'passthrough' opens all of them through the host. Values: emulated-only|prefer-emulated|passthrough, default: emulated-only")
+ 	flagSet.Bool("gvisor-marker-file", false, "enable the presence of the /proc/gvisor/kernel_is_gvisor file that can be used by applications to detect that gVisor is in use")
+diff --git a/runsc/fsgofer/BUILD b/runsc/fsgofer/BUILD
+index c3b00f8..5ff214e 100644
+--- a/runsc/fsgofer/BUILD
++++ b/runsc/fsgofer/BUILD
+@@ -8,6 +8,7 @@ package(
+ go_library(
+     name = "fsgofer",
+     srcs = [
++        "host_uds_paths.go",
+         "lisafs.go",
+     ],
+     visibility = ["//runsc:__subpackages__"],
+@@ -25,6 +26,13 @@ go_library(
+     ],
+ )
+ 
++go_test(
++    name = "host_uds_paths_test",
++    size = "small",
++    srcs = ["host_uds_paths_test.go"],
++    library = ":fsgofer",
++)
++
+ go_test(
+     name = "lisafs_test",
+     size = "small",
+diff --git a/runsc/fsgofer/host_uds_paths.go b/runsc/fsgofer/host_uds_paths.go
+new file mode 100644
+index 0000000..534e27b
+--- /dev/null
++++ b/runsc/fsgofer/host_uds_paths.go
+@@ -0,0 +1,33 @@
++// Copyright 2026 The SafeYolo Authors.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package fsgofer
++
++import "strings"
++
++// hostUDSPathAllowed reports whether host Unix-domain socket access applies to
++// socketPath. An empty allowed list places no restriction beyond HostUDS.
++// Otherwise socketPath must equal an entry or lie below it; a sibling that
++// merely shares the entry's prefix does not match.
++func hostUDSPathAllowed(allowed []string, socketPath string) bool {
++	if len(allowed) == 0 {
++		return true
++	}
++	for _, entry := range allowed {
++		if entry == "/" || socketPath == entry || strings.HasPrefix(socketPath, strings.TrimSuffix(entry, "/")+"/") {
++			return true
++		}
++	}
++	return false
++}
+diff --git a/runsc/fsgofer/host_uds_paths_test.go b/runsc/fsgofer/host_uds_paths_test.go
+new file mode 100644
+index 0000000..928bc65
+--- /dev/null
++++ b/runsc/fsgofer/host_uds_paths_test.go
+@@ -0,0 +1,44 @@
++// Copyright 2026 The SafeYolo Authors.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package fsgofer
++
++import "testing"
++
++func TestHostUDSPathAllowed(t *testing.T) {
++	proxy := []string{"/safeyolo/proxy"}
++	for _, tc := range []struct {
++		name    string
++		allowed []string
++		path    string
++		want    bool
++	}{
++		{"unrestricted", nil, "/workspace/host.sock", true},
++		{"socket_below_entry", proxy, "/safeyolo/proxy/proxy.sock", true},
++		{"nested_below_entry", proxy, "/safeyolo/proxy/a/b.sock", true},
++		{"entry_itself", []string{"/run/one.sock"}, "/run/one.sock", true},
++		{"other_mount", proxy, "/workspace/host.sock", false},
++		{"sibling_with_shared_prefix", proxy, "/safeyolo/proxy-other/x.sock", false},
++		{"parent_of_entry", proxy, "/safeyolo/x.sock", false},
++		{"second_entry", []string{"/a", "/safeyolo/proxy"}, "/safeyolo/proxy/proxy.sock", true},
++		{"trailing_slash_entry", []string{"/safeyolo/proxy/"}, "/safeyolo/proxy/proxy.sock", true},
++		{"root_entry", []string{"/"}, "/workspace/host.sock", true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			if got := hostUDSPathAllowed(tc.allowed, tc.path); got != tc.want {
++				t.Errorf("hostUDSPathAllowed(%q, %q) = %t, want %t", tc.allowed, tc.path, got, tc.want)
++			}
++		})
++	}
++}
+diff --git a/runsc/fsgofer/lisafs.go b/runsc/fsgofer/lisafs.go
+index 0b3b598..e489e16 100644
+--- a/runsc/fsgofer/lisafs.go
++++ b/runsc/fsgofer/lisafs.go
+@@ -54,6 +54,10 @@ type Config struct {
+ 	// HostUDS signals whether the gofer can connect to host unix domain sockets.
+ 	HostUDS config.HostUDS
+ 
++	// HostUDSPaths restricts HostUDS access to sockets at or below these
++	// paths, as the gofer sees them. Empty applies HostUDS to every mount.
++	HostUDSPaths []string
++
+ 	// HostFifo signals whether the gofer can connect to host FIFOs.
+ 	HostFifo config.HostFifo
+ 
+@@ -553,9 +557,9 @@ func (fd *controlFDLisa) Open(flags uint32) (*lisafs.OpenFD, int, error) {
+ 			return nil, -1, unix.EPERM
+ 		}
+ 	case unix.S_IFSOCK:
+-		if !impl.config.HostUDS.AllowOpen() {
++		if !impl.config.HostUDS.AllowOpen() || !hostUDSPathAllowed(impl.config.HostUDSPaths, fd.ControlFD.Node().FilePath()) {
+ 			logRejectedUdsOpenOnce.Do(func() {
+-				log.Warningf("Rejecting attempt to open unix domain socket from host filesystem: %q. If you want to allow this, set flag --host-uds=open", fd.ControlFD.Node().FilePath())
++				log.Warningf("Rejecting attempt to open unix domain socket from host filesystem: %q. If you want to allow this, set flag --host-uds=open and include its path in --host-uds-paths if that flag is set", fd.ControlFD.Node().FilePath())
+ 			})
+ 			return nil, -1, unix.EPERM
+ 		}
+@@ -885,7 +889,7 @@ func isSockTypeSupported(sockType uint32) bool {
+ 
+ // Connect implements lisafs.ControlFDImpl.Connect.
+ func (fd *controlFDLisa) Connect(sockType uint32) (int, error) {
+-	if !fd.Conn().Impl().(*connectionImpl).config.HostUDS.AllowOpen() {
++	if impl := fd.Conn().Impl().(*connectionImpl); !impl.config.HostUDS.AllowOpen() || !hostUDSPathAllowed(impl.config.HostUDSPaths, fd.ControlFD.Node().FilePath()) {
+ 		logRejectedUdsConnectOnce.Do(func() {
+ 			log.Warningf("Rejecting attempt to connect to unix domain socket from host filesystem: %q. If you want to allow this, set flag --host-uds=open", fd.ControlFD.Node().FilePath())
+ 		})
+@@ -921,7 +925,7 @@ func (fd *controlFDLisa) Connect(sockType uint32) (int, error) {
+ // ConnectWithCreds implements lisafs.ControlFDImpl.ConnectWithCreds.
+ func (fd *controlFDLisa) ConnectWithCreds(sockType uint32, uid lisafs.UID, gid lisafs.GID) (int, error) {
+ 	impl := fd.Conn().Impl().(*connectionImpl)
+-	if !impl.config.HostUDS.AllowOpen() {
++	if !impl.config.HostUDS.AllowOpen() || !hostUDSPathAllowed(impl.config.HostUDSPaths, fd.ControlFD.Node().FilePath()) {
+ 		logRejectedUdsConnectOnce.Do(func() {
+ 			log.Warningf("Rejecting attempt to connect to unix domain socket from host filesystem: %q. If you want to allow this, set flag --host-uds=open", fd.ControlFD.Node().FilePath())
+ 		})
+@@ -984,7 +988,7 @@ func (fd *controlFDLisa) ConnectWithCreds(sockType uint32, uid lisafs.UID, gid l
+ // +checklocksread:fd.ControlFD.conn.server.renameMu
+ // +checklocksexclude:fd.ControlFD.conn.fdsMu
+ func (fd *controlFDLisa) BindAt(name string, sockType uint32, mode linux.FileMode, uid lisafs.UID, gid lisafs.GID) (*lisafs.ControlFD, lisafs.Statx, *lisafs.BoundSocketFD, int, error) {
+-	if !fd.Conn().Impl().(*connectionImpl).config.HostUDS.AllowCreate() {
++	if impl := fd.Conn().Impl().(*connectionImpl); !impl.config.HostUDS.AllowCreate() || !hostUDSPathAllowed(impl.config.HostUDSPaths, filepath.Join(fd.Node().FilePath(), name)) {
+ 		logRejectedUdsCreateOnce.Do(func() {
+ 			log.Warningf("Rejecting attempt to create unix domain socket from host filesystem: %q. If you want to allow this, set flag --host-uds=create", name)
+ 		})

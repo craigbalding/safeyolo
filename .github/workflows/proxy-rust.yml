@@ -335,8 +335,8 @@ jobs:
         if: needs.native-changes.outputs.rust == 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/runsc-cache/safeyolo/gvisor/release-20261005.0-safeyolo.1/*/linux-amd64/runtime
-          key: runsc-runtime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/acquire_runsc.sh', 'scripts/build_runsc.sh', 'scripts/native_package.sh', 'scripts/gvisor/nofollow.patch', 'scripts/gvisor/portforward.patch') }}
+          path: ${{ runner.temp }}/runsc-cache/safeyolo/gvisor/release-20261005.0-safeyolo.2/*/linux-amd64/runtime
+          key: runsc-runtime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/acquire_runsc.sh', 'scripts/build_runsc.sh', 'scripts/native_package.sh', 'scripts/gvisor/nofollow.patch', 'scripts/gvisor/portforward.patch', 'scripts/gvisor/host-uds-paths.patch') }}
 
       - name: Prepare the complete patched gVisor runtime
         id: runsc_inputs
@@ -354,7 +354,7 @@ jobs:
         if: steps.runsc_inputs.outcome == 'success' && steps.runsc_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/runsc-cache/safeyolo/gvisor/release-20261005.0-safeyolo.1/*/linux-amd64/runtime
+          path: ${{ runner.temp }}/runsc-cache/safeyolo/gvisor/release-20261005.0-safeyolo.2/*/linux-amd64/runtime
           key: ${{ steps.runsc_cache.outputs.cache-primary-key }}
 
       - name: Retain the complete patched gVisor runtime

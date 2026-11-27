@@ -462,7 +462,8 @@ existing verification owners. Repeating a target reuses verified host archives
 and guest inputs.
 
 Installed Linux packages can retain the bundled stock gVisor
-`release-20261005.0` pin or the patched `release-20261005.0-safeyolo.1` pin.
+`release-20261005.0` pin, the earlier patched `release-20261005.0-safeyolo.1`
+pin or the current patched `release-20261005.0-safeyolo.2` pin.
 Upgrade validates the installed package against its exact runtime pin and source.
 A newly selected bundle must use the patched pin. Rollback validates the
 retained previous package against its own pin before selecting the complete
@@ -612,7 +613,7 @@ Alpine host qualification is separate from the accepted Alpine guest images.
 ## Linux host preparation in new source bundles
 
 The Linux host-package producer selects the required patched
-gVisor `release-20261005.0-safeyolo.1` payload for the bundle's architecture.
+gVisor `release-20261005.0-safeyolo.2` payload for the bundle's architecture.
 The installer checks the required files' checksums, architecture, executable
 permissions and runtime version. It uses that private runtime;
 it does not replace a system `runsc` or add a package repository.
@@ -621,7 +622,9 @@ The host-package producer builds the patched runtime from pinned upstream source
 The patches repair final-directory symlink refusal with `O_DIRECTORY | O_NOFOLLOW`
 while retaining trailing-slash traversal, and preserve reverse port-forward
 output after orderly input closure. Copy errors and shutdown still cancel both
-directions. The build uses Bazel 8.3.1, Go 1.26.3
+directions. A third patch adds `--host-uds-paths`, which limits host Unix-domain
+socket access to the listed guest paths; SafeYOLO selects the agent's proxy
+socket directory. The build uses Bazel 8.3.1, Go 1.26.3
 and the upstream opt profile. Source builders need the upstream C/C++ cross
 compilers, Clang with BPF target support, and `libbpf` development headers.
 The producer caches the complete four-file runtime. To reuse a prepared runtime,

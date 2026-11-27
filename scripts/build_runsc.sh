@@ -8,7 +8,7 @@ upstream=$(cd -- "$1" && pwd)
 mkdir -p "$(dirname -- "$2")"
 output=$(cd -- "$(dirname -- "$2")" && pwd)/$(basename -- "$2")
 revision=97e8e896904cb364319cd9758241d3f0bd27a6f4
-version=release-20261005.0-safeyolo.1
+version=release-20261005.0-safeyolo.2
 platform=$(host_platform)
 case "$platform" in
   linux-amd64) configuration=x86_64;;
@@ -18,7 +18,8 @@ esac
 [[ $(git -C "$upstream" rev-parse HEAD) == "$revision" ]] || { package_error "gVisor source must be $revision"; exit 1; }
 [[ -z $(git -C "$upstream" status --porcelain) ]] || { package_error 'use a clean upstream checkout; retain an interrupted build and resume its Bazel commands there'; exit 1; }
 [[ ! -e $output && ! -L $output ]] || { package_error "runtime destination already exists: $output"; exit 1; }
-patches=("$script_dir/gvisor/nofollow.patch" "$script_dir/gvisor/portforward.patch")
+patches=("$script_dir/gvisor/nofollow.patch" "$script_dir/gvisor/portforward.patch" \
+  "$script_dir/gvisor/host-uds-paths.patch")
 git -C "$upstream" apply --check "${patches[@]}"
 git -C "$upstream" apply "${patches[@]}"
 
@@ -29,6 +30,8 @@ bazel test --jobs=1 --config="$configuration" --compilation_mode=opt //pkg/sentr
   --test_filter='TestShouldFollowSymlinkDirectoryRequirement|TestSymlinkTargetTrailingSlash' --test_arg=-test.v
 bazel test --jobs=1 --config="$configuration" --compilation_mode=opt \
   //runsc/boot/portforward:portforward_test --test_arg=-test.v
+bazel test --jobs=1 --config="$configuration" --compilation_mode=opt \
+  //runsc/fsgofer:host_uds_paths_test --test_arg=-test.v
 targets=(//runsc:runsc //runsc/cmd/sentry:gvisor_sentry \
   //runsc/prewarmer:prewarmer_binary //runsc/fdparking:fdparking_binary)
 names=(runsc gvisor-bin/gvisor_sentry gvisor-bin/gvisor-sentry-prewarmer gvisor-bin/runsc-fd-parking)
@@ -48,4 +51,4 @@ observed=$("$stage/runsc" --version)
 [[ ${observed%%$'\n'*} == "runsc version $version" ]] || { package_error "built gVisor version differs: $observed"; exit 1; }
 mv -T -- "$stage" "$output"
 trap - EXIT
-echo "Prepared gVisor $version $platform from $revision and gvisor/{nofollow,portforward}.patch" >&2
+echo "Prepared gVisor $version $platform from $revision and gvisor/{nofollow,portforward,host-uds-paths}.patch" >&2

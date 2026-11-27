@@ -84,7 +84,7 @@ def stock_runsc(bundle):
     """Use the exact retained stock pin with controlled executable identities."""
     metadata = bundle / "package-info"
     metadata.write_text(metadata.read_text().replace(
-        "release-20261005.0-safeyolo.1", "release-20261005.0",
+        "release-20261005.0-safeyolo.2", "release-20261005.0",
     ).replace(
         "https://github.com/google/gvisor/commit/97e8e896904cb364319cd9758241d3f0bd27a6f4",
         "https://github.com/google/gvisor/releases/tag/release-20261005.0",
@@ -130,7 +130,7 @@ def test_stock_installed_pair_status_upgrade_and_rollback(
     tree_identity = tree.stat().st_ino, tree.stat().st_uid, tree.stat().st_gid
     before = len(requests)
     selected = upgrade(native_cli, root, environment, "--bundle", target)
-    assert selected["current"]["host"]["runsc_version"] == "release-20261005.0-safeyolo.1"
+    assert selected["current"]["host"]["runsc_version"] == "release-20261005.0-safeyolo.2"
     assert selected["previous"] == original["current"]
     assert selected["current"]["guest"] == original["current"]["guest"]
     assert upgrade(native_cli, root, environment, "status") == selected
@@ -163,7 +163,7 @@ def test_runsc_pin_refusals_preserve_current_and_state(
     elif fault == "target-stock":
         stock_runsc(target)
     elif fault.endswith("runtime"):
-        version = "release-20261005.0-safeyolo.1" if fault.startswith("current-") else "release-20261005.0"
+        version = "release-20261005.0-safeyolo.2" if fault.startswith("current-") else "release-20261005.0"
         executable(package / "libexec/runsc", f"runsc version {version}")
         checksums(package)
     else:
@@ -203,7 +203,7 @@ def test_bad_retained_stock_runtime_cannot_replace_current_on_rollback(
         with (previous / "libexec/runsc").open("ab") as stream:
             stream.write(b"tampered")
     else:
-        executable(previous / "libexec/runsc", "runsc version release-20261005.0-safeyolo.1")
+        executable(previous / "libexec/runsc", "runsc version release-20261005.0-safeyolo.2")
         checksums(previous)
     # Record the deliberately changed receipt before checking refusal effects.
     selected = upgrade(native_cli, root, environment, "status")
@@ -313,7 +313,7 @@ def test_shell_installed_stock_runtime_keeps_integrity_checks(host_pair, fault):
         with (bundle / "libexec/gvisor-bin/gvisor_sentry").open("ab") as stream:
             stream.write(b"tampered")
     elif fault == "runtime":
-        executable(bundle / "libexec/runsc", "runsc version release-20261005.0-safeyolo.1")
+        executable(bundle / "libexec/runsc", "runsc version release-20261005.0-safeyolo.2")
         checksums(bundle)
     elif fault in ("source", "origin"):
         metadata = bundle / "package-info"

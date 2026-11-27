@@ -112,7 +112,7 @@ the existing `systemd-run --user --scope` path remains active.
 A complete factory inside a Linux/gVisor day agent is not qualified. The
 [#1450 investigation](https://github.com/craigbalding/safeyolo/issues/1450)
 reached a concrete worker bootstrap blocker with ARM64 runsc
-`release-20261005.0-safeyolo.1`. The proxy-only Lab and the
+`release-20261005.0-safeyolo.2`. The proxy-only Lab and the
 [nested Docker recipe](nested-docker.md) retain their separate scope.
 
 After initializing a private inner instance, native worker creation and host

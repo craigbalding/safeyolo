@@ -159,11 +159,13 @@ fn package_guest_allows_only_known_installed_runsc_pins() {
     );
     let stock_version = "release-20261005.0";
     let stock_source = "https://github.com/google/gvisor/releases/tag/release-20261005.0";
-    let patched_version = "release-20261005.0-safeyolo.1";
+    let patched_version = "release-20261005.0-safeyolo.2";
     let patched_source =
         "https://github.com/google/gvisor/commit/97e8e896904cb364319cd9758241d3f0bd27a6f4";
+    let earlier_patched_version = "release-20261005.0-safeyolo.1";
     for (version, source, target_allowed) in [
         (stock_version, stock_source, false),
+        (earlier_patched_version, patched_source, false),
         (patched_version, patched_source, true),
     ] {
         let metadata =

@@ -28,7 +28,7 @@ Use the small asset update below for this existing consumer. Future ordinary
 bundles use the corrected write_job_definitions producer and installed helper.
 
 The gVisor input remains /home/agent/1452-native-bundle/libexec. Execution17820
-verified patched release-20261005.0-safeyolo.1 and the four files with mode 0755 below.
+verified patched release-20261005.0-safeyolo.2 and the four files with mode 0755 below.
 Their exact hashes remain in gvisor.sha256 and the shared gvisor-binding.json:
 
 | Input relative to GVISOR_ROOT | Bytes |

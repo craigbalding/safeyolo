@@ -474,8 +474,9 @@ apply only the new portforward patch. Do not reset the warm checkout. Resume the
 builder's focused tests and four-target build with its existing Bazel output
 root, architecture configuration, opt profile and one job.
 
-The compatible runtime version marker remains
-`release-20261005.0-safeyolo.1`. Record the actual SafeYOLO source, both patch
+The runtime version marker is `release-20261005.0-safeyolo.2`; it changed when
+[`host-uds-paths.patch`](../../scripts/gvisor/host-uds-paths.patch) added a
+runtime flag. Record the actual SafeYOLO source, all patch
 inputs and all four output hashes; that version string alone does not distinguish
 the repaired runtime from the defective donor. Acquisition now includes the new
 patch in its cache key. Do not relabel or reuse an unmodified runtime as repaired.
