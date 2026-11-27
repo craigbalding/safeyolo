@@ -127,6 +127,15 @@ repos:
         always_run: true
         pass_filenames: false
 
+      # Website pages name the maintained claims their prose relies on.
+      # See the front-matter claims lists and scripts/check_website_claims.py.
+      - id: website-claims
+        name: Website claims grounding
+        entry: python3 scripts/check_website_claims.py
+        language: system
+        always_run: true
+        pass_filenames: false
+
       # Agent API auth examples must pass the header on stdin. Expanding the
       # token inside curl -H/--header exposes it through process argv.
       - id: agent-token-argv

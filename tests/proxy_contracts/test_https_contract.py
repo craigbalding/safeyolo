@@ -51,11 +51,12 @@ def mapped_https_origin(chain, key, hosts):
             assert not thread.is_alive()
 
 
-def intercepted_request(proxy, host, *, method="GET", headers=None, body=None):
+def intercepted_request(proxy, host, *, method="GET", headers=None, body=None,
+                        agent="alice", path="/preserved-chain"):
     """Verify the intercepted leaf, then observe native upstream verification."""
     with socket.socket(socket.AF_UNIX) as raw:
         raw.settimeout(5)
-        raw.connect(proxy.paths["alice"])
+        raw.connect(proxy.paths[agent])
         raw.sendall(f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n".encode())
         head = bytearray()
         while not head.endswith(b"\r\n\r\n"):
@@ -68,7 +69,7 @@ def intercepted_request(proxy, host, *, method="GET", headers=None, body=None):
             client = http.client.HTTPConnection(host, timeout=5)
             client.sock = stream
             try:
-                client.request(method, "/preserved-chain", headers=headers or {}, body=body)
+                client.request(method, path, headers=headers or {}, body=body)
                 response = client.getresponse()
                 return response.status, dict(response.getheaders()), response.read()
             finally:

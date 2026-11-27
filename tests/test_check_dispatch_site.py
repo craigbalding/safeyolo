@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import os
+import shlex
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.legacy_dispatch import check_site as check_dispatch_site
 
@@ -75,3 +79,53 @@ def test_workflows_keep_manual_publication_default_and_deploy_separate() -> None
     assert "workflow_dispatch:" in pages
     assert "environment:\n      name: github-pages" in pages
     assert "pull_request:" not in pages
+
+
+@pytest.mark.parametrize(("workflow_name", "job_name", "event"), [
+    ("dispatch-publication.yml", "validate", "pull_request"),
+    ("pages.yml", "build", "push"),
+])
+@pytest.mark.parametrize("build_status", [0, 23])
+def test_publication_build_profile_matches_consumers_and_preserves_failures(
+    tmp_path: Path, workflow_name: str, job_name: str, event: str, build_status: int,
+) -> None:
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows" / workflow_name).read_text())
+    paths = workflow[True][event]["paths"]
+    for source in ("scripts/cargo_with_space.sh", "scripts/rust_cache_command.sh",
+                   f".github/workflows/{workflow_name}"):
+        assert source in paths
+    job = workflow["jobs"][job_name]
+    steps = job["steps"]
+    cache = next(step for step in steps if step.get("uses", "").startswith("Swatinem/rust-cache@"))
+    assert cache["with"]["shared-key"] == "development-dispatch"
+    assert "key" not in cache["with"]
+    build = next(step for step in steps if step.get("name") == "Build the native Dispatch command")
+    assert steps.index(cache) < steps.index(build)
+    environment = {**job.get("env", {}), **build.get("env", {})}
+    assert "CARGO_BUILD_JOBS" not in environment
+    assert "--release" not in build["run"]
+    arguments = shlex.split(build["run"])
+    assert arguments[arguments.index("--profile") + 1] == "dev"
+    assert "--locked" in arguments
+    assert arguments[arguments.index("--bin") + 1] == "safeyolo"
+    consumers = [step for step in steps if "dispatch check-site" in step.get("run", "")]
+    assert consumers
+    for consumer in consumers:
+        assert shlex.split(consumer["run"])[0] == "proxy/target/debug/safeyolo"
+        assert steps.index(build) < steps.index(consumer)
+        assert not consumer.get("continue-on-error")
+
+    # Exercise the stored build shell after rust-cache has exported zero.
+    wrapper = tmp_path / "scripts/cargo_with_space.sh"
+    wrapper.parent.mkdir()
+    wrapper.write_text('#!/bin/bash\nset -eu\n'
+                       'test "$CARGO_INCREMENTAL" = 1\ntest "$CARGO_PROFILE_DEV_DEBUG" = 0\n'
+                       'exit "$BUILD_STATUS"\n')
+    wrapper.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", build["run"]],
+        cwd=tmp_path, capture_output=True, text=True,
+        env={**os.environ, "CARGO_INCREMENTAL": "0", "BUILD_STATUS": str(build_status), **environment},
+    )
+    assert result.returncode == build_status, result.stderr
+    assert not build.get("continue-on-error")

@@ -21,7 +21,7 @@ egress = "deny"
 
 def operator_logs(directory, *, agent=None):
     binary = Path(os.environ.get("SAFEYOLO_NATIVE_CLI", REPO / "proxy/target/release/safeyolo"))
-    command = [str(binary), "logs", "--lines", "100"]
+    command = [str(binary), "logs", "--lines", "100", "--json"]
     if agent:
         command += ["--agent", agent]
     result = subprocess.run(command, env=dict(os.environ, SAFEYOLO_NATIVE_CONFIG_PATH=str(directory / "config.toml")),
@@ -58,7 +58,7 @@ def test_selected_route_reaches_operator_logs_and_scoped_explain(tmp_path, filte
                 explain = scoped_api(proxy, agent, f"/explain?request_id={identifier}")
                 assert explain["status"] == "complete"
                 event, = [row for row in explain["events"] if row["event"] == "traffic.egress"]
-                assert event["schema_version"] == 1
+                assert event["schema_version"] == 2
                 assert event["host"] == host and event["agent"] == agent
                 assert event["details"]["route"] == route and event["details"]["port"] == selected_port
                 assert event["details"]["connection_id"]

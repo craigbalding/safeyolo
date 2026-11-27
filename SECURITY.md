@@ -41,7 +41,7 @@ describes platform namespaces, UID mappings, storage, and the proxy route.
   durable identities. Guest administration includes the target's credentials,
   writable mounts and delegations. It grants no host socket or arbitrary host
   execution.
-- **External services** are reachable only if policy explicitly permits the destination.
+- **External services** are reachable only through SafeYOLO's policy. The shipped policy allows any destination until you narrow it.
 
 ## Core Security Properties
 
@@ -138,7 +138,7 @@ configuration binds that socket to the agent name and source address. When the
 listener accepts a connection, it fixes those values for the connection.
 Request headers, guest metadata and IP claims cannot select another owner.
 The proxy does not read an agent map to establish or reconcile identity.
-Linux mounts only the agent's dedicated proxy directory into the sandbox.
+Of the proxy sockets, Linux mounts only the agent's dedicated proxy directory into the sandbox.
 On Linux, a synthetic loopback address supplies attribution. It is not an
 external interface or a direct egress path. Existing explicit operator
 listeners keep their configured paths.

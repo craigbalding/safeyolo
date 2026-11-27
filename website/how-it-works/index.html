@@ -4,6 +4,13 @@ full_width: true
 permalink: /how-it-works/
 title: "How SafeYOLO works"
 description: "A map of SafeYOLO: agent sandboxes, the checkpoint every request passes, policy and approvals, host-held credentials, evidence, Coord, gates, remote execution and connected instances."
+claims:
+- BB-01  # only route out is the socket
+- BB-04  # identity comes from the socket
+- BB-06  # policy validated before agents connect
+- BB-12  # no silent passthrough
+- decision:identity
+- decision:authorization
 ---
 <section class="pagehead">
   <div class="wrap">
@@ -47,6 +54,7 @@ description: "A map of SafeYOLO: agent sandboxes, the checkpoint every request p
       <p>The socket a connection arrives on fixes which agent it is. Headers, JSON fields and bearer tokens cannot select another agent.</p>
       <p class="statement">Fail closed.</p>
       <p>Unknown credentials and out-of-policy requests get HTTP 428 (approval required) or 403 (denied), never silent passthrough. Policy is loaded and validated before any agent can connect.</p>
+      <p>Both rules assume a trusted host. If your host account or SafeYOLO's own directory is compromised, these protections do not hold.</p>
       <ul class="linkrow"><li><a href="/journey/">Follow the journey</a></li><li><a href="https://github.com/craigbalding/safeyolo/blob/master/docs/ARCHITECTURE.md">Architecture overview</a></li><li><a href="https://github.com/craigbalding/safeyolo/blob/master/SECURITY.md">Security model</a></li></ul>
     </div>
   </div>
