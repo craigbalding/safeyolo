@@ -40,7 +40,7 @@ fn factory_contract_modes_keep_validation_approval_and_cancellation_distinct() {
     fs::create_dir(&root).unwrap();
     let contract = scratch.path().join("factory.toml");
     fs::write(
-        scratch.path().join("role.md"),
+        scratch.path().join("role\u{1b}[2J.md"),
         "Follow the assigned work.\n",
     )
     .unwrap();
@@ -54,7 +54,7 @@ to = "worker"
 types = ["DIRECTION"]
 [roles.worker]
 agent = "audit-worker"
-contract = "role.md"
+contract = "role\u001b[2J.md"
 [work]
 authorities = ["worker"]
 deciders = ["worker"]
@@ -74,6 +74,8 @@ independent = true
     assert!(!root.join("factories").exists());
     let human = stdout(cli(&root, &["factory", "check", file]));
     assert!(human.contains("factory=human-audit") && human.contains("agent=audit-worker"));
+    assert!(human.contains("contract=\"role\\u001b[2J.md\""));
+    assert!(!human.contains('\u{1b}'));
     let mut declined = Command::new(executable())
         .arg("--instance-dir")
         .arg(&root)
@@ -88,6 +90,7 @@ independent = true
     assert!(!declined.status.success() && declined.stdout.is_empty());
     let diagnostic = String::from_utf8(declined.stderr).unwrap();
     assert!(diagnostic.contains("factory=human-audit"));
+    assert!(!diagnostic.contains('\u{1b}'));
     assert!(diagnostic.contains("Approve this exact Factory contract?"));
     assert!(diagnostic.contains("cancelled"));
     assert!(!root.join("factories").exists());
@@ -100,6 +103,71 @@ independent = true
     assert_eq!(approved["snapshot_id"], checked["snapshot_id"]);
     assert_eq!(approved["roles_started"], false);
     assert!(Path::new(approved["path"].as_str().unwrap()).is_file());
+    assert!(!root.join("agents").exists());
+}
+
+#[test]
+fn federation_receipts_show_saved_trust_and_routing_without_exposing_credentials() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().join("selected federation instance");
+    stdout(cli(&root, &["init"]));
+    let empty = stdout(cli(&root, &["coord", "federation", "peers"]));
+    assert!(empty.contains("No federation peers configured"));
+    let token = scratch.path().join("peer-token");
+    let file = token.to_str().unwrap();
+    let created = stdout(cli(&root, &["coord", "federation", "credential", file]));
+    assert!(created.contains("Created: yes"));
+    assert_eq!(
+        token.metadata().unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let secret = fs::read_to_string(&token).unwrap();
+    let trusted = stdout(cli(
+        &root,
+        &["coord", "federation", "trust", "peer-instance", file],
+    ));
+    assert!(trusted.contains("Instance: peer-instance") && trusted.contains("Trusted: yes"));
+    assert!(trusted.contains("Trust epoch: 1") && trusted.contains("restart"));
+    let peers = stdout(cli(&root, &["coord", "federation", "peers"]));
+    assert!(peers.contains("peer-instance") && peers.contains("TRUSTED"));
+    let machine: Value = serde_json::from_str(&stdout(cli(
+        &root,
+        &["coord", "federation", "peers", "--json"],
+    )))
+    .unwrap();
+    assert_eq!(machine["peers"][0]["trusted"], true);
+    let saved = stdout(cli(
+        &root,
+        &[
+            "coord",
+            "federation",
+            "home",
+            "remote",
+            "peer-instance",
+            "loopback",
+            "nats://127.0.0.1:4222",
+            file,
+        ],
+    ));
+    assert!(saved.contains("Home: remote") && saved.contains("Instance: peer-instance"));
+    assert!(saved.contains("Activation: next_request") && saved.contains("grants no room"));
+    let removed = stdout(cli(&root, &["coord", "federation", "unhome", "remote"]));
+    assert!(removed.contains("Home: remote") && removed.contains("Removed: yes"));
+    let revoked = stdout(cli(
+        &root,
+        &["coord", "federation", "revoke", "peer-instance"],
+    ));
+    assert!(revoked.contains("Trusted: no") && revoked.contains("Revoked memberships: 0"));
+    let machine: Value = serde_json::from_str(&stdout(cli(
+        &root,
+        &["coord", "federation", "peers", "--json"],
+    )))
+    .unwrap();
+    assert_eq!(machine["peers"][0]["trusted"], false);
+    for output in [created, trusted, peers, saved, removed, revoked] {
+        assert!(!output.contains(&secret));
+    }
+    assert!(!root.join("data/coord/nats/process.json").exists());
     assert!(!root.join("agents").exists());
 }
 

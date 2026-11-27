@@ -329,7 +329,7 @@ fn describe(snapshot: &Snapshot) -> Result<String, Error> {
             role.agent,
             role.harness,
             serde_json::to_string(&role.args)?,
-            role.contract,
+            serde_json::to_string(&role.contract)?,
             role.contract_bytes,
             role.contract_sha256
         )?;

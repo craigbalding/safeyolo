@@ -248,6 +248,19 @@ pub fn coord(value: &Value) -> Result<(), Error> {
             );
         }
         field("Next page (--after)", &value["next_after"]);
+    } else if let Some(peers) = value["peers"].as_array() {
+        if peers.is_empty() {
+            println!("No federation peers configured.");
+        } else {
+            rows(
+                peers,
+                &[
+                    ("INSTANCE", "instance_id"),
+                    ("TRUST EPOCH", "epoch"),
+                    ("TRUSTED", "trusted"),
+                ],
+            );
+        }
     } else if let Some(rooms) = value["rooms"].as_array() {
         if rooms.is_empty() {
             println!("No rooms configured. Create one: safeyolo coord room create NAME");
@@ -279,6 +292,16 @@ pub fn coord(value: &Value) -> Result<(), Error> {
         };
         for (label, key) in [
             ("Room", "room_name"),
+            ("Home", "home"),
+            ("Instance", "instance_id"),
+            ("Trust epoch", "epoch"),
+            ("Trusted", "trusted"),
+            ("Trust changed", "trust_changed"),
+            ("Revoked memberships", "revoked_memberships"),
+            ("Created", "created"),
+            ("Removed", "removed"),
+            ("Activation", "activation"),
+            ("Authority", "authority"),
             (state_label, "state"),
             ("Status", "status"),
             ("Work", "work_id"),
