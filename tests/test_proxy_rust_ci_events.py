@@ -939,6 +939,49 @@ def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix
     assert "install.sh" not in runs and "bootstrap" not in runs
 
 
+@pytest.mark.parametrize("job_name", ["macos-pr", "contracts"])
+def test_macos_incremental_outputs_survive_dependency_cache_cleanup(tmp_path, job_name):
+    job = rust_workflow()["jobs"][job_name]
+    assert "CARGO_BUILD_JOBS" not in job["env"]
+    steps = {step["name"]: step for step in job["steps"] if "name" in step}
+    dependency = steps["Restore Rust dependency cache"]
+    restore = steps["Restore macOS workspace outputs"]
+    enable = steps["Enable macOS incremental compilation"]
+    save = steps["Save macOS workspace outputs"]
+    names = list(steps)
+    assert names.index(dependency["name"]) < names.index(restore["name"]) < names.index(enable["name"])
+    assert names.index(enable["name"]) < names.index(save["name"])
+    assert dependency["with"]["cache-targets"] == (
+        False if job_name == "macos-pr" else "${{ matrix.os != 'macos-latest' }}"
+    )
+    assert restore["if"] == enable["if"] == (
+        "needs.focused-pr.outputs.rust == 'true'" if job_name == "macos-pr" else "matrix.os == 'macos-latest'"
+    )
+    assert restore["with"]["path"] == save["with"]["path"] == "proxy/target\nguest/command/target\n"
+    assert "${{ env.RUSTUP_TOOLCHAIN }}" in restore["with"]["key"]
+    assert "${{ runner.arch }}" in restore["with"]["key"]
+    assert restore["with"]["key"].startswith(restore["with"]["restore-keys"])
+    assert "cache-primary-key" in save["with"]["key"]
+    # An earlier failed check must still save useful compiler outputs; a skipped
+    # restore or an exact cache hit must not create another cache entry.
+    for cancelled, outcome, hit, expected in [
+        (False, "success", "false", True), (False, "success", "true", False),
+        (False, "skipped", "", False), (True, "success", "false", False),
+    ]:
+        condition = save["if"].removeprefix("${{").removesuffix("}}").strip()
+        condition = condition.replace("!cancelled()", "'false' == 'true'" if cancelled else "'true' == 'true'")
+        condition = condition.replace("steps.macos_rust_cache.outcome", shlex.quote(outcome))
+        condition = condition.replace("steps.macos_rust_cache.outputs.cache-hit", shlex.quote(hit))
+        result = subprocess.run(["bash", "-e", "-c", f"[[ {condition} ]]"], capture_output=True, text=True)
+        assert result.returncode == (0 if expected else 1), result.stderr
+    environment = tmp_path / "job-env"
+    environment.write_text("CARGO_INCREMENTAL=0\n")
+    result = subprocess.run(["bash", "-e", "-c", enable["run"]], capture_output=True, text=True,
+                            env=dict(os.environ, GITHUB_ENV=str(environment), CARGO_INCREMENTAL="0"))
+    assert result.returncode == 0, result.stderr
+    assert environment.read_text().splitlines()[-1] == "CARGO_INCREMENTAL=1"
+
+
 @pytest.mark.parametrize("path,expected,matcher", [
     ("tests/reference/safeyolo/platform/linux.py", {"linux": "true"}, "available"),
     ("tests/reference/safeyolo/platform/darwin.py", {"macos": "true"}, "available"),

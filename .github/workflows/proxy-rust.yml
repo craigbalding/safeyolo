@@ -83,7 +83,6 @@ jobs:
           - os: ubuntu-24.04
             target: x86_64-pc-windows-gnu
     env:
-      CARGO_BUILD_JOBS: "1"
       CARGO_TARGET_DIR: ${{ github.workspace }}/host-executor/target
       SAFEYOLO_BUILD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
       EXECUTOR_TARGET: ${{ matrix.target }}
@@ -594,7 +593,6 @@ jobs:
     name: Overnight native contracts (${{ matrix.os }})
     needs: guest-inputs
     env:
-      CARGO_BUILD_JOBS: "1"
       SAFEYOLO_BUILD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
     # Package dispatch reuses the producer without starting full regression.
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)
@@ -629,6 +627,24 @@ jobs:
           shared-key: production-focused-pr
           cache-bin: false
           cache-on-failure: true
+          cache-targets: ${{ matrix.os != 'macos-latest' }}
+
+      - name: Restore macOS workspace outputs
+        if: matrix.os == 'macos-latest'
+        id: macos_rust_cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            proxy/target
+            guest/command/target
+          key: native-macos-${{ github.job }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/rust-toolchain.toml', '**/.cargo/config.toml', '.github/workflows/proxy-rust.yml', 'scripts/cargo_with_space.sh') }}-${{ github.event.pull_request.head.sha || github.sha }}
+          restore-keys: native-macos-${{ github.job }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/rust-toolchain.toml', '**/.cargo/config.toml', '.github/workflows/proxy-rust.yml', 'scripts/cargo_with_space.sh') }}-
+
+      - name: Enable macOS incremental compilation
+        if: matrix.os == 'macos-latest'
+        # rust-cache exports zero and removes incremental files from its targets.
+        # Keep macOS targets in the separate cache and override zero afterwards.
+        run: printf 'CARGO_INCREMENTAL=1\n' >> "$GITHUB_ENV"
 
       - name: Check Rust formatting and lint
         working-directory: proxy
@@ -935,13 +951,21 @@ jobs:
             tests/test_blackbox_harness.py::test_lifecycle_owner_prepares_pinned_nats_on_independent_ports
           uv run --frozen pytest -q tests/proxy_contracts --proxy-backend rust
 
+      - name: Save macOS workspace outputs
+        if: ${{ !cancelled() && steps.macos_rust_cache.outcome == 'success' && steps.macos_rust_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            proxy/target
+            guest/command/target
+          key: ${{ steps.macos_rust_cache.outputs.cache-primary-key }}
+
   macos-pr:
     name: Relevant macOS platform checks
     needs: focused-pr
     if: needs.focused-pr.outputs.macos == 'true'
     runs-on: macos-latest
     env:
-      CARGO_BUILD_JOBS: "1"
       SAFEYOLO_BUILD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -965,6 +989,22 @@ jobs:
           shared-key: production-focused-pr
           cache-bin: false
           cache-on-failure: true
+          cache-targets: false
+
+      - name: Restore macOS workspace outputs
+        if: needs.focused-pr.outputs.rust == 'true'
+        id: macos_rust_cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            proxy/target
+            guest/command/target
+          key: native-macos-${{ github.job }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/rust-toolchain.toml', '**/.cargo/config.toml', '.github/workflows/proxy-rust.yml', 'scripts/cargo_with_space.sh') }}-${{ github.event.pull_request.head.sha || github.sha }}
+          restore-keys: native-macos-${{ github.job }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/rust-toolchain.toml', '**/.cargo/config.toml', '.github/workflows/proxy-rust.yml', 'scripts/cargo_with_space.sh') }}-
+
+      - name: Enable macOS incremental compilation
+        if: needs.focused-pr.outputs.rust == 'true'
+        run: printf 'CARGO_INCREMENTAL=1\n' >> "$GITHUB_ENV"
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -1001,3 +1041,12 @@ jobs:
           path: ${{ runner.temp }}/host-debug
           retention-days: 7
           if-no-files-found: ignore
+
+      - name: Save macOS workspace outputs
+        if: ${{ !cancelled() && steps.macos_rust_cache.outcome == 'success' && steps.macos_rust_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            proxy/target
+            guest/command/target
+          key: ${{ steps.macos_rust_cache.outputs.cache-primary-key }}
