@@ -301,7 +301,12 @@ def lifecycle_job(args, mode, observations):
                 if mode == "revocation":
                     subprocess.run([str(args.cli), "--instance-dir", str(args.root), "services", "revoke", "gate:proof", "simple"],
                                    check=True, capture_output=True, timeout=10)
-                    assert scoped_request(connection, token)[0] == 403
+                    try:
+                        status, _ = scoped_request(connection, token)
+                    except (OSError, http.client.HTTPException):
+                        pass  # Policy replacement can close the entire delegated transport.
+                    else:
+                        assert status == 403
                     assert len(observations) == count + 2, "revoked authority reached the origin"
                 if mode != "expiry":
                     child.send_signal(signal.SIGTERM)

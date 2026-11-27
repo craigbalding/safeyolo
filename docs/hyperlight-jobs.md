@@ -413,9 +413,10 @@ independently captured response body. In particular, the GitHub checked-input
 path still requires the host's `service_evidence`; missing capture cannot
 satisfy that binding. Named service sources remain Gateway-backed.
 
-Policy revocation, cancellation, expiry and teardown close the delegated
-listener and its connections. The helper's existing deadline and process-group
-cleanup still apply. No stream or token is donated to another invocation.
+Replacing the active policy closes each job's delegated network listener and
+its connections. Start a new job to use the updated policy. Cancellation,
+expiry and teardown also close the delegation. The helper's existing deadline
+and process-group cleanup still apply. No stream or token is donated to another invocation.
 Offline validation and preview do not open a proxy stream or query a dependency.
 CPU client checks and guest ELF builds alone do not establish installed VM
 execution or isolation on a different host.
