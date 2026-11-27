@@ -165,6 +165,13 @@ async fn retained_evidence_defaults_to_summaries_and_preserves_explicit_json() {
     write_rows(root.path(), &original);
     let audit = fs::read(root.path().join("audit.jsonl")).unwrap();
 
+    for args in [vec!["logs", "--help"], vec!["logs", "list", "--help"]] {
+        let help = cli(root.path(), &args).await;
+        assert!(help.status.success());
+        let help = String::from_utf8(help.stdout).unwrap();
+        assert!(help.contains("complete listing metadata"), "{help}");
+    }
+
     let listing = cli(root.path(), &["logs", "list"]).await;
     assert!(listing.status.success());
     let listing = String::from_utf8(listing.stdout).unwrap();
