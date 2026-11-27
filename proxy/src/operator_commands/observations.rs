@@ -8,11 +8,13 @@ pub(super) async fn run(args: &[String]) -> Result<(), Error> {
     // These aggregates have no agent, request, connection or retained-file filter.
     let mut instance = None;
     let mut runtime = None;
+    let mut details = false;
     let mut json_output = crate::operator_output::json_requested();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--json" => json_output = true,
+            "--details" => details = true,
             "--instance" | "--runtime" => {
                 let value = args.next().ok_or("namespace option requires an ID")?;
                 if arg == "--instance" {
@@ -21,7 +23,7 @@ pub(super) async fn run(args: &[String]) -> Result<(), Error> {
                     runtime = Some(value.as_str());
                 }
             }
-            _ => return Err("usage: observations [--instance ID] [--runtime ID] [--json]; measurements cover the whole runtime".into()),
+            _ => return Err("usage: observations [--instance ID] [--runtime ID] [--details] [--json]; measurements cover the whole runtime".into()),
         }
     }
     let config_path = host_platform::config_path();
@@ -47,7 +49,7 @@ pub(super) async fn run(args: &[String]) -> Result<(), Error> {
         println!("{}", context_json(&report)?);
         Ok(())
     } else {
-        show(&report)
+        show(&report, details)
     }
 }
 
@@ -114,7 +116,7 @@ fn counters(value: &Value) {
     }
 }
 
-fn show(report: &Value) -> Result<(), Error> {
+fn show(report: &Value, details: bool) -> Result<(), Error> {
     let source = &report["source"];
     println!(
         "Observation measurements\nConfig: {}\nInstance: {}\nRuntime: {}",
@@ -125,6 +127,10 @@ fn show(report: &Value) -> Result<(), Error> {
     println!(
         "Scope: current runtime aggregates across all agents, requests and connections.\nReload preserves measurements; restart resets the namespace and counters.\nCounters are sampled while traffic continues; canonical measurement can lag attempted observations."
     );
+    if !details {
+        show_summary(report);
+        return Ok(());
+    }
     println!(
         "Queue limits: {}\nPayload capture layers: {}\nCapture availability: {}\nWire source active: {}",
         context_json(&source["queue_limits"])?,
@@ -195,4 +201,95 @@ fn show(report: &Value) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+fn show_summary(report: &Value) {
+    use crate::operator_output::{rows, text};
+
+    let source = &report["source"];
+    let observations = &report["observations"];
+    let payload = source["payload_layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(text)
+        .collect::<Vec<_>>();
+    println!(
+        "Capture: {}; payload layers: {}; wire source active: {}",
+        text(&source["capture"]["state"]),
+        if payload.is_empty() {
+            "none".into()
+        } else {
+            payload.join(", ")
+        },
+        text(&source["wire_source_active"]),
+    );
+    if let Some(outputs) = source["capture"]["outputs"].as_object() {
+        for (name, output) in outputs {
+            println!(
+                "Capture {}: configured {}; subscribed {}",
+                safe(name),
+                text(&output["configured"]),
+                text(&output["subscribed"])
+            );
+        }
+    }
+    println!(
+        "Queue limits: {} items / {} bytes",
+        text(&source["queue_limits"]["items"]),
+        text(&source["queue_limits"]["bytes"])
+    );
+    for (name, values, columns) in [
+        (
+            "Observation admission",
+            &observations["layers"],
+            &[
+                ("LAYER", "name"),
+                ("ATTEMPTED", "observations_total"),
+                ("DROPPED", "observation_bus_dropped_total"),
+                ("METADATA BYTES", "observation_metadata_bytes_total"),
+                ("PAYLOAD BYTES", "observation_payload_bytes_total"),
+            ][..],
+        ),
+        (
+            "Output delivery (separate from admission)",
+            &observations["sinks"],
+            &[
+                ("OUTPUT", "name"),
+                ("BYTES", "sink_bytes_total"),
+                ("DROPPED", "sink_dropped_observations_total"),
+                ("ERRORS", "sink_errors_total"),
+                ("DISCONNECTS", "sink_disconnects_total"),
+            ][..],
+        ),
+    ] {
+        println!("\n{name}");
+        let values = values
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(name, counters)| {
+                let mut row = json!({"name":name});
+                for (_, key) in &columns[1..] {
+                    row[*key] = counters[*key].clone();
+                }
+                row
+            })
+            .collect::<Vec<_>>();
+        rows(&values, columns);
+    }
+    println!(
+        "Loss: {} recorded gap ranges; {} exhausted sequences",
+        text(&observations["observation_gap_ranges_total"]),
+        text(&observations["observation_sequence_exhausted_total"])
+    );
+    let loss = &observations["behaviour"]["observation_loss_total"];
+    println!(
+        "Metrics loss: {} canonical admission unavailable; {} accounting capacity",
+        text(&loss["canonical_admission_unavailable"]),
+        text(&loss["metrics_accounting_capacity"])
+    );
+    println!(
+        "Zero counters do not establish availability or complete delivery. Layer counts and bytes overlap.\nUse --details for wire counters, consumer metadata, loss reasons and transport histograms; --json for complete records."
+    );
 }

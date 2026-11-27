@@ -222,9 +222,16 @@ pub(crate) async fn report(path: &Path) -> Value {
                 } else {
                     "fail"
                 },
-                runtime["version"]
-                    .as_str()
-                    .unwrap_or("Runtime prerequisites unavailable"),
+                match runtime["platform_selection"].as_str() {
+                    Some(platform) => format!(
+                        "{}; prerequisite selection: {platform}",
+                        runtime["version"].as_str().unwrap_or_default()
+                    ),
+                    None => runtime["version"]
+                        .as_str()
+                        .unwrap_or("Runtime prerequisites unavailable")
+                        .into(),
+                },
                 runtime["next_action"].as_str().unwrap_or(""),
                 runtime.clone(),
             );

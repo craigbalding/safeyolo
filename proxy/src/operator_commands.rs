@@ -38,7 +38,7 @@ pub fn help(group: &str) -> &'static str {
             "safeyolo [--instance-dir PATH] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs list [--instance ID] [--runtime ID] [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs connection ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs request ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]\nLogs connection/request accept --capture FILE to read existing current pcap:compat metadata. Matches require the selected audit namespace, connection and recorded agent attribution; request observations require the selected request ID. Lower-layer ancestry can be shared input, not exclusive request bytes. Results include audit lines, one-based packet numbers and PCAP packet-header byte offsets. --lines also bounds retained matching connection observations and runtime loss records separately. Missing/unsupported captures remain unavailable; malformed/truncated input and omissions can leave partial evidence. Loss is runtime-wide with unknown connection/request attribution. Synthetic headers are representation, not measured wire behaviour. No payload is returned or capture enabled. EOF does not prove complete evidence.\nWith --capture, prompt-exposure source/model transports also show retained stream chunk counts, observed-byte sums, size ranges and monotonic intervals, grouped by connection/point/layer/direction. Chunk references preserve observation IDs, packet/byte offsets and audit lines. The same observation limit covers selected and correlated connections together. These are connection-wide retained measurements, not exclusive request bytes, anomaly scores or complete coverage. Layers must not be added as application bytes.\nLogs use the configured local audit file unless --file PATH is supplied. Repeat --file for explicitly selected offline inputs; no installed config or API is needed. Each file is validated to EOF and retains the last --lines selected-agent rows (default 100 per file), so total retention is at most input count times --lines. Selected-file pivots identify every input/physical line and duplicate copy, and refuse conflicting event copies or transport owners as join evidence. Input order is not chronological order. Selection and schema validation do not authenticate the producer. Use logs list to discover retained namespaces, agent context, and connection/request/indicator references; --instance and --runtime optionally narrow that listing. It is not live inventory. Unknown attribution and conflicting copies stay distinct from recorded resolved agent context. Pivots require instance and runtime; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Prompt exposure correlations explain exact source and source/model transport novelty support, including partial or unavailable evidence. These are connection-wide relationships, not proof of malicious intent or model receipt. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.\nIf evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable."
         }
         "observations" => {
-            "safeyolo [--instance-dir PATH] observations [--instance ID] [--runtime ID] [--json]\nObservations reads current runtime aggregates. --instance and --runtime check a retained namespace; they do not retrieve historical or per-agent measurements. Reload preserves counters; restart changes the runtime. Reading observations does not enable payload capture or content storage."
+            "safeyolo [--instance-dir PATH] observations [--instance ID] [--runtime ID] [--details] [--json]\nObservations summarizes current runtime aggregates. Use --details for all counters and histograms, or --json for complete structured records. --instance and --runtime check a retained namespace; they do not retrieve historical or per-agent measurements. Reload preserves counters; restart changes the runtime. Reading observations does not enable payload capture or content storage."
         }
         "diagnose" => {
             "safeyolo [--instance-dir PATH] diagnose [--agent NAME] [--json]\nDiagnostics: diagnose reads saved/current policy and audit availability without test traffic.\nagent diagnostics NAME probes the selected runtime/control and reports its next_action.\ndoctor probes host prerequisites and each configured policy pipeline; it does not prove coding-agent readiness.\nIf evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable."
@@ -565,6 +565,168 @@ fn show_decision_evidence(view: &Value) {
     }
 }
 
+// Decision facts have no display-length cap. Supporting model inputs and
+// duplicate projections remain available through explain and explicit JSON.
+fn show_review_fact(label: &str, value: &Value) {
+    let rendered = match value {
+        Value::Null => return,
+        Value::Array(items) if items.is_empty() => return,
+        Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| item.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+        Value::String(value) if value.is_empty() => return,
+        Value::String(value) => value.clone(),
+        _ => value.to_string(),
+    };
+    println!("{label}: {}", safe(&rendered));
+}
+
+fn show_decision_summary(view: &Value) {
+    let assessment = &view["assessment"];
+    if assessment.get("risk_policy").is_none() && assessment.get("availability").is_none() {
+        // Policy adoption still needs its exact source diff and consequences;
+        // other assessment owners retain their existing decision evidence.
+        for (label, field) in [
+            ("SafeYolo assessment (includes request data)", "assessment"),
+            ("Policy and reviewed guidance", "guidance"),
+        ] {
+            if let Some(value) = view.get(field).filter(|value| !value.is_null()) {
+                println!("{label}:");
+                show_evidence_fields(value, 2);
+            }
+        }
+        if view["assessment_changed"] == true {
+            println!("Assessment changed since request. Review current state before deciding.");
+        }
+        return;
+    }
+    println!("SafeYolo assessment:");
+    show_review_fact("  Availability", &assessment["availability"]);
+    show_review_fact("  Assessment", &assessment["message"]);
+    show_review_fact(
+        "  Current risk policy",
+        &assessment["risk_policy"]["effect"],
+    );
+    show_review_fact("  Possible effects", &assessment["enables"]);
+    for direct in assessment["model"]["direct"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if direct["permission"]["proposed"] != true {
+            continue;
+        }
+        show_review_fact("  Proposed operation", &direct["permission"]["operation"]);
+        show_review_fact("  Coverage", &direct["coverage"]);
+        show_review_fact("  Persistent effects", &direct["persistent_effects"]);
+        show_review_fact("  Execution authority", &direct["execution_authority"]);
+        show_review_fact("  Unresolved effects", &direct["unresolved_effects"]);
+        show_review_fact("  Unresolved conditions", &direct["unresolved_conditions"]);
+    }
+    for (name, rule) in assessment["model"]["rules"]
+        .as_object()
+        .into_iter()
+        .flatten()
+    {
+        println!(
+            "  Combined effect {}: {}",
+            safe(name),
+            safe(text(&rule["status"]))
+        );
+        if rule["status"] != "non_match" {
+            show_review_fact("    Consequence", &rule["consequence"]);
+            show_review_fact(
+                "    Unverified prerequisites",
+                &rule["unverified_prerequisites"],
+            );
+            show_review_fact("    Limits", &rule["gaps"]);
+        }
+    }
+    for source in [assessment, &assessment["model"]] {
+        show_review_fact("  Unresolved conditions", &source["unresolved_conditions"]);
+        show_review_fact("  Limits", &source["limitations"]);
+    }
+    if let Some(authority) = assessment.get("docker_authority") {
+        println!("  Docker authority:");
+        show_evidence_fields(authority, 4);
+    }
+    println!("Policy and reviewed guidance:");
+    for field in ["other_controls", "uncertainty"] {
+        show_review_fact(
+            &format!("  {}", field.replace('_', " ")),
+            &view["guidance"][field],
+        );
+    }
+    show_review_fact(
+        "  Reviewed risk",
+        &view["guidance"]["reviewed_risk"]["description"],
+    );
+    if view["guidance"]["reviewed_risk"]["irreversible"] == true {
+        println!("  Reviewed risk: irreversible effects are possible.");
+    }
+    for alternative in assessment["alternatives"].as_array().into_iter().flatten() {
+        println!(
+            "  Alternative {} (goal suitability unverified):",
+            safe(text(&alternative["id"]))
+        );
+        for step in alternative["required_access"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            println!(
+                "    {}: {}",
+                safe(text(&step["operation"])),
+                safe(text(&step["access"]))
+            );
+        }
+        // Native recipes use access/steps rather than required_access.
+        show_review_fact("    Access", &alternative["access"]);
+        show_review_fact(
+            "    Unverified prerequisites",
+            &alternative["unverified_prerequisites"],
+        );
+        show_review_fact("    Limits", &alternative["limitations"]);
+    }
+    if view["assessment_changed"] == true {
+        println!("Assessment changed since request. Review current state before deciding.");
+    }
+}
+
+fn show_approval_outcome(view: &Value) -> Result<(), Error> {
+    println!(
+        "Request {}: {}",
+        safe(text(&view["request_id"])),
+        safe(text(&view["status"]))
+    );
+    if view["result"]["status"] != view["status"] {
+        show_review_fact("Recorded outcome", &view["result"]["status"]);
+    }
+    show_review_fact("Selected option", &view["option"]);
+    show_review_fact("Next action", &view["result"]["next_action"]);
+    show_review_fact("Diagnostic", &view["result"]["diagnostic"]["message"]);
+    if !matches!(view["status"].as_str(), Some("approved" | "rejected")) {
+        show_review_fact("Decision not applied", &view["effect"]);
+        println!(
+            "Inspect this request again before deciding; no decision is retried automatically."
+        );
+    }
+    if let Some(url) = view["operator_preview"]["url"].as_str() {
+        println!(
+            "Operator preview: {}\nUnlock code: {}",
+            safe(url),
+            safe(text(&view["operator_preview"]["unlock_code"]))
+        );
+    }
+    Ok(())
+}
+
 /// Reuse the canonical approval renderer and its display-control escaping.
 pub fn show_policy_assessment(view: &Value) {
     println!("Trusted policy consequences:");
@@ -727,16 +889,29 @@ fn show_explanation(view: &Value) -> Result<(), Error> {
 
 pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
     println!(
-        "Request: {}\nStatus: {}\nSafeYolo effect: {}",
+        "Instance configuration: {}",
+        safe(&host_platform::config_path().display().to_string())
+    );
+    println!(
+        "Request: {}\nStatus: {}\nAgent: {} | Destination: {}",
         safe(text(&view["request_id"])),
         safe(text(&view["status"])),
-        safe(text(&view["effect"]))
+        safe(text(&view["agent"])),
+        safe(text(&view["approval"]["target"]))
     );
     if let Some(id) = view["approval_id"].as_str() {
         println!("Approval: {}", safe(id));
     }
     show_request_history(view)?;
-    show_decision_evidence(view);
+    show_decision_summary(view);
+    let effect_is_option = view["options"].as_array().is_some_and(|options| {
+        options
+            .iter()
+            .any(|option| option["effect"] == view["effect"])
+    });
+    if !effect_is_option {
+        show_review_fact("SafeYolo effect", &view["effect"]);
+    }
 
     if view["action"]["kind"] == "diagnostic_disclosure" {
         println!("Local read-only diagnostic disclosure:");
@@ -762,10 +937,21 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
         if let Some(audit) = view["audit_status"].as_str() {
             println!("Audit: {}", safe(audit));
         }
+        if view["action"]["action_id"] == crate::operator_actions::WEB_PRESENT {
+            println!("SafeYolo operator action: Publish agent web port");
+            show_review_fact("Guest port", &view["action"]["parameters"]["guest_port"]);
+            show_review_fact("Audience", &view["action"]["parameters"]["audience"]);
+            show_review_fact(
+                "Tailnet port",
+                &view["action"]["parameters"]["tailnet_port"],
+            );
+        } else {
+            println!("SafeYolo operator action: Present agent desktop");
+            show_review_fact("Presentation", &view["action"]["presentation"]);
+        }
         println!(
-            "SafeYolo operator action: Present agent desktop\nTarget: {}\nPresentation: {}\nPreview lifetime: {} seconds",
+            "Target: {}\nPreview lifetime: {} seconds",
             safe(text(&view["action"]["agent"])),
-            safe(text(&view["action"]["presentation"])),
             view["action"]["parameters"]["ttl_seconds"]
         );
         if let Some(url) = view["action"]["parameters"]["browser_url"].as_str() {
@@ -827,8 +1013,9 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
     if let Some(options) = view["options"].as_array() {
         for option in options {
             println!(
-                "Option {}: {}",
+                "Option {} ({}): {}",
                 safe(text(&option["id"])),
+                safe(text(&option["status"])),
                 safe(text(&option["effect"]))
             );
         }
@@ -843,6 +1030,13 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
         );
     }
     if let Some(reason) = view["untrusted_reason_text"].as_str() {
+        // Escalation records wrap the agent's reason with source/context data.
+        // The ordinary view shows that reason; explicit JSON retains the wrapper.
+        let parsed = serde_json::from_str::<Value>(reason).ok();
+        let reason = parsed
+            .as_ref()
+            .and_then(|value| value["context"]["reason"].as_str())
+            .unwrap_or(reason);
         // A quoted JSON string stays visibly separate, including forged
         // Markdown/HTML headings and all terminal controls.
         println!(
@@ -855,6 +1049,22 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
                 "Helper reason"
             },
             context_json(&json!(reason))?
+        );
+    }
+    if !view["result"].is_null() {
+        if view["result"]["status"] != view["status"] {
+            show_review_fact("Recorded outcome", &view["result"]["status"]);
+        }
+        show_review_fact("Next action", &view["result"]["next_action"]);
+    }
+    if let Some(id) = view["approval_id"].as_str() {
+        println!(
+            "Full evidence: safeyolo --config {} approvals explain {} (or show {} --json).",
+            safe(&crate::host_lifecycle::shell_quote(
+                &host_platform::config_path().display().to_string()
+            )),
+            safe(id),
+            safe(id)
         );
     }
     Ok(())
@@ -1105,11 +1315,7 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
         }
         println!("SafeYolo host — pending requests for {}", safe(agent));
         for (index, entry) in entries.iter().enumerate() {
-            println!(
-                "{}: {}",
-                index + 1,
-                serde_json::to_string(&entry["summary"])?
-            );
+            println!("{}: {}", index + 1, safe(text(&entry["summary"])));
             show_request_history(entry)?;
         }
         let Some(answer) = crate::host_launch::input(
@@ -1231,7 +1437,7 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
             if option.as_deref() == Some("") {
                 continue;
             }
-            show_approval(
+            show_approval_outcome(
                 &resolve_preview(root, &view, decision, Some(agent), option.as_deref()).await?,
             )?;
             break;
@@ -1927,7 +2133,7 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
                 "approve" | "reject" => {
                     let view = approval(root, rest, Some(name)).await?;
                     show_approval(&view)?;
-                    show_approval(&resolve_preview(root, &view, command, Some(name), None).await?)
+                    show_approval_outcome(&resolve_preview(root, &view, command, Some(name), None).await?)
                 }
                 "share" => {
                     let (id, helper) = rest.split_once(' ').ok_or("share requires ID HELPER")?;
@@ -2254,7 +2460,14 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         }
         Ok(())
     } else if args[0] == "approvals" && !options.json && value.get("action").is_some() {
-        show_approval(&value)
+        if matches!(
+            options.positional.first().map(String::as_str),
+            Some("approve" | "reject")
+        ) {
+            show_approval_outcome(&value)
+        } else {
+            show_approval(&value)
+        }
     } else if options.json {
         print_json(&value)
     } else {

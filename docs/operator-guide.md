@@ -522,6 +522,7 @@ not enable payload capture, content storage, files or capture listeners:
 
 ```sh
 safeyolo observations
+safeyolo observations --details
 safeyolo observations --json
 ```
 
@@ -532,6 +533,8 @@ checks the returned instance against the selected installation's identity.
 JSON preserves the existing stats owner's values under `observations`;
 `source` identifies their owner and effective queue, payload and capture state.
 
+The ordinary report summarizes capture state, attempted observations and losses,
+and output delivery. `--details` shows all counters and transport histograms.
 The measurements aggregate all agents, requests and connections in that runtime.
 They are not evidence about an individual retained connection or request.
 Reload preserves counters, namespace and effective observation settings.

@@ -132,10 +132,13 @@ fn access_path(method: &str, path: &str) -> bool {
             "/backend-api/wham/accounts/check"
                 | "/backend-api/wham/usage"
                 | "/backend-api/wham/rate-limit-reset-credits"
+                | "/backend-api/wham/security-setup"
+                | "/backend-api/wham/settings/user"
                 | "/backend-api/plugins/featured"
                 | "/backend-api/ps/plugins/installed"
                 | "/backend-api/ps/plugins/suggested/codex"
                 | "/backend-api/ps/plugins/list"
+                | "/backend-api/ps/plugins/tooling-state/turtle"
                 | "/backend-api/codex/models"
                 | "/backend-api/codex/rate_limits"
                 | "/backend-api/codex/responses"
@@ -421,6 +424,9 @@ mod tests {
             "/backend-api/ps/plugins/suggested/codex",
             "/backend-api/ps/plugins/list",
             "/backend-api/wham/rate-limit-reset-credits",
+            "/backend-api/wham/security-setup",
+            "/backend-api/wham/settings/user",
+            "/backend-api/ps/plugins/tooling-state/turtle",
         ] {
             assert!(access_path("GET", path));
             assert!(access_path("GET", &format!("{path}?limit=20&cursor=next")));
@@ -436,6 +442,7 @@ mod tests {
             "/backend-api/ps/plugins",
             "/backend-api/ps/plugins/suggested/other",
             "/backend-api/wham/unrelated",
+            "/backend-api/ps/plugins/tooling-state/other",
         ] {
             assert!(!access_path("GET", path));
         }

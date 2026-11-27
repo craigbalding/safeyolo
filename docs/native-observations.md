@@ -37,8 +37,8 @@ proxy to change these limits.
 
 The existing authenticated operator stats report includes `observations`.
 On the owning host, the native command-line interface (CLI) provides
-`safeyolo observations` for an ordinary report and `safeyolo observations --json`
-for the same existing measurements. Select
+`safeyolo observations` for a concise report. Select `--details` for all
+counters and histograms, or `--json` for the complete structured measurements. Select
 another installed instance with the existing `--instance-dir` or `--config` option
 before the command. The [operator workflow](operator-guide.md#read-current-observation-measurements)
 also explains how to compare a retained NSM namespace.

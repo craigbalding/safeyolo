@@ -197,13 +197,14 @@ pub(crate) fn report() -> Value {
         };
         unavailable["version"] = json!(version);
         let mapping = super::selected_mapping()?;
-        super::prepare::check_prerequisites(
+        let platform_selection = super::prepare::check_prerequisites(
             &crate::host_platform::config_dir(),
             settings.as_ref(),
             mapping,
         )?;
         Ok(
             json!({"state":"ready", "path":path,"version":version,"origin":origin,
+            "platform_selection":platform_selection,
             "uid_base":mapping.uid_base,"gid_base":mapping.gid_base,
             "host_uid":mapping.host_uid,"host_gid":mapping.host_gid,
             "apparmor_profile":settings.and_then(|s| s.apparmor_profile)}),

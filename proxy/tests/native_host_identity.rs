@@ -117,7 +117,7 @@ fn coord_fixture(directory: &TempDir, marker: &str) {
     let created = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
         .arg("--instance-dir")
         .arg(root)
-        .args(["agent", "create", "probe", "--workspace"])
+        .args(["agent", "create", "probe", "--json", "--workspace"])
         .arg(root)
         .output()
         .unwrap();

@@ -552,6 +552,7 @@ def test_doctor_keeps_selected_system_identity_when_runtime_disappears(native_cl
                           env={**os.environ, "PATH": str(tools)})
     observed = next(check["details"] for check in json.loads(unavailable.stdout)["checks"] if check["name"] == "Linux runtime and namespaces")
     assert observed["state"] == "unavailable"
+    assert "platform_selection" not in observed
     assert "newuidmap" in observed["error"] and "newgidmap" in observed["error"]
     assert "zstd" not in observed["error"]
     assert observed["path"] == str(runtime) and observed["origin"] == "system"
@@ -571,12 +572,25 @@ def test_doctor_keeps_selected_system_identity_when_runtime_disappears(native_cl
                       env={**os.environ, "SAFEYOLO_RUNSC_PLATFORM": "kvm"})
         observed = next(check["details"] for check in json.loads(kvm.stdout)["checks"] if check["name"] == "Linux runtime and namespaces")
         assert observed["state"] == "unavailable", observed
+        assert "platform_selection" not in observed
         assert "/dev/kvm" in observed["error"] and "host prepare" in observed["error"]
         assert observed["path"] == str(runtime) and observed["origin"] == "system"
-        for backend in ("auto", "systrap"):
-            available = command(native_cli, "--json", "--instance-dir", root, "doctor",
-                                env={**os.environ, "SAFEYOLO_RUNSC_PLATFORM": backend})
-            assert next(check["details"] for check in json.loads(available.stdout)["checks"] if check["name"] == "Linux runtime and namespaces")["state"] == "ready", available.stdout
+    for backend in ("auto", "systrap"):
+        env = {**os.environ, "SAFEYOLO_RUNSC_PLATFORM": backend}
+        available = command(native_cli, "--json", "--instance-dir", root, "doctor", env=env)
+        report = json.loads(available.stdout)
+        check = next(check for check in report["checks"] if check["name"] == "Linux runtime and namespaces")
+        observed = check["details"]
+        assert observed["state"] == "ready", available.stdout
+        selection = observed["platform_selection"]
+        assert selection in ("kvm", "systrap")
+        if backend == "systrap" or not Path("/dev/kvm").exists():
+            assert selection == "systrap"
+        assert check["message"] == f"{observed['version']}; prerequisite selection: {selection}"
+        human = command(native_cli, "--instance-dir", root, "doctor", env=env)
+        assert human.returncode == available.returncode == report["exit_code"]
+        assert check["message"] in human.stdout
+        assert not (root / "data/ready.json").exists()
     runtime.unlink()
     missing = command(native_cli, "--json", "--instance-dir", root, "doctor")
     report = json.loads(missing.stdout)

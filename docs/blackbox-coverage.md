@@ -346,7 +346,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-gateway-scope-py).
 - [tests/proxy_contracts/test_gateway_risk_approval.py](../tests/proxy_contracts/test_gateway_risk_approval.py#L224) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-gateway-risk-approval-py).
-- [tests/proxy_contracts/test_service_route_challenge.py](../tests/proxy_contracts/test_service_route_challenge.py#L125) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_service_route_challenge.py](../tests/proxy_contracts/test_service_route_challenge.py#L126) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-service-route-challenge-py).
 - [tests/proxy_contracts/test_shared_operator_approval.py](../tests/proxy_contracts/test_shared_operator_approval.py#L133) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-shared-operator-approval-py).
@@ -420,7 +420,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Selection: default `systrap` section `continuity`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `continuity`.
 - [tests/blackbox/claude_smoke.py::run](../tests/blackbox/claude_smoke.py#L258) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
-- [proxy/tests/credential_http/codex.rs](../proxy/tests/credential_http/codex.rs#L275) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Controlled OAuth provider and run-lifetime adapter; native HTTP.
+- [proxy/tests/credential_http/codex.rs](../proxy/tests/credential_http/codex.rs#L278) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Controlled OAuth provider and run-lifetime adapter; native HTTP.
   Exact identities: [source inventory](#witness-proxy-tests-credential-http-codex-rs).
 
 ### BB-11 — TLS / guest trust separation
@@ -679,7 +679,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-gateway-scope-py).
 - [tests/proxy_contracts/test_gateway_risk_approval.py](../tests/proxy_contracts/test_gateway_risk_approval.py#L224) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-gateway-risk-approval-py).
-- [tests/proxy_contracts/test_service_route_challenge.py](../tests/proxy_contracts/test_service_route_challenge.py#L125) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_service_route_challenge.py](../tests/proxy_contracts/test_service_route_challenge.py#L126) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-service-route-challenge-py).
 - [tests/proxy_contracts/test_shared_operator_approval.py](../tests/proxy_contracts/test_shared_operator_approval.py#L133) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-shared-operator-approval-py).
@@ -1477,11 +1477,11 @@ Selection: optional: select `SAFEYOLO_REAL_RESEARCH` = `1` (explicit bounded rea
 <a id="witness-tests-proxy-contracts-test-native-policy-cli-py"></a>
 ### [`tests/proxy_contracts/test_native_policy_cli.py`](../tests/proxy_contracts/test_native_policy_cli.py)
 
-Selection: phase `proxy` (host); phase `policy-recipe` (host); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+Selection: phase `proxy` (host); phase `policy-recipe` (host); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
 - [`tests/proxy_contracts/test_native_policy_cli.py::test_candidate_evaluation_reports_actions_without_destination_contact`](../tests/proxy_contracts/test_native_policy_cli.py#L54)
 - [`tests/proxy_contracts/test_native_policy_cli.py::test_candidate_evaluation_preserves_captured_scores`](../tests/proxy_contracts/test_native_policy_cli.py#L129)
-Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
 - [`tests/proxy_contracts/test_native_policy_cli.py::test_candidate_evaluation_uses_time_after_all_evidence_reads`](../tests/proxy_contracts/test_native_policy_cli.py#L223)
 - [`tests/proxy_contracts/test_native_policy_cli.py::test_installed_stop_cleanup_accepts_inactive_native_process_record`](../tests/proxy_contracts/test_native_policy_cli.py#L533)
@@ -1524,20 +1524,20 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 - [`tests/proxy_contracts/test_service_effect_assessment.py::test_host_assessment_cli_reports_full_proposal_current_ceiling_and_unavailable_authority`](../tests/proxy_contracts/test_service_effect_assessment.py#L36)
 - [`tests/proxy_contracts/test_service_effect_assessment.py::test_host_package_guidance_is_shared_by_challenge_private_and_operator_review`](../tests/proxy_contracts/test_service_effect_assessment.py#L95)
 - [`tests/proxy_contracts/test_service_effect_assessment.py::test_normal_approval_interfaces_retain_canonical_effects_guidance_and_outcome`](../tests/proxy_contracts/test_service_effect_assessment.py#L171)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_combined_authority_is_prepared_before_operator_work_and_shared_by_approval`](../tests/proxy_contracts/test_service_effect_assessment.py#L208)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_policy_changes_expose_recomputed_assessment_and_supersede_old_consent`](../tests/proxy_contracts/test_service_effect_assessment.py#L245)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_alternative_recipe_needs_access_and_effect_denial_applies_to_other_endpoint`](../tests/proxy_contracts/test_service_effect_assessment.py#L265)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_prohibited_edit_does_not_deny_independent_inspection_or_recipe`](../tests/proxy_contracts/test_service_effect_assessment.py#L293)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_new_temporary_route_authority_invalidates_a_pending_assessment`](../tests/proxy_contracts/test_service_effect_assessment.py#L323)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_removed_temporary_execution_access_is_reassessed_without_asserting_upstream_state`](../tests/proxy_contracts/test_service_effect_assessment.py#L338)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_definition_changes_are_recomputed_before_approval`](../tests/proxy_contracts/test_service_effect_assessment.py#L359)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_unbounded_execution_scope_includes_the_job_except_where_policy_denies_it`](../tests/proxy_contracts/test_service_effect_assessment.py#L375)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_known_candidate_scope_establishes_overlap_through_native_selectors`](../tests/proxy_contracts/test_service_effect_assessment.py#L385)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_unresolved_alias_overlap_does_not_invent_an_effect_prohibition`](../tests/proxy_contracts/test_service_effect_assessment.py#L393)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_risk_only_grant_does_not_add_modeled_route_admission_authority`](../tests/proxy_contracts/test_service_effect_assessment.py#L405)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_actual_contract_binding_projects_enforced_cosmetic_constraints`](../tests/proxy_contracts/test_service_effect_assessment.py#L417)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_recipe_with_unspecified_binding_reports_the_prerequisite_and_full_effects`](../tests/proxy_contracts/test_service_effect_assessment.py#L447)
-- [`tests/proxy_contracts/test_service_effect_assessment.py::test_existing_risk_approval_consumes_the_same_temporary_combined_authority`](../tests/proxy_contracts/test_service_effect_assessment.py#L463)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_combined_authority_is_prepared_before_operator_work_and_shared_by_approval`](../tests/proxy_contracts/test_service_effect_assessment.py#L269)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_policy_changes_expose_recomputed_assessment_and_supersede_old_consent`](../tests/proxy_contracts/test_service_effect_assessment.py#L306)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_alternative_recipe_needs_access_and_effect_denial_applies_to_other_endpoint`](../tests/proxy_contracts/test_service_effect_assessment.py#L326)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_prohibited_edit_does_not_deny_independent_inspection_or_recipe`](../tests/proxy_contracts/test_service_effect_assessment.py#L354)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_new_temporary_route_authority_invalidates_a_pending_assessment`](../tests/proxy_contracts/test_service_effect_assessment.py#L384)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_removed_temporary_execution_access_is_reassessed_without_asserting_upstream_state`](../tests/proxy_contracts/test_service_effect_assessment.py#L399)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_definition_changes_are_recomputed_before_approval`](../tests/proxy_contracts/test_service_effect_assessment.py#L420)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_unbounded_execution_scope_includes_the_job_except_where_policy_denies_it`](../tests/proxy_contracts/test_service_effect_assessment.py#L436)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_known_candidate_scope_establishes_overlap_through_native_selectors`](../tests/proxy_contracts/test_service_effect_assessment.py#L446)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_unresolved_alias_overlap_does_not_invent_an_effect_prohibition`](../tests/proxy_contracts/test_service_effect_assessment.py#L454)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_risk_only_grant_does_not_add_modeled_route_admission_authority`](../tests/proxy_contracts/test_service_effect_assessment.py#L466)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_actual_contract_binding_projects_enforced_cosmetic_constraints`](../tests/proxy_contracts/test_service_effect_assessment.py#L478)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_recipe_with_unspecified_binding_reports_the_prerequisite_and_full_effects`](../tests/proxy_contracts/test_service_effect_assessment.py#L508)
+- [`tests/proxy_contracts/test_service_effect_assessment.py::test_existing_risk_approval_consumes_the_same_temporary_combined_authority`](../tests/proxy_contracts/test_service_effect_assessment.py#L524)
 
 <a id="witness-tests-proxy-contracts-test-gateway-redirect-py"></a>
 ### [`tests/proxy_contracts/test_gateway_redirect.py`](../tests/proxy_contracts/test_gateway_redirect.py)
@@ -1618,15 +1618,16 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_adopted_questions_bind_pending_answers_and_operator_decisions`](../tests/proxy_contracts/test_service_route_challenge.py#L125)
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_completed_check_survives_run_approval_and_receipt`](../tests/proxy_contracts/test_service_route_challenge.py#L162)
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_challenge_abandon_alternative_and_explicit_retry`](../tests/proxy_contracts/test_service_route_challenge.py#L291)
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_forged_scope_and_refusal_do_not_create_more_operator_work`](../tests/proxy_contracts/test_service_route_challenge.py#L339)
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_route_exception_rechecks_current_authority`](../tests/proxy_contracts/test_service_route_challenge.py#L361)
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_restart_preserves_pending_scope_and_grant_expiry`](../tests/proxy_contracts/test_service_route_challenge.py#L410)
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_destination_and_literal_metacharacter_scope`](../tests/proxy_contracts/test_service_route_challenge.py#L438)
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_risk_grant_alone_cannot_admit_missing_route`](../tests/proxy_contracts/test_service_route_challenge.py#L455)
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_exception_preserves_other_enforcement`](../tests/proxy_contracts/test_service_route_challenge.py#L465)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_adopted_questions_bind_pending_answers_and_operator_decisions`](../tests/proxy_contracts/test_service_route_challenge.py#L126)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_completed_check_survives_run_approval_and_receipt`](../tests/proxy_contracts/test_service_route_challenge.py#L163)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_challenge_abandon_alternative_and_explicit_retry`](../tests/proxy_contracts/test_service_route_challenge.py#L292)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_removed_service_keeps_old_challenge_readable_and_new_requests_visible`](../tests/proxy_contracts/test_service_route_challenge.py#L341)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_forged_scope_and_refusal_do_not_create_more_operator_work`](../tests/proxy_contracts/test_service_route_challenge.py#L387)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_route_exception_rechecks_current_authority`](../tests/proxy_contracts/test_service_route_challenge.py#L409)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_restart_preserves_pending_scope_and_grant_expiry`](../tests/proxy_contracts/test_service_route_challenge.py#L458)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_destination_and_literal_metacharacter_scope`](../tests/proxy_contracts/test_service_route_challenge.py#L486)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_risk_grant_alone_cannot_admit_missing_route`](../tests/proxy_contracts/test_service_route_challenge.py#L503)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_exception_preserves_other_enforcement`](../tests/proxy_contracts/test_service_route_challenge.py#L513)
 
 <a id="witness-tests-proxy-contracts-test-shared-operator-approval-py"></a>
 ### [`tests/proxy_contracts/test_shared_operator_approval.py`](../tests/proxy_contracts/test_shared_operator_approval.py)
@@ -2083,7 +2084,7 @@ Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.ym
 <a id="witness-tests-proxy-contracts-test-first-agent-launch-py"></a>
 ### [`tests/proxy_contracts/test_first_agent_launch.py`](../tests/proxy_contracts/test_first_agent_launch.py)
 
-Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
 - [`tests/proxy_contracts/test_first_agent_launch.py::test_first_run_numbered_decisions_show_and_enforce_their_real_scope`](../tests/proxy_contracts/test_first_agent_launch.py#L49)
 - [`tests/proxy_contracts/test_first_agent_launch.py::test_credential_picker_does_not_attribute_old_requests_to_a_recreated_name`](../tests/proxy_contracts/test_first_agent_launch.py#L89)
@@ -2186,14 +2187,14 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 - [`tests/proxy_contracts/test_native_factory_cli.py::test_setup_approval_and_workspace_requirements_do_not_launch_roles`](../tests/proxy_contracts/test_native_factory_cli.py#L226)
 - [`tests/proxy_contracts/test_native_factory_cli.py::test_setup_keeps_explicit_codex_adoption_before_runtime_start`](../tests/proxy_contracts/test_native_factory_cli.py#L242)
 - [`tests/proxy_contracts/test_native_factory_cli.py::test_setup_repairs_stopped_staging_and_explicitly_changed_workspace`](../tests/proxy_contracts/test_native_factory_cli.py#L256)
-Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
 - [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_prepare_stages_codex_pi_and_retains_state_and_peer_grants`](../tests/proxy_contracts/test_native_factory_cli.py#L276)
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
 - [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_repo_map_reads_working_tree_and_reports_guidance`](../tests/proxy_contracts/test_native_factory_cli.py#L361)
 - [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_doctor_checks_actual_direct_and_wrapped_role_commands`](../tests/proxy_contracts/test_native_factory_cli.py#L399)
-Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
 - [`tests/proxy_contracts/test_native_factory_cli.py::test_doctor_rejects_failed_or_paused_command_with_a_healthy_runtime`](../tests/proxy_contracts/test_native_factory_cli.py#L475)
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
@@ -2203,7 +2204,7 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 - [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_stop_interprets_lifecycle_errors`](../tests/proxy_contracts/test_native_factory_cli.py#L667)
 - [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_does_not_boot_workers_without_coord`](../tests/proxy_contracts/test_native_factory_cli.py#L690)
 - [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_does_not_boot_workers_when_room_provisioning_fails`](../tests/proxy_contracts/test_native_factory_cli.py#L703)
-Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
 - [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_requires_confirmation_before_any_role_starts`](../tests/proxy_contracts/test_native_factory_cli.py#L715)
 Selection: optional: select `SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE` explicitly (Explicit disposable installed guided-setup acceptance root.); phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
@@ -2463,73 +2464,73 @@ Selection: phase `host-lifecycle` (host); phase `listener-restart` (host).
 <a id="witness-tests-test-guest-acquisition-py"></a>
 ### [`tests/test_guest_acquisition.py`](../tests/test_guest_acquisition.py)
 
-Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_guest_acquisition.py::test_native_acquisition_omits_only_publisher_identical_config`](../tests/test_guest_acquisition.py#L360)
 - [`tests/test_guest_acquisition.py::test_native_acquisition_refuses_invalid_config_before_archive`](../tests/test_guest_acquisition.py#L402)
 - [`tests/test_guest_acquisition.py::test_copied_instance_keeps_installed_guest_binding`](../tests/test_guest_acquisition.py#L443)
 - [`tests/test_guest_acquisition.py::test_explicit_first_acquisition_selects_each_index_without_discovery`](../tests/test_guest_acquisition.py#L489)
 - [`tests/test_guest_acquisition.py::test_custom_profile_requires_explicit_index_and_reuses_native_preparation`](../tests/test_guest_acquisition.py#L525)
-Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_guest_acquisition.py::test_guest_validation_failure_keeps_verified_archive_for_retry`](../tests/test_guest_acquisition.py#L549)
-Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_guest_acquisition.py::test_linux_extraction_preserves_metadata_across_tar_records`](../tests/test_guest_acquisition.py#L577)
-Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_guest_acquisition.py::test_native_selection_pins_one_index_and_keeps_existing_installation`](../tests/test_guest_acquisition.py#L623)
-Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_guest_acquisition.py::test_native_acquisition_refuses_before_activation`](../tests/test_guest_acquisition.py#L677)
 - [`tests/test_guest_acquisition.py::test_guest_download_pins_index_and_reuses_verified_inputs`](../tests/test_guest_acquisition.py#L736)
 - [`tests/test_guest_acquisition.py::test_pinned_handoff_revalidates_retained_content`](../tests/test_guest_acquisition.py#L772)
 - [`tests/test_guest_acquisition.py::test_acquisition_reads_the_verified_file_and_refuses_nonregular_cache`](../tests/test_guest_acquisition.py#L830)
 - [`tests/test_guest_acquisition.py::test_download_metadata_keeps_discovery_fresh_and_checks_package_compatibility`](../tests/test_guest_acquisition.py#L859)
-Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_guest_acquisition.py::test_early_preparation_defers_unavailable_setup_and_reports_cleanup_failure`](../tests/test_guest_acquisition.py#L887)
 - [`tests/test_guest_acquisition.py::test_guest_download_interruption_removes_partial_blob_and_allows_retry`](../tests/test_guest_acquisition.py#L934)
-Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_guest_acquisition.py::test_guest_download_timing_is_opt_in`](../tests/test_guest_acquisition.py#L960)
-Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_guest_acquisition.py::test_guest_download_decodes_during_transfer_but_extracts_only_verified_bytes`](../tests/test_guest_acquisition.py#L993)
-Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_guest_acquisition.py::test_first_acquisition_rejects_wrong_index_digest`](../tests/test_guest_acquisition.py#L1115)
 - [`tests/test_guest_acquisition.py::test_invalid_acquisition_index_options_make_no_changes`](../tests/test_guest_acquisition.py#L1132)
 - [`tests/test_guest_acquisition.py::test_generated_malformed_acquisition_digests_make_no_changes`](../tests/test_guest_acquisition.py#L1144)
 - [`tests/test_guest_acquisition.py::test_pinned_acquisition_preserves_nonfresh_roots`](../tests/test_guest_acquisition.py#L1156)
 - [`tests/test_guest_acquisition.py::test_generated_archive_paths_cannot_escape_staging`](../tests/test_guest_acquisition.py#L1174)
-Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_guest_acquisition.py::test_rootless_production_metadata_and_distinct_mappings`](../tests/test_guest_acquisition.py#L1201)
-Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_guest_acquisition.py::test_native_client_reports_bad_proxy_and_ca_without_panicking`](../tests/test_guest_acquisition.py#L1213)
 - [`tests/test_guest_acquisition.py::test_verified_bundle_installer_and_proxy_restart_retain_guest`](../tests/test_guest_acquisition.py#L1222)
 - [`tests/test_guest_acquisition.py::test_host_archive_smoke_runs_normal_native_guest_acquisition`](../tests/test_guest_acquisition.py#L1291)
-Selection: phase `rootless-guest` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: phase `rootless-guest` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_guest_acquisition.py::test_prepared_rootless_guest_remains_usable_after_restart`](../tests/test_guest_acquisition.py#L1369)
 
 <a id="witness-tests-test-guest-upgrade-py"></a>
 ### [`tests/test_guest_upgrade.py`](../tests/test_guest_upgrade.py)
 
-Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_guest_upgrade.py::test_explicit_upgrade_pins_reuses_and_rolls_back_without_changing_host_or_state`](../tests/test_guest_upgrade.py#L67)
-Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_guest_upgrade.py::test_metadata_only_upgrade_retains_previous_release_and_reuses_inputs`](../tests/test_guest_upgrade.py#L120)
-Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: phase `rootless-preparation` (host); [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_guest_upgrade.py::test_upgrade_refusals_preserve_active_and_previous_selection`](../tests/test_guest_upgrade.py#L174)
 - [`tests/test_guest_upgrade.py::test_failed_activation_is_retryable_and_bad_selected_inputs_can_be_rolled_back`](../tests/test_guest_upgrade.py#L224)
 - [`tests/test_guest_upgrade.py::test_killed_archive_pull_preserves_selection_and_next_upgrade_recovers`](../tests/test_guest_upgrade.py#L261)
-Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_guest_upgrade.py::test_generated_invalid_index_shapes_cannot_replace_the_active_guest`](../tests/test_guest_upgrade.py#L296)
 - [`tests/test_guest_upgrade.py::test_invalid_guest_command_options_do_not_change_the_instance`](../tests/test_guest_upgrade.py#L315)
@@ -2538,7 +2539,7 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 <a id="witness-tests-test-component-upgrade-py"></a>
 ### [`tests/test_component_upgrade.py`](../tests/test_component_upgrade.py)
 
-Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_component_upgrade.py::test_stock_installed_pair_status_upgrade_and_rollback`](../tests/test_component_upgrade.py#L117)
 - [`tests/test_component_upgrade.py::test_runsc_pin_refusals_preserve_current_and_state`](../tests/test_component_upgrade.py#L152)
@@ -2567,7 +2568,7 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 <a id="witness-tests-test-linux-host-py"></a>
 ### [`tests/test_linux_host.py`](../tests/test_linux_host.py)
 
-Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`).
+Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
 - [`tests/test_linux_host.py::test_retained_systrap_caller_remaps_only_its_private_copy`](../tests/test_linux_host.py#L53)
 - [`tests/test_linux_host.py::test_runtime_input_fails_before_host_changes`](../tests/test_linux_host.py#L145)
@@ -2581,9 +2582,9 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 - [`tests/test_linux_host.py::test_remap_refuses_live_tree_and_bad_owner_before_changing_files`](../tests/test_linux_host.py#L455)
 - [`tests/test_linux_host.py::test_denied_runtime_permission_reports_changes_and_retry_is_idempotent`](../tests/test_linux_host.py#L475)
 - [`tests/test_linux_host.py::test_doctor_keeps_selected_system_identity_when_runtime_disappears`](../tests/test_linux_host.py#L535)
-- [`tests/test_linux_host.py::test_profile_load_failure_retains_only_its_complete_profile`](../tests/test_linux_host.py#L592)
-- [`tests/test_linux_host.py::test_host_prepare_retries_retained_runtime_profile`](../tests/test_linux_host.py#L621)
-- [`tests/test_linux_host.py::test_scoped_namespace_entry_with_both_apparmor_restrictions`](../tests/test_linux_host.py#L719)
+- [`tests/test_linux_host.py::test_profile_load_failure_retains_only_its_complete_profile`](../tests/test_linux_host.py#L606)
+- [`tests/test_linux_host.py::test_host_prepare_retries_retained_runtime_profile`](../tests/test_linux_host.py#L635)
+- [`tests/test_linux_host.py::test_scoped_namespace_entry_with_both_apparmor_restrictions`](../tests/test_linux_host.py#L733)
 
 <a id="witness-tests-test-host-sudo-py"></a>
 ### [`tests/test_host_sudo.py`](../tests/test_host_sudo.py)
@@ -2714,17 +2715,17 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 
 Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::imported_login_two_rotations_reload_restart_and_redaction -- --exact`](../proxy/tests/credential_http/codex.rs#L275)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::credentials_do_not_inherit_other_origins_routes_clients_or_beneficiaries -- --exact`](../proxy/tests/credential_http/codex.rs#L389)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::host_import_requires_a_subscription_pair_and_unique_beneficiary -- --exact`](../proxy/tests/credential_http/codex.rs#L550)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::refresh_observation_uses_the_final_route_json_and_only_imported_authentication -- --exact`](../proxy/tests/credential_http/codex.rs#L592)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::refresh_trailers_cannot_supply_unobserved_authentication -- --exact`](../proxy/tests/credential_http/codex.rs#L697)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::concurrent_issuance_retains_each_token_under_one_import -- --exact`](../proxy/tests/credential_http/codex.rs#L761)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::revocation_or_reimport_during_exchange_cannot_restore_old_authority -- --exact`](../proxy/tests/credential_http/codex.rs#L793)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::run_scoped_import_follows_the_verified_backend_lifetime -- --exact`](../proxy/tests/credential_http/codex.rs#L827) — `#[cfg(target_os = "linux")]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::guest_markers_expiry_identity_and_stopped_run_do_not_create_authority -- --exact`](../proxy/tests/credential_http/codex.rs#L905)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::imported_credentials_do_not_bypass_upstream_tls_verification -- --exact`](../proxy/tests/credential_http/codex.rs#L985)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::malformed_duplicate_and_redirected_issuance_cannot_authorize_replacements -- --exact`](../proxy/tests/credential_http/codex.rs#L1007)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::imported_login_two_rotations_reload_restart_and_redaction -- --exact`](../proxy/tests/credential_http/codex.rs#L278)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::credentials_do_not_inherit_other_origins_routes_clients_or_beneficiaries -- --exact`](../proxy/tests/credential_http/codex.rs#L392)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::host_import_requires_a_subscription_pair_and_unique_beneficiary -- --exact`](../proxy/tests/credential_http/codex.rs#L552)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::refresh_observation_uses_the_final_route_json_and_only_imported_authentication -- --exact`](../proxy/tests/credential_http/codex.rs#L594)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::refresh_trailers_cannot_supply_unobserved_authentication -- --exact`](../proxy/tests/credential_http/codex.rs#L699)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::concurrent_issuance_retains_each_token_under_one_import -- --exact`](../proxy/tests/credential_http/codex.rs#L763)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::revocation_or_reimport_during_exchange_cannot_restore_old_authority -- --exact`](../proxy/tests/credential_http/codex.rs#L795)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::run_scoped_import_follows_the_verified_backend_lifetime -- --exact`](../proxy/tests/credential_http/codex.rs#L829) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::guest_markers_expiry_identity_and_stopped_run_do_not_create_authority -- --exact`](../proxy/tests/credential_http/codex.rs#L907)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::imported_credentials_do_not_bypass_upstream_tls_verification -- --exact`](../proxy/tests/credential_http/codex.rs#L987)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::malformed_duplicate_and_redirected_issuance_cannot_authorize_replacements -- --exact`](../proxy/tests/credential_http/codex.rs#L1009)
 
 <a id="witness-proxy-tests-native-coord-reviews-rs"></a>
 ### [`proxy/tests/native_coord/reviews.rs`](../proxy/tests/native_coord/reviews.rs)
