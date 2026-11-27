@@ -210,6 +210,19 @@ pub fn coord(value: &Value) -> Result<(), Error> {
         ] {
             field(label, &value[key]);
         }
+    } else if let Some(permissions) = value["permissions"].as_array() {
+        field("Room", value.get("room_name").unwrap_or(&value["room_id"]));
+        field("Agent", value.get("agent").unwrap_or(&value["agent_id"]));
+        if permissions.is_empty() {
+            println!("Room membership revoked.");
+        } else {
+            println!(
+                "Granted room permissions: {}",
+                permissions.iter().map(text).collect::<Vec<_>>().join(", ")
+            );
+        }
+        field("Operation", &value["operation_id"]);
+        println!("Use --json for the complete membership receipt.");
     } else if let Some(items) = value["items"].as_array() {
         if items.is_empty() {
             println!("No records in this selection.");
@@ -254,13 +267,20 @@ pub fn coord(value: &Value) -> Result<(), Error> {
             println!("No retained messages in this range.");
         }
     } else {
-        let selected = value.get("work").or(value.get("envelope")).unwrap_or(value);
+        let selected = value
+            .get("work")
+            .or(value.get("signal"))
+            .or(value.get("envelope"))
+            .unwrap_or(value);
         for (label, key) in [
             ("Room", "room_name"),
             ("State", "state"),
             ("Status", "status"),
             ("Work", "work_id"),
             ("Title", "title"),
+            ("Signal", "signal_id"),
+            ("Kind", "kind"),
+            ("Summary", "summary"),
             ("Version", "version"),
             ("Generation", "claim_generation"),
             ("Candidate", "target_ref"),
@@ -273,6 +293,8 @@ pub fn coord(value: &Value) -> Result<(), Error> {
             field(label, &selected[key]);
         }
         field("Output acceptance", &selected["acceptance_status"]["state"]);
+        field("Report author", &selected["author"]["id"]);
+        field("Observation basis", &selected["basis"]);
         field(
             "Acceptance evidence",
             &selected["acceptance_status"]["reason"],

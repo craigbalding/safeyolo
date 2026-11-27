@@ -32,6 +32,73 @@ fn stdout(output: Output) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+#[test]
+fn factory_contract_modes_keep_validation_approval_and_cancellation_distinct() {
+    use std::{io::Write, process::Stdio};
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().join("selected factory instance");
+    fs::create_dir(&root).unwrap();
+    let contract = scratch.path().join("factory.toml");
+    fs::write(
+        scratch.path().join("role.md"),
+        "Follow the assigned work.\n",
+    )
+    .unwrap();
+    fs::write(
+        &contract,
+        r#"schema = "safeyolo.factory/v1"
+name = "human-audit"
+room = "human-audit"
+[operator_input]
+to = "worker"
+types = ["DIRECTION"]
+[roles.worker]
+agent = "audit-worker"
+contract = "role.md"
+"#,
+    )
+    .unwrap();
+    let file = contract.to_str().unwrap();
+    let checked: Value =
+        serde_json::from_str(&stdout(cli(&root, &["factory", "check", file, "--json"]))).unwrap();
+    assert_eq!(checked["valid"], true);
+    assert_eq!(checked["contract"]["name"], "human-audit");
+    assert_eq!(
+        checked["contract"]["roles"]["worker"]["contract_text"],
+        "Follow the assigned work.\n"
+    );
+    assert!(!root.join("factories").exists());
+    let human = stdout(cli(&root, &["factory", "check", file]));
+    assert!(human.contains("factory=human-audit") && human.contains("agent=audit-worker"));
+    let mut declined = Command::new(executable())
+        .arg("--instance-dir")
+        .arg(&root)
+        .args(["factory", "approve", file, "--json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    declined.stdin.take().unwrap().write_all(b"n\n").unwrap();
+    let declined = declined.wait_with_output().unwrap();
+    assert!(!declined.status.success() && declined.stdout.is_empty());
+    let diagnostic = String::from_utf8(declined.stderr).unwrap();
+    assert!(diagnostic.contains("factory=human-audit"));
+    assert!(diagnostic.contains("Approve this exact Factory contract?"));
+    assert!(diagnostic.contains("cancelled"));
+    assert!(!root.join("factories").exists());
+    let approved: Value = serde_json::from_str(&stdout(cli(
+        &root,
+        &["factory", "approve", file, "--yes", "--json"],
+    )))
+    .unwrap();
+    assert_eq!(approved["approved"], true);
+    assert_eq!(approved["snapshot_id"], checked["snapshot_id"]);
+    assert_eq!(approved["roles_started"], false);
+    assert!(Path::new(approved["path"].as_str().unwrap()).is_file());
+    assert!(!root.join("agents").exists());
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn doctor_observes_helper_capability_identity_and_executable_terminal_without_starting() {
