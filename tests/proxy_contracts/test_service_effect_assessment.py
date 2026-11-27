@@ -184,11 +184,32 @@ def test_normal_approval_interfaces_retain_canonical_effects_guidance_and_outcom
             assert result.returncode == 0, result.stderr
             output = result.stdout
             assert "SafeYolo assessment" in output and "Policy and reviewed guidance" in output
-            assert "executable_changed" in output and "alternatives" in output
+            assert "executable_changed" in output and "inspect_stored_definition" in output
             assert "unverified" in output.lower() and "uncertainty" in output
             assert identifier in output and "run" in output and "expires" in output.lower()
             assert VAULT_VALUE not in output
+            if action == "show":
+                # Ordinary review contains decision facts, not the serialized
+                # model and duplicate assessments used by explicit explain.
+                assert "Persistent effects: executable_changed; description_changed" in output
+                assert "Changed executable steps can run" in output
+                assert "No code execution" in output and "inspect_definition: available" in output
+                assert "Allow only this agent run" in output
+                assert output.count("Reusable access expires") == 1
+                assert "120 seconds" in output and "never replays" in output
+                assert "Agent: alice" in output and "Destination: 127.0.0.1" in output
+                assert "Full evidence:" in output and str(fixture.directory / "config.toml") in output
+                assert not any(field in output for field in (
+                    "input revision:", "contributing permissions:", "effect definitions:",
+                    "permission:", "session id:", ": null",
+                ))
+            else:
+                assert "input revision:" in output and "contributing permissions:" in output
             (tmp_path / f"normal-{action}.txt").write_text(output)
+        machine = subprocess.run([*command, "approvals", "show", identifier, "--json"],
+                                 capture_output=True, text=True, timeout=15)
+        assert machine.returncode == 0, machine.stderr
+        assert json.loads(machine.stdout)["assessment"] == record["assessment"]
         instance = SimpleNamespace(root=fixture.directory, environment=dict(os.environ))
         with terminal(instance, command=[*command, "approvals", "review", "--agent", "alice"]) as (process, master, until):
             until(b"Type a displayed request number")
@@ -196,13 +217,24 @@ def test_normal_approval_interfaces_retain_canonical_effects_guidance_and_outcom
             output = until(b"approve run / reject")
             assert b"SafeYolo assessment" in output and b"executable_changed" in output
             assert b"Policy and reviewed guidance" in output and b"untrusted" in output.lower()
+            assert b"contributing permissions:" not in output and b"input revision:" not in output
+            assert output.count(b"Reusable access expires") == 1
+            assert b"Changed executable steps can run" in output and b"120 seconds" in output
+            # Reading details is deliberate and leaves this exact decision open.
+            os.write(master, b"explain\n")
+            details = until(b"approve run / reject")
+            assert b"input revision:" in details and b"contributing permissions:" in details
+            assert _admin(fixture, "GET", "/admin/approvals/" + identifier)["status"] == "pending"
             os.write(master, b"reject\n")
-            output += until(b"No pending requests")
+            outcome = until(b"No pending requests")
+            assert outcome.count(b": rejected") == 1
+            assert b"SafeYolo assessment" not in outcome and b"Policy and reviewed guidance" not in outcome
+            output += details + outcome
             assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
             (tmp_path / "normal-review.txt").write_bytes(output)
         result = subprocess.run([*command, "approvals", "show", identifier], capture_output=True, text=True, timeout=15)
         assert result.returncode == 0 and "rejected" in result.stdout
-        assert "Recorded outcome" in result.stdout and fixture.sink.deliveries == []
+        assert "Status: rejected" in result.stdout and fixture.sink.deliveries == []
 
 
 def test_combined_authority_is_prepared_before_operator_work_and_shared_by_approval(tmp_path):

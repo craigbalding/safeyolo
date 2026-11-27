@@ -565,6 +565,157 @@ fn show_decision_evidence(view: &Value) {
     }
 }
 
+// Decision facts have no display-length cap. Supporting model inputs and
+// duplicate projections remain available through explain and explicit JSON.
+fn show_review_fact(label: &str, value: &Value) {
+    let rendered = match value {
+        Value::Null => return,
+        Value::Array(items) if items.is_empty() => return,
+        Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| item.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+        Value::String(value) if value.is_empty() => return,
+        Value::String(value) => value.clone(),
+        _ => value.to_string(),
+    };
+    println!("{label}: {}", safe(&rendered));
+}
+
+fn show_decision_summary(view: &Value) {
+    let assessment = &view["assessment"];
+    if assessment.get("risk_policy").is_none() && assessment.get("availability").is_none() {
+        // Policy adoption still needs its exact source diff and consequences;
+        // other assessment owners retain their existing decision evidence.
+        show_decision_evidence(view);
+        return;
+    }
+    println!("SafeYolo assessment:");
+    show_review_fact("  Availability", &assessment["availability"]);
+    show_review_fact("  Assessment", &assessment["message"]);
+    show_review_fact(
+        "  Current risk policy",
+        &assessment["risk_policy"]["effect"],
+    );
+    show_review_fact("  Possible effects", &assessment["enables"]);
+    for direct in assessment["model"]["direct"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if direct["permission"]["proposed"] != true {
+            continue;
+        }
+        show_review_fact("  Proposed operation", &direct["permission"]["operation"]);
+        show_review_fact("  Coverage", &direct["coverage"]);
+        show_review_fact("  Persistent effects", &direct["persistent_effects"]);
+        show_review_fact("  Execution authority", &direct["execution_authority"]);
+        show_review_fact("  Unresolved effects", &direct["unresolved_effects"]);
+        show_review_fact("  Unresolved conditions", &direct["unresolved_conditions"]);
+    }
+    for (name, rule) in assessment["model"]["rules"]
+        .as_object()
+        .into_iter()
+        .flatten()
+    {
+        println!(
+            "  Combined effect {}: {}",
+            safe(name),
+            safe(text(&rule["status"]))
+        );
+        if rule["status"] != "non_match" {
+            show_review_fact("    Consequence", &rule["consequence"]);
+            show_review_fact(
+                "    Unverified prerequisites",
+                &rule["unverified_prerequisites"],
+            );
+            show_review_fact("    Limits", &rule["gaps"]);
+        }
+    }
+    for source in [assessment, &assessment["model"]] {
+        show_review_fact("  Unresolved conditions", &source["unresolved_conditions"]);
+        show_review_fact("  Limits", &source["limitations"]);
+    }
+    if let Some(authority) = assessment.get("docker_authority") {
+        println!("  Docker authority:");
+        show_evidence_fields(authority, 4);
+    }
+    println!("Policy and reviewed guidance:");
+    for field in ["other_controls", "uncertainty"] {
+        show_review_fact(
+            &format!("  {}", field.replace('_', " ")),
+            &view["guidance"][field],
+        );
+    }
+    show_review_fact(
+        "  Reviewed risk",
+        &view["guidance"]["reviewed_risk"]["description"],
+    );
+    if view["guidance"]["reviewed_risk"]["irreversible"] == true {
+        println!("  Reviewed risk: irreversible effects are possible.");
+    }
+    for alternative in assessment["alternatives"].as_array().into_iter().flatten() {
+        println!(
+            "  Alternative {} (goal suitability unverified):",
+            safe(text(&alternative["id"]))
+        );
+        for step in alternative["required_access"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            println!(
+                "    {}: {}",
+                safe(text(&step["operation"])),
+                safe(text(&step["access"]))
+            );
+        }
+        // Native recipes use access/steps rather than required_access.
+        show_review_fact("    Access", &alternative["access"]);
+        show_review_fact(
+            "    Unverified prerequisites",
+            &alternative["unverified_prerequisites"],
+        );
+        show_review_fact("    Limits", &alternative["limitations"]);
+    }
+    if view["assessment_changed"] == true {
+        println!("Assessment changed since request. Review current state before deciding.");
+    }
+}
+
+fn show_approval_outcome(view: &Value) -> Result<(), Error> {
+    println!(
+        "Request {}: {}",
+        safe(text(&view["request_id"])),
+        safe(text(&view["status"]))
+    );
+    if view["result"]["status"] != view["status"] {
+        show_review_fact("Recorded outcome", &view["result"]["status"]);
+    }
+    show_review_fact("Selected option", &view["option"]);
+    show_review_fact("Next action", &view["result"]["next_action"]);
+    show_review_fact("Diagnostic", &view["result"]["diagnostic"]["message"]);
+    if !matches!(view["status"].as_str(), Some("approved" | "rejected")) {
+        show_review_fact("Decision not applied", &view["effect"]);
+        println!(
+            "Inspect this request again before deciding; no decision is retried automatically."
+        );
+    }
+    if let Some(url) = view["operator_preview"]["url"].as_str() {
+        println!(
+            "Operator preview: {}\nUnlock code: {}",
+            safe(url),
+            safe(text(&view["operator_preview"]["unlock_code"]))
+        );
+    }
+    Ok(())
+}
+
 /// Reuse the canonical approval renderer and its display-control escaping.
 pub fn show_policy_assessment(view: &Value) {
     println!("Trusted policy consequences:");
@@ -727,16 +878,29 @@ fn show_explanation(view: &Value) -> Result<(), Error> {
 
 pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
     println!(
-        "Request: {}\nStatus: {}\nSafeYolo effect: {}",
+        "Instance configuration: {}",
+        safe(&host_platform::config_path().display().to_string())
+    );
+    println!(
+        "Request: {}\nStatus: {}\nAgent: {} | Destination: {}",
         safe(text(&view["request_id"])),
         safe(text(&view["status"])),
-        safe(text(&view["effect"]))
+        safe(text(&view["agent"])),
+        safe(text(&view["approval"]["target"]))
     );
     if let Some(id) = view["approval_id"].as_str() {
         println!("Approval: {}", safe(id));
     }
     show_request_history(view)?;
-    show_decision_evidence(view);
+    show_decision_summary(view);
+    let effect_is_option = view["options"].as_array().is_some_and(|options| {
+        options
+            .iter()
+            .any(|option| option["effect"] == view["effect"])
+    });
+    if !effect_is_option {
+        show_review_fact("SafeYolo effect", &view["effect"]);
+    }
 
     if view["action"]["kind"] == "diagnostic_disclosure" {
         println!("Local read-only diagnostic disclosure:");
@@ -827,8 +991,9 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
     if let Some(options) = view["options"].as_array() {
         for option in options {
             println!(
-                "Option {}: {}",
+                "Option {} ({}): {}",
                 safe(text(&option["id"])),
+                safe(text(&option["status"])),
                 safe(text(&option["effect"]))
             );
         }
@@ -855,6 +1020,22 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
                 "Helper reason"
             },
             context_json(&json!(reason))?
+        );
+    }
+    if !view["result"].is_null() {
+        if view["result"]["status"] != view["status"] {
+            show_review_fact("Recorded outcome", &view["result"]["status"]);
+        }
+        show_review_fact("Next action", &view["result"]["next_action"]);
+    }
+    if let Some(id) = view["approval_id"].as_str() {
+        println!(
+            "Full evidence: safeyolo --config {} approvals explain {} (or show {} --json).",
+            safe(&crate::host_lifecycle::shell_quote(
+                &host_platform::config_path().display().to_string()
+            )),
+            safe(id),
+            safe(id)
         );
     }
     Ok(())
@@ -1105,11 +1286,7 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
         }
         println!("SafeYolo host — pending requests for {}", safe(agent));
         for (index, entry) in entries.iter().enumerate() {
-            println!(
-                "{}: {}",
-                index + 1,
-                serde_json::to_string(&entry["summary"])?
-            );
+            println!("{}: {}", index + 1, safe(text(&entry["summary"])));
             show_request_history(entry)?;
         }
         let Some(answer) = crate::host_launch::input(
@@ -1231,7 +1408,7 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
             if option.as_deref() == Some("") {
                 continue;
             }
-            show_approval(
+            show_approval_outcome(
                 &resolve_preview(root, &view, decision, Some(agent), option.as_deref()).await?,
             )?;
             break;
@@ -1927,7 +2104,7 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
                 "approve" | "reject" => {
                     let view = approval(root, rest, Some(name)).await?;
                     show_approval(&view)?;
-                    show_approval(&resolve_preview(root, &view, command, Some(name), None).await?)
+                    show_approval_outcome(&resolve_preview(root, &view, command, Some(name), None).await?)
                 }
                 "share" => {
                     let (id, helper) = rest.split_once(' ').ok_or("share requires ID HELPER")?;
