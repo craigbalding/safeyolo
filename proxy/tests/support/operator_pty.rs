@@ -45,7 +45,9 @@ impl Terminal {
             0
         );
         let input = master.try_clone().unwrap();
-        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"));
+        let executable = std::env::var_os("SAFEYOLO_NATIVE_CLI")
+            .unwrap_or_else(|| env!("CARGO_BIN_EXE_safeyolo").into());
+        let mut command = tokio::process::Command::new(executable);
         command
             .arg("--instance-dir")
             .arg(root)

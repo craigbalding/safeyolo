@@ -103,8 +103,11 @@ After adoption, use `resume BINDING` and authenticated discovery. Resume can
 activate only the exact task document selected in that binding; it accepts no
 caller replacement policy. A conflicting active task must be resolved explicitly.
 
-After a lost setup reply, use `setup-status --original-request-id ORIGINAL_ID`
-and the original policy-change request before another effect. On the target,
+After a lost preparation reply, use `setup-status --original-request-id ORIGINAL_ID`.
+After a lost `submit-setup` reply, add `--submitted` to read the original
+policy-change request through the approval owner. Failure output carries the
+generated request ID and the matching recovery command. Neither read retries
+setup or grants permission. On the target,
 inspect the original private directory and `enrolment.json`. Reusing the same
 bootstrap request recovers its protected preparation; changed content conflicts.
 A prepared receipt does not establish that the listener is currently serving.

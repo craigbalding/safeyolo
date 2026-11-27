@@ -154,6 +154,18 @@ def stage(args: argparse.Namespace) -> dict[str, Any]:
     adoption_args.command = "stage"
     adoption_args.request_id += "-adopt"
     adoption = adopt_code(adoption_args, script)
+    try:
+        return stage_adopted(args, adoption)
+    except RequestFailed as error:
+        error.value["adoption"] = adoption
+        error.value["stage_request_id"] = args.request_id
+        error.value.setdefault("host_binding", args.binding)
+        error.value["next_action"] = error.value.get("next_action", "Inspect the original result before another effect.") + " The completed code adoption is retained below; inspect it before preparing another stage."
+        raise
+
+
+def stage_adopted(args: argparse.Namespace, adoption: dict[str, Any]) -> dict[str, Any]:
+    """Prepare and invoke the selected staging revision, retaining its adoption."""
     original = adoption["original"]["request"]
     discovery = call(args.binding, args.request_id + "-discovery", {"kind": "discover"})["discovery"]
     operation = next((item for item in discovery["operations"] if item["operation_id"] == "task:stage"), None)
@@ -181,13 +193,19 @@ def stage(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def setup(args: argparse.Namespace) -> dict[str, Any]:
-    if args.command == "setup":
-        return request("/gateway/host-setup", {"kind": "prepare", "operation_id": args.request_id,
-                       "plan": json.loads(Path(args.plan).read_text())})
-    if args.command == "submit-setup":
-        return request("/gateway/host-setup", {"kind": "submit", "operation_id": args.request_id,
-                       "enrolment": json.loads(Path(args.enrolment).read_text())})
-    return request("/gateway/host-setup/" + urllib.parse.quote(args.original_request_id, safe=""))
+    if args.command == "setup-status":
+        owner = "/approvals/" if getattr(args, "submitted", False) else "/gateway/host-setup/"
+        return request(owner + urllib.parse.quote(args.original_request_id, safe=""))
+    field = "plan" if args.command == "setup" else "enrolment"
+    value = {"kind": "prepare" if args.command == "setup" else "submit", "operation_id": args.request_id,
+             field: json.loads(Path(getattr(args, field)).read_text())}
+    try:
+        return request("/gateway/host-setup", value)
+    except RequestFailed as error:
+        error.value.setdefault("request_id", args.request_id)
+        submitted = " --submitted" if args.command == "submit-setup" else ""
+        error.value["recovery_command"] = f"setup-status{submitted} --original-request-id {shlex.quote(args.request_id)}"
+        raise
 
 
 def resume(args: argparse.Namespace) -> dict[str, Any]:
@@ -248,6 +266,7 @@ def main() -> int:
         sub.add_argument("--plan" if command == "setup" else "--enrolment", required=True)
     sub = commands.add_parser("setup-status")
     sub.add_argument("--original-request-id", required=True)
+    sub.add_argument("--submitted", action="store_true", help="Read the original submitted policy-change request instead of its signing preparation")
     for command in ("discover", "propose", "invoke", "job", "output", "file", "cancel", "resume", "adopt", "adoption", "stage"):
         sub = commands.add_parser(command)
         sub.add_argument("binding")
