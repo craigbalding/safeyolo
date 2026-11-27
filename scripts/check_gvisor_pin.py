@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM = "https://github.com/google/gvisor.git"
 ADVISORIES = "repos/google/gvisor/security-advisories?state=published&per_page=100"
 LABEL = "gvisor-pin"
-STALE_DAYS = 60
+STALE_DAYS = 30
 RELEASE = re.compile(r"release-(\d{4})(\d{2})(\d{2})\.(\d+)")
 # gVisor names a fixed version by its release date, with or without a prefix.
 FIXED_DATE = re.compile(r"(20\d{2})(\d{2})(\d{2})")

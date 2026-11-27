@@ -53,9 +53,9 @@ def test_an_advisory_is_reported_only_when_the_pin_may_lack_its_fix(patched, pub
 
 
 @pytest.mark.parametrize("newest,today,reported", [
-    ("release-20261123.1", datetime.date(2026, 11, 27), False),  # 53 days
-    ("release-20261123.1", datetime.date(2026, 12, 4), False),   # exactly 60 days
-    ("release-20261130.0", datetime.date(2026, 12, 5), True),
+    ("release-20261102.0", datetime.date(2026, 11, 3), False),   # 29 days
+    ("release-20261102.0", datetime.date(2026, 11, 4), False),   # exactly 30 days
+    ("release-20261102.0", datetime.date(2026, 11, 5), True),
     (PIN, datetime.date(2027, 3, 1), False),                     # nothing newer to move to
 ])
 def test_the_pin_is_stale_only_past_the_limit_with_a_newer_release(newest, today, reported):

@@ -2,7 +2,7 @@ name: Pinned gVisor release
 
 # The bundled runsc is built from one gVisor release that no dependency scanner
 # reads. This check opens an issue for a published gVisor advisory that the pin
-# may lack a fix for, or for a pin more than 60 days behind upstream. It opens
+# may lack a fix for, or for a pin more than 30 days behind upstream. It opens
 # nothing otherwise.
 #
 # gVisor publishes a release on a weekday, not on a fixed one. The check runs
