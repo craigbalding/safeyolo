@@ -212,6 +212,26 @@ def test_normal_approval_interfaces_retain_canonical_effects_guidance_and_outcom
         assert machine.returncode == 0, machine.stderr
         assert json.loads(machine.stdout)["assessment"] == record["assessment"]
         instance = SimpleNamespace(root=fixture.directory, environment=dict(os.environ))
+        with terminal(instance, command=[*command, "watch", "--no-color"]) as (process, master, until):
+            until(b"Type a displayed request number")
+            os.write(master, b"1\n")
+            watched = until(b"Request #1 [choice / d / r / l / q]")
+            assert b"SafeYolo assessment" in watched and b"Changed executable steps can run" in watched
+            assert watched.count(b"Reusable access expires") == 1
+            assert b"input revision:" not in watched and b"contributing permissions:" not in watched
+            os.write(master, b"\n")
+            until(b"No decision selected")
+            assert _admin(fixture, "GET", "/admin/approvals/" + identifier)["status"] == "pending"
+            os.write(master, b"d\n")
+            details = until(b"Request #1 [choice / d / r / l / q]")
+            assert b"input revision:" in details and b"contributing permissions:" in details
+            os.write(master, b"l\n")
+            until(b"No decision sent for request #1")
+            until(b"Type a displayed request number")
+            os.write(master, b"q\n")
+            assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
+            assert _admin(fixture, "GET", "/admin/approvals/" + identifier)["status"] == "pending"
+            (tmp_path / "normal-watch.txt").write_bytes(watched + details)
         with terminal(instance, command=[*command, "approvals", "review", "--agent", "alice"]) as (process, master, until):
             until(b"Type a displayed request number")
             os.write(master, b"1\n")
