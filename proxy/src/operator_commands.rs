@@ -937,10 +937,21 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
         if let Some(audit) = view["audit_status"].as_str() {
             println!("Audit: {}", safe(audit));
         }
+        if view["action"]["action_id"] == crate::operator_actions::WEB_PRESENT {
+            println!("SafeYolo operator action: Publish agent web port");
+            show_review_fact("Guest port", &view["action"]["parameters"]["guest_port"]);
+            show_review_fact("Audience", &view["action"]["parameters"]["audience"]);
+            show_review_fact(
+                "Tailnet port",
+                &view["action"]["parameters"]["tailnet_port"],
+            );
+        } else {
+            println!("SafeYolo operator action: Present agent desktop");
+            show_review_fact("Presentation", &view["action"]["presentation"]);
+        }
         println!(
-            "SafeYolo operator action: Present agent desktop\nTarget: {}\nPresentation: {}\nPreview lifetime: {} seconds",
+            "Target: {}\nPreview lifetime: {} seconds",
             safe(text(&view["action"]["agent"])),
-            safe(text(&view["action"]["presentation"])),
             view["action"]["parameters"]["ttl_seconds"]
         );
         if let Some(url) = view["action"]["parameters"]["browser_url"].as_str() {
