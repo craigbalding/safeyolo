@@ -913,7 +913,7 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
                         &format!("/admin/agents/{}/web", agent.id),
                         match operation.as_str() {"publications"=>hyper::Method::GET, "unpublish"=>hyper::Method::DELETE, _=>hyper::Method::POST},
                         if operation == "publications" {Value::Null} else {parameters}, Duration::from_secs(40)).await
-                        .map_err(|error| format!("Web {operation} for agent {} could not complete using configuration {}: {error}\nInspect this instance: {prefix} status\nWhen the proxy is available, inspect current publications before repeating a change: {prefix} agent publications {}",
+                        .map_err(|error| format!("Web {operation} result is unavailable for agent {} using configuration {}: {error}\nInspect this instance: {prefix} status\nWhen the proxy is available, inspect current publications before repeating a change: {prefix} agent publications {}",
                             host_lifecycle::shell_quote(name), host_lifecycle::shell_quote(&config.to_string_lossy()), host_lifecycle::shell_quote(name)))?;
                     print(&result)?;
                 },

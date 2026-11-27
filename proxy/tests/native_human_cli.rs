@@ -47,7 +47,7 @@ async fn publication_failure_preserves_context_and_recovers_to_real_empty_result
             scratch.path().to_str().unwrap(),
         ],
     ));
-    assert!(stdout(cli(&root, &["agent", "publish", "--help"])).contains("publications NAME"));
+    assert!(stdout(cli(&root, &["agent", "publish", "--help"])).contains("agent publish NAME"));
     assert!(stdout(cli(&root, &["agent", "list"])).contains("builder"));
     assert!(stdout(cli(&root, &["status"])).contains("selected web instance"));
     fs::write(
