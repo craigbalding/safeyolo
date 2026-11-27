@@ -30,7 +30,7 @@ pub fn agent_run(root: &Path, name: &str, agent_id: &str, generation: &str) -> B
             "import time; time.sleep(600)",
             "boot",
             &format!("safeyolo-{generation}"),
-            "--instance-dir",
+            "--root",
         ])
         .arg(root.join("run"))
         .spawn()
