@@ -686,7 +686,7 @@ async fn normal_watch_renders_host_consequences_and_decides_exact_content() {
         .await;
     terminal.send("1\n");
     let rendered = terminal
-        .until(0, "Request #1: approve apply / reject")
+        .until(0, "Request #1 [choice / d / r / l / q]")
         .await;
     let changes = &rendered[rendered
         .find("configured agents:")
@@ -714,4 +714,223 @@ async fn normal_watch_renders_host_consequences_and_decides_exact_content() {
         "active"
     );
     f.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cannot_dispatch() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    use safeyolo_proxy::{
+        credentials::{Credential, Secret},
+        host_execution::*,
+    };
+    for decision in ["reject", "stale"] {
+        let f = Fixture::new().await;
+        let _run = controlled_runs::agent_run(f.root.path(), "worker", WORKER_ID, RUN);
+        let task = json!({"permissions":[]});
+        assert_eq!(
+            f.admin(
+                "PUT",
+                "/admin/policy/task/host-task",
+                Some(json!({"policy":task}))
+            )
+            .await
+            .status,
+            200
+        );
+        assert_eq!(
+            f.admin(
+                "POST",
+                "/admin/policy/task/host-task/activate",
+                Some(json!({}))
+            )
+            .await
+            .status,
+            200
+        );
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+        let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        safeyolo_proxy::credentials::open(&f.root.path().join("data"))
+            .unwrap()
+            .store(Credential::new(
+                "host-key",
+                "ed25519",
+                Secret::new(STANDARD.encode(pkcs8.as_ref())),
+            ))
+            .unwrap();
+        let package: Package =
+            serde_json::from_str(include_str!("fixtures/host_execution/package.json")).unwrap();
+        let scope = json!({"implementation_sha256":package.operations["restart"].implementation_sha256(),
+            "resources":["service:demo"],"arguments":{"wait":[5],"mode":["normal","quiet"]},
+            "budgets":{"calls":2,"concurrent":1,"timeout_seconds":15,"output_bytes":512}});
+        let issuer = "sy-11111111111111111111111111111111";
+        let grant = json!({"principal":{"run":{"agent":"worker","agent_id":WORKER_ID,"run_id":RUN},"task_id":"host-task"},
+            "not_before":now()-1,"expires_at":now()+600,"verbs":["discover","propose","invoke"],
+            "operations":{"restart":scope},"families":[],"allow_run_refresh":false});
+        let mut ceiling = scope.clone();
+        ceiling["arguments"]["wait"] = json!([5, 6]);
+        let target = json!({"target_id":"owned-review-target","ceiling_revision":"1","allowed_verbs":["discover","propose","invoke"],
+            "max_authority_age_seconds":600,"issuers":{issuer:{"revision":"1","public_keys":{"key":STANDARD.encode(key.public_key().as_ref())},
+                "authority":{"revision":"1","assessment_revision":"1","observed_at":now()-1,"valid_until":now()+600,"grants":{"task":grant}}}},
+            "ceiling":{"restart":ceiling},"package":package,"families":[],"catalogue":null});
+        let socket = f.root.path().join("no-dispatch.sock");
+        let target_listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        target_listener.set_nonblocking(true).unwrap();
+        let binding = json!({"target":target,"issuer_id":issuer,"grant_id":"task","key_id":"key","credential":"host-key",
+            "service":"owned-host","endpoint":{"transport":"unix","socket":socket,"executor_uid":unsafe{libc::geteuid()}},
+            "task_revision":revision(&task),"timeout_ms":1000,"request_bytes":131072,"response_bytes":1048576});
+        let mut document = f.source().parse::<toml_edit::DocumentMut>().unwrap();
+        document["host_bindings"]["owned"] = toml_edit::value(binding.to_string());
+        let mut rule = toml_edit::Table::new();
+        rule["action"] = toml_edit::value("gateway:request");
+        rule["resource"] = toml_edit::value("owned-host:/v1/host-execution/*");
+        rule["effect"] = toml_edit::value("allow");
+        let mut condition = toml_edit::InlineTable::new();
+        condition.insert("agent", "worker".into());
+        rule["condition"] = toml_edit::value(condition);
+        let mut rules = toml_edit::Array::new();
+        rules.push(rule.into_inline_table());
+        document["hosts"]["*"]["rules"] = toml_edit::value(rules);
+        f.apply(&document.to_string()).await;
+        let native_policy = safeyolo_proxy::policy::Policy::from_native_path(
+            f.config.policy_file.as_ref().unwrap(),
+        )
+        .unwrap();
+        let gateway_permission =
+            native_policy.evaluate_gateway_request(safeyolo_proxy::policy::GatewayRequest {
+                agent: "worker",
+                service: "owned-host",
+                capability: "host_execution",
+                method: "POST",
+                path: Verb::Propose.path(),
+            });
+        assert_eq!(
+            gateway_permission.effect,
+            safeyolo_proxy::policy::Effect::Allow,
+            "generated fixture rules: {}",
+            document["hosts"]["*"]
+        );
+        let (id, source) = snapshot(&f).await;
+        let mut expanded = binding.clone();
+        expanded["target"]["issuers"][issuer]["authority"]["grants"]["task"]["operations"]["restart"]
+            ["arguments"]["wait"] = json!([5, 6]);
+        document["host_bindings"]["owned"] = toml_edit::value(expanded.to_string());
+        let changed = document.to_string();
+        let assessment = client(&f, "worker")
+            .call("assess_policy", &candidate(&id, &changed))
+            .await
+            .unwrap();
+        assert_eq!(
+            assessment["host_operations"]["before"][0]["full_grant"]["operations"]["restart"]["arguments"]
+                ["wait"],
+            json!([5])
+        );
+        assert_eq!(
+            assessment["host_operations"]["after"][0]["full_grant"]["operations"]["restart"]["arguments"]
+                ["wait"],
+            json!([5, 6])
+        );
+        let (op, _) = submit(&f, &id, &changed).await;
+        fs::write(f.root.path().join("config.toml"),format!("admin_port={}\nadmin_api_token_file='admin_token'\npolicy_file='policy.toml'\naudit_log_path='audit.jsonl'\n",f.admin)).unwrap();
+        if decision == "reject" {
+            let mut terminal =
+                operator_pty::Terminal::start(f.root.path(), &["watch", "--no-color"]);
+            terminal
+                .until(0, "PENDING APPROVALS: 1 (current state refreshed)")
+                .await;
+            terminal.send("1\n");
+            let rendered = terminal
+                .until(0, "Request #1 [choice / d / r / l / q]")
+                .await;
+            assert!(rendered.contains("owned-review-target") && rendered.contains("uid:1000"));
+            assert!(rendered.contains("full grant:") && rendered.contains("target ceiling:"));
+            // A later arrival cannot replace the request already under review.
+            let (other, _) = submit(&f, &id, &source.replace("budget=40", "budget=41")).await;
+            let mark = terminal.mark();
+            terminal.send("r\n");
+            terminal
+                .until(mark, "CANONICAL OUTCOME Request #1: rejected")
+                .await;
+            terminal.finish().await;
+            assert_eq!(
+                client(&f, "worker")
+                    .call("read_policy_change", &json!({"request_id":other}))
+                    .await
+                    .unwrap()["status"],
+                "pending"
+            );
+        } else {
+            f.apply(&source.replace("budget=40", "budget=42")).await;
+            let executable = std::env::var_os("SAFEYOLO_NATIVE_CLI")
+                .unwrap_or_else(|| env!("CARGO_BIN_EXE_safeyolo").into());
+            let output = tokio::process::Command::new(executable)
+                .args([
+                    "--instance-dir",
+                    f.root.path().to_str().unwrap(),
+                    "approvals",
+                    "approve",
+                    &op,
+                    "--option",
+                    "apply",
+                    "--json",
+                ])
+                .stdin(std::process::Stdio::null())
+                .output()
+                .await
+                .unwrap();
+            assert!(!output.status.success());
+            assert!(String::from_utf8_lossy(&output.stderr).contains("Approval is stale"));
+        }
+        let retained = client(&f, "worker")
+            .call("read_policy_change", &json!({"request_id":op}))
+            .await
+            .unwrap();
+        assert_eq!(
+            retained["status"],
+            if decision == "reject" {
+                "rejected"
+            } else {
+                // CLI preflight refuses the stale selection without POSTing
+                // a decision. The original request is still recorded pending.
+                "pending"
+            }
+        );
+        if decision == "stale" {
+            let current = f
+                .admin("GET", &format!("/admin/approvals/{op}"), None)
+                .await
+                .json();
+            assert_eq!(current["status"], "stale");
+            assert_eq!(current["reviewed_inputs_match_current"], false);
+        }
+        let target: Target = serde_json::from_value(target).unwrap();
+        let invocation = json!({"operation_id":"restart","resource_id":"service:demo",
+            "operation_sha256":package.operation_sha256("restart").unwrap(),"implementation_sha256":package.operations["restart"].implementation_sha256(),
+            "arguments":{"wait":6},"expected_assessment_sha256":null});
+        let action: Action =
+            serde_json::from_value(json!({"kind":"propose","invocation":invocation})).unwrap();
+        let refused = f
+            .agent(
+                "worker",
+                "POST",
+                "/gateway/host/owned",
+                Some(json!({"request_id":"outside-scope","action":action,
+            "expected":target.request_revisions(issuer,"task",&action).unwrap()})),
+            )
+            .await;
+        assert_eq!(refused.status, 403, "{}", refused.json());
+        assert!(
+            refused.json()["refusal"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("outside effective authority"),
+            "unexpected refusal: {}",
+            refused.json()
+        );
+        assert_eq!(
+            target_listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        f.stop().await;
+    }
 }

@@ -341,10 +341,9 @@ pub(crate) fn proxy_live() -> bool {
                         )
                         .is_ok_and(|binaries| {
                             binaries.iter().any(|binary| {
-                                host_platform::process_has_path_argument(
+                                host_platform::process_has_config_path(
                                     pid,
                                     binary,
-                                    b"--config",
                                     &host_platform::config_path(),
                                 )
                             })
