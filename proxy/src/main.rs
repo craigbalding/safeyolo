@@ -20,7 +20,7 @@ async fn main() -> Result<(), Error> {
         Some("--config") => {}
         Some("--help") => {
             println!(
-                "safeyolo-proxy --config config.toml [--dangerously-allow-root]\nsafeyolo-proxy --version\n\nThe proxy does not run as root unless --dangerously-allow-root is given.\nconfig.toml owns paths, listeners and runtime settings.\npolicy.toml owns host policy and named controls.\nRelative paths belong to the config.toml directory.\nCtrl-C stops this foreground process; SIGHUP reloads configuration.\nEmbedded development launchers may still pass their internal JSON configuration."
+                "safeyolo-proxy --config config.toml [--dangerously-allow-root]\nsafeyolo-proxy --version\n\nTo run as root, use --dangerously-allow-root or set SAFEYOLO_DANGEROUSLY_ALLOW_ROOT=1 for this invocation.\nconfig.toml owns paths, listeners and runtime settings.\npolicy.toml owns host policy and named controls.\nRelative paths belong to the config.toml directory.\nCtrl-C stops this foreground process; SIGHUP reloads configuration.\nEmbedded development launchers may still pass their internal JSON configuration."
             );
             return Ok(());
         }

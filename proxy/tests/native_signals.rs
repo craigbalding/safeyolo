@@ -44,6 +44,7 @@ async fn cli(root: &Path, args: &[&str]) -> Output {
     tokio::time::timeout(
         Duration::from_secs(20),
         tokio::process::Command::new(native_binary("safeyolo", env!("CARGO_BIN_EXE_safeyolo")))
+            .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
             .arg("--instance-dir")
             .arg(root)
             .arg("--json")
@@ -1095,6 +1096,7 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
     fs::write(&input, toml::to_string(&feeds).unwrap()).unwrap();
     let acquisition =
         tokio::process::Command::new(native_binary("safeyolo", env!("CARGO_BIN_EXE_safeyolo")))
+            .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
             .arg("--instance-dir")
             .arg(&publisher)
             .args(["policy", "feeds", "configure"])
@@ -1148,6 +1150,7 @@ async fn push_two_instances_recovery_local_changes_and_real_scoped_response() {
         "safeyolo-proxy",
         env!("CARGO_BIN_EXE_safeyolo-proxy"),
     ))
+    .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
     .arg("--config")
     .arg(standalone.join("config.toml"))
     .stdout(std::process::Stdio::null())

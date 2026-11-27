@@ -923,6 +923,9 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
                     let (operation, arguments, allow_unowned) = if operation=="start" {
                         start_arguments(extra)?
                     }else{if !extra.is_empty(){return Err("unexpected agent argument".into());} (operation.as_str(), None, false)};
+                    if matches!(operation, "start"|"start-foreground"|"sandbox-start") {
+                        crate::host_root::refuse_root("start an agent")?;
+                    }
                     let setup_lock = if matches!(operation, "start"|"start-foreground"|"sandbox-start"|"stop") {
                         inherited_setup_lock(&agent)?
                     } else { None };
@@ -1114,6 +1117,7 @@ mod tests {
             "--".into(),
             "--model".into(),
             "fixture model $(literal)".into(),
+            crate::host_root::FLAG.into(),
         ];
         let selected = start_arguments(&literal).unwrap();
         assert_eq!(selected.0, "start-foreground");

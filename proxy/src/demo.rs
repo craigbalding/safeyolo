@@ -1071,6 +1071,7 @@ pub async fn run(config: &Path, args: &[String]) -> Result<(), Error> {
         return Ok(());
     }
     let mut options = Options::parse(args)?;
+    crate::host_root::refuse_root("run a demo")?;
     let config = config
         .canonicalize()
         .map_err(|error| format!("Demo needs an installed SafeYolo instance: {error}"))?;

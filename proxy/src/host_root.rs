@@ -23,10 +23,11 @@ pub fn allowed() -> bool {
 
 fn refusal(effective_uid: u32, allowed: bool, action: &str) -> Result<(), String> {
     if effective_uid != 0 || allowed {
+        // DOC: SECURITY.md
         return Ok(());
     }
     Err(format!(
-        "Refusing to {action} as root. Nothing was started or changed. Repeat the command as your ordinary host account. To run as root anyway, add {FLAG} or set {ENVIRONMENT}=1"
+        "Refusing to {action} as root. Repeat the command as your ordinary host account. To run as root anyway, use {FLAG} (see --help) or set {ENVIRONMENT}=1 for this invocation"
     ))
 }
 
@@ -44,7 +45,6 @@ mod tests {
     fn root_is_refused_unless_explicitly_allowed() {
         let message = refusal(0, false, "start the proxy").unwrap_err();
         assert!(message.contains("Refusing to start the proxy as root"));
-        assert!(message.contains("Nothing was started or changed"));
         assert!(message.contains(FLAG) && message.contains(ENVIRONMENT));
         assert_eq!(refusal(0, true, "start the proxy"), Ok(()));
     }

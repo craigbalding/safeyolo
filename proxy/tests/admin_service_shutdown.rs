@@ -57,6 +57,7 @@ async fn authenticated_canceled_service_shutdown_drains_held_policy_lock() {
     paths.write_inputs();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_safeyolo-proxy"))
+        .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
         .arg("--config")
         .arg(&paths.config)
         .stdin(Stdio::null())
@@ -433,6 +434,7 @@ impl Paths {
 
 fn start_proxy(paths: &Paths) -> (std::process::Child, ChildGuard) {
     let child = Command::new(env!("CARGO_BIN_EXE_safeyolo-proxy"))
+        .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
         .arg("--config")
         .arg(&paths.config)
         .env("SAFEYOLO_LOG_PATH", paths.fallback_audit())

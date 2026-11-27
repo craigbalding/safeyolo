@@ -456,7 +456,7 @@ def test_copied_instance_keeps_installed_guest_binding(native_cli, registry, pac
     selection = (source / "share/guest-selection.json").read_bytes()
     request_count = len(requests)
     if prepared_host:
-        initialized = subprocess.run([str(native_cli), "--instance-dir", str(source), "init"], capture_output=True, text=True)
+        initialized = subprocess.run([str(native_cli), "--dangerously-allow-root", "--instance-dir", str(source), "init"], capture_output=True, text=True)
         assert initialized.returncode == 0, initialized.stderr
         uid_base, gid_base = owned_root_ids(source / "share/rootfs-tree")
         with (source / "config.toml").open("a") as configuration:
@@ -642,7 +642,7 @@ def test_native_selection_pins_one_index_and_keeps_existing_installation(native_
     assert (tree / "hard").stat().st_ino == (tree / "command").stat().st_ino
     assert (tree / "symbolic").readlink() == Path("command")
     assert (root / "share/cache-paths.txt").read_text() == "/var/cache/apt\n"
-    initialized = subprocess.run([str(native_cli), "--instance-dir", str(root), "init"], env=environment,
+    initialized = subprocess.run([str(native_cli), "--dangerously-allow-root", "--instance-dir", str(root), "init"], env=environment,
                                  capture_output=True, text=True, timeout=10)
     assert initialized.returncode == 0, initialized.stderr
     preserved = {path: (root / path).read_bytes() for path in ("policy.toml", "data/admin_token", "data/agent_token", "data/instance_id")}
