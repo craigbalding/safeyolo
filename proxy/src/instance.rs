@@ -243,7 +243,7 @@ pub(crate) fn check_agent_socket_paths(root: &Path, name: &str) -> Result<(), Er
 
 fn check_socket_path(path: &Path, capacity: usize) -> Result<(), Error> {
     if path.as_os_str().as_bytes().len() >= capacity {
-        return Err(format!("Unix socket path is too long ({} bytes; maximum {}): {}. Use a shorter instance --directory or agent name", path.as_os_str().as_bytes().len(), capacity - 1, path.display()).into());
+        return Err(format!("Unix socket path is too long ({} bytes; maximum {}): {}. Use a shorter --instance-dir path or agent name", path.as_os_str().as_bytes().len(), capacity - 1, path.display()).into());
     }
     Ok(())
 }
@@ -677,7 +677,7 @@ mod tests {
             check_socket_path(Path::new(&"x".repeat(104)), 104)
                 .unwrap_err()
                 .to_string()
-                .contains("shorter instance --directory")
+                .contains("shorter --instance-dir path")
         );
         assert!(check_socket_path(Path::new(&"é".repeat(52)), 104).is_err());
     }
