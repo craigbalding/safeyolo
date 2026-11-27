@@ -406,6 +406,19 @@ impl Fixture {
         crate::apply_native_policy(&self.proxy.runtime, &source).unwrap();
         self.source = source;
     }
+
+    fn install_binding(&mut self, binding: Binding) {
+        let old = bindings(&crate::policy::parse_toml_document(&self.source).unwrap())
+            .unwrap()
+            .remove("local")
+            .unwrap();
+        let source = self.source.replace(
+            &serde_json::to_string(&serde_json::to_string(&old).unwrap()).unwrap(),
+            &serde_json::to_string(&serde_json::to_string(&binding).unwrap()).unwrap(),
+        );
+        self.binding = binding;
+        self.install(source);
+    }
 }
 
 fn task_plan(f: &Fixture) -> Value {
@@ -783,6 +796,191 @@ async fn resumed_task_uses_only_the_exact_adopted_document() {
             .document(),
         &document
     );
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    f.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn covered_resume_survives_issuer_restart_and_observed_run_change_with_current_gates() {
+    let mut f = Fixture::new("").await;
+    let operation = format!("req-{}", "6".repeat(32));
+    let prepared = f
+        .api(
+            "/gateway/host-setup",
+            "POST",
+            json!({
+                "kind":"prepare", "operation_id":operation, "plan":task_plan(&f)
+            }),
+        )
+        .await;
+    assert_eq!(prepared.status, 200, "{}", prepared.value);
+    let mut binding = f.binding.clone();
+    binding.resume_task = true;
+    binding.target.target_id = prepared.value["enrolment_request"]["target_id"]
+        .as_str()
+        .unwrap()
+        .into();
+    binding.credential = format!(
+        "host-task-{}",
+        revision(&("issuer", &f.run.agent_id, &operation))
+    );
+    binding
+        .target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .authority
+        .grants
+        .get_mut("approved")
+        .unwrap()
+        .allow_run_refresh = true;
+    f.install_binding(binding);
+    // Restart the actual issuer with its saved policy, vault and task registry.
+    let config = f.proxy.runtime.read().unwrap().config.clone();
+    f.proxy.shutdown().await;
+    f.proxy = Proxy::start(config).await.unwrap();
+    assert_eq!(
+        f.api("/gateway/host", "GET", Value::Null).await.value["host_bindings"][0]["task_active"],
+        true
+    );
+    f.backend.kill().await.unwrap();
+    f.run.run_id = "22222222222222222222222222222222".into();
+    let mut command = tokio::process::Command::new("/bin/bash");
+    command.as_std_mut().arg0("runsc");
+    f.backend = command
+        .args(["-c", "read -r marker", "boot", "--root"])
+        .arg(f.root.path().join("run"))
+        .arg(format!("safeyolo-{}", f.run.run_id))
+        .stdin(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let pid = f.backend.id().unwrap();
+    let agent = f.root.path().join("agents/alice");
+    std::fs::write(
+        agent.join("config-share/host-launch-context.json"),
+        json!({"agent_id":f.run.agent_id,"generation":f.run.run_id}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(agent.join("runtime.json"), json!({"name":"alice","agent_id":f.run.agent_id,"run_id":f.run.run_id,"state":"running","backend_pid":pid,
+        "backend_token":crate::host_lifecycle::process_token(i64::from(pid)).unwrap()}).to_string()).unwrap();
+    assert!(crate::clear_registered_task(&f.proxy.runtime, "approved-task").is_ok());
+    let resume_input = json!({"request_id":format!("req-{}", "7".repeat(32))});
+    let resumed = f
+        .api("/gateway/host/local/resume", "POST", resume_input.clone())
+        .await;
+    assert_eq!(resumed.status, 200, "{}", resumed.value);
+    assert_eq!(resumed.value["run"]["run_id"], f.run.run_id);
+    assert_eq!(
+        f.api("/gateway/host/local/resume", "POST", resume_input.clone())
+            .await
+            .status,
+        200
+    );
+    let eligible = f.binding.clone();
+    for gate in [
+        "run_refresh",
+        "expiry",
+        "revocation",
+        "task_revision",
+        "agent_identity",
+    ] {
+        let mut changed = eligible.clone();
+        let grant = changed
+            .target
+            .issuers
+            .get_mut("issuer")
+            .unwrap()
+            .authority
+            .grants
+            .get_mut("approved")
+            .unwrap();
+        match gate {
+            "run_refresh" => grant.allow_run_refresh = false,
+            "expiry" => grant.expires_at = now(),
+            "revocation" => {
+                changed
+                    .target
+                    .issuers
+                    .get_mut("issuer")
+                    .unwrap()
+                    .authority
+                    .grants
+                    .remove("approved");
+            }
+            "task_revision" => changed.task_revision = "f".repeat(64),
+            "agent_identity" => grant.principal.run.agent_id = format!("ag-{}", "c".repeat(32)),
+            _ => unreachable!(),
+        }
+        // Revocation is represented by removing the binding, as invalid
+        // bindings cannot be adopted into the current policy.
+        if gate == "revocation" {
+            let mut document = crate::policy::parse_toml_document(&f.source).unwrap();
+            document["host_bindings"]
+                .as_object_mut()
+                .unwrap()
+                .remove("local");
+            let source = toml::to_string(&document).unwrap();
+            f.install(source);
+        } else {
+            f.install_binding(changed);
+        }
+        assert_ne!(
+            f.api("/gateway/host/local/resume", "POST", resume_input.clone())
+                .await
+                .status,
+            200,
+            "{gate}"
+        );
+        // Restore only the local fixture's trusted saved policy, never target effects.
+        if gate == "revocation" {
+            let mut document = crate::policy::parse_toml_document(&f.source).unwrap();
+            document["host_bindings"]["local"] = json!(serde_json::to_string(&eligible).unwrap());
+            f.install(toml::to_string(&document).unwrap());
+            f.binding = eligible.clone();
+        } else {
+            f.install_binding(eligible.clone());
+        }
+    }
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    f.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unavailable_adoption_points_to_its_original_result_instead_of_a_job() {
+    let f = Fixture::new("").await;
+    let runtime = f.proxy.runtime.read().unwrap().clone();
+    for action in [
+        Action::Adopt {
+            operation_id: "restart".into(),
+            operation: Box::new(f.binding.target.package.operations["restart"].clone()),
+            base_package_sha256: revision(&f.binding.target.package),
+            package_sha256: String::new(),
+            observed_at: now(),
+        },
+        Action::Adoption {
+            request_id: "original-code".into(),
+        },
+    ] {
+        let input = f.input("original-code", action);
+        let reply = unavailable_result(
+            &runtime,
+            "local",
+            &f.binding,
+            &input,
+            "not-a-job",
+            "HOST_RESULT_UNAVAILABLE",
+        )
+        .await;
+        assert_eq!(reply.value["original_adoption_request_id"], "original-code");
+        assert!(reply.value.get("possible_job_id").is_none());
+        assert!(
+            reply.value["next_action"]
+                .as_str()
+                .unwrap()
+                .contains("original adoption")
+        );
+    }
     assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
     f.stop().await;
 }

@@ -816,7 +816,9 @@ async fn unavailable_result(
     } else {
         "unavailable"
     };
-    let next_action = if uncertain {
+    let next_action = if matches!(input.action, Action::Adopt { .. } | Action::Adoption { .. }) {
+        "Read the original adoption through this binding using original_adoption_request_id. The target may have committed code; no task program was invoked. Reconcile the target and issuer before preparing another revision."
+    } else if uncertain {
         "Inspect the original job through this binding before retrying. Do not change the operation ID or replay a mutation whose effect is unknown."
     } else if code == "HOST_RESPONSE_MISMATCH" && matches!(input.action, Action::Discover) {
         "Compare expected_package_sha256 and observed_package_sha256 with the target and gateway owners; adopt a compatible package snapshot, then rediscover. No invocation was retried."
@@ -825,7 +827,11 @@ async fn unavailable_result(
     };
     let mut value = json!({"error":code,"execution_outcome":outcome,"request_id":input.request_id,
         "host_binding":name,"target_id":binding.target.target_id,"next_action":next_action});
-    if uncertain {
+    if let Action::Adopt { .. } = &input.action {
+        value["original_adoption_request_id"] = json!(input.request_id);
+    } else if let Action::Adoption { request_id } = &input.action {
+        value["original_adoption_request_id"] = json!(request_id);
+    } else if uncertain {
         value["possible_job_id"] = json!(job_id);
     } else if let Some(job_id) = input.action.job_id() {
         value["job_id"] = json!(job_id);
@@ -847,7 +853,8 @@ async fn unavailable_result(
     );
     event.request_id = Some(input.request_id.clone());
     event.details = json!({"host_binding":name,"target_id":binding.target.target_id,
-        "possible_job_id":uncertain.then_some(job_id),"reason":code,"execution_outcome":outcome})
+        "possible_job_id":matches!(input.action, Action::Invoke { .. } | Action::Cancel { .. }).then_some(job_id),
+        "original_adoption_request_id":value.get("original_adoption_request_id"),"reason":code,"execution_outcome":outcome})
     .into();
     let _ = runtime.audit.emit_confirmed(event).await;
     Reply { status: 503, value }

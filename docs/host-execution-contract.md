@@ -163,7 +163,11 @@ not run task code. The issuer derives the exact binding and concrete authority
 review. It never gives the agent Admin credentials or adoption authority.
 `GET /gateway/host-setup/{operation_id}` recovers the original public preparation.
 The setup operation and subsequent policy-change operation remain distinct;
-retain both results. A notification cannot select either effect for replay.
+retain both results. The host helper's `setup-status` reads preparation;
+`setup-status --submitted` reads the original policy-change request through
+`GET /approvals/{operation_id}`. A setup failure carries its generated operation
+identity and the matching recovery command. A notification cannot select either
+effect for replay.
 
 An adopted binding can select `resume_task` and a separately labelled agent
 interpretation of intent. The exact task document remains private in the vault;

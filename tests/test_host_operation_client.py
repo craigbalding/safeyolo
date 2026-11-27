@@ -161,6 +161,63 @@ def test_setup_recovery_is_an_original_read_with_no_creation(transport):
     assert calls[0].data is None
 
 
+@pytest.mark.parametrize("command,submitted", [("setup", False), ("submit-setup", True)])
+def test_setup_cli_retains_generated_identity_and_reads_the_correct_original_owner(tmp_path, transport, monkeypatch, capsys, command, submitted):
+    calls, responses = transport
+    document = tmp_path / "input.json"
+    document.write_text("{}")
+    responses.append(TimeoutError("reply lost after preparation or submission"))
+    monkeypatch.setattr(client.sys, "argv", [str(SOURCE), command, "--plan" if command == "setup" else "--enrolment", str(document)])
+    assert client.main() == 1
+    failure = json.loads(capsys.readouterr().out)
+    original = json.loads(calls[0].data)["operation_id"]
+    assert failure["request_id"] == original and original.startswith("req-")
+    assert failure["execution_outcome"] == "uncertain"
+    assert failure["recovery_command"] == f"setup-status{' --submitted' if submitted else ''} --original-request-id {original}"
+    responses.append({"status": "pending" if submitted else "prepared", "operation_id": original})
+    monkeypatch.setattr(client.sys, "argv", [str(SOURCE), *failure["recovery_command"].split()])
+    assert client.main() == 0
+    assert json.loads(capsys.readouterr().out)["status"] == ("pending" if submitted else "prepared")
+    assert calls[1].data is None
+    assert calls[1].full_url.endswith(("/approvals/" if submitted else "/gateway/host-setup/") + original)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("phase", ["discover", "propose", "invoke"])
+def test_stage_cli_keeps_completed_adoption_when_a_later_reply_is_lost(tmp_path, transport, monkeypatch, capsys, phase):
+    calls, responses = transport
+    source = tmp_path / "selected"
+    source.write_bytes(b"selected bytes")
+    ceiling = {"execution": {"argv": [{"kind": "literal", "value": "-c"}], "resources": {"processes": 8}}}
+    adoption = {"kind": "adoption", "operation_sha256": "adopted", "original": {"request": {
+        "target_id": "target", "issuer_id": "issuer", "request_id": "req-stage-adopt"}}}
+    responses.extend([
+        {"host_bindings": [{"binding": "case", "task_active": True, "agent_code_classes": [
+            {"prefix": "task:", "excluded": [], "rule": {"ceiling": ceiling}}]}]},
+        {"discovery": {"package_sha256": "base", "revisions": {}}}, adoption,
+    ])
+    if phase != "discover":
+        responses.append({"discovery": {"target_id": "target", "operations": [{"operation_id": "task:stage",
+            "operation_sha256": "adopted", "implementation_sha256": "implementation", "revisions": {}}]}})
+    if phase == "invoke":
+        responses.append({"prepared": {"invocation": {}, "revisions": {}}})
+    responses.append(TimeoutError(f"lost {phase} reply"))
+    monkeypatch.setattr(client.sys, "argv", [str(SOURCE), "stage", "case", "--request-id", "req-stage", "--file", str(source), "--path", "/selected/input"])
+    assert client.main() == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["adoption"] == adoption
+    assert result["stage_request_id"] == "req-stage"
+    assert result["request_id"] == f"req-stage-{'discovery' if phase == 'discover' else phase}"
+    assert result["host_binding"] == "case"
+    assert result["execution_outcome"] == ("uncertain" if phase == "invoke" else "unavailable")
+    assert [json.loads(call.data)["action"]["kind"] for call in calls if call.data].count("adopt") == 1
+    assert len(calls) == {"discover": 4, "propose": 5, "invoke": 6}[phase]
+    if phase == "invoke":
+        assert result["possible_job_id"].startswith("job-")
+    else:
+        assert "possible_job_id" not in result
+
+
 def test_adoption_recovery_does_not_require_matching_discovery(transport):
     calls, responses = transport
     responses.append({"kind": "adoption", "package_sha256": "committed-target-package"})

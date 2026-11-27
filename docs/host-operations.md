@@ -782,6 +782,11 @@ replaced. After agent-code adoption, an interrupted issuer activation reports
 the retained target result. Read the original `adoption` result to reconcile
 the exact package before invoking. Another current base needs owner resolution.
 Explicit authority or endpoint changes still use the normal exact policy review.
+An unavailable adoption reply identifies `original_adoption_request_id` for
+that lookup; adoption does not create a task job. If `stage` adopts code and
+a later discovery, proposal or invocation fails, its failure retains the completed
+adoption alongside the failed step's original request ID. Inspect both results
+before another stage. An uncertain invocation can already have written the file.
 
 Return to the agent's existing `discover case` call. Compare its active package
 with the refreshed binding before preparing a new operation. This read adds no
