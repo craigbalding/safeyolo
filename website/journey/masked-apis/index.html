@@ -1,0 +1,57 @@
+---
+layout: waypoint
+full_width: true
+permalink: /journey/masked-apis/
+title: "API access without the secret · SafeYOLO journey"
+description: "Give agents real access to Slack, GitHub, Docker and other services through scoped tokens, while the real credentials stay on your host."
+act: "Act 2"
+waypoint: 3
+headline: "Give an agent real API access, without giving it the key"
+lede: "You want an agent to read Slack, push to GitHub or drive Docker, but you do not want a live token sitting in its sandbox for a prompt injection to find."
+lit: "credentials checkpoint policy-and-approvals agent-api"
+next:
+  title: "See the whole journey"
+  url: /journey/
+  blurb: "Next: agents beyond code, approvals that scale, and work on your host."
+---
+<h2>The problem with handing over tokens</h2>
+<p>An agent with a token in its environment can send that token anywhere, use it for anything the token allows, and leak it in a log. Scoping the token at the vendor helps, but the secret is still in the sandbox.</p>
+
+<h2>What you do</h2>
+<p>Use the host account owning a running instance with Alice's trusted listener already configured. This example selects the default installation and instance at <code>$HOME/.safeyolo</code>; for another instance, change both paths. Obtain a Slack token for the account you intend Alice to use. The <a href="https://github.com/craigbalding/safeyolo/blob/master/docs/credentials.md#store-a-local-credential">credential guide</a> covers listener setup, storage and verification.</p>
+<p>These commands store the token and activate Slack's read-only <code>reader</code> capability for Alice. <code>--allow-host-network</code> also permits host-wide network access to <code>slack.com</code>; the service authorization remains scoped to Alice. <code>credentials add</code> prompts without echo and replaces any existing <code>slack-account</code> credential. On the first write, choose encrypted local storage or passphrase protection; enter <code>q</code> to cancel before creation.</p>
+<pre><code>"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" credentials add slack-account
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" services authorize alice slack --capability reader --credential slack-account --account operator --allow-host-network
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" services authorized alice</code></pre>
+<p>The last command shows Alice's current service token, credential reference, account, capability and routes. An upstream request still needs sufficient Slack permissions.</p>
+
+<h2>What the agent does</h2>
+<ol>
+<li>It fetches its own scoped <code>sgw_</code> token from the Agent API, using the identity of its socket.</li>
+<li>It sends that token in the service's usual header, like any API client.</li>
+<li>The <a href="/how-it-works/checkpoint/">checkpoint</a> checks the method and path against the capability, then replaces the token with your real credential on the way out.</li>
+</ol>
+<p>Another agent, another destination, or a method or path outside the capability cannot use Alice's token. The service still applies its own permissions.</p>
+
+<h2>When it needs more</h2>
+<table>
+<tr><th>The agent needs</th><th>What happens</th></tr>
+<tr><td>A capability it does not have</td><td>It requests that capability with a reason. Approval authorizes the newly selected access for the named agent, account and credential.</td></tr>
+<tr><td>One route the capability does not cover</td><td>An eligible missing-route challenge can be escalated for temporary access. Approval adds the recorded method and literal path with the existing credential, for the reported run and lifetime.</td></tr>
+<tr><td>A risky route already admitted by the capability</td><td>Authored risk policy may allow, deny or require approval. A risk grant can last once, for the session, or remembered; it stays within the admitted capability.</td></tr>
+</table>
+<p>A <a href="https://github.com/craigbalding/safeyolo/blob/master/docs/service-route-approval.md">temporary route grant</a> leaves query and body values unrestricted unless an enforced contract bounds them. It does not imply access limited to a sample repository or payload. Other network, credential, contract and risk controls still apply. Approval does not replay the blocked request; the agent must retry explicitly.</p>
+
+<h2>The same pattern, many services</h2>
+<ul>
+<li><b>GitHub</b> over HTTPS, including Git pushes governed by authored risk policy</li>
+<li><b>Docker and Compose</b>, with each management request checked against the gateway capability</li>
+<li><b>Coding-client subscriptions</b>: Claude Code and Codex logins stay in the host vault and are renewed on the host</li>
+<li><b>Services hosted by other agents</b>, shared through the same gateway</li>
+<li><b>Your own APIs</b>, described in YAML, with optional effect models that assess what a permission could do</li>
+</ul>
+
+<div class="guarantees">
+<div><h3>What the gateway gives you</h3><ul><li>The configured service credential stays on the host</li><li>A token works only for its agent, capability and destination</li><li>Unknown credentials in selected request headers require approval under the default controls</li></ul></div>
+<div class="no"><h3>What it does not do</h3><ul><li>Scan general bodies, query parameters or URL paths for secrets; the supported Codex refresh endpoint has a specific body check</li><li>Remove ordinary raw credentials from optional stored flows; the injected credential header is redacted</li><li>Override the service's permissions or make command-execution authority harmless</li><li>Protect logins a host script copies into a guest, which is a separate, weaker option</li></ul></div>
+</div>

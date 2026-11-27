@@ -1,0 +1,41 @@
+---
+layout: explainer
+full_width: true
+permalink: /how-it-works/agent-api/
+title: Agent API · How SafeYOLO works
+description: 'Every agent can talk to SafeYOLO itself: to find out why a request was blocked, check what it may reach, and request the access it is missing.'
+part_name: Agent API
+headline: Agents can ask SafeYOLO why, and ask for more
+lede: 'Every agent can talk to SafeYOLO itself: to find out why a request was blocked, check what it may reach, and request the access it is missing.'
+lit: agent-api checkpoint
+docs:
+- title: Agent API reference
+  url: https://github.com/craigbalding/safeyolo/blob/master/cli/src/safeyolo/agent_context/skills/safeyolo/references/agent-api.md
+- title: The SafeYOLO skill
+  url: https://github.com/craigbalding/safeyolo/blob/master/cli/src/safeyolo/agent_context/skills/safeyolo/SKILL.md
+journey:
+- title: A home for an agent
+  url: /journey/agent-home/
+- title: API access without the secret
+  url: /journey/masked-apis/
+---
+<h2>Answered by the checkpoint, not the Internet</h2>
+<p>The Agent API lives at <code>_safeyolo.proxy.internal</code>. The checkpoint answers it locally, through the agent's own socket, and never looks the name up upstream. Because the socket fixes the caller's identity, an agent can only ask about itself and act within its own permissions.</p>
+<h2>What an agent asks</h2>
+<table>
+<tr><th>The agent wants to know or do</th><th>It calls</th></tr>
+<tr><td>Why was this request blocked?</td><td><code>/explain?request_id=…</code></td></tr>
+<tr><td>Can I reach this host before I ask the operator?</td><td><code>/lookup?host=…</code></td></tr>
+<tr><td>Why am I getting 429 or 503?</td><td><code>/budgets</code>, <code>/circuits</code></td></tr>
+<tr><td>Which services can I use, and with what token?</td><td><code>/gateway/services</code></td></tr>
+<tr><td>Request a missing service capability</td><td><code>/gateway/request-access</code></td></tr>
+<tr><td>Propose a policy change for approval</td><td><code>/policy/snapshots</code></td></tr>
+<tr><td>Show the operator its guest browser</td><td><code>/operator-actions</code></td></tr>
+</table>
+<p>Agents also coordinate through the same API, using Coord tools exposed to their harness over the Model Context Protocol (MCP).</p>
+<h2>Skills teach the agent</h2>
+<p>At launch, SafeYOLO stages skills into the guest that teach the agent these workflows: how to read a block, what to try first, and how to hand the operator one concrete decision instead of a vague "I can't".</p>
+<div class="guarantees">
+<div><h3>What this gives you</h3><ul><li>Agents that diagnose their own blocks</li><li>Requests that arrive with a reason and an exact scope</li><li>Fewer interruptions for questions an agent can answer itself</li></ul></div>
+<div class="no"><h3>What it does not do</h3><ul><li>Let an agent grant itself anything: policy, the operator or a delegated reviewer decides</li><li>Reach the Admin API, which the checkpoint blocks for agents</li></ul></div>
+</div>

@@ -1,0 +1,38 @@
+---
+layout: explainer
+full_width: true
+permalink: /how-it-works/multi-instance/
+title: Other SafeYOLOs · How SafeYOLO works
+description: Instances connect over authenticated NATS, so agents on one machine can support, direct or approve work on another, within grants each owner chooses.
+part_name: Other SafeYOLOs
+headline: Connect SafeYOLOs on different machines without sharing their keys
+lede: Instances connect over authenticated NATS, so agents on one machine can support, direct or approve work on another, within grants each owner chooses.
+lit: multi-instance coord
+docs:
+- title: Connect instances and delegate support
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/federation-setup.md
+- title: Peer support
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/peer-support.md
+- title: Delegated approvals
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/delegated-approvals.md
+- title: Operational notices
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/operational-events.md
+---
+<h2>Connected, not merged</h2>
+<p>Instances connect over NATS, secured with TLS and a selected certificate authority or with verified Tailscale. Broker credentials and Admin tokens stay on their own hosts, and every guest keeps using its own local Agent API. <code>safeyolo configure</code> guides the setup through exchanged public identity files.</p>
+<h2>Agents that support other agents</h2>
+<p>An owner can grant a support agent, local or on another instance, specific powers over named target agents:</p>
+<table>
+<tr><th>Permission</th><th>Lets the support agent</th></tr>
+<tr><td>Inspection</td><td>Read the target's runtime, harness and proxy state</td></tr>
+<tr><td><code>guest_logs</code></td><td>Read selected paths inside the target</td></tr>
+<tr><td><code>guest_admin</code></td><td>Run commands inside the target guest to investigate and repair it</td></tr>
+<tr><td><code>lifecycle</code></td><td>Start, stop or restart the target's sandbox or harness</td></tr>
+<tr><td><code>factory_directions</code></td><td>Send selected direction types to an approved factory</td></tr>
+</table>
+<h2>Approvals and notices across machines</h2>
+<p>Delegated reviewers can decide selected requests for named workers, and selected lifecycle and needs-operator events can be delivered to an authorised recipient.</p>
+<div class="guarantees">
+<div><h3>What this gives you</h3><ul><li>One agent looking after others, across machines</li><li>Keys and tokens that never leave their hosts</li><li>Grants bound to durable identities, not names</li></ul></div>
+<div class="no"><h3>What it does not do</h3><ul><li>Limit guest administration to less than the target itself can do</li><li>Transfer a grant to a new agent that reuses an old name</li></ul></div>
+</div>
