@@ -211,9 +211,11 @@ def test_normal_approval_interfaces_retain_canonical_effects_guidance_and_outcom
                                  capture_output=True, text=True, timeout=15)
         assert machine.returncode == 0, machine.stderr
         assert json.loads(machine.stdout)["assessment"] == record["assessment"]
-        instance = SimpleNamespace(root=fixture.directory, environment=dict(os.environ))
+        instance = SimpleNamespace(root=fixture.directory, environment={**os.environ, "TERM": "xterm-256color"})
         with terminal(instance, command=[*command, "watch", "--no-color"]) as (process, master, until):
-            until(b"Type a displayed request number")
+            # The introductory help precedes the asynchronous canonical read.
+            # Select only after that read has actually displayed this request.
+            until(b"agent=alice ")
             os.write(master, b"1\n")
             watched = until(b"Request #1 [choice / d / r / l / q]")
             assert b"SafeYolo assessment" in watched and b"Changed executable steps can run" in watched
@@ -227,7 +229,6 @@ def test_normal_approval_interfaces_retain_canonical_effects_guidance_and_outcom
             assert b"input revision:" in details and b"contributing permissions:" in details
             os.write(master, b"l\n")
             until(b"No decision sent for request #1")
-            until(b"Type a displayed request number")
             os.write(master, b"q\n")
             assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
             assert _admin(fixture, "GET", "/admin/approvals/" + identifier)["status"] == "pending"
