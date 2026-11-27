@@ -414,7 +414,9 @@ path still requires the host's `service_evidence`; missing capture cannot
 satisfy that binding. Named service sources remain Gateway-backed.
 
 Replacing the active policy closes each job's delegated network listener and
-its connections. Start a new job to use the updated policy. Cancellation,
+cancels its accepted connections without a graceful response drain. Platform
+jobs recheck delegation authority before retaining a completed guest result.
+Start a new job to use the updated policy. Cancellation,
 expiry and teardown also close the delegation. The helper's existing deadline
 and process-group cleanup still apply. No stream or token is donated to another invocation.
 Offline validation and preview do not open a proxy stream or query a dependency.

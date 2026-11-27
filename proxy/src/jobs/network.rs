@@ -222,8 +222,8 @@ pub(crate) async fn serve(
                     }
                 }
             }
-            // Join accepted requests before acknowledging revocation. Reuse
-            // normal listener teardown, including cancellation of open tunnels.
+            // Job listener teardown cancels accepted transports immediately,
+            // then joins them before acknowledging revocation.
             if listener.stop().await.is_ok() {
                 let _ = tokio::time::timeout(TIMEOUT, stream.write_u8(0)).await;
             }
@@ -599,8 +599,7 @@ action = "warn"
         let host = uri.authority().unwrap();
         stream.write_all(format!("GET {target} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {token}\r\nX-SafeYolo-Agent: gate:proof\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
         let mut response = String::new();
-        // Listener shutdown may use its full TIMEOUT grace before closing the
-        // downstream response. Keep the observer alive beyond that boundary.
+        // Bound the observer even if a broken transport fails to terminate.
         tokio::time::timeout(TIMEOUT * 2, stream.read_to_string(&mut response))
             .await
             .unwrap()
@@ -655,9 +654,10 @@ action = "warn"
             "max_input_entries":1, "retain_bytes":1024
         }))
         .unwrap();
-        let client = Client::connect_with_checks(&path, &directory, &spec, &"a".repeat(32), &[])
-            .await
-            .unwrap();
+        let mut client =
+            Client::connect_with_checks(&path, &directory, &spec, &"a".repeat(32), &[])
+                .await
+                .unwrap();
         let endpoint = directory.join("proxy/proxy.sock");
         let tokens: serde_json::Value =
             serde_json::from_str(client.tokens.expose_secret()).unwrap();
@@ -684,6 +684,22 @@ action = "warn"
         )
         .unwrap();
         assert!(proxy.reload_policy_if_changed().await.unwrap());
+        // Socket removal marks shutdown admission. Offer the held response
+        // during teardown, rather than waiting out a graceful-drain window.
+        tokio::time::timeout(TIMEOUT, async {
+            while endpoint.exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let _ = upstream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nlate")
+            .await;
+        let response = pending.await.unwrap();
+        assert!(!response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(!response.contains("late"), "{response}");
+        assert!(client.confirm_current().await.is_err());
         let mut byte = [0];
         assert_eq!(
             tokio::time::timeout(TIMEOUT * 2, upstream.read(&mut byte))
@@ -692,7 +708,6 @@ action = "warn"
                 .unwrap(),
             0
         );
-        assert!(!pending.await.unwrap().starts_with("HTTP/1.1 200"));
         client.close().await.unwrap();
         assert!(!endpoint.exists());
         proxy.shutdown().await;

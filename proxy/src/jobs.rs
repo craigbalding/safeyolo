@@ -712,7 +712,14 @@ async fn run_inner(
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         { let _ = (host, guest); Err::<(Value, Option<Outcome>, Output, Output, Option<String>), Error>("jobs require Linux or macOS".into()) }
     }).await;
-    let result = if let Some(delegation) = delegation {
+    let result = if let Some(mut delegation) = delegation {
+        // A completed guest can race policy replacement or return findings
+        // after its transport was revoked. Cleanup alone does not validate them.
+        let result = if result.is_ok() {
+            delegation.confirm_current().await.and(result)
+        } else {
+            result
+        };
         match delegation.close().await {
             Ok(()) => result,
             Err(error) => {

@@ -262,7 +262,7 @@ impl Running {
                                     let result = bridge(client, name.clone(), target, peers, stop).await;
                                     if let Err(error) = &result { eprintln!("ingress binding {name:?} target/relay failed: {error}"); }
                                     result
-                                }).await;
+                                }, false).await;
                                 if let Some(monitor) = monitor { monitor.abort(); let _ = monitor.await; }
                             });
                         }

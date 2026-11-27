@@ -146,24 +146,29 @@ impl ConnectionTasks {
     pub(crate) async fn run(
         self: &Arc<Self>,
         main: impl Future<Output = Result<(), crate::Error>> + Send + 'static,
+        cancel_on_stop: bool,
     ) {
+        let mut stop = self.stop.clone();
+        let mut stopping = *stop.borrow_and_update();
+        if stopping && cancel_on_stop {
+            self.abort_all();
+        }
         let mut main = self.spawn_result(main);
         let mut main_pending = true;
-        let mut stop = self.stop.clone();
-        let mut stopping = *stop.borrow();
         let deadline = tokio::time::sleep(Duration::from_secs(10));
         tokio::pin!(deadline);
         let mut forced = false;
         loop {
             tokio::select! {
                 biased;
+                _ = stop.changed(), if !stopping => {
+                    stopping = true;
+                    if cancel_on_stop { self.abort_all(); }
+                    deadline.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(10));
+                },
                 result = &mut main, if main_pending => {
                     main_pending = false;
                     if !matches!(result, Ok(Ok(()))) { self.abort_all(); }
-                },
-                _ = stop.changed(), if !stopping => {
-                    stopping = true;
-                    deadline.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(10));
                 },
                 _ = &mut deadline, if stopping && !forced => {
                     forced = true;

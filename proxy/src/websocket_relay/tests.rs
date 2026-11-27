@@ -236,7 +236,7 @@ async fn complete_messages_count_before_drop_and_monitor_error_preserves_scanner
                 owner.clone(),
             )
             .await;
-            owner.run(async { Ok(()) }).await;
+            owner.run(async { Ok(()) }, false).await;
             assert!(matches!(
                 result,
                 Finished::Reader(Closing {
@@ -343,7 +343,7 @@ async fn cancellation_during_scanner_prevents_message_publication() {
             .unwrap(),
         Finished::Stopped
     ));
-    owner.run(async { Ok(()) }).await;
+    owner.run(async { Ok(()) }, false).await;
     assert!(messages.recv().await.is_none());
     drop(memory);
     assert_eq!(stats(&runtime.memory_monitor)["active_websockets"], 0);
@@ -391,7 +391,7 @@ async fn relay_diagnostic_error_still_ends_the_session() {
     )
     .await
     .unwrap();
-    owner.run(async { Ok(()) }).await;
+    owner.run(async { Ok(()) }, false).await;
     assert!(
         result.is_err(),
         "the canonical writer must report the injected submission failure"
@@ -443,7 +443,7 @@ async fn canceled_relay_cleans_session_without_waiting_for_messages() {
     assert_eq!(ended["websocket"]["state"], "incomplete");
     assert!(ended["websocket"]["timestamp_end"].is_number());
     owner.abort_all();
-    owner.run(async { Ok(()) }).await;
+    owner.run(async { Ok(()) }, false).await;
     drop(late);
     assert_eq!(
         runtime
