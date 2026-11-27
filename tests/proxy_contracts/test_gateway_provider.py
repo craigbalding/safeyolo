@@ -330,6 +330,7 @@ esac
     closed = directory / "provider-port-closed"
     with _origin("127.0.0.1") as origin, _origin("127.0.0.1") as parent, _provider_run(directory, monkeypatch):
         monkeypatch.setenv("PATH", f"{runsc_dir}:{os.environ['PATH']}")
+        monkeypatch.setenv("SAFEYOLO_TEST_RUNSC", str(runsc))
         monkeypatch.setenv("PROVIDER_FIXTURE_PORT", str(origin.server_address[1]))
         monkeypatch.setenv("PROVIDER_STOP_MARKER", str(stopped))
         monkeypatch.setenv("PROVIDER_CLOSE_MARKER", str(closed))

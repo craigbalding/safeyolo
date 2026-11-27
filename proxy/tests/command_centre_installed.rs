@@ -102,6 +102,7 @@ fi
         std::env::set_var("SAFEYOLO_CONFIG_DIR", root);
         std::env::set_var("SAFEYOLO_LOGS_DIR", root.join("logs"));
         std::env::set_var("PATH", &bin);
+        std::env::set_var("SAFEYOLO_TEST_RUNSC", bin.join("runsc"));
         std::env::set_var("FAKE_TAILSCALE_STATE_DIR", root.join("tailnet"));
     }
     let config: Config = serde_json::from_value(json!({

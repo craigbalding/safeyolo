@@ -740,6 +740,12 @@ the complete payload beside that executable, including `gvisor-bin`. Its
 administrator remains responsible for those bytes and security updates.
 Selecting a system runtime does not remove the bundled payload from the host
 archive or the installed package.
+
+SafeYolo never uses a `runsc` merely because it is on `PATH`. An instance with
+neither a recorded selection nor a host package has no runtime, and commands
+that need one stop with the two ways to select it. Repository tests name their
+stand-in runtime with `SAFEYOLO_TEST_RUNSC`; that executable is not checked, so
+do not set the variable for real agents.
 A cold system comparison must count that common package cost and the separate
 runtime download, verification and administrator setup.
 Bundled runtime fixes arrive through normal SafeYOLO host-package updates;

@@ -816,6 +816,7 @@ mod tests {
                 "PATH",
                 format!("{}:/usr/bin:/bin", root.join("bin").display()),
             );
+            std::env::set_var("SAFEYOLO_TEST_RUNSC", root.join("bin/runsc"));
         }
         host_platform::in_instance(root.clone(), async {
             let workspace = root.join("workspace");

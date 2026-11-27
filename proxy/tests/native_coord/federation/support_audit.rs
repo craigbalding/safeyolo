@@ -323,6 +323,7 @@ printf 'untrusted-secret-output\n'
             )
             .unwrap(),
         );
+        std::env::set_var("SAFEYOLO_TEST_RUNSC", b.join("bin/runsc"));
     }
     let mut proxy = stage0::start_proxy(&b).await;
     let mut selected = proposal(&b_id, Some(&a_id));

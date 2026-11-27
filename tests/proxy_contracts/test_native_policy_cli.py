@@ -478,6 +478,8 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
                                   f'source_id = {json.dumps(agent_addresses[name] if agent_addresses is not None else f"10.0.0.{index}")}\n')
             (root / "config.toml").write_text(configuration)
             environment = dict(os.environ, PATH=str(root / "bin"), SAFEYOLO_HOME=str(root),
+                               # A fixture that needs a stand-in runtime writes it here.
+                               SAFEYOLO_TEST_RUNSC=str(root / "bin/runsc"),
                                SAFEYOLO_CONFIG_DIR=str(root),
                                SAFEYOLO_NATIVE_CONFIG_PATH=str(root / "config.toml"),
                                SAFEYOLO_NATIVE_WORKING_DIRECTORY=str(root),

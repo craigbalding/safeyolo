@@ -113,6 +113,7 @@ printf 'controlled command completed\n'
             std::iter::once(f.root.path().join("bin")).chain(std::env::split_paths(&original_path));
         unsafe {
             std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+            std::env::set_var("SAFEYOLO_TEST_RUNSC", f.root.path().join("bin/runsc"));
         }
         let mut selected = proposal();
         selected["grant"]["guest_admin"] = json!(true);

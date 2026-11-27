@@ -11,6 +11,9 @@ use std::{
 };
 
 pub(super) const VERSION: &str = "release-20261005.0-safeyolo.1";
+/// Names the stand-in runtime of a test fixture. It applies only to an
+/// instance with neither a recorded runtime selection nor a host package.
+const TEST_RUNSC: &str = "SAFEYOLO_TEST_RUNSC";
 pub(super) const FILES: &[&str] = &[
     "runsc",
     "gvisor-bin/gvisor-sentry-prewarmer",
@@ -149,12 +152,21 @@ pub(crate) fn runtime_path() -> Result<PathBuf, IoError> {
         }
         return Ok(path);
     }
-    // Existing contributor installations retain their explicit PATH runtime.
-    // New installers always record a selected executable in config.toml.
-    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .map(|directory| directory.join("runsc"))
-        .find(|path| path.is_file() && fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0))
-        .ok_or_else(|| IoError::other("gVisor runtime is missing; run the SafeYolo installer or select a complete system runtime with --system-runsc PATH"))
+    // A runsc that happens to be on PATH is never used. Test fixtures name
+    // their stand-in runtime explicitly; it is not checked as a real payload.
+    if let Some(path) = std::env::var_os(TEST_RUNSC).map(PathBuf::from) {
+        if path.is_file() && fs::metadata(&path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+        {
+            return Ok(path);
+        }
+        return Err(IoError::other(format!(
+            "{TEST_RUNSC} does not name an executable file: {}",
+            path.display()
+        )));
+    }
+    Err(IoError::other(
+        "no gVisor runtime is selected for this instance, and a runsc on PATH is not used; run the SafeYolo installer to use the bundled runtime, or select a complete runtime with `safeyolo host prepare --system-runsc PATH`",
+    ))
 }
 
 pub(crate) fn report() -> Value {
@@ -176,7 +188,7 @@ pub(crate) fn report() -> Value {
             if packaged {
                 "bundled"
             } else {
-                "system (existing PATH selection)"
+                "test (SAFEYOLO_TEST_RUNSC)"
             },
             |s| s.runsc_origin.as_str(),
         );

@@ -86,6 +86,7 @@ def proposal_instance(tmp_path, *, nats_binary):
         version = subprocess.run([str(path), "--version"], capture_output=True, text=True, timeout=15)
         assert version.returncode == 0 and "commit=" in version.stdout, version.stderr
     environment["PATH"] = str(root / "bin")
+    environment["SAFEYOLO_TEST_RUNSC"] = str(root / "bin/runsc")
     environment.pop("PYTHONPATH", None)
     (root / "policy.toml").write_text(DENY + '\n[agents.relay]\nagent_id="ag-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n'
                                     '[agents.lens]\nagent_id="ag-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"\n')

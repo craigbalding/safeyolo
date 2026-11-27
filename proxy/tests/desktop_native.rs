@@ -124,6 +124,7 @@ esac
     unsafe {
         std::env::set_var("SAFEYOLO_CONFIG_DIR", root);
         // An interpreter name is unavailable in the proxy's executable path.
+        std::env::set_var("SAFEYOLO_TEST_RUNSC", &script);
         std::env::set_var("PATH", bin);
         std::env::set_var("SAFEYOLO_CLI_PYTHON", "/no/python/interpreter");
         std::env::set_var("SAFEYOLO_LOG_PATH", root.join("audit.jsonl"));
@@ -308,6 +309,7 @@ fn assert_staged_desktop_size(root: &Path, expected: &str) {
             .args(args)
             .env_clear()
             .env("PATH", root.join("bin"))
+            .env("SAFEYOLO_TEST_RUNSC", root.join("bin/runsc"))
             .env("HOME", root)
             .output()
             .unwrap();

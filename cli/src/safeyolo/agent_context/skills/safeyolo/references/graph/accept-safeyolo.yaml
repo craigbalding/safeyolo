@@ -254,7 +254,7 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: d158e30f826e746d41046ccf8a114223690284ba84307f1c6d19b4ad2b2766e0
         - path: proxy/src/host_platform.rs
-          sha256: 0f39c1bfde1db3723e2618dae202babab37b92e7807596918f9dec4ed9846815
+          sha256: 21b1006b48d5788bb594bb4a2ccec982a4f1eedb7b8a4791e9d67c6da8092093
         - path: proxy/src/host_boot.rs
           sha256: a355aa1115403cb79d6ee64ca1d9b294f8b4384411777144bad299a361ca9746
         - path: guest/build-rootfs.sh
@@ -355,7 +355,7 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 46c612b62bd3880177bb3d96bd129db59daf28e4fa6dc269a18d06a70c8d8f41
         - path: proxy/src/host_platform.rs
-          sha256: 0f39c1bfde1db3723e2618dae202babab37b92e7807596918f9dec4ed9846815
+          sha256: 21b1006b48d5788bb594bb4a2ccec982a4f1eedb7b8a4791e9d67c6da8092093
         - path: proxy/src/jobs.rs
           sha256: 733661dad815a090a947239979fc4cb6458c8df9fe398bfb6c25d17f4b7b2881
         - path: proxy/src/jobs/input.rs
@@ -657,9 +657,9 @@ nodes:
         - path: proxy/tests/native_coord/federation/support_authority.rs
           sha256: fc2936d685b8ed6ab8ba497f86c670e31dcbdf1b05e7ca14151cfc4ad5d42e0e
         - path: proxy/tests/native_coord/federation/support_audit.rs
-          sha256: 9178f9871dce1d402710c7d49edd897e1598fbc92c51eb42e9a68b6bf5bf18f2
+          sha256: b5b614eaaf73a60400340a639d661915885618891eccb0b36f58395028a605ec
         - path: proxy/tests/peer_support.rs
-          sha256: 89cea1317f128318dfeb7011d5d57ec71df148e49cd31455e17414944b6de209
+          sha256: 38ea1daa50ba0317f6be92d04412571e15597a281b75a1a378d92b6291b4e8c2
         - path: proxy/tests/peer_support/audit.rs
           sha256: 8fb65b2c49e9fe84d777a484b79f3b7818236d8169fe36bf9d51ee46f8ebc703
         - path: proxy/tests/support/owned_run.rs
@@ -977,7 +977,7 @@ nodes:
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: proxy/tests/native_host_cli.rs
-          sha256: d3b3efc9a26d43c7217aed044a8011c6c1d6120eec0fc78c1d4a7c8aba5c1530
+          sha256: c26e35725e3ef938702fa630c6180d998113281066a520942d136c95f280b910
       setup: "Use the prepared native proxy/platform lane for system evidence. For an ownership probe, select the affected native_host_cli test with the trusted Cargo toolchain and warm target."
       verify: "sha256sum tests/blackbox/run-tests.sh tests/blackbox/host/uds_transport.py proxy/tests/native_host_cli.rs"
       run:

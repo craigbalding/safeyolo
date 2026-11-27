@@ -96,6 +96,7 @@ esac
         );
         std::env::set_var("SAFEYOLO_CLI_PYTHON", "/no/python/interpreter");
         std::env::set_var("PATH", &bin);
+        std::env::set_var("SAFEYOLO_TEST_RUNSC", bin.join("runsc"));
     }
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":root.join("alice.sock")}],

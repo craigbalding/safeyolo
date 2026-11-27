@@ -3444,6 +3444,7 @@ esac
                         format!("{}:/usr/bin:/bin", root.path().join("bin").display())
                     },
                 )
+                .env("SAFEYOLO_TEST_RUNSC", root.path().join("bin/runsc"))
                 .env("SAFEYOLO_RUNSC_PLATFORM", "systrap")
                 .output()
                 .unwrap();
@@ -3559,6 +3560,7 @@ esac
             // Environment changes are confined to this test's child process.
             unsafe {
                 std::env::set_var("PATH", root.join("bin"));
+                std::env::set_var("SAFEYOLO_TEST_RUNSC", root.join("bin/runsc"));
             }
             in_instance(root.clone(), async {
                 if std::env::var_os("SAFEYOLO_TEST_INHERITED_GUEST_OUTPUT").is_some() {

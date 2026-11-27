@@ -474,6 +474,7 @@ esac
                 "alice",
             ])
             .env("PATH", root.join("bin"))
+            .env("SAFEYOLO_TEST_RUNSC", root.join("bin/runsc"))
             .output()
             .unwrap();
         let holder_survived = run.child.try_wait().unwrap().is_none();
@@ -596,6 +597,7 @@ fn unverified_holders_never_authorize_nsenter_or_signal() {
                 "alice",
             ])
             .env("PATH", root.join("bin"))
+            .env("SAFEYOLO_TEST_RUNSC", root.join("bin/runsc"))
             .output()
             .unwrap();
         results.push((
@@ -688,6 +690,7 @@ esac
         .args(["--config", config.to_str().unwrap()])
         .env("SAFEYOLO_CONFIG_DIR", &root)
         .env("PATH", root.join("bin"))
+        .env("SAFEYOLO_TEST_RUNSC", root.join("bin/runsc"))
         .stdout(fs::File::create(&log).unwrap())
         .stderr(fs::File::options().append(true).open(&log).unwrap())
         .spawn()
@@ -798,6 +801,7 @@ esac
             "alice",
         ])
         .env("PATH", root.join("bin"))
+        .env("SAFEYOLO_TEST_RUNSC", root.join("bin/runsc"))
         .output()
         .unwrap();
     assert!(
@@ -886,6 +890,7 @@ esac
                 .args(["--instance-dir", root.to_str().unwrap()])
                 .args(args)
                 .env("PATH", &path_env)
+                .env("SAFEYOLO_TEST_RUNSC", root.join("bin/runsc"))
                 .env_remove("SAFEYOLO_RUNSC_ROOT");
             command
         };
@@ -1573,6 +1578,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
                 "PATH",
                 format!("{}:/usr/bin:/bin", root.join("bin").display()),
             )
+            .env("SAFEYOLO_TEST_RUNSC", root.join("bin/runsc"))
             .output()
             .unwrap(),
     );
@@ -1691,6 +1697,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
             "PATH",
             format!("{}:/usr/bin:/bin", root.join("bin").display()),
         )
+        .env("SAFEYOLO_TEST_RUNSC", root.join("bin/runsc"))
         .output()
         .unwrap();
     assert!(!retried.status.success());
@@ -1740,6 +1747,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
                 "PATH",
                 format!("{}:/usr/bin:/bin", root.join("bin").display()),
             )
+            .env("SAFEYOLO_TEST_RUNSC", root.join("bin/runsc"))
             .output()
             .unwrap();
         let error = String::from_utf8_lossy(&failed.stderr);
@@ -1802,6 +1810,7 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
             "PATH",
             format!("{}:/usr/bin:/bin", root.join("bin").display()),
         )
+        .env("SAFEYOLO_TEST_RUNSC", root.join("bin/runsc"))
         .output()
         .unwrap();
     assert!(!failed.status.success());
@@ -4539,4 +4548,47 @@ fn retirement_preserves_definition_on_stop_failure_and_reports_final_write_failu
             "kept"
         );
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn doctor_never_runs_an_unselected_runsc_from_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    let used = root.join("unselected-runsc-ran");
+    fs::write(
+        root.join("bin/runsc"),
+        format!(
+            "#!/bin/sh\n: > '{}'\necho 'runsc version fixture'\n",
+            used.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(root.join("bin/runsc"), fs::Permissions::from_mode(0o755)).unwrap();
+    let doctor = |named: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_safeyolo"));
+        command
+            .arg("--json")
+            .args(["--instance-dir", root.to_str().unwrap(), "doctor"])
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", root.join("bin").display()),
+            )
+            .env_remove("SAFEYOLO_TEST_RUNSC");
+        if named {
+            command.env("SAFEYOLO_TEST_RUNSC", root.join("bin/runsc"));
+        }
+        String::from_utf8(command.output().unwrap().stdout).unwrap()
+    };
+
+    // The instance has no recorded selection and no host package.
+    let report = doctor(false);
+    assert!(report.contains("a runsc on PATH is not used"), "{report}");
+    assert!(!used.exists());
+
+    // A fixture that names the same file explicitly does reach it.
+    let report = doctor(true);
+    assert!(report.contains("test (SAFEYOLO_TEST_RUNSC)"), "{report}");
+    assert!(used.exists());
 }

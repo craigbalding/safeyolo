@@ -3069,6 +3069,7 @@ mod tests {
                 .env("SAFEYOLO_TEST_PREBACKEND_ROOT", temp.path())
                 .env("SAFEYOLO_TEST_FAILED_START_LAUNCH", "direct")
                 .env("SAFEYOLO_RUNSC_ROOT", temp.path().join("run"))
+                .env("SAFEYOLO_TEST_RUNSC", temp.path().join("bin/runsc"))
                 .env(
                     "PATH",
                     format!(
