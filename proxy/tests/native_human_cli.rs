@@ -32,6 +32,100 @@ fn stdout(output: Output) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+#[tokio::test]
+async fn publication_failure_preserves_context_and_recovers_to_real_empty_results() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().join("selected web instance");
+    stdout(cli(&root, &["init"]));
+    stdout(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "builder",
+            "--workspace",
+            scratch.path().to_str().unwrap(),
+        ],
+    ));
+    assert!(stdout(cli(&root, &["agent", "publish", "--help"])).contains("agent publish NAME"));
+    assert!(stdout(cli(&root, &["agent", "list"])).contains("builder"));
+    assert!(stdout(cli(&root, &["status"])).contains("selected web instance"));
+    fs::write(
+        root.join("config.toml"),
+        "admin_port = 0\nlisteners = []\nflow_store_enabled = false\n",
+    )
+    .unwrap();
+    let config = fs::read(root.join("config.toml")).unwrap();
+    for args in [
+        vec!["agent", "publications", "builder"],
+        vec!["agent", "publications", "builder", "--json"],
+        vec![
+            "agent",
+            "publish",
+            "builder",
+            "--port",
+            "3000",
+            "--audience",
+            "local",
+        ],
+        vec![
+            "agent",
+            "unpublish",
+            "builder",
+            "--port",
+            "3000",
+            "--audience",
+            "local",
+        ],
+    ] {
+        let failed = cli(&root, &args);
+        assert_eq!(failed.status.code(), Some(1));
+        assert!(failed.stdout.is_empty());
+        let error = String::from_utf8(failed.stderr).unwrap();
+        assert!(
+            error.contains("agent builder") && error.contains("selected web instance"),
+            "{error}"
+        );
+        assert!(
+            error.contains("--config '") && error.contains(" status"),
+            "{error}"
+        );
+        assert!(
+            error.contains("agent publications builder")
+                && error.contains("before repeating a change"),
+            "{error}"
+        );
+        assert!(!error.contains("No web publications"), "{error}");
+        assert!(!root.join("data/ready.json").exists());
+        assert_eq!(fs::read(root.join("config.toml")).unwrap(), config);
+    }
+    let proxy = safeyolo_proxy::Proxy::start(
+        safeyolo_proxy::native_config::read(&root.join("config.toml")).unwrap(),
+    )
+    .await
+    .unwrap();
+    // The real CLI is a blocking child; the product proxy must keep serving.
+    let selected = root.clone();
+    let (human, machine) = tokio::task::spawn_blocking(move || {
+        (
+            stdout(cli(&selected, &["agent", "publications", "builder"])),
+            stdout(cli(
+                &selected,
+                &["agent", "publications", "builder", "--json"],
+            )),
+        )
+    })
+    .await
+    .unwrap();
+    assert!(
+        human.contains("No web publications for this agent."),
+        "{human}"
+    );
+    let machine: Value = serde_json::from_str(&machine).unwrap();
+    assert_eq!(machine["publications"], serde_json::json!([]));
+    proxy.shutdown().await;
+}
+
 #[test]
 fn factory_contract_modes_keep_validation_approval_and_cancellation_distinct() {
     use std::{io::Write, process::Stdio};
