@@ -555,6 +555,10 @@ jobs:
             ${{ runner.temp }}/runtime-qualification/package-info
             ${{ runner.temp }}/runtime-qualification/SHA256SUMS
             ${{ runner.temp }}/runtime-qualification/*/reports/
+            ${{ runner.temp }}/uds-host-package/libexec/runsc
+            ${{ runner.temp }}/uds-host-package/libexec/gvisor-bin/gvisor_sentry
+            ${{ runner.temp }}/uds-host-package/libexec/gvisor-bin/gvisor-sentry-prewarmer
+            ${{ runner.temp }}/uds-host-package/libexec/gvisor-bin/runsc-fd-parking
             ${{ runner.temp }}/native-policy.xml
           retention-days: 7
           if-no-files-found: ignore
