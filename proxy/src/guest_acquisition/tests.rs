@@ -173,10 +173,6 @@ fn package_guest_allows_only_known_installed_runsc_pins() {
         fs::write(&path, &metadata).unwrap();
         assert_eq!(PackageGuest::read(&path, false).is_ok(), target_allowed);
         assert!(PackageGuest::read(&path, true).is_ok());
-        assert_eq!(
-            packaged_runsc_version(temp.path()).unwrap().as_deref(),
-            Some(version)
-        );
         for bad in [
             metadata.replace(source, "https://example.test/runsc"),
             metadata.replace("runsc_origin=bundled", "runsc_origin=system"),
@@ -378,7 +374,6 @@ mod linux {
                 discovery_tag: "compat-v1".into(),
                 repository: format!("{}/guest", self.address),
                 platform: consumer_platform().unwrap(),
-                runsc_version: None,
             }
         }
 

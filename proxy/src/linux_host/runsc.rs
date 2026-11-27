@@ -106,55 +106,35 @@ pub(super) fn verify_bundle_payload(package: &Path) -> Result<(), Error> {
 }
 
 pub(crate) fn verify_selected_runtime() -> Result<String, Error> {
-    let settings = crate::native_config::host_settings()?.linux;
     let path = runtime_path()?;
-    let packaged =
-        crate::guest_acquisition::packaged_runsc_version(&crate::host_platform::config_dir())?
-            .is_some();
-    if settings
-        .as_ref()
-        .map_or(packaged, |s| s.runsc_origin == "bundled")
-    {
-        let package = path
-            .parent()
-            .and_then(Path::parent)
-            .ok_or("bundled runtime has no package directory")?;
-        verify_bundle_payload(package)?;
-    }
     check_runtime(&path)
 }
 
 pub(crate) fn runtime_path() -> Result<PathBuf, IoError> {
     let settings = crate::native_config::host_settings().map_err(IoError::other)?;
-    if let Some(settings) = settings.linux {
-        if !settings.runsc.is_file() {
-            return Err(IoError::other(format!(
-                "selected gVisor executable is missing: {}; repair this installation's runtime; no other runtime was selected",
-                settings.runsc.display()
-            )));
-        }
-        return Ok(settings.runsc);
+    let path = settings.linux.map_or_else(
+        || crate::host_platform::config_dir().join("libexec/runsc"),
+        |settings| settings.runsc,
+    );
+    let package = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| IoError::other("bundled gVisor runtime has no package directory"))?;
+    if !path.is_absolute() || path != package.join("libexec/runsc") {
+        return Err(IoError::other(format!(
+            "selected gVisor path must be the host package's libexec/runsc: {}; reinstall the complete SafeYolo host package",
+            path.display()
+        )));
     }
-    let root = crate::host_platform::config_dir();
-    if crate::guest_acquisition::packaged_runsc_version(&root)
-        .map_err(IoError::other)?
-        .is_some()
-    {
-        let path = root.join("libexec/runsc");
-        if !path.is_file() {
-            return Err(IoError::other(format!(
-                "bundled gVisor executable is missing: {}; repair this host package; no system runtime was selected",
-                path.display()
-            )));
-        }
-        return Ok(path);
-    }
-    // Existing contributor installations retain their explicit PATH runtime.
-    // New installers always record a selected executable in config.toml.
-    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .map(|directory| directory.join("runsc"))
-        .find(|path| path.is_file() && fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0))
-        .ok_or_else(|| IoError::other("gVisor runtime is missing; run the SafeYolo installer or select a complete system runtime with --system-runsc PATH"))
+    // Every caller, including namespace helpers and live-mount gofers, checks
+    // the complete executable set before launching any part of it.
+    verify_bundle_payload(package).map_err(|error| {
+        IoError::other(format!(
+            "bundled gVisor runtime at {} is missing or invalid: {error}; reinstall the complete SafeYolo host package",
+            path.display()
+        ))
+    })?;
+    Ok(path)
 }
 
 pub(crate) fn report() -> Value {
@@ -169,32 +149,9 @@ pub(crate) fn report() -> Value {
             unavailable["gid_base"] = json!(settings.gid_base);
         }
         let path = runtime_path()?;
-        let packaged =
-            crate::guest_acquisition::packaged_runsc_version(&crate::host_platform::config_dir())?
-                .is_some();
-        let origin = settings.as_ref().map_or(
-            if packaged {
-                "bundled"
-            } else {
-                "system (existing PATH selection)"
-            },
-            |s| s.runsc_origin.as_str(),
-        );
         unavailable["path"] = json!(path);
-        unavailable["origin"] = json!(origin);
-        let version = if settings.is_some() || packaged {
-            verify_selected_runtime()?
-        } else {
-            let output = Command::new(&path).arg("--version").output()?;
-            if !output.status.success() {
-                return Err("runsc --version failed".into());
-            }
-            std::str::from_utf8(&output.stdout)?
-                .lines()
-                .next()
-                .unwrap_or_default()
-                .into()
-        };
+        unavailable["origin"] = json!("bundled");
+        let version = check_runtime(&path)?;
         unavailable["version"] = json!(version);
         let mapping = super::selected_mapping()?;
         let platform_selection = super::prepare::check_prerequisites(
@@ -203,7 +160,7 @@ pub(crate) fn report() -> Value {
             mapping,
         )?;
         Ok(
-            json!({"state":"ready", "path":path,"version":version,"origin":origin,
+            json!({"state":"ready", "path":path,"version":version,"origin":"bundled",
             "platform_selection":platform_selection,
             "uid_base":mapping.uid_base,"gid_base":mapping.gid_base,
             "host_uid":mapping.host_uid,"host_gid":mapping.host_gid,

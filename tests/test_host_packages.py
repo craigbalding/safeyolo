@@ -121,12 +121,16 @@ def test_runsc_acquisition_reuses_its_build_and_refuses_corrupt_cached_companion
     assert not (tmp_path / "corrupt").exists()
     assert build_calls.read_text().splitlines() == ["build"]
 
-    # A provider repair must not reuse the cached runtime without that patch.
-    patch = scripts / "gvisor/portforward.patch"
-    patch.write_bytes(patch.read_bytes() + b"\n")
-    result = run("bash", str(scripts / "acquire_runsc.sh"), str(tmp_path / "repaired"))
-    assert result.returncode == 0, result.stderr
-    assert build_calls.read_text().splitlines() == ["build", "build"]
+    # Every changed patch or build recipe selects a fresh cache component.
+    for index, name in enumerate(("gvisor/nofollow.patch", "gvisor/portforward.patch",
+                                  "gvisor/host-uds-paths.patch", "build_runsc.sh"), 2):
+        source = scripts / name
+        source.write_bytes(source.read_bytes() + b"\n")
+        result = run("bash", str(scripts / "acquire_runsc.sh"), str(tmp_path / f"repaired-{index}"))
+        assert result.returncode == 0, result.stderr
+        assert build_calls.read_text().splitlines() == ["build"] * index
+    components = list((cache / "safeyolo/gvisor/release-20261005.0-safeyolo.2").iterdir())
+    assert len(components) == 5 and all(len(path.name) == 64 for path in components)
 
 
 @pytest.mark.parametrize("failure", ["http", "reset"])

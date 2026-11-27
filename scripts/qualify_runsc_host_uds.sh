@@ -13,6 +13,8 @@ work=$(cd -- "$2" && pwd)
 mkdir "$work/reports" "$work/bundle" "$work/bundle/rootfs" "$work/workspace" "$work/proxy"
 # The gofer connects with reduced host credentials.
 chmod 0755 "$work" "$work/workspace" "$work/proxy"
+verify_runsc_payload "$runtime" "$(host_platform)"
+(cd "$runtime"; sha256sum runsc gvisor-bin/*) > "$work/reports/SHA256SUMS"
 version=$("$runtime/runsc" --version)
 [[ ${version%%$'\n'*} == 'runsc version release-20261005.0-safeyolo.2' ]] || { package_error "unexpected runtime: $version"; exit 1; }
 printf '%s\n' "$version" > "$work/reports/version.txt"
@@ -20,8 +22,10 @@ privileged=()
 (($(id -u) == 0)) || privileged=(sudo -n)
 
 listeners=()
+active=
 cleanup() {
   local result=$? listener
+  if [[ -n $active ]]; then "${privileged[@]}" "$runtime/runsc" --root="$work/state" delete --force "$active" || result=1; fi
   for listener in "${listeners[@]}"; do kill "$listener" 2>/dev/null || true; done
   return "$result"
 }
@@ -93,11 +97,25 @@ for case in ("restricted", "unrestricted"):
 PY
 
 run_case() {
-  local case=$1; shift
+  local case=$1 pid actual expected; shift
   cp "$work/bundle/$case.json" "$work/bundle/config.json"
-  "${privileged[@]}" "$runtime/runsc" --root="$work/state" --platform=systrap --network=sandbox \
-    --ignore-cgroups=true --host-uds=open "$@" run --bundle "$work/bundle" "host-uds-$case" \
-    | tee "$work/reports/$case.json"
+  local runsc=("${privileged[@]}" "$runtime/runsc" --root="$work/state" --platform=systrap --network=sandbox
+    --ignore-cgroups=true --host-uds=open --sidecar-usage-policy=STRICT
+    --sidecar-release-enforcement-policy=ALWAYS "$@")
+  active="host-uds-$case"
+  "${runsc[@]}" create --bundle "$work/bundle" "$active" > "$work/reports/$case.json"
+  "${runsc[@]}" state "$active" > "$work/reports/$case-state.json"
+  pid=$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["pid"]))' "$work/reports/$case-state.json")
+  "${privileged[@]}" sha256sum "/proc/$pid/exe" > "$work/reports/$case-sentry-sha256.txt"
+  expected=$(file_sha256 "$runtime/gvisor-bin/gvisor_sentry")
+  read -r actual _ < "$work/reports/$case-sentry-sha256.txt"
+  [[ $actual == "$expected" ]] || { package_error 'running sentry differs from the selected bundle'; exit 1; }
+  "${runsc[@]}" start "$active"
+  "${runsc[@]}" wait "$active" > "$work/reports/$case-wait.json"
+  python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["exitStatus"] == 0' "$work/reports/$case-wait.json"
+  "${runsc[@]}" delete "$active"
+  active=
+  cat "$work/reports/$case.json"
 }
 run_case restricted --host-uds-paths=/safeyolo/proxy
 run_case unrestricted

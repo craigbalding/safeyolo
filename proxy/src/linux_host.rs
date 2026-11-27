@@ -24,7 +24,7 @@ mod runsc;
 #[path = "linux_host/shares.rs"]
 pub(crate) mod shares;
 
-pub const HELP: &str = "safeyolo [--instance-dir PATH] host prepare [--system-runsc PATH] [--yes]\nCheck and prepare the Ubuntu or Alpine host for rootless agents.\nReuse valid subordinate UID/GID ranges. Allocate missing ranges through shadow's locked allocator.\nInstall only missing host tools. Prepare an installation-scoped namespace entry and AppArmor profiles when required.\nShow exact host commands and effects before consent and execution, even with cached/passwordless sudo. --yes accepts the explained changes.\nThe agent and proxy continue to run as your host account. Repeat preserves existing instances.\n--system-runsc selects a complete tested system payload; the bundled runtime remains unchanged.";
+pub const HELP: &str = "safeyolo [--instance-dir PATH] host prepare [--yes]\nCheck and prepare the Ubuntu or Alpine host for rootless agents.\nReuse valid subordinate UID/GID ranges. Allocate missing ranges through shadow's locked allocator.\nInstall only missing host tools. Prepare an installation-scoped namespace entry and AppArmor profiles when required.\nShow exact host commands and effects before consent and execution, even with cached/passwordless sudo. --yes accepts the explained changes.\nThe agent and proxy continue to run as your host account. Repeat preserves existing instances.\nSafeYolo uses only its verified bundled gVisor runtime. Repair missing or invalid runtime files by reinstalling the complete host package.";
 
 pub const ID_COUNT: u32 = 65536;
 pub const ARCHIVE_BASE: u32 = 100000;
@@ -112,9 +112,8 @@ impl Settings {
 
     pub(crate) fn validate(&self) -> Result<(), Error> {
         self.mapping()?;
-        if !self.runsc.is_absolute() || !matches!(self.runsc_origin.as_str(), "bundled" | "system")
-        {
-            return Err("linux.runsc must be an absolute executable path; linux.runsc_origin must be bundled or system".into());
+        if !self.runsc.is_absolute() || self.runsc_origin != "bundled" {
+            return Err("linux.runsc must select the bundled executable by absolute path; linux.runsc_origin must be bundled. Reinstall the complete SafeYolo host package".into());
         }
         if self.apparmor_profile.as_ref().is_some_and(|name| {
             name.is_empty()

@@ -193,8 +193,10 @@ records for recovery; it must not be reported as successfully stopped.
 
 #### Bundled, patched gVisor
 
-Linux bundles carry a private gVisor runtime. The installer uses it and does
-not replace a system `runsc`. It is built from the pinned upstream release
+Linux bundles carry a private gVisor runtime. Every runtime launch checks all
+four bundled executables against the package checksums. SafeYOLO never selects
+a system or `PATH` copy. Missing or invalid required bytes stop the launch with
+a host-package repair action. The runtime is built from the pinned upstream release
 `release-20261005.0` with three patches. The runtime reports
 `release-20261005.0-safeyolo.2`, and the installer verifies its files against
 the bundle's checksums.
@@ -207,6 +209,11 @@ the bundle's checksums.
 
 Each patch adds upstream-style Go tests, which the runtime build runs. See
 [how the runtime is built](installation.md#linux-host-preparation-in-new-source-bundles).
+
+Agents and jobs permit host sockets only at `/safeyolo/proxy`. Separate gofers
+for extra mounts use `--host-uds=none`: their filesystem root is the extra
+share, which contains no proxy mount. Runtime startup requires the bundled
+sentry sidecar, including for the patched release suffix.
 
 See the [macOS microVM architecture](microvm-architecture.md) and
 [historical Linux port design](linux-port-design.md) for platform design context.

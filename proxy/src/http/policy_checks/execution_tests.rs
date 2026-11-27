@@ -783,7 +783,7 @@ fn native_job_fixture_preserves_selected_optional_linux_settings() {
             uid_base: 100000,
             gid_base: 200000,
             runsc: "/selected/bin/runsc".into(),
-            runsc_origin: "system".into(),
+            runsc_origin: "bundled".into(),
             apparmor_profile,
         };
         let config = test_configuration(root.path(), &job_configuration(Some(&linux)));

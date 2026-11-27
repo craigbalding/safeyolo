@@ -315,7 +315,7 @@ def test_prepared_configuration_is_readable_by_native_cli(tmp_path):
     (base / "data/coord/nats/bin").mkdir(parents=True)
     config = tomlkit.parse((base / "config.toml").read_text())
     config["linux"] = {"host_uid": os.getuid(), "host_gid": os.getgid(), "uid_base": 100000,
-                       "gid_base": 100000, "runsc": shutil.which("true"), "runsc_origin": "system"}
+                       "gid_base": 100000, "runsc": shutil.which("true"), "runsc_origin": "bundled"}
     (base / "config.toml").write_text(tomlkit.dumps(config))
     prepare(base, root, 19437, 19438)
     assert (root / "host").resolve() == base / "host"

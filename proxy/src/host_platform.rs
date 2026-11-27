@@ -1134,16 +1134,7 @@ async fn prepare_linux_sandbox(name: &str) -> io::Result<crate::linux_host::Mapp
         ));
     }
     let mapping = crate::linux_host::selected_mapping().map_err(io::Error::other)?;
-    if crate::native_config::host_settings()
-        .map_err(io::Error::other)?
-        .linux
-        .is_some()
-        || crate::guest_acquisition::packaged_runsc_version(&config_dir())
-            .map_err(io::Error::other)?
-            .is_some()
-    {
-        crate::linux_host::verify_selected_runtime().map_err(io::Error::other)?;
-    }
+    crate::linux_host::verify_selected_runtime().map_err(io::Error::other)?;
     let directory = config_dir().join("agents").join(name);
     let bundle = directory.join("config.json");
     let share = directory.join("config-share");
@@ -1288,6 +1279,7 @@ async fn start_prepared_linux_sandbox(
                 // The patched version suffix is outside upstream's release
                 // pattern. Preserve its release-build companion checks.
                 "--sidecar-release-enforcement-policy=ALWAYS",
+                "--sidecar-usage-policy=STRICT",
                 "--ignore-cgroups",
                 "--network=sandbox",
                 &format!("--platform={platform}"),
@@ -3250,6 +3242,10 @@ esac
                     ),
                 ),
             ] {
+                if name == "runsc" {
+                    guest_command_test_run::install_runtime(&root, &script);
+                    continue;
+                }
                 let path = root.join("bin").join(name);
                 std::fs::write(&path, script).unwrap();
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -3552,12 +3548,7 @@ esac
                 "#!/bin/sh\ncase \"$3\" in\n state) printf '{{\"id\":\"%s\",\"status\":\"running\"}}\\n' \"$4\";;\n exec) for argument; do SAFEYOLO_TEST_GUEST_FD_MUTATOR=$argument; done; export SAFEYOLO_TEST_GUEST_FD_MUTATOR; exec '{}' --exact host_platform::tests::guest_output_descriptor_mutator --nocapture;;\n *) exit 2;;\nesac\n",
                 std::env::current_exe().unwrap().display()
             );
-            std::fs::write(root.join("bin/runsc"), script).unwrap();
-            std::fs::set_permissions(
-                root.join("bin/runsc"),
-                std::fs::Permissions::from_mode(0o755),
-            )
-            .unwrap();
+            guest_command_test_run::install_runtime(&root, &script);
             // Environment changes are confined to this test's child process.
             unsafe {
                 std::env::set_var("PATH", root.join("bin"));
@@ -3609,7 +3600,7 @@ esac
                         );
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
-                    std::fs::remove_file(root.join("bin/runsc")).unwrap();
+                    std::fs::remove_file(root.join("libexec/runsc")).unwrap();
                     assert!(exec_guest_command("alice", "ignored").await.is_err());
                 }
             })

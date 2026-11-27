@@ -17,7 +17,7 @@ index 1e56534..a83ee14 100644
 @@ -111,6 +111,11 @@ type Config struct {
  	// DO NOT call it directly, use GetHostUDS() instead.
  	HostUDS HostUDS `flag:"host-uds"`
- 
+
 +	// HostUDSPaths is a comma-separated list of absolute container paths.
 +	// When set, host-uds access applies only to sockets at or below one of
 +	// these paths. DO NOT call it directly, use GetHostUDSPaths() instead.
@@ -25,7 +25,7 @@ index 1e56534..a83ee14 100644
 +
  	// HostFifo controls permission to access host FIFO (or named pipes).
  	HostFifo HostFifo `flag:"host-fifo"`
- 
+
 @@ -562,6 +567,11 @@ func (c *Config) Validate() error {
  		// Deprecated flag was used together with flag that replaced it.
  		return fmt.Errorf("fsgofer-host-uds has been replaced with host-uds flag")
@@ -41,7 +41,7 @@ index 1e56534..a83ee14 100644
 @@ -634,6 +644,18 @@ func (c *Config) GetHostUDS() HostUDS {
  	return c.HostUDS
  }
- 
+
 +// GetHostUDSPaths returns the cleaned container paths that host-uds access is
 +// restricted to. An empty result applies host-uds to every gofer mount.
 +func (c *Config) GetHostUDSPaths() []string {
@@ -84,7 +84,7 @@ index c3b00f8..5ff214e 100644
 @@ -25,6 +26,13 @@ go_library(
      ],
  )
- 
+
 +go_test(
 +    name = "host_uds_paths_test",
 +    size = "small",
@@ -191,14 +191,14 @@ index 0b3b598..e489e16 100644
 @@ -54,6 +54,10 @@ type Config struct {
  	// HostUDS signals whether the gofer can connect to host unix domain sockets.
  	HostUDS config.HostUDS
- 
+
 +	// HostUDSPaths restricts HostUDS access to sockets at or below these
 +	// paths, as the gofer sees them. Empty applies HostUDS to every mount.
 +	HostUDSPaths []string
 +
  	// HostFifo signals whether the gofer can connect to host FIFOs.
  	HostFifo config.HostFifo
- 
+
 @@ -553,9 +557,9 @@ func (fd *controlFDLisa) Open(flags uint32) (*lisafs.OpenFD, int, error) {
  			return nil, -1, unix.EPERM
  		}
@@ -212,7 +212,7 @@ index 0b3b598..e489e16 100644
  			return nil, -1, unix.EPERM
  		}
 @@ -885,7 +889,7 @@ func isSockTypeSupported(sockType uint32) bool {
- 
+
  // Connect implements lisafs.ControlFDImpl.Connect.
  func (fd *controlFDLisa) Connect(sockType uint32) (int, error) {
 -	if !fd.Conn().Impl().(*connectionImpl).config.HostUDS.AllowOpen() {

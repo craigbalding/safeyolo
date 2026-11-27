@@ -299,7 +299,7 @@ fn stage(root: &Path, runtime: &Path, reuse: Option<&Path>) -> Result<(), Error>
         }
     }
     std::os::unix::fs::symlink(&bin, root.join("bin"))?;
-    for name in ["lib", "libexec", "assets", "package-info"] {
+    for name in ["lib", "libexec", "assets", "package-info", "SHA256SUMS"] {
         let source = runtime.join(name);
         if source.try_exists()? {
             std::os::unix::fs::symlink(source.canonicalize()?, root.join(name))?;
@@ -333,9 +333,7 @@ fn stage(root: &Path, runtime: &Path, reuse: Option<&Path>) -> Result<(), Error>
         );
         #[cfg(target_os = "linux")]
         if let Some(mut settings) = source_settings.linux {
-            if settings.runsc_origin == "bundled" {
-                settings.runsc = runtime.join("libexec/runsc").canonicalize()?;
-            }
+            settings.runsc = runtime.join("libexec/runsc").canonicalize()?;
             let source_document: toml_edit::DocumentMut =
                 fs::read_to_string(source.join("config.toml"))?.parse()?;
             config["linux"] = source_document["linux"].clone();

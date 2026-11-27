@@ -696,8 +696,9 @@ pub(crate) async fn attach(
         .arg(&source)
         .arg(super::runtime_path()?)
         .args([
-            "--host-uds=open",
-            "--host-uds-paths=/safeyolo/proxy",
+            // This gofer serves only an extra share, rooted at /. It has no
+            // proxy mount, so no host socket belongs to its allowed paths.
+            "--host-uds=none",
             "gofer",
             "--bundle",
         ])

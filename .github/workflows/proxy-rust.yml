@@ -439,6 +439,20 @@ jobs:
         if: needs.native-changes.outputs.rust == 'true'
         run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy
 
+      - name: Qualify the packaged patched gVisor runtime
+        if: needs.native-changes.outputs.rust == 'true'
+        run: |
+          set -euo pipefail
+          package="$RUNNER_TEMP/uds-host-package"
+          scripts/build_host_packages.sh --directory "$package" --profile production \
+            --artifacts "$PWD/proxy/target/release" \
+            --guest-artifacts "$PWD/guest/command/target/release" \
+            --runtime-artifacts "$(dirname "$(command -v tmux)")"
+          mkdir "$RUNNER_TEMP/runtime-qualification"
+          cp "$package/package-info" "$package/SHA256SUMS" "$RUNNER_TEMP/runtime-qualification/"
+          scripts/qualify_runsc_host_uds.sh "$package/libexec" "$RUNNER_TEMP/runtime-qualification/host-uds"
+          scripts/qualify_runsc_nofollow.sh "$package/libexec" "$RUNNER_TEMP/runtime-qualification/nofollow"
+
       # Make matching inputs available while the remaining checks continue.
       # Failed runs retain successful matching builds for diagnosis, not release.
       - name: Retain built Linux production inputs
@@ -538,6 +552,9 @@ jobs:
           name: native-policy-diagnostics
           path: |
             ${{ runner.temp }}/gvisor-preparation.log
+            ${{ runner.temp }}/runtime-qualification/package-info
+            ${{ runner.temp }}/runtime-qualification/SHA256SUMS
+            ${{ runner.temp }}/runtime-qualification/*/reports/
             ${{ runner.temp }}/native-policy.xml
           retention-days: 7
           if-no-files-found: ignore
