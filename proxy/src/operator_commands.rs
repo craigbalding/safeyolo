@@ -1800,11 +1800,7 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
     }
     if let Some(inputs) = value["inputs"].as_array() {
         for input in inputs {
-            println!(
-                "Input {}: {}",
-                input["input"],
-                escaped_log_text(text(&input["file"]))?
-            );
+            println!("Input {}: {}", input["input"], safe(text(&input["file"])));
             println!(
                 "  Searched {} retained rows, physical lines {}..{}; {} selected-agent rows omitted ({} file rows read).",
                 input["retained_rows"],
