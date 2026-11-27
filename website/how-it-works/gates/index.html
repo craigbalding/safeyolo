@@ -33,7 +33,7 @@ claims:
 <tr><td><code>after_complete</code></td><td>After completion, as a follow-up action</td><td>Reported; completion stands, and the action is not retried blindly</td></tr>
 </table>
 <h2>Evidence the agents cannot fake</h2>
-<p>A gate job has no network of its own. When it needs a service, the host makes a mediated call with a scoped token the job never receives, and keeps the exact response bytes and digests. A manual preview, a caller-supplied result or a guest-supplied timestamp cannot satisfy a gate.</p>
+<p>A job has no network by default. A Hyperlight job that needs a service asks the host to make a mediated call: the job never holds a token, and the host keeps the exact response bytes and digests. A gVisor or VZ job with network enabled goes through the checkpoint under its own gate identity, with scoped service tokens. The real credentials stay on the host either way. A manual preview, a caller-supplied result or a guest-supplied timestamp cannot satisfy a gate.</p>
 <div class="guarantees">
 <div><h3>What this gives you</h3><ul><li>Checks that hold at every handoff, not just when someone remembers</li><li>Results tied to the exact output reviewed</li><li>A gate that applies however the work was created</li></ul></div>
 <div class="no"><h3>What it does not do</h3><ul><li>Create a gate just because a job exists</li><li>Undo a completion when a follow-up action fails</li></ul></div>

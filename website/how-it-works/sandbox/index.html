@@ -29,7 +29,7 @@ claims:
 <h2>Two platforms, one boundary</h2>
 <p>On Apple Silicon macOS, each agent runs in a hardware-backed microVM built on Apple's Virtualization.framework. On Linux, it runs in rootless gVisor inside an unprivileged user namespace, so launching agents needs no host sudo. Both use the same Debian guest image.</p>
 <h2>No network interface</h2>
-<p>The sandbox has no external network interface. On macOS there is no virtual network card at all, only virtual sockets. On Linux, the only host path mounted is the agent's own socket directory. Requests go from a forwarder inside the guest, through that agent's socket, to the <a href="/how-it-works/checkpoint/">checkpoint</a>. Removing proxy settings inside the guest does not create another route.</p>
+<p>The sandbox has no external network interface. On macOS there is no virtual network card at all, only virtual sockets. On Linux, the sandbox's network namespace has only loopback, and the one host socket SafeYOLO mounts into it is the agent's own. Requests go from a forwarder inside the guest, through that agent's socket, to the <a href="/how-it-works/checkpoint/">checkpoint</a>. Removing proxy settings inside the guest does not create another route.</p>
 <h2>Root inside, not on your host</h2>
 <p>Agents start as an ordinary user and can use <code>sudo</code> to install packages and administer their guest. Guest root is not host root: on Linux it maps to an unprivileged subordinate user on the host.</p>
 <h2>What persists</h2>

@@ -26,7 +26,7 @@ claims:
 <h2>The audit log</h2>
 <p>Every decision lands in a canonical JSONL audit log with rotation. It is the integration surface for other tools, and the source an agent reads when it asks the Agent API to explain a block.</p>
 <h2>Flows, when you want them</h2>
-<p>Flow recording is opt-in per request. Recorded flows go to a local SQLite store and export as raw requests, curl, HTTPie or HAR.</p>
+<p>Flows are stored only for requests that carry a test context you declare. Recorded flows go to a local SQLite store and export as raw requests, curl, HTTPie or HAR.</p>
 <h2>Below HTTP</h2>
 <p>Transport metadata is observed by default, without payloads. Packet capture is opt-in and bounded, with PCAP export to a file, pipe or socket. Network security monitoring events describe connections, flows and indicators, including TLS client fingerprints, upstream certificate identity, connection-history changes and a prompt-injection sensor.</p>
 <div class="guarantees">

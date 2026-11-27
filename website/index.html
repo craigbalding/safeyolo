@@ -13,7 +13,6 @@ claims:
 - BB-08  # service capabilities
 - BB-09  # host keeps credentials
 - BB-14  # rate budgets and circuit breakers
-- BB-12  # loop detection stays local
 - BB-40  # credential custody at rest and in records
 - decision:management_evidence  # audit records of requests and decisions
 ---
@@ -67,7 +66,7 @@ claims:
       <div class="card"><h3>Controlled network access</h3><p>The sandbox has no external network interface, so every request leaves through SafeYOLO.</p><p>The default policy allows any destination within rate budgets. Set your boundary once, with host patterns, maintained host lists and service capabilities, and agents ask only about what falls outside it.</p></div>
       <div class="card"><h3>Protected service credentials</h3><p>The service gateway can keep credentials on the trusted host and inject them only into authorised requests.</p><p>The credential guard checks selected request headers for credentials. By default, an unknown credential needs approval.</p></div>
       <div class="card"><h3>Visible work</h3><p>Inspect HTTP(S) traffic and open sandboxed browser or desktop previews while the agent works.</p></div>
-      <div class="card"><h3>Limits and evidence</h3><p>Rate budgets, circuit breakers and loop detection constrain runaway activity.</p><p>Structured audit records preserve requests, decisions and block reasons.</p></div>
+      <div class="card"><h3>Limits and evidence</h3><p>Rate budgets and circuit breakers constrain runaway activity.</p><p>Structured audit records preserve requests, decisions and block reasons.</p></div>
     </div>
   </div>
 </section>

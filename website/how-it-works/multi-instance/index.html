@@ -5,7 +5,7 @@ permalink: /how-it-works/multi-instance/
 title: Other SafeYOLOs · How SafeYOLO works
 description: Instances connect over authenticated NATS, so agents on one machine can support, direct or approve work on another, within grants each owner chooses.
 part_name: Other SafeYOLOs
-headline: Connect SafeYOLOs on different machines without sharing their keys
+headline: Connect SafeYOLOs on different machines without sharing private keys
 lede: Instances connect over authenticated NATS, so agents on one machine can support, direct or approve work on another, within grants each owner chooses.
 lit: multi-instance coord
 docs:
@@ -24,7 +24,7 @@ claims:
 - BB-26  # Tailscale transport validation
 ---
 <h2>Connected, not merged</h2>
-<p>Instances connect over NATS, secured with TLS and a selected certificate authority or with verified Tailscale. Broker credentials and Admin tokens stay on their own hosts, and every guest keeps using its own local Agent API. <code>safeyolo configure</code> guides the setup through exchanged public identity files.</p>
+<p>Instances connect over NATS, secured with TLS and a selected certificate authority or with verified Tailscale. Broker and certificate authority private keys and Admin tokens stay on their own hosts, and every guest keeps using its own local Agent API. <code>safeyolo configure</code> guides the setup and gives the other side one scoped peer credential, which you transfer privately.</p>
 <h2>Agents that support other agents</h2>
 <p>An owner can grant a support agent, local or on another instance, specific powers over named target agents:</p>
 <table>
@@ -38,6 +38,6 @@ claims:
 <h2>Approvals and notices across machines</h2>
 <p>Delegated reviewers can decide selected requests for named workers, and selected lifecycle and needs-operator events can be delivered to an authorised recipient.</p>
 <div class="guarantees">
-<div><h3>What this gives you</h3><ul><li>One agent looking after others, across machines</li><li>Keys and tokens that never leave their hosts</li><li>Grants bound to durable identities, not names</li></ul></div>
+<div><h3>What this gives you</h3><ul><li>One agent looking after others, across machines</li><li>Private keys and Admin tokens that never leave their hosts</li><li>Grants bound to durable identities, not names</li></ul></div>
 <div class="no"><h3>What it does not do</h3><ul><li>Limit guest administration to less than the target itself can do</li><li>Transfer a grant to a new agent that reuses an old name</li></ul></div>
 </div>

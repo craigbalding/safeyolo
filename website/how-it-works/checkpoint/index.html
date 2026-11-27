@@ -28,7 +28,7 @@ claims:
 - BB-13  # no direct fallback from a required parent
 - BB-14  # rate budgets and circuit breakers
 - BB-29  # named checks
-- BB-39  # lookalike-domain checks
+- BB-39  # mixed-script domain checks
 - decision:interception_tls
 - decision:external_effects
 ---
@@ -37,11 +37,11 @@ claims:
 <h2>What it checks</h2>
 <p>The checkpoint terminates TLS with the instance's own certificate authority and understands HTTP/1.1, HTTP/2, CONNECT tunnels and WebSockets. Depending on the request, it applies:</p>
 <ul>
-<li><b>Network policy</b>: allowed destinations, lists and lookalike-domain checks</li>
+<li><b>Network policy</b>: allowed destinations, lists and mixed-script (homoglyph) domain checks</li>
 <li><b>Rate budgets and circuit breakers</b>: limits on runaway loops and failing upstreams</li>
 <li><b>Credential guard</b>: recognises credentials in selected request headers and checks whether the destination may receive them</li>
 <li><b>Service gateway</b>: swaps the agent's scoped token for your real credential</li>
-<li><b>Content inspection</b>: pattern scanning, and prompt-injection signals on model traffic that are recorded as evidence, not used to decide</li>
+<li><b>Content inspection</b>: patterns you configure, and prompt-injection indicators in text content that are recorded as evidence, not used to decide</li>
 <li><b>Specialised paths</b>: Docker API mediation, coding-client routing and SSH</li>
 <li><b>Your own named checks</b>: rules you write over the request's facts</li>
 </ul>
@@ -55,5 +55,5 @@ claims:
 </table>
 <div class="guarantees">
 <div><h3>What this gives you</h3><ul><li>A single place where every outbound request is decided</li><li>Policy validated before any agent can connect</li><li>No silent passthrough after a timeout or parse failure</li></ul></div>
-<div class="no"><h3>What it does not do</h3><ul><li>Inspect streamed bodies or TLS passthrough as deeply as ordinary requests</li><li>Replace a destination's own authentication</li><li>Detect or prevent prompt injection, or judge whether data is sensitive</li></ul></div>
+<div class="no"><h3>What it does not do</h3><ul><li>Inspect streamed bodies or TLS passthrough as deeply as ordinary requests</li><li>Inspect non-HTTP protocols, such as SSH, inside an admitted tunnel: those are decided by destination only</li><li>Replace a destination's own authentication</li><li>Detect or prevent prompt injection, or judge whether data is sensitive</li></ul></div>
 </div>
