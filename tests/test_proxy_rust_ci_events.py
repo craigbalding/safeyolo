@@ -982,6 +982,13 @@ def test_macos_incremental_outputs_survive_dependency_cache_cleanup(tmp_path, jo
     assert environment.read_text().splitlines()[-1] == "CARGO_INCREMENTAL=1"
 
 
+def test_macos_build_jobs_use_available_cpus():
+    jobs = rust_workflow()["jobs"]
+    shared = yaml.safe_load(WORKFLOW.with_name("guest-test-inputs.yml").read_text())
+    for job in [jobs["host-executor"], jobs["macos-pr"], jobs["contracts"], shared["jobs"]["macos-host"]]:
+        assert "CARGO_BUILD_JOBS" not in job["env"]
+
+
 @pytest.mark.parametrize("path,expected,matcher", [
     ("tests/reference/safeyolo/platform/linux.py", {"linux": "true"}, "available"),
     ("tests/reference/safeyolo/platform/darwin.py", {"macos": "true"}, "available"),
