@@ -27,6 +27,7 @@ cleanup() {
   local result=$? listener
   if [[ -n $active ]]; then "${privileged[@]}" "$runtime/runsc" --root="$work/state" delete --force "$active" || result=1; fi
   for listener in "${listeners[@]}"; do kill "$listener" 2>/dev/null || true; done
+  for listener in "${listeners[@]}"; do wait "$listener" 2>/dev/null || true; done
   return "$result"
 }
 trap cleanup EXIT
@@ -51,7 +52,14 @@ while True:
 PY
   listeners+=($!)
 done
-until [[ -f $work/reports/workspace-listener.log && -f $work/reports/proxy-listener.log ]]; do sleep 0.1; done
+listener_deadline=$((SECONDS + 10))
+until [[ -f $work/reports/workspace-listener.log && -f $work/reports/proxy-listener.log ]]; do
+  (( SECONDS < listener_deadline )) || { package_error 'host socket listeners did not become ready'; exit 1; }
+  for listener in "${listeners[@]}"; do
+    kill -0 "$listener" 2>/dev/null || { package_error 'host socket listener exited before readiness'; exit 1; }
+  done
+  sleep 0.1
+done
 
 cat > "$work/workspace/probe.py" <<'PY'
 import json
@@ -61,6 +69,7 @@ import sys
 results = {}
 for name, path in (("workspace", "/workspace/host.sock"), ("proxy", "/safeyolo/proxy/host.sock")):
     client = socket.socket(socket.AF_UNIX)
+    client.settimeout(5)
     try:
         client.connect(path)
         client.sendall(("canary-" + sys.argv[1] + "-" + name).encode())

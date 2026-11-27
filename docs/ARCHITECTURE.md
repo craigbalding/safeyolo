@@ -214,8 +214,9 @@ Each patch adds upstream-style Go tests, which the runtime build runs. See
 
 Agents and jobs permit host sockets only at `/safeyolo/proxy`. Separate gofers
 for extra mounts use `--host-uds=none`: their filesystem root is the extra
-share, which contains no proxy mount. Runtime startup requires the bundled
-sentry sidecar, including for the patched release suffix.
+share, which contains no proxy mount. Runtime startup requires the sentry
+sidecar from the selected complete payload, including for the patched release
+suffix.
 
 See the [macOS microVM architecture](microvm-architecture.md) and
 [historical Linux port design](linux-port-design.md) for platform design context.
