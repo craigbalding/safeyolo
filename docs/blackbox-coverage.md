@@ -420,7 +420,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Selection: default `systrap` section `continuity`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `continuity`.
 - [tests/blackbox/claude_smoke.py::run](../tests/blackbox/claude_smoke.py#L258) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
-- [proxy/tests/credential_http/codex.rs](../proxy/tests/credential_http/codex.rs#L275) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Controlled OAuth provider and run-lifetime adapter; native HTTP.
+- [proxy/tests/credential_http/codex.rs](../proxy/tests/credential_http/codex.rs#L278) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Controlled OAuth provider and run-lifetime adapter; native HTTP.
   Exact identities: [source inventory](#witness-proxy-tests-credential-http-codex-rs).
 
 ### BB-11 — TLS / guest trust separation
@@ -2715,17 +2715,17 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 
 Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::imported_login_two_rotations_reload_restart_and_redaction -- --exact`](../proxy/tests/credential_http/codex.rs#L275)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::credentials_do_not_inherit_other_origins_routes_clients_or_beneficiaries -- --exact`](../proxy/tests/credential_http/codex.rs#L389)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::host_import_requires_a_subscription_pair_and_unique_beneficiary -- --exact`](../proxy/tests/credential_http/codex.rs#L550)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::refresh_observation_uses_the_final_route_json_and_only_imported_authentication -- --exact`](../proxy/tests/credential_http/codex.rs#L592)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::refresh_trailers_cannot_supply_unobserved_authentication -- --exact`](../proxy/tests/credential_http/codex.rs#L697)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::concurrent_issuance_retains_each_token_under_one_import -- --exact`](../proxy/tests/credential_http/codex.rs#L761)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::revocation_or_reimport_during_exchange_cannot_restore_old_authority -- --exact`](../proxy/tests/credential_http/codex.rs#L793)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::run_scoped_import_follows_the_verified_backend_lifetime -- --exact`](../proxy/tests/credential_http/codex.rs#L827) — `#[cfg(target_os = "linux")]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::guest_markers_expiry_identity_and_stopped_run_do_not_create_authority -- --exact`](../proxy/tests/credential_http/codex.rs#L905)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::imported_credentials_do_not_bypass_upstream_tls_verification -- --exact`](../proxy/tests/credential_http/codex.rs#L985)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::malformed_duplicate_and_redirected_issuance_cannot_authorize_replacements -- --exact`](../proxy/tests/credential_http/codex.rs#L1007)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::imported_login_two_rotations_reload_restart_and_redaction -- --exact`](../proxy/tests/credential_http/codex.rs#L278)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::credentials_do_not_inherit_other_origins_routes_clients_or_beneficiaries -- --exact`](../proxy/tests/credential_http/codex.rs#L392)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::host_import_requires_a_subscription_pair_and_unique_beneficiary -- --exact`](../proxy/tests/credential_http/codex.rs#L552)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::refresh_observation_uses_the_final_route_json_and_only_imported_authentication -- --exact`](../proxy/tests/credential_http/codex.rs#L594)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::refresh_trailers_cannot_supply_unobserved_authentication -- --exact`](../proxy/tests/credential_http/codex.rs#L699)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::concurrent_issuance_retains_each_token_under_one_import -- --exact`](../proxy/tests/credential_http/codex.rs#L763)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::revocation_or_reimport_during_exchange_cannot_restore_old_authority -- --exact`](../proxy/tests/credential_http/codex.rs#L795)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::run_scoped_import_follows_the_verified_backend_lifetime -- --exact`](../proxy/tests/credential_http/codex.rs#L829) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::guest_markers_expiry_identity_and_stopped_run_do_not_create_authority -- --exact`](../proxy/tests/credential_http/codex.rs#L907)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::imported_credentials_do_not_bypass_upstream_tls_verification -- --exact`](../proxy/tests/credential_http/codex.rs#L987)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::malformed_duplicate_and_redirected_issuance_cannot_authorize_replacements -- --exact`](../proxy/tests/credential_http/codex.rs#L1009)
 
 <a id="witness-proxy-tests-native-coord-reviews-rs"></a>
 ### [`proxy/tests/native_coord/reviews.rs`](../proxy/tests/native_coord/reviews.rs)
