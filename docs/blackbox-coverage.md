@@ -346,7 +346,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-gateway-scope-py).
 - [tests/proxy_contracts/test_gateway_risk_approval.py](../tests/proxy_contracts/test_gateway_risk_approval.py#L224) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-gateway-risk-approval-py).
-- [tests/proxy_contracts/test_service_route_challenge.py](../tests/proxy_contracts/test_service_route_challenge.py#L125) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_service_route_challenge.py](../tests/proxy_contracts/test_service_route_challenge.py#L126) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-service-route-challenge-py).
 - [tests/proxy_contracts/test_shared_operator_approval.py](../tests/proxy_contracts/test_shared_operator_approval.py#L133) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-shared-operator-approval-py).
@@ -679,7 +679,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-gateway-scope-py).
 - [tests/proxy_contracts/test_gateway_risk_approval.py](../tests/proxy_contracts/test_gateway_risk_approval.py#L224) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-gateway-risk-approval-py).
-- [tests/proxy_contracts/test_service_route_challenge.py](../tests/proxy_contracts/test_service_route_challenge.py#L125) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_service_route_challenge.py](../tests/proxy_contracts/test_service_route_challenge.py#L126) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-service-route-challenge-py).
 - [tests/proxy_contracts/test_shared_operator_approval.py](../tests/proxy_contracts/test_shared_operator_approval.py#L133) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-shared-operator-approval-py).
@@ -1618,15 +1618,16 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_adopted_questions_bind_pending_answers_and_operator_decisions`](../tests/proxy_contracts/test_service_route_challenge.py#L125)
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_completed_check_survives_run_approval_and_receipt`](../tests/proxy_contracts/test_service_route_challenge.py#L162)
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_challenge_abandon_alternative_and_explicit_retry`](../tests/proxy_contracts/test_service_route_challenge.py#L291)
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_forged_scope_and_refusal_do_not_create_more_operator_work`](../tests/proxy_contracts/test_service_route_challenge.py#L339)
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_route_exception_rechecks_current_authority`](../tests/proxy_contracts/test_service_route_challenge.py#L361)
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_restart_preserves_pending_scope_and_grant_expiry`](../tests/proxy_contracts/test_service_route_challenge.py#L410)
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_destination_and_literal_metacharacter_scope`](../tests/proxy_contracts/test_service_route_challenge.py#L438)
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_risk_grant_alone_cannot_admit_missing_route`](../tests/proxy_contracts/test_service_route_challenge.py#L455)
-- [`tests/proxy_contracts/test_service_route_challenge.py::test_exception_preserves_other_enforcement`](../tests/proxy_contracts/test_service_route_challenge.py#L465)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_adopted_questions_bind_pending_answers_and_operator_decisions`](../tests/proxy_contracts/test_service_route_challenge.py#L126)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_completed_check_survives_run_approval_and_receipt`](../tests/proxy_contracts/test_service_route_challenge.py#L163)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_challenge_abandon_alternative_and_explicit_retry`](../tests/proxy_contracts/test_service_route_challenge.py#L292)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_removed_service_keeps_old_challenge_readable_and_new_requests_visible`](../tests/proxy_contracts/test_service_route_challenge.py#L341)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_forged_scope_and_refusal_do_not_create_more_operator_work`](../tests/proxy_contracts/test_service_route_challenge.py#L387)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_route_exception_rechecks_current_authority`](../tests/proxy_contracts/test_service_route_challenge.py#L409)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_restart_preserves_pending_scope_and_grant_expiry`](../tests/proxy_contracts/test_service_route_challenge.py#L458)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_destination_and_literal_metacharacter_scope`](../tests/proxy_contracts/test_service_route_challenge.py#L486)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_risk_grant_alone_cannot_admit_missing_route`](../tests/proxy_contracts/test_service_route_challenge.py#L503)
+- [`tests/proxy_contracts/test_service_route_challenge.py::test_exception_preserves_other_enforcement`](../tests/proxy_contracts/test_service_route_challenge.py#L513)
 
 <a id="witness-tests-proxy-contracts-test-shared-operator-approval-py"></a>
 ### [`tests/proxy_contracts/test_shared_operator_approval.py`](../tests/proxy_contracts/test_shared_operator_approval.py)

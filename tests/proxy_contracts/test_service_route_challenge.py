@@ -31,6 +31,7 @@ from tests.proxy_contracts.test_gateway_risk_approval import (
     _origin,
     _OriginHandler,
 )
+from tests.proxy_contracts.test_native_coord_operator import terminal, wait_terminal_exit
 from tests.proxy_contracts.test_native_network_policy import replace_policy
 
 SERVICE = "route-challenge-fixture"
@@ -334,6 +335,53 @@ def test_challenge_abandon_alternative_and_explicit_retry(tmp_path):
         assert any(row["event"] == "gateway.route_challenged" for row in events)
         assert any(row["event"] == "gateway.route_escalated" for row in events)
         assert any(row["event"] == "gateway.route_exception_used" for row in events)
+
+
+@pytest.mark.parametrize("phase", ["challenged", "pending"])
+def test_removed_service_keeps_old_challenge_readable_and_new_requests_visible(tmp_path, phase):
+    with route_fixture(tmp_path / phase) as fixture:
+        challenge = _challenge(fixture)
+        if phase == "pending":
+            _escalate(fixture, challenge)
+        recorded = challenge["scope"]["action"]["prepared_assessment"]
+        (fixture.directory / "services/fixture.yaml").unlink()
+        policy = tomlkit.parse(fixture.source)
+        del policy["hosts"]["127.0.0.1"]
+        policy["hosts"][f"127.0.0.1:{fixture.port}"]["egress"] = "prompt"
+        for agent in IDS:
+            del policy["agents"][agent]["services"][SERVICE]
+        replace_policy(fixture.proxy, "rust", fixture.directory, tomlkit.dumps(policy))
+
+        old = _admin(fixture, "GET", "/admin/approvals/" + challenge["challenge_id"])
+        assert old["status"] == "superseded"
+        assert old["assessment"]["availability"] == "unavailable"
+        assert old["action"]["prepared_assessment"] == recorded
+        command = [str(native_cli()), "--config", str(fixture.directory / "config.toml"),
+                   "approvals", "show", challenge["challenge_id"]]
+        redirected = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        assert redirected.returncode == 0, redirected.stderr
+        assert "superseded" in redirected.stdout
+        assert "Current assessment is unavailable" in redirected.stdout
+        assert not redirected.stdout.lstrip().startswith("{")
+        machine = subprocess.run([*command, "--json"], capture_output=True, text=True, timeout=10)
+        assert machine.returncode == 0, machine.stderr
+        assert json.loads(machine.stdout)["status"] == "superseded"
+        terminal_instance = SimpleNamespace(root=fixture.directory, environment=dict(os.environ))
+        with terminal(terminal_instance, command=command) as (process, master, _):
+            output = bytearray()
+            assert wait_terminal_exit(process, master, output, timeout=10) == 0
+            assert b"Current assessment is unavailable" in output and b"superseded" in output
+        assert _decide(fixture, challenge, status=409)["status"] == "superseded"
+        assert _admin(fixture, "GET", "/admin/approvals")["approvals"] == []
+
+        target = f"http://127.0.0.1:{fixture.port}/ordinary-request"
+        assert request(fixture.proxy.paths["alice"], target)[0] == 428
+        current, = _admin(fixture, "GET", "/admin/approvals")["approvals"]
+        assert current["agent"] == "alice"
+        assert current["action"]["kind"] == "network_allow"
+        assert current["status"] == "pending"
+        assert current["approval_id"] != challenge["challenge_id"]
+        assert fixture.sink.deliveries == []
 
 
 def test_forged_scope_and_refusal_do_not_create_more_operator_work(tmp_path):
