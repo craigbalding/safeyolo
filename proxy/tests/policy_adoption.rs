@@ -808,7 +808,7 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
             gateway_permission.effect,
             safeyolo_proxy::policy::Effect::Allow,
             "generated fixture rules: {}",
-            document["hosts"]["*"].to_string()
+            document["hosts"]["*"]
         );
         let (id, source) = snapshot(&f).await;
         let mut expanded = binding.clone();

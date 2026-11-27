@@ -3769,10 +3769,13 @@ fn host_setup_keeps_the_explicit_config_and_failed_setup_does_not_publish() {
     assert!(String::from_utf8_lossy(&failed.stderr).contains("saved configuration is unchanged"));
     assert_eq!(fs::read(root.join("policy.toml")).unwrap(), saved);
     assert_eq!(
-        fs::read_to_string(root.join("agents/marker/home/source"))
-            .unwrap()
-            .trim(),
-        fs::canonicalize(&selected).unwrap().to_str().unwrap()
+        fs::canonicalize(
+            fs::read_to_string(root.join("agents/marker/home/source"))
+                .unwrap()
+                .trim()
+        )
+        .unwrap(),
+        fs::canonicalize(&selected).unwrap()
     );
 }
 
@@ -4116,8 +4119,8 @@ fn custom_launchers_can_delegate_to_the_shipped_tmux_presets() {
         );
         let target: Value = serde_json::from_slice(&started.stdout).unwrap();
         assert_eq!(
-            target["tmux_socket"],
-            fs::canonicalize(&socket).unwrap().to_str().unwrap()
+            fs::canonicalize(target["tmux_socket"].as_str().unwrap()).unwrap(),
+            fs::canonicalize(&socket).unwrap()
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while !root.join("custom-entry").exists() {
@@ -4137,20 +4140,25 @@ fn custom_launchers_can_delegate_to_the_shipped_tmux_presets() {
 
 #[test]
 fn native_demo_preserves_a_shared_proxy_when_guest_prerequisites_fail() {
-    let root = tempfile::tempdir().unwrap();
-    initialize(root.path());
-    let config = root.path().join("config.toml");
+    let temp = tempfile::tempdir().unwrap();
+    let instance = temp.path().join("instance");
+    initialize(&instance);
+    // Demo resolves the selected config. Reuse must recognize the same file
+    // through an alias without replacing its verified process incarnation.
+    let root = temp.path().join("selected");
+    symlink(&instance, &root).unwrap();
+    let config = root.join("config.toml");
     let mut document: toml_edit::DocumentMut =
         fs::read_to_string(&config).unwrap().parse().unwrap();
     document["admin_port"] = toml_edit::value(0);
     fs::write(&config, document.to_string()).unwrap();
     let _stop = StopOnDrop(&config);
-    value(cli(root.path(), &["start"]));
-    let process = root.path().join("data/proxy-process.json");
+    value(cli(&root, &["start"]));
+    let process = root.join("data/proxy-process.json");
     let record = fs::read(&process).unwrap();
     // This native instance has no guest artifacts. Setup must fail normally
     // and clean its new Demo state while leaving the pre-existing proxy alive.
-    let failed = cli(root.path(), &["demo", "--task", "tiny-web-app"]);
+    let failed = cli(&root, &["demo", "--task", "tiny-web-app"]);
     assert!(!failed.status.success());
     assert!(
         String::from_utf8(failed.stdout)
@@ -4158,7 +4166,7 @@ fn native_demo_preserves_a_shared_proxy_when_guest_prerequisites_fail() {
             .contains("Demo cleanup: guest stopped")
     );
     assert_eq!(fs::read(&process).unwrap(), record);
-    let status = value(cli(root.path(), &["status"]));
+    let status = value(cli(&root, &["status"]));
     assert_eq!(status["proxy_state"], "running");
     assert!(status["agents"].as_array().unwrap().is_empty());
 }
@@ -4415,8 +4423,8 @@ fn retirement_previews_retention_and_preserves_a_concurrent_saved_writer() {
     assert_eq!(preview["retirement_state"], "preview");
     assert_eq!(preview["agent_id"], ids[0]);
     assert_eq!(
-        preview["home"],
-        fs::canonicalize(&home).unwrap().to_str().unwrap()
+        fs::canonicalize(preview["home"].as_str().unwrap()).unwrap(),
+        fs::canonicalize(&home).unwrap()
     );
     assert_eq!(preview["retained_references"]["coord"]["state"], "unknown");
     assert_eq!(
