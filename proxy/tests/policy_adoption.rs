@@ -869,9 +869,19 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
             if decision == "reject" {
                 "rejected"
             } else {
-                "stale"
+                // CLI preflight refuses the stale selection without POSTing
+                // a decision. The original request is still recorded pending.
+                "pending"
             }
         );
+        if decision == "stale" {
+            let current = f
+                .admin("GET", &format!("/admin/approvals/{op}"), None)
+                .await
+                .json();
+            assert_eq!(current["status"], "stale");
+            assert_eq!(current["reviewed_inputs_match_current"], false);
+        }
         let target: Target = serde_json::from_value(target).unwrap();
         let invocation = json!({"operation_id":"restart","resource_id":"service:demo",
             "operation_sha256":package.operation_sha256("restart").unwrap(),"implementation_sha256":package.operations["restart"].implementation_sha256(),
@@ -888,6 +898,12 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
             )
             .await;
         assert_eq!(refused.status, 403, "{}", refused.json());
+        assert!(
+            refused.json()["refusal"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("outside effective authority")
+        );
         assert_eq!(
             target_listener.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock
