@@ -785,10 +785,31 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
         rule["action"] = toml_edit::value("gateway:request");
         rule["resource"] = toml_edit::value("owned-host:/v1/host-execution/*");
         rule["effect"] = toml_edit::value("allow");
-        let mut rules = toml_edit::ArrayOfTables::new();
-        rules.push(rule);
-        document["hosts"]["*"]["rules"] = toml_edit::Item::ArrayOfTables(rules);
+        let mut condition = toml_edit::InlineTable::new();
+        condition.insert("agent", "worker".into());
+        rule["condition"] = toml_edit::value(condition);
+        let mut rules = toml_edit::Array::new();
+        rules.push(rule.into_inline_table());
+        document["hosts"]["*"]["rules"] = toml_edit::value(rules);
         f.apply(&document.to_string()).await;
+        let native_policy = safeyolo_proxy::policy::Policy::from_native_path(
+            f.config.policy_file.as_ref().unwrap(),
+        )
+        .unwrap();
+        let gateway_permission =
+            native_policy.evaluate_gateway_request(safeyolo_proxy::policy::GatewayRequest {
+                agent: "worker",
+                service: "owned-host",
+                capability: "host_execution",
+                method: "POST",
+                path: Verb::Propose.path(),
+            });
+        assert_eq!(
+            gateway_permission.effect,
+            safeyolo_proxy::policy::Effect::Allow,
+            "generated fixture rules: {}",
+            document["hosts"]["*"].to_string()
+        );
         let (id, source) = snapshot(&f).await;
         let mut expanded = binding.clone();
         expanded["target"]["issuers"][issuer]["authority"]["grants"]["task"]["operations"]["restart"]
@@ -902,7 +923,9 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
             refused.json()["refusal"]["message"]
                 .as_str()
                 .unwrap()
-                .contains("outside effective authority")
+                .contains("outside effective authority"),
+            "unexpected refusal: {}",
+            refused.json()
         );
         assert_eq!(
             target_listener.accept().unwrap_err().kind(),
