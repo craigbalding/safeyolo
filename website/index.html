@@ -62,7 +62,7 @@ claims:
     <p class="kicker">What SafeYOLO does</p>
     <div class="cards">
       <div class="card"><h3>Isolated workspace</h3><p>Each agent gets its own Linux sandbox and persistent home: hardware-backed microVMs on Apple Silicon macOS, rootless gVisor on Linux.</p></div>
-      <div class="card"><h3>Controlled network access</h3><p>The sandbox has no external network interface, so every request leaves through SafeYOLO.</p><p>The default policy allows any destination within rate budgets. You narrow it per destination and agent: allow, deny or require approval.</p></div>
+      <div class="card"><h3>Controlled network access</h3><p>The sandbox has no external network interface, so every request leaves through SafeYOLO.</p><p>The default policy allows any destination within rate budgets. Set your boundary once, with host patterns, maintained host lists and service capabilities, and agents ask only about what falls outside it.</p></div>
       <div class="card"><h3>Protected service credentials</h3><p>The service gateway can keep credentials on the trusted host and inject them only into authorised requests.</p><p>The credential guard checks selected request headers for credentials. By default, an unknown credential needs approval.</p></div>
       <div class="card"><h3>Visible work</h3><p>Inspect HTTP(S) traffic and open sandboxed browser or desktop previews while the agent works.</p></div>
       <div class="card"><h3>Limits and evidence</h3><p>Rate budgets, circuit breakers and loop detection constrain runaway activity.</p><p>Structured audit records preserve requests, decisions and block reasons.</p></div>
