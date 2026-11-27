@@ -13,6 +13,13 @@ next:
   title: "API access without the secret"
   url: /journey/masked-apis/
   blurb: "Give the agent Slack, GitHub or Docker without putting a token in its sandbox."
+claims:
+- BB-01  # only route out is the socket
+- BB-03  # guest root never becomes host root
+- BB-04  # identity the agent cannot change
+- BB-05  # Agent API answers through its own socket
+- BB-21  # nested Docker under the sandbox policy
+- BB-23  # token-gated desktop preview
 ---
 <h2>Most sandboxes are a cage</h2>
 <p>A sandbox that only says no keeps an agent safe and useless. The agent hits a wall, guesses at the cause, and stops to ask you. SafeYOLO is built the other way round: the sandbox is a place where the agent can do real work, and SafeYOLO talks back.</p>
@@ -47,7 +54,7 @@ next:
 
 <h2>What happens when it hits a wall</h2>
 <ol>
-<li>The agent calls a host its policy does not cover and gets <b>428: Network access requires approval</b>.</li>
+<li>The agent calls a host that its policy sends for approval and gets <b>428: Network access requires approval</b>.</li>
 <li>It reads the reason with <code>/explain</code>, instead of guessing or retrying.</li>
 <li>If the work genuinely needs that host, it tells you the exact destination and why, as a pending approval.</li>
 <li>You approve or deny it once. The decision and its reason are recorded.</li>

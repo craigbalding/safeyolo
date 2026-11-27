@@ -16,6 +16,11 @@ docs:
 journey:
 - title: The live software factory
   url: /journey/software-factory/
+claims:
+- BB-16  # disposable-job isolation
+- BB-17  # job network authority
+- BB-31  # Hyperlight capabilities
+- BB-32  # gates bind to the exact output
 ---
 <h2>Jobs run on the host</h2>
 <p>A job is disposable, host-only execution from a trusted job definition, with its output captured as evidence. Jobs run in gVisor, a VZ microVM, or Hyperlight, with core Rust guests or Unikraft Python. A job definition never carries a host mount path.</p>

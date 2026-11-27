@@ -13,6 +13,13 @@ next:
   title: "See the whole journey"
   url: /journey/
   blurb: "Next: agents beyond code, approvals that scale, and work on your host."
+claims:
+- BB-07  # credential reaches only approved destinations
+- BB-08  # token scoped to agent, capability and destination
+- BB-09  # credential stays on the host
+- BB-10  # subscription logins renewed on the host
+- BB-21  # Docker API scopes
+- decision:credentials
 ---
 <h2>The problem with handing over tokens</h2>
 <p>An agent with a token in its environment can send that token anywhere, use it for anything the token allows, and leak it in a log. Scoping the token at the vendor helps, but the secret is still in the sandbox.</p>

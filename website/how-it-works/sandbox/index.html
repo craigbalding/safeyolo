@@ -18,6 +18,13 @@ docs:
 journey:
 - title: A home for an agent
   url: /journey/agent-home/
+claims:
+- BB-01  # no external network interface
+- BB-02  # no DNS/UDP route
+- BB-03  # guest root is not host root
+- BB-04  # separate identity per agent
+- BB-22  # only explicitly mounted host folders
+- BB-33  # no host sudo to launch on Linux
 ---
 <h2>Two platforms, one boundary</h2>
 <p>On Apple Silicon macOS, each agent runs in a hardware-backed microVM built on Apple's Virtualization.framework. On Linux, it runs in rootless gVisor inside an unprivileged user namespace, so launching agents needs no host sudo. Both use the same Debian guest image.</p>

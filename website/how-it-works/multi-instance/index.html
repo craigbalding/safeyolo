@@ -17,6 +17,11 @@ docs:
   url: https://github.com/craigbalding/safeyolo/blob/master/docs/delegated-approvals.md
 - title: Operational notices
   url: https://github.com/craigbalding/safeyolo/blob/master/docs/operational-events.md
+claims:
+- BB-18  # peer support scope
+- BB-19  # delegated approvals
+- BB-25  # federation authority and TLS
+- BB-26  # Tailscale transport validation
 ---
 <h2>Connected, not merged</h2>
 <p>Instances connect over NATS, secured with TLS and a selected certificate authority or with verified Tailscale. Broker credentials and Admin tokens stay on their own hosts, and every guest keeps using its own local Agent API. <code>safeyolo configure</code> guides the setup through exchanged public identity files.</p>

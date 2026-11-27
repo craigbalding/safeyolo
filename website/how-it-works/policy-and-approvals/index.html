@@ -22,11 +22,19 @@ journey:
   url: /journey/masked-apis/
 - title: The live software factory
   url: /journey/software-factory/
+claims:
+- BB-06  # destination policy and reload
+- BB-08  # grants never widen a capability
+- BB-19  # delegated reviewers
+- BB-29  # named checks
+- BB-30  # maintained host lists
+- decision:policy_publication
 ---
 <h2>Policy is a file you control</h2>
 <p><code>policy.toml</code> holds which hosts each agent may reach, its budgets, lists, grants and controls. <code>safeyolo policy check</code> validates a candidate without activating it, and <code>safeyolo policy apply</code> activates it and confirms the result. The running checkpoint reloads policy when the file changes.</p>
+<p>A new instance's policy allows any destination within rate budgets and sends unknown credentials for approval. You can set each destination to allow, deny or require approval, for every agent or for one. No maintained host list is enabled by default. When you add one, SafeYOLO downloads it on the host, and a list rule that denies while the list is unavailable blocks the requests it governs until the first download is accepted.</p>
 <h2>Approvals arrive specific</h2>
-<p>A request outside policy returns 428 and records a pending approval with its exact scope: the agent, the destination and, for a service, the method and path. You decide in the CLI, in Command Centre on macOS, or through a delegated reviewer: a named agent that decides selected request types for named workers without gaining policy administration.</p>
+<p>A request that policy sends for approval returns 428 and records a pending approval with its exact scope: the agent, the destination and, for a service, the method and path. You decide in the CLI, in Command Centre on macOS, or through a delegated reviewer: a named agent that decides selected request types for named workers without gaining policy administration.</p>
 <h2>Answers that last as long as you choose</h2>
 <p>Service risk approvals can apply <b>once</b>, for the <b>session</b>, or be <b>remembered</b>. A grant never widens what a capability allows; it only approves risk inside what you already authorised.</p>
 <h2>Separate questions, by design</h2>

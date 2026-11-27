@@ -18,6 +18,10 @@ journey:
   url: /journey/agent-home/
 - title: API access without the secret
   url: /journey/masked-apis/
+claims:
+- BB-04  # an agent can only ask about itself
+- BB-05  # Agent API authorization; Admin API blocked
+- decision:management_evidence
 ---
 <h2>Answered by the checkpoint, not the Internet</h2>
 <p>The Agent API lives at <code>_safeyolo.proxy.internal</code>. The checkpoint answers it locally, through the agent's own socket, and never looks the name up upstream. Because the socket fixes the caller's identity, an agent can only ask about itself and act within its own permissions.</p>
