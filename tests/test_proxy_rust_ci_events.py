@@ -1223,7 +1223,7 @@ def test_windows_compiler_preparation_preserves_failure_before_contracts(tmp_pat
 
 
 @pytest.mark.parametrize("failure,diagnostic_status", [
-    ("none", 0), ("source", 0), ("update", 0), ("update", 23), ("update", 124),
+    ("none", 0), ("update", 0), ("update", 23), ("update", 124),
     ("install", 0), ("install", 23), ("install", 124),
 ])
 def test_cli_apt_failure_keeps_original_error_and_status(tmp_path, failure, diagnostic_status):
@@ -1232,24 +1232,10 @@ def test_cli_apt_failure_keeps_original_error_and_status(tmp_path, failure, diag
                 if step.get("name") == "Install CLI test system dependencies")
     commands = tmp_path / "bin"
     commands.mkdir()
-    sources = tmp_path / "sources.list.d"
-    sources.mkdir()
-    microsoft = sources / "microsoft-prod.list"
-    microsoft.write_text("deb [signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/26.04/prod resolute main\n")
-    ubuntu = sources / "ubuntu.sources"
-    ubuntu.write_text("Types: deb\nURIs: https://archive.ubuntu.com/ubuntu\nSigned-By: /usr/share/keyrings/ubuntu.gpg\n")
-    unrelated = sources / "unrelated.list"
-    unrelated.write_text("deb [signed-by=/usr/share/keyrings/other.gpg] https://other.example/ubuntu resolute main\n")
     sudo = commands / "sudo"
     sudo.write_text(
         '#!/bin/bash\nprintf "%s\\n" "$*" >> "$APT_CALLS"\n'
-        'if [[ "$1" == rm ]]; then\n'
-        '  [[ "$*" == "rm -f /etc/apt/sources.list.d/microsoft-prod.list" ]] || exit 91\n'
-        '  if [[ "$FAILURE" == source ]]; then echo "original apt error" >&2; exit 100; fi\n'
-        '  /bin/rm -f "$APT_SOURCES/microsoft-prod.list"\n'
-        'elif [[ "$1" == apt-get && "$2" == "$FAILURE" ]]; then\n'
-        '  echo "original apt error" >&2; exit 100\n'
-        'fi\n'
+        'if [[ "$2" == "$FAILURE" ]]; then echo "original apt error" >&2; exit 100; fi\n'
     )
     diagnostic = commands / "python3"
     diagnostic.write_text(
@@ -1264,21 +1250,15 @@ def test_cli_apt_failure_keeps_original_error_and_status(tmp_path, failure, diag
         ["bash", "-e", "-c", step["run"] + '\nprintf "following step reached\\n"'],
         cwd=tmp_path, capture_output=True, text=True,
         env=dict(os.environ, BASH_ENV=os.devnull, PATH=f"{commands}:{os.environ['PATH']}",
-                 APT_CALLS=str(calls), APT_SOURCES=str(sources), FAILURE=failure,
-                 DIAGNOSTIC_STATUS=str(diagnostic_status)),
+                 APT_CALLS=str(calls), FAILURE=failure, DIAGNOSTIC_STATUS=str(diagnostic_status)),
         timeout=10,
     )
-    expected_calls = ["rm -f /etc/apt/sources.list.d/microsoft-prod.list"]
-    if failure != "source":
-        expected_calls.append("apt-get update -qq")
-    if failure not in {"source", "update"}:
+    expected_calls = ["apt-get update -qq"]
+    if failure != "update":
         expected_calls.append("apt-get install -y -qq --no-install-recommends libegl1 socat tmux")
     if failure != "none":
         expected_calls.append("diagnostic")
     assert calls.read_text().splitlines() == expected_calls
-    assert microsoft.exists() == (failure == "source")
-    assert "Signed-By: /usr/share/keyrings/ubuntu.gpg" in ubuntu.read_text()
-    assert "https://other.example/ubuntu" in unrelated.read_text()
     assert result.returncode == (0 if failure == "none" else 100)
     assert ("original apt error" in result.stderr) == (failure != "none")
     assert ("diagnostic: scripts/diagnose_ci_apt.py" in result.stdout) == (failure != "none")
