@@ -1688,9 +1688,9 @@ fn show_log_listing(value: &Value) -> Result<(), Error> {
                 context_json(&group["agent"])?,
                 text(&group["context"])
             );
-            show_log_run(&group["sandbox_run"], &group["run_context"]);
+            show_log_run(&group["sandbox_run"], &group["run_context"])?;
             for record in group["records"].as_array().into_iter().flatten() {
-                show_log_record(record);
+                show_log_record(record)?;
                 println!(
                     "    Locations: {}",
                     log_record_locations(&record["locations"])
@@ -1718,15 +1718,22 @@ fn show_log_listing(value: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-fn show_log_run(run: &Value, context: &Value) {
-    print!("Run context: {}", safe(text(context)));
+fn escaped_log_text(value: &str) -> Result<String, Error> {
+    let encoded = context_json(&json!(value))?;
+    // context_json always returns an ASCII JSON string for this scalar input.
+    Ok(encoded[1..encoded.len() - 1].to_owned())
+}
+
+fn show_log_run(run: &Value, context: &Value) -> Result<(), Error> {
+    print!("Run context: {}", escaped_log_text(text(context))?);
     if let Some(id) = run["run_id"].as_str() {
-        print!(" | Sandbox run: {}", safe(id));
+        print!(" | Sandbox run: {}", escaped_log_text(id)?);
     }
     if let Some(id) = run["agent_id"].as_str() {
-        print!(" | Agent ID: {}", safe(id));
+        print!(" | Agent ID: {}", escaped_log_text(id)?);
     }
     println!();
+    Ok(())
 }
 
 fn log_record_line(line: &Value) -> String {
@@ -1753,20 +1760,21 @@ fn log_record_locations(locations: &Value) -> String {
         .join(", ")
 }
 
-fn show_log_record(record: &Value) {
+fn show_log_record(record: &Value) -> Result<(), Error> {
     print!(
-        "  {}  {} — {}",
-        safe(text(&record["ts"])),
-        safe(text(&record["event"])),
-        safe(text(&record["summary"]))
+        "  {}  {} - {}",
+        escaped_log_text(text(&record["ts"]))?,
+        escaped_log_text(text(&record["event"]))?,
+        escaped_log_text(text(&record["summary"]))?
     );
     if let Some(decision) = record["decision"].as_str() {
-        print!(" | Decision: {}", safe(decision));
+        print!(" | Decision: {}", escaped_log_text(decision)?);
     }
     println!();
     if let Some(id) = record["event_id"].as_str() {
-        println!("    Event ID: {}", safe(id));
+        println!("    Event ID: {}", escaped_log_text(id)?);
     }
+    Ok(())
 }
 
 fn show_log_pivot(value: &Value) -> Result<(), Error> {
@@ -1778,21 +1786,25 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
             .as_str()
             .map(safe)
             .unwrap_or_else(|| "explicitly selected files".into()),
-        safe(text(&query["instance_id"])),
-        safe(text(&query["runtime_id"])),
-        safe(text(&query["kind"])),
-        safe(text(&query["id"])),
+        escaped_log_text(text(&query["instance_id"]))?,
+        escaped_log_text(text(&query["runtime_id"]))?,
+        escaped_log_text(text(&query["kind"]))?,
+        escaped_log_text(text(&query["id"]))?,
         query["agent"]
             .as_str()
             .map(safe)
             .unwrap_or_else(|| "all".into())
     );
     if let Some(run) = query["sandbox_run_id"].as_str() {
-        println!("Sandbox run selection: {}", safe(run));
+        println!("Sandbox run selection: {}", escaped_log_text(run)?);
     }
     if let Some(inputs) = value["inputs"].as_array() {
         for input in inputs {
-            println!("Input {}: {}", input["input"], safe(text(&input["file"])));
+            println!(
+                "Input {}: {}",
+                input["input"],
+                escaped_log_text(text(&input["file"]))?
+            );
             println!(
                 "  Searched {} retained rows, physical lines {}..{}; {} selected-agent rows omitted ({} file rows read).",
                 input["retained_rows"],
@@ -1826,7 +1838,7 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
         if correlation["warning"]["status"] == "investigate" {
             println!(
                 "\nInvestigation warning: {}",
-                safe(text(&correlation["warning"]["reason"]))
+                escaped_log_text(text(&correlation["warning"]["reason"]))?
             );
         }
         println!(
@@ -1834,21 +1846,21 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
             log_record_line(&correlation["exposure_line"]),
             text(&correlation["status"])
         );
-        println!("{}", safe(text(&correlation["reason"])));
-        println!("{}", safe(text(&correlation["meaning"])));
+        println!("{}", escaped_log_text(text(&correlation["reason"]))?);
+        println!("{}", escaped_log_text(text(&correlation["meaning"]))?);
         println!(
             "Source indication: {} | Novelty evidence: {}",
-            safe(text(&correlation["source"]["status"])),
-            safe(text(&correlation["novelty_status"]))
+            escaped_log_text(text(&correlation["source"]["status"]))?,
+            escaped_log_text(text(&correlation["novelty_status"]))?
         );
         for (label, key) in [
             ("Source transport", "source_transport"),
             ("Model transport", "model_transport"),
         ] {
             println!(
-                "{label}: {} — {}",
-                safe(text(&correlation[key]["status"])),
-                safe(text(&correlation[key]["reason"]))
+                "{label}: {} - {}",
+                escaped_log_text(text(&correlation[key]["status"]))?,
+                escaped_log_text(text(&correlation[key]["reason"]))?
             );
         }
     }
@@ -1858,7 +1870,7 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
             log_record_line(&entry["line"]),
             text(&entry["selection"])
         );
-        show_log_run(&entry["sandbox_run"], &entry["run_context"]);
+        show_log_run(&entry["sandbox_run"], &entry["run_context"])?;
         if let Some(locations) = entry.get("locations") {
             println!(
                 "Locations: {}; conflicting copy or owner: {}",
@@ -1866,7 +1878,7 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
                 entry["conflicting"]
             );
         }
-        show_log_record(&entry["record"]);
+        show_log_record(&entry["record"])?;
     }
     if value["records"].as_array().is_some_and(Vec::is_empty) {
         println!("No related validated NSM records in the searched window.");
@@ -1875,10 +1887,10 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
         println!(
             "Link from line {} {} to {} {}: {} (supporting lines {})",
             log_record_line(&link["from_line"]),
-            safe(text(&link["field"])),
-            safe(text(&link["event"])),
-            safe(text(&link["connection_id"])),
-            safe(text(&link["status"])),
+            escaped_log_text(text(&link["field"]))?,
+            escaped_log_text(text(&link["event"]))?,
+            escaped_log_text(text(&link["connection_id"]))?,
+            escaped_log_text(text(&link["status"]))?,
             log_record_locations(&link["record_lines"])
         );
         if let Some(lines) = link["conflicting_record_lines"]
@@ -1900,13 +1912,16 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
             "\nSelected capture metadata ({}):",
             text(&capture["status"])
         );
-        println!("File: {}", safe(text(&capture["file"])));
-        println!("Scan: {}", safe(text(&capture["scan"]["status"])));
+        println!("File: {}", escaped_log_text(text(&capture["file"]))?);
+        println!(
+            "Scan: {}",
+            escaped_log_text(text(&capture["scan"]["status"]))?
+        );
         if let Some(reason) = capture["scan"]["reason"].as_str() {
-            println!("{}", safe(reason));
+            println!("{}", escaped_log_text(reason)?);
         }
         if let Some(reason) = capture["reason"].as_str() {
-            println!("{}", safe(reason));
+            println!("{}", escaped_log_text(reason)?);
         }
         println!(
             "Retained observations: {} | Runtime loss records: {}\nOmitted observations: {} | Omitted loss records: {}",
@@ -1915,7 +1930,7 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
             capture["omitted_connection_observations"],
             capture["omitted_runtime_loss_records"]
         );
-        println!("{}", safe(text(&capture["limits"])));
+        println!("{}", escaped_log_text(text(&capture["limits"]))?);
     }
     println!(
         "\nSelect --json for complete original records, attribution, links and capture metadata."
