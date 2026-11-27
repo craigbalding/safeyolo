@@ -1,0 +1,31 @@
+---
+layout: explainer
+full_width: true
+permalink: /how-it-works/evidence/
+title: Evidence · How SafeYOLO works
+description: SafeYOLO keeps a canonical audit log of what agents attempted and why each request was allowed or blocked, with optional flow recording and packet capture for deeper investigation.
+part_name: Evidence
+headline: Every request, decision and reason is on record
+lede: SafeYOLO keeps a canonical audit log of what agents attempted and why each request was allowed or blocked, with optional flow recording and packet capture for deeper investigation.
+lit: evidence
+docs:
+- title: Transport observations
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/native-observations.md
+- title: Network security monitoring events
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/nsm-events.md
+- title: Operator guide
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/operator-guide.md
+journey:
+- title: The live software factory
+  url: /journey/software-factory/
+---
+<h2>The audit log</h2>
+<p>Every decision lands in a canonical JSONL audit log with rotation. It is the integration surface for other tools, and the source an agent reads when it asks the Agent API to explain a block.</p>
+<h2>Flows, when you want them</h2>
+<p>Flow recording is opt-in per request. Recorded flows go to a local SQLite store and export as raw requests, curl, HTTPie or HAR.</p>
+<h2>Below HTTP</h2>
+<p>Transport metadata is observed by default, without payloads. Packet capture is opt-in and bounded, with PCAP export to a file, pipe or socket. Network security monitoring events describe connections, flows and indicators, including TLS client fingerprints, upstream certificate identity, connection-history changes and a prompt-injection sensor.</p>
+<div class="guarantees">
+<div><h3>What this gives you</h3><ul><li>An answer to "what did the agent try, and why was it allowed?"</li><li>Evidence another tool can consume</li><li>Deeper capture only when you turn it on</li></ul></div>
+<div class="no"><h3>What it does not do</h3><ul><li>Record every payload by default</li><li>Capture as much detail inside streamed or passthrough connections</li></ul></div>
+</div>

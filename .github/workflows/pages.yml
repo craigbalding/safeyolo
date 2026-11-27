@@ -5,6 +5,8 @@ on:
     branches: [master, main]
     paths:
       - "site/**"
+      - "website/**"
+      - "scripts/assemble_site.sh"
   workflow_dispatch:
 
 permissions:
@@ -41,9 +43,11 @@ jobs:
       - name: Validate publication tree
         run: proxy/target/release/safeyolo dispatch check-site
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - name: Assemble website and Dispatch into one site
+        run: scripts/assemble_site.sh ./_assembled_site
       - uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1.0.13
         with:
-          source: ./site
+          source: ./_assembled_site
           destination: ./_site
           future: true
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3

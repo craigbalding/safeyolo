@@ -15,7 +15,7 @@ continues to govern any existing message assignment.
 
 ## Instance bindings
 
-For SafeYolo work, a brief can bind the target checkout's `AGENTS.md`,
+For SafeYOLO work, a brief can bind the target checkout's `AGENTS.md`,
 [review tools](../DEVELOPERS.md#independent-review-tools),
 [publication guidance](../DEVELOPERS.md#repository-publication) and its
 [acceptance graph](../../cli/src/safeyolo/agent_context/skills/safeyolo/references/graph/accept-safeyolo.yaml).
@@ -25,7 +25,7 @@ the responsibilities; this guide does not copy the tool procedures.
 
 For example, an instance brief can state:
 
-> For SafeYolo work, all roles use the target checkout's repository instructions.
+> For SafeYOLO work, all roles use the target checkout's repository instructions.
 > The reviewer uses its maintained review-tool guidance and the acceptance graph
 > from the bound trusted base. The repository's publication guidance binds the
 > immutable PR commit reference. Role-scoped environment locations are supplied

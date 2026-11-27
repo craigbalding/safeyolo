@@ -1,7 +1,7 @@
 # Host scripts
 
 Host scripts are shell scripts that run on the macOS or Linux host before a
-SafeYolo agent boots. SafeYolo runs them with the operator's user permissions.
+SafeYOLO agent boots. SafeYOLO runs them with the operator's user permissions.
 A host script can install an agent harness, copy authentication or settings,
 and define the command that the sandbox executes.
 
@@ -12,7 +12,7 @@ That reference distinguishes the tested Linux paths from Windows mount limits.
 For the host path, first complete the [installation and guest prerequisites](../docs/installation.md#install-and-start)
 in the instance you installed. The commands below use `$HOME/.safeyolo`;
 replace that root if your installation uses another path. Run as your ordinary
-host account from the trusted SafeYolo checkout. In these examples, `~/code` is an existing
+host account from the trusted SafeYOLO checkout. In these examples, `~/code` is an existing
 workspace that you own. Replace `/absolute/path/to/my-host-setup.sh` with your
 executable script outside all agent-writable shares. Agent creation runs setup
 without starting the sandbox:
@@ -30,7 +30,7 @@ Select an executable host script outside every agent-writable share:
 "$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" agent start work
 ```
 
-SafeYolo does not interpret a template, domain-specific language (DSL), or
+SafeYOLO does not interpret a template, domain-specific language (DSL), or
 TOML document. It executes the selected shell script. Read the script before
 you run it.
 
@@ -53,10 +53,10 @@ no Python interpreter.
 
 | File under `assets/contrib/` | Setup |
 | --- | --- |
-| `claude-host-setup.sh` | Copies Claude Code authentication and selected user extensions into `/home/agent`, registers the coord MCP adapter, installs SafeYolo context, and launches Claude Code. |
-| `codex-host-setup.sh` | Stages SafeYolo-owned Codex settings and the coord MCP adapter, without importing host credentials or arbitrary `~/.codex` state. Launches Codex with its inner sandbox disabled (`-s danger-full-access -a never`); SafeYolo remains the outer boundary. |
+| `claude-host-setup.sh` | Copies Claude Code authentication and selected user extensions into `/home/agent`, registers the coord MCP adapter, installs SafeYOLO context, and launches Claude Code. |
+| `codex-host-setup.sh` | Stages SafeYOLO-owned Codex settings and the coord MCP adapter, without importing host credentials or arbitrary `~/.codex` state. Launches Codex with its inner sandbox disabled (`-s danger-full-access -a never`); SafeYOLO remains the outer boundary. |
 | `codex-coord-host-setup.sh` | Uses the Codex setup with an explicitly adopted agent-local login and supervises bounded non-interactive turns. See the [supervisor contract](../docs/codex-coord-supervisor.md). |
-| `pi-host-setup.sh` | Keeps Pi authentication and state in the agent's own home and stages SafeYolo context. See the Pi section below. |
+| `pi-host-setup.sh` | Keeps Pi authentication and state in the agent's own home and stages SafeYOLO context. See the Pi section below. |
 | `pi-coord-host-setup.sh` | Adds the approved Factory role and Coord extension to the Pi setup. |
 | `mise-shell-host-setup.sh` | Opens an interactive shell with mise ready for `mise use -g ...`. |
 
@@ -64,7 +64,7 @@ Without `--host-script`, the sandbox starts an interactive bash shell in its
 persistent home. Any executable host script can be selected by its path.
 
 Codex setup installs guest-owned shell rules in `.codex/rules/safeyolo-guest.rules`
-so its command heuristics allow ordinary shell cleanup inside SafeYolo. Host rules
+so its command heuristics allow ordinary shell cleanup inside SafeYOLO. Host rules
 are not imported. Organization-managed restrictions and Codex model modes that
 ignore local allow rules can still reject commands.
 
@@ -84,7 +84,7 @@ Malformed settings JSON recovers to defaults; missing or invalid host identity
 metadata leaves the retained agent identity intact. Claude credentials still use
 the explicit sharing path described below.
 
-After updating the installed SafeYolo bundle, an existing Claude agent receives
+After updating the installed SafeYOLO bundle, an existing Claude agent receives
 these defaults when you stop it and reapply `assets/contrib/claude-host-setup.sh`
 with `agent configure --host-script`, as shown above. Restart the agent to use
 the updated settings. No manual settings-file edit is required.
@@ -98,12 +98,12 @@ selection also suppresses host Claude state copying on setup reapply. Use
 `agent auth NAME` to configure this choice through the host guide.
 
 With `SAFEYOLO_CLAUDE_COPY_HOST_STATE=0`, the shipped Claude script prepares guest
-defaults and SafeYolo context without reading host Claude state. Existing agent
+defaults and SafeYOLO context without reading host Claude state. Existing agent
 authentication stays in place. With copying enabled, the host helper replaces
 credential files through private temporary files with mode `0600`. Extension
 files use atomic replacement too; a destination directory link stops copying.
 Host skills named `safeyolo`, `safeyolo-lab-controller`, `safeyolo-factory`, or `job-authoring`
-are skipped because SafeYolo stages those shared skills itself. Other host
+are skipped because SafeYOLO stages those shared skills itself. Other host
 skills keep the existing copy behavior.
 
 ### First Codex login
@@ -140,12 +140,12 @@ Then return to the Codex terminal. Repeat the login and adoption commands after
 an explicit authentication reset. The coordinated setup requires the same agent
 to complete this normal Codex login before selecting `codex-coord-host-setup.sh`.
 
-Codex routing discovery can require credential approval during startup. SafeYolo
+Codex routing discovery can require credential approval during startup. SafeYOLO
 holds the routing `GET /backend-api/wham/accounts/check` for up to 30 seconds
 while its credential approval is pending. Use the trusted host controls to inspect
-and approve or reject the request. Once approval is active, SafeYolo returns a
+and approve or reject the request. Once approval is active, SafeYOLO returns a
 temporary redirect to the same URL. If the run or policy changes during the wait,
-SafeYolo also redirects the GET so the current checks decide it. Codex follows
+SafeYOLO also redirects the GET so the current checks decide it. Codex follows
 the redirect without restarting the client. The redirect does not grant access
 or send the original request upstream. Current checks can still refuse the new
 GET. Rejection or timeout retains the ordinary approval response. Codex's own
@@ -181,7 +181,7 @@ the script, repeat `agent create` for a new agent or `agent configure
 
 ## What to write
 
-SafeYolo separates its compact, always-on [sandbox baseline](../docs/AGENTS.md)
+SafeYOLO separates its compact, always-on [sandbox baseline](../docs/AGENTS.md)
 from detailed operational workflows in the [safeyolo skill](../cli/src/safeyolo/agent_context/skills/safeyolo/SKILL.md).
 The baseline covers environment invariants and security boundaries; the skill
 covers Agent API, flow, gateway, collaboration, and troubleshooting operations.
@@ -200,7 +200,7 @@ Typical tasks:
    selected agent process.
 
 First-party integrations also source `contrib/lib/stage-safeyolo-context.sh`
-to install SafeYolo's compact baseline and managed skills. Pass `codex`,
+to install SafeYOLO's compact baseline and managed skills. Pass `codex`,
 `claude`, `pi`, or `none` to select the agent-specific discovery links:
 
 ```sh
@@ -245,7 +245,7 @@ The helper also stages repository guidance beside the command. A checkout's
 `repo-map.toml` takes precedence. If that file is absent, installed guidance
 applies only when its `project` matches the checkout's `pyproject.toml` project
 name. This is hint selection, not repository authorization. Query output names
-the guidance file used; unrelated repositories do not receive SafeYolo hints.
+the guidance file used; unrelated repositories do not receive SafeYOLO hints.
 
 Sketch:
 
@@ -284,7 +284,7 @@ guest shell. For boot-only work use `agent start NAME --sandbox-only`; it invoke
 no coding agent, host launcher, or launch hooks.
 
 The bundled `codex-coord-host-setup.sh` and `pi-coord-host-setup.sh` setups
-explicitly select the SafeYolo runtime supervisor. Guest PID 1 owns that
+explicitly select the SafeYOLO runtime supervisor. Guest PID 1 owns that
 supervisor, which runs the Coord supervisor and its bounded harness turns. Existing recovery and
 intentional-stop handling remain unchanged. The setups retain a separate
 `.safeyolo-interactive-command` for Command Centre's **Debug Agent** action;
@@ -319,7 +319,7 @@ A healthy existing Aqua selection is reused. Explicit native specs keep their
 selected backend and archive. Reentry repairs
 missing required executables and reuses a healthy selected version.
 
-During public installation with `--launch --harness codex`, SafeYolo can fetch,
+During public installation with `--launch --harness codex`, SafeYOLO can fetch,
 verify and extract the complete Linux client while acquiring the host and guest.
 Apple Silicon hosts acquire the Linux ARM64 package. After setup consent, launch
 moves this payload into the new agent home. A healthy installed selection keeps
@@ -381,7 +381,7 @@ setting. `SAFEYOLO_CODEX_NPM_PACKAGE` selects the Alpine package and version;
 it also supplies the other platform's selection. A healthy Codex installation
 is reused. A missing or broken installation is repaired at the selected version.
 
-This `sudo` is guest-only. On rootless Linux, SafeYolo's compatibility helper
+This `sudo` is guest-only. On rootless Linux, SafeYOLO's compatibility helper
 uses `setpriv` to reach namespace uid 0, which maps to a subordinate host uid;
 on hardware microVMs it delegates to ordinary distro sudo. Host scripts should
 use `sudo -n` for noninteractive guest package setup and must not instruct the
@@ -401,7 +401,7 @@ sessions, extensions, and prompts in the agent-local `~/.pi/agent/` directory.
 It does not inspect or copy host `~/.pi` state. From an interactive Pi session, use
 `/login` and `/logout` for the agent's own provider session; never copy a
 credential from another agent or from the host. The launcher starts Pi with
-`--approve` and appends the SafeYolo baseline. Arguments supplied later by the
+`--approve` and appends the SafeYOLO baseline. Arguments supplied later by the
 user are forwarded unchanged and can alter Pi's trust behavior.
 
 For a factory role, `pi-coord-host-setup.sh` adds the approved role contract

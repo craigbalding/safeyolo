@@ -1,4 +1,4 @@
-# SafeYolo Future Ideas
+# SafeYOLO Future Ideas
 
 **Status**: Ideas under consideration, not committed features. These solve real problems but aren't prioritized yet. Kept here to avoid forgetting them.
 

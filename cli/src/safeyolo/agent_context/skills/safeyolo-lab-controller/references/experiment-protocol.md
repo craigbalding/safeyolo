@@ -95,7 +95,7 @@ Stop fault injection and diagnose the baseline when:
 
 - the known-good path no longer works;
 - restoration cannot be proven;
-- a mutation would cross the outer SafeYolo boundary;
+- a mutation would cross the outer SafeYOLO boundary;
 - the next action requires authority not already granted;
 - credential values would need to be exposed;
 - the target of a destructive action cannot be resolved unambiguously.

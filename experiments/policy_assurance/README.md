@@ -6,7 +6,7 @@ environment to run the commands below. The current Rust cutover tree does not
 run these experiments or its retired `tools.policy_chaos` wrapper.
 
 These experiments evaluate which testing techniques genuinely detect policy
-security failures under SafeYolo's documented threat model. They are not part of
+security failures under SafeYOLO's documented threat model. They are not part of
 the normal pytest collection and do not assume that the current implementation
 is correct.
 

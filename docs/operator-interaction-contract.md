@@ -112,7 +112,7 @@ detailed requirements and acceptance evidence in their owning issues.
 
 ## Sources
 
-These requirements apply established guidance to SafeYolo's operator journeys:
+These requirements apply established guidance to SafeYOLO's operator journeys:
 
 - [Command Line Interface Guidelines](https://clig.dev/): human-first defaults,
   discoverability, concise feedback, interactive assistance and scriptability.

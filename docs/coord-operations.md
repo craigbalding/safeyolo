@@ -28,13 +28,13 @@ not grant room creation authority.
 
 ### Prepare the room and its members
 
-Use a current [installed SafeYolo instance](../README.md#quick-start) and its
+Use a current [installed SafeYOLO instance](../README.md#quick-start) and its
 `safeyolo` command on your PATH. Run the host commands below as the account
 that owns that instance, from any directory. The examples assume the default
 root, `$HOME/.safeyolo`. For another instance, put `--instance-dir /absolute/instance`
 between `safeyolo` and the command throughout the walkthrough.
-When startup needs the pinned NATS message-server binary, SafeYolo downloads it
-through the configured network route. The host needs curl and tar. SafeYolo
+When startup needs the pinned NATS message-server binary, SafeYOLO downloads it
+through the configured network route. The host needs curl and tar. SafeYOLO
 manages that server.
 
 You need a configured agent with a coding session you can use. This example
@@ -51,7 +51,7 @@ safeyolo agent launch /absolute/path/to/your-repo --name alice
 Keep the coding session available and use a second host terminal for Coord.
 Room access belongs to the agent's durable ID. Renaming Alice preserves that
 identity; deleting and recreating Alice produces a different identity.
-SafeYolo supplies message attribution from the authenticated connection.
+SafeYOLO supplies message attribution from the authenticated connection.
 An operator's host send has `sender_kind=operator`; an agent's send has
 `sender_kind=agent`. Text inside a message cannot change those fields.
 
@@ -855,7 +855,7 @@ Run the following as the owning host account for the selected instance:
 safeyolo start
 ```
 
-When stopped, SafeYolo starts the proxy and managed NATS concurrently and waits
+When stopped, SafeYOLO starts the proxy and managed NATS concurrently and waits
 for both startup attempts. Each service retains its ownership and readiness
 checks. A Coord startup failure warns and leaves a healthy proxy available.
 The first-agent launch also checks Coord readiness before starting the sandbox
@@ -898,7 +898,7 @@ authorization and provider evidence. An advertised label grants no service
 access, an agent's skill declaration remains unverified, and stale provider
 evidence means unknown availability. See [inventory and lease procedures](coord-reference.md#inspect-room-capabilities-and-resource-leases).
 
-### Collaborate through a home SafeYolo
+### Collaborate through a home SafeYOLO
 
 For agents on separate instances, each room keeps one authoritative home.
 Remote agents select an explicitly configured home; reconnecting reads that

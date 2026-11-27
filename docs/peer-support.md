@@ -44,10 +44,10 @@ informs the operator's choice and does not prohibit combinations.
 
 Guest administration can read and change secrets present in the target. It
 can also use the target's authorized service-gateway permissions. The outer
-SafeYolo vault remains protected when it is on the owning host outside the
+SafeYOLO vault remains protected when it is on the owning host outside the
 guest. A support grant adds no vault-management or Admin API operation.
 
-If a nested SafeYolo stores its vault inside the administered guest, that
+If a nested SafeYOLO stores its vault inside the administered guest, that
 vault is within guest filesystem authority. Accessible local-key vault files
 and their key permit plaintext recovery. Locked passphrase ciphertext alone
 does not permit plaintext recovery. Writable vault files can still be changed
@@ -289,7 +289,7 @@ unreachable routes and refused disclosure as unknown. A missing run, route, brok
 can prevent execution without erasing the grant. Later capabilities given to a
 controlled target can intentionally expand standing authority.
 
-The report models declared SafeYolo guest control and scoped approval composition.
+The report models declared SafeYOLO guest control and scoped approval composition.
 It includes known shared writable-data warnings from the owner's existing metadata.
 It does not exhaustively analyze guest programs, arbitrary files, external APIs
 or undeclared owners. Host gateway injection permits scoped credential **use**;
@@ -397,7 +397,7 @@ shared-home/PID-1 health probe without SSH. It requires a verified live target
 and idle command supervision. It does not replace an active command or grant
 privileged host access. Its process and SSH-banner observations are guest
 evidence; a successful probe is not a completed repair.
-After a successful probe, SafeYolo restores the previous terminal harness
+After a successful probe, SafeYOLO restores the previous terminal harness
 observation without rerunning its command. The run, launch and current support
 authority must still match. Repair the diagnosed guest fault, then deliberately
 select an authorized `start_harness` or `restart_harness` action. Verify the
@@ -432,7 +432,7 @@ grant without rebinding the original execution to its new run.
 
 The process owns an admitted operation even if its HTTP caller disconnects.
 Disconnecting that caller is not command cancellation. The operation can keep
-running. If a command times out, SafeYolo stops its host transport; that does
+running. If a command times out, SafeYOLO stops its host transport; that does
 not prove that guest descendants stopped. No automatic rollback is performed.
 
 Private receipts under the owning instance's `data/support-operations` retain

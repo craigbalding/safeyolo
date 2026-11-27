@@ -384,10 +384,7 @@ fn load_profile(runtime: &Path, prefix: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn runtime_access_changes(
-    runtime: &Path,
-    mapping: Mapping,
-) -> Result<Vec<(PathBuf, String, bool)>, Error> {
+fn runtime_access_paths(runtime: &Path) -> Result<Vec<(PathBuf, bool)>, Error> {
     let mut paths: Vec<_> = runtime
         .ancestors()
         .skip(1)
@@ -405,7 +402,14 @@ fn runtime_access_changes(
             true,
         )
     }));
-    paths
+    Ok(paths)
+}
+
+fn runtime_access_changes(
+    runtime: &Path,
+    mapping: Mapping,
+) -> Result<Vec<(PathBuf, String, bool)>, Error> {
+    runtime_access_paths(runtime)?
         .into_iter()
         .filter_map(|(path, file)| {
             access_change(
@@ -1140,6 +1144,14 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
         .or(available_uid
             .zip(available_gid)
             .map(|(uid, gid)| Mapping::for_bases(uid, gid)));
+    let pending_runtime_paths = runtime_access_paths(&destination)?
+        .into_iter()
+        .filter_map(|(path, file)| match path.try_exists() {
+            Ok(true) => None,
+            Ok(false) => Some(Ok((path, file))),
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let access_needed = if let Some(mapping) = planned_mapping {
         if command_path("getfacl").is_some() {
             !runtime_access_changes(&destination, mapping)?.is_empty()
@@ -1149,7 +1161,7 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
     } else {
         true
     };
-    if access_needed {
+    if access_needed || !pending_runtime_paths.is_empty() {
         changes.push("allow the selected sandbox-root UID to traverse private runtime parent directories and read or execute the selected runtime payload".into());
     }
     if kvm
@@ -1202,6 +1214,28 @@ fn prepare(root: &Path, args: &[String], applied: &mut Vec<String>) -> Result<Se
         } else if access_needed || kvm {
             eprintln!(
                 "Final ACL commands and mapped IDs will be shown after the required host tools or ID ranges are available, before those commands run."
+            );
+        }
+        if !pending_runtime_paths.is_empty() {
+            let identity = planned_mapping
+                .map(|mapping| format!("mapped guest-root UID {}", mapping.uid_base))
+                .unwrap_or_else(|| "the selected mapped guest-root UID".into());
+            eprintln!(
+                "After creating the following runtime paths, installation checks access for {identity} and adds only missing access:"
+            );
+            for (path, file) in &pending_runtime_paths {
+                eprintln!(
+                    "  {}: {}",
+                    if *file {
+                        "read and execute runtime file"
+                    } else {
+                        "traverse directory (not list or read files)"
+                    },
+                    path.display()
+                );
+            }
+            eprintln!(
+                "A directory ACL covers the whole named directory. These ACLs persist until removed; other principals keep their effective permissions. Exact ACL commands are shown when the paths exist, before they run."
             );
         }
         eprintln!(

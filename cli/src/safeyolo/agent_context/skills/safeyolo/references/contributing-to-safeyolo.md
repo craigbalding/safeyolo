@@ -1,10 +1,10 @@
-# Contributing to the SafeYolo repo
+# Contributing to the SafeYOLO repo
 
-Load this when you are editing files in the SafeYolo checkout itself
+Load this when you are editing files in the SafeYOLO checkout itself
 (source under `cli/src/safeyolo/`, `guest/`, `scripts/`; user-facing
-docs; CI configs). Do not load for unrelated project work — SafeYolo
+docs; CI configs). Do not load for unrelated project work — SafeYOLO
 being the sandbox boundary does not mean every task inside it is
-SafeYolo development.
+SafeYOLO development.
 
 Before implementation or review, read the target checkout's root `AGENTS.md`,
 including "Security boundaries and operator policy". Keep unrequested policy

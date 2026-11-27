@@ -422,7 +422,7 @@ execution 16032 at `69fa02a5`. The recipe below is for changed behavior, not a
 request to repeat the accepted controls.
 
 Docker 26.1.5's [API error decoder](https://github.com/moby/moby/blob/v26.1.5/client/request.go#L188-L221)
-reads JSON failures from `message`. SafeYolo adds that field to its local Docker
+reads JSON failures from `message`. SafeYOLO adds that field to its local Docker
 failure replies while retaining their existing fields, status and attribution
 headers. It uses the existing sanitized diagnostic, or a local refusal message
 when the error is structured. Daemon responses pass through unchanged. The
@@ -475,7 +475,7 @@ builder's focused tests and four-target build with its existing Bazel output
 root, architecture configuration, opt profile and one job.
 
 The compatible runtime version marker remains
-`release-20261005.0-safeyolo.1`. Record the actual SafeYolo source, both patch
+`release-20261005.0-safeyolo.1`. Record the actual SafeYOLO source, both patch
 inputs and all four output hashes; that version string alone does not distinguish
 the repaired runtime from the defective donor. Acquisition now includes the new
 patch in its cache key. Do not relabel or reuse an unmodified runtime as repaired.

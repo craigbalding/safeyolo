@@ -1,7 +1,7 @@
 # Notifications
 
 The optional Python ntfy notifier and approval-button listener were removed
-with SafeYolo's Python retirement. Their scripts and commands are
+with SafeYOLO's Python retirement. Their scripts and commands are
 no longer available.
 
 Use [operator commands](../../docs/operator-guide.md) to inspect and

@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 
-pub const HELP: &str = "safeyolo [--instance-dir PATH] factory setup FILE [--workspace ROLE=PATH ...] [--preview] [--yes] [--login ROLE ...] [--confirm-fresh-identity]\nsafeyolo [--instance-dir PATH] factory check FILE\nsafeyolo [--instance-dir PATH] factory approve FILE [--yes]\nsafeyolo [--instance-dir PATH] factory prepare NAME --workspace ROLE=PATH [--workspace ROLE=PATH ...] [--dangerously-allow-unowned]\nsafeyolo [--instance-dir PATH] factory login NAME ROLE\nsafeyolo [--instance-dir PATH] factory run NAME [--workspace ROLE=PATH ...] [--confirm-fresh-identity]\nsafeyolo [--instance-dir PATH] factory doctor|stop NAME\nsafeyolo [--instance-dir PATH] factory send NAME TEXT\nsafeyolo [--instance-dir PATH] factory history NAME [--since SEQUENCE]\nsafeyolo [--instance-dir PATH] factory release NAME --target URL [--target URL ...] [--room ROOM] [--yes]\n\nsetup guides the selected contract through approval, preparation, role-local authentication and supervised start. --preview shows contract changes and current role observations without changes. Select --preview --json for complete proposed/previous contracts, or type details before approval. --yes approves only the snapshot; it does not confirm fresh identities. Repeat setup to reuse valid staging, identities, workspaces and checkpoints.\ncheck validates the contract. approve selects its immutable content; it does not start roles.\nprepare provisions declared agents, rooms and staging without starting a model. Each harness needs its own agent-local login.\nrun starts the approved roles and verifies their actual readiness. Missing checkpoints require --confirm-fresh-identity once, only when those roles' configured identities or memberships have never received targeted attention in any configured room. Clearing room messages does not reset attention.\nstop preserves identities, checkpoints and messages; run restarts that same state without confirmation.\ndoctor is read-only and names the failed role or room. send targets the approved operator-input role. Direct agent diagnosis and recovery remain available.";
+pub const HELP: &str = "safeyolo [--instance-dir PATH] factory setup FILE [--workspace ROLE=PATH ...] [--preview] [--yes] [--login ROLE ...] [--confirm-fresh-identity]\nsafeyolo [--instance-dir PATH] factory check FILE [--json]\nsafeyolo [--instance-dir PATH] factory approve FILE [--yes] [--json]\nsafeyolo [--instance-dir PATH] factory prepare NAME --workspace ROLE=PATH [--workspace ROLE=PATH ...] [--dangerously-allow-unowned]\nsafeyolo [--instance-dir PATH] factory login NAME ROLE\nsafeyolo [--instance-dir PATH] factory run NAME [--workspace ROLE=PATH ...] [--confirm-fresh-identity]\nsafeyolo [--instance-dir PATH] factory doctor|stop NAME\nsafeyolo [--instance-dir PATH] factory send NAME TEXT\nsafeyolo [--instance-dir PATH] factory history NAME [--since SEQUENCE]\nsafeyolo [--instance-dir PATH] factory release NAME --target URL [--target URL ...] [--room ROOM] [--yes]\n\nsetup guides the selected contract through approval, preparation, role-local authentication and supervised start. --preview shows contract changes and current role observations without changes. Select --preview --json for complete proposed/previous contracts, or type details before approval. --yes approves only the snapshot; it does not confirm fresh identities. Repeat setup to reuse valid staging, identities, workspaces and checkpoints.\ncheck validates the contract. approve selects its immutable content; it does not start roles. Select --json for the complete check or approval receipt; approval prompts stay on stderr.\nprepare provisions declared agents, rooms and staging without starting a model. Each harness needs its own agent-local login.\nrun starts the approved roles and verifies their actual readiness. Missing checkpoints require --confirm-fresh-identity once, only when those roles' configured identities or memberships have never received targeted attention in any configured room. Clearing room messages does not reset attention.\nstop preserves identities, checkpoints and messages; run restarts that same state without confirmation.\ndoctor is read-only and names the failed role or room. send targets the approved operator-input role. Direct agent diagnosis and recovery remain available.";
 
 fn codex() -> String {
     "codex".into()
@@ -314,30 +314,33 @@ fn load_snapshot(root: &Path, name: &str, id: &str) -> Result<(Snapshot, PathBuf
     }
     Ok((snapshot, path))
 }
-fn describe(snapshot: &Snapshot) -> Result<(), Error> {
-    println!(
-        "factory={} room={} snapshot={}",
+fn describe(snapshot: &Snapshot) -> Result<String, Error> {
+    use std::fmt::Write as _;
+    let mut description = format!(
+        "factory={} room={} snapshot={}\n",
         snapshot.name,
         snapshot.room,
         snapshot.id()?
     );
     for (name, role) in &snapshot.roles {
-        println!(
+        writeln!(
+            description,
             "role={name} agent={} harness={} args={} contract={} bytes={} sha256={}",
             role.agent,
             role.harness,
             serde_json::to_string(&role.args)?,
-            role.contract,
+            serde_json::to_string(&role.contract)?,
             role.contract_bytes,
             role.contract_sha256
-        );
+        )?;
     }
-    println!(
+    writeln!(
+        description,
         "operator_input=operator to={} types={}",
         snapshot.operator_input.to,
         snapshot.operator_input.types.join(",")
-    );
-    Ok(())
+    )?;
+    Ok(description)
 }
 
 #[derive(Default)]
@@ -986,8 +989,8 @@ async fn release(
     Ok(())
 }
 fn confirm(prompt: &str) -> Result<(), Error> {
-    print!("{prompt}");
-    std::io::stdout().flush()?;
+    eprint!("{prompt}");
+    std::io::stderr().flush()?;
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
     if !["y", "yes"].contains(&input.trim().to_ascii_lowercase().as_str()) {
@@ -1015,8 +1018,17 @@ pub async fn run(config: &Path, args: &[String]) -> Result<(), Error> {
             [kind,file,rest @ ..] if kind=="check" || kind=="approve" => {
                 if kind=="check" && !rest.is_empty() || kind=="approve" && !rest.is_empty() && rest!=["--yes"] { return Err("usage: factory check FILE | approve FILE [--yes]".into()); }
                 let snapshot = load_file(Path::new(file))?;
-                describe(&snapshot)?;
-                if kind=="approve" { if rest.is_empty() { confirm("Approve this exact Factory contract? [y/N] ")?; } let path=approve(&root,&snapshot)?; println!("Approved snapshot={}.json at {}; roles have not been started",snapshot.id()?,path.display()); }
+                let json = crate::operator_output::json_requested();
+                if !json { print!("{}", describe(&snapshot)?); }
+                if kind=="approve" {
+                    if rest.is_empty() {
+                        if json { eprint!("{}", describe(&snapshot)?); }
+                        confirm("Approve this exact Factory contract? [y/N] ")?;
+                    }
+                    let path=approve(&root,&snapshot)?;
+                    if json { crate::operator_output::json(&json!({"approved":true,"snapshot_id":snapshot.id()?,"path":path,"contract":snapshot,"roles_started":false}))?; }
+                    else { println!("Approved snapshot={}.json at {}; roles have not been started",snapshot.id()?,path.display()); }
+                } else if json { crate::operator_output::json(&json!({"valid":true,"snapshot_id":snapshot.id()?,"contract":snapshot}))?; }
                 Ok(())
             }
             [kind,name,options @ ..] if kind=="prepare" || kind=="run" => {

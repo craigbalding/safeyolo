@@ -1,8 +1,8 @@
-# SafeYolo Tests
+# SafeYOLO Tests
 
 ## Blackbox Tests (`blackbox/`)
 
-End-to-end security verification — SafeYolo's trust anchor. Runs the real
+End-to-end security verification — SafeYOLO's trust anchor. Runs the real
 proxy, real firewall, real microVM. Split across two execution domains:
 
 - **Host pytest** (`blackbox/host/`) — proxy functional tests (credential guard, network guard)

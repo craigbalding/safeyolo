@@ -1,8 +1,8 @@
 # Host execution contract
 
-The `safeyolo.host-execution/v1` contract connects an issuing SafeYolo instance
+The `safeyolo.host-execution/v1` contract connects an issuing SafeYOLO instance
 to a named execution target. The target can run independently or alongside
-SafeYolo. The maintained types and validators are in
+SafeYOLO. The maintained types and validators are in
 [`host-executor`](../host-executor/src/lib.rs). The proxy's
 [`host_execution`](../proxy/src/host_execution.rs) module reuses those types and
 owns the service projections. `schemas()` derives the JSON schemas from the
@@ -22,7 +22,7 @@ HTTPS and starter workflows. Integrated platform qualification remains part of
 
 | Owner | Authoritative inputs and decisions |
 |---|---|
-| Issuing SafeYolo instance | Durable instance/agent identities; current host-observed agent run and selected task; policy, grants, checks, assessments and approvals; issuer signing credential. |
+| Issuing SafeYOLO instance | Durable instance/agent identities; current host-observed agent run and selected task; policy, grants, checks, assessments and approvals; issuer signing credential. |
 | Target operator | Durable target identity; enrolled issuers and public keys; adopted package bytes; maximum operation scope and budgets; maximum authority age. |
 | Target executor | Fresh authenticated issuer-authority observations; atomic admission/usage and replay records; job lifecycle, output and actual native enforcement. |
 | Calling agent | Typed argument choices and untrusted rationale. Agent labels and prose establish no identity or scope. |
@@ -32,7 +32,7 @@ each issuer to named Ed25519 public keys using the existing credential and
 configuration owners. The private signing key stays outside agent sandboxes.
 No certificate authority or new approval protocol is required. A standalone
 target keeps its operator-owned trust, adoption and ceiling configuration; it
-does not become a second SafeYolo policy owner.
+does not become a second SafeYOLO policy owner.
 
 An issuer adapter must derive the principal from trusted ingress and current
 run state, using the existing `AgentRun` identity. It must bind the selected task
@@ -104,7 +104,7 @@ validation; it does not qualify an HTTPS deployment.
 
 ## Agent gateway entry point
 
-On a running Unix SafeYolo host, the operator uses the existing policy owner to
+On a running Unix SafeYOLO host, the operator uses the existing policy owner to
 adopt a `host_bindings` table. Each value is an encoded JSON binding document.
 Installed capability discovery exposes `host_execution_binding` and its actual
 validator. A binding selects the target's adopted `Target`, issuer, native
@@ -462,7 +462,7 @@ profiles and their disclosure remain unchanged.
 ## Standalone binary and build dependencies
 
 The standalone executable is `safeyolo-host-executor` (`.exe` on Windows).
-It does not require Python, Rust, WSL, a container runtime or a full SafeYolo
+It does not require Python, Rust, WSL, a container runtime or a full SafeYOLO
 installation on the target. Its `--version` output identifies the source commit,
 build profile and Rust target. A local build without a supplied source revision
 reports `commit=unknown`; this is not a release identity.
@@ -553,7 +553,7 @@ Discovery and proposals return the target-generated `network_enforcement`
 disclosure separately from authored effects and agent rationale. Native
 receipts retain the reached enforcement and dependencies. The target account's
 routing, firewall, VPN and service permissions remain effective. TCP is not
-automatically mediated by the issuing SafeYolo instance's proxy. Reaching a
+automatically mediated by the issuing SafeYOLO instance's proxy. Reaching a
 host-local TCP service can exercise that service's authority, which can exceed
 the job's filesystem/process bounds. A declaration or successful process start
 does not prove binding, application readiness, publication, authentication,
@@ -742,7 +742,7 @@ replacement, termination, firewall or publication authority.
 The native proxy workflow retains an executor archive for each target below,
 named `host-executor-TARGET-COMMIT`. Download the archive for the selected source
 from that workflow's artifacts. The separate `packages_only` dispatch continues
-to select full SafeYolo packages. The executor job runs during ordinary pull
+to select full SafeYOLO packages. The executor job runs during ordinary pull
 request, push, scheduled and manual contract runs. Windows binaries are built
 with the GNU cross compiler; compiling Windows tests does not run them.
 
@@ -1097,7 +1097,7 @@ From a repository checkout on Linux or macOS with the pinned Rust toolchain and
 locked dependencies available, run the following focused integration test.
 Use the repository Cargo reserve wrapper and the environment's existing reserve
 settings. The test creates owned loopback endpoints and a temporary isolated
-SafeYolo proxy. It starts no native operation or virtual machine:
+SafeYOLO proxy. It starts no native operation or virtual machine:
 
 ```sh
 scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --test host_execution -- --nocapture
@@ -1105,7 +1105,7 @@ scripts/cargo_with_space.sh test --locked --manifest-path proxy/Cargo.toml --tes
 
 The same signed client discovers, proposes, invokes, recovers a simulated lost
 reply, reads output and requests cancellation first on a standalone target,
-then on a target alongside an actual isolated SafeYolo proxy. Shared negative
+then on a target alongside an actual isolated SafeYOLO proxy. Shared negative
 fixtures exercise identity, freshness, selectors and protocol refusals. Other
 controls cover typed/default scope, package projection correspondence,
 replacement refusal, issuer collisions, budgets and terminal transitions.

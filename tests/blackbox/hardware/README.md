@@ -4,7 +4,7 @@ Run Kernel-based Virtual Machine (KVM) tests on devstack through the existing
 Rundeck acceptance harness. Run Apple Virtualization.framework (VZ) tests on
 physical Bristol through `sy-agent`. Each entry selects existing production
 host/helper and staged guest artifacts once. It uses the same installed runner
-as hosted blackbox. Neither entry builds SafeYolo, a rootfs, kernel or helper.
+as hosted blackbox. Neither entry builds SafeYOLO, a rootfs, kernel or helper.
 
 The entries adapt the independently reviewed #889 wrappers at
 `4fc6e11c07ea308d053873bbec59a07baa43e1a7`. That source review remains separate

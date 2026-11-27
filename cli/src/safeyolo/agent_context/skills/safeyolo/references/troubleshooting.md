@@ -12,7 +12,7 @@
 
 ## Classify blocked responses
 
-Most SafeYolo block responses are JSON and include `X-Blocked-By`. The 508
+Most SafeYOLO block responses are JSON and include `X-Blocked-By`. The 508
 loop-guard response is an exception and may omit that header. Prefer the JSON
 `action` and `reflection` fields over guessing from status alone.
 
@@ -22,7 +22,7 @@ loop-guard response is an exception and may omit that header. Prefer the JSON
 | `428` | Approval required or credential destination mismatch | Inspect `type` and `action`; wait only when `action` is `wait_for_approval` |
 | `429` | Rate or budget exhausted | Honor `Retry-After`, inspect `/budgets`, and back off |
 | `503` | Policy, registry, vault, circuit, or proxy dependency unavailable | Inspect `X-Blocked-By`, body, `/health`, and `/circuits` |
-| `508` | Request re-entered the SafeYolo proxy | Stop and report a proxy loop or double-proxy configuration |
+| `508` | Request re-entered the SafeYOLO proxy | Stop and report a proxy loop or double-proxy configuration |
 
 Important 428 distinctions:
 
@@ -185,7 +185,7 @@ If the guest sudo helper is missing or broken, report that specific prerequisite
 for operator repair. The shell command has no guest-root flag. Do not use
 a recovery request to bypass a policy or approval block.
 
-Do not tell the operator merely to "disable SafeYolo" or switch a guard to
+Do not tell the operator merely to "disable SafeYOLO" or switch a guard to
 warn mode. State the exact host, capability, approval, or failing hop needed.
 
 ## Protect administrative credentials

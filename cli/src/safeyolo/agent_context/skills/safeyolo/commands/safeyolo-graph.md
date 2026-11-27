@@ -1,9 +1,9 @@
 ---
 name: safeyolo-graph
-description: Review a SafeYolo triage graph against a real Claude Code session log. Walks the review DAG at references/graph/review-triage-session.yaml to extract evidence of graph adoption, classify the finding, and propose either a graph edit or a SafeYolo defect report.
+description: Review a SafeYOLO triage graph against a real Claude Code session log. Walks the review DAG at references/graph/review-triage-session.yaml to extract evidence of graph adoption, classify the finding, and propose either a graph edit or a SafeYOLO defect report.
 ---
 
-You are being asked to review a SafeYolo triage graph against real
+You are being asked to review a SafeYOLO triage graph against real
 session evidence. The review procedure is itself a DAG — same schema
 as the triage-*.yaml graphs, same traversal protocol, drift-checked
 and rendered the same way.
@@ -41,7 +41,7 @@ A single markdown response with these sections, in order:
    `cls.review_graph_overfit`, `cls.review_env_or_operator`, `cls.review_mixed`).
    One line of reasoning for why this category and not the others.
 5. **Proposed graph edits** — YAML diff blocks, or "None."
-6. **SafeYolo defect** — description + evidence + suggested severity, or "None."
+6. **SafeYOLO defect** — description + evidence + suggested severity, or "None."
 7. **Other observations** — terse bullets. Only what is useful.
 
 ## Constraints

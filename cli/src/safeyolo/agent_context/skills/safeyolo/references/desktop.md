@@ -1,8 +1,8 @@
 # Desktop and operator preview
 
-SafeYolo owns the lifecycle and security boundary for its optional graphical
+SafeYOLO owns the lifecycle and security boundary for its optional graphical
 desktop. The guest components listen only on loopback; the operator reaches
-noVNC through a token-gated SafeYolo preview.
+noVNC through a token-gated SafeYOLO preview.
 
 Guest browsers are a supported choice for webapp security testing and other
 browser tasks. Use this reference when the task needs a graphical session
@@ -43,8 +43,8 @@ lifetime in seconds:
 )
 ```
 
-SafeYolo creates a stable `action_request_id` and pending approval. Your reason
-is untrusted context. SafeYolo defines the consequences and the operator can
+SafeYOLO creates a stable `action_request_id` and pending approval. Your reason
+is untrusted context. SafeYOLO defines the consequences and the operator can
 inspect, explain, ask for context, approve or reject the same request. An eligible
 reviewer uses the same canonical approval and its host-generated `once` choice. A change
 to the URL, lifetime or selected host route requires a different approval.
@@ -72,7 +72,7 @@ reports `outcome_unknown` with a diagnostic. Reads and decision retries do not
 replay that execution. The operator must inspect the preview before a new request.
 A source that ends can later report `expired` or `revoked`.
 
-Requests bind the current trusted sandbox run and durable SafeYolo instance.
+Requests bind the current trusted sandbox run and durable SafeYOLO instance.
 Do not supply identity, route, command or approval overrides. `POST /desktop/present`
 accepts the typed parameters directly and uses the same approval owner.
 Agent-selected browser URLs remain data, not instructions.
@@ -93,7 +93,7 @@ preview's tailnet session. It cannot undo browser opening or disclosed content.
 
 The host selects a usable local display/browser or its configured tailnet
 route. A remote host without a configured route reports a prerequisite.
-SafeYolo does not enable Funnel, run privileged Tailscale setup or create a
+SafeYOLO does not enable Funnel, run privileged Tailscale setup or create a
 tunnel. A denial starts no preview and changes no permissions. If execution
 was interrupted, read the saved result before requesting again. A saved
 `starting` result does not establish that presentation completed.
@@ -157,9 +157,9 @@ workflow requires operator control.
 - Browser startup errors are written to `/tmp/chrome.log` by the core launcher.
 - Bridge startup and connection errors are written to `/tmp/desktop-bridge.log`.
 - A missing bridge indicates stale guest assets; ask the operator to
-  stop and run the agent with the current SafeYolo package.
+  stop and run the agent with the current SafeYOLO package.
 - A missing `/safeyolo/guest-desktop` indicates stale or incomplete per-run
-  guest files; ask the operator to stop and run the agent with current SafeYolo.
+  guest files; ask the operator to stop and run the agent with current SafeYOLO.
 
 Do not treat a desktop failure as a proxy-policy failure, and do not weaken the
 network boundary to repair a graphical component.

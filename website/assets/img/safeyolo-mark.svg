@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50" width="100" height="50">
+  <defs>
+    <style>
+      /* Shared styles for consistency */
+      .rail {
+        stroke: #373737; /* Dark Gray */
+        stroke-width: 6px;
+        stroke-linecap: square; /* Squared corners for rails */
+      }
+      .toggle-container {
+        fill: #FCE139; /* Safety Yellow */
+        stroke: #373737; /* Dark Gray */
+        stroke-width: 6px;
+      }
+      .toggle-knob {
+        fill: #373737; /* Dark Gray */
+      }
+    </style>
+  </defs>
+
+  <line class="rail" x1="0" y1="5" x2="100" y2="5" />
+
+  <line class="rail" x1="0" y1="45" x2="100" y2="45" />
+
+  <rect class="toggle-container" x="25" y="12" width="50" height="26" rx="13" />
+
+  <circle class="toggle-knob" cx="62" cy="25" r="7" />
+
+</svg>

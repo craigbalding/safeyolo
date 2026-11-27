@@ -265,7 +265,7 @@ separately demonstrate the enforcement facts stated in the fixture documentation
 
 ## Runtime assessment
 
-For a temporary route request, SafeYolo projects the agent's current baseline
+For a temporary route request, SafeYOLO projects the agent's current baseline
 and temporary gateway permissions, bindings and explicit denials into the adopted
 model. The candidate adds its exact method and literal path. The assessment covers
 all permitted arguments. Submitted payloads and agent explanations cannot narrow

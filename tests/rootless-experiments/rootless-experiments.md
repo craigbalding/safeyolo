@@ -175,7 +175,7 @@ Results from the disposable Kali clone used for Linux host acceptance:
 Both transports established the held WebSocket. Closing the host write side
 before reading caused all 48 HTTP responses to arrive empty, isolating a
 shared relay-lifecycle defect. Keeping it open made both transports correct.
-SafeYolo therefore keeps the relay open through the response and uses native
+SafeYOLO therefore keeps the relay open through the response and uses native
 gVisor stream donation on Linux. Operator acceptance with an image-heavy,
 complex website confirmed that pages render correctly and promptly through a
 Tailnet desktop preview. No experiment left child processes behind.
@@ -374,4 +374,4 @@ KVM ACL changes: ZERO
   ```
 
 - Status: in-sandbox probes pass in a production gVisor agent. The full
-  host-side experiment must be run from a Linux SafeYolo operator host.
+  host-side experiment must be run from a Linux SafeYOLO operator host.

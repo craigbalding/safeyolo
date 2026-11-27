@@ -1,6 +1,6 @@
 # Contained SSH development on macOS
 
-Give your SafeYolo agent a shell on a physical Mac when a VM won't do.
+Give your SafeYOLO agent a shell on a physical Mac when a VM won't do.
 The default Seatbelt profile allows development writes in the dedicated account's home and
 denies IP networking and access to other users' homes. The `sandbox-exec`
 interface is deprecated; see
@@ -17,7 +17,7 @@ and refuses service registration. Existing host processes need a separate check.
 
 ## 1. Ask your agent for an SSH key
 
-The client needs OpenSSH and `socat`, both included in the standard SafeYolo
+The client needs OpenSSH and `socat`, both included in the standard SafeYOLO
 image. Paste this into your client agent:
 
 ```text
@@ -37,7 +37,7 @@ Keep the private key inside this agent. If a command fails, report the error.
 ## 2. Set up the Mac
 
 On the Mac, use your existing administrator account for this section. You need
-Command Line Tools and a SafeYolo checkout. These commands assume
+Command Line Tools and a SafeYOLO checkout. These commands assume
 `/Users/sy-agent` and `/opt/homebrew`;
 [customize these first](REFERENCE.md#account-and-toolchain-customization) if your
 account or toolchain differs.
@@ -119,7 +119,7 @@ printf '\n%s\n' 'CLIENT_PUBLIC_KEY' | sudo tee -a /Library/PrivilegedHelperTools
 sudo chmod 644 /Library/PrivilegedHelperTools/seatbelt-agent/authorized_keys
 ```
 
-[Authorize the SSH route](REFERENCE.md#approved-ssh-route) on the SafeYolo host.
+[Authorize the SSH route](REFERENCE.md#approved-ssh-route) on the SafeYOLO host.
 Replace `mac.example.net` and `22` below with the approved destination as seen
 by the proxy.
 

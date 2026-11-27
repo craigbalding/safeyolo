@@ -9,7 +9,7 @@ Claude witness. Independent acceptance remains with Lens.
 | --- | --- | --- |
 | PoC1: native proxy supervision | **FAIL** for the temporary direct held launch controlled by native stop. Normal native CLI launch, detached operation, later stop, identity controls, diagnostics and cleanup passed on Bristol. | The direct held launch needs an identity and a working stop path before readiness. Its result does not establish failure of the normal CLI's separate startup timeout and child-kill path. Do not widen Seatbelt permissions. |
 | PoC2: PTY and screen state | **PASS** in the bounded probes: deterministic fixture, actual Codex 0.159.1 and operator-run Claude Code 2.1.304. | This combination supports the selected terminal behavior. Reuse it for PoC3. These finite results do not qualify a production terminal implementation. |
-| PoC3: SafeYolo session lifecycle | **PASS** on one real Bristol VZ guest, with two same-size viewers, either viewer disconnected, proxy restart, original identity and later attach reporting exit 23. | The same prototype fits the tested trusted entrypoint. Keep viewer and keeper lifetime separate. Production integration remains separate work. |
+| PoC3: SafeYOLO session lifecycle | **PASS** on one real Bristol VZ guest, with two same-size viewers, either viewer disconnected, proxy restart, original identity and later attach reporting exit 23. | The same prototype fits the tested trusted entrypoint. Keep viewer and keeper lifetime separate. Production integration remains separate work. |
 
 ## PoC1: direct held launch lacks a native stop record
 
@@ -275,7 +275,7 @@ native `agent start bbtest --foreground`. That command prepared the host-owned
 launch record and called the existing `run_entrypoint`. The entrypoint used
 the normal SSH guest transport and `safeyolo-guest observe exec` to run the
 configured guest command. The command printed its PID and kernel start time,
-answered terminal input, and returned 23 on request. It was a real SafeYolo
+answered terminal input, and returned 23 on request. It was a real SafeYOLO
 guest command; PoC3 needed no further model session.
 
 The isolated instance had no `bin/tmux`. `TMUX` and `TMUX_PANE` were unset.
@@ -364,7 +364,7 @@ before removing it. Do not delete the prepared inputs or warm build targets.
 ## Finite implementation decision
 
 The selected `pty-process` + `vt100` component supports the tested terminal
-and SafeYolo lifecycle requirements. Keep that combination if implementation
+and SafeYOLO lifecycle requirements. Keep that combination if implementation
 proceeds. Differently sized simultaneous viewers, broader terminal compatibility,
 and production session integration remain outside this experiment.
 

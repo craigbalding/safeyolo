@@ -3,7 +3,7 @@
 Read this reference only when testing coord waits, attention cursors,
 continuation turns, queued work, or harness/MCP absence.
 
-Follow the installed SafeYolo coord guidance for room membership, envelope
+Follow the installed SafeYOLO coord guidance for room membership, envelope
 attribution, foreground waiting, and task authority.
 
 ## Cursor and completion are separate

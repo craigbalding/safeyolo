@@ -1,6 +1,6 @@
 # TLS certificate management
 
-SafeYolo intercepts HTTPS at its mediated proxy. The client trusts the
+SafeYOLO intercepts HTTPS at its mediated proxy. The client trusts the
 instance's signing CA; the proxy makes a separate verified TLS connection to
 the origin. TLS verification or parsing failure does not select passthrough.
 

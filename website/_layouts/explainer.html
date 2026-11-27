@@ -1,0 +1,27 @@
+---
+layout: default
+---
+<section class="pagehead">
+  <div class="wrap">
+    <p class="crumbs"><a href="/how-it-works/">How it works</a> · {{ page.part_name }}</p>
+    <h1>{{ page.headline }}</h1>
+    <p class="lede">{{ page.lede }}</p>
+  </div>
+</section>
+<section class="band">
+  <div class="wrap withmap">
+    <div class="body">
+{{ content }}
+      <h2>Go deeper</h2>
+      <ul class="linkrow">{% for doc in page.docs %}<li><a href="{{ doc.url }}">{{ doc.title }}</a></li>{% endfor %}</ul>
+{% if page.journey %}
+      <h2>On the journey</h2>
+      <ul class="linkrow">{% for stop in page.journey %}<li><a href="{{ stop.url }}">{{ stop.title }}</a></li>{% endfor %}</ul>
+{% endif %}
+    </div>
+    <aside>
+      <div class="map-frame">{% include map.html %}</div>
+      <p>This part is highlighted. Select any other part to read about it.</p>
+    </aside>
+  </div>
+</section>

@@ -20,7 +20,7 @@ Set `SNAPSHOT_REQUEST_ID` to that original `req-` identifier. In an environment
 with Python 3, the following command writes a private assessment request and
 reads its result. If the guest has no JSON encoder, prepare the request on the
 owning host and transfer it privately to the guest. Run `safeyolo-coord` in the
-same guest run as the approved disclosure. Python is not a SafeYolo runtime
+same guest run as the approved disclosure. Python is not a SafeYOLO runtime
 dependency.
 
 ```sh
