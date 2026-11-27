@@ -686,7 +686,7 @@ async fn normal_watch_renders_host_consequences_and_decides_exact_content() {
         .await;
     terminal.send("1\n");
     let rendered = terminal
-        .until(0, "Request #1: approve apply / reject")
+        .until(0, "Request #1 [choice / d / r / l / q]")
         .await;
     let changes = &rendered[rendered
         .find("configured agents:")
@@ -840,7 +840,9 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
             );
         } else {
             f.apply(&source.replace("budget=40", "budget=42")).await;
-            let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            let executable = std::env::var_os("SAFEYOLO_NATIVE_CLI")
+                .unwrap_or_else(|| env!("CARGO_BIN_EXE_safeyolo").into());
+            let output = tokio::process::Command::new(executable)
                 .args([
                     "--instance-dir",
                     f.root.path().to_str().unwrap(),
@@ -855,13 +857,8 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
                 .output()
                 .await
                 .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let outcome: Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert_eq!(outcome["status"], "stale", "{outcome}");
+            assert!(!output.status.success());
+            assert!(String::from_utf8_lossy(&output.stderr).contains("Approval is stale"));
         }
         let retained = client(&f, "worker")
             .call("read_policy_change", &json!({"request_id":op}))

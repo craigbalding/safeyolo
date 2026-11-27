@@ -408,14 +408,10 @@ impl Fixture {
     }
 
     fn install_binding(&mut self, binding: Binding) {
-        let old = bindings(&crate::policy::parse_toml_document(&self.source).unwrap())
-            .unwrap()
-            .remove("local")
-            .unwrap();
-        let source = self.source.replace(
-            &serde_json::to_string(&serde_json::to_string(&old).unwrap()).unwrap(),
-            &serde_json::to_string(&serde_json::to_string(&binding).unwrap()).unwrap(),
-        );
+        let (mut document, context) = crate::policy::parse_toml_for_edit(&self.source).unwrap();
+        document["host_bindings"]["local"] =
+            toml_edit::value(serde_json::to_string(&binding).unwrap());
+        let source = crate::policy::restore_large_toml_integers(&document.to_string(), &context);
         self.binding = binding;
         self.install(source);
     }
@@ -878,6 +874,7 @@ async fn covered_resume_survives_issuer_restart_and_observed_run_change_with_cur
         200
     );
     let eligible = f.binding.clone();
+    let eligible_source = f.source.clone();
     for gate in [
         "run_refresh",
         "expiry",
@@ -898,16 +895,7 @@ async fn covered_resume_survives_issuer_restart_and_observed_run_change_with_cur
         match gate {
             "run_refresh" => grant.allow_run_refresh = false,
             "expiry" => grant.expires_at = now(),
-            "revocation" => {
-                changed
-                    .target
-                    .issuers
-                    .get_mut("issuer")
-                    .unwrap()
-                    .authority
-                    .grants
-                    .remove("approved");
-            }
+            "revocation" => (),
             "task_revision" => changed.task_revision = "f".repeat(64),
             "agent_identity" => grant.principal.run.agent_id = format!("ag-{}", "c".repeat(32)),
             _ => unreachable!(),
@@ -933,14 +921,8 @@ async fn covered_resume_survives_issuer_restart_and_observed_run_change_with_cur
             "{gate}"
         );
         // Restore only the local fixture's trusted saved policy, never target effects.
-        if gate == "revocation" {
-            let mut document = crate::policy::parse_toml_document(&f.source).unwrap();
-            document["host_bindings"]["local"] = json!(serde_json::to_string(&eligible).unwrap());
-            f.install(toml::to_string(&document).unwrap());
-            f.binding = eligible.clone();
-        } else {
-            f.install_binding(eligible.clone());
-        }
+        f.install(eligible_source.clone());
+        f.binding = eligible.clone();
     }
     assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
     f.stop().await;

@@ -165,8 +165,8 @@ review. It never gives the agent Admin credentials or adoption authority.
 The setup operation and subsequent policy-change operation remain distinct;
 retain both results. The host helper's `setup-status` reads preparation;
 `setup-status --submitted` reads the original policy-change request through
-`GET /approvals/{operation_id}`. A setup failure carries its generated operation
-identity and the matching recovery command. A notification cannot select either
+`GET /approvals/{operation_id}`. For a lost or refused reply, the helper carries
+its generated operation identity and the matching recovery command. A notification cannot select either
 effect for replay.
 
 An adopted binding can select `resume_task` and a separately labelled agent
