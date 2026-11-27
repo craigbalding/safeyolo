@@ -130,7 +130,9 @@ as an explicit decision to share the files that the selected script copies.
 Agents have no direct internet access. Each sandbox has no external network
 interface. Its only egress path is a host-owned, per-agent Unix domain socket
 that routes through SafeYOLO. No host firewall rule participates in this
-boundary.
+boundary. On Linux, SafeYOLO bundles a gVisor runtime with
+[three patches](docs/ARCHITECTURE.md#bundled-patched-gvisor); one limits host
+Unix-domain socket access to that proxy socket's directory.
 
 The host creates each managed proxy socket at
 `~/.safeyolo/agents/<agent-name>/proxy/proxy.sock`. The native listener
