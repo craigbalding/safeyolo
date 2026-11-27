@@ -371,7 +371,7 @@ def test_removed_service_keeps_old_challenge_readable_and_new_requests_visible(t
             output = bytearray()
             assert wait_terminal_exit(process, master, output, timeout=10) == 0
             assert b"Current assessment is unavailable" in output and b"superseded" in output
-        assert _decide(fixture, challenge, status=409)["status"] == "superseded"
+        assert _decide(fixture, challenge, status=200 if phase == "challenged" else 409)["status"] == "superseded"
         assert _admin(fixture, "GET", "/admin/approvals")["approvals"] == []
 
         target = f"http://127.0.0.1:{fixture.port}/ordinary-request"
