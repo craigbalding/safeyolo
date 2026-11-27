@@ -56,6 +56,15 @@ def test_each_claim_source_is_accepted(repo: Path) -> None:
     assert mod.check() == []
 
 
+@pytest.mark.parametrize("front", [
+    "claims:\n- 'BB-01'\n- \"decision:identity\"\n",
+    "claims: [BB-01, 'factory:FACTORY-X']\n",
+])
+def test_yaml_claim_lists_are_accepted(repo: Path, front: str) -> None:
+    page(repo, front)
+    assert mod.main() == 0
+
+
 @pytest.mark.parametrize(("front", "problem"), [
     ("", "needs a non-empty claims list"),
     ("claims:\n", "needs a non-empty claims list"),
@@ -63,10 +72,30 @@ def test_each_claim_source_is_accepted(repo: Path) -> None:
     ("claims:\n- decision:missing\n", "unknown claim decision:missing"),
     ("claims:\n- BB-02\n", "BB-02 has no witness"),
     ("claims:\n- BB-01\n- BB-01\n", "BB-01 is listed twice"),
+    ("claims:\n- BB-01\n# another claim\n- BB-99\n", "unknown claim BB-99"),
+    ("claims:\n- BB-01\n\n- BB-01\n", "BB-01 is listed twice"),
+    ("claims:\n- BB-01 extra\n", "unknown claim BB-01 extra"),
 ])
-def test_ungrounded_pages_fail(repo: Path, front: str, problem: str) -> None:
+def test_ungrounded_pages_fail(repo: Path, front: str, problem: str, capsys) -> None:
     page(repo, front)
-    assert any(problem in found for found in mod.check())
+    assert mod.main() == 1
+    assert problem in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("front", [
+    "claims: BB-01\n",
+    "claims: {BB-01: true}\n",
+    "claims: [BB-01, 1]\n",
+    "claims: [BB-01, null]\n",
+    "claims: [BB-01, {id: BB-02}]\n",
+    "title: [\nclaims:\n- BB-01\n",
+])
+def test_invalid_front_matter_fails_with_page_diagnostic(repo: Path, front: str, capsys) -> None:
+    page(repo, front)
+    assert mod.main() == 1
+    error = capsys.readouterr().err
+    assert "website/how-it-works/index.html: invalid front matter:" in error
+    assert "Traceback" not in error
 
 
 def test_unreadable_claim_source_exits_2(repo: Path) -> None:

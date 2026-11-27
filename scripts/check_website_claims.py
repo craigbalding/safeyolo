@@ -17,24 +17,23 @@ these IDs as the starting point.
 Exit codes
 ----------
     0  -- every page names existing, witnessed claims
-    1  -- a page is missing claims or names an unknown or unwitnessed claim
+    1  -- page claims are malformed, missing, unknown, duplicated or unwitnessed
     2  -- a claim source is missing or unparseable
 """
 
 from __future__ import annotations
 
-import re
 import sys
 import tomllib
 from pathlib import Path
+
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WEBSITE = "website"
 CONTROLS = "tests/blackbox/controls.toml"
 ASSURANCE_MAP = "docs/assurance-map.toml"
 TEST_ASSURANCE = "tests/assurance.toml"
-
-CONTROL_ID = re.compile(r"BB-\d{2}")
 
 def _load_toml(relative: str) -> dict:
     path = REPO_ROOT / relative
@@ -60,7 +59,7 @@ def known_claims() -> dict[str, str | None]:
     return claims
 
 def page_claims(text: str) -> list[str] | None:
-    """Return the front-matter claims list, or None when the key is absent."""
+    """Parse YAML claims, returning None when front matter or claims are absent."""
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return None
@@ -68,15 +67,16 @@ def page_claims(text: str) -> list[str] | None:
         end = lines.index("---", 1)
     except ValueError:
         return None
-    front = lines[1:end]
-    if "claims:" not in front:
+    front = yaml.safe_load("\n".join(lines[1:end]))
+    if front is None:
         return None
-    claims: list[str] = []
-    for line in front[front.index("claims:") + 1 :]:
-        item = re.match(r"\s*-\s+(\S+)", line)
-        if not item:
-            break
-        claims.append(item.group(1))
+    if not isinstance(front, dict):
+        raise ValueError("front matter must be a YAML mapping")
+    if "claims" not in front:
+        return None
+    claims = front.get("claims")
+    if not isinstance(claims, list) or not claims or not all(isinstance(claim, str) for claim in claims):
+        raise ValueError("front matter needs a non-empty claims list of strings")
     return claims
 
 def pages() -> list[Path]:
@@ -87,7 +87,11 @@ def check() -> list[str]:
     problems: list[str] = []
     for page in pages():
         relative = page.relative_to(REPO_ROOT)
-        claims = page_claims(page.read_text())
+        try:
+            claims = page_claims(page.read_text())
+        except (yaml.YAMLError, ValueError) as error:
+            problems.append(f"{relative}: invalid front matter: {error}")
+            continue
         if not claims:
             problems.append(f"{relative}: front matter needs a non-empty claims list")
             continue

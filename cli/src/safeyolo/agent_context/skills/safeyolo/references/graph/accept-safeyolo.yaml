@@ -1000,7 +1000,7 @@ nodes:
         - path: ruff.toml
           sha256: ec622855546870fcea36325759af749cd95480b10df98c95b6a8a95ccca73213
         - path: .pre-commit-config.yaml
-          sha256: 9bdc03c90ec54a0ee74e8cf856a53d99bbe88b2bd49b5d6ff90521efd8be23de
+          sha256: d0f380c8ea67f7e153c422c5888e6ba4cfaffd9bfbf530fc118793ce0331b254
         - path: uv.lock
           sha256: fd244df9e559bed2b211bbe93f257831fce8e1087b19cfc7d9d3da2fd1bc3050
       setup: "Use the trusted base's locked Python environment and already-approved hook dependencies."

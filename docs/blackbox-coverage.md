@@ -3576,7 +3576,7 @@ Selection: ignored by default.
 <a id="witness-proxy-src-audit-nsm-tests-rs"></a>
 ### [`proxy/src/audit/nsm/tests.rs`](../proxy/src/audit/nsm/tests.rs)
 
-Selection: [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step steps.changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+Selection: [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
 - [`cargo test --manifest-path proxy/Cargo.toml --lib audit::nsm::tests::writer_and_reader_preserve_namespace_and_many_to_one_correlation -- --exact`](../proxy/src/audit/nsm/tests.rs#L83)
 - [`cargo test --manifest-path proxy/Cargo.toml --lib audit::nsm::tests::strict_versions_kinds_payloads_and_content_boundaries -- --exact`](../proxy/src/audit/nsm/tests.rs#L186)
