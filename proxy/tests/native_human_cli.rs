@@ -55,6 +55,10 @@ types = ["DIRECTION"]
 [roles.worker]
 agent = "audit-worker"
 contract = "role.md"
+[work]
+authorities = ["worker"]
+deciders = ["worker"]
+independent = true
 "#,
     )
     .unwrap();
