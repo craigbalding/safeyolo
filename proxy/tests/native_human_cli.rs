@@ -32,6 +32,102 @@ fn stdout(output: Output) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn doctor_observes_helper_capability_identity_and_executable_terminal_without_starting() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().join("selected Mac instance");
+    stdout(cli(&root, &["init"]));
+    fs::create_dir_all(root.join("bin")).unwrap();
+    let report = || -> Value {
+        let output = cli(&root, &["doctor", "--json"]);
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.status.code().unwrap(), report["exit_code"]);
+        assert!(!root.join("data/proxy-process.json").exists());
+        report
+    };
+    let row = |report: &Value, name: &str| -> Value {
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    let absent = report();
+    assert_eq!(row(&absent, "Virtualization helper")["status"], "fail");
+    assert_eq!(
+        row(&absent, "Virtualization helper identity")["status"],
+        "skip"
+    );
+    let helper = root.join("bin/safeyolo-vm");
+    let terminal = root.join("bin/vsock-term");
+    fs::write(&terminal, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&terminal, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut identity = serde_json::json!({"schema_version":1,"helper_version":"fixture-helper",
+        "version":"0.1.0","git_sha":"0123456789012345678901234567890123456789",
+        "build_profile":"production","architecture":"arm64","get_task_allow":false,
+        "hardened_runtime":true});
+    let write_helper = |capability: &str, identity: &Value| {
+        fs::write(&helper, format!("#!/bin/sh\ncase \"$1\" in\ncheck) {capability};;\n--version) printf '%s\\n' '{identity}';;\n*) exit 99;;\nesac\n")).unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+    };
+    for (capability, status, message) in [
+        (
+            "printf 'safeyolo-vm check: ok\\n'",
+            "pass",
+            "capability check passed",
+        ),
+        (
+            "printf 'stale helper\\n'",
+            "unknown",
+            "unexpected capability",
+        ),
+        (
+            "printf 'Virtualization is not supported\\n' >&2; exit 7",
+            "fail",
+            "not supported",
+        ),
+        ("exec sleep 20", "unknown", "timed out"),
+    ] {
+        write_helper(capability, &identity);
+        let current = report();
+        let capability = row(&current, "Virtualization helper");
+        assert_eq!(capability["status"], status, "{current}");
+        assert!(
+            capability["message"].as_str().unwrap().contains(message),
+            "{current}"
+        );
+        assert_eq!(
+            row(&current, "Virtualization helper identity")["status"],
+            "pass"
+        );
+        assert_eq!(row(&current, "Interactive terminal")["status"], "pass");
+    }
+    identity["get_task_allow"] = Value::Bool(true);
+    write_helper("printf 'safeyolo-vm check: ok\\n'", &identity);
+    fs::set_permissions(&terminal, fs::Permissions::from_mode(0o600)).unwrap();
+    let warning = report();
+    let identity = row(&warning, "Virtualization helper identity");
+    assert_eq!(identity["status"], "warn");
+    assert!(
+        identity["message"]
+            .as_str()
+            .unwrap()
+            .contains("authorized debuggers")
+    );
+    assert_eq!(row(&warning, "Interactive terminal")["status"], "fail");
+    assert!(
+        row(&warning, "Interactive terminal")["next_action"]
+            .as_str()
+            .unwrap()
+            .contains(root.to_str().unwrap())
+    );
+    let human = String::from_utf8(cli(&root, &["doctor"]).stdout).unwrap();
+    assert!(human.contains("Virtualization helper identity") && human.contains("Overall:"));
+}
+
 #[test]
 fn discovery_precedes_instance_access_and_does_not_create_state() {
     let scratch = tempfile::tempdir().unwrap();

@@ -230,26 +230,7 @@ pub(crate) async fn report(path: &Path) -> Value {
             );
         }
         #[cfg(target_os = "macos")]
-        for (name, file) in [
-            ("Virtualization helper", "bin/safeyolo-vm"),
-            ("Interactive terminal", "bin/vsock-term"),
-        ] {
-            let ready = root.join(file).is_file();
-            check(
-                &mut checks,
-                name,
-                if ready { "warn" } else { "fail" },
-                if ready {
-                    "Installed input present; execution capability is established by agent diagnostics"
-                } else {
-                    "Packaged helper absent"
-                },
-                &format!(
-                    "Inspect {command} agent list, then {command} agent diagnostics NAME for actual guest/control capability; reinstall a matching package if the helper is absent."
-                ),
-                Value::Null,
-            );
-        }
+        checks.extend(macos_runtime_checks(root, &command).await);
         match crate::guest_acquisition::inspect_boot_inputs(root) {
             Ok(inputs) => check(
                 &mut checks,
@@ -600,6 +581,201 @@ pub(crate) async fn report(path: &Path) -> Value {
         "verdict":if failed { "fail" } else if counts["warn"].as_u64().unwrap_or(0) > 0 { "warn" } else { "pass" }})
 }
 
+#[cfg(target_os = "macos")]
+async fn macos_runtime_checks(root: &Path, command: &str) -> Vec<Value> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt, time::Duration};
+    use tokio::{process::Command, time::timeout};
+
+    let mut checks = Vec::new();
+    let helper = root.join("bin/safeyolo-vm");
+    let recovery = format!(
+        "Inspect the helper at {}; reinstall a matching host package if needed, then rerun {command} doctor.",
+        helper.display()
+    );
+    if helper.is_file() {
+        // Both commands observe the installed helper without starting a VM.
+        let mut capability_command = Command::new(&helper);
+        capability_command.arg("check").kill_on_drop(true);
+        let mut identity_command = Command::new(&helper);
+        identity_command
+            .args(["--version", "--json"])
+            .kill_on_drop(true);
+        let (capability, identity) = tokio::join!(
+            timeout(Duration::from_secs(3), capability_command.output()),
+            timeout(Duration::from_secs(3), identity_command.output())
+        );
+        let (status, message) = match capability {
+            Ok(Ok(output)) if !output.status.success() => (
+                "fail",
+                format!(
+                    "{} check failed ({}): {}",
+                    helper.display(),
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            ),
+            Ok(Ok(output))
+                if output.stdout.trim_ascii() == b"safeyolo-vm check: ok"
+                    && output.stderr.trim_ascii().is_empty() =>
+            {
+                (
+                    "pass",
+                    "Apple Virtualization.framework capability check passed".to_owned(),
+                )
+            }
+            Ok(Ok(_)) => (
+                "unknown",
+                "Helper returned an unexpected capability response".to_owned(),
+            ),
+            Ok(Err(error)) => (
+                "fail",
+                format!("Cannot execute {} check: {error}", helper.display()),
+            ),
+            Err(_) => (
+                "unknown",
+                "Helper capability check timed out after 3 seconds".to_owned(),
+            ),
+        };
+        check(
+            &mut checks,
+            "Virtualization helper",
+            status,
+            message,
+            if status == "pass" { "" } else { &recovery },
+            json!({"path":helper}),
+        );
+
+        let identity = match identity {
+            Ok(Ok(output)) if output.status.success() => {
+                serde_json::from_slice::<Value>(&output.stdout)
+                    .map_err(|error| format!("Helper build identity is unreadable: {error}"))
+            }
+            Ok(Ok(output)) => Err(format!("Helper build identity failed ({})", output.status)),
+            Ok(Err(error)) => Err(format!("Cannot read helper build identity: {error}")),
+            Err(_) => Err("Helper build identity timed out after 3 seconds".to_owned()),
+        };
+        match identity {
+            Ok(identity)
+                if identity["schema_version"] == 1
+                    && [
+                        "helper_version",
+                        "version",
+                        "git_sha",
+                        "build_profile",
+                        "architecture",
+                    ]
+                    .iter()
+                    .all(|key| identity[*key].as_str().is_some_and(|text| !text.is_empty())) =>
+            {
+                let mut warnings = Vec::new();
+                if identity["get_task_allow"] == true {
+                    warnings.push("local debugger access is enabled; authorized debuggers may inspect or modify helper memory and execution");
+                }
+                if identity["get_task_allow"].as_bool().is_none()
+                    || identity["hardened_runtime"].as_bool().is_none()
+                {
+                    warnings.push("running signing posture is unavailable");
+                } else if identity["hardened_runtime"] == false {
+                    warnings.push("hardened runtime is disabled");
+                }
+                if !matches!(
+                    identity["build_profile"].as_str(),
+                    Some("production" | "development")
+                ) || identity["git_sha"] == "unknown"
+                {
+                    warnings.push("source/build identity is incomplete");
+                }
+                let message = format!(
+                    "helper={}, SafeYolo={}, source={}, tree={}, profile={}, architecture={}{}",
+                    identity["helper_version"].as_str().unwrap(),
+                    identity["version"].as_str().unwrap(),
+                    identity["git_sha"].as_str().unwrap(),
+                    match identity["git_dirty"].as_bool() {
+                        Some(true) => "modified",
+                        Some(false) => "clean",
+                        None => "unknown",
+                    },
+                    identity["build_profile"].as_str().unwrap(),
+                    identity["architecture"].as_str().unwrap(),
+                    if warnings.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; {}", warnings.join("; "))
+                    }
+                );
+                check(
+                    &mut checks,
+                    "Virtualization helper identity",
+                    if warnings.is_empty() { "pass" } else { "warn" },
+                    message,
+                    if warnings.is_empty() { "" } else { &recovery },
+                    identity,
+                );
+            }
+            Ok(_) => check(
+                &mut checks,
+                "Virtualization helper identity",
+                "unknown",
+                "Helper returned an incomplete build identity",
+                &recovery,
+                Value::Null,
+            ),
+            Err(error) => check(
+                &mut checks,
+                "Virtualization helper identity",
+                "unknown",
+                error,
+                &recovery,
+                Value::Null,
+            ),
+        }
+    } else {
+        check(
+            &mut checks,
+            "Virtualization helper",
+            "fail",
+            format!("Packaged helper absent at {}", helper.display()),
+            &recovery,
+            Value::Null,
+        );
+        check(
+            &mut checks,
+            "Virtualization helper identity",
+            "skip",
+            "Requires the installed virtualization helper",
+            "",
+            Value::Null,
+        );
+    }
+    let terminal = root.join("bin/vsock-term");
+    let executable = terminal.is_file()
+        && CString::new(terminal.as_os_str().as_bytes())
+            .is_ok_and(|path| unsafe { libc::access(path.as_ptr(), libc::X_OK) } == 0);
+    let terminal_recovery = format!(
+        "Restore the terminal executable at {} from a matching host package, then rerun {command} doctor.",
+        terminal.display()
+    );
+    check(
+        &mut checks,
+        "Interactive terminal",
+        if executable { "pass" } else { "fail" },
+        if executable {
+            format!(
+                "Installed terminal executable at {}; guest/control health is reported by Agent runtimes",
+                terminal.display()
+            )
+        } else {
+            format!(
+                "Terminal executable is missing or inaccessible at {}",
+                terminal.display()
+            )
+        },
+        if executable { "" } else { &terminal_recovery },
+        json!({"path":terminal}),
+    );
+    checks
+}
+
 fn storage_checks(config: &crate::Config) -> Vec<Value> {
     use std::{fs, os::fd::AsRawFd};
     let mut checks = Vec::new();
@@ -627,7 +803,9 @@ fn storage_checks(config: &crate::Config) -> Vec<Value> {
             return Err(std::io::Error::last_os_error().into());
         }
         let space = unsafe { space.assume_init() };
-        let free_bytes = space.f_bavail.saturating_mul(space.f_frsize);
+        // Available blocks are u32 on macOS and u64 on Linux.
+        #[allow(clippy::useless_conversion)]
+        let free_bytes = u64::from(space.f_bavail).saturating_mul(space.f_frsize);
         Ok(json!({"enabled":true,"path":path,"bytes":bytes,"free_bytes":free_bytes}))
     })();
     match logs {
