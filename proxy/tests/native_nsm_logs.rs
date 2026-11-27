@@ -204,6 +204,109 @@ async fn retained_evidence_defaults_to_summaries_and_preserves_explicit_json() {
 }
 
 #[tokio::test]
+async fn human_logs_keep_recorded_failure_stage_and_final_response_distinct() {
+    let root = tempfile::tempdir().unwrap();
+    configure(root.path());
+    let agent = "alice\n\u{1b}[2J\u{202e}\u{200b}";
+    let mut failed = connection("C1", "failed");
+    failed["agent"] = json!(agent);
+    failed["summary"] = json!("Connection lifecycle");
+    failed["details"]["state"] = json!("failed");
+    failed["details"]["ended_at"] = json!("2026-10-29T00:00:01Z");
+    failed["details"]["error"] = json!("origin_tls_failed\n\u{1b}[2J");
+    failed["details"]["requested_target"] = json!("failed.example:443");
+    let mut original = vec![failed];
+    for name in [
+        "security.credential_guard.evaluated",
+        "security.network_guard.evaluated",
+    ] {
+        let mut evaluated = decisions::scoped_decision();
+        evaluated["agent"] = json!(agent);
+        evaluated["details"]["attribution"]["evidence_owner"] = json!(agent);
+        evaluated["details"]["attribution"]["trusted_transport_identity"] = json!(agent);
+        evaluated["event"] = json!(name);
+        evaluated["event_id"] = json!(name);
+        evaluated["summary"] = json!("Guard evaluated request");
+        evaluated.as_object_mut().unwrap().remove("addon");
+        evaluated.as_object_mut().unwrap().remove("decision");
+        evaluated["details"]["outcome"] = json!("blocked");
+        evaluated["details"]["evaluations"] = json!([]);
+        evaluated["details"]["pdp"] = Value::Null;
+        original.push(evaluated);
+    }
+    for (decision, status, request) in [
+        ("allow", 200, "allowed-request"),
+        ("deny", 428, "denied-request"),
+    ] {
+        let mut outcome = row("traffic.request_outcome", json!({"status":status}));
+        outcome["summary"] = json!("Proxy response prepared");
+        outcome["decision"] = json!(decision);
+        outcome["request_id"] = json!(request);
+        original.push(outcome);
+    }
+    write_rows(root.path(), &original);
+    let audit = fs::read(root.path().join("audit.jsonl")).unwrap();
+    let ordinary = cli(root.path(), &["logs"]).await;
+    assert!(ordinary.status.success());
+    let ordinary = String::from_utf8(ordinary.stdout).unwrap();
+    for expected in [
+        "State: failed | Error: origin_tls_failed\\n\\u001b[2J | Target: failed.example:443",
+        "Agent: alice\\n\\u001b[2J\\u202e\\u200b",
+        "Guard evaluation: blocked",
+        "Decision: allow | HTTP status: 200 | Request: allowed-request",
+        "Decision: deny | HTTP status: 428 | Request: denied-request",
+    ] {
+        assert!(
+            ordinary.contains(expected),
+            "missing {expected}: {ordinary}"
+        );
+    }
+    let pivot = cli(
+        root.path(),
+        &[
+            "logs",
+            "connection",
+            "C1",
+            "--instance",
+            "I1",
+            "--runtime",
+            "R1",
+        ],
+    )
+    .await;
+    assert!(pivot.status.success());
+    let pivot = String::from_utf8(pivot.stdout).unwrap();
+    for expected in [
+        "Agent: all",
+        "Agent: alice\\n\\u001b[2J\\u202e\\u200b",
+        "State: failed",
+        "origin_tls_failed",
+        "Guard evaluation: blocked",
+        "Run context: unavailable",
+    ] {
+        assert!(pivot.contains(expected), "missing {expected}: {pivot}");
+    }
+    for human in [&ordinary, &pivot] {
+        assert!(
+            !human.contains('\u{1b}') && !human.contains('\u{202e}') && !human.contains('\u{200b}'),
+            "{human}"
+        );
+        assert!(
+            !human
+                .lines()
+                .filter(|line| line.contains("Guard evaluation:"))
+                .any(|line| line.contains("Decision:")),
+            "{human}"
+        );
+    }
+    assert_eq!(
+        success(root.path(), &["logs"]).await["events"],
+        json!(original)
+    );
+    assert_eq!(fs::read(root.path().join("audit.jsonl")).unwrap(), audit);
+}
+
+#[tokio::test]
 async fn exact_links_preserve_sources_and_exclude_other_namespaces_agents_and_unscoped_records() {
     let root = tempfile::tempdir().unwrap();
     configure(root.path());

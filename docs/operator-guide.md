@@ -657,8 +657,11 @@ safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --a
 
 Ordinary log listings and pivots summarize retained events, run context and
 available or unavailable links. They preserve source locations, investigation
-warnings and the searched window's limits. Select `--json` for complete original
-records, attribution, correlations and capture metadata.
+warnings and the searched window's limits. A guard evaluation describes one
+stage; it does not establish final authorization or a granted permission.
+Select `--json` on ordinary logs or pivots for complete original records,
+attribution, correlations and capture metadata. `logs list --json` provides
+complete listing metadata and references for navigation.
 
 The structured `capture` result shows matching observation metadata, its supporting audit
 lines, and the capture packet number and byte offset. Packet numbers start at

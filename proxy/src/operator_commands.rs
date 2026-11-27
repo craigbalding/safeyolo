@@ -35,7 +35,7 @@ pub fn help(group: &str) -> &'static str {
             "safeyolo [--instance-dir PATH] support grants [--json]\nsafeyolo [--instance-dir PATH] support verify GRANT TARGET --agent SUPPORT [--home HOME] [--json]\nsafeyolo [--instance-dir PATH] support notices --agent SUPPORT [--home HOME] [--since CURSOR] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] support result OPERATION_ID --agent SUPPORT [--home HOME] [--output] [--json]\nsafeyolo [--instance-dir PATH] support receipts [--agent TARGET] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] support receipt|recover OPERATION_ID [--initiator PRINCIPAL] [--output] [--json]\nsafeyolo [--instance-dir PATH] support preview|apply|revoke|report NAME --file PROPOSAL.json [--json]\nSharing permits selected diagnostic/approval reads only. A named approval delegation separately permits bounded Helper decisions. Other Helper work prepares a human decision.\nIf evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable."
         }
         "logs" => {
-            "safeyolo [--instance-dir PATH] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs list [--instance ID] [--runtime ID] [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs connection ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs request ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]\nOrdinary log views summarize retained evidence; select --json for complete original records, attribution, links and capture metadata. Logs connection/request accept --capture FILE to read existing current pcap:compat metadata. Matches require the selected audit namespace, connection and recorded agent attribution; request observations require the selected request ID. Lower-layer ancestry can be shared input, not exclusive request bytes. Results include audit lines, one-based packet numbers and PCAP packet-header byte offsets. --lines also bounds retained matching connection observations and runtime loss records separately. Missing/unsupported captures remain unavailable; malformed/truncated input and omissions can leave partial evidence. Loss is runtime-wide with unknown connection/request attribution. Synthetic headers are representation, not measured wire behaviour. No payload is returned or capture enabled. EOF does not prove complete evidence.\nWith --capture, prompt-exposure source/model transports also show retained stream chunk counts, observed-byte sums, size ranges and monotonic intervals, grouped by connection/point/layer/direction. Chunk references preserve observation IDs, packet/byte offsets and audit lines. The same observation limit covers selected and correlated connections together. These are connection-wide retained measurements, not exclusive request bytes, anomaly scores or complete coverage. Layers must not be added as application bytes.\nLogs use the configured local audit file unless --file PATH is supplied. Repeat --file for explicitly selected offline inputs; no installed config or API is needed. Each file is validated to EOF and retains the last --lines selected-agent rows (default 100 per file), so total retention is at most input count times --lines. Selected-file pivots identify every input/physical line and duplicate copy, and refuse conflicting event copies or transport owners as join evidence. Input order is not chronological order. Selection and schema validation do not authenticate the producer. Use logs list to discover retained namespaces, agent context, and connection/request/indicator references; --instance and --runtime optionally narrow that listing. It is not live inventory. Unknown attribution and conflicting copies stay distinct from recorded resolved agent context. Pivots require instance and runtime; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Prompt exposure correlations explain exact source and source/model transport novelty support, including partial or unavailable evidence. These are connection-wide relationships, not proof of malicious intent or model receipt. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.\nIf evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable."
+            "safeyolo [--instance-dir PATH] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs list [--instance ID] [--runtime ID] [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs connection ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs request ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]\nOrdinary log views summarize retained evidence. Guard evaluation is stage evidence, not final authorization or a granted permission. Select --json on ordinary logs or pivots for complete original records, attribution, links and capture metadata. Logs list --json provides complete listing metadata and navigation references. Logs connection/request accept --capture FILE to read existing current pcap:compat metadata. Matches require the selected audit namespace, connection and recorded agent attribution; request observations require the selected request ID. Lower-layer ancestry can be shared input, not exclusive request bytes. Results include audit lines, one-based packet numbers and PCAP packet-header byte offsets. --lines also bounds retained matching connection observations and runtime loss records separately. Missing/unsupported captures remain unavailable; malformed/truncated input and omissions can leave partial evidence. Loss is runtime-wide with unknown connection/request attribution. Synthetic headers are representation, not measured wire behaviour. No payload is returned or capture enabled. EOF does not prove complete evidence.\nWith --capture, prompt-exposure source/model transports also show retained stream chunk counts, observed-byte sums, size ranges and monotonic intervals, grouped by connection/point/layer/direction. Chunk references preserve observation IDs, packet/byte offsets and audit lines. The same observation limit covers selected and correlated connections together. These are connection-wide retained measurements, not exclusive request bytes, anomaly scores or complete coverage. Layers must not be added as application bytes.\nLogs use the configured local audit file unless --file PATH is supplied. Repeat --file for explicitly selected offline inputs; no installed config or API is needed. Each file is validated to EOF and retains the last --lines selected-agent rows (default 100 per file), so total retention is at most input count times --lines. Selected-file pivots identify every input/physical line and duplicate copy, and refuse conflicting event copies or transport owners as join evidence. Input order is not chronological order. Selection and schema validation do not authenticate the producer. Use logs list to discover retained namespaces, agent context, and connection/request/indicator references; --instance and --runtime optionally narrow that listing. It is not live inventory. Unknown attribution and conflicting copies stay distinct from recorded resolved agent context. Pivots require instance and runtime; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Prompt exposure correlations explain exact source and source/model transport novelty support, including partial or unavailable evidence. These are connection-wide relationships, not proof of malicious intent or model receipt. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.\nIf evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable."
         }
         "observations" => {
             "safeyolo [--instance-dir PATH] observations [--instance ID] [--runtime ID] [--details] [--json]\nObservations summarizes current runtime aggregates. Use --details for all counters and histograms, or --json for complete structured records. --instance and --runtime check a retained namespace; they do not retrieve historical or per-agent measurements. Reload preserves counters; restart changes the runtime. Reading observations does not enable payload capture or content storage."
@@ -138,29 +138,24 @@ fn show_operator_result(kind: &str, value: &Value) -> Result<(), Error> {
         }
         "logs" => {
             field("Audit file", &value["file"]);
-            let show = |events: &[Value]| {
+            let show = |events: &[Value]| -> Result<(), Error> {
                 if events.is_empty() {
                     println!("No retained events in this selection.");
                 }
                 for event in events {
                     let event = event.get("record").unwrap_or(event);
-                    println!(
-                        "{}  {}  {}  {}",
-                        text(&event["ts"]),
-                        text(&event["event"]),
-                        text(&event["agent"]),
-                        text(&event["summary"])
-                    );
+                    show_log_record(event)?;
                 }
+                Ok(())
             };
             if let Some(events) = value["events"].as_array() {
-                show(events);
+                show(events)?;
             }
             if let Some(inputs) = value["inputs"].as_array() {
                 for input in inputs {
                     field("Input", &input["file"]);
                     if let Some(events) = input["events"].as_array() {
-                        show(events);
+                        show(events)?;
                     }
                 }
                 field("Limits", &value["limits"]);
@@ -1713,7 +1708,7 @@ fn show_log_listing(value: &Value) -> Result<(), Error> {
         }
     }
     println!(
-        "\nUse logs connection ID or logs request ID with the listed --instance ID --runtime ID, optional --agent NAME --sandbox-run RUN_ID, and the same --file/--lines selection. IDs above use JSON escaping; decode escapes when supplying an argument. Select --json for complete records and evidence."
+        "\nUse logs connection ID or logs request ID with the listed --instance ID --runtime ID, optional --agent NAME --sandbox-run RUN_ID, and the same --file/--lines selection. IDs above use JSON escaping; decode escapes when supplying an argument. Select --json for complete listing metadata. Pivots include complete original records and evidence with --json."
     );
     Ok(())
 }
@@ -1767,8 +1762,39 @@ fn show_log_record(record: &Value) -> Result<(), Error> {
         escaped_log_text(text(&record["event"]))?,
         escaped_log_text(text(&record["summary"]))?
     );
+    if let Some(agent) = record["agent"].as_str() {
+        print!(" | Agent: {}", escaped_log_text(agent)?);
+    }
     if let Some(decision) = record["decision"].as_str() {
         print!(" | Decision: {}", escaped_log_text(decision)?);
+    }
+    let details = &record["details"];
+    match record["event"].as_str() {
+        Some("network.connection") => {
+            for (label, key) in [
+                ("State", "state"),
+                ("Error", "error"),
+                ("Target", "requested_target"),
+            ] {
+                if let Some(value) = details[key].as_str() {
+                    print!(" | {label}: {}", escaped_log_text(value)?);
+                }
+            }
+        }
+        Some("security.network_guard.evaluated" | "security.credential_guard.evaluated") => {
+            if let Some(outcome) = details["outcome"].as_str() {
+                print!(" | Guard evaluation: {}", escaped_log_text(outcome)?);
+            }
+        }
+        Some("traffic.request_outcome") => {
+            if let Some(status) = details["status"].as_u64() {
+                print!(" | HTTP status: {status}");
+            }
+            if let Some(request) = record["request_id"].as_str() {
+                print!(" | Request: {}", escaped_log_text(request)?);
+            }
+        }
+        _ => {}
     }
     println!();
     if let Some(id) = record["event_id"].as_str() {

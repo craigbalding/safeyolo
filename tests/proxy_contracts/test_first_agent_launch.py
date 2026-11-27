@@ -1128,10 +1128,11 @@ def test_direct_credential_decision_keeps_the_selected_destination(tmp_path, dec
         identifier = instance.admin("GET", "/admin/approvals")["approvals"][0]["request_id"]
         assert request(instance.paths["alice"], target, headers=headers)[0] == 428
         assert request(instance.paths["alice"], changed, headers=headers)[0] == 428
+        expected = "approved" if decision == "approve" else "rejected"
         if surface == "direct":
             result = instance.cli("approvals", decision, identifier, "--agent", "alice", "--json")
             assert result.returncode == 0, result.stderr
-            assert json.loads(result.stdout)["status"] == ("approved" if decision == "approve" else "rejected")
+            assert json.loads(result.stdout)["status"] == expected
         else:
             with terminal(instance, ["inspect", "--agent", "alice"]) as (process, master, until):
                 until(b"inspect> ")
@@ -1140,10 +1141,13 @@ def test_direct_credential_decision_keeps_the_selected_destination(tmp_path, dec
                 assert b"Status: pending" in output
                 os.write(master, f"{decision} {identifier}\n".encode())
                 output = until(b"inspect> ")
-                expected = b"approved" if decision == "approve" else b"rejected"
-                assert b"Status: " + expected in output
+                outcome = f"Request {identifier}: {expected}".encode()
+                assert output.count(outcome) == 1, output
+                assert b"first-launch-key" not in output
                 os.write(master, b"quit\n")
                 assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
+        canonical = instance.admin("GET", f"/admin/approvals/{identifier}")
+        assert canonical["status"] == expected and canonical["action"]["host"] == "127.0.0.1"
         _wait_for_active_policy(instance)
         assert request(instance.paths["alice"], changed, headers=headers)[0] == 428
         assert origin.accepts == 0
