@@ -422,7 +422,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Selection: default `systrap` section `continuity`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `vz` section `continuity`.
 - [tests/blackbox/claude_smoke.py::run](../tests/blackbox/claude_smoke.py#L258) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
-- [proxy/tests/credential_http/codex.rs](../proxy/tests/credential_http/codex.rs#L278) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Controlled OAuth provider and run-lifetime adapter; native HTTP.
+- [proxy/tests/credential_http/codex.rs](../proxy/tests/credential_http/codex.rs#L279) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Controlled OAuth provider and run-lifetime adapter; native HTTP.
   Exact identities: [source inventory](#witness-proxy-tests-credential-http-codex-rs).
 
 ### BB-11 — TLS / guest trust separation
@@ -846,7 +846,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-room-status-rs).
 - [proxy/tests/native_coord/signals.rs](../proxy/tests/native_coord/signals.rs#L229) — Native Coord/NATS; host process; cfg and ignore annotations retain venue limits. Evidence: Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-signals-rs).
-- [proxy/tests/native_coord/stage0.rs](../proxy/tests/native_coord/stage0.rs#L85) — Native Coord/NATS; host process; cfg and ignore annotations retain venue limits. Evidence: Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself.
+- [proxy/tests/native_coord/stage0.rs](../proxy/tests/native_coord/stage0.rs#L87) — Native Coord/NATS; host process; cfg and ignore annotations retain venue limits. Evidence: Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-stage0-rs).
 - [proxy/tests/native_coord/supervision.rs](../proxy/tests/native_coord/supervision.rs#L129) — Native Coord/NATS; host process; cfg and ignore annotations retain venue limits. Evidence: Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-supervision-rs).
@@ -881,7 +881,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-federation-modes-rs).
 - [proxy/tests/native_coord/federation/operator.rs](../proxy/tests/native_coord/federation/operator.rs#L44) — Native Coord/NATS; host process; cfg and ignore annotations retain venue limits. Evidence: Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-federation-operator-rs).
-- [proxy/tests/native_coord/federation/reliability.rs](../proxy/tests/native_coord/federation/reliability.rs#L316) — Native Coord/NATS; host process; cfg and ignore annotations retain venue limits. Evidence: Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself.
+- [proxy/tests/native_coord/federation/reliability.rs](../proxy/tests/native_coord/federation/reliability.rs#L317) — Native Coord/NATS; host process; cfg and ignore annotations retain venue limits. Evidence: Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-federation-reliability-rs).
 - [proxy/tests/native_coord/federation/support.rs](../proxy/tests/native_coord/federation/support.rs#L197) — Native Coord/NATS; host process; cfg and ignore annotations retain venue limits. Evidence: Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-federation-support-rs).
@@ -1032,7 +1032,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-native-policy-cli-py).
 - [tests/proxy_contracts/test_service_effect_assessment.py](../tests/proxy_contracts/test_service_effect_assessment.py#L36) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-service-effect-assessment-py).
-- [proxy/tests/native_policy_feeds.rs](../proxy/tests/native_policy_feeds.rs#L282) — Native CLI/proxy in an installed layout; owned feed server; no guest. Evidence: Real acquisition, refresh and request decisions with retained snapshot provenance and independent destination contact observations.
+- [proxy/tests/native_policy_feeds.rs](../proxy/tests/native_policy_feeds.rs#L283) — Native CLI/proxy in an installed layout; owned feed server; no guest. Evidence: Real acquisition, refresh and request decisions with retained snapshot provenance and independent destination contact observations.
   Exact identities: [source inventory](#witness-proxy-tests-native-policy-feeds-rs).
 
 ### BB-31 — Hyperlight capabilities
@@ -1356,7 +1356,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 - [proxy/src/signals/control_updates/tests.rs](../proxy/src/signals/control_updates/tests.rs#L115) — Signal receipt and response adoption. Evidence: Controlled signal revisions; receipt does not adopt.
   Exact identities: [source inventory](#witness-proxy-src-signals-control-updates-tests-rs).
-- [proxy/tests/native_signals.rs](../proxy/tests/native_signals.rs#L282) — Native process signals with owned NATS. Evidence: Real native executable; operator approval before a response applies.
+- [proxy/tests/native_signals.rs](../proxy/tests/native_signals.rs#L283) — Native process signals with owned NATS. Evidence: Real native executable; operator approval before a response applies.
   Exact identities: [source inventory](#witness-proxy-tests-native-signals-rs).
 
 ### BB-43 — Approval does not replay
@@ -2834,17 +2834,17 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 
 Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::imported_login_two_rotations_reload_restart_and_redaction -- --exact`](../proxy/tests/credential_http/codex.rs#L278)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::credentials_do_not_inherit_other_origins_routes_clients_or_beneficiaries -- --exact`](../proxy/tests/credential_http/codex.rs#L392)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::host_import_requires_a_subscription_pair_and_unique_beneficiary -- --exact`](../proxy/tests/credential_http/codex.rs#L552)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::refresh_observation_uses_the_final_route_json_and_only_imported_authentication -- --exact`](../proxy/tests/credential_http/codex.rs#L594)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::refresh_trailers_cannot_supply_unobserved_authentication -- --exact`](../proxy/tests/credential_http/codex.rs#L699)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::concurrent_issuance_retains_each_token_under_one_import -- --exact`](../proxy/tests/credential_http/codex.rs#L763)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::revocation_or_reimport_during_exchange_cannot_restore_old_authority -- --exact`](../proxy/tests/credential_http/codex.rs#L795)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::run_scoped_import_follows_the_verified_backend_lifetime -- --exact`](../proxy/tests/credential_http/codex.rs#L829) — `#[cfg(target_os = "linux")]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::guest_markers_expiry_identity_and_stopped_run_do_not_create_authority -- --exact`](../proxy/tests/credential_http/codex.rs#L907)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::imported_credentials_do_not_bypass_upstream_tls_verification -- --exact`](../proxy/tests/credential_http/codex.rs#L987)
-- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::malformed_duplicate_and_redirected_issuance_cannot_authorize_replacements -- --exact`](../proxy/tests/credential_http/codex.rs#L1009)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::imported_login_two_rotations_reload_restart_and_redaction -- --exact`](../proxy/tests/credential_http/codex.rs#L279)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::credentials_do_not_inherit_other_origins_routes_clients_or_beneficiaries -- --exact`](../proxy/tests/credential_http/codex.rs#L393)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::host_import_requires_a_subscription_pair_and_unique_beneficiary -- --exact`](../proxy/tests/credential_http/codex.rs#L553)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::refresh_observation_uses_the_final_route_json_and_only_imported_authentication -- --exact`](../proxy/tests/credential_http/codex.rs#L595)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::refresh_trailers_cannot_supply_unobserved_authentication -- --exact`](../proxy/tests/credential_http/codex.rs#L700)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::concurrent_issuance_retains_each_token_under_one_import -- --exact`](../proxy/tests/credential_http/codex.rs#L764)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::revocation_or_reimport_during_exchange_cannot_restore_old_authority -- --exact`](../proxy/tests/credential_http/codex.rs#L796)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::run_scoped_import_follows_the_verified_backend_lifetime -- --exact`](../proxy/tests/credential_http/codex.rs#L830) — `#[cfg(target_os = "linux")]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::guest_markers_expiry_identity_and_stopped_run_do_not_create_authority -- --exact`](../proxy/tests/credential_http/codex.rs#L908)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::imported_credentials_do_not_bypass_upstream_tls_verification -- --exact`](../proxy/tests/credential_http/codex.rs#L988)
+- [`cargo test --manifest-path proxy/Cargo.toml --test credential_http codex::malformed_duplicate_and_redirected_issuance_cannot_authorize_replacements -- --exact`](../proxy/tests/credential_http/codex.rs#L1010)
 
 <a id="witness-proxy-tests-native-coord-reviews-rs"></a>
 ### [`proxy/tests/native_coord/reviews.rs`](../proxy/tests/native_coord/reviews.rs)
@@ -3147,11 +3147,11 @@ Selection: ignored by default.
 
 Selection: ignored by default.
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord federation::reliability::failed_peer_publication_does_not_hold_local_or_other_peer_hints -- --exact --ignored`](../proxy/tests/native_coord/federation/reliability.rs#L316) — `#![cfg(target_os = "linux")]`; `#[ignore = "requires pinned NATS; three independent instance roots and brokers"]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord federation::reliability::repeated_calls_reuse_connections_and_waits_release_consumers -- --exact --ignored`](../proxy/tests/native_coord/federation/reliability.rs#L412) — `#![cfg(target_os = "linux")]`; `#[ignore = "requires pinned NATS; three independent instance roots and brokers"]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord federation::reliability::accepted_publisher_exits_before_projection -- --exact --ignored`](../proxy/tests/native_coord/federation/reliability.rs#L586) — `#![cfg(target_os = "linux")]`; `#[ignore = "child helper for actual publisher exit immediately after JetStream acknowledgement"]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord federation::reliability::owner_repairs_after_publisher_exit_without_remote_polling -- --exact --ignored`](../proxy/tests/native_coord/federation/reliability.rs#L616) — `#![cfg(target_os = "linux")]`; `#[ignore = "requires pinned NATS; three independent instance roots and brokers"]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord federation::reliability::selected_sources_keep_independent_health_and_stop_disclosing_after_revoke -- --exact --ignored`](../proxy/tests/native_coord/federation/reliability.rs#L686) — `#![cfg(target_os = "linux")]`; `#[ignore = "requires pinned NATS; selected observer health and current disclosure grants"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord federation::reliability::failed_peer_publication_does_not_hold_local_or_other_peer_hints -- --exact --ignored`](../proxy/tests/native_coord/federation/reliability.rs#L317) — `#![cfg(target_os = "linux")]`; `#[ignore = "requires pinned NATS; three independent instance roots and brokers"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord federation::reliability::repeated_calls_reuse_connections_and_waits_release_consumers -- --exact --ignored`](../proxy/tests/native_coord/federation/reliability.rs#L413) — `#![cfg(target_os = "linux")]`; `#[ignore = "requires pinned NATS; three independent instance roots and brokers"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord federation::reliability::accepted_publisher_exits_before_projection -- --exact --ignored`](../proxy/tests/native_coord/federation/reliability.rs#L587) — `#![cfg(target_os = "linux")]`; `#[ignore = "child helper for actual publisher exit immediately after JetStream acknowledgement"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord federation::reliability::owner_repairs_after_publisher_exit_without_remote_polling -- --exact --ignored`](../proxy/tests/native_coord/federation/reliability.rs#L617) — `#![cfg(target_os = "linux")]`; `#[ignore = "requires pinned NATS; three independent instance roots and brokers"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord federation::reliability::selected_sources_keep_independent_health_and_stop_disclosing_after_revoke -- --exact --ignored`](../proxy/tests/native_coord/federation/reliability.rs#L687) — `#![cfg(target_os = "linux")]`; `#[ignore = "requires pinned NATS; selected observer health and current disclosure grants"]`
 
 <a id="witness-proxy-tests-native-coord-federation-support-rs"></a>
 ### [`proxy/tests/native_coord/federation/support.rs`](../proxy/tests/native_coord/federation/support.rs)
@@ -3218,8 +3218,8 @@ Selection: ignored by default; [contracts](../.github/workflows/proxy-rust.yml) 
 
 Selection: ignored by default.
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord stage0::native_stage0_replay_and_delivery_survive_current_master_and_process_crashes -- --exact --ignored`](../proxy/tests/native_coord/stage0.rs#L85) — `#[ignore = "requires the pinned NATS binary and retained current-master CLI"]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord stage0::native_brief_replay_preserves_delivered_revision_metadata_and_authorized_reads -- --exact --ignored`](../proxy/tests/native_coord/stage0.rs#L538) — `#[ignore = "requires the pinned NATS binary; owns isolated native services"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord stage0::native_stage0_replay_and_delivery_survive_current_master_and_process_crashes -- --exact --ignored`](../proxy/tests/native_coord/stage0.rs#L87) — `#[ignore = "requires the pinned NATS binary and retained current-master CLI"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord stage0::native_brief_replay_preserves_delivered_revision_metadata_and_authorized_reads -- --exact --ignored`](../proxy/tests/native_coord/stage0.rs#L540) — `#[ignore = "requires the pinned NATS binary; owns isolated native services"]`
 
 <a id="witness-proxy-tests-native-coord-supervision-rs"></a>
 ### [`proxy/tests/native_coord/supervision.rs`](../proxy/tests/native_coord/supervision.rs)
@@ -3348,15 +3348,15 @@ Selection: manual native phase `named-checks` (named execution receipt; ignored 
 
 Selection: manual native phase `managed-feeds` (named execution receipt; ignored cases remain incomplete); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds assessment_keeps_adopted_feed_scope_and_expiry_without_reloading_its_path -- --exact`](../proxy/tests/native_policy_feeds.rs#L282)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_refresh_preserves_literal_initial_and_redirect_endpoints -- --exact`](../proxy/tests/native_policy_feeds.rs#L328)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_refresh_after_rollback_recovers_unchanged_provider_membership -- --exact`](../proxy/tests/native_policy_feeds.rs#L377)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_setup_refresh_retention_expiry_restart_rollback_and_recovery -- --exact`](../proxy/tests/native_policy_feeds.rs#L505)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_download_validation_and_adopted_redirect_boundaries -- --exact`](../proxy/tests/native_policy_feeds.rs#L639)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_first_start_failure_recovers_automatically_without_approvals -- --exact`](../proxy/tests/native_policy_feeds.rs#L771)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_named_feed_only_fallback_refresh_preview_restart_and_rollback -- --exact`](../proxy/tests/native_policy_feeds.rs#L800)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds pending_acquisition_rechecks_source_adoption_and_retains_interrupted_schedule -- --exact`](../proxy/tests/native_policy_feeds.rs#L1024)
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds feed_setup_and_candidate_check_keep_the_selected_policy_directory -- --exact`](../proxy/tests/native_policy_feeds.rs#L1124)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds assessment_keeps_adopted_feed_scope_and_expiry_without_reloading_its_path -- --exact`](../proxy/tests/native_policy_feeds.rs#L283)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_refresh_preserves_literal_initial_and_redirect_endpoints -- --exact`](../proxy/tests/native_policy_feeds.rs#L329)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_refresh_after_rollback_recovers_unchanged_provider_membership -- --exact`](../proxy/tests/native_policy_feeds.rs#L378)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_setup_refresh_retention_expiry_restart_rollback_and_recovery -- --exact`](../proxy/tests/native_policy_feeds.rs#L506)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_download_validation_and_adopted_redirect_boundaries -- --exact`](../proxy/tests/native_policy_feeds.rs#L640)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_first_start_failure_recovers_automatically_without_approvals -- --exact`](../proxy/tests/native_policy_feeds.rs#L772)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds installed_named_feed_only_fallback_refresh_preview_restart_and_rollback -- --exact`](../proxy/tests/native_policy_feeds.rs#L801)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds pending_acquisition_rechecks_source_adoption_and_retains_interrupted_schedule -- --exact`](../proxy/tests/native_policy_feeds.rs#L1025)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_policy_feeds feed_setup_and_candidate_check_keep_the_selected_policy_directory -- --exact`](../proxy/tests/native_policy_feeds.rs#L1125)
 
 <a id="witness-proxy-src-coord-rooms-work-automatic-tests-rs"></a>
 ### [`proxy/src/coord_rooms/work/automatic_tests.rs`](../proxy/src/coord_rooms/work/automatic_tests.rs)
@@ -3637,11 +3637,11 @@ Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; c
 
 Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_signals advisory_numeric_wire_round_trips_with_the_current_json_features -- --exact`](../proxy/tests/native_signals.rs#L282)
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_signals advisory_numeric_wire_round_trips_with_the_current_json_features -- --exact`](../proxy/tests/native_signals.rs#L283)
 Selection: ignored by default; [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_signals renewed_finding_refreshes_the_list_without_repeating_approval -- --exact --ignored`](../proxy/tests/native_signals.rs#L298) — `#[ignore = "requires the approved NATS binary via SAFEYOLO_COORD_NATS_BINARY"]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_signals push_two_instances_recovery_local_changes_and_real_scoped_response -- --exact --ignored`](../proxy/tests/native_signals.rs#L427) — `#[ignore = "requires the approved NATS binary via SAFEYOLO_COORD_NATS_BINARY"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_signals renewed_finding_refreshes_the_list_without_repeating_approval -- --exact --ignored`](../proxy/tests/native_signals.rs#L299) — `#[ignore = "requires the approved NATS binary via SAFEYOLO_COORD_NATS_BINARY"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_signals push_two_instances_recovery_local_changes_and_real_scoped_response -- --exact --ignored`](../proxy/tests/native_signals.rs#L428) — `#[ignore = "requires the approved NATS binary via SAFEYOLO_COORD_NATS_BINARY"]`
 
 <a id="witness-tests-proxy-contracts-test-codex-approval-fallback-py-test-codex-routing-wait-timeout-leaves-approval-pending-without-replay"></a>
 ### [`tests/proxy_contracts/test_codex_approval_fallback.py::test_codex_routing_wait_timeout_leaves_approval_pending_without_replay`](../tests/proxy_contracts/test_codex_approval_fallback.py::test_codex_routing_wait_timeout_leaves_approval_pending_without_replay)

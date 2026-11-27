@@ -36,7 +36,7 @@ from tests.proxy_contracts.test_service_route_challenge import (
 
 
 def _cli(root, *args):
-    result = subprocess.run([os.environ["SAFEYOLO_NATIVE_CLI"], "--instance-dir", str(root), *map(str, args)],
+    result = subprocess.run([os.environ["SAFEYOLO_NATIVE_CLI"], "--dangerously-allow-root", "--instance-dir", str(root), *map(str, args)],
                             capture_output=True, text=True, timeout=45, check=False)
     assert result.returncode == 0, (args, result.returncode, result.stdout, result.stderr)
     return json.loads(result.stdout) if result.stdout.lstrip().startswith(("{", "[")) else result.stdout

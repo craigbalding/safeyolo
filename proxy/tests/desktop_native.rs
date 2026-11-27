@@ -366,6 +366,7 @@ impl DesktopProxyProcess {
         let log = fs::File::create(root.join("proxy-process.log")).unwrap();
         let mut proxy = Self(Some(
             Command::new(env!("CARGO_BIN_EXE_safeyolo-proxy"))
+                .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
                 .arg("--config")
                 .arg(source)
                 .process_group(0)

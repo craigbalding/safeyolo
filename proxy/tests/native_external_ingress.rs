@@ -130,6 +130,7 @@ fn check_foreground_binding_reload(through_alias: bool) {
     let log = fs::File::create(root.join("proxy.log")).unwrap();
     let mut process = Process(
         Command::new(env!("CARGO_BIN_EXE_safeyolo-proxy"))
+            .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
             .arg("--config")
             .arg(config_path)
             .stdin(Stdio::null())

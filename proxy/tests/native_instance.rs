@@ -13,6 +13,7 @@ use tempfile::TempDir;
 
 fn cli(root: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
         .arg("--instance-dir")
         .arg(root)
         .arg("--json")
@@ -66,6 +67,7 @@ impl Fixture {
         }
         symlink(runtime.join("bin"), root.join("bin")).unwrap();
         let peer = Command::new(env!("CARGO_BIN_EXE_safeyolo-proxy"))
+            .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
             .arg("--config")
             .arg(&config)
             .stdout(Stdio::null())
@@ -99,6 +101,7 @@ impl Fixture {
     fn run(&self, script: &str, reuse: bool) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_safeyolo"));
         command
+            .arg(safeyolo_proxy::host_root::FLAG)
             .arg("--instance-dir")
             .arg(self.root())
             .args(["instance", "run", "--ephemeral", "--runtime"])
@@ -111,6 +114,7 @@ impl Fixture {
             .arg(self.root());
         // Hostile inherited overrides must all be replaced for this command.
         command
+            .env_remove(safeyolo_proxy::host_root::ENVIRONMENT)
             .env("SAFEYOLO_CONFIG_DIR", self.root())
             .env(
                 "SAFEYOLO_NATIVE_CONFIG_PATH",

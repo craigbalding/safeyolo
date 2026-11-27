@@ -249,6 +249,9 @@ fn check_socket_path(path: &Path, capacity: usize) -> Result<(), Error> {
 }
 
 fn scoped(command: &mut Command, root: &Path) -> Result<(), Error> {
+    if crate::host_root::allowed() {
+        command.env(crate::host_root::ENVIRONMENT, "1");
+    }
     // Preserve unrelated client, proxy and CA settings. Replace the independent
     // historical path overrides so a caller's live selection cannot leak in.
     for name in [
@@ -639,6 +642,7 @@ pub async fn run(source: &Path, args: &[OsString]) -> Result<i32, Error> {
     if !ephemeral {
         return Err("instance run requires --ephemeral".into());
     }
+    crate::host_root::refuse_root("create an ephemeral instance")?;
     let runtime = runtime.canonicalize()?;
     let directory = tempfile::Builder::new().prefix("sy-").tempdir_in(&parent)?;
     let root = directory.path().canonicalize()?;

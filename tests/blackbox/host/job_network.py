@@ -39,7 +39,7 @@ from execution_receipt import ProcedureReceipt
 def prepare(cli: Path, proxy: Path, base: Path, root: Path, port: int, upstream: int):
     """Reuse installed runtime inputs without changing the original instance."""
     root.mkdir(mode=0o755)
-    subprocess.run([str(cli), "--instance-dir", str(root), "--json", "init"], check=True)
+    subprocess.run([str(cli), "--dangerously-allow-root", "--instance-dir", str(root), "--json", "init"], check=True)
     selected = base / "current"
     host = selected / "host" if (selected / "share").is_dir() else base
     share = selected / "share" if (selected / "share").is_dir() else base / "share"
@@ -364,7 +364,7 @@ def run(args, receipt=None):
         thread.start()
         try:
             with (args.scratch / "proxy.log").open("wb") as log:
-                with subprocess.Popen([str(args.proxy), "--config", str(args.root / "config.toml")], stdout=log, stderr=log) as child:
+                with subprocess.Popen([str(args.proxy), "--config", str(args.root / "config.toml"), "--dangerously-allow-root"], stdout=log, stderr=log) as child:
                     try:
                         wait_ready(child, args.root, args.admin_port)
                         first, fingerprint = job(args.cli, args.root, args.scratch, args.upstream_port, 1)

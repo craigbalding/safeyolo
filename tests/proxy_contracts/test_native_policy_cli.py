@@ -419,7 +419,7 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
         if source_fixture:
             # A controlled guest transport needs native commands and source
             # assets, but consumes neither an installed package nor runsc.
-            subprocess.run([str(artifacts / "safeyolo"), "--instance-dir", str(root), "init"],
+            subprocess.run([str(artifacts / "safeyolo"), "--dangerously-allow-root", "--instance-dir", str(root), "init"],
                            check=True, capture_output=True, timeout=15)
             (root / "bin").mkdir()
             for binary in HOST_BINARIES:

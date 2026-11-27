@@ -111,6 +111,7 @@ impl Drop for RestoreNatsRecord {
 fn host_command(root: &Path, arguments: &[&str]) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"));
     command
+        .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
         .arg("--json")
         .arg("--instance-dir")
         .arg(root)
