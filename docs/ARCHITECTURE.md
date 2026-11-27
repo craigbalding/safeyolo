@@ -199,11 +199,11 @@ not replace a system `runsc`. It is built from the pinned upstream release
 `release-20261005.0-safeyolo.2`, and the installer verifies its files against
 the bundle's checksums.
 
-| Patch | What it changes | Why SafeYOLO carries it |
-|---|---|---|
-| [`host-uds-paths.patch`](../scripts/gvisor/host-uds-paths.patch) | Adds `--host-uds-paths`. Host Unix-domain socket access is refused outside the listed guest paths. | Upstream's `--host-uds=open` applies to every mount. The agent needs its proxy socket, but a socket that a host process created in the workspace or another mounted folder would also be reachable, bypassing the proxy. SafeYOLO lists only `/safeyolo/proxy`. |
-| [`nofollow.patch`](../scripts/gvisor/nofollow.patch) | Opening a path with `O_DIRECTORY \| O_NOFOLLOW` refuses a final symlink, as Linux does. A trailing slash still follows it. | Software in the sandbox that uses `O_NOFOLLOW` to avoid following a symlinked directory gets the Linux result. |
-| [`portforward.patch`](../scripts/gvisor/portforward.patch) | A forwarded connection keeps the reply direction open after the sender finishes. Errors and shutdown still close both directions. | SafeYOLO uses `runsc port-forward` to reach a service inside a guest. Upstream dropped the service's reply when the request side closed first. |
+| Patch | What it changes | Why SafeYOLO carries it | Upstream |
+|---|---|---|---|
+| [`host-uds-paths.patch`](../scripts/gvisor/host-uds-paths.patch) | Adds `--host-uds-paths`. Host Unix-domain socket access is refused outside the listed guest paths. | gVisor's `--host-uds=open` covers every mount. The agent needs its proxy socket, and SafeYOLO wants no other host socket reachable, such as one a host process created in the workspace. SafeYOLO lists only `/safeyolo/proxy`. | A SafeYOLO-specific option; not proposed upstream. |
+| [`nofollow.patch`](../scripts/gvisor/nofollow.patch) | Opening a path with `O_DIRECTORY \| O_NOFOLLOW` refuses a final symlink with `ENOTDIR`, matching Linux. A trailing slash still follows it. | Software in the sandbox that uses these flags to avoid following a symlinked directory, including Go's `os.Root`, relies on the refusal. | Reported in [gVisor issue 14786](https://github.com/google/gvisor/issues/14786) and fixed by [pull request 14789](https://github.com/google/gvisor/pull/14789), first released in `release-20261109.0`. SafeYOLO can drop this patch when it moves its pin to that release or later. |
+| [`portforward.patch`](../scripts/gvisor/portforward.patch) | A forwarded connection keeps the reply direction open after the sender finishes. Errors and shutdown still close both directions. | SafeYOLO uses `runsc port-forward` to reach a service inside a guest, and needs the service's reply when the request side closes first. | Not reported upstream. |
 
 Each patch adds upstream-style Go tests, which the runtime build runs. See
 [how the runtime is built](installation.md#linux-host-preparation-in-new-source-bundles).
