@@ -272,9 +272,14 @@ pub fn coord(value: &Value) -> Result<(), Error> {
             .or(value.get("signal"))
             .or(value.get("envelope"))
             .unwrap_or(value);
+        let state_label = if selected.get("signal_id").is_some() {
+            "Recorded state"
+        } else {
+            "State"
+        };
         for (label, key) in [
             ("Room", "room_name"),
-            ("State", "state"),
+            (state_label, "state"),
             ("Status", "status"),
             ("Work", "work_id"),
             ("Title", "title"),
@@ -282,6 +287,7 @@ pub fn coord(value: &Value) -> Result<(), Error> {
             ("Kind", "kind"),
             ("Summary", "summary"),
             ("Version", "version"),
+            ("Revision", "revision"),
             ("Generation", "claim_generation"),
             ("Candidate", "target_ref"),
             ("Sequence", "sequence"),

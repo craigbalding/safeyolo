@@ -140,7 +140,9 @@ def test_human_membership_and_signal_receipts_retain_the_canonical_effect(instan
     shown = cli(instance, "signal", "show", ROOM, signal_id)
     assert shown.returncode == 0, shown.stderr
     assert f"Signal: {signal_id}" in shown.stdout and "Kind: result" in shown.stdout
-    assert "Summary: Observed human output" in shown.stdout and "State: current" in shown.stdout
+    assert "Summary: Observed human output" in shown.stdout and "Recorded state: current" in shown.stdout
+    assert "Revision: 1" in shown.stdout and "Report author: operator" in shown.stdout
+    assert "Observation basis: observed" in shown.stdout
     with terminal(instance, ["coord", "signal", "show", ROOM, signal_id]) as (process, fd, until):
         until(b"Summary: Observed human output")
         assert wait_terminal_exit(process, fd, bytearray(), timeout=5) == 0
