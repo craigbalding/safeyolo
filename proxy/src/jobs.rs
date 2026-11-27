@@ -31,8 +31,8 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
-pub const HELP: &str = r#"safeyolo [--instance-dir PATH] job run SPEC.json [--input DIRECTORY] [--console-file PATH]
-safeyolo [--instance-dir PATH] job validate SPEC.json
+pub const HELP: &str = r#"safeyolo [--instance-dir PATH] job run SPEC.json [--input DIRECTORY] [--console-file PATH] [--json]
+safeyolo [--instance-dir PATH] job validate SPEC.json [--json]
 Run a trusted host-supplied job definition. Only the host caller selects DIRECTORY.
 Inputs are copied without following symlinks. No job receives an Agent API, Coord, harness or host-script authority.
 Spec fields: gate_id, argv, timeout_seconds, max_input_bytes, max_input_entries, retain_bytes.
@@ -46,9 +46,9 @@ Both Hyperlight engines require KVM on Linux x86_64/aarch64 or entitled HVF on A
 Both engines default to reuse_initialization=true in the engine object. They restore clean initialized templates with fresh input, identity, deadline and capabilities. Set reuse_initialization=false for explicit cold execution of the same engine. runtime_report.initialization identifies construction, restore or a cold reason and stage timings. Templates retain no live worker or invocation authority.
 Hyperlight has no Unix process or guest-root semantics. Core calls the named function with argv as a JSON string and offers bounded ReadInput(relative_path); its returned string is ordinary stdout. Unikraft runs the pinned Python checker with argv, read-only /input, and fresh in-memory /work and rootfs. It supports a Linux subset, without fork or full Unix privilege semantics. Both reject network=true and guest-root. memory_mb sizes scratch memory; it is not a total helper RSS limit.
 For mediated service access, set mediated_services={services:[NAME],max_calls:N,max_request_bytes:N,max_response_bytes:N} in the adopted Hyperlight specification, with network=false. Core SYCall(JSON) and Unikraft hyperlight.call("sy.call", REQUEST) use the same named-service request. The host delegates gate:<gate_id> through the existing proxy, keeps credentials outside the guest, and retains service_evidence. Guest sockets stay disabled. Host-call messages are at most 49152 bytes; captured responses use handles and reads of at most 16384 bytes.
-Print observed execution evidence as JSON. A PASS string is ordinary output. engine identifies the selected backend; outcome_source distinguishes a guest process from a host helper. runtime_report retains VM completion or error separately. helper_process_status retains the actual OS exit or signal even after a watchdog deadline or cancellation.
+Human output summarizes observed execution. Select --json for complete execution evidence. A PASS string is ordinary output. engine identifies the selected backend; outcome_source distinguishes a guest process from a host helper. runtime_report retains VM completion or error separately. helper_process_status retains the actual OS exit or signal even after a watchdog deadline or cancellation.
 All captured stream bytes are counted and hashed; retain_bytes bounds retained output. Unikraft's console decodes UTF-8 with replacement; console_encoding identifies that representation.
-For Hyperlight jobs, --console-file creates a private new file and copies up to retain_bytes of stdout there as it arrives. The final JSON result remains on stdout. An existing path is refused. This file belongs only to this invocation; console text is guest output, not an authority or success signal.
+For Hyperlight jobs, --console-file creates a private new file and copies up to retain_bytes of stdout there as it arrives. The selected human or JSON result remains on stdout. An existing path is refused. This file belongs only to this invocation; console text is guest output, not an authority or success signal.
 Without network or mediated_services, gate_principal is provenance and authorization_principal is null.
 Return 0 only for observed exit 0 with complete evidence and, for Hyperlight, successful VM completion. Return 124 for timeout and 1 for other job outcomes.
 Observation failures set observation_error and retain exact available outcome/streams; outcome is null when no exact result is available. Startup or cleanup failures cannot report successful completion.

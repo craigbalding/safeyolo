@@ -1042,14 +1042,17 @@ pub async fn run(config: &Path, arguments: &[String]) -> Result<(), Error> {
                     return Err(format!("unknown coord {kind} option: {option}").into());
                 }
             }
-            grant(
+            let mut receipt = grant(
                 config,
                 room,
                 agent,
                 &permissions,
                 kind == "revoke",
                 operation_id,
-            )?
+            )?;
+            receipt["room_name"] = json!(room);
+            receipt["agent"] = json!(agent);
+            receipt
         }
         [help] if help == "--help" => {
             println!("{LIFECYCLE_HELP}");

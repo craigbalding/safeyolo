@@ -115,6 +115,39 @@ def test_installed_continuity_setup_uses_native_room_grants_and_readers(instance
     assert status in (403, 404), raw
 
 
+def test_human_membership_and_signal_receipts_retain_the_canonical_effect(instance):
+    operation = "human-membership-grant"
+    granted = cli(instance, "grant", ROOM, "alice", "receive", "--operation-id", operation)
+    assert granted.returncode == 0, granted.stderr
+    assert f"Room: {ROOM}" in granted.stdout and "Agent: alice" in granted.stdout
+    assert "Granted room permissions: receive" in granted.stdout
+    assert "send" not in granted.stdout and "page_operator" not in granted.stdout
+    replay = cli(instance, "grant", ROOM, "alice", "receive", "--operation-id", operation, "--json")
+    assert replay.returncode == 0, replay.stderr
+    receipt = json.loads(replay.stdout)
+    assert receipt["permissions"] == ["receive"] and receipt["operation_id"] == operation
+    assert receipt["room_name"] == ROOM and receipt["agent"] == "alice"
+    revoked = cli(instance, "revoke", ROOM, "alice", "--operation-id", "human-membership-revoke")
+    assert revoked.returncode == 0, revoked.stderr
+    assert f"Room: {ROOM}" in revoked.stdout and "Agent: alice" in revoked.stdout
+    assert "Room membership revoked" in revoked.stdout
+    status, _, raw = request(instance.paths["alice"], f"http://_safeyolo.proxy.internal/api/coord/rooms/{ROOM}/state",
+                             headers={"Authorization": f"Bearer {(instance.root / 'data/agent_token').read_text().strip()}"})
+    assert status in (403, 404), raw
+    created = cli(instance, "signal", "create", ROOM, "result", "Observed human output", "--basis", "observed", "--json")
+    assert created.returncode == 0, created.stderr
+    signal_id = json.loads(created.stdout)["signal"]["signal_id"]
+    shown = cli(instance, "signal", "show", ROOM, signal_id)
+    assert shown.returncode == 0, shown.stderr
+    assert f"Signal: {signal_id}" in shown.stdout and "Kind: result" in shown.stdout
+    assert "Summary: Observed human output" in shown.stdout and "Recorded state: current" in shown.stdout
+    assert "Revision: 1" in shown.stdout and "Report author: operator" in shown.stdout
+    assert "Observation basis: observed" in shown.stdout
+    with terminal(instance, ["coord", "signal", "show", ROOM, signal_id]) as (process, fd, until):
+        until(b"Summary: Observed human output")
+        assert wait_terminal_exit(process, fd, bytearray(), timeout=5) == 0
+
+
 async def stream_control(instance, no_ack=None, *, delete=(), purge=False):
     # Only this driver reads the fixture's host-local NATS credential. Neither
     # the guest command nor test output receives it.
