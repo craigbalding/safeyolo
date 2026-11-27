@@ -655,7 +655,12 @@ safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_
 safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --file instance-a.jsonl --capture capture.pcap --lines 1000
 ```
 
-The `capture` result shows matching observation metadata, its supporting audit
+Ordinary log listings and pivots summarize retained events, run context and
+available or unavailable links. They preserve source locations, investigation
+warnings and the searched window's limits. Select `--json` for complete original
+records, attribution, correlations and capture metadata.
+
+The structured `capture` result shows matching observation metadata, its supporting audit
 lines, and the capture packet number and byte offset. Packet numbers start at
 one; offsets point to the PCAP packet header. The connection view requires the
 recorded connection and agent attribution in the selected instance/runtime.

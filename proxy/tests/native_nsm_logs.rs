@@ -32,12 +32,14 @@ mod test_owned_endpoint;
 async fn cli(root: &Path, args: &[&str]) -> std::process::Output {
     timeout(
         Duration::from_secs(15),
-        tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
-            .arg("--instance-dir")
-            .arg(root)
-            .arg("--json")
-            .args(args)
-            .output(),
+        tokio::process::Command::new(
+            std::env::var_os("SAFEYOLO_NATIVE_CLI")
+                .unwrap_or_else(|| env!("CARGO_BIN_EXE_safeyolo").into()),
+        )
+        .arg("--instance-dir")
+        .arg(root)
+        .args(args)
+        .output(),
     )
     .await
     .unwrap()
@@ -45,7 +47,9 @@ async fn cli(root: &Path, args: &[&str]) -> std::process::Output {
 }
 
 async fn success(root: &Path, args: &[&str]) -> Value {
-    let output = cli(root, args).await;
+    let mut args = args.to_vec();
+    args.push("--json");
+    let output = cli(root, &args).await;
     assert!(
         output.status.success(),
         "{args:?}: {}",
@@ -150,6 +154,53 @@ fn pivot_args<'a>(kind: &'a str, id: &'a str) -> Vec<&'a str> {
         "alice",
         "--json",
     ]
+}
+
+#[tokio::test]
+async fn retained_evidence_defaults_to_summaries_and_preserves_explicit_json() {
+    let root = tempfile::tempdir().unwrap();
+    configure(root.path());
+    let mut original = fixture_rows();
+    original[2]["summary"] = json!("Original source summary \u{1b}[2J");
+    write_rows(root.path(), &original);
+    let audit = fs::read(root.path().join("audit.jsonl")).unwrap();
+
+    let listing = cli(root.path(), &["logs", "list"]).await;
+    assert!(listing.status.success());
+    let listing = String::from_utf8(listing.stdout).unwrap();
+    assert!(listing.contains("Original source summary"), "{listing}");
+    assert!(listing.contains("Run context: unavailable"), "{listing}");
+    assert!(!listing.contains("Decision: null"), "{listing}");
+    assert!(listing.contains("--json"), "{listing}");
+
+    for (kind, id) in [("request", "F1"), ("connection", "C1")] {
+        let mut args = pivot_args(kind, id);
+        args.retain(|arg| *arg != "--json");
+        let human = cli(root.path(), &args).await;
+        assert!(human.status.success());
+        let human = String::from_utf8(human.stdout).unwrap();
+        for expected in [
+            "Instance: I1",
+            "Runtime: R1",
+            "Agent: alice",
+            "Original source summary",
+            "Run context: unavailable",
+            "supporting",
+            "Select --json for complete original records",
+            "Only the retained window",
+        ] {
+            assert!(human.contains(expected), "missing {expected}: {human}");
+        }
+        assert!(!human.contains("\"schema_version\""), "{human}");
+        assert!(!human.contains("\"details\""), "{human}");
+        assert!(!human.contains('\u{1b}'), "{human}");
+        let machine = success(root.path(), &args).await;
+        assert!(!machine["records"].as_array().unwrap().is_empty());
+        for entry in machine["records"].as_array().unwrap() {
+            assert!(original.contains(&entry["record"]), "{entry}");
+        }
+    }
+    assert_eq!(fs::read(root.path().join("audit.jsonl")).unwrap(), audit);
 }
 
 #[tokio::test]
