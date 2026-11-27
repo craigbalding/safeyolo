@@ -1,0 +1,59 @@
+---
+layout: waypoint
+full_width: true
+permalink: /journey/agent-home/
+title: "A home for an agent · SafeYOLO journey"
+description: "SafeYOLO gives each agent root, tools, browsers, Docker and an API to explain its own blocks and request access, inside a sandbox with no route out but one."
+act: "Act 1"
+waypoint: 2
+headline: "A home for an agent, not just a box to keep it in"
+lede: "You want an agent that sets up whatever it needs, works out why it was blocked and asks for what it lacks, without you standing over it."
+lit: "sandbox agent-api checkpoint"
+next:
+  title: "API access without the secret"
+  url: /journey/masked-apis/
+  blurb: "Give the agent Slack, GitHub or Docker without putting a token in its sandbox."
+---
+<h2>Most sandboxes are a cage</h2>
+<p>A sandbox that only says no keeps an agent safe and useless. The agent hits a wall, guesses at the cause, and stops to ask you. SafeYOLO is built the other way round: the sandbox is a place where the agent can do real work, and SafeYOLO talks back.</p>
+
+<h2>What the agent gets</h2>
+<ul>
+<li><b>Its own Linux machine</b> with guest root through <code>sudo</code>, a persistent home and your selected workspace</li>
+<li><b>Tools that stay</b>: language runtimes and CLIs installed with mise persist across restarts, and distro packages are available for system dependencies</li>
+<li><b>Full terminals</b>, plus ordinary <code>cron</code> and <code>at</code> scheduling inside the guest</li>
+<li><b>Browsers</b> inside the guest, with an optional desktop you can watch or take over through a token-gated preview</li>
+<li><b>Docker inside the sandbox</b> on Linux, with builds and Compose applications running under the sandbox's own outbound policy</li>
+<li><b>Ways to share what it builds</b>: with other agents through the service gateway, or with you on the host's localhost or your tailnet</li>
+<li><b>Skills</b> staged at launch that teach it how SafeYOLO works</li>
+</ul>
+
+<h2>What the agent can ask</h2>
+<p>Through the <a href="/how-it-works/agent-api/">Agent API</a>, answered by the checkpoint through the agent's own socket:</p>
+<table>
+<tr><th>Situation</th><th>The agent</th></tr>
+<tr><td>A request came back 428 or 403</td><td>Reads the exact reason with <code>/explain</code></td></tr>
+<tr><td>It is about to need a new host</td><td>Checks with <code>/lookup</code> before asking you</td></tr>
+<tr><td>It is being rate-limited</td><td>Reads its budgets and circuit breakers</td></tr>
+<tr><td>It needs a service</td><td>Requests one named capability, with a reason</td></tr>
+<tr><td>It needs a policy change</td><td>Proposes the exact snapshot for you to approve</td></tr>
+<tr><td>You should see its browser</td><td>Requests a desktop preview</td></tr>
+</table>
+
+<h2>What you do</h2>
+<p>Launch an agent on a workspace, choosing its harness. For Claude Code and Codex subscriptions you can keep the login in the host vault:</p>
+<pre><code>safeyolo agent launch /path/to/workspace --name alice --harness claude --authentication host-vault</code></pre>
+<p>Then let it work. When it needs something outside policy, you get one specific request with its scope, and decide it in the CLI, in Command Centre on macOS, or through a delegated reviewer.</p>
+
+<h2>What happens when it hits a wall</h2>
+<ol>
+<li>The agent calls a host its policy does not cover and gets <b>428: Network access requires approval</b>.</li>
+<li>It reads the reason with <code>/explain</code>, instead of guessing or retrying.</li>
+<li>If the work genuinely needs that host, it tells you the exact destination and why, as a pending approval.</li>
+<li>You approve or deny it once. The decision and its reason are recorded.</li>
+</ol>
+
+<div class="guarantees">
+<div><h3>What SafeYOLO guarantees</h3><ul><li>Guest root never becomes host root</li><li>The only route out is the agent's own socket</li><li>An agent's requests carry its identity, which it cannot change</li></ul></div>
+<div class="no"><h3>What it does not do</h3><ul><li>Protect files in a writable mount from the agent working in them</li><li>Keep OS package changes under Linux gVisor after a stop; persistent home and caches remain</li><li>Run nested Docker on macOS: the qualified configuration is Linux with gVisor</li></ul></div>
+</div>

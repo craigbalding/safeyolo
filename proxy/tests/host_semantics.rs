@@ -1,5 +1,7 @@
 //! Native loading and authority assessment; no Windows host operation executes.
-use crate::{
+use base64::{Engine, engine::general_purpose::STANDARD};
+use ring::signature::{Ed25519KeyPair, KeyPair};
+use safeyolo_proxy::{
     host_execution::{
         semantics::{self, Authority, PersistentEffect},
         *,
@@ -11,12 +13,10 @@ use crate::{
         effects::assessment::ResourceScopes,
     },
 };
-use base64::{Engine, engine::general_purpose::STANDARD};
-use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
-const SOURCE: &str = include_str!("../../../host-executor/examples/windows-starter.json");
+const SOURCE: &str = include_str!("../../host-executor/examples/windows-starter.json");
 
 fn package() -> Package {
     serde_json::from_str(SOURCE).unwrap()
@@ -678,7 +678,7 @@ fn scope_from<'a>(grant: &'a mut Authority, operation: &str) -> &'a mut Operatio
 
 #[test]
 fn the_full_argument_envelope_and_default_authority_drive_conditional_effects() {
-    use crate::services::effects::{Condition, EffectUse};
+    use safeyolo_proxy::services::effects::{Condition, EffectUse};
     let mut package = package();
     let op = package.operations.get_mut("file-inspect").unwrap();
     op.effects.insert(
@@ -1129,7 +1129,7 @@ fn target_owned_full_grants_and_ceiling_are_assessed_without_changing_admission_
             .unwrap();
     assert_eq!(
         policy
-            .evaluate_gateway_request(crate::policy::GatewayRequest {
+            .evaluate_gateway_request(safeyolo_proxy::policy::GatewayRequest {
                 agent: "alice",
                 service: "windows-starter:service-restart",
                 capability: "invoke",
@@ -1289,7 +1289,7 @@ fn model_errors_and_stale_or_invalid_native_scope_remain_explicit() {
 
 #[test]
 fn current_private_policy_assessment_uses_the_adopted_host_explanations_and_alternatives() {
-    use crate::{
+    use safeyolo_proxy::{
         policy::capabilities,
         services::effects::policy::{self, Candidate},
     };

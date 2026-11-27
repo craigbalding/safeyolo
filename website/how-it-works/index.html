@@ -1,0 +1,53 @@
+---
+layout: default
+full_width: true
+permalink: /how-it-works/
+title: "How SafeYOLO works"
+description: "A map of SafeYOLO: agent sandboxes, the checkpoint every request passes, policy and approvals, host-held credentials, evidence, Coord, gates, remote execution and connected instances."
+---
+<section class="pagehead">
+  <div class="wrap">
+    <p class="kicker">How it works</p>
+    <h1>One checkpoint between your agents and everything else</h1>
+    <p class="lede">Each agent works in its own sandbox. Its only route out is a socket into SafeYOLO, which decides every request against the policy you set. Select any part of the map to see what it does.</p>
+  </div>
+</section>
+
+<section class="band">
+  <div class="wrap">
+    <div class="map-frame big">{% include map.html %}</div>
+  </div>
+</section>
+
+<section class="band alt">
+  <div class="wrap">
+    <h2>The parts</h2>
+    <div class="partgrid">
+      <a href="/how-it-works/sandbox/"><b>Agent sandbox</b><span>Its own Linux machine, root inside, no network interface.</span></a>
+      <a href="/how-it-works/agent-api/"><b>Agent API</b><span>How an agent asks why it was blocked, and asks for more.</span></a>
+      <a href="/how-it-works/checkpoint/"><b>Checkpoint</b><span>The Rust proxy that decides every request and fails closed.</span></a>
+      <a href="/how-it-works/policy-and-approvals/"><b>Policy and approvals</b><span>Decide once; agents only ask about what is outside it.</span></a>
+      <a href="/how-it-works/credentials/"><b>Credentials</b><span>Agents use your services; the secrets stay on your host.</span></a>
+      <a href="/how-it-works/evidence/"><b>Evidence</b><span>Every request, decision and reason on record.</span></a>
+      <a href="/how-it-works/coord/"><b>Coord</b><span>Rooms, work and claims for agents working together.</span></a>
+      <a href="/how-it-works/gates/"><b>Gates</b><span>Deterministic checks the agents cannot skip.</span></a>
+      <a href="/how-it-works/host-execution/"><b>Remote machines</b><span>Named, signed operations on other hosts, without SSH.</span></a>
+      <a href="/how-it-works/multi-instance/"><b>Other SafeYOLOs</b><span>Connect instances for support, approvals and federation.</span></a>
+    </div>
+  </div>
+</section>
+
+<section class="band">
+  <div class="wrap split">
+    <div>
+      <h2>Two rules hold everywhere</h2>
+    </div>
+    <div>
+      <p class="statement">Identity comes from the socket, never from the request.</p>
+      <p>The socket a connection arrives on fixes which agent it is. Headers, JSON fields and bearer tokens cannot select another agent.</p>
+      <p class="statement">Fail closed.</p>
+      <p>Unknown credentials and out-of-policy requests get HTTP 428 (approval required) or 403 (denied), never silent passthrough. Policy is loaded and validated before any agent can connect.</p>
+      <ul class="linkrow"><li><a href="/journey/">Follow the journey</a></li><li><a href="https://github.com/craigbalding/safeyolo/blob/master/docs/ARCHITECTURE.md">Architecture overview</a></li><li><a href="https://github.com/craigbalding/safeyolo/blob/master/SECURITY.md">Security model</a></li></ul>
+    </div>
+  </div>
+</section>

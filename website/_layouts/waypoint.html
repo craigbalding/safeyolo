@@ -1,0 +1,34 @@
+---
+layout: default
+---
+<section class="pagehead">
+  <div class="wrap">
+    <p class="crumbs"><a href="/journey/">Journey</a> · {{ page.act }} · Waypoint {{ page.waypoint }}</p>
+    <h1>{{ page.headline }}</h1>
+    <p class="lede">{{ page.lede }}</p>
+  </div>
+</section>
+{% if page.swimlane %}
+<section class="band alt">
+  <div class="wrap">
+    <h2>{{ page.swimlane_title }}</h2>
+    {% include factory-swimlane.html %}
+    <p class="swimlegend"><span><i style="border-color:#b39700;border-top-style:dashed"></i>Agent call through the proxy</span><span><i style="border-color:currentColor"></i>Coord message or Work change</span><span><i style="border-color:#0f7b55"></i>Optional bound job path</span><span><i class="hx"></i>Adopted job</span></p>
+  </div>
+</section>
+{% endif %}
+<section class="band">
+  <div class="wrap withmap">
+    <div class="body">
+{{ content }}
+      <div class="nextup">
+        <div><span>Next on the journey</span><br><a href="{{ page.next.url }}">{{ page.next.title }}</a></div>
+        <span>{{ page.next.blurb }}</span>
+      </div>
+    </div>
+    <aside>
+      <div class="map-frame">{% include map.html %}</div>
+      <p>Parts this waypoint uses are highlighted. Select one to see how it works.</p>
+    </aside>
+  </div>
+</section>

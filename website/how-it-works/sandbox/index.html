@@ -1,0 +1,38 @@
+---
+layout: explainer
+full_width: true
+permalink: /how-it-works/sandbox/
+title: Agent sandbox · How SafeYOLO works
+description: Agents get root, a persistent home and the tools they need, inside a sandbox that has no route to the outside world except through SafeYOLO.
+part_name: Agent sandbox
+headline: Each agent gets its own Linux machine, with no network but one socket
+lede: Agents get root, a persistent home and the tools they need, inside a sandbox that has no route to the outside world except through SafeYOLO.
+lit: sandbox
+docs:
+- title: 'Architecture: sandbox runtime'
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/ARCHITECTURE.md#sandbox-runtime-and-networking
+- title: macOS microVM design
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/microvm-architecture.md
+- title: Isolation tests
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/security-verification.md
+journey:
+- title: A home for an agent
+  url: /journey/agent-home/
+---
+<h2>Two platforms, one boundary</h2>
+<p>On Apple Silicon macOS, each agent runs in a hardware-backed microVM built on Apple's Virtualization.framework. On Linux, it runs in rootless gVisor inside an unprivileged user namespace, so launching agents needs no host sudo. Both use the same Debian guest image.</p>
+<h2>No network interface</h2>
+<p>The sandbox has no external network interface. On macOS there is no virtual network card at all, only virtual sockets. On Linux, the only host path mounted is the agent's own socket directory. Requests go from a forwarder inside the guest, through that agent's socket, to the <a href="/how-it-works/checkpoint/">checkpoint</a>. Removing proxy settings inside the guest does not create another route.</p>
+<h2>Root inside, not on your host</h2>
+<p>Agents start as an ordinary user and can use <code>sudo</code> to install packages and administer their guest. Guest root is not host root: on Linux it maps to an unprivileged subordinate user on the host.</p>
+<h2>What persists</h2>
+<table>
+<tr><th>Location</th><th>Behaviour</th></tr>
+<tr><td><code>/home/agent</code> and <code>/workspace</code></td><td>Persist across ordinary stop and run cycles, including tools installed with mise</td></tr>
+<tr><td>OS packages</td><td>Kept by microVMs in their per-agent overlay; discarded on stop under Linux gVisor, with package downloads cached for quick reinstalls</td></tr>
+<tr><td><code>/tmp</code></td><td>Temporary, and may be held in memory</td></tr>
+</table>
+<div class="guarantees">
+<div><h3>What this gives you</h3><ul><li>A separate machine per agent, with its own identity</li><li>No direct route from the agent to the Internet</li><li>Only the host folders you explicitly mount</li></ul></div>
+<div class="no"><h3>What it does not do</h3><ul><li>Protect data in a writable mount from the agent working in it</li><li>Make a destructive change harmless because it happened in a sandbox</li></ul></div>
+</div>

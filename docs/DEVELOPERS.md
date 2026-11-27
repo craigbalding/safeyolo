@@ -337,6 +337,22 @@ CARGO_TARGET_DIR=/path/to/candidate/proxy/target \
   scripts/cargo_with_space.sh --manifest-path proxy/Cargo.toml clippy --locked --all-targets -- -D warnings
 ```
 
+For host-operation authority and semantics changes, run the focused integration
+suite from the repository root with the pinned Rust toolchain and the target
+and reserve settings for that host:
+
+```sh
+scripts/cargo_with_space.sh test --manifest-path proxy/Cargo.toml \
+  --locked -p safeyolo-proxy --test host_semantics
+```
+
+This suite uses the public host-operation APIs and the shared Windows starter
+fixture. Cargo builds the normal proxy library and binaries, but skips the
+library test executable and unrelated test targets. The normal broader
+`cargo test --manifest-path proxy/Cargo.toml --locked` command also discovers
+this suite. Integration-target selection removes unrelated test compilation;
+it does not guarantee a faster production-edit build.
+
 For candidate-versus-mutant sensitivity tests, create one scratch source tree
 at the exact candidate commit and reuse it for the complete batch. Reuse one
 Cargo target for that batch. Do not recreate the full source tree or allocate a
@@ -1413,7 +1429,7 @@ tests start only owned local fixtures. The contract test also needs the matching
 native CLI for its gateway credential fixture:
 
 ```sh
-CARGO_TARGET_DIR="$PWD/proxy/target" CARGO_BUILD_JOBS=1 SAFEYOLO_CARGO_RESERVE_GIB=10 scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --release --locked --bins
+CARGO_TARGET_DIR="$PWD/proxy/target" SAFEYOLO_CARGO_RESERVE_GIB=10 scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --release --locked --bins
 SAFEYOLO_NATIVE_CLI="$PWD/proxy/target/release/safeyolo" uv run --frozen --no-sync pytest -q tests/proxy_contracts/test_http2_gate.py tests/proxy_contracts/test_http2_gate_timing.py tests/proxy_contracts/test_http2_contract.py
 ```
 
@@ -1471,8 +1487,9 @@ uv run --frozen pytest -q cli/tests/test_config.py
 ```
 
 For changed Rust code, use the focused Cargo test and Ubuntu Clippy check through
-`scripts/cargo_with_space.sh`; keep `CARGO_BUILD_JOBS=1` on the configured factory
-host. Broaden testing when an observed result warrants it, not to obtain a
+`scripts/cargo_with_space.sh` with Cargo's available-CPU default on the configured
+factory host. Set a lower job limit when current memory or contention measurements
+require it. Broaden testing when an observed result warrants it, not to obtain a
 full-suite badge for each candidate.
 
 ### Pull Request Guidelines
