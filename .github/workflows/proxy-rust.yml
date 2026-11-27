@@ -389,7 +389,9 @@ jobs:
         if: needs.native-changes.outputs.rust == 'true' || needs.native-changes.outputs.guest == 'true' || needs.native-changes.outputs.dispatch == 'true'
         run: |
           printf 'Available CPUs: %s\n' "$(nproc)"
-          printf 'CARGO_BUILD_JOBS=%s\n' "${CARGO_BUILD_JOBS:-Cargo default}"
+          # The guest producer defaults to one job for constrained local hosts.
+          # This runner has the memory for its available CPUs; preserve an override.
+          printf 'CARGO_BUILD_JOBS=%s\n' "${CARGO_BUILD_JOBS:-$(nproc)}" | tee -a "$GITHUB_ENV"
           free -m
           df -Pk . "$RUNNER_TEMP"
           # rust-cache disables incremental compilation unless explicitly reset.

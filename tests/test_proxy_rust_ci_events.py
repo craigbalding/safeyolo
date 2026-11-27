@@ -996,7 +996,8 @@ def test_native_build_jobs_use_available_cpus():
         assert all("CARGO_BUILD_JOBS" not in step.get("env", {}) for step in job["steps"])
 
 
-def test_linux_cache_does_not_disable_incremental_compilation(tmp_path):
+@pytest.mark.parametrize("build_jobs", [None, "2"])
+def test_linux_build_environment_uses_runner_cpus_and_incremental_compilation(tmp_path, build_jobs):
     steps = rust_workflow()["jobs"]["focused-pr"]["steps"]
     cache = next(step for step in steps if step.get("name") == "Restore Rust dependency cache")
     enable = next(step for step in steps if step.get("name") == "Record runner resources and enable incremental compilation")
@@ -1005,11 +1006,17 @@ def test_linux_cache_does_not_disable_incremental_compilation(tmp_path):
     assert enable["if"] == cache["if"]
     environment = tmp_path / "job-env"
     environment.write_text("CARGO_INCREMENTAL=0\n")
+    process_environment = dict(os.environ, GITHUB_ENV=str(environment), RUNNER_TEMP=str(tmp_path),
+                               CARGO_INCREMENTAL="0")
+    process_environment.pop("CARGO_BUILD_JOBS", None)
+    if build_jobs is not None:
+        process_environment["CARGO_BUILD_JOBS"] = build_jobs
     result = subprocess.run(["bash", "-e", "-c", enable["run"]], capture_output=True, text=True,
-                            env=dict(os.environ, GITHUB_ENV=str(environment), RUNNER_TEMP=str(tmp_path),
-                                     CARGO_INCREMENTAL="0"))
+                            env=process_environment)
     assert result.returncode == 0, result.stderr
     assert environment.read_text().splitlines()[-1] == "CARGO_INCREMENTAL=1"
+    expected_jobs = build_jobs or subprocess.check_output(["nproc"], text=True).strip()
+    assert f"CARGO_BUILD_JOBS={expected_jobs}" in environment.read_text().splitlines()
     assert "Available CPUs:" in result.stdout
 
 
