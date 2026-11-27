@@ -458,6 +458,66 @@ comments = "The separately installed executor and independent host observers ret
 owner = "#1677"
 decisions = ["authorization", "other_sinks_and_launch"]
 
+[[controls]]
+id = "BB-39"
+control = "Lookalike destination names"
+source = "https://github.com/craigbalding/safeyolo/blob/e9d6fa08d0b69c3275d5820c53348a26fe95466e/tests/proxy_contracts/test_native_network_policy.py"
+what = "Homoglyph, mixed-script and internationalized-name checks apply to the host that policy matched, in every authority form, before a request leaves."
+existing = "Native process contract and Rust network-guard tests; CI."
+conformance = "Process and component evidence; no installed-guest run yet."
+effort = "S"
+comments = "Catalogued from website grounding (#1742). Decide under #1743 whether installed-guest evidence is needed."
+owner = "#1743"
+decisions = ["authorization"]
+
+[[controls]]
+id = "BB-40"
+control = "Credential custody at rest and in records"
+source = "https://github.com/craigbalding/safeyolo/blob/e9d6fa08d0b69c3275d5820c53348a26fe95466e/proxy/tests/credentials.rs"
+what = "The host vault is encrypted with a generated key or an explicitly unlocked passphrase; credential events carry keyed fingerprints, not detected values; stored flows redact the gateway-injected credential header."
+existing = "Rust credential-store, credential-guard and flow-recording tests; CI."
+conformance = "Component evidence; ordinary raw credentials in optional stored flows remain unredacted by design."
+effort = "S"
+comments = "Catalogued from website grounding (#1742). Guest access to the vault remains BB-09."
+owner = "#1743"
+decisions = ["credentials", "management_evidence"]
+
+[[controls]]
+id = "BB-41"
+control = "Network evidence limits"
+source = "https://github.com/craigbalding/safeyolo/blob/e9d6fa08d0b69c3275d5820c53348a26fe95466e/proxy/src/observations/tests.rs"
+what = "Transport observations record metadata without payloads within item and byte limits; packet capture stays bounded and a failed sink does not stop agent traffic; TLS evidence requires measured, scoped changes."
+existing = "Rust observation, packet-capture, NSM and connection-history tests; CI."
+conformance = "Component evidence; no installed-guest run yet. Default-enabled settings are not separately witnessed."
+effort = "S"
+comments = "Catalogued from website grounding (#1742)."
+owner = "#1743"
+decisions = ["management_evidence"]
+
+[[controls]]
+id = "BB-42"
+control = "Advisory signals grant nothing"
+source = "https://github.com/craigbalding/safeyolo/blob/e9d6fa08d0b69c3275d5820c53348a26fe95466e/proxy/src/signals/control_updates/tests.rs"
+what = "Receiving a signal does not adopt a response or change policy; only an operator-adopted response takes effect."
+existing = "Rust signal-update tests and native signal process tests; CI."
+conformance = "Process and component evidence; no installed-guest run yet."
+effort = "S"
+comments = "Catalogued from website grounding (#1742). Managed host-list refresh remains BB-30."
+owner = "#1743"
+decisions = ["policy_publication"]
+
+[[controls]]
+id = "BB-43"
+control = "Approval does not replay"
+source = "https://github.com/craigbalding/safeyolo/blob/e9d6fa08d0b69c3275d5820c53348a26fe95466e/tests/proxy_contracts/test_codex_approval_fallback.py"
+what = "Approving or timing out a pending request does not resend the blocked request; the agent retries explicitly."
+existing = "Native process contract and operator CLI tests; CI."
+conformance = "Process evidence for gateway and coding-client approvals; network-egress approval is not separately witnessed."
+effort = "S"
+comments = "Catalogued from website grounding (#1742)."
+owner = "#1743"
+decisions = ["external_effects", "management_evidence"]
+
 [[witnesses]]
 paths = ["host-executor/tests/unix_native.rs"]
 controls = ["BB-38"]
@@ -1322,3 +1382,144 @@ adapter = "Real proxy/SQLite with independent helper-launch and service/effect c
 target = "lib"
 module = "coord_rooms::work::tests::automatic_tests"
 owner = "proxy/src/coord_rooms/work/tests.rs"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_local_api_authorization.py::test_invalid_policy_startup_refuses_and_reload_keeps_denial"]
+controls = ["BB-06"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Real native executable started with an invalid policy; no agent listener accepts before policy loads"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_native_network_policy.py::test_native_policy_homoglyph_checks_the_source_matching_host", "tests/proxy_contracts/test_native_network_policy.py::test_native_policy_homoglyph_authority_forms", "tests/proxy_contracts/test_native_network_policy.py::test_native_policy_raw_decodable_mixed_script_ace"]
+controls = ["BB-39"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["proxy/tests/network_guard.rs"]
+controls = ["BB-39"]
+kind = "cargo"
+target = "network_guard"
+module = ""
+owner = "proxy/tests/network_guard.rs"
+scope = "Controlled network-guard decisions"
+adapter = "Real guard ordering over homoglyph, identity and budget gates; no network"
+
+[[witnesses]]
+paths = ["proxy/tests/host_names.rs"]
+controls = ["BB-39"]
+kind = "cargo"
+target = "host_names"
+module = ""
+owner = "proxy/tests/host_names.rs"
+scope = "Host-name normalization and internationalized-name tables"
+adapter = "Checked-in name tables and witnesses; no network"
+
+[[witnesses]]
+paths = ["proxy/tests/credentials.rs"]
+controls = ["BB-40"]
+kind = "cargo"
+target = "credentials"
+module = ""
+owner = "proxy/tests/credentials.rs"
+scope = "Host credential store files, keys and passphrase unlock"
+adapter = "Real encrypted store files in temporary directories"
+
+[[witnesses]]
+paths = ["proxy/tests/credential_guard.rs"]
+controls = ["BB-40"]
+kind = "cargo"
+target = "credential_guard"
+module = ""
+owner = "proxy/tests/credential_guard.rs"
+scope = "Credential guard extraction and evidence"
+adapter = "Controlled requests; fingerprints checked without retained secret values"
+
+[[witnesses]]
+paths = ["proxy/src/http/flow_recording/tests.rs"]
+controls = ["BB-40"]
+kind = "cargo"
+target = "lib"
+module = "http::flow_recording::tests"
+owner = "proxy/src/http/flow_recording.rs"
+scope = "Stored flow recording"
+adapter = "Real flow store; gateway-injected header redaction"
+
+[[witnesses]]
+paths = ["proxy/src/observations/tests.rs"]
+controls = ["BB-41"]
+kind = "cargo"
+target = "lib"
+module = "observations::tests"
+owner = "proxy/src/observations.rs"
+scope = "Transport observation receivers and limits"
+adapter = "Controlled byte streams; payload-free records and canonical loss reporting"
+
+[[witnesses]]
+paths = ["proxy/src/packet_capture/tests.rs"]
+controls = ["BB-41"]
+kind = "cargo"
+target = "lib"
+module = "packet_capture::tests"
+owner = "proxy/src/packet_capture.rs"
+scope = "Packet capture collectors and sinks"
+adapter = "Controlled file, pipe and socket sinks; agent traffic continues on sink failure"
+
+[[witnesses]]
+paths = ["proxy/src/audit/nsm/tests.rs"]
+controls = ["BB-41"]
+kind = "cargo"
+target = "lib"
+module = "audit::nsm::tests"
+owner = "proxy/src/audit/nsm.rs"
+scope = "Network security monitoring records"
+adapter = "Schema, bounds and measured-evidence checks; no live network"
+
+[[witnesses]]
+paths = ["proxy/src/connection_events/novelty/tests.rs"]
+controls = ["BB-41"]
+kind = "cargo"
+target = "lib"
+module = "connection_events::novelty::tests"
+owner = "proxy/src/connection_events/novelty.rs"
+scope = "Connection-history and TLS fingerprint changes"
+adapter = "Controlled ClientHello and connection histories"
+
+[[witnesses]]
+paths = ["proxy/src/signals/control_updates/tests.rs"]
+controls = ["BB-42"]
+kind = "cargo"
+target = "lib"
+module = "signals::control_updates::tests"
+owner = "proxy/src/signals/control_updates.rs"
+scope = "Signal receipt and response adoption"
+adapter = "Controlled signal revisions; receipt does not adopt"
+
+[[witnesses]]
+paths = ["proxy/tests/native_signals.rs"]
+controls = ["BB-42"]
+kind = "cargo"
+target = "native_signals"
+module = ""
+owner = "proxy/tests/native_signals.rs"
+scope = "Native process signals with owned NATS"
+adapter = "Real native executable; operator approval before a response applies"
+
+[[witnesses]]
+paths = ["tests/proxy_contracts/test_codex_approval_fallback.py::test_codex_routing_wait_timeout_leaves_approval_pending_without_replay"]
+controls = ["BB-43"]
+kind = "pytest"
+scope = "Native process; Linux/macOS; host identity"
+adapter = "Owned HTTP origins; real native executable"
+
+[[witnesses]]
+paths = ["proxy/tests/native_operator_cli.rs"]
+controls = ["BB-43"]
+kind = "cargo"
+target = "native_operator_cli"
+module = ""
+owner = "proxy/tests/native_operator_cli.rs"
+scope = "Native operator CLI approvals"
+adapter = "Real native executable; pending gateway approval survives restart without replay"
