@@ -33,6 +33,51 @@ fn stdout(output: Output) -> String {
 }
 
 #[tokio::test]
+async fn service_capabilities_without_descriptions_do_not_look_unavailable() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().join("selected service instance");
+    stdout(cli(&root, &["init"]));
+    fs::create_dir_all(root.join("services")).unwrap();
+    let definition = serde_json::json!({
+        "schema_version": 1,
+        "name": "notes",
+        "default_host": "notes.safeyolo.internal",
+        "capabilities": {
+            "reader": {"routes": [{"methods": ["GET"], "path": "/notes"}]},
+            "writer": {
+                "description": "Write saved notes",
+                "routes": [{"methods": ["POST"], "path": "/notes"}]
+            }
+        }
+    });
+    fs::write(root.join("services/notes.yaml"), definition.to_string()).unwrap();
+    fs::write(
+        root.join("config.toml"),
+        "admin_port = 0\nlisteners = []\nflow_store_enabled = false\n",
+    )
+    .unwrap();
+    let proxy = safeyolo_proxy::Proxy::start(
+        safeyolo_proxy::native_config::read(&root.join("config.toml")).unwrap(),
+    )
+    .await
+    .unwrap();
+    let (human, machine) = tokio::task::spawn_blocking(move || {
+        (
+            stdout(cli(&root, &["services", "show", "notes"])),
+            stdout(cli(&root, &["services", "show", "notes", "--json"])),
+        )
+    })
+    .await
+    .unwrap();
+    proxy.shutdown().await;
+    assert!(human.contains("  reader\n"), "{human}");
+    assert!(human.contains("  writer: Write saved notes\n"), "{human}");
+    assert!(!human.contains("unavailable"), "{human}");
+    let machine: Value = serde_json::from_str(&machine).unwrap();
+    assert_eq!(machine["definition"], definition);
+}
+
+#[tokio::test]
 async fn publication_failure_preserves_context_and_recovers_to_real_empty_results() {
     let scratch = tempfile::tempdir().unwrap();
     let root = scratch.path().join("selected web instance");
