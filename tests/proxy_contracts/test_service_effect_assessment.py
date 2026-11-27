@@ -191,9 +191,9 @@ def test_normal_approval_interfaces_retain_canonical_effects_guidance_and_outcom
             (tmp_path / f"normal-{action}.txt").write_text(output)
         instance = SimpleNamespace(root=fixture.directory, environment=dict(os.environ))
         with terminal(instance, command=[*command, "approvals", "review", "--agent", "alice"]) as (process, master, until):
-            until(b"Request number")
+            until(b"Type a displayed request number")
             os.write(master, b"1\n")
-            output = until(b"approve / reject")
+            output = until(b"approve run / reject")
             assert b"SafeYolo assessment" in output and b"executable_changed" in output
             assert b"Policy and reviewed guidance" in output and b"untrusted" in output.lower()
             os.write(master, b"reject\n")
