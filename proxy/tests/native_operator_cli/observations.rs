@@ -55,6 +55,16 @@ async fn observations_live_metadata_matches_stats_and_keeps_reload_restart_scope
         total(&before["observations"], "observation_chunks_total"),
         0
     );
+    let idle = cli(root.path(), &["observations"]).await;
+    assert!(idle.status.success());
+    let idle = String::from_utf8(idle.stdout).unwrap();
+    assert!(idle.lines().count() < 45, "{idle}");
+    assert!(
+        idle.contains("Capture: not_running; payload layers: none; wire source active: no"),
+        "{idle}"
+    );
+    assert!(idle.contains("Zero counters do not establish availability or complete delivery"));
+    assert!(!idle.contains("observation_chunk_bytes: count="));
 
     let (origin, address) = test_owned_endpoint::bind().await;
     let peer = tokio::spawn(async move {
@@ -146,6 +156,21 @@ async fn observations_live_metadata_matches_stats_and_keeps_reload_restart_scope
     assert!(ordinary.status.success());
     let ordinary = String::from_utf8(ordinary.stdout).unwrap();
     for expected in [
+        "Observation admission",
+        "DROPPED",
+        "Output delivery",
+        "--details",
+        "--json",
+    ] {
+        assert!(
+            ordinary.contains(expected),
+            "missing {expected}: {ordinary}"
+        );
+    }
+    let detailed = cli(root.path(), &["observations", "--details"]).await;
+    assert!(detailed.status.success());
+    let detailed = String::from_utf8(detailed.stdout).unwrap();
+    for expected in [
         INSTANCE,
         "Scope: current runtime aggregates",
         "Canonical admission",
@@ -159,8 +184,8 @@ async fn observations_live_metadata_matches_stats_and_keeps_reload_restart_scope
         "not_running",
     ] {
         assert!(
-            ordinary.contains(expected),
-            "missing {expected}: {ordinary}"
+            detailed.contains(expected),
+            "missing {expected}: {detailed}"
         );
     }
     let previous_runtime = view["source"]["runtime_id"].as_str().unwrap();
@@ -329,6 +354,41 @@ async fn observations_loss_and_failed_capture_stay_distinct_from_healthy_zero() 
         0
     );
     assert!(!root.path().join("missing-parent/capture.pcap").exists());
+    let human = cli(root.path(), &["observations"]).await;
+    assert!(human.status.success());
+    let human = String::from_utf8(human.stdout).unwrap();
+    assert!(
+        human.contains("Capture file: configured yes; subscribed no"),
+        "{human}"
+    );
+    let file = human
+        .lines()
+        .find(|line| line.starts_with("file "))
+        .unwrap();
+    assert!(
+        file.split_whitespace()
+            .nth(3)
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > 0,
+        "{file}"
+    );
+    for (name, layer) in report["observations"]["layers"].as_object().unwrap() {
+        let line = human
+            .lines()
+            .find(|line| line.starts_with(&format!("{name} ")))
+            .unwrap();
+        assert!(
+            line.split_whitespace()
+                .nth(2)
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                >= layer["observation_bus_dropped_total"].as_u64().unwrap(),
+            "{line}"
+        );
+    }
     proxy.shutdown().await;
 }
 

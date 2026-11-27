@@ -922,6 +922,21 @@ fn saved_policy_remains_useful_when_proxy_is_down_and_storage_listing_creates_no
         serde_json::from_str(&stdout(cli(&root, &["policy", "show", "--json"]))).unwrap();
     assert!(record.get("effective").is_none());
     assert!(record["saved"].is_object());
+    let provider = policy
+        .lines()
+        .find(|line| line.starts_with("api.openai.com "))
+        .unwrap();
+    assert!(
+        provider.contains("openai:*") && provider.matches("not set").count() == 3,
+        "{provider}"
+    );
+    assert!(!provider.contains("unavailable"));
+    assert!(
+        record["saved"]["hosts"]["api.openai.com"]
+            .get("egress")
+            .is_none()
+    );
+    assert!(policy.contains("other matching rules and defaults still apply"));
     let credentials = stdout(cli(&root, &["credentials", "list"]));
     assert!(credentials.contains("storage is not configured"));
     assert!(!root.join("data/credentials.enc").exists());
