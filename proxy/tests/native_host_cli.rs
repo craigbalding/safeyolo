@@ -113,13 +113,19 @@ fn runtime_selection_checks_bundled_bytes_with_an_unrelated_runsc_on_path() {
             .output()
             .unwrap();
         let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-        report["checks"]
+        let check = report["checks"]
             .as_array()
             .unwrap()
             .iter()
             .find(|check| check["name"] == "Linux runtime and namespaces")
-            .unwrap()["details"]
-            .clone()
+            .unwrap();
+        if let Some(error) = check["details"]["error"].as_str() {
+            assert!(
+                check["message"].as_str().unwrap().contains(error),
+                "{check}"
+            );
+        }
+        check["details"].clone()
     };
     for name in [
         "runsc",

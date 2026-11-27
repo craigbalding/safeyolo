@@ -29,7 +29,11 @@ FILES = ("runsc", "gvisor-bin/gvisor-sentry-prewarmer", "gvisor-bin/gvisor_sentr
 
 
 def command(binary, *arguments, **kwargs):
-    return subprocess.run([str(binary), "--dangerously-allow-root", *map(str, arguments)], capture_output=True,
+    # Host-tool probes keep their own arguments; only SafeYolo takes this flag.
+    root_override = ["--dangerously-allow-root"] if (
+        Path(binary).name == "safeyolo" or str(binary) == os.environ.get("SAFEYOLO_NATIVE_CLI")
+    ) else []
+    return subprocess.run([str(binary), *root_override, *map(str, arguments)], capture_output=True,
                           text=True, timeout=30, **kwargs)
 
 
