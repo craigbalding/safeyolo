@@ -199,6 +199,7 @@ def test_normal_approval_interfaces_retain_canonical_effects_guidance_and_outcom
                 assert "120 seconds" in output and "never replays" in output
                 assert "Agent: alice" in output and "Destination: 127.0.0.1" in output
                 assert "Full evidence:" in output and str(fixture.directory / "config.toml") in output
+                assert 'Agent-provided reason (untrusted text): "The operator requested a stored-definition edit."' in output
                 assert not any(field in output for field in (
                     "input revision:", "contributing permissions:", "effect definitions:",
                     "permission:", "session id:", ": null",
@@ -235,6 +236,13 @@ def test_normal_approval_interfaces_retain_canonical_effects_guidance_and_outcom
         result = subprocess.run([*command, "approvals", "show", identifier], capture_output=True, text=True, timeout=15)
         assert result.returncode == 0 and "rejected" in result.stdout
         assert "Status: rejected" in result.stdout and fixture.sink.deliveries == []
+        # Resolving a settled request reads its canonical outcome without
+        # replaying the decision or printing the full review a second time.
+        settled = subprocess.run([*command, "approvals", "reject", identifier],
+                                 capture_output=True, text=True, timeout=15)
+        assert settled.returncode == 0, settled.stderr
+        assert settled.stdout.count(": rejected") == 1
+        assert "SafeYolo assessment" not in settled.stdout and fixture.sink.deliveries == []
 
 
 def test_combined_authority_is_prepared_before_operator_work_and_shared_by_approval(tmp_path):

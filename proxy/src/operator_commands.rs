@@ -592,7 +592,18 @@ fn show_decision_summary(view: &Value) {
     if assessment.get("risk_policy").is_none() && assessment.get("availability").is_none() {
         // Policy adoption still needs its exact source diff and consequences;
         // other assessment owners retain their existing decision evidence.
-        show_decision_evidence(view);
+        for (label, field) in [
+            ("SafeYolo assessment (includes request data)", "assessment"),
+            ("Policy and reviewed guidance", "guidance"),
+        ] {
+            if let Some(value) = view.get(field).filter(|value| !value.is_null()) {
+                println!("{label}:");
+                show_evidence_fields(value, 2);
+            }
+        }
+        if view["assessment_changed"] == true {
+            println!("Assessment changed since request. Review current state before deciding.");
+        }
         return;
     }
     println!("SafeYolo assessment:");
@@ -1008,6 +1019,13 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
         );
     }
     if let Some(reason) = view["untrusted_reason_text"].as_str() {
+        // Escalation records wrap the agent's reason with source/context data.
+        // The ordinary view shows that reason; explicit JSON retains the wrapper.
+        let parsed = serde_json::from_str::<Value>(reason).ok();
+        let reason = parsed
+            .as_ref()
+            .and_then(|value| value["context"]["reason"].as_str())
+            .unwrap_or(reason);
         // A quoted JSON string stays visibly separate, including forged
         // Markdown/HTML headings and all terminal controls.
         println!(
@@ -2431,7 +2449,14 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         }
         Ok(())
     } else if args[0] == "approvals" && !options.json && value.get("action").is_some() {
-        show_approval(&value)
+        if matches!(
+            options.positional.first().map(String::as_str),
+            Some("approve" | "reject")
+        ) {
+            show_approval_outcome(&value)
+        } else {
+            show_approval(&value)
+        }
     } else if options.json {
         print_json(&value)
     } else {
