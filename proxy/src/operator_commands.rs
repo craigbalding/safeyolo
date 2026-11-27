@@ -1706,7 +1706,7 @@ fn show_log_listing(value: &Value) -> Result<(), Error> {
                 if record.get("indicator").is_some() {
                     println!(
                         "    Indicator: {}",
-                        safe(text(&record["indicator"]["indicator_type"]))
+                        escaped_log_text(text(&record["indicator"]["indicator_type"]))?
                     );
                 }
             }
