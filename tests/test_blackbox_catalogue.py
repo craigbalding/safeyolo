@@ -43,7 +43,7 @@ def catalogue_root(tmp_path, monkeypatch):
         (tmp_path / path).mkdir(parents=True)
     shutil.copyfile(ROOT / "docs/assurance-map.toml", tmp_path / "docs/assurance-map.toml")
     metadata = ""
-    for number in range(1, 39):
+    for number in range(1, 44):
         metadata += "[[controls]]\n"
         for field in ("id", "control", "source", "what", "existing", "conformance", "effort", "comments", "owner"):
             value = f"BB-{number:02}" if field == "id" else "#1558" if field == "owner" else "fixture"
@@ -94,7 +94,7 @@ def test_catalogue_rejects_structural_drift(catalogue_root, defect, expected):
     if defect == "duplicate":
         path.write_text(text.replace('id = "BB-37"', 'id = "BB-01"'))
     elif defect == "missing-id":
-        path.write_text(text.replace('id = "BB-38"', 'id = "BB-39"'))
+        path.write_text(text.replace('id = "BB-43"', 'id = "BB-44"'))
     elif defect == "incomplete":
         path.write_text(text.replace('what = "fixture"', 'what = ""', 1))
     elif defect in {"renamed", "deleted"}:
@@ -119,13 +119,13 @@ def test_catalogue_rejects_structural_drift(catalogue_root, defect, expected):
             catalogue.load(root)
     else:
         controls, witnesses, _outside = catalogue.load(root)
-        assert len(controls) == 38 and witnesses[0]["resolved"][0][1][0]["node"].endswith("::test_required")
+        assert len(controls) == 43 and witnesses[0]["resolved"][0][1][0]["node"].endswith("::test_required")
         assert not any("BB-37" in witness["controls"] for witness in witnesses)
 
 
 def test_current_catalogue_resolves_all_controls_and_external_families():
     controls, witnesses, _outside = catalogue.load(ROOT)
-    assert len(controls) == 38
+    assert len(controls) == 43
     assert {witness["kind"] for witness in witnesses} == {"pytest", "cargo", "procedure"}
     assert any("tests/test_guest_acquisition.py" in witness["paths"] for witness in witnesses)
 

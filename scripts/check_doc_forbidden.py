@@ -47,6 +47,24 @@ def _load_rules() -> list[dict]:
     return cfg.get("rule", [])
 
 
+def _expand_docs(docs: list[str]) -> list[str]:
+    """Expand glob entries such as ``website/**/*.html``; keep literal paths.
+
+    A glob that matches nothing stays as written, so the caller reports it as
+    a missing doc instead of silently checking nothing.
+    """
+    expanded: list[str] = []
+    for doc_rel in docs:
+        if any(char in doc_rel for char in "*?["):
+            matches = sorted(
+                str(path.relative_to(REPO_ROOT)) for path in REPO_ROOT.glob(doc_rel)
+            )
+            expanded.extend(matches or [doc_rel])
+        else:
+            expanded.append(doc_rel)
+    return expanded
+
+
 def _check_rule(rule: dict) -> list[str]:
     """Return a list of error strings; empty on success."""
     name = rule.get("name", "<unnamed>")
@@ -60,7 +78,7 @@ def _check_rule(rule: dict) -> list[str]:
         return [f"{name}: rule has no forbidden list"]
 
     problems: list[str] = []
-    for doc_rel in docs:
+    for doc_rel in _expand_docs(docs):
         doc_path = REPO_ROOT / doc_rel
         if not doc_path.exists():
             problems.append(f"{name}: doc not found: {doc_rel}")

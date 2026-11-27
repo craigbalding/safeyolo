@@ -45,7 +45,7 @@ class Source:
 @pytest.fixture
 def sources():
     controls = "\n".join(f'[[controls]]\nid = "BB-{number:02}"\ndecisions = ["test"]\n'
-                         for number in range(1, 39))
+                         for number in range(1, 44))
     controls += f'[[witnesses]]\npaths = ["{TEST}"]\ncontrols = ["BB-01"]\nkind = "pytest"\n'
     controls += f'[[witnesses]]\npaths = ["{RUST}"]\ncontrols = ["BB-10"]\nkind = "cargo"\n'
     return {changes.CATALOGUE: controls, changes.MAP: '[[decisions]]\nid = "test"\ntests = []\n',
@@ -685,12 +685,12 @@ def test_stale_or_failed_untrusted_report_cannot_publish(sources, github):
 def test_all_current_controls_reach_publisher(sources, github):
     files = sources | {changes.MAP: f'[[decisions]]\nid = "test"\ntests = ["{TEST}"]\n'}
     report = compare(files, {TEST: ORIGINAL.replace("== 0", "== 1")})
-    assert report["changes"][0]["controls"] == [f"BB-{number:02}" for number in range(1, 39)]
+    assert report["changes"][0]["controls"] == [f"BB-{number:02}" for number in range(1, 44)]
     assert notices.publish(report, event(), "pull_request_target")["status"] == "published"
-    assert "BB-38" in github.posts[0][1]["body"]
+    assert "BB-43" in github.posts[0][1]["body"]
 
 
-@pytest.mark.parametrize("controls", [None, "BB-38", ["BB-00"], ["BB-39"], ["BB-038"], [38], ["BB-01"] * 39])
+@pytest.mark.parametrize("controls", [None, "BB-43", ["BB-00"], ["BB-44"], ["BB-043"], [43], ["BB-01"] * 44])
 def test_invalid_report_controls_cannot_publish(sources, github, controls):
     report = compare(sources, {TEST: ORIGINAL.replace("== 0", "== 1")})
     report["changes"][0]["controls"] = controls
@@ -1161,7 +1161,7 @@ def test_yaml_alias_bomb_and_invalid_python_are_analysis_failures(sources):
     with pytest.raises(SyntaxError):
         compare(sources, {TEST: "def invalid syntax\n"})
     with pytest.raises(ValueError, match="catalogue"):
-        compare(sources | {changes.CATALOGUE: sources[changes.CATALOGUE].replace('id = "BB-38"', 'id = "BB-39"')}, {})
+        compare(sources | {changes.CATALOGUE: sources[changes.CATALOGUE].replace('id = "BB-43"', 'id = "BB-44"')}, {})
 
 
 def test_report_cannot_inject_another_mention(sources):

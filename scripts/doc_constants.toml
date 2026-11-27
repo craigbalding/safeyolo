@@ -423,3 +423,20 @@ source = "proxy/src/coord_rooms/federation/nats.rs"
 pattern = 'const MAX_WAIT_CONSUMERS: i32 = (?P<count>\d+);'
 docs = ["docs/coord-reference.md"]
 must_contain = "at most {count} wait consumers"
+
+# The website distinguishes the structural boundary (no external network
+# interface) from the default policy. If a new instance's default changes,
+# these website statements must change with it.
+[[assertion]]
+name = "website-default-policy-allows-any-destination"
+source = "proxy/config/native/policy.toml"
+pattern = '"\*" = \{ egress = "(?P<egress>allow)"'
+docs = ["website/index.html", "website/how-it-works/policy-and-approvals/index.html"]
+must_contain = "allows any destination"
+
+[[assertion]]
+name = "website-default-policy-prompts-for-unknown-credentials"
+source = "proxy/config/native/policy.toml"
+pattern = 'unknown_creds = "(?P<mode>prompt)"'
+docs = ["website/how-it-works/policy-and-approvals/index.html"]
+must_contain = "sends unknown credentials for approval"
