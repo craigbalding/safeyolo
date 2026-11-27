@@ -21,7 +21,7 @@ Match the work to the request:
 
 Use the user's brief and project purpose to identify the primary reader. Inspect relevant code, configuration, and docs to verify commands, paths, defaults, versions, and effects. Do not invent capabilities; preserve project terminology.
 
-Read applicable project guidance for owner priorities. For SafeYolo only, also read [the project notes](references/safeyolo.md); do not apply those examples to unrelated projects.
+Read applicable project guidance for owner priorities. For SafeYOLO only, also read [the project notes](references/safeyolo.md); do not apply those examples to unrelated projects.
 
 ## Reader path
 

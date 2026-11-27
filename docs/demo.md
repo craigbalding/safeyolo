@@ -1,7 +1,7 @@
 # Build a tiny app with Demo
 
 On a prepared Ubuntu host, run `safeyolo demo` as the ordinary account that
-owns your SafeYolo installation. Complete the [installation and guest
+owns your SafeYOLO installation. Complete the [installation and guest
 prerequisites](installation.md#guest-prerequisites) first. The installed command
 uses your default installation automatically. Demo uses Codex and its normal
 model access; no new API key is required. Your policy must permit that model

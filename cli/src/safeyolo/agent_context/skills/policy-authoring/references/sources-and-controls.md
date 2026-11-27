@@ -16,7 +16,7 @@ metadata, accepted snapshots, refresh, outage, stale and rollback semantics.
 No account or paid subscription is required for that public path. Acquiring the
 file discloses the host's source request/IP to its hosting provider. It does not
 send each assessed hostname or visit list members. Hosting logs/retention remain
-outside SafeYolo's guarantees. The optional StevenBlack example also includes
+outside SafeYOLO's guarantees. The optional StevenBlack example also includes
 advertising/tracking choices; do not silently substitute it for threat-only intent.
 
 The named check's collection-age limit bounds accepted evidence further; it
@@ -35,7 +35,7 @@ GET to `/com/v1/domain/{subject}` at that fixed adopted provider. See
 and the [RDAP response standard](https://www.rfc-editor.org/rfc/rfc9083.html#section-4.5).
 Check the current [service help/terms](https://rdap.verisign.com/com/v1/help)
 before adoption. There is no paid API key in this public example. Provider
-availability, rate limits and retention are not SafeYolo guarantees. Rate
+availability, rate limits and retention are not SafeYOLO guarantees. Rate
 limiting, a redirect or non-success response remains unavailable evidence; the
 check does not automatically follow RDAP links or invoke a scanner.
 

@@ -43,10 +43,10 @@ A dependency or graph entry newly added or changed by the candidate is review
 subject matter; it does not grant itself standing approval. If material
 validation needs a tool outside both trusted-base inventories, ask the operator
 for that specific tool, source, and version and retain the work as
-`awaiting_operator`. All downloads remain subject to SafeYolo policy.
+`awaiting_operator`. All downloads remain subject to SafeYOLO policy.
 
 Use the target repository's approved record and source-transport tools.
-For SafeYolo, follow the maintained
+For SafeYOLO, follow the maintained
 [repository publication guidance](../DEVELOPERS.md#repository-publication).
 
 The current role contract and trusted brief govern tooling. Retained task-level
@@ -235,7 +235,7 @@ evidence merely because the author produced it.
 
 - Inspect the actual diff and enough surrounding code to understand its effects;
   do not review changed lines in isolation.
-- For changes to SafeYolo operator journeys, use the
+- For changes to SafeYOLO operator journeys, use the
   [operator-ux skill](../../cli/src/safeyolo/agent_context/skills/operator-ux/SKILL.md)
   to assess the applicable [operator interaction contract](../operator-interaction-contract.md)
   clauses and verify the journey within the assigned scope.
@@ -361,7 +361,7 @@ background work. Existing background work that began before a candidate arrived
 finishes normally. Affinity ends when the correction is awaiting the operator,
 blocked, superseded, accepted, or otherwise terminal.
 
-For SafeYolo review tools and sensitivity-test builds, use the maintained
+For SafeYOLO review tools and sensitivity-test builds, use the maintained
 [project review-tool guidance](../DEVELOPERS.md#independent-review-tools).
 Other repositories supply their own tools through repository instructions or
 the brief.

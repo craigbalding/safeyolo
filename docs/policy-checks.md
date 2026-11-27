@@ -967,7 +967,7 @@ before forwarding; a denial prevents origin contact for that request. The
 job's dependency traffic retains its own capability and credential controls.
 No second service evaluator is required.
 
-Output verification protects native output acceptance, which SafeYolo controls.
+Output verification protects native output acceptance, which SafeYOLO controls.
 It does not withdraw artifacts already exposed elsewhere. A final GitHub merge,
 external release or publication must enforce the required revision and authority
 at that system's boundary. The controlled native tests establish these source

@@ -1,10 +1,10 @@
 # Python behavior references
 
 These former Python modules are inputs to the retained unit, protocol and
-black-box fixtures. SafeYolo does not install or stage this tree.
+black-box fixtures. SafeYOLO does not install or stage this tree.
 The source installer, bundles, guest shares and launchers use the
 implementation. Python test drivers can read or construct test state;
-that execution does not establish a SafeYolo operation.
+that execution does not establish a SafeYOLO operation.
 
 `tests/conftest.py` and the test environment select this tree explicitly.
 The existing tests keep their original `safeyolo` imports so the retained

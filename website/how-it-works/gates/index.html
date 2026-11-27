@@ -1,0 +1,35 @@
+---
+layout: explainer
+full_width: true
+permalink: /how-it-works/gates/
+title: Gates · How SafeYOLO works
+description: Gates are policy-bound jobs that run on the host at fixed points in a piece of work. Their results decide whether work starts, whether an output can be accepted, and what happens after completion.
+part_name: Gates
+headline: Deterministic checks the agents cannot talk their way past
+lede: Gates are policy-bound jobs that run on the host at fixed points in a piece of work. Their results decide whether work starts, whether an output can be accepted, and what happens after completion.
+lit: gates coord
+docs:
+- title: Hyperlight jobs
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/hyperlight-jobs.md
+- title: Automatic Work requirements
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/policy-checks.md
+journey:
+- title: The live software factory
+  url: /journey/software-factory/
+---
+<h2>Jobs run on the host</h2>
+<p>A job is disposable, host-only execution from a trusted job definition, with its output captured as evidence. Jobs run in gVisor, a VZ microVM, or Hyperlight, with core Rust guests or Unikraft Python. A job definition never carries a host mount path.</p>
+<h2>A binding turns a job into a gate</h2>
+<p>Running a job does not create a gate. You adopt a binding in policy, and the checkpoint enforces it whatever the agents' prompts say:</p>
+<table>
+<tr><th>Boundary</th><th>When it runs</th><th>If it fails</th></tr>
+<tr><td><code>admit_issue</code></td><td>Before work is created, claimed or continued</td><td>The work is held</td></tr>
+<tr><td><code>verify_output</code></td><td>Against the exact bytes an agent publishes</td><td>Acceptance is held</td></tr>
+<tr><td><code>after_complete</code></td><td>After completion, as a follow-up action</td><td>Reported; completion stands, and the action is not retried blindly</td></tr>
+</table>
+<h2>Evidence the agents cannot fake</h2>
+<p>A gate job has no network of its own. When it needs a service, the host makes a mediated call with a scoped token the job never receives, and keeps the exact response bytes and digests. A manual preview, a caller-supplied result or a guest-supplied timestamp cannot satisfy a gate.</p>
+<div class="guarantees">
+<div><h3>What this gives you</h3><ul><li>Checks that hold at every handoff, not just when someone remembers</li><li>Results tied to the exact output reviewed</li><li>A gate that applies however the work was created</li></ul></div>
+<div class="no"><h3>What it does not do</h3><ul><li>Create a gate just because a job exists</li><li>Undo a completion when a follow-up action fails</li></ul></div>
+</div>

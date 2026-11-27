@@ -1,8 +1,8 @@
-# SafeYolo Integration Test Plan
+# SafeYOLO Integration Test Plan
 
 ## Goal
 
-Create "specification quality" integration tests - tests good enough that SafeYolo could be reimplemented in another language and these tests would define correctness.
+Create "specification quality" integration tests - tests good enough that SafeYOLO could be reimplemented in another language and these tests would define correctness.
 
 ## Current State
 
@@ -28,7 +28,7 @@ A local HTTP server (`UpstreamServer`) that returns deterministic responses base
 ### Test Clients
 
 1. **Admin API client** - Direct to admin API (no proxy), authenticated with bearer token
-2. **Proxied client** - Routes through SafeYolo proxy to upstream server
+2. **Proxied client** - Routes through SafeYOLO proxy to upstream server
 
 ### Test Categories (32 tests)
 
@@ -100,8 +100,8 @@ python3 /projects/claude-dev/lib/shell_mux.py exec safeyolo \
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PROXY_HOST` | `localhost` | SafeYolo proxy host |
-| `PROXY_PORT` | `8080` | SafeYolo proxy port |
+| `PROXY_HOST` | `localhost` | SafeYOLO proxy host |
+| `PROXY_PORT` | `8080` | SafeYOLO proxy port |
 | `ADMIN_HOST` | `localhost` | Admin API host |
 | `ADMIN_PORT` | `9090` | Admin API port |
 | `ADMIN_API_TOKEN` | (required) | Bearer token for admin API |
@@ -110,7 +110,7 @@ Tests skip automatically if `ADMIN_API_TOKEN` is not set.
 
 ## Specification Guarantees Verified
 
-These tests verify SafeYolo's core security guarantees:
+These tests verify SafeYOLO's core security guarantees:
 
 1. **Credential Protection**: API keys cannot be exfiltrated to unauthorized hosts (test_openai_credential_to_wrong_host_blocked)
 2. **Access Control**: Security addons can block/warn on requests

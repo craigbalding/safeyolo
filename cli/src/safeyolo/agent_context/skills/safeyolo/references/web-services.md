@@ -17,7 +17,7 @@ consumers; the choices below can coexist.
 | Intended use | Path |
 |---|---|
 | Run a browser inside the guest, including webapp security testing | Use the guest browser. Follow the [desktop guide](desktop.md) when a graphical session or operator interaction with that browser is needed. |
-| Let other SafeYolo agents call a service hosted in a guest | Use the existing service gateway, a sandbox-hosted service definition and the consuming agents' service permissions. |
+| Let other SafeYOLO agents call a service hosted in a guest | Use the existing service gateway, a sandbox-hosted service definition and the consuming agents' service permissions. |
 | Let the operator reach a guest service through the host's localhost | Publish the selected guest port to a host loopback listener. A remote operator can use an existing SSH connection to forward that host listener. |
 | Let the operator use a guest service over the tailnet | Publish the selected guest port through the host's tailnet route. |
 
@@ -132,7 +132,7 @@ unrelated Tailscale mappings.
 
 ### Supported human and agent-assisted publication
 
-On the selected SafeYolo host, use the running agent's name and app port:
+On the selected SafeYOLO host, use the running agent's name and app port:
 
 ```sh
 safeyolo agent publish builder --port 3000 --audience local
@@ -145,7 +145,7 @@ Select `--audience tailnet` for the host's existing Tailscale Serve route;
 returns a clean browser URL and a separate one-time unlock code. Keep the code
 private. Enter it in the browser before using the app's own login. Publication
 retains the selected agent run, port and audience; it starts no desktop and
-grants no network or service access. Ports 8080 and 9090 are reserved SafeYolo
+grants no network or service access. Ports 8080 and 9090 are reserved SafeYOLO
 plumbing. The default lifetime is 900 seconds; use `--ttl SECONDS` to select
 another positive lifetime in seconds.
 Stop with the same agent, port, audience and optional tailnet port. Stop,

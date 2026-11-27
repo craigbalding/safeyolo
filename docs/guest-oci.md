@@ -1,7 +1,7 @@
 # OCI guest source contract
 
 The default guest filesystem has an independent release identity from the
-SafeYolo host package. The Open Container Initiative (OCI) index, manifests,
+SafeYOLO host package. The Open Container Initiative (OCI) index, manifests,
 descriptors and annotations are the sole guest release catalogue. Public guest
 artifacts use `ghcr.io/craigbalding/safeyolo-guest` in GitHub Container Registry
 (GHCR).

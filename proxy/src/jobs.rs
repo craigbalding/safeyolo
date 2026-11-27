@@ -32,8 +32,8 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
-pub const HELP: &str = r#"safeyolo [--instance-dir PATH] job run SPEC.json [--input DIRECTORY] [--console-file PATH]
-safeyolo [--instance-dir PATH] job validate SPEC.json
+pub const HELP: &str = r#"safeyolo [--instance-dir PATH] job run SPEC.json [--input DIRECTORY] [--console-file PATH] [--json]
+safeyolo [--instance-dir PATH] job validate SPEC.json [--json]
 Run a trusted host-supplied job definition. Only the host caller selects DIRECTORY.
 Inputs are copied without following symlinks. No job receives an Agent API, Coord, harness or host-script authority.
 Spec fields: gate_id, argv, timeout_seconds, max_input_bytes, max_input_entries, retain_bytes.
@@ -48,9 +48,9 @@ Both engines default to reuse_initialization=true in the engine object. They res
 Hyperlight has no Unix process or guest-root semantics. Core calls the named function with argv as a JSON string and offers bounded ReadInput(relative_path); its returned string is ordinary stdout. Unikraft runs the pinned Python checker with argv, read-only /input, and fresh in-memory /work and rootfs. It supports a Linux subset, without fork or full Unix privilege semantics. Both reject guest-root. memory_mb sizes scratch memory; it is not a total helper RSS limit.
 Platform jobs receive proxy/CA environment and scoped SAFEYOLO_GATEWAY_TOKENS. Hyperlight network jobs use bounded SYCall proxy stream operations; Core's NetworkCheck uses reqwless/Rustls and Unikraft's safeyolo_proxy.open_url uses Python HTTP/OpenSSL in the guest. Raw guest sockets/DNS stay disabled. The host opens only the selected delegated proxy socket. Provider credentials stay on the host; generic streams do not produce independent source capture. See docs/hyperlight-jobs.md for client modes and limits.
 For mediated service access, set mediated_services={services:[NAME],max_calls:N,max_request_bytes:N,max_response_bytes:N} in the adopted Hyperlight specification, with network=false. Core SYCall(JSON) and Unikraft hyperlight.call("sy.call", REQUEST) use the same named-service request. The host delegates gate:<gate_id> through the existing proxy, keeps credentials outside the guest, and retains service_evidence. Guest sockets stay disabled. Host-call messages are at most 49152 bytes; captured responses use handles and reads of at most 16384 bytes.
-Print observed execution evidence as JSON. A PASS string is ordinary output. engine identifies the selected backend; outcome_source distinguishes a guest process from a host helper. runtime_report retains VM completion or error separately. helper_process_status retains the actual OS exit or signal even after a watchdog deadline or cancellation.
+Human output summarizes observed execution. Select --json for complete execution evidence. A PASS string is ordinary output. engine identifies the selected backend; outcome_source distinguishes a guest process from a host helper. runtime_report retains VM completion or error separately. helper_process_status retains the actual OS exit or signal even after a watchdog deadline or cancellation.
 All captured stream bytes are counted and hashed; retain_bytes bounds retained output. Unikraft's console decodes UTF-8 with replacement; console_encoding identifies that representation.
-For Hyperlight jobs, --console-file creates a private new file and copies up to retain_bytes of stdout there as it arrives. The final JSON result remains on stdout. An existing path is refused. This file belongs only to this invocation; console text is guest output, not an authority or success signal.
+For Hyperlight jobs, --console-file creates a private new file and copies up to retain_bytes of stdout there as it arrives. The selected human or JSON result remains on stdout. An existing path is refused. This file belongs only to this invocation; console text is guest output, not an authority or success signal.
 Without network or mediated_services, gate_principal is provenance and authorization_principal is null.
 Return 0 only for observed exit 0 with complete evidence and, for Hyperlight, successful VM completion. Return 124 for timeout and 1 for other job outcomes.
 Observation failures set observation_error and retain exact available outcome/streams; outcome is null when no exact result is available. Startup or cleanup failures cannot report successful completion.
@@ -371,6 +371,10 @@ fn stage(
     let lower = guest.join("rootfs-tree").canonicalize()?;
     let share = directory.join("config-share");
     fs::create_dir(&share)?;
+    if spec.network {
+        // Keep the nested mountpoint host-owned so ordinary teardown can remove it.
+        fs::create_dir(share.join("proxy"))?;
+    }
     // The only host mounts are two read-only directories. Readiness is observed
     // through runsc, so even a guest-root job has no writable host status share.
     let bind = |source: PathBuf, target: &str| json!({"source":source,"destination":target,"type":"bind","options":["rbind","ro","nosuid","nodev"]});
@@ -1049,37 +1053,53 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn staged_job_has_no_writable_host_mount_or_agent_payload() {
-        let root = tempfile::tempdir().unwrap();
-        let guest = root.path().join("guest");
-        let directory = root.path().join("runtime");
-        fs::create_dir_all(guest.join("rootfs-tree")).unwrap();
-        fs::create_dir(&directory).unwrap();
-        stage(
-            root.path(),
-            &directory,
-            &guest,
-            &spec(),
-            "0123456789abcdef0123456789abcdef",
-        )
-        .unwrap();
-        let oci: Value =
-            serde_json::from_slice(&fs::read(directory.join("config.json")).unwrap()).unwrap();
-        for mount in oci["mounts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|mount| mount["type"] == "bind")
-        {
-            assert!(mount["options"].as_array().unwrap().contains(&json!("ro")));
+        use std::os::unix::fs::MetadataExt;
+
+        for network in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let guest = root.path().join("guest");
+            let directory = root.path().join("runtime");
+            fs::create_dir_all(guest.join("rootfs-tree")).unwrap();
+            fs::create_dir(&directory).unwrap();
+            let mut job = spec();
+            job.network = network;
+            stage(
+                root.path(),
+                &directory,
+                &guest,
+                &job,
+                "0123456789abcdef0123456789abcdef",
+            )
+            .unwrap();
+            let oci: Value =
+                serde_json::from_slice(&fs::read(directory.join("config.json")).unwrap()).unwrap();
+            for mount in oci["mounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|mount| mount["type"] == "bind")
+            {
+                assert!(mount["options"].as_array().unwrap().contains(&json!("ro")));
+            }
+            let mut files: Vec<_> = fs::read_dir(directory.join("config-share"))
+                .unwrap()
+                .map(|file| file.unwrap().file_name())
+                .collect();
+            files.sort();
+            let mut expected = vec!["guest-init", "host-launch-context.json", "job.json"];
+            if network {
+                expected.push("proxy");
+                let proxy = directory.join("config-share/proxy");
+                let metadata = fs::symlink_metadata(proxy).unwrap();
+                assert!(metadata.is_dir());
+                assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+            }
+            assert_eq!(files, expected);
+            fs::remove_dir_all(&directory).unwrap();
+            assert!(
+                !directory.exists(),
+                "staged job could not be disposed by its host owner"
+            );
         }
-        let mut files: Vec<_> = fs::read_dir(directory.join("config-share"))
-            .unwrap()
-            .map(|file| file.unwrap().file_name())
-            .collect();
-        files.sort();
-        assert_eq!(
-            files,
-            ["guest-init", "host-launch-context.json", "job.json"]
-        );
     }
 }

@@ -3,7 +3,7 @@
 Date: 2026-08-20
 
 This experiment investigated host-side `ETXTBSY` (`Text file busy`) after a
-SafeYolo agent edited an executable file in a gVisor-backed host workspace.
+SafeYOLO agent edited an executable file in a gVisor-backed host workspace.
 It identified the responsible gVisor cache behavior, tested candidate runtime
 settings, and exercised the recommended setting for correctness and obvious
 side effects.
@@ -268,12 +268,12 @@ semantics.
 
 Summaries deliberately retain the tested host paths, runtime command lines,
 PIDs, mount options, inode identities, timing samples, and FD flags needed to
-audit the interpretation. No credentials or SafeYolo tokens are included.
+audit the interpretation. No credentials or SafeYOLO tokens are included.
 
 ## Reproduction
 
-Run from the repository's parent directory on a Linux SafeYolo host. The
-controller invokes SafeYolo as the normal user and uses `sudo` only for
+Run from the repository's parent directory on a Linux SafeYOLO host. The
+controller invokes SafeYOLO as the normal user and uses `sudo` only for
 read-only `/proc` attribution. It leaves the selected agent stopped.
 
 ```bash

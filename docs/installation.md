@@ -1,6 +1,6 @@
-# Install and configure SafeYolo
+# Install and configure SafeYOLO
 
-Install SafeYolo on your host, create an agent for an owned workspace, and
+Install SafeYOLO on your host, create an agent for an owned workspace, and
 choose its access policy. The installed `safeyolo` command starts and stops the
 proxy and agents, opens terminals, and reads traffic and access requests. For
 an inspect and approval walkthrough, use the [operator guide](operator-guide.md).
@@ -29,9 +29,8 @@ for the warning, limits and diagnostics.
 ## Install and start
 
 Use your ordinary host account on Ubuntu 24.04 or Apple Silicon macOS 26.0
-or later. Download the production archive for your host from the current
-[release](https://github.com/craigbalding/safeyolo/releases/latest):
-`linux-amd64`, `linux-arm64` or `darwin-arm64`.
+or later. Download the production archive that matches your host from the
+[latest release](https://github.com/craigbalding/safeyolo/releases/latest).
 Normal installation uses prebuilt host and guest artifacts and needs no Linux
 guest build. Source builds are an [optional alternative](#build-a-bundle).
 A bundle's `package-info` records its source, profile, platform and actual
@@ -289,7 +288,7 @@ on fresh Ubuntu 24.04.4 AMD64, ordinary
 UID 1000, with an existing authorized Claude account in its normal host
 locations. Bash, curl, tar, Git, system Python, tmux and suitable subordinate ranges
 were present. Product/runtime/vendor caches, helpers and build tools were absent;
-SafeYolo prepared missing helpers and its runtime. No new-account sign-in is
+SafeYOLO prepared missing helpers and its runtime. No new-account sign-in is
 proved. Account transport and the observer were test preparation, not new user
 commands. Their preparation is not an exhaustive shell-command count.
 
@@ -312,7 +311,7 @@ or selected authentication/settings copying. Claude and guest tools can read
 copied authentication. Declining setup leaves saved agents/services unchanged.
 Declining authentication copy uses Claude's supported `/login` route, without
 proving a fresh sign-in here. Claude's own tool prompts are disabled;
-SafeYolo's policy still applies.
+SafeYOLO's policy still applies.
 
 The same-terminal host controls remain available after Ctrl-b then d in tmux.
 Use `a`, choose a displayed request number, read its effect and enter `approve`,
@@ -371,9 +370,9 @@ safeyolo upgrade
 ```
 
 Choose a published production host package from the displayed release list.
-SafeYolo acquires and verifies the target through the existing package checks.
+SafeYOLO acquires and verifies the target through the existing package checks.
 It keeps your selected guest when compatible. If the target requires another
-guest compatibility identifier, SafeYolo discovers that host's compatible
+guest compatibility identifier, SafeYOLO discovers that host's compatible
 published guest and pins its immutable Open Container Initiative (OCI) index.
 The preview shows the proposed pair before you choose activation.
 
@@ -743,11 +742,11 @@ Selecting a system runtime does not remove the bundled payload from the host
 archive or the installed package.
 A cold system comparison must count that common package cost and the separate
 runtime download, verification and administrator setup.
-Bundled runtime fixes arrive through normal SafeYolo host-package updates;
+Bundled runtime fixes arrive through normal SafeYOLO host-package updates;
 there is no separate runtime updater. Current source bundles ship `runsc`,
 `gvisor_sentry`, `gvisor-sentry-prewarmer` and `runsc-fd-parking`. They omit
 `checkpointgofer`, `runsc-metric-server` and the separate containerd shim.
-SafeYolo does not use Google Cloud Storage checkpoints, the metrics server or
+SafeYOLO does not use Google Cloud Storage checkpoints, the metrics server or
 the containerd integration. `package-info` records the bundled
 version, source and origin. `assets/licenses` contains the gVisor and dependency
 notices.
@@ -759,15 +758,15 @@ Production bundles keep runtime metadata and function symbols.
 The verified upstream tar is about 121 MB compressed for ARM64 and 130 MB for
 AMD64; the upstream ARM64 payload is about 268 MB unpacked. Those upstream
 sizes precede the removal of unused executables and production debug data.
-The host package's compressed size also includes the SafeYolo host
+The host package's compressed size also includes the SafeYOLO host
 executables and assets; the upstream tar size is not the increase in the host
 archive size. Bundling avoids an extra package source, changes to an unrelated
 system runtime and system-package version drift. A system installation can
-share its runtime across SafeYolo instances, but its package updates and
+share its runtime across SafeYOLO instances, but its package updates and
 installation remain host administration. See the upstream
 [distribution instructions](https://gvisor.dev/docs/user_guide/install/).
 
-SafeYolo keeps the private pinned payload as its default. It avoids separate
+SafeYOLO keeps the private pinned payload as its default. It avoids separate
 runtime acquisition and administrator installation. The cold observations below
 support that choice for the shipped package. The explicit system override remains
 useful when an administrator needs to own or share the runtime.
@@ -839,7 +838,7 @@ completed changes. Keep those results. Repair the named prerequisite and retry;
 valid prerequisites are reused. If no unused range exists, the administrator
 must supply one within the host's allocation limits. Do not overlap another
 account's range. If the host disables rootless namespaces, use a supported
-host configuration; SafeYolo does not disable AppArmor or start agents as host
+host configuration; SafeYOLO does not disable AppArmor or start agents as host
 root to compensate.
 
 Explicit `--platform-assets` inputs must already use a valid mapping for your

@@ -1,6 +1,6 @@
-# Manage SafeYolo access and traffic
+# Manage SafeYOLO access and traffic
 
-Use SafeYolo on the host to inspect an agent's activity and decide its access
+Use SafeYOLO on the host to inspect an agent's activity and decide its access
 requests. You are the operator: the person managing the installation. An
 instance is one installation's configuration and runtime state. An agent is
 a named sandbox with its own persistent home and the workspace you selected.
@@ -165,7 +165,7 @@ apply inside that connection. Network controls remain in force.
 
 Use the account and instance that own the running agent. Start the app inside
 that guest and keep its HTTP port, for example 3000, distinct from a port on
-your computer or on the SafeYolo host. Discover the commands with
+your computer or on the SafeYOLO host. Discover the commands with
 `safeyolo agent --help` and `safeyolo agent publish --help`.
 
 ```sh
@@ -176,7 +176,7 @@ safeyolo agent unpublish work --port 3000 --audience tailnet
 
 The publication reports the selected agent, guest port, audience, URL and a
 separate unlock code. Open the URL on the intended device and enter that code.
-`local` is reachable from the SafeYolo host's browser; `tailnet` uses that host's
+`local` is reachable from the SafeYOLO host's browser; `tailnet` uses that host's
 existing Tailscale Serve authority and the tailnet's access rules. It creates no
 public or Funnel exposure. The app retains its own login, cookies and redirects;
 the publication gate does not authenticate you to the app. HTTP streaming and
@@ -217,7 +217,7 @@ single-use unlock rules still apply.
 
 The desktop appears inside this page. Use the page's full-screen, keyboard,
 clipboard and view controls. The page stays open if the desktop disconnects.
-Its status explains what SafeYolo observed. **Show diagnostics** opens a live,
+Its status explains what SafeYOLO observed. **Show diagnostics** opens a live,
 timestamped history; checks also run while that panel is closed. **Copy
 diagnostics** copies up to 120 observations. That copy excludes credentials,
 unlock codes, cookies, URLs, clipboard text and screen content.
@@ -234,7 +234,7 @@ local preview.
 If an approved `desktop.present` action fails its final readiness check, inspect
 the saved approval result. `desktop_not_ready` means the status command exited
 unsuccessfully. `desktop_readiness_timeout` means the check exceeded eight
-seconds. `desktop_readiness_command_failed` means SafeYolo could not complete
+seconds. `desktop_readiness_command_failed` means SafeYOLO could not complete
 the command. The operator result's diagnostic includes `operator_details` with
 the failed phase, command state and available exit or transport status. It
 retains at most 4096 bytes from each output stream and reports truncation.
@@ -243,7 +243,7 @@ responses omit these details. Inspect current state before requesting again.
 
 The page checks both legs of its existing viewer connection with WebSocket
 Ping/Pong messages. The replies verify the existing browser-to-SafeYolo and
-SafeYolo-to-guest WebSocket paths. They do not check the relay's existing TCP
+SafeYOLO-to-guest WebSocket paths. They do not check the relay's existing TCP
 connection to VNC or the browser's rendering loop. The checks send no keyboard
 or mouse input. They can detect a stalled WebSocket transport
 while a separate diagnostic request and a fresh VNC greeting still work. An
@@ -390,7 +390,7 @@ SafeYolo effect: Allow reusable network access for work (ag-…) to example.com 
 Read the effect before deciding. Approval permits future requests by this
 agent to that host and port until you remove the permission. It is not limited
 to one HTTP request and does not grant credential permission. If the scope is
-unclear, type `explain REQUEST_ID` with the same full ID. SafeYolo shows the
+unclear, type `explain REQUEST_ID` with the same full ID. SafeYOLO shows the
 recorded facts, why the request stopped, the offered grant, important non-grants
 and unknown scope. Explanation records an audit event and leaves the approval
 unchanged. Raw paths, queries and contract values are omitted because they can
@@ -452,7 +452,7 @@ without adding a deny rule. Exit the viewer with `quit`.
 
 After approval, return to **`work`'s guest shell** and repeat the curl command.
 The network approval should no longer block that destination. The site's
-response is separate from SafeYolo's decision; an upstream error is not an
+response is separate from SafeYOLO's decision; an upstream error is not an
 approval failure. After rejection, the permission remains unchanged.
 
 To remove the example's grant later, edit a copy of the current policy and set
@@ -512,7 +512,7 @@ All seven export formats are supported:
 | Format | Use |
 | --- | --- |
 | `raw`, `raw_request`, `raw_response` | Reconstructed HTTP observations and retained bytes. Combined raw can include WebSocket payloads. |
-| `curl`, `httpie` | Saved request commands for inspection. SafeYolo never executes them. |
+| `curl`, `httpie` | Saved request commands for inspection. SafeYOLO never executes them. |
 | `har`, `zhar` | HTTP archives for other tools; zhar uses zlib compression. |
 
 A flow pruned before the byte read returns unavailable. Retention and exporter
@@ -891,7 +891,7 @@ for source permissions, filters and completeness limits.
 
 ## Inspect a pending approval
 
-When a request needs approval, SafeYolo gives it an `approval_id` that starts
+When a request needs approval, SafeYOLO gives it an `approval_id` that starts
 with `apr-`. Each traffic attempt also has its own `request_id`. Equivalent
 retries share the pending approval. A changed method, destination, resource,
 credential binding or offered scope gets a new approval.
@@ -936,7 +936,7 @@ safeyolo approvals show APPROVAL_ID --agent work
 safeyolo approvals explain APPROVAL_ID --agent work
 ```
 
-The normal views retain the applicable SafeYolo assessment, reviewed guidance,
+The normal views retain the applicable SafeYOLO assessment, reviewed guidance,
 option IDs, effects, lifetime, uncertainty and recorded outcome. Command Centre
 shows the same canonical decision facts. Agent-provided reasons remain separate,
 untrusted context. Use `--json` for the structured record. Explanation grants
@@ -964,12 +964,12 @@ host commands. They do not grant network, credential or service access.
 
 In `inspect`, use `ask APPROVAL_ID` and `context APPROVAL_ID`. In the numbered
 `review` interface, use `a` to ask and `c` to read the reply. You can still use
-`e` for the separate SafeYolo explanation, then approve or reject the same
+`e` for the separate SafeYOLO explanation, then approve or reject the same
 request. Context does not select or change an approval option.
 
 Every reply appears under **Agent-provided context — UNTRUSTED**, with the
 requesting agent's name and durable ID. Its task, reason, next step and fallback
-are agent claims. SafeYolo does not verify those claims or use them to change
+are agent claims. SafeYOLO does not verify those claims or use them to change
 the fixed authority. Each field is limited to 2048 UTF-8 bytes. Plain terminal
 output quotes and escapes the text and shows at most 512 characters per field.
 Use `--json` to read the complete bounded response; Unicode and terminal controls
@@ -981,12 +981,12 @@ approval. Approve/reject remains available. Repeating `ask` while a question is
 open reads that exchange without resending it. After a timeout, an explicit
 `ask` sends a new question for the same approval. An old or duplicate response
 cannot replace a recorded reply. An uncertain delivery is shown as `unknown`;
-SafeYolo does not automatically resend it. The agent can also read its question
+SafeYOLO does not automatically resend it. The agent can also read its question
 through the [approval-context Agent API](../cli/src/safeyolo/agent_context/skills/safeyolo/references/agent-api.md#approval-context).
 
 Context has its own stored record and audit events,
 `admin.approval_context_requested` and `agent.approval_context_responded`.
-SafeYolo explanation and operator-decision events remain separate. If context
+SafeYOLO explanation and operator-decision events remain separate. If context
 storage or audit fails, the command reports the failure. Read `context` before
 retrying an uncertain write. Ordinary approval controls remain available.
 
@@ -1024,7 +1024,7 @@ successful response still consumes a `once` grant under the existing gateway
 rules. The approval record does not restore that consumed grant. If a new request
 still needs approval after a terminal decision, it gets a new approval ID.
 
-SafeYolo keeps pending authority in the instance's host-owned data directory.
+SafeYOLO keeps pending authority in the instance's host-owned data directory.
 Audit events correlate traffic IDs, approval IDs, inspection and decisions.
 Audit display text does not supply permission. Historical audit-only requests
 remain inspectable; assisted approval needs a new durable request. Missing
@@ -1096,7 +1096,7 @@ or shell failures, follow [agent diagnosis and recovery](installation.md#configu
 Keep the selected root and executable when retrying. Direct human decisions
 remain usable when an optional assistant's model is unavailable.
 
-If a Linux agent start fails before backend creation, SafeYolo removes that
+If a Linux agent start fails before backend creation, SafeYOLO removes that
 attempt's run and listener state after checking its identity and the absence of
 sandbox controls. Repair the reported cause, then retry the same start command.
 Saved agent configuration, home and guest selection remain available. If the

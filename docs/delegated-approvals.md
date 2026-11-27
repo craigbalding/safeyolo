@@ -627,7 +627,7 @@ the same `attention_id`; consumers must treat repeats as harmless.
 
 Private delivery uses the requester's existing own-approval read authority:
 its name must still resolve unambiguously to the original durable `agent_id`.
-It does not depend on room membership or renew a run-bound permission. SafeYolo
+It does not depend on room membership or renew a run-bound permission. SafeYOLO
 checks recipient authority at admission and again after broker I/O, immediately
 before disclosure. Observed identity revocation or replacement permanently
 withholds outstanding references, even if the original identity is later

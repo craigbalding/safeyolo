@@ -1,6 +1,6 @@
-# SafeYolo
+# SafeYOLO
 
-SafeYolo lets coding agents build, test and debug software with fewer
+SafeYOLO lets coding agents build, test and debug software with fewer
 interruptions inside isolated Linux sandboxes. Share a project directory and
 let the agent install tools, run commands, start services and use browsers.
 You choose its file, network and service access. Works with Claude Code,
@@ -28,14 +28,14 @@ Use the terminal on a workstation or headless server; the Mac GUI is optional.
   scoped exports and capture/retention limits. Commander provides the Mac GUI.
 - Tools for experiments and agent coordination.
 
-SafeYolo is pre-v1. Use the installer below; published Python CLI packages
+SafeYOLO is pre-v1. Use the installer below; published Python CLI packages
 belong to the earlier product.
 
 **Install preview:** Edited Ubuntu 24.04 AMD64 walkthrough with Codex and an
 existing host login.
-Install SafeYolo and get your first agent running in less than a minute.
+Install SafeYOLO and get your first agent running in less than a minute.
 
-![SafeYolo installation preview: download, review access, and open Codex](docs/media/install-preview.gif)
+![SafeYOLO installation preview: download, review access, and open Codex](docs/media/install-preview.gif)
 
 [Terminal walkthrough (.cast)](docs/media/install-preview.cast)
 
@@ -60,7 +60,7 @@ bash install-safeyolo.sh --launch
 
 Sharing and login/settings copying require consent. The sandbox can read copied
 credentials. Declining setup stops launch; copying is optional. You can sign in
-inside Claude. Claude skips tool prompts; read SafeYolo requests before
+inside Claude. Claude skips tool prompts; read SafeYOLO requests before
 approving. First use can take minutes.
 
 When Claude opens, send:
@@ -124,12 +124,12 @@ command family to its current operating instructions.
 | A different agent or setup | [Host scripts](contrib/HOST_SCRIPT_GUIDE.md) |
 | Kali, Alpine or another rootfs | [Custom rootfs preparation](contrib/ROOTFS_SCRIPT_GUIDE.md) |
 | Contained physical Mac access | [Seatbelt SSH account](contrib/macos-seatbelt-agent/README.md) |
-| SafeYolo inside a Linux agent | [Nested integration lab](docs/nested-linux-lab.md) |
+| SafeYOLO inside a Linux agent | [Nested integration lab](docs/nested-linux-lab.md) |
 | Publish approved public output | [Dispatch](docs/dispatch-generation.md) |
 
 ## Trust model and reference
 
-The host and operator are trusted; agent code may be compromised. SafeYolo
+The host and operator are trusted; agent code may be compromised. SafeYOLO
 constrains agent actions, but cannot eliminate prompt injection, protect an
 already compromised host or replace service authentication. Host scripts that
 intentionally copy authentication into an agent have a different boundary from

@@ -1,6 +1,6 @@
 # Security Verification
 
-Evidence and verification procedures for SafeYolo's security claims. For the security model and properties, see [SECURITY.md](../SECURITY.md).
+Evidence and verification procedures for SafeYOLO's security claims. For the security model and properties, see [SECURITY.md](../SECURITY.md).
 
 The [runtime reference](ARCHITECTURE.md#linux-runtime-and-storage) describes the
 Linux user ID (UID) and group ID (GID) mappings and rootfs artifact model used

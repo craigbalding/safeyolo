@@ -4,7 +4,7 @@ For recoverable NATS distribution and background responses to advisory changes,
 use [signals and adopted responses](signals.md). Ordinary policy admission
 continues to use local accepted snapshots.
 
-SafeYolo can acquire and refresh named host lists on the trusted host. Choose a
+SafeYOLO can acquire and refresh named host lists on the trusted host. Choose a
 source once, then reference its accepted snapshot in `policy.toml`. The running
 proxy refreshes sources through its existing policy control loop. A stopped
 proxy does not refresh sources. Restart resumes the saved retry deadlines and
@@ -117,7 +117,7 @@ watcher observes sources referenced only by checks.
 
 These examples were researched against the primary provider documentation on
 13 November 2026. Recheck provider availability and terms when adopting a
-source. The limits and failure behavior in each example are explicit SafeYolo
+source. The limits and failure behavior in each example are explicit SafeYOLO
 settings, not provider service guarantees. Print either complete configuration
 with `policy feeds example hagezi` or `policy feeds example stevenblack`.
 
@@ -126,7 +126,7 @@ with `policy feeds example hagezi` or `policy feeds example stevenblack`.
 | `hagezi` | Optional malware, phishing, scam and other threat exclusions. The TIF Mini wildcard file supplies domain suffixes. It covers each listed domain and descendants. Mini has less coverage than the larger TIF variants. Shared hosts and false positives can affect research. | Public download without a key. The current [provider documentation](https://github.com/hagezi/dns-blocklists#-threat-intelligence-feeds-a-serious-security-boost-recommended) links the formats and coverage. Its [published file](https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.mini.txt) declares an eight-hour expiry and dataset version/time; the example polls every eight hours and permits at most two days of evidence age. The provider publishes [GPL-3.0](https://github.com/hagezi/dns-blocklists/blob/main/LICENSE) and a [disclaimer](https://github.com/hagezi/dns-blocklists#disclaimer). |
 | `stevenblack` | Optional adware/tracker and malware blocking for workloads that want those exclusions. The unified hosts file supplies exact hostnames, including all aliases on valid address lines. It does not imply suffix or URL coverage. | Public download without a key. The [provider README](https://github.com/StevenBlack/hosts#list-of-all-hosts-file-variants) describes the base and optional categories. The example polls daily and permits fourteen days of evidence age; the README does not promise a fixed publication interval. The [file header](https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts) supplies its dataset date. The repository has an [MIT license](https://github.com/StevenBlack/hosts/blob/master/license.txt); its [source table](https://github.com/StevenBlack/hosts#sources-of-hosts-data-unified-in-this-variant) lists separate upstream licenses, including non-commercial terms. Review those terms for your intended use and distribution. |
 
-SafeYolo ships the configurations, not copies of the provider datasets. Both
+SafeYOLO ships the configurations, not copies of the provider datasets. Both
 examples cap downloads at 16 MiB and require at least 1,000 normalized entries.
 HaGeZi permits up to 500,000 entries; StevenBlack permits up to 250,000. Each
 rejects a membership change above 50 percent. Operators can revise these limits

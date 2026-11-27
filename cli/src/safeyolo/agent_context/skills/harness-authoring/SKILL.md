@@ -1,6 +1,6 @@
 ---
 name: harness-authoring
-description: Discover, implement and qualify a coding harness integration for SafeYolo using the operator's preferred authoring agent, current launch and attention adapters, and installed proof. Use for adding or assessing harness support; ordinary use of an existing harness does not need this workflow.
+description: Discover, implement and qualify a coding harness integration for SafeYOLO using the operator's preferred authoring agent, current launch and attention adapters, and installed proof. Use for adding or assessing harness support; ordinary use of an existing harness does not need this workflow.
 ---
 
 # Author a harness integration
@@ -31,7 +31,7 @@ Replace the example harness name and executable with the selected target.
 The JSON report identifies the observed version; `not_tested` means no task
 was qualified. A successful version probe is not a login or capability test.
 Check the target's own help and official protocol documentation at the exact
-version. Preserve proxy and certificate settings. Use the installed SafeYolo
+version. Preserve proxy and certificate settings. Use the installed SafeYOLO
 diagnostic interfaces for unavailable host information; request only an exact
 missing operand from its authorized owner.
 

@@ -36,7 +36,7 @@ credentials. The command reports `delivered`, `already-delivered`, or
 unavailable backend, denied grant or corrupt ledger produces a nonzero exit
 status, rather than reporting delivery.
 The explicit date is the stable key. The local coord data directory contains a
-locked, atomic outbox with the SafeYolo-minted message and attention IDs. A
+locked, atomic outbox with the SafeYOLO-minted message and attention IDs. A
 retry reconciles retained room history using the original prepared message
 identity. The ledger is `coord/dispatch-schedule.json` under the selected
 configuration's `data_dir`; that directory also retains the Coord store and
@@ -105,7 +105,7 @@ stop Coord for a disposable instance you own, use
 `safeyolo coord stop`; keep a shared instance
 running for its other users.
 
-No launchd example is shipped because SafeYolo does not install or validate a
+No launchd example is shipped because SafeYOLO does not install or validate a
 launchd integration. On any host, rerun the exact one-shot command to retry;
 do not add a background poller around coord.
 

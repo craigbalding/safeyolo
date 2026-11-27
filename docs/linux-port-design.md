@@ -17,7 +17,7 @@
 
 ## Context
 
-SafeYolo runs on macOS using Apple's Virtualization.framework for agent
+SafeYOLO runs on macOS using Apple's Virtualization.framework for agent
 isolation. This design describes the Linux port, which uses gVisor (runsc)
 to provide agent isolation on Linux servers — including VPS without KVM.
 

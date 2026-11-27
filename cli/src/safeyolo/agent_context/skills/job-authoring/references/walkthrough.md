@@ -1,6 +1,6 @@
 # Installed GitHub and artifact checks
 
-Use the host account that owns the selected SafeYolo instance. The example
+Use the host account that owns the selected SafeYOLO instance. The example
 adds two required native Work bindings to an already approved factory: a live
 GitHub author check before issue admission/delegation and a check of a small
 JSON artifact before output acceptance. It uses one selected engine in normal
@@ -29,7 +29,7 @@ An agent running inside a normal guest has no host adoption authority.
 
 ## Check prerequisites and proposed authority
 
-Install a complete published production SafeYolo host package through the normal
+Install a complete published production SafeYOLO host package through the normal
 installer; it includes the matching Hyperlight bundle under `assets/hyperlight`.
 For an existing instance without that bundle, use the existing `safeyolo upgrade`
 journey, then inspect `upgrade status` and `assets/hyperlight/runtime.json`.

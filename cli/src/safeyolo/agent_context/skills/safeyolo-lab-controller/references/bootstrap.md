@@ -1,6 +1,6 @@
 # Controller bootstrap and reconnection
 
-Read this reference when the operator starts or reconnects to a SafeYolo lab.
+Read this reference when the operator starts or reconnects to a SafeYOLO lab.
 
 ## Operator workflow
 

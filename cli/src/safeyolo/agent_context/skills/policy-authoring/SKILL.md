@@ -1,6 +1,6 @@
 ---
 name: policy-authoring
-description: Turn an operator's cyber brief or research workload and risk choices into a reviewable SafeYolo policy, source and check configuration. Discover installed policy capabilities and request an operator-approved full local policy snapshot in an ordinary guest. Author and apply through the owning host's existing policy authority. Keep administrative credentials outside the research workload.
+description: Turn an operator's cyber brief or research workload and risk choices into a reviewable SafeYOLO policy, source and check configuration. Discover installed policy capabilities and request an operator-approved full local policy snapshot in an ordinary guest. Author and apply through the owning host's existing policy authority. Keep administrative credentials outside the research workload.
 ---
 
 # Author a research policy
@@ -116,7 +116,7 @@ Research providers from primary documentation. Distinguish passive lookup,
 input retention and active subject scanning. Identify disclosed data, coverage,
 score meaning, freshness and access requirements. Select an explicit provider
 and endpoint; do not turn an example into a universal requirement. RDAP
-registration, provider first-seen and SafeYolo local first-seen are different
+registration, provider first-seen and SafeYOLO local first-seen are different
 facts. A finite-window list no-match cannot establish an older domain.
 
 Generate with [author.py](scripts/author.py), using TOMLKit to retain unrelated

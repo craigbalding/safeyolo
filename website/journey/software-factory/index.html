@@ -1,0 +1,56 @@
+---
+layout: waypoint
+full_width: true
+permalink: /journey/software-factory/
+title: "The live software factory · SafeYOLO journey"
+description: "How SafeYOLO's software factory separates assignment, execution and independent acceptance, with optional policy-bound checks and service access."
+act: "Act 4"
+waypoint: 13
+headline: "Three agents ship fixes day and night. None can approve its own work."
+lede: "You want agents doing continuous, real work on a repository, with independent review of the exact result. This is how SafeYOLO organises its own development."
+lit: "coord gates checkpoint credentials host-execution"
+swimlane: true
+swimlane_title: "One issue, from assignment to independent acceptance"
+next:
+  title: "See the whole journey"
+  url: /journey/
+  blurb: "Earlier stops cover the agent's home and API access without the secret."
+---
+<h2>Three roles, one room</h2>
+<p>SafeYOLO's own factory separates coordination, implementation and independent review. The shipped <code>backlog</code> example binds those roles to three Codex agents in one shared Coord room:</p>
+<table>
+<tr><th>Role</th><th>Agent</th><th>Does</th></tr>
+<tr><td>Coordinator</td><td>relay</td><td>Takes your direction, reads the backlog and creates Work. It is the only role you talk to.</td></tr>
+<tr><td>Owner</td><td>forge</td><td>Claims Work, implements it, runs tests, publishes the exact output and completes execution.</td></tr>
+<tr><td>Reviewer</td><td>lens</td><td>Independently reviews that exact output and decides acceptance.</td></tr>
+</table>
+
+<h2>Start the example factory</h2>
+<p>Use the owning host account with an <a href="https://github.com/craigbalding/safeyolo/blob/master/docs/installation.md#install-and-start">installed SafeYOLO instance and prepared guest runtime</a>. In a host terminal, start from the SafeYOLO repository root. These commands select the default installation and instance at <code>$HOME/.safeyolo</code>. For another instance, change both paths.</p>
+<p>Replace <code>/work/relay</code>, <code>/work/forge</code> and <code>/work/lens</code> with three existing, owned repository workspaces. Keep the installation outside those workspaces. Setup shows the exact role contracts before asking you to approve their immutable snapshot. It prepares the roles and asks for each role's own login or supported provider configuration when needed; it does not copy host or peer credentials.</p>
+<p>For a missing checkpoint, confirm fresh identities only if those identities or room memberships have never received targeted attention in any configured room. Valid checkpoints resume without that confirmation.</p>
+<pre><code>"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" start
+"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" factory setup docs/factories/backlog-native/backlog.toml --workspace coordinator=/work/relay --workspace owner=/work/forge --workspace reviewer=/work/lens</code></pre>
+<p>Editing a contract requires a new snapshot approval and staging before running roles use it.</p>
+<p>Setup reports <code>running</code> only after all roles pass the readiness checks. If it stops short, follow its named prerequisite in the <a href="https://github.com/craigbalding/safeyolo/blob/master/docs/factories.md#guided-setup">setup and recovery guide</a>. The guide also gives the explicit manual commands. Repeat setup after correcting the prerequisite; it reuses saved choices and healthy running roles.</p>
+<p>After setup reports <code>running</code>, send direction from the same host account and instance:</p>
+<pre><code>"$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" factory send backlog 'Work the backlog in priority order.'</code></pre>
+
+<h2>What native Work enforces</h2>
+<ul>
+<li><b>Assignment and claims.</b> The example permits relay to create Work and the assigned owner to claim execution.</li>
+<li><b>Exact-output review.</b> Publishing an immutable output creates lens's required check for that output. A changed output needs a new check.</li>
+<li><b>Execution completion.</b> Forge explicitly completes its attempt before waiting for review. A blocked or failed attempt also completes execution; this does not establish acceptance.</li>
+<li><b>Independent acceptance.</b> Lens answers the check and separately decides acceptance. It must be a different participant from forge. Relay integrates the unchanged accepted candidate.</li>
+</ul>
+
+<h2>Add checks and service access when needed</h2>
+<p>The shipped Factory TOML selects roles, checks and acceptance authority. It does not configure executable jobs, service credentials or remote hosts. Each needs separate operator adoption in the selected instance.</p>
+<p>With adopted <a href="/how-it-works/gates/">Work bindings</a>, an admission job can check an issue's author before delegation, and an output job can hold acceptance until its predicate passes for the exact retained bytes. An optional <code>after_complete</code> action can post an execution result. That action follows execution completion, including blocked attempts; it is not an acceptance or integration announcement. A failed action cannot undo completion and must not be retried blindly.</p>
+<p>With configured <a href="/how-it-works/credentials/">service-gateway grants</a>, agents use scoped tokens while the proxy injects host-held GitHub or model credentials. Separately adopted <a href="/how-it-works/host-execution/">host-executor bindings</a> permit signed operations on remote machines without giving agents the signing key. Factory setup alone supplies neither integration.</p>
+
+<div class="guarantees">
+<div><h3>What the example gives you</h3><ul><li>Independent acceptance of the exact published output</li><li>Separate execution and acceptance records</li><li>Running roles bound to the approved, staged snapshot</li></ul></div>
+<div class="no"><h3>What setup does not do</h3><ul><li>Establish software correctness: the reviewer must inspect the result</li><li>Adopt executable gates, credential custody or remote-host access</li><li>Turn role instructions into additional permissions</li></ul></div>
+</div>
+<ul class="linkrow"><li><a href="https://github.com/craigbalding/safeyolo/blob/master/docs/factories.md">Factories guide</a></li><li><a href="https://github.com/craigbalding/safeyolo/tree/master/docs/factories/backlog-native">The backlog contracts</a></li><li><a href="/how-it-works/gates/">How gates work</a></li></ul>

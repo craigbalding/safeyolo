@@ -66,7 +66,7 @@ python3 "$SCRIPT" installed --harness codex --binary "$TARGET" --output "$PROOF"
 ```
 
 The probe is guest-only. Codex runs with its inner sandbox disabled, as in the
-normal SafeYolo command; the SafeYolo outer boundary remains enforced. The
+normal SafeYOLO command; the SafeYOLO outer boundary remains enforced. The
 probe retains native configuration and credentials in their existing owners.
 Optional `--model` selects a model; omission preserves the native preference.
 For Pi, use `--harness pi` and, when needed, `--provider` and `--model` together.
@@ -96,7 +96,7 @@ each selected row in the existing PR or issue. Do not invent a new task store.
 | Native Work | Read/claim assignment, immutable output publication, explicit execution completion, independently attributed acceptance; model exit cannot substitute | `proxy/tests/native_coord/factory.rs`, `outputs.rs`, `reviews.rs`, `supervision.rs`; installed Factory observation when Factory support is claimed |
 | Visibility | Actual `agent watch`, `agent diagnostics` and `factory doctor` distinguish runtime, coding client, saved/staged configuration and unavailable reads | Existing installed CLI/blackbox lanes and `cli/tests/test_codex_coord_supervisor.py` telemetry controls |
 | Security refusals | Selected credential, network and policy refusals remain enforced and actionable; no credential custody change | Existing `tests/blackbox` installed lanes and `tests/proxy_contracts` credential/service controls |
-| Versions/platforms | Tested target and SafeYolo identities, supported floor/range, native package/platform inputs and missing-version refusal | Package/setup tests and each claimed platform's installed lane; do not infer macOS host proof from a Linux guest |
+| Versions/platforms | Tested target and SafeYOLO identities, supported floor/range, native package/platform inputs and missing-version refusal | Package/setup tests and each claimed platform's installed lane; do not infer macOS host proof from a Linux guest |
 | Mixed harnesses | Same native Work contract across selected different role harnesses | Existing native Factory tests plus the installed composition when supported; otherwise mark unverified/unsupported |
 
 The repository's acceptance graph selects trusted tools and environments.

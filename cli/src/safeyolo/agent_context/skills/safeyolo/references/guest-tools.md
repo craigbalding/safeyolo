@@ -21,7 +21,7 @@ mise use -g node@22
 mise use -g npm:typescript
 ```
 
-SafeYolo exposes those global tools to login shells, non-interactive shells,
+SafeYOLO exposes those global tools to login shells, non-interactive shells,
 harness commands, and Linux `runsc exec` without loading repository-local
 `mise.toml` or `.tool-versions` files. A plain tool invocation and a plain
 `mise` command therefore stay on the persistent global toolset even when the
@@ -43,7 +43,7 @@ mise-project run TASK
 mise-project use TOOL@VERSION
 ```
 
-The opt-in is command-scoped. `mise-project` clears SafeYolo's project-config
+The opt-in is command-scoped. `mise-project` clears SafeYOLO's project-config
 discovery guards only for that child process, while preserving the proxy, CA,
 and persistent mise directory environment. Review and trust the repository
 configuration before opting in; later ordinary commands remain global-only.
@@ -62,7 +62,7 @@ path instead.
 
 ## Use guest sudo
 
-SafeYolo rootfs images provide passwordless guest sudo. Use `-n` so an old or
+SafeYOLO rootfs images provide passwordless guest sudo. Use `-n` so an old or
 incomplete rootfs fails immediately rather than prompting for a nonexistent
 password:
 
@@ -75,20 +75,20 @@ sudo -n apt-get install -y PACKAGE
 sudo -n apk add PACKAGE
 ```
 
-The sudo policy preserves SafeYolo's proxy and CA variables, while bundled apt
+The sudo policy preserves SafeYOLO's proxy and CA variables, while bundled apt
 images also configure apt's own proxy route. Package downloads remain subject
-to the normal SafeYolo policy, budget, and approval flow. A network block is
+to the normal SafeYOLO policy, budget, and approval flow. A network block is
 not evidence that guest root failed; inspect the response before retrying.
 
 Guest root is not host root. It can change the guest rootfs and the writable
 mounts already exposed to the agent, including `/workspace`, but it cannot
 turn `/safeyolo` writable, expose the host network, or access the host admin
-API. Do not use sudo to attempt to disable the proxy or weaken SafeYolo.
+API. Do not use sudo to attempt to disable the proxy or weaken SafeYOLO.
 
 ## Understand setpriv
 
 Rootless Linux gVisor mounts its rootfs with `nosuid`, so a conventional
-setuid-only sudo transition cannot work there. SafeYolo installs
+setuid-only sudo transition cannot work there. SafeYOLO installs
 `/usr/local/bin/sudo`, which uses the agent's existing `CAP_SETUID` and
 `CAP_SETGID` through `/usr/bin/setpriv`, then delegates argument parsing to the
 distro's `/usr/bin/sudo`:
@@ -102,7 +102,7 @@ for routine work. `sudo` is cross-platform, preserves the configured
 environment, and falls through to ordinary distro sudo in a hardware microVM.
 The direct setpriv transition is expected to fail in a hardware microVM.
 
-On Linux, guest uid 0 maps through SafeYolo's outer user namespace to an
+On Linux, guest uid 0 maps through SafeYOLO's outer user namespace to an
 unprivileged subordinate host uid rather than host uid 0. The capability is
 therefore a guest usability mechanism, not an additional security boundary or
 host privilege.
@@ -221,7 +221,7 @@ safeyolo-guest-state history
 Inspect the resulting private copy at `configuration/opt/example/config`.
 `paths remove /opt/example/config` stops future coverage. Coverage settings
 persist in the record. Track configuration, not binaries, caches, logs or bulk
-data. Generated SafeYolo proxy settings, runtime identities/credentials and the
+data. Generated SafeYOLO proxy settings, runtime identities/credentials and the
 recorder's own bookkeeping are excluded. Symlinks are recorded without following
 them. Restoration refuses a symlink parent rather than writing through it.
 
@@ -265,7 +265,7 @@ sudo -n id -u
 The expected output is `0`. If the command is missing, prompts for a password,
 reports a setuid/nosuid error, or cannot find `/usr/bin/setpriv` on Linux, the
 agent likely uses an older or incomplete rootfs. Report the exact error and
-ask the operator to rebuild the image with the current SafeYolo guest helper.
+ask the operator to rebuild the image with the current SafeYOLO guest helper.
 
 `agent shell` has no guest-root flag. `agent recover` runs a fixed health
 probe through PID 1 as the ordinary guest account, without SSH. It cannot repair

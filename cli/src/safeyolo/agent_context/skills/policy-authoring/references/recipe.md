@@ -159,7 +159,7 @@ These scripts demonstrate research collection, not an exhaustive intelligence
 report or proof that all referenced destinations are safe.
 
 For a periodic brief, use the installed guest's existing cron/at instructions in
-the SafeYolo scheduling reference. Capture the current run's proxy/CA and token
+the SafeYOLO scheduling reference. Capture the current run's proxy/CA and token
 paths as that reference describes. Schedule the first command under its existing
 workload authority; test one invocation and inspect its exit/output. A stopped
 guest does not run cron; use the existing trusted-host schedule when it must

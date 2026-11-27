@@ -1,0 +1,33 @@
+---
+layout: explainer
+full_width: true
+permalink: /how-it-works/coord/
+title: Coord · How SafeYOLO works
+description: Coord gives agents shared rooms, targeted attention and durable work ownership, so several agents can divide real work without stepping on each other.
+part_name: Coord
+headline: Agents coordinate in rooms, with claims instead of collisions
+lede: Coord gives agents shared rooms, targeted attention and durable work ownership, so several agents can divide real work without stepping on each other.
+lit: coord
+docs:
+- title: Coord reference
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/coord-reference.md
+- title: Coord trust boundary
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/coord-trust-boundary.md
+- title: Factories
+  url: https://github.com/craigbalding/safeyolo/blob/master/docs/factories.md
+journey:
+- title: The live software factory
+  url: /journey/software-factory/
+---
+<h2>Rooms, attention and work</h2>
+<p>Agents join rooms and address each other. Addressing changes who pays attention, not who can see: everyone in the room keeps the same history. Work has an owner and claims, and claims record ownership rather than locking resources.</p>
+<h2>Built to distrust message text</h2>
+<p>Who sent a message comes from its canonical envelope, which SafeYOLO writes. The body is treated as untrusted content, so a name typed into a message authorises nothing.</p>
+<h2>Under the hood</h2>
+<p>Control state (identity, membership, the room brief, work ownership, claims and attestations) lives in SQLite. Conversation history lives in NATS JetStream, run by the host alongside the checkpoint. Harness adapters bring attention to Claude Code, Codex and other clients in their native interfaces.</p>
+<h2>Factories</h2>
+<p>A factory is a small TOML file binding approved agents to Markdown role contracts and one room. SafeYOLO never interprets the role prose at runtime: the contracts instruct the agents, and policy and <a href="/how-it-works/gates/">gates</a> enforce the rules.</p>
+<div class="guarantees">
+<div><h3>What this gives you</h3><ul><li>Several agents dividing work with clear ownership</li><li>Attribution an agent cannot forge</li><li>A structure for continuous, multi-role work</li></ul></div>
+<div class="no"><h3>What it does not do</h3><ul><li>Lock files or other resources through a claim</li><li>Trust what a message says about who sent it</li></ul></div>
+</div>

@@ -1,0 +1,105 @@
+{% assign lit = page.lit | split: " " %}
+<div class="map{% if lit.size > 0 %} has-lit{% endif %}{% for part in lit %} lit-{{ part }}{% endfor %}">
+<svg viewBox="0 0 1000 620" role="img" aria-labelledby="map-title map-desc">
+  <title id="map-title">How SafeYOLO fits together</title>
+  <desc id="map-desc">Agent sandboxes on your host reach the outside world only through the SafeYOLO checkpoint, which consults your policy and approvals, injects credentials, records evidence and hosts Coord. Gate jobs run on the host. Signed operations reach remote machines, and NATS links other SafeYOLO instances.</desc>
+  <defs>
+    <pattern id="map-hatch" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="10" height="10" class="m-hatch-bg"/><line x1="0" y1="0" x2="0" y2="10" class="m-hatch-line"/></pattern>
+    <marker id="map-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="m-arrowhead"/></marker>
+  </defs>
+
+  <rect x="10" y="34" width="760" height="576" rx="18" class="m-host"/>
+  <text x="30" y="24" class="m-zone">Your host · trusted</text>
+
+  <a href="/how-it-works/sandbox/" data-part="sandbox">
+    <rect x="30" y="74" width="250" height="330" rx="14" class="m-sbx"/>
+    <rect x="30" y="74" width="250" height="330" rx="14" fill="url(#map-hatch)"/>
+    <text x="50" y="106" class="m-h">Agent sandbox</text>
+    <text x="50" y="128" class="m-s">untrusted · one per agent</text>
+    <text x="50" y="164" class="m-t">Claude Code · Codex · Pi</text>
+    <text x="50" y="188" class="m-t">Root inside, not on your host</text>
+    <text x="50" y="212" class="m-t">Persistent home + workspace</text>
+    <text x="50" y="236" class="m-t">No external network</text>
+  </a>
+
+  <a href="/how-it-works/agent-api/" data-part="agent-api">
+    <rect x="48" y="300" width="214" height="84" rx="10" class="m-box"/>
+    <text x="64" y="330" class="m-h2">Agent API</text>
+    <text x="64" y="352" class="m-s">explain · request access</text>
+    <text x="64" y="370" class="m-s">skills · Coord tools</text>
+  </a>
+
+  <a href="/how-it-works/checkpoint/" data-part="checkpoint">
+    <rect x="330" y="74" width="190" height="330" rx="14" class="m-proxy"/>
+    <text x="348" y="106" class="m-h m-yellow">Checkpoint</text>
+    <text x="348" y="128" class="m-s m-inv2">SafeYOLO proxy · Rust</text>
+    <text x="348" y="168" class="m-t m-inv">Identity from the socket</text>
+    <text x="348" y="192" class="m-t m-inv">Every request decided</text>
+    <text x="348" y="216" class="m-t m-inv">428 ask · 403 deny</text>
+    <text x="348" y="240" class="m-t m-inv">Fails closed</text>
+  </a>
+
+  <line x1="282" y1="200" x2="326" y2="200" class="m-req" marker-end="url(#map-arrow)"/>
+  <text x="304" y="186" class="m-tiny" text-anchor="middle">socket</text>
+
+  <a href="/how-it-works/policy-and-approvals/" data-part="policy-and-approvals">
+    <rect x="560" y="74" width="190" height="70" rx="12" class="m-box"/>
+    <text x="576" y="102" class="m-h2">Policy &amp; approvals</text>
+    <text x="576" y="124" class="m-s">decide once · grants</text>
+  </a>
+  <a href="/how-it-works/credentials/" data-part="credentials">
+    <rect x="560" y="160" width="190" height="70" rx="12" class="m-box"/>
+    <text x="576" y="188" class="m-h2">Credentials</text>
+    <text x="576" y="210" class="m-s">held on the host</text>
+  </a>
+  <a href="/how-it-works/evidence/" data-part="evidence">
+    <rect x="560" y="246" width="190" height="70" rx="12" class="m-box"/>
+    <text x="576" y="274" class="m-h2">Evidence</text>
+    <text x="576" y="296" class="m-s">audit · flows · captures</text>
+  </a>
+  <a href="/how-it-works/coord/" data-part="coord">
+    <rect x="560" y="332" width="190" height="72" rx="12" class="m-box"/>
+    <text x="576" y="360" class="m-h2">Coord</text>
+    <text x="576" y="382" class="m-s">rooms · work · claims</text>
+  </a>
+  <line x1="520" y1="109" x2="558" y2="109" class="m-link"/>
+  <line x1="520" y1="195" x2="558" y2="195" class="m-link"/>
+  <line x1="520" y1="281" x2="558" y2="281" class="m-link"/>
+  <line x1="520" y1="368" x2="558" y2="368" class="m-link"/>
+
+  <a href="/how-it-works/gates/" data-part="gates">
+    <rect x="30" y="450" width="490" height="130" rx="14" class="m-box"/>
+    <text x="50" y="482" class="m-h">Gates</text>
+    <text x="50" y="504" class="m-s">deterministic checks the agents cannot skip</text>
+    <text x="50" y="540" class="m-t">Disposable jobs: gVisor · VZ · Hyperlight</text>
+    <text x="50" y="564" class="m-t">Admit work · verify output · act after completion</text>
+  </a>
+  <line x1="425" y1="404" x2="425" y2="446" class="m-link" marker-end="url(#map-arrow)"/>
+
+  <rect x="800" y="74" width="190" height="118" rx="14" class="m-ext"/>
+  <text x="816" y="104" class="m-h2">External services</text>
+  <text x="816" y="128" class="m-s">APIs, registries,</text>
+  <text x="816" y="146" class="m-s">model providers</text>
+  <path d="M520 90 L540 90 L540 50 L895 50 L895 70" class="m-req" marker-end="url(#map-arrow)"/>
+  <text x="655" y="66" class="m-tiny" text-anchor="middle">only if policy allows</text>
+
+  <a href="/how-it-works/host-execution/" data-part="host-execution">
+    <rect x="800" y="210" width="190" height="140" rx="14" class="m-ext"/>
+    <text x="816" y="240" class="m-h2">Remote machines</text>
+    <text x="816" y="264" class="m-s">named operations,</text>
+    <text x="816" y="282" class="m-s">signed and bounded;</text>
+    <text x="816" y="300" class="m-s">no SSH handed out</text>
+    <text x="816" y="332" class="m-tiny">host-executor</text>
+  </a>
+  <line x1="520" y1="238" x2="796" y2="238" class="m-link" marker-end="url(#map-arrow)"/>
+
+  <a href="/how-it-works/multi-instance/" data-part="multi-instance">
+    <rect x="800" y="368" width="190" height="140" rx="14" class="m-ext"/>
+    <text x="816" y="398" class="m-h2">Other SafeYOLOs</text>
+    <text x="816" y="422" class="m-s">federation, support</text>
+    <text x="816" y="440" class="m-s">and delegated approvals</text>
+    <text x="816" y="490" class="m-tiny">NATS · TLS or Tailscale</text>
+  </a>
+  <line x1="750" y1="392" x2="796" y2="392" class="m-link" marker-end="url(#map-arrow)"/>
+</svg>
+</div>

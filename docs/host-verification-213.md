@@ -12,7 +12,7 @@ suite that would normally exercise the full lifecycle needs `runsc`
 and a dedicated test VM (see `tests/blackbox/conftest.py`).
 
 Per the reviewer's explicit ask, this file documents the concrete
-host-side commands to run against a live SafeYolo proxy on
+host-side commands to run against a live SafeYOLO proxy on
 `agent/issue-213-doctor-probe-dag-consumers` before sign-off. These
 verifications must pass on the host — the in-sandbox tests
 (`tests/test_probe_lifecycle.py`, `tests/test_transport_guard.py`,
@@ -53,7 +53,7 @@ Layer 2 (both absent).
 ## Shared setup (used by V3a/V3b/V4)
 
 These commands work on both Linux and macOS. Run from the host, NOT
-from inside the SafeYolo sandbox. The agent token, Agent API address,
+from inside the SafeYOLO sandbox. The agent token, Agent API address,
 and mitmproxy log path differ from container assumptions — use the
 paths below.
 

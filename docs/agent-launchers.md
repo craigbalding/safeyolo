@@ -32,7 +32,7 @@ lets the operator recheck after host/session-manager failure, which cannot
 reliably emit its own final event. These are observations, not a heartbeat or
 a new recovery manager.
 
-The macOS Command Centre connects to local SafeYolo and multiple saved instances
+The macOS Command Centre connects to local SafeYOLO and multiple saved instances
 together, including separate roots on one host. Each instance has its own menu,
 connection status, agents, approvals, support receipts and diagnostics. Approval windows show the instance name and ID.
 Local connections use loopback; adding a remote connection does not publish
@@ -46,7 +46,7 @@ Each saved profile is pinned to the authenticated owner's durable identity.
 Editing an existing profile cannot adopt a recreated same-name instance. Select
 a new profile deliberately for that owner. **Remove Selected Profile** disconnects
 only that instance. It does not revoke its credential, grants or peer trust.
-**Connect Local SafeYolo** reconnects the default local instance and keeps the
+**Connect Local SafeYOLO** reconnects the default local instance and keeps the
 saved connections. Saved profiles remain usable without a local installation.
 When both `--admin-url` and `--events-url` are passed to the app executable,
 launch connects only to those endpoints.
@@ -88,7 +88,7 @@ Attaching and disconnecting never stop the coding agent.
 Command Centre uses `agent shell --persistent` for both local and remote
 sandbox shells. Host tmux is required; the command reports a missing dependency
 instead of falling back to an unprotected shell. Persistent shells use a
-dedicated tmux server per SafeYolo configuration, with separate sessions for
+dedicated tmux server per SafeYOLO configuration, with separate sessions for
 each agent identity and guest user. They do not use or modify coding-agent
 launcher records. Multiple viewers of the same shell share its input and output.
 Exiting the guest shell ends that shell session; reopening then creates a new
@@ -136,7 +136,7 @@ changing a default does not redirect attach/stop to another session.
 a pane. Both create the session if absent. Custom scripts must be executable
 absolute host paths outside every agent-writable share. An external manager
 is selected with `manager:/absolute/host/script.sh`; its management behavior
-belongs in that script, not in a new SafeYolo scheduler.
+belongs in that script, not in a new SafeYOLO scheduler.
 
 The tmux presets retain the server socket as well as the pane ID. An attachment
 from SSH therefore reaches the same server that created the agent session,
@@ -154,7 +154,7 @@ with `agent configure NAME --launcher PATH`. This is a runtime launcher;
 `--host-script` remains the separate setup operation that installs the guest
 harness and its configuration.
 
-SafeYolo calls the script with one action: `launch`, `attach`, `status`, `stop`,
+SafeYOLO calls the script with one action: `launch`, `attach`, `status`, `stop`,
 `pre_launch`, `post_launch`, or `on_exit`. The template handles all actions,
 including optional hooks as no-ops. `launch` starts a persistent session and
 returns; it must not wait for a terminal viewer. Use stderr for diagnostics.
@@ -167,7 +167,7 @@ A custom manager's `status` returns a JSON object with `state` equal to
 `starting`, `running`, `exited`, `failed`, `stopped`, or `unknown`. Its `stop`
 must stop only that agent and prevent its manager from relaunching it. A manager
 with no terminal should return a useful explanation from `attach`. The
-SafeYolo supervisor already does this through `agent diagnostics` and Coord output.
+SafeYOLO supervisor already does this through `agent diagnostics` and Coord output.
 
 Context arrives as environment data, not shell source:
 
@@ -177,7 +177,7 @@ Context arrives as environment data, not shell source:
 | `SAFEYOLO_LAUNCH_ID` | Identity of this launch, also available to attach/stop. |
 | `SAFEYOLO_WORKSPACE` | Workspace for this launch. |
 | `SAFEYOLO_LAUNCH_MODE` | `foreground` or `background`. |
-| `SAFEYOLO_CONFIG_DIR` | This host's selected SafeYolo configuration. |
+| `SAFEYOLO_CONFIG_DIR` | This host's selected SafeYOLO configuration. |
 | `SAFEYOLO_EXECUTABLE` | Installed host executable. |
 | `SAFEYOLO_NATIVE_CONFIG_PATH` | Selected `config.toml` path. |
 | `SAFEYOLO_LAUNCHER_PRESETS` | Installed directory containing the two tmux presets. |
@@ -228,7 +228,7 @@ hostname; it does not use the Mac's login or the Admin URL's port.
 Standard SSH works over the tailnet, including
 when Tailscale SSH provides authentication on that host.
 
-On an installed SafeYolo host with Tailscale connected, enable the explicit
+On an installed SafeYOLO host with Tailscale connected, enable the explicit
 Tailnet share and restart the proxy. Select two free Tailnet HTTPS ports;
 the defaults are 9443 for Admin and 9444 for events.
 
@@ -284,7 +284,7 @@ forwarded loopback URL cannot identify an SSH destination.
 Run Agent uses the named Admin API operation and needs no SSH connection.
 Open Agent Terminal opens Terminal.app and runs `ssh -t TARGET` followed by
 the server's reported `host_executable` with its `host_root` and
-`agent attach -- NAME` on that host. This uses the running instance's SafeYolo installation even when the non-interactive SSH shell has no `safeyolo`
+`agent attach -- NAME` on that host. This uses the running instance's SafeYOLO installation even when the non-interactive SSH shell has no `safeyolo`
 on its PATH. An explicit SSH target in local
 connection settings overrides discovery, for example to use another login.
 If the host's effective UID has no OS account entry, `host_user` is null and an
@@ -315,13 +315,13 @@ the copy. It reuses the credential already loaded for that connection; it does
 not read Keychain again or put the key in the URL.
 
 Security observations use native macOS notifications. Allow notifications for
-SafeYolo Command Centre in macOS settings to see banners. Permission and
+SafeYOLO Command Centre in macOS settings to see banners. Permission and
 submission failures appear in Error details. The menu retains security events
 even if macOS does not show a banner. Repeated matching events update their
 count rather than send another banner. Long menu summaries end with an
 ellipsis; opening the event retains the complete summary and details.
 
-The macOS app uses SwiftUI and native Keychain support. SafeYolo no longer
+The macOS app uses SwiftUI and native Keychain support. SafeYOLO no longer
 installs the earlier Qt/PySide frontend or a Python Keychain wrapper. Build
 the app with `bash command-centre/macos/build-app.sh` on the Mac, install the
 resulting app in Applications, then open its icon. Linux hosts provide the

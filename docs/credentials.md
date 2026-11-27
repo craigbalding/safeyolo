@@ -100,13 +100,13 @@ selection, exclusions, enablement and warn mode.
 
 With default credential policy, public pulls from GitHub Container Registry
 (GHCR) need no credential approval when the client obtains its anonymous bearer
-token through the same running SafeYolo proxy. This applies to images and
+token through the same running SafeYOLO proxy. This applies to images and
 Open Container Initiative (OCI) artifacts. Ordinary network permission must
 allow the download destinations.
 The client follows the registry's authentication challenge and requests its
-own token. SafeYolo does not obtain or refresh tokens for the client.
+own token. SafeYOLO does not obtain or refresh tokens for the client.
 
-SafeYolo recognises a token only after a verified HTTPS exchange at
+SafeYOLO recognises a token only after a verified HTTPS exchange at
 `https://ghcr.io/token`. The final GET request sent upstream must have no body
 or trailing headers. It must have no authentication headers, cookies or
 injected credential. Its service must be `ghcr.io`, and each repository scope
@@ -135,7 +135,7 @@ decoded. Token response capture is limited to 64 KiB and token values to
 16 KiB; larger or malformed responses retain ordinary handling. Recognition
 does not add token fingerprints to persistent policy or approvals.
 
-A token cached by a client before SafeYolo observed its issuance, after cache
+A token cached by a client before SafeYOLO observed its issuance, after cache
 eviction, or across a proxy restart retains ordinary credential-policy
 handling. Clear that client's cached registry token or start a fresh client
 session, then repeat its anonymous token exchange through the proxy to restore
@@ -155,7 +155,7 @@ existing scope.
 
 Codex supports [ChatGPT subscription authentication and OpenAI API key
 authentication](https://learn.chatgpt.com/docs/auth). These are different
-credentials. SafeYolo's `openai` detector recognises `sk-proj-` and
+credentials. SafeYOLO's `openai` detector recognises `sk-proj-` and
 `sk-svcacct-` API keys. A grant for `openai:*` does not identify or approve a
 ChatGPT subscription OAuth access token.
 
@@ -193,7 +193,7 @@ credential permissions, including deny and prompt, network policy, and inspectio
 of other secrets still apply.
 
 The supported native Codex transport uses a JSON refresh POST to
-`https://auth.openai.com/oauth/token` with the default Codex client ID. SafeYolo
+`https://auth.openai.com/oauth/token` with the default Codex client ID. SafeYOLO
 checks the exact imported or observed refresh credential and complete verified
 TLS exchange.
 It records keyed digests of present access/refresh replacements in the same
@@ -217,7 +217,7 @@ receive this recognition. The issuer still decides whether a token is valid.
 The encrypted imported pair, replacement digests and authorization scope survive
 proxy restart. Recognition stops after revocation, expiry, an agent identity
 change, or the end of a run-scoped authorization. A replacement made without a
-qualifying observed exchange retains ordinary handling. SafeYolo never rescans
+qualifying observed exchange retains ordinary handling. SafeYOLO never rescans
 guest replacements to create or repair authorization.
 
 With the [default bearer controls](#unknown-bearer-credentials), an unrecognised
@@ -301,9 +301,9 @@ After restart, register the reference and authorize Alice:
 "$HOME/.safeyolo/bin/safeyolo" --instance-dir "$HOME/.safeyolo" services authorized alice
 ```
 
-SafeYolo stores the reference in the same encrypted store. The proxy invokes the
+SafeYOLO stores the reference in the same encrypted store. The proxy invokes the
 configured host executable with [op read --no-newline](https://developer.1password.com/docs/cli/reference/commands/read/)
-only after route and approval checks. The resolved value is transient; SafeYolo does not store it
+only after route and approval checks. The resolved value is transient; SafeYOLO does not store it
 as a local credential. Keep 1Password authentication out of guest environment
 variables and mounts. Provider commands, item selection and executable selection
 are host choices; the guest supplies only a minted service token.
@@ -346,7 +346,7 @@ the push risk route. The normal catalogue watcher activates a valid override;
 `services show github-git` shows the accepted definition. A broader PAT does
 not bypass these routes.
 
-When the updated guest starts, SafeYolo configures a Git credential helper for
+When the updated guest starts, SafeYOLO configures a Git credential helper for
 `https://github.com`. Existing guests need a stop/start to stage the helper.
 The helper reads Alice's current minted gateway token from the Agent API. It
 returns that opaque token as the Basic-auth password and does not save Git's

@@ -40,6 +40,12 @@ time. Normal approval review shows this recorded report, the concrete grant and
 its code class separately from the agent's intent. In particular, explicit
 broader TCP modes do not gain address/port isolation from a selected endpoint.
 Current discovery and job observations still establish the reached runtime state.
+Read `enforcement_and_effects` in the shared assessment before deciding on the
+proposal. Its `native_authority` view derives file, execution and network
+potential from concrete native definitions, including the standing code-class
+ceiling. It remains available without program effect annotations. Compare those
+derived facts and the recorded target enforcement with the separate intent;
+uncharacterised code, authentication and unobserved audience reach remain gaps.
 
 Inside the authorised issuing agent, with that complete plan, run:
 

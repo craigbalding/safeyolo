@@ -98,7 +98,7 @@ point includes every potentially unrecorded presentation.
 ## Correlation and presentation
 
 The verifier assigns a narrow correlation key for the demonstrated problem.
-SafeYolo normalizes that key and hashes it into a stable `factory-...`
+SafeYOLO normalizes that key and hashes it into a stable `factory-...`
 fingerprint. Recommendation wording is not part of the fingerprint, so related
 evidence remains one proposal. A `rev-...` digest covers verified facts,
 verified evidence, distinct nomination task keys, and the verifier's stable

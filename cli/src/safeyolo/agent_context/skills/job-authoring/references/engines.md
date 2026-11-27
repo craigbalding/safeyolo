@@ -6,7 +6,7 @@ Hyperlight-Unikraft fits the pinned Python checker and compatible libraries.
 Use a Linux job when the program needs ordinary processes, a full packaged
 Linux userspace, guest-root administration or a larger toolchain.
 
-These are SafeYolo's current integration choices, not every capability offered
+These are SafeYOLO's current integration choices, not every capability offered
 by the upstream projects.
 
 | Property | Core Hyperlight | Hyperlight-Unikraft | Linux gVisor job | Linux VZ job on macOS |
@@ -22,7 +22,7 @@ by the upstream projects.
 | Memory setting | `memory_mb` selects scratch, not total host resident memory | Same | Existing sandbox resource controls; check actual enforcement for the selected platform | VM memory and existing job controls; host helper overhead remains separate |
 | Deadline/cancellation | Owning helper process group is stopped and reaped; VM errors remain separate from OS helper status | Same | Existing job process/runtime cleanup | Existing VM/job cleanup |
 
-Production SafeYolo host packages include `assets/hyperlight` with `runtime.json`,
+Production SafeYOLO host packages include `assets/hyperlight` with `runtime.json`,
 helper, core guest, pinned Python runtime archive, checkers, JSON definitions and
 license notices. Runtime/guest/helper digests and architecture must match.
 Use the normal published installer or host
@@ -132,5 +132,5 @@ Pinned upstream references explain the
 [core guest ABI](https://github.com/hyperlight-dev/hyperlight/blob/a03088470d822b538d2525ef9a5ae9e29daea1e8/docs/how-to-build-a-hyperlight-guest-binary.md),
 [Unikraft execution model](https://github.com/hyperlight-dev/hyperlight-unikraft/blob/34c0d647a9f8679c0ce53b76e174894b2c5bfa7a/docs/execution.md)
 and [cooperative scheduling/process subset](https://github.com/hyperlight-dev/hyperlight-unikraft/blob/34c0d647a9f8679c0ce53b76e174894b2c5bfa7a/docs/concurrency.md).
-SafeYolo uses the initialized snapshot paths described here. Upstream socket
+SafeYOLO uses the initialized snapshot paths described here. Upstream socket
 passthrough remains disabled; use the adopted mediated-service contract.

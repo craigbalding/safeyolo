@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% if page.title %}{{ page.title }}{% else %}{{ site.title }}{% endif %}</title>
+<meta name="description" content="{% if page.description %}{{ page.description }}{% else %}{{ site.description }}{% endif %}">
+<link rel="icon" type="image/png" href="/assets/img/favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@600;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/css/site.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap top-inner">
+    <a class="brand" href="/"><img src="/assets/img/safeyolo-mark.svg" alt="" width="40" height="20"><span>{{ site.brand }}</span></a>
+    <nav class="nav" aria-label="Main">
+      <a href="/how-it-works/">How it works</a>
+      <a href="/journey/">Journey</a>
+      <a href="/dispatch/">Dispatch</a>
+      <a href="/#install">Install</a>
+      <a href="https://github.com/craigbalding/safeyolo">GitHub</a>
+    </nav>
+  </div>
+</header>
+<main>
+{% if page.full_width or layout.full_width %}
+{{ content }}
+{% else %}
+<article class="wrap prose">
+{{ content }}
+</article>
+{% endif %}
+</main>
+<footer class="foot">
+  <div class="wrap">
+{% include footer.html %}
+  </div>
+</footer>
+</body>
+</html>

@@ -21,14 +21,14 @@ conventions, optimistic/version fields where appropriate, mutation
 idempotency, immutable revision/transition history, and a `coord.*` audit-event
 family. The kernel invariants are:
 
-* SafeYolo owns identity, membership, brief, work ownership, claims, current coordination state and attestations.
+* SafeYOLO owns identity, membership, brief, work ownership, claims, current coordination state and attestations.
 * JetStream owns conversation history.
 * External systems own rich work descriptions.
 * Message addressing affects **attention, not visibility**.
 * Coord work claims are not resource locks.
 * Services remain authoritative for actual resource leases.
 * Agent-authored content is attributed but untrusted; operator brief is trusted operator state.
-* Each room ultimately has one authoritative SafeYolo for mutable state.
+* Each room ultimately has one authoritative SafeYOLO for mutable state.
 * Work claims are durable generation-protected ownership, not automatically
   expiring leases.
 * Every agent has one identity-derived, multiplexed attention feed across its
@@ -42,7 +42,7 @@ family. The kernel invariants are:
   or signal prose.
 
 Every new kernel mutation accepts an `operation_id` scoped by principal and
-operation type. SafeYolo retains the operation ID, a canonical request hash,
+operation type. SafeYOLO retains the operation ID, a canonical request hash,
 and the result. Replaying the same operation ID with the same request returns
 the original result; reusing it with different input returns a conflict.
 `operation_id` handles ambiguous retries. Object revisions and claim
@@ -71,7 +71,7 @@ a grant revoked by a later operation. The operation result records the original
 membership generation and transition time. The immutable operation ledger,
 membership change, and metadata audit row commit in one SQLite transaction.
 
-SafeYolo is pre-v1. Current-master state and retained messages must remain
+SafeYOLO is pre-v1. Current-master state and retained messages must remain
 usable across the candidate boundary. Bootstrap accepts an empty database or
 the current native schema; it refuses populated unversioned, incompatible, or
 unknown newer schemas. It does not convert earlier implementation generations.
@@ -139,7 +139,7 @@ Extend message sending with an explicit attention target:
 notify = none | room | [agent...]
 ```
 
-SafeYolo resolves names to durable `agent_id`s. The stored message remains ordinary retained room history available to every authorized member. `notify=[bob]` means only Bob gets interrupted; it does **not** make the message private.
+SafeYOLO resolves names to durable `agent_id`s. The stored message remains ordinary retained room history available to every authorized member. `notify=[bob]` means only Bob gets interrupted; it does **not** make the message private.
 
 Add one identity-derived `wait_for_attention()` feed per agent, multiplexing
 all authorized rooms. A model must not maintain one wait loop per room. The
@@ -184,7 +184,7 @@ Compatibility is deliberate:
 * operator chat explicitly sends `notify=room`.
 
 Message attention has an explicit cross-store recovery contract. Before
-publishing, SafeYolo resolves the intended recipients and generates one
+publishing, SafeYOLO resolves the intended recipients and generates one
 stable `attention_id` for each exact `(msg_id, recipient agent_id, active
 membership/grant generation)` tuple. `notify=room` selects every active
 receive-capable agent membership except the sending agent; operator
@@ -194,7 +194,7 @@ generation so revoke followed by re-grant cannot resurrect attention created
 for the revoked generation.
 
 JetStream remains the canonical message store and the recovery source for the
-message's generated attention intent. SafeYolo persists a versioned internal
+message's generated attention intent. SafeYOLO persists a versioned internal
 attention manifest in NATS headers or equivalent internal JetStream metadata;
 it is not part of the ordinary agent-visible message envelope. Agent
 `read_room()` calls do not expose target metadata. Operator reads and accepted
@@ -216,7 +216,7 @@ classification assumes the supported upgrade/restart model preserves SQLite;
 restoring JetStream and SQLite from inconsistent points is not reclassified as
 a normal upgrade.
 
-After a definite JetStream PubAck, the message is accepted. SafeYolo
+After a definite JetStream PubAck, the message is accepted. SafeYOLO
 materializes its manifest into the canonical SQLite attention feed and
 transactionally enqueues any NATS wake hints. If materialization is not yet
 complete, the send still returns success with explicit pending-attention
@@ -241,7 +241,7 @@ unprocessed earlier message. SQLite enforces one logical edge per canonical
 `msg_id` and intended recipient membership generation.
 
 Retention can overtake an interrupted projection. If the current retained
-floor is above `watermark + 1`, the missing interval is irrecoverable. SafeYolo
+floor is above `watermark + 1`, the missing interval is irrecoverable. SafeYOLO
 atomically enqueues one stable `coord.attention_projection_lost` audit event
 for that interval and advances the projection frontier to immediately before
 the retained floor, then continues with retained messages. It creates no edges
@@ -294,7 +294,7 @@ Key acceptance tests:
 * `notify=none` records history without waking anyone.
 * Targeting a non-member is rejected without leaking otherwise-undiscoverable identities.
 * Revocation between notification creation and delivery cannot expose the message to the revoked recipient.
-* SafeYolo/NATS restart during notification delivery causes no lost canonical message or permanently lost state notification.
+* SafeYOLO/NATS restart during notification delivery causes no lost canonical message or permanently lost state notification.
 * Process death after JetStream acceptance but before SQLite materialization is
   recovered by a fresh process, including across NATS restart; repeated
   recovery returns the same logical edge.
@@ -351,7 +351,7 @@ Key acceptance tests:
 * Only the operator/admin surface can mutate the brief.
 * An agent cannot forge/update the brief through the Agent API or by sending specially formatted chat.
 * Every agent joining a room sees the same current brief and version.
-* Brief persists across SafeYolo/NATS/agent restart.
+* Brief persists across SafeYOLO/NATS/agent restart.
 * Updating v4→v5 wakes all current members and their next state read shows v5.
 * A revoked agent cannot read updates.
 * Concurrent operator edits using the same expected version produce one update and one conflict rather than silently losing an edit.
@@ -427,7 +427,7 @@ that remain blocked after timeout.
 
 Keep provenance explicit:
 
-* `verified`: SafeYolo-derived. `authorized` is a current platform grant.
+* `verified`: SafeYOLO-derived. `authorized` is a current platform grant.
   `availability=available` requires positive evidence from an authoritative
   provider. Stale or failed provider information becomes `unknown`, never a
   silently retained positive.
@@ -435,7 +435,7 @@ Keep provenance explicit:
 * unknown is different from false.
 
 Room state exposes an explicit room-visible/advertised capability projection,
-not the agent's complete SafeYolo grant inventory. Collaborators see only the
+not the agent's complete SafeYOLO grant inventory. Collaborators see only the
 labels needed for coordination. Tokens, credential identities, account/persona
 details, sensitive route scopes and unadvertised grants never enter the
 projection.
@@ -594,7 +594,7 @@ reconciliation against current native authority. See
 github://craigbalding/safeyolo/issues/391
 ```
 
-SafeYolo doesn't need GitHub to resolve it in order to coordinate ownership.
+SafeYOLO doesn't need GitHub to resolve it in order to coordinate ownership.
 
 Key acceptance tests:
 
@@ -617,7 +617,7 @@ Key acceptance tests:
   the operator remains able to reclaim the work.
 * Restart during a claim mutation preserves one valid result.
 * GitHub being unavailable does not affect claim/release/complete.
-* Rich external description can change without changing SafeYolo's claim.
+* Rich external description can change without changing SafeYOLO's claim.
 * Three agents shown three open items independently converge on ownership without a chat negotiation.
 
 That last test should deliberately reproduce the README/issue-filing duplication seen in the transcript.
@@ -656,7 +656,7 @@ supersedes?
 Signals retain immutable canonical revisions/history in SQLite alongside their
 efficient current-state projection. The author identity is trusted. The claim
 itself remains attributed agent data. `basis=observed` means "Bob says this is
-observed", not "SafeYolo independently proved it."
+observed", not "SafeYOLO independently proved it."
 
 Semantics:
 
@@ -883,7 +883,7 @@ This is much more valuable than a generic `vote()` primitive.
 
 Now implement the principle:
 
-> **SafeYolo owns the claim and runtime truth. GitHub owns the rich work description.**
+> **SafeYOLO owns the claim and runtime truth. GitHub owns the rich work description.**
 
 Start read-only.
 
@@ -896,7 +896,7 @@ URL
 perhaps current head SHA
 ```
 
-through an adapter. SafeYolo still owns claim state.
+through an adapter. SafeYOLO still owns claim state.
 
 Only later, if useful, add explicitly configured outbound projection such as posting a completion/result comment.
 
@@ -904,13 +904,13 @@ Do not make bidirectional state synchronization the starting point.
 
 Key acceptance tests:
 
-* Import/seed from GitHub creates a SafeYolo work item pointing to the issue; it does not clone the entire issue model.
-* GitHub outage leaves SafeYolo work/claim operations fully functional.
-* Someone changing the GitHub assignee cannot seize the SafeYolo claim.
-* Someone closing the GitHub issue does not automatically mark SafeYolo work complete unless an explicit mapping policy exists.
-* SafeYolo claim changes do not modify GitHub unless the adapter is explicitly enabled for writes.
-* Adapter obtains credentials through normal SafeYolo service controls; agents never receive the PAT.
-* An agent lacking GitHub access can still participate in the SafeYolo work object according to room policy.
+* Import/seed from GitHub creates a SafeYOLO work item pointing to the issue; it does not clone the entire issue model.
+* GitHub outage leaves SafeYOLO work/claim operations fully functional.
+* Someone changing the GitHub assignee cannot seize the SafeYOLO claim.
+* Someone closing the GitHub issue does not automatically mark SafeYOLO work complete unless an explicit mapping policy exists.
+* SafeYOLO claim changes do not modify GitHub unless the adapter is explicitly enabled for writes.
+* Adapter obtains credentials through normal SafeYOLO service controls; agents never receive the PAT.
+* An agent lacking GitHub access can still participate in the SafeYOLO work object according to room policy.
 * External metadata is clearly labelled external rather than authoritative runtime truth.
 
 Only after GitHub proves the adapter contract would I consider Plane/OpenProject/etc.
@@ -923,16 +923,16 @@ Do this last, after local semantics have been heavily dogfooded.
 
 The architectural constraint is explicit now:
 
-> **Every mutable room has one authoritative SafeYolo instance.**
+> **Every mutable room has one authoritative SafeYOLO instance.**
 
 Remote agents participate through it. Do not replicate claims as multi-master mutable state.
 
 #371 already establishes `safeyolo_instance_id`, the distinction between `SY_LOCAL` and future federated accounts, and the rule that NATS is transport rather than principal authority.
 
-Key acceptance tests with two real SafeYolos:
+Key acceptance tests with two real SafeYOLOs:
 
 * Agent A on instance 1 and Agent B on instance 2 both see retained authorized room state.
-* Both concurrently claim the same work item → home SafeYolo chooses exactly one winner.
+* Both concurrently claim the same work item → home SafeYOLO chooses exactly one winner.
 * Network partition during mutation produces failure/unavailability rather than two independent winners.
 * Remote agent cannot forge its `origin_instance_id`/agent identity.
 * Local-only `SY_LOCAL` data is not accidentally exported.
@@ -972,7 +972,7 @@ Require every behavioural stage to pass four levels before moving on:
 1. **Model/API tests** — authorization, validation, state transitions, bounds.
 2. **Concurrency/restart tests** — simultaneous agents, ambiguous retries, process/NATS restart, revocation races.
 3. **Real Agent-API/NATS black-box tests** — exercise the authenticated native transport and real stores; model-function calls alone do not prove this boundary.
-4. **Three-agent dogfood** — give agents a real SafeYolo task and measure whether the feature actually reduces transcript negotiation.
+4. **Three-agent dogfood** — give agents a real SafeYOLO task and measure whether the feature actually reduces transcript negotiation.
 
 For control-plane mutations, use the same philosophy as the new assurance work: deliberately interrupt operations around commit/publication boundaries and prove the invariant survives. The coordination state is becoming security-relevant platform state; it deserves stronger testing than a normal task tracker.
 

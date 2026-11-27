@@ -1,8 +1,8 @@
 # Harness integration contract, revision 1
 
-This contract describes the current SafeYolo integration boundaries. It is an
+This contract describes the current SafeYOLO integration boundaries. It is an
 authoring contract, not a loadable adapter format. Bind evidence to the exact
-SafeYolo source revision, installed executable and target harness version.
+SafeYOLO source revision, installed executable and target harness version.
 Inspect the selected installation; a newer source proposal is not installed
 capability. Later contract changes update producers, consumers and tests
 together. There is no compatibility requirement for superseded pre-v1 formats.
@@ -51,10 +51,10 @@ shared `lib/stage-safeyolo-context.sh` for discoverable skills and baseline
 instructions, and the current native Coord bootstrap where needed. The
 ordinary launcher is separate from this guest command. A custom host launcher
 must use the existing launcher contract and remain outside guest-writable
-shares. SafeYolo owns runtime, process identity, stop and cleanup; do not add a
+shares. SafeYOLO owns runtime, process identity, stop and cleanup; do not add a
 second lifecycle owner.
 
-Inner permission/YOLO flags apply only within the approved SafeYolo sandbox.
+Inner permission/YOLO flags apply only within the approved SafeYOLO sandbox.
 Do not weaken the outer proxy, mounts, network policy or credential protection.
 A new provider destination or service capability follows existing policy and
 approval owners. Preserve proxy/CA environment variables and scoped gateway
