@@ -290,6 +290,7 @@ def lifecycle_job(args, mode, observations):
                     time.sleep(0.025)
                 assert child.poll() is None and len(paths) == 1, "job exited before the live authority probe"
                 backend = observe_backend(paths[0].parents[1] / "runtime.json")
+                (args.scratch / f"{mode}.backend.json").write_text(json.dumps(backend))
                 # Only this fixture's scoped token enters memory. Never retain
                 # the services response or put the token in a command argument.
                 authorized = json.loads(subprocess.check_output(
@@ -311,9 +312,20 @@ def lifecycle_job(args, mode, observations):
                 if mode != "expiry":
                     child.send_signal(signal.SIGTERM)
                 child.wait(timeout=180)
-                result = json.loads((args.scratch / f"{mode}.stdout").read_text())
-                expected = {"kind": "timeout"} if mode == "expiry" else {"kind": "interrupted", "signal": signal.SIGTERM}
-                assert result["outcome"] == expected and result["observation_error"] is None, result
+                (args.scratch / f"{mode}.exit").write_text(str(child.returncode))
+                if mode == "revocation":
+                    # Current-policy confirmation rejects even a completed guest
+                    # result after revocation. Keep the actual CLI refusal;
+                    # it does not supply an observed guest outcome or streams.
+                    assert (args.scratch / f"{mode}.stdout").read_bytes() == b""
+                    error = (args.scratch / f"{mode}.stderr").read_text().strip()
+                    assert error == "safeyolo: job policy changed or delegation revoked", error
+                    result = {"run_id": paths[0].parents[1].name,
+                              "caller_exit_code": child.returncode, "cli_error": error}
+                else:
+                    result = json.loads((args.scratch / f"{mode}.stdout").read_text())
+                    expected = {"kind": "timeout"} if mode == "expiry" else {"kind": "interrupted", "signal": signal.SIGTERM}
+                    assert result["outcome"] == expected and result["observation_error"] is None, result
                 assert child.returncode == (124 if mode == "expiry" else 1)
                 assert job_directories(args.root) == before
                 ended_delegation(paths[0], connection, token, observations, count + 2)
