@@ -325,7 +325,7 @@ pub fn create_passphrase(data_dir: &Path, passphrase: &Secret) -> Result<Vault> 
     Vault::unlock(data_dir.join("credentials.enc"), passphrase)
 }
 
-/// Create native storage only for an operation that will store a credential.
+/// Create native storage for an explicit credential-storage operation.
 /// Mark new random keys explicitly; unmarked keys keep their passphrase KDF.
 pub fn open(data_dir: &Path) -> Result<Vault> {
     use std::os::unix::fs::OpenOptionsExt;

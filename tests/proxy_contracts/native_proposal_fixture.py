@@ -30,6 +30,8 @@ class ProposalInstance(NativeInstance):
                                SAFEYOLO_COORD_DATA_DIR=str(self.root / "data/coord"))
         else:
             command = [str(self.root / "bin/safeyolo"), "--instance-dir", str(self.root), "coord", *args]
+            if check:
+                command.append("--json")
             environment = self.environment
         result = subprocess.run(command, cwd=self.root.parent, env=environment, text=True,
                                 capture_output=True, input=input, timeout=15)

@@ -57,6 +57,11 @@ The result retains one original operation, a public enrolment request and the
 small target bootstrap action. The signing key stays in the issuer vault.
 If credential storage is unavailable, resume through its existing owner; do not
 copy signing secrets into the sandbox or choose another store automatically.
+If storage has not yet been selected, the issuing host's owner runs
+`safeyolo credentials init` with the same instance or configuration selection.
+The terminal offers the existing local/passphrase choice; noninteractive use
+must select `--storage`. No placeholder credential is needed. Read the original
+preparation before resuming it after storage is ready.
 
 The selected target's existing trusted install/transfer owner acquires the
 matching prebuilt executor and carries the public request to its `enrol`

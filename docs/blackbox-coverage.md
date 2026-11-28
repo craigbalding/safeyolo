@@ -1706,7 +1706,8 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 - [`tests/proxy_contracts/test_native_credentials_cli.py::test_installed_direct_credential_approval_activates_next_connection`](../tests/proxy_contracts/test_native_credentials_cli.py#L426)
 - [`tests/proxy_contracts/test_native_credentials_cli.py::test_installed_direct_credential_activation_failure_is_visible`](../tests/proxy_contracts/test_native_credentials_cli.py#L431)
 - [`tests/proxy_contracts/test_native_credentials_cli.py::test_init_and_read_only_commands_defer_storage_until_a_valid_secret_write`](../tests/proxy_contracts/test_native_credentials_cli.py#L525)
-- [`tests/proxy_contracts/test_native_credentials_cli.py::test_first_storage_choice_and_hidden_passphrase_input`](../tests/proxy_contracts/test_native_credentials_cli.py#L572)
+- [`tests/proxy_contracts/test_native_credentials_cli.py::test_first_storage_choice_and_hidden_passphrase_input`](../tests/proxy_contracts/test_native_credentials_cli.py#L573)
+- [`tests/proxy_contracts/test_native_credentials_cli.py::test_explicit_storage_initialization_preserves_credentials_and_requires_a_scripted_choice`](../tests/proxy_contracts/test_native_credentials_cli.py#L631)
 
 <a id="witness-tests-proxy-contracts-test-native-onepassword-cli-py"></a>
 ### [`tests/proxy_contracts/test_native_onepassword_cli.py`](../tests/proxy_contracts/test_native_onepassword_cli.py)
