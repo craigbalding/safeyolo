@@ -635,7 +635,7 @@ def test_explicit_storage_initialization_preserves_credentials_and_requires_a_sc
     root = tmp_path / "instance"
 
     def command(*arguments, value=None, valid=True):
-        result = subprocess.run([str(binary), "--instance-dir", str(root), "--json", *arguments],
+        result = subprocess.run([str(binary), "--dangerously-allow-root", "--instance-dir", str(root), "--json", *arguments],
                                 input=value or "", capture_output=True, text=True, timeout=15)
         assert (result.returncode == 0) == valid, result.stderr
         return result
