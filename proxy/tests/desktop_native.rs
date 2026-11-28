@@ -63,8 +63,9 @@ fn fixture(root: &Path) {
     fs::write(root.join("data/agent_token"), "native-desktop-agent-token").unwrap();
     let bin = root.join("bin");
     fs::create_dir(&bin).unwrap();
-    let script = bin.join("runsc");
-    fs::write(&script, r#"#!/bin/sh
+    owned_run::install_runtime(
+        root,
+        r#"#!/bin/sh
 printf 'runsc=%s uid=%s gid=%s userns=%s netns=%s\n' "$0" "$(/usr/bin/id -u)" "$(/usr/bin/id -g)" "$(/usr/bin/readlink /proc/self/ns/user)" "$(/usr/bin/readlink /proc/self/ns/net)" >> "$SAFEYOLO_CONFIG_DIR/desktop-child.trace"
 printf 'argv <%s>\n' "$@" >> "$SAFEYOLO_CONFIG_DIR/desktop-child.trace"
 trap 'printf "runsc exit=%s\n" "$?" >> "$SAFEYOLO_CONFIG_DIR/desktop-child.trace"' EXIT
@@ -119,8 +120,8 @@ case "$3" in
     ;;
   *) exit 2;;
 esac
-"#).unwrap();
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+"#,
+    );
     unsafe {
         std::env::set_var("SAFEYOLO_CONFIG_DIR", root);
         // An interpreter name is unavailable in the proxy's executable path.
@@ -703,7 +704,7 @@ async fn check_desktop_readiness_failures() {
         bind_action_run(root.path(), "alice", ID);
         fs::write(root.path().join("desktop-ready"), "").unwrap();
         fs::write(root.path().join("readiness-fault"), fault).unwrap();
-        let script = root.path().join("bin/runsc");
+        let script = root.path().join("libexec/fixture-runsc.sh");
         let source = fs::read_to_string(&script).unwrap();
         // The initial status succeeds. Only the post-presentation readiness
         // boundary fails, after the normal approval and preview setup.
@@ -715,7 +716,7 @@ async fn check_desktop_readiness_failures() {
         fault=$(/bin/cat "$SAFEYOLO_CONFIG_DIR/readiness-fault")
         if [ ! -e "$SAFEYOLO_CONFIG_DIR/readiness-checked" ]; then
           : > "$SAFEYOLO_CONFIG_DIR/readiness-checked"
-          if [ "$fault" = spawn ]; then /bin/chmod -x "$0"; fi
+          if [ "$fault" = spawn ]; then /bin/chmod -x "$SAFEYOLO_CONFIG_DIR/libexec/runsc"; fi
           exit 0
         fi
         printf 'private-readiness-output'
