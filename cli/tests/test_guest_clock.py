@@ -65,7 +65,14 @@ def _run_per_run(tmp_path, release, staged, initial_failure, shutdown):
     )
     helper = (
         '#!/bin/bash\n'
-        'if [ "${2:-}" = watch ]; then exec sleep 60; fi\n'
+        # No maintenance gate is present in this fixture. Its permission check
+        # must not record a clock event or inherit the simulated RTC failure.
+        'case "$*" in\n'
+        '  "retained-state startup-allowed") exit 0 ;;\n'
+        '  "clock-sync watch") exec sleep 60 ;;\n'
+        '  "clock-sync") ;;\n'
+        '  *) echo "unexpected guest helper arguments: $*" >&2; exit 64 ;;\n'
+        'esac\n'
         'printf "%s\\n" "$0" >> "$TRACE"\n'
         'if [ "$INITIAL_FAILURE" = 1 ]; then\n'
         '  echo "[guest-clock] controlled unavailable RTC" >&2\n'

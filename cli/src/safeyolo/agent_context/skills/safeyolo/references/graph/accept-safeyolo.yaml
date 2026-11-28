@@ -217,7 +217,7 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 46c612b62bd3880177bb3d96bd129db59daf28e4fa6dc269a18d06a70c8d8f41
         - path: tests/blackbox/run-tests.sh
-          sha256: d158e30f826e746d41046ccf8a114223690284ba84307f1c6d19b4ad2b2766e0
+          sha256: 61e260170020bddc06ddf7a0ba25656ca9694d7cb2dd8de93ccd22c2934729b3
         - path: uv.lock
           sha256: fd244df9e559bed2b211bbe93f257831fce8e1087b19cfc7d9d3da2fd1bc3050
       setup: "Use an approved host with native bundle/build inputs and a fresh SAFEYOLO_CONFIG_DIR; the lane owns its separate test instance, ports, certificates and sinkhole."
@@ -252,7 +252,7 @@ nodes:
         - path: tests/blackbox/run-lane.sh
           sha256: 46c612b62bd3880177bb3d96bd129db59daf28e4fa6dc269a18d06a70c8d8f41
         - path: tests/blackbox/run-tests.sh
-          sha256: d158e30f826e746d41046ccf8a114223690284ba84307f1c6d19b4ad2b2766e0
+          sha256: 61e260170020bddc06ddf7a0ba25656ca9694d7cb2dd8de93ccd22c2934729b3
         - path: proxy/src/host_platform.rs
           sha256: 452a13a36a0e00d19d6f4668fd30d8bf1e270356813cfcae2358f30549ab8178
         - path: proxy/src/host_boot.rs
@@ -264,9 +264,9 @@ nodes:
         - path: proxy/src/jobs/input.rs
           sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
         - path: tests/blackbox/host/job_sandbox.py
-          sha256: 988140a3dd9fb99907fa99c7ee073dc768475de50d80a142c439cceecf0a7ad0
+          sha256: 725bf064937d9ba21a589417847e2a8dff18407c7659c2b028ac72431afa31f8
         - path: tests/blackbox/host/job_network.py
-          sha256: b3c181a7e561d512780b67b688950674ba114068886b5d35dd07cc39200df6d4
+          sha256: 67ba2b103bcbe53884d0744f60ebb5aa077134d7f1a7f27f862da88c28ef4927
         - path: proxy/Cargo.toml
           sha256: d7eeb74ad1750018fc8195f55468e37d49e8622f5b540891e43dcc79fda096f7
         - path: proxy/Cargo.lock
@@ -280,7 +280,7 @@ nodes:
         - path: tests/blackbox/claude_smoke.py
           sha256: e4bce6080e17ac3c1de52f6d7cbac54b4922be8c84c4a715dea2bade825d64bf
         - path: tests/blackbox/installed_sections.py
-          sha256: 94c6fa46c210968d017180e8f49b089da737f3e0f93d5c3cbd5c54ddd61cb47d
+          sha256: 569e2e4a94d4e7ea097ed20a9f3a70328fdbd8fd5fcd9f9340ded34f8f9493ee
         - path: tests/blackbox/installed_ingress_pair.py
           sha256: 5c2207f149e59a5821af87a16c4b068f9ee471ccd05713c627f681e6e96c5dad
         - path: tests/blackbox/installed_storage.py
@@ -288,9 +288,9 @@ nodes:
         - path: tests/blackbox/isolation/installed_ingress.py
           sha256: f8294d354653e3e183e897b9609be21eb7eb977621a75a86663af1858edd9cad
         - path: tests/blackbox/retained_inputs.py
-          sha256: 31a86680ce0d58c2314d63fc7393929b7e131d41370095b59c246f570c63d9c3
+          sha256: b4c92cd0c417f479eb43e5705b4648af4f9253c99fb8eb2a7b437aa7ac226899
         - path: tests/blackbox/installed_boundaries.py
-          sha256: 75603a2ce25f2018cb60c95613ef5eb61f34bd4a716f966019223855782d9936
+          sha256: 50d667952f5fa67ae308d522bb9835ca23fa3d386c32f657a357c32de5c89172
         - path: tests/blackbox/execution_receipt.py
           sha256: 786cb0de77cd1fa1a23b94b53f4a6000080f9c2afd2c4bf6e57ade03127370ec
         - path: tests/blackbox/selections.py
@@ -363,9 +363,9 @@ nodes:
         - path: proxy/src/jobs/macos.rs
           sha256: 1b9b3798f9dba8d169b983ba9a1c610e2fb2a2f827f4d04bd8a41b3fcdc833f8
         - path: tests/blackbox/host/job_sandbox.py
-          sha256: 988140a3dd9fb99907fa99c7ee073dc768475de50d80a142c439cceecf0a7ad0
+          sha256: 725bf064937d9ba21a589417847e2a8dff18407c7659c2b028ac72431afa31f8
         - path: tests/blackbox/host/job_network.py
-          sha256: b3c181a7e561d512780b67b688950674ba114068886b5d35dd07cc39200df6d4
+          sha256: 67ba2b103bcbe53884d0744f60ebb5aa077134d7f1a7f27f862da88c28ef4927
         - path: proxy/Cargo.toml
           sha256: d7eeb74ad1750018fc8195f55468e37d49e8622f5b540891e43dcc79fda096f7
         - path: proxy/Cargo.lock
@@ -381,7 +381,7 @@ nodes:
         - path: tests/fixtures/job-observer-probe.c
           sha256: 0207c5417386d7022d0ffefeb9a6b4b9d162e5017a8684a5225c62533beb0e8b
         - path: tests/blackbox/installed_boundaries.py
-          sha256: 75603a2ce25f2018cb60c95613ef5eb61f34bd4a716f966019223855782d9936
+          sha256: 50d667952f5fa67ae308d522bb9835ca23fa3d386c32f657a357c32de5c89172
         - path: tests/blackbox/execution_receipt.py
           sha256: 786cb0de77cd1fa1a23b94b53f4a6000080f9c2afd2c4bf6e57ade03127370ec
         - path: tests/blackbox/selections.py
@@ -973,7 +973,7 @@ nodes:
       obtain_from: "the exact trusted-base blackbox and native Cargo tests; Python drivers are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: tests/blackbox/run-tests.sh
-          sha256: d158e30f826e746d41046ccf8a114223690284ba84307f1c6d19b4ad2b2766e0
+          sha256: 61e260170020bddc06ddf7a0ba25656ca9694d7cb2dd8de93ccd22c2934729b3
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: proxy/tests/native_host_cli.rs

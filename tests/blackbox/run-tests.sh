@@ -37,6 +37,8 @@
 #
 
 set -euo pipefail
+# Explicit intent stays inside this owned test runner and its children.
+export SAFEYOLO_DANGEROUSLY_ALLOW_ROOT=1
 
 CALLER_DIR="$(pwd -P)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

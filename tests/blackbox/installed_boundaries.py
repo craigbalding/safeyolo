@@ -104,8 +104,10 @@ def run(args):
                 for option, port in (("--client-port", client_port), ("--monitor-port", monitor_port)):
                     if port is not None:
                         coord += [option, str(port)]
-                subprocess.run(coord, check=True, timeout=60)
-                subprocess.run([str(cli), "--instance-dir", str(root), "--json", "start"], check=True, timeout=60)
+                environment = dict(os.environ, SAFEYOLO_DANGEROUSLY_ALLOW_ROOT="1")
+                subprocess.run(coord, env=environment, check=True, timeout=60)
+                subprocess.run([str(cli), "--instance-dir", str(root), "--json", "start"],
+                               env=environment, check=True, timeout=60)
                 run_proof(root, output / "mounts", candidate=args.revision, receipt=receipt, holder_probe=holder_probe)
         result["finished"] = True
         return 0
