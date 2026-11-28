@@ -742,6 +742,130 @@ def test_codex_authorization_failure_reports_and_retains_the_completed_copy(code
     assert (instance.root / "data/credentials.enc").is_dir()
     assert not (instance.root / "data/proxy-process.json").exists()
 
+    # Reconcile the completed copy before repairing this fixture's failed
+    # storage operand. The supported auth command resumes that exact login.
+    inspected = instance.cli("agent", "auth", "first")
+    assert inspected["local_login"]["state"] == "found"
+    unavailable = subprocess.run(
+        [str(instance.root / "bin/safeyolo"), "--instance-dir", str(instance.root),
+         "credentials", "list", "--json"],
+        env=instance.environment, capture_output=True, text=True, timeout=15,
+    )
+    assert unavailable.returncode != 0 and not unavailable.stdout
+    assert "corrupted vault" in unavailable.stderr
+    (instance.root / "data/credentials.enc").rmdir()
+    assert instance.cli("credentials", "list") == []
+    with terminal(instance, ["agent", "auth", "first"]) as (process, master, until):
+        until(b"Authentication [client/host-vault")
+        os.write(master, b"client\n")
+        _codex_choice(until, master, new=False)
+        os.write(master, b"a\n")
+        output = until(b"Choose credential storage")
+        os.write(master, b"local\n")
+        output += until(b"Codex login authorized for first")
+        assert b"synthetic-first-launch-access" not in output
+        assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
+    imported, = instance.cli("credentials", "list")
+    agent = tomllib.loads(policy.decode())["agents"]["first"]
+    assert imported["type"] == "codex_subscription"
+    assert imported["codex"]["agent_id"] == agent["agent_id"]
+    assert imported["codex"]["run_id"] is None
+    assert auth.read_bytes() == original == instance.login.read_bytes()
+    assert instance.policy.read_bytes() == policy
+    assert not (instance.root / "data/proxy-process.json").exists()
+
+
+def test_codex_retained_login_recovery_activates_only_its_selected_provider(
+    tmp_path, blackbox_chain_material,
+):
+    """Join installed auth recovery to real proxy enforcement, without a login or model task."""
+    access = "synthetic-first-launch-access.eyJleHAiOjIwMDAwMDAwMDB9.signature"
+    policy = '''budget=12000
+[hosts]
+"*"={egress="allow",unknown_creds="prompt"}
+[credential.synthetic]
+match=["synthetic-first-launch-access[.][A-Za-z0-9._-]+", "synthetic-other-login"]
+headers=["authorization"]
+''' + AGENTS
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    configured = tomlkit.parse(policy)
+    configured["agents"]["alice"]["folder"] = str(workspace)
+    configured["agents"]["alice"]["host_script"] = str(
+        tmp_path / "installed/assets/contrib/codex-host-setup.sh"
+    )
+    public, private = blackbox_chain_material
+    with mapped_https_origin(public / "sinkhole.crt", private / "sinkhole.key",
+                             ("chatgpt.com", "attacker.com")) as (origin, parent), native_instance(
+        tmp_path, source=tomlkit.dumps(configured), parent_proxy=parent,
+        extra_config=f'upstream_ca_file={json.dumps(str(public / "ca.crt"))}\n'
+                     'tls_ca_file="certs/mitmproxy-ca.pem"\n',
+    ) as instance:
+        instance.environment["PATH"] = os.pathsep.join((str(instance.root / "bin"), "/usr/bin", "/bin"))
+        instance.environment["CODEX_HOME"] = str(tmp_path / "empty-host/.codex")
+        saved_policy = instance.policy.read_bytes()
+        auth = instance.root / "agents/alice/home/.codex/auth.json"
+        auth.parent.mkdir(parents=True, exist_ok=True)
+        auth.write_text(json.dumps({"auth_mode": "chatgpt", "tokens": {
+            "access_token": access, "refresh_token": "synthetic-first-launch-refresh",
+        }}) + "\n")
+        auth.chmod(0o600)
+        saved_login = auth.read_bytes()
+        # Complete the supported agent-local adoption step after sign-in. Its
+        # provenance marker retains client state and grants no proxy access.
+        adopted = subprocess.run(
+            [str(instance.root / "bin/safeyolo-coord"), "codex-state", "--home",
+             str(auth.parent.parent), "adopt"],
+            env=instance.environment, capture_output=True, text=True, timeout=15,
+        )
+        assert adopted.returncode == 0, adopted.stderr
+        assert json.loads(instance.cli("credentials", "list").stdout) == []
+        headers = {"Authorization": "Bearer " + access}
+        path = "/backend-api/wham/usage"
+        ca_file = instance.root / "certs/mitmproxy-ca-cert.pem"
+        # The ended request stays ended throughout inspection and setup.
+        assert intercepted_request(instance, "chatgpt.com", agent="alice", path=path,
+                                   headers=headers, ca_file=ca_file)[0] == 428
+        pending = instance.admin("GET", "/admin/approvals")["approvals"]
+        identifier = pending[0]["approval_id"]
+        assert len(pending) == 1 and not origin.requests
+        assert instance.cli("approvals", "show", identifier).returncode == 0
+        assert instance.show()["saved_matches_active"]
+        assert instance.cli("agent", "stop", "alice").returncode == 0
+        for choice in (b"q\n", b"a\n"):
+            with terminal(instance, ["agent", "auth", "alice"]) as (process, master, until):
+                until(b"Authentication [client/host-vault")
+                os.write(master, b"client\n")
+                output = until(b"q: cancel]: ")
+                assert b"Agent login: found (subscription" in output
+                assert b"does not force a new sign-in" in output
+                os.write(master, choice)
+                if choice == b"a\n":
+                    output += until(b"Choose credential storage")
+                    os.write(master, b"local\n")
+                    output += until(b"Codex login authorized for alice")
+                assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
+                assert access.encode() not in output
+            assert auth.read_bytes() == saved_login and auth.stat().st_mode & 0o777 == 0o600
+            assert instance.policy.read_bytes() == saved_policy and not origin.requests
+            assert instance.admin("GET", f"/admin/approvals/{identifier}")["status"] == "pending"
+            if choice == b"q\n":
+                assert json.loads(instance.cli("credentials", "list").stdout) == []
+        imported, = json.loads(instance.cli("credentials", "list").stdout)
+        assert imported["codex"]["agent_id"] == "ag-" + "a" * 32
+        assert imported["codex"]["run_id"] is None
+        assert instance.show()["saved_matches_active"]
+        assert intercepted_request(instance, "chatgpt.com", agent="alice", path=path,
+                                   headers=headers, ca_file=ca_file)[0] == 200
+        assert len(origin.requests) == 1
+        for agent, host, credential in [("bob", "chatgpt.com", access),
+                                        ("alice", "attacker.com", access),
+                                        ("alice", "chatgpt.com", "synthetic-other-login")]:
+            assert intercepted_request(instance, host, agent=agent, path=path,
+                                       headers={"Authorization": "Bearer " + credential}, ca_file=ca_file)[0] == 428
+            assert len(origin.requests) == 1
+        assert instance.policy.read_bytes() == saved_policy and auth.read_bytes() == saved_login
+
 
 @pytest.mark.parametrize("missing_input", (
     ["rootfs-base.ext4", "Image", "initramfs.cpio.gz", "helper"]
