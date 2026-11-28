@@ -125,7 +125,7 @@ pub(crate) async fn prepare(
     }
     let issuer_id = issuer(&runtime)?;
     let name = key_name(&issuer_id, run, operation);
-    let loaded = runtime.gateway_vault.load_async().await?.ok_or("host credential storage is not selected; select storage through the existing credentials owner, then resume this original preparation")?;
+    let loaded = runtime.gateway_vault.load_async().await?.ok_or("host credential storage is not selected; on the issuing host run safeyolo credentials init for this instance, then resume this original preparation")?;
     let vault = &loaded.vault;
     vault.reload_if_changed()?;
     if vault.snapshot(&name)?.is_none() {

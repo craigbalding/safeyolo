@@ -568,8 +568,9 @@ def test_init_and_read_only_commands_defer_storage_until_a_valid_secret_write(tm
         assert (root / "data/credentials.key").read_bytes() == key
 
 
+@pytest.mark.parametrize("operation", ["add", "init"])
 @pytest.mark.parametrize("selection", ["local", "passphrase", "cancel", "mismatch", "eof"])
-def test_first_storage_choice_and_hidden_passphrase_input(tmp_path, selection):
+def test_first_storage_choice_and_hidden_passphrase_input(tmp_path, selection, operation):
     from tests.proxy_contracts.test_native_coord_operator import terminal, wait_terminal_exit
     from tests.proxy_contracts.test_native_policy_cli import native_inputs
 
@@ -583,7 +584,8 @@ def test_first_storage_choice_and_hidden_passphrase_input(tmp_path, selection):
     value_file.write_text(LOCAL)
     instance = SimpleNamespace(root=root, environment=os.environ.copy())
     protected = "synthetic-manual-storage-passphrase"
-    with terminal(instance, ["credentials", "add", "local", "--value-file", str(value_file)]) as (process, master, until):
+    arguments = ["credentials", "init"] if operation == "init" else ["credentials", "add", "local", "--value-file", str(value_file)]
+    with terminal(instance, arguments) as (process, master, until):
         output = until(b"Choose credential storage")
         assert not (root / "data/credentials.key").exists()
         os.write(master, ("q" if selection == "cancel" else "local" if selection == "local" else "passphrase").encode() + b"\n")
@@ -597,7 +599,8 @@ def test_first_storage_choice_and_hidden_passphrase_input(tmp_path, selection):
             os.write(master, (protected if selection == "passphrase" else "different").encode() + b"\n")
         output = bytearray(output)
         code = wait_terminal_exit(process, master, output, timeout=5)
-        assert (b"Credential stored:" if selection in ("local", "passphrase") else b"cancelled" if selection in ("cancel", "eof") else b"do not match") in output
+        success = b"Credential storage is ready" if operation == "init" else b"Credential stored:"
+        assert (success if selection in ("local", "passphrase") else b"cancelled" if selection in ("cancel", "eof") else b"do not match") in output
         assert (code == 0) == (selection in ("local", "passphrase"))
         assert protected.encode() not in output and LOCAL.encode() not in output
     if selection in ("cancel", "mismatch", "eof"):
@@ -620,4 +623,41 @@ def test_first_storage_choice_and_hidden_passphrase_input(tmp_path, selection):
         assert (result.returncode == 0) == (value == protected)
         assert protected not in result.stdout + result.stderr
         assert (root / "data/credentials.enc").read_bytes() == encrypted
-    assert json.loads(result.stdout)[0]["name"] == "local"
+    listing = json.loads(result.stdout)
+    assert listing == [] if operation == "init" else listing[0]["name"] == "local"
+
+
+@pytest.mark.parametrize("storage", ["local", "passphrase"])
+def test_explicit_storage_initialization_preserves_credentials_and_requires_a_scripted_choice(tmp_path, storage):
+    from tests.proxy_contracts.test_native_policy_cli import native_inputs
+
+    binary = native_inputs()[0] / "safeyolo"
+    root = tmp_path / "instance"
+
+    def command(*arguments, value=None, valid=True):
+        result = subprocess.run([str(binary), "--dangerously-allow-root", "--instance-dir", str(root), "--json", *arguments],
+                                input=value or "", capture_output=True, text=True, timeout=15)
+        assert (result.returncode == 0) == valid, result.stderr
+        return result
+
+    command("init")
+    assert not (root / "data/credentials.enc").exists()
+    refused = command("credentials", "init", valid=False)
+    assert "--storage" in refused.stderr
+    assert not (root / "data/credentials.key").exists()
+    passphrase = tmp_path / "passphrase"
+    passphrase.write_text("synthetic-host-setup-storage-passphrase")
+    options = ["--storage", storage]
+    unlock = ["--passphrase-file", str(passphrase)] if storage == "passphrase" else []
+    command("credentials", "init", *options, *unlock)
+    assert json.loads(command("credentials", "list", *unlock).stdout) == []
+    for filename in ["credentials.enc", "credentials.key"]:
+        assert (root / "data" / filename).stat().st_mode & 0o777 == 0o600
+    command("credentials", "add", "retained", "--stdin", *unlock, value=LOCAL)
+    original = {name: (root / "data" / name).read_bytes() for name in ["credentials.enc", "credentials.key"]}
+    command("credentials", "init", *options, *unlock)
+    command("credentials", "init", *unlock)
+    assert [item["name"] for item in json.loads(command("credentials", "list", *unlock).stdout)] == ["retained"]
+    command("credentials", "init", "--storage", "passphrase" if storage == "local" else "local", valid=False)
+    for filename, content in original.items():
+        assert (root / "data" / filename).read_bytes() == content
