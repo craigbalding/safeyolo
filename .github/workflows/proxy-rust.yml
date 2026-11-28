@@ -335,8 +335,8 @@ jobs:
         if: needs.native-changes.outputs.rust == 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/runsc-cache/safeyolo/gvisor/release-20261005.0-safeyolo.1/*/linux-amd64/runtime
-          key: runsc-runtime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/acquire_runsc.sh', 'scripts/build_runsc.sh', 'scripts/native_package.sh', 'scripts/gvisor/nofollow.patch', 'scripts/gvisor/portforward.patch') }}
+          path: ${{ runner.temp }}/runsc-cache/safeyolo/gvisor/release-20261005.0-safeyolo.2/*/linux-amd64/runtime
+          key: runsc-runtime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/acquire_runsc.sh', 'scripts/build_runsc.sh', 'scripts/native_package.sh', 'scripts/gvisor/nofollow.patch', 'scripts/gvisor/portforward.patch', 'scripts/gvisor/host-uds-paths.patch') }}
 
       - name: Prepare the complete patched gVisor runtime
         id: runsc_inputs
@@ -354,7 +354,7 @@ jobs:
         if: steps.runsc_inputs.outcome == 'success' && steps.runsc_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/runsc-cache/safeyolo/gvisor/release-20261005.0-safeyolo.1/*/linux-amd64/runtime
+          path: ${{ runner.temp }}/runsc-cache/safeyolo/gvisor/release-20261005.0-safeyolo.2/*/linux-amd64/runtime
           key: ${{ steps.runsc_cache.outputs.cache-primary-key }}
 
       - name: Retain the complete patched gVisor runtime
@@ -438,6 +438,20 @@ jobs:
         id: linux_host_inputs
         if: needs.native-changes.outputs.rust == 'true'
         run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy
+
+      - name: Qualify the packaged patched gVisor runtime
+        if: needs.native-changes.outputs.rust == 'true'
+        run: |
+          set -euo pipefail
+          package="$RUNNER_TEMP/uds-host-package"
+          scripts/build_host_packages.sh --directory "$package" --profile production \
+            --artifacts "$PWD/proxy/target/release" \
+            --guest-artifacts "$PWD/guest/command/target/release" \
+            --runtime-artifacts "$(dirname "$(command -v tmux)")"
+          mkdir "$RUNNER_TEMP/runtime-qualification"
+          cp "$package/package-info" "$package/SHA256SUMS" "$RUNNER_TEMP/runtime-qualification/"
+          scripts/qualify_runsc_host_uds.sh "$package/libexec" "$RUNNER_TEMP/runtime-qualification/host-uds"
+          scripts/qualify_runsc_nofollow.sh "$package/libexec" "$RUNNER_TEMP/runtime-qualification/nofollow"
 
       # Make matching inputs available while the remaining checks continue.
       # Failed runs retain successful matching builds for diagnosis, not release.
@@ -538,6 +552,13 @@ jobs:
           name: native-policy-diagnostics
           path: |
             ${{ runner.temp }}/gvisor-preparation.log
+            ${{ runner.temp }}/runtime-qualification/package-info
+            ${{ runner.temp }}/runtime-qualification/SHA256SUMS
+            ${{ runner.temp }}/runtime-qualification/*/reports/
+            ${{ runner.temp }}/uds-host-package/libexec/runsc
+            ${{ runner.temp }}/uds-host-package/libexec/gvisor-bin/gvisor_sentry
+            ${{ runner.temp }}/uds-host-package/libexec/gvisor-bin/gvisor-sentry-prewarmer
+            ${{ runner.temp }}/uds-host-package/libexec/gvisor-bin/runsc-fd-parking
             ${{ runner.temp }}/native-policy.xml
           retention-days: 7
           if-no-files-found: ignore

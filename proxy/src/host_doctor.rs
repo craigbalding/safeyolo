@@ -227,8 +227,9 @@ pub(crate) async fn report(path: &Path) -> Value {
                         "{}; prerequisite selection: {platform}",
                         runtime["version"].as_str().unwrap_or_default()
                     ),
-                    None => runtime["version"]
+                    None => runtime["error"]
                         .as_str()
+                        .or_else(|| runtime["version"].as_str())
                         .unwrap_or("Runtime prerequisites unavailable")
                         .into(),
                 },

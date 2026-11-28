@@ -956,7 +956,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-test-guest-upgrade-py).
 - [tests/test_component_upgrade.py](../tests/test_component_upgrade.py#L117) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-component-upgrade-py).
-- [tests/test_linux_host.py](../tests/test_linux_host.py#L53) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
+- [tests/test_linux_host.py](../tests/test_linux_host.py#L57) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-linux-host-py).
 - [tests/blackbox/installed_storage.py::qualify](../tests/blackbox/installed_storage.py#L99) — Prepared native Linux installation; acquisition or prepared-guest reuse and two systrap boots with root/user persistence. Evidence: Rootless --boot uses the maintained pytest receipt and unavailable host sudo; standalone acquisition keeps its original scope. Both record actual package/guest/maps and owned cleanup; manual selection establishes no recurring cadence.
   Selection: manual; no recurring selector resolved.
@@ -1133,7 +1133,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-test-guest-upgrade-py).
 - [tests/test_component_upgrade.py](../tests/test_component_upgrade.py#L117) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-component-upgrade-py).
-- [tests/test_linux_host.py](../tests/test_linux_host.py#L53) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
+- [tests/test_linux_host.py](../tests/test_linux_host.py#L57) — Ordinary native CLI; Linux/macOS; host identity. Evidence: Owned OCI registry/archive fixtures and real native CLI; selected acquisition setup may use guest-only/rootfs helpers.
   Exact identities: [source inventory](#witness-tests-test-linux-host-py).
 - [tests/blackbox/rootless_preparation.py::observe](../tests/blackbox/rootless_preparation.py#L50) — Retained native Linux storage observations; recorded ordinary host identity and systrap guest root/user. Evidence: Manual run-controls.sh rootless-preparation; canonical source/digest supplied separately; recorded operands checked without command replay or independent product acceptance.
   Selection: manual; no recurring selector resolved.
@@ -2318,33 +2318,33 @@ Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.ym
 - [`tests/proxy_contracts/test_native_factory_cli.py::test_doctor_rejects_failed_or_paused_command_with_a_healthy_runtime`](../tests/proxy_contracts/test_native_factory_cli.py#L475)
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_native_release_preserves_other_work_and_requires_canonical_audit`](../tests/proxy_contracts/test_native_factory_cli.py#L585)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_doctor_names_missing_role_executable_and_room_permission`](../tests/proxy_contracts/test_native_factory_cli.py#L624)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_stop_interprets_lifecycle_errors`](../tests/proxy_contracts/test_native_factory_cli.py#L667)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_does_not_boot_workers_without_coord`](../tests/proxy_contracts/test_native_factory_cli.py#L690)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_does_not_boot_workers_when_room_provisioning_fails`](../tests/proxy_contracts/test_native_factory_cli.py#L703)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_native_release_preserves_other_work_and_requires_canonical_audit`](../tests/proxy_contracts/test_native_factory_cli.py#L593)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_doctor_names_missing_role_executable_and_room_permission`](../tests/proxy_contracts/test_native_factory_cli.py#L632)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_stop_interprets_lifecycle_errors`](../tests/proxy_contracts/test_native_factory_cli.py#L675)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_does_not_boot_workers_without_coord`](../tests/proxy_contracts/test_native_factory_cli.py#L698)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_does_not_boot_workers_when_room_provisioning_fails`](../tests/proxy_contracts/test_native_factory_cli.py#L711)
 Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_requires_confirmation_before_any_role_starts`](../tests/proxy_contracts/test_native_factory_cli.py#L715)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_requires_confirmation_before_any_role_starts`](../tests/proxy_contracts/test_native_factory_cli.py#L723)
 Selection: optional: select `SAFEYOLO_FACTORY_ACCEPTANCE_SOURCE` explicitly (Explicit disposable installed guided-setup acceptance root.); phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_setup_interruption_preserves_prepared_roles`](../tests/proxy_contracts/test_native_factory_cli.py#L742)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_setup_interruption_preserves_prepared_roles`](../tests/proxy_contracts/test_native_factory_cli.py#L750)
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_claude_direction_reads_exact_envelope`](../tests/proxy_contracts/test_native_factory_cli.py#L826)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_claude_direction_rejects_unmatched_envelope`](../tests/proxy_contracts/test_native_factory_cli.py#L848)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_claude_direction_native_readback`](../tests/proxy_contracts/test_native_factory_cli.py#L859)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_pending_claude_caller_refuses_replaying_started_work`](../tests/proxy_contracts/test_native_factory_cli.py#L1176)
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_pending_claude_caller_observes_setup_recovery_and_scoped_grants`](../tests/proxy_contracts/test_native_factory_cli.py#L1203)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_claude_direction_reads_exact_envelope`](../tests/proxy_contracts/test_native_factory_cli.py#L834)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_claude_direction_rejects_unmatched_envelope`](../tests/proxy_contracts/test_native_factory_cli.py#L856)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_installed_claude_direction_native_readback`](../tests/proxy_contracts/test_native_factory_cli.py#L867)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_pending_claude_caller_refuses_replaying_started_work`](../tests/proxy_contracts/test_native_factory_cli.py#L1184)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_pending_claude_caller_observes_setup_recovery_and_scoped_grants`](../tests/proxy_contracts/test_native_factory_cli.py#L1211)
 Selection: optional: select `SAFEYOLO_FACTORY_ACCEPTANCE_ROOT` explicitly (Explicit disposable installed Factory acceptance root.); phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_pending_claude_work_survives_restart`](../tests/proxy_contracts/test_native_factory_cli.py#L1326)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_pending_claude_work_survives_restart`](../tests/proxy_contracts/test_native_factory_cli.py#L1334)
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_pending_claude_case_preserves_other_factory_selections`](../tests/proxy_contracts/test_native_factory_cli.py#L1343)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_pending_claude_case_preserves_other_factory_selections`](../tests/proxy_contracts/test_native_factory_cli.py#L1351)
 Selection: optional: select `SAFEYOLO_FACTORY_ACCEPTANCE_ROOT` explicitly (Explicit disposable installed Factory acceptance root.); phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_executes_staged_worker_commands`](../tests/proxy_contracts/test_native_factory_cli.py#L1366)
+- [`tests/proxy_contracts/test_native_factory_cli.py::test_factory_run_executes_staged_worker_commands`](../tests/proxy_contracts/test_native_factory_cli.py#L1374)
 
 <a id="witness-tests-proxy-contracts-test-native-harness-attention-py"></a>
 ### [`tests/proxy_contracts/test_native_harness_attention.py`](../tests/proxy_contracts/test_native_harness_attention.py)
@@ -2689,21 +2689,21 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`); [focused-pr](../.github/workflows/proxy-rust.yml) (conditional CI; condition `github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'ready_for_review'); step needs.native-changes.outputs.rust == 'true'`).
 
-- [`tests/test_linux_host.py::test_retained_systrap_caller_remaps_only_its_private_copy`](../tests/test_linux_host.py#L53)
-- [`tests/test_linux_host.py::test_runtime_input_fails_before_host_changes`](../tests/test_linux_host.py#L145)
-- [`tests/test_linux_host.py::test_bundled_runtime_access_preview_covers_new_paths_before_consent`](../tests/test_linux_host.py#L168)
-- [`tests/test_linux_host.py::test_namespace_failure_keeps_original_result_and_observes_only_its_audit`](../tests/test_linux_host.py#L222)
-- [`tests/test_linux_host.py::test_runtime_access_preserves_other_acl_rights_and_honors_named_denial`](../tests/test_linux_host.py#L279)
-- [`tests/test_linux_host.py::test_runtime_access_keeps_mapped_uid_read_access_before_after_and_repeat`](../tests/test_linux_host.py#L313)
-- [`tests/test_linux_host.py::test_mapping_remap_keeps_modes_links_and_guest_user_ids`](../tests/test_linux_host.py#L349)
-- [`tests/test_linux_host.py::test_remap_preserves_unchanged_inode_metadata`](../tests/test_linux_host.py#L395)
-- [`tests/test_linux_host.py::test_remap_nested_attributes_and_links_preserve_external_target`](../tests/test_linux_host.py#L420)
-- [`tests/test_linux_host.py::test_remap_refuses_live_tree_and_bad_owner_before_changing_files`](../tests/test_linux_host.py#L455)
-- [`tests/test_linux_host.py::test_denied_runtime_permission_reports_changes_and_retry_is_idempotent`](../tests/test_linux_host.py#L475)
-- [`tests/test_linux_host.py::test_doctor_keeps_selected_system_identity_when_runtime_disappears`](../tests/test_linux_host.py#L535)
-- [`tests/test_linux_host.py::test_profile_load_failure_retains_only_its_complete_profile`](../tests/test_linux_host.py#L606)
-- [`tests/test_linux_host.py::test_host_prepare_retries_retained_runtime_profile`](../tests/test_linux_host.py#L635)
-- [`tests/test_linux_host.py::test_scoped_namespace_entry_with_both_apparmor_restrictions`](../tests/test_linux_host.py#L733)
+- [`tests/test_linux_host.py::test_retained_systrap_caller_remaps_only_its_private_copy`](../tests/test_linux_host.py#L57)
+- [`tests/test_linux_host.py::test_runtime_input_fails_before_host_changes`](../tests/test_linux_host.py#L149)
+- [`tests/test_linux_host.py::test_bundled_runtime_access_preview_covers_new_paths_before_consent`](../tests/test_linux_host.py#L172)
+- [`tests/test_linux_host.py::test_namespace_failure_keeps_original_result_and_observes_only_its_audit`](../tests/test_linux_host.py#L226)
+- [`tests/test_linux_host.py::test_runtime_access_preserves_other_acl_rights_and_honors_named_denial`](../tests/test_linux_host.py#L283)
+- [`tests/test_linux_host.py::test_runtime_access_keeps_mapped_uid_read_access_before_after_and_repeat`](../tests/test_linux_host.py#L317)
+- [`tests/test_linux_host.py::test_mapping_remap_keeps_modes_links_and_guest_user_ids`](../tests/test_linux_host.py#L353)
+- [`tests/test_linux_host.py::test_remap_preserves_unchanged_inode_metadata`](../tests/test_linux_host.py#L399)
+- [`tests/test_linux_host.py::test_remap_nested_attributes_and_links_preserve_external_target`](../tests/test_linux_host.py#L424)
+- [`tests/test_linux_host.py::test_remap_refuses_live_tree_and_bad_owner_before_changing_files`](../tests/test_linux_host.py#L459)
+- [`tests/test_linux_host.py::test_denied_runtime_permission_reports_changes_and_retry_is_idempotent`](../tests/test_linux_host.py#L479)
+- [`tests/test_linux_host.py::test_doctor_keeps_selected_system_identity_when_runtime_disappears`](../tests/test_linux_host.py#L539)
+- [`tests/test_linux_host.py::test_profile_load_failure_retains_only_its_complete_profile`](../tests/test_linux_host.py#L610)
+- [`tests/test_linux_host.py::test_host_prepare_retries_retained_runtime_profile`](../tests/test_linux_host.py#L639)
+- [`tests/test_linux_host.py::test_scoped_namespace_entry_with_both_apparmor_restrictions`](../tests/test_linux_host.py#L737)
 
 <a id="witness-tests-test-host-sudo-py"></a>
 ### [`tests/test_host_sudo.py`](../tests/test_host_sudo.py)

@@ -65,8 +65,6 @@ struct PackageGuest {
     repository: String,
     discovery_tag: String,
     platform: ConsumerPlatform,
-    #[cfg(target_os = "linux")]
-    runsc_version: Option<String>,
 }
 
 impl PackageGuest {
@@ -139,19 +137,25 @@ impl PackageGuest {
             .any(|key| fields.contains_key(key))
         {
             let runtime = (field("runsc_version")?, field("runsc_source")?);
-            // Retained installed packages may use the stock pin. New targets
-            // must use the current patched build, with its exact source.
+            // Retained installed packages may use the stock pin or the earlier
+            // patched build. New targets must use the current patched build,
+            // with its exact source.
             let known_runtime = runtime
                 == (
-                    "release-20261005.0-safeyolo.1",
+                    "release-20261005.0-safeyolo.2",
                     "https://github.com/google/gvisor/commit/97e8e896904cb364319cd9758241d3f0bd27a6f4",
                 )
                 || (installed
-                    && runtime
+                    && (runtime
                         == (
                             "release-20261005.0",
                             "https://github.com/google/gvisor/releases/tag/release-20261005.0",
-                        ));
+                        )
+                        || runtime
+                            == (
+                                "release-20261005.0-safeyolo.1",
+                                "https://github.com/google/gvisor/commit/97e8e896904cb364319cd9758241d3f0bd27a6f4",
+                            )));
             if platform == ConsumerPlatform::DarwinArm64
                 || !known_runtime
                 || field("runsc_origin")? != "bundled"
@@ -182,20 +186,8 @@ impl PackageGuest {
             repository: repository.into(),
             discovery_tag: discovery_tag.into(),
             platform,
-            #[cfg(target_os = "linux")]
-            runsc_version: fields.get("runsc_version").map(|value| value.to_string()),
         })
     }
-}
-
-/// Validate installed package metadata for Linux runtime selection and doctor.
-#[cfg(target_os = "linux")]
-pub(crate) fn packaged_runsc_version(root: &Path) -> Result<Option<String>, Error> {
-    let path = root.join("package-info");
-    if !path.try_exists()? {
-        return Ok(None);
-    }
-    Ok(PackageGuest::read(&path, true)?.runsc_version)
 }
 
 fn consumer_platform() -> Result<ConsumerPlatform, Error> {

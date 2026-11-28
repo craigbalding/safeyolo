@@ -15,7 +15,11 @@ esac
 build_input=$(file_sha256 "$script_dir/build_runsc.sh")
 patch_input=$(file_sha256 "$script_dir/gvisor/nofollow.patch")
 portforward_input=$(file_sha256 "$script_dir/gvisor/portforward.patch")
-cache=${XDG_CACHE_HOME:-$HOME/.cache}/safeyolo/gvisor/release-20261005.0-safeyolo.1/$patch_input-$portforward_input-$build_input/$platform
+host_uds_input=$(file_sha256 "$script_dir/gvisor/host-uds-paths.patch")
+# Keep one bounded component while binding every patch and the build recipe.
+runtime_input=$(printf '%s\n' "$patch_input" "$portforward_input" "$host_uds_input" "$build_input" | sha256sum)
+runtime_input=${runtime_input%% *}
+cache=${XDG_CACHE_HOME:-$HOME/.cache}/safeyolo/gvisor/release-20261005.0-safeyolo.2/$runtime_input/$platform
 selected=${SAFEYOLO_RUNSC_ARTIFACTS:-}
 stage=
 cleanup_runsc() { [[ -z $stage ]] || rm -rf -- "$stage"; }
@@ -67,4 +71,4 @@ while IFS= read -r name; do cp -- "$selected/$name" "$stage/$name"; done < <(run
 verify_runsc_payload "$stage" "$platform"
 mv -T -- "$stage" "$destination"
 stage=
-echo "Prepared gVisor release-20261005.0-safeyolo.1 $platform" >&2
+echo "Prepared gVisor release-20261005.0-safeyolo.2 $platform" >&2

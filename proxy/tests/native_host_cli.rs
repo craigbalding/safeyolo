@@ -102,6 +102,72 @@ fn initialize(root: &Path) {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn runtime_selection_checks_bundled_bytes_with_an_unrelated_runsc_on_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("instance");
+    initialize(&root);
+    let inspect = || {
+        let output = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .args(["--instance-dir", root.to_str().unwrap(), "--json", "doctor"])
+            .env("PATH", root.join("bin"))
+            .output()
+            .unwrap();
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let check = report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "Linux runtime and namespaces")
+            .unwrap();
+        if let Some(error) = check["details"]["error"].as_str() {
+            assert!(
+                check["message"].as_str().unwrap().contains(error),
+                "{check}"
+            );
+        }
+        check["details"].clone()
+    };
+    for name in [
+        "runsc",
+        "gvisor-bin/gvisor_sentry",
+        "gvisor-bin/gvisor-sentry-prewarmer",
+        "gvisor-bin/runsc-fd-parking",
+    ] {
+        owned_run::install_runtime(&root, "#!/bin/sh\nexit 0\n");
+        let valid = inspect();
+        assert_eq!(valid["version"], "release-20261005.0-safeyolo.2", "{valid}");
+        assert_eq!(valid["origin"], "bundled");
+        let path = root.join("libexec").join(name);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"changed after valid ELF header")
+            .unwrap();
+        let changed = inspect();
+        assert_eq!(changed["state"], "unavailable");
+        assert!(
+            changed["error"]
+                .as_str()
+                .unwrap()
+                .contains("checksum differs"),
+            "{changed}"
+        );
+        fs::remove_file(&path).unwrap();
+        let missing = inspect();
+        assert_eq!(missing["state"], "unavailable");
+        assert!(
+            missing["error"]
+                .as_str()
+                .unwrap()
+                .contains("reinstall the complete SafeYolo host package"),
+            "{missing}"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 #[ignore = "requires guest root; run with TMPDIR on the gVisor overlay to cover split device numbers"]
 fn profile_tree_remapping_preserves_ownership_and_outside_files() {
     use std::os::unix::fs::{MetadataExt, chown};
@@ -465,8 +531,7 @@ esac
             root = root.display(),
             foreign = foreign_root.display()
         );
-        fs::write(root.join("bin/runsc"), script).unwrap();
-        fs::set_permissions(root.join("bin/runsc"), fs::Permissions::from_mode(0o755)).unwrap();
+        owned_run::install_runtime(&root, &script);
         let output = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
             .args([
                 "--instance-dir",
@@ -657,10 +722,9 @@ fn provider_failures_have_request_correlated_reasons_and_generic_502() {
     let socket = root.join("bob.sock");
     let config = root.join("config.toml");
     fs::write(&config, format!("admin_port=0\nflow_store_enabled=false\nagent_api_enabled=true\ngateway_services_dir='services'\nreadiness_file='data/ready.json'\n[[listeners]]\nagent_id='bob'\nsocket_path={}\n", serde_json::to_string(socket.to_str().unwrap()).unwrap())).unwrap();
-    let script = root.join("bin/runsc");
-    fs::write(
-        &script,
-        format!(
+    owned_run::install_runtime(
+        &root,
+        &format!(
             r#"#!/bin/sh
 mode=$(/bin/cat '{root}/mode')
 case "$3" in
@@ -680,9 +744,7 @@ esac
 "#,
             root = root.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    );
     fs::write(root.join("mode"), "refused").unwrap();
     let log = root.join("process.log");
     let _stop = StopOnDrop(&config);
@@ -936,9 +998,9 @@ exec '{binary}' "$@"
         )
         .unwrap();
         fs::set_permissions(root.join("bin/safeyolo"), fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(
-            root.join("bin/runsc"),
-            format!(
+        owned_run::install_runtime(
+            &root,
+            &format!(
                 r#"#!/bin/bash
 case "$3" in
   state) printf '{{"id":"%s","status":"running"}}\n' "$4";;
@@ -959,9 +1021,7 @@ esac
 "#,
                 root = root.display()
             ),
-        )
-        .unwrap();
-        fs::set_permissions(root.join("bin/runsc"), fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let runtime = fs::read(root.join("agents/alice/runtime.json")).unwrap();
         let status = value(
             selected_cli(&["agent", "status", "alice"])
