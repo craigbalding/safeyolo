@@ -228,7 +228,7 @@ establish a fresh public image pull or transfer an earlier registry approval.
 
 The installed journey used CLI revision `90545121`, source-equivalent proxy
 revision `f8d1037f`, guest helper revision `0d3332e6` and runsc
-`release-20261005.0-safeyolo.2`. The observer reused the retained image/data and
+`release-20261005.0-safeyolo.1`. The observer reused the retained image/data and
 fresh initialization result, and staged the public CA outside a private
 workspace for `_apt`. The original journey stopped at its Compose log parser;
 the remaining provider failure controls ran separately. The origin and audit

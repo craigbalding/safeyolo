@@ -440,11 +440,12 @@ This establishes the provider defect without excluding further Docker defects.
 
 ### Qualify the repaired provider first
 
-The existing runtime builder applies both
-[`nofollow.patch`](../../scripts/gvisor/nofollow.patch) and
-[`portforward.patch`](../../scripts/gvisor/portforward.patch) to that pinned
-upstream source. The second patch keeps the reverse copy alive after orderly
-EOF and cancels both copies on a real error or shutdown. Its focused upstream
+The current [runtime builder](../../scripts/build_runsc.sh) applies
+[`nofollow.patch`](../../scripts/gvisor/nofollow.patch),
+[`portforward.patch`](../../scripts/gvisor/portforward.patch) and
+[`host-uds-paths.patch`](../../scripts/gvisor/host-uds-paths.patch) to that pinned
+upstream source. The portforward patch keeps the reverse copy alive after
+orderly EOF and cancels both copies on a real error or shutdown. Its focused upstream
 tests include response after EOF in either direction, buffered final bytes,
 write/read/shutdown errors, and the three connection adapters.
 
@@ -458,8 +459,8 @@ the protected provider fixture's execution slot.
 The workflow runs the focused tests, builds the four runtime files and qualifies
 the selected native payload on both guest filesystems. Its artifact is named
 `runsc-ARCHITECTURE-SOURCE-RUN-ATTEMPT`. With `runsc_build_run`, reuse selects
-that architecture's artifact and compares the builder, both patches, packaging
-helper and qualification inputs before checking the output hashes. Reached
+that architecture's artifact and compares the builder, all three patches,
+packaging helper and qualification inputs before checking the output hashes. Reached
 logs, downloaded operands and test results are retained on failure. Preserve
 those results before deciding whether another acquisition or build is needed.
 Hosted qualification does not replace the provider and Docker controls below.
@@ -468,23 +469,46 @@ For a build on the owned Linux venue, obtain the factory's serialized build
 slot and inspect the retained upstream checkout and compatible Bazel outputs.
 Preserve active source, prepared runtime and the existing disk reserves. If the
 checkout is clean at the pinned revision, invoke the candidate's
-`scripts/build_runsc.sh UPSTREAM_SOURCE NEW_RUNTIME_DIRECTORY`. For a retained
-checkout that already has the unchanged nofollow patch, verify that delta and
-apply only the new portforward patch. Do not reset the warm checkout. Resume the
-builder's focused tests and four-target build with its existing Bazel output
-root, architecture configuration, opt profile and one job.
+`scripts/build_runsc.sh UPSTREAM_SOURCE NEW_RUNTIME_DIRECTORY`. The builder applies
+all three current patches, runs their focused tests, builds and validates all
+four runtime files, and stages them together in the new output directory.
+
+For an interrupted build, retain the patched checkout and its existing Bazel
+output root. Compare its full source delta with all three current patch inputs.
+Apply only the verified missing changes; a nofollow-only checkout is incomplete.
+The current nofollow patch also sets the `.2` version marker, so an older `.1`
+delta does not match. From the SafeYOLO candidate checkout on that Linux host,
+set `upstream` to the retained pinned upstream directory, then check that all
+three current patches are present:
+
+```bash
+git -C "$upstream" apply --reverse --check \
+  "$PWD/scripts/gvisor/nofollow.patch" \
+  "$PWD/scripts/gvisor/portforward.patch" \
+  "$PWD/scripts/gvisor/host-uds-paths.patch"
+```
+
+Expected: exit 0. Resolve a differing delta before resuming. Do not reset the
+warm checkout or rerun the builder's clean-checkout entry. Resume its VFS,
+portforward and host-UDS tests, four-target build and validated output-staging
+commands from `scripts/build_runsc.sh`. Keep its architecture configuration,
+`opt` profile, one job and existing Bazel output root. The output must contain
+`runsc`, `gvisor-bin/gvisor_sentry`, `gvisor-bin/gvisor-sentry-prewarmer` and
+`gvisor-bin/runsc-fd-parking` from that build.
 
 The runtime version marker is `release-20261005.0-safeyolo.2`; it changed when
 [`host-uds-paths.patch`](../../scripts/gvisor/host-uds-paths.patch) added a
 runtime flag. Record the actual SafeYOLO source, all patch
-inputs and all four output hashes; that version string alone does not distinguish
-the repaired runtime from the defective donor. Acquisition now includes the new
-patch in its cache key. Do not relabel or reuse an unmodified runtime as repaired.
+inputs and all four output hashes; the version string alone does not establish
+the patch inputs or executing bytes. Acquisition binds all three patches and the
+builder in one aggregate cache digest. Do not relabel an unmodified runtime as
+repaired.
 
-The response-after-EOF control passed in execution 16003: the origin and both
-clients received the expected 16 bytes and exited successfully. Reuse that
-result and its actual four-file hashes for the unchanged payload. When a changed
-runtime needs qualification, use the existing operator wrapper to select it in
+The response-after-EOF control passed in execution 16003 with
+`release-20261005.0-safeyolo.1`: the origin and both clients received the expected
+16 bytes and exited successfully. Reuse that result and its actual four-file
+hashes only for the unchanged payload; it does not qualify the `.2` runtime.
+When a changed runtime needs qualification, use the existing operator wrapper to select it in
 an isolated installation. Preserve the donor bytes and original runtime
 selection. Reuse the retained response-after-EOF control from execution 15499
 through its actual `nsenter`/`runsc port-forward --stream` route. Run no Docker
@@ -496,8 +520,8 @@ Restore the selection and stop the fixture on failure. Direct TCP or source
 tests alone do not establish that this runtime defect is repaired.
 
 After qualifying a changed runtime, use that selected runtime for the finite
-Docker management check below. For the current correction, reuse the qualified
-payload and select the corrected debug proxy. No gVisor rebuild is needed.
+Docker management check below. A proxy-only correction can reuse the matching
+qualified runtime without a gVisor rebuild.
 
 Reuse the stopped, qualified Linux/gVisor fixture from #1436. This check adds
 only the missing Docker management connection through its existing provider

@@ -210,7 +210,7 @@ not establish cold public-release acquisition, installation or first use.
 | Guest source and producer | `27ea8aa6a700b473e35b040f35f89a08b076475b`, [CI producer 42981692240](https://github.com/craigbalding/safeyolo/actions/runs/42981692240) |
 | Guest archive SHA-256 | `c232174140058313a679e4b780566744b89e769df36d67dac151d219b24b2f5c` |
 | Guest Open Container Initiative (OCI) index SHA-256 | `5494a6ee6204492c330ba6e1ce073b57ab6c898537ece12825b2285d2336ecb8` |
-| gVisor | Bundled `release-20261005.0-safeyolo.2` |
+| gVisor | Bundled `release-20261005.0-safeyolo.1` |
 | Coding client | Complete native Codex `0.167.0`, `x86_64-unknown-linux-musl`, including code-mode host, ripgrep and resources |
 
 The selected installer, package helpers, Linux launch/boot sources and Codex
