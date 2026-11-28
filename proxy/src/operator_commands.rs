@@ -754,10 +754,16 @@ fn show_policy_decision_summary(assessment: &Value) {
             "credential_custody",
             "agent_interpretation_of_intent",
             "recorded_target_network_enforcement",
-            "service_readiness_and_reach",
             "limitations",
         ] {
             show_review_fact(&format!("  {}", key.replace('_', " ")), &binding[key]);
+        }
+        println!("  Service observations:");
+        for key in ["binding", "application", "audience_reach", "authentication"] {
+            show_review_fact(
+                &format!("    {}", key.replace('_', " ")),
+                &binding["service_readiness_and_reach"][key],
+            );
         }
         for key in ["not_before", "expires_at"] {
             show_review_time(
