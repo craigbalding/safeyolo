@@ -105,10 +105,10 @@ def test_platform_client_uses_only_selected_proxy_and_strict_guest_tls(witness, 
         assert b"Authorization:" not in bridge.requests[0]
 
 
-@pytest.mark.parametrize("client", ["platform", "unikraft"])
+@pytest.mark.parametrize("client", ["platform", "unikraft", "core"])
 @pytest.mark.parametrize("allowed", [False, True])
 def test_redirect_clients_actually_follow_one_location(witness, tmp_path, monkeypatch, capsys, client, allowed):
-    from tests.test_hyperlight_proxy_client import ProxyBytes, head
+    from tests.test_hyperlight_proxy_client import ProxyBytes, head, run_client
 
     class RedirectProxy(ProxyBytes):
         def respond(self, stream):
@@ -123,7 +123,10 @@ def test_redirect_clients_actually_follow_one_location(witness, tmp_path, monkey
 
     bridge = RedirectProxy("", None, https=False)
     try:
-        if client == "unikraft":
+        if client == "core":
+            result = run_client("core", bridge, tmp_path, monkeypatch, https=False, service=False,
+                                path_query="/start", redirect=True)["Ok"]
+        elif client == "unikraft":
             module_spec = importlib.util.spec_from_file_location("redirect_client", REPO / "jobs/proxy_client.py")
             module = importlib.util.module_from_spec(module_spec)
             module_spec.loader.exec_module(module)
@@ -162,6 +165,41 @@ def test_redirect_clients_actually_follow_one_location(witness, tmp_path, monkey
         assert result == {"finding": {"kind": "finding", "positive": allowed}}
         assert len(bridge.requests) == 2 and not bridge.errors
         assert not bridge.streams
+    finally:
+        bridge.close()
+
+
+@pytest.mark.parametrize(("follow", "second_status", "location"), [
+    (False, 200, b"http://example.test/next"),
+    (False, 200, b"\xff"),
+    (True, 200, b"http://example.test/next"),
+    (True, 302, b"http://example.test/next"),
+    (True, 200, b"/relative"),
+    (True, 200, None),
+])
+def test_core_redirect_diagnostic_preserves_default_and_stops_after_one_hop(
+        tmp_path, monkeypatch, follow, second_status, location):
+    from tests.test_hyperlight_proxy_client import ProxyBytes, head, run_client
+
+    class RedirectProxy(ProxyBytes):
+        def respond(self, stream):
+            self.requests.append(head(stream))
+            status = 302 if len(self.requests) == 1 else second_status if len(self.requests) == 2 else 200
+            header = b"" if location is None else b"Location: " + location + b"\r\n"
+            stream.sendall(f"HTTP/1.1 {status} Fixture\r\n".encode() + header
+                           + b"Content-Length: 0\r\nConnection: close\r\n\r\n")
+
+    bridge = RedirectProxy("", None, https=False)
+    try:
+        result = run_client("core", bridge, tmp_path, monkeypatch, https=False, service=False,
+                            path_query="/start", redirect=follow)
+        valid_follow = follow and location == b"http://example.test/next"
+        if follow and not valid_follow:
+            assert "Err" in result, result
+        else:
+            assert result["Ok"]["finding"]["positive"] is (valid_follow and second_status == 200)
+        assert len(bridge.requests) == (2 if valid_follow else 1)
+        assert not bridge.streams and not bridge.errors
     finally:
         bridge.close()
 

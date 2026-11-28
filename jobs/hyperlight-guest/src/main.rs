@@ -61,6 +61,17 @@ fn network_check(_argv: String) -> Result<String> {
 #[host_function("InvocationContext")]
 fn invocation_context() -> Result<String>;
 
+/// Selected only by the owned redirect witness, rather than NetworkCheck.
+#[guest_function("NetworkRedirectCheck")]
+fn network_redirect_check(_argv: String) -> Result<String> {
+    let bytes = read_input(String::from("request.json"))?;
+    let result = safeyolo_checker::network::redirect_check(&bytes, proxy_call, || {
+        proxy_call(serde_json::json!({"kind":"time"})).ok()?["unix_seconds"].as_u64()
+    })
+    .map_err(|message| HyperlightGuestError::new(ErrorCode::GuestError, message))?;
+    Ok(alloc::format!("{result}\n"))
+}
+
 #[host_function("InitializationWitness")]
 fn initialization_witness() -> Result<u64>;
 

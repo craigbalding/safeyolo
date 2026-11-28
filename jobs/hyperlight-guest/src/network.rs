@@ -255,6 +255,7 @@ async fn perform(
     input: &[u8],
     mut call: impl FnMut(Value) -> Result<Value, String>,
     now: fn() -> Option<u64>,
+    follow_redirect: bool,
 ) -> Result<Value, Error> {
     let request: Value = serde_json::from_slice(input).map_err(error)?;
     let inputs = &request["inputs"];
@@ -270,6 +271,34 @@ async fn perform(
         .as_str()
         .or_else(|| request["subject"]["value"].as_str())
         .ok_or_else(|| error("missing URL"))?;
+    let (mut status, location) = request_once(url, inputs, &mut call, now).await?;
+    if follow_redirect {
+        if status != 302 {
+            return Err(error("redirect witness requires HTTP 302"));
+        }
+        let location = location.ok_or_else(|| error("redirect Location unavailable"))?;
+        // This diagnostic uses an absolute Location. Every hop opens another
+        // invocation-owned proxy stream under the same adopted gate.
+        status = request_once(&location, inputs, &mut call, now).await?.0;
+    }
+    Ok(json!({"finding":{"kind":"finding","positive":status == expected}}))
+}
+
+fn status_and_location<S: Read>(response: &Response<'_, '_, S>) -> (u16, Option<String>) {
+    let location = response
+        .headers()
+        .find(|(name, _)| name.eq_ignore_ascii_case("location"))
+        .and_then(|(_, value)| core::str::from_utf8(value).ok())
+        .map(String::from);
+    (response.status.0, location)
+}
+
+async fn request_once(
+    url: &str,
+    inputs: &Value,
+    call: &mut impl FnMut(Value) -> Result<Value, String>,
+    now: fn() -> Option<u64>,
+) -> Result<(u16, Option<String>), Error> {
     // Fragments are local client identifiers and never part of an HTTP target.
     let url = url.split_once('#').map_or(url, |(target, _)| target);
     let parsed = Url::parse(url).map_err(error)?;
@@ -285,10 +314,7 @@ async fn perform(
     let id = call(json!({"kind":"proxy_open"})).map_err(error)?["id"]
         .as_u64()
         .ok_or_else(|| error("proxy handle unavailable"))?;
-    let mut stream = ProxyStream {
-        id,
-        call: &mut call,
-    };
+    let mut stream = ProxyStream { id, call };
     let host = if parsed.host().contains(':') {
         format!("[{}]:{}", parsed.host(), parsed.port_or_default())
     } else {
@@ -305,7 +331,7 @@ async fn perform(
         headers.push((name, value));
     }
     let mut buffer = vec![0; TLS_BUFFER];
-    let status = if parsed.scheme() == UrlScheme::HTTPS {
+    if parsed.scheme() == UrlScheme::HTTPS {
         Request::connect(&host)
             .host(&host)
             .build()
@@ -351,7 +377,7 @@ async fn perform(
             )
             .await
             .map_err(error)?;
-        response.status.0
+        Ok(status_and_location(&response))
     } else {
         let mut connection = HttpConnection::Plain(stream);
         let response = connection
@@ -361,9 +387,8 @@ async fn perform(
             )
             .await
             .map_err(error)?;
-        response.status.0
-    };
-    Ok(json!({"finding":{"kind":"finding","positive":status == expected}}))
+        Ok(status_and_location(&response))
+    }
 }
 
 /// Host callbacks are synchronous; this future has no external executor dependency.
@@ -372,7 +397,25 @@ pub fn check(
     call: impl FnMut(Value) -> Result<Value, String>,
     now: fn() -> Option<u64>,
 ) -> Result<Value, String> {
-    let mut future = pin!(perform(input, call, now));
+    check_http_status(input, call, now, false)
+}
+
+/// Diagnostic witness: follow exactly one HTTP 302 with an absolute Location.
+pub fn redirect_check(
+    input: &[u8],
+    call: impl FnMut(Value) -> Result<Value, String>,
+    now: fn() -> Option<u64>,
+) -> Result<Value, String> {
+    check_http_status(input, call, now, true)
+}
+
+fn check_http_status(
+    input: &[u8],
+    call: impl FnMut(Value) -> Result<Value, String>,
+    now: fn() -> Option<u64>,
+    follow_redirect: bool,
+) -> Result<Value, String> {
+    let mut future = pin!(perform(input, call, now, follow_redirect));
     match future
         .as_mut()
         .poll(&mut Context::from_waker(Waker::noop()))

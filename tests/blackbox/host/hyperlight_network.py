@@ -33,11 +33,11 @@ deadline/revocation, held-response teardown and current-policy/cache isolation.
 Use --scope for destination/method/path refusal, a negative HTTP 302 finding
 without automatic following, separate adopted gates and cache expiry. The 302
 case does not prove policy refusal of an attempted redirected request.
-Use --redirect for an actual one-hop client follow on gVisor, VZ or Unikraft.
+Use --redirect for an actual one-hop client follow on each engine.
 Allowed target controls precede path/destination removal with the same job.
 The denied follow needs an exact-run proxy 403 and no target-origin contact.
-Core's installed NetworkCheck does not follow redirects; this mode cannot
-establish that missing Core observation and does not replace its guest.
+Core selects the diagnostic NetworkRedirectCheck from the pinned guest;
+the ordinary NetworkCheck example still sends one GET.
 Use --caller-only for caller/ancestry/offline cases where
 those observations remain unrun. These modes share logical cases across all
 engines without rerunning completed lifetime or authority cases.
@@ -857,6 +857,8 @@ def adopt_network_checks(instance, engines):
             checker.write_text(UNIKRAFT_REDIRECT_CHECKER)
             spec["engine"]["checker"] = {"path": str(checker), "sha256": digest(checker)}
             implementation = digest(checker)
+        if args.redirect and engine == "hyperlight":
+            spec["engine"]["function"] = "NetworkRedirectCheck"
         spec["timeout_seconds"] = 30
         path = args.scratch / f"{engine}-adopted.json"
         save(path, spec)
@@ -957,8 +959,8 @@ def exercise(args):
 
 
 def validate_engine_selection(parser, args):
-    if args.redirect and args.engine not in ("gvisor", "vz", "hyperlight-unikraft"):
-        parser.error("--redirect needs an explicit gvisor/vz/Unikraft engine; installed Core NetworkCheck does not follow redirects")
+    if args.redirect and args.engine is None:
+        parser.error("--redirect needs an explicit engine")
     if (args.base_root is not None) != (args.engine in ("gvisor", "vz")):
         parser.error("select --engine gvisor/vz with --base-root; Hyperlight engines require --bundle")
     if args.base_root is not None and (sys.platform == "darwin") != (args.engine == "vz"):

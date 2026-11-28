@@ -151,7 +151,7 @@ class ProxyBytes:
             assert not thread.is_alive()
 
 
-def run_client(client, bridge, directory, monkeypatch, *, https, service, expected="200", fragment="", path_query="/value?x=1"):
+def run_client(client, bridge, directory, monkeypatch, *, https, service, expected="200", fragment="", path_query="/value?x=1", redirect=False):
     url = ("https" if https else "http") + "://example.test" + path_query + fragment
     inputs = {"expected_status": expected}
     if service:
@@ -177,7 +177,7 @@ def run_client(client, bridge, directory, monkeypatch, *, https, service, expect
         pytest.skip(f"set {variable} to the corresponding CPU client adapter")
     request = directory / "request.json"
     request.write_text(json.dumps(request_value))
-    with subprocess.Popen([executable, str(request)], stdin=subprocess.PIPE,
+    with subprocess.Popen([executable, str(request), *(["--redirect"] if redirect else [])], stdin=subprocess.PIPE,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as child:
         result = None
         try:

@@ -1,7 +1,6 @@
 //! Real destination owners and scoped NATS; controlled guest execution retains
 //! the already accepted backend boundary rather than replaying installed guests.
 use super::*;
-use std::os::unix::fs::PermissionsExt;
 
 fn audit_path(root: &Path) -> PathBuf {
     native_config::read(&root.join("config.toml"))
@@ -292,9 +291,9 @@ async fn remote_queue_recovery() {
         json!({"agent_id":ALICE,"generation":generation}).to_string(),
     )
     .unwrap();
-    fs::write(
-        b.join("bin/runsc"),
-        format!(
+    super::super::super::owned_run::install_runtime(
+        &b,
+        &format!(
             r#"#!/bin/sh
 for arg in "$@"; do
     if [ "$arg" = state ]; then
@@ -309,9 +308,7 @@ printf 'untrusted-secret-output\n'
 "#,
             root = b.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(b.join("bin/runsc"), fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let original = std::env::var_os("PATH").unwrap();
     // This entire test is an isolated harness child; sibling tests do not
     // inherit the controlled guest adapter.
