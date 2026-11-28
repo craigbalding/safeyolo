@@ -15,6 +15,7 @@ fn executable() -> OsString {
 
 fn cli(root: &Path, arguments: &[&str]) -> Output {
     Command::new(executable())
+        .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
         .arg("--instance-dir")
         .arg(root)
         .args(arguments)

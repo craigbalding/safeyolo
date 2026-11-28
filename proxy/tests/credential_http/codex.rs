@@ -44,6 +44,7 @@ impl Fixture {
     async fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let initialized = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
             .args(["--instance-dir", directory.path().to_str().unwrap(), "init"])
             .output()
             .unwrap();

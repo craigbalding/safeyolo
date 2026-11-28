@@ -29,7 +29,7 @@ FILES = ("runsc", "gvisor-bin/gvisor-sentry-prewarmer", "gvisor-bin/gvisor_sentr
 
 
 def command(binary, *arguments, **kwargs):
-    return subprocess.run([str(binary), *map(str, arguments)], capture_output=True,
+    return subprocess.run([str(binary), "--dangerously-allow-root", *map(str, arguments)], capture_output=True,
                           text=True, timeout=30, **kwargs)
 
 

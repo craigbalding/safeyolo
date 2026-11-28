@@ -1380,7 +1380,7 @@ def test_state_created_during_guest_download_is_preserved(public_release, guest_
         assert faults["entered"].wait(timeout=15), "installer did not reach guest download"
         if conflict == "instance":
             cli = archive.parent / archive.name.removesuffix(".tar.gz") / "bin/safeyolo"
-            initialized = run(str(cli), "--instance-dir", str(root), "init", env=environment)
+            initialized = run(str(cli), "--dangerously-allow-root", "--instance-dir", str(root), "init", env=environment)
             assert initialized.returncode == 0, initialized.stderr
             state_root = root
         elif conflict == "command":

@@ -447,6 +447,7 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, Error> {
         return Ok(0);
     }
     let options = Options::parse(args)?;
+    crate::host_root::refuse_root("launch an agent")?;
     let root = host_platform::config_dir();
     let requested_script = options
         .harness

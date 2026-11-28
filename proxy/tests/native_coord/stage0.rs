@@ -13,6 +13,7 @@ pub(super) async fn base(root: &Path, args: &[&str]) -> Value {
         .arg("--instance-dir")
         .arg(root)
         .args(args)
+        .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
         .env("SAFEYOLO_NATS_TEST_INSTANCE", root)
         .env_remove("SAFEYOLO_NATS_TEST_PORTS")
         .kill_on_drop(true)
@@ -55,6 +56,7 @@ pub(super) async fn until(mut condition: impl FnMut() -> bool) {
 pub(super) async fn start_proxy(root: &Path) -> tokio::process::Child {
     let config = native_config::read(&root.join("config.toml")).unwrap();
     let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo-proxy"))
+        .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
         .args(["--config"])
         .arg(root.join("config.toml"))
         .stdout(Stdio::null())
