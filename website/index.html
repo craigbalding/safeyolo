@@ -13,6 +13,12 @@ claims:
 - BB-08  # service capabilities
 - BB-09  # host keeps credentials
 - BB-14  # rate budgets and circuit breakers
+- BB-18  # scoped peer support
+- BB-19  # route challenges and delegated approvals
+- BB-21  # nested Docker / gateway scopes
+- BB-24  # Coord ownership and independent review
+- BB-30  # managed feeds
+- BB-42  # signals adopt only operator-selected responses
 - BB-40  # credential custody at rest and in records
 - decision:management_evidence  # audit records of requests and decisions
 ---
@@ -27,11 +33,41 @@ claims:
       <p>Not only for code: agents can also run services and manage remote systems through API calls that SafeYOLO mediates.</p>
       <div class="actions">
         <a class="btn primary" href="https://github.com/craigbalding/safeyolo">View on GitHub</a>
-        <a class="btn ghost" href="#start">Learn More</a>
+        <a class="btn ghost" href="#use-cases">See what it does</a>
       </div>
       <p class="meta">Pre-v1 · Open source · Apple Silicon macOS, Linux and Windows (WSL2)<br>Built by <a href="https://threatspotting.com/">Threatspotting</a></p>
     </div>
     <div class="hero-mark"><img src="/assets/img/safeyolo-mark.svg" alt="" width="360" height="180"></div>
+  </div>
+</section>
+
+<section class="band alt" id="use-cases">
+  <div class="wrap">
+    <p class="kicker">What you can hand off</p>
+    <h2>Real work, not just a safer box.</h2>
+    <div class="cards">
+      <div class="card"><h3>Run coding agents in YOLO mode</h3><p>Claude Code, Codex or Pi work through the night on your repository with root in their own sandbox, and ask only about what falls outside your boundary.</p><p><a href="https://github.com/craigbalding/safeyolo#quick-start">Quick start</a></p></div>
+      <div class="card"><h3>Use your admin API key without handing it over</h3><p>Your agent calls Slack, GitHub, Gmail or your own API with a scoped token. The real key stays on your host, and the agent gets only the routes you chose.</p><p><a href="https://github.com/craigbalding/safeyolo/blob/master/docs/credentials.md">Masked APIs</a></p></div>
+      <div class="card"><h3>Let agents run Docker</h3><p>Agents build and run containers and Compose stacks in their own sandbox, or manage one selected project on a Docker host you already run.</p><p><a href="https://github.com/craigbalding/safeyolo/blob/master/docs/docker.md">Docker</a></p></div>
+      <div class="card"><h3>React to threat intelligence</h3><p>A feed or signal updates a blocklist, notifies a room or assigns work to the agent it affects, so your agents respond while you are away.</p><p><a href="https://github.com/craigbalding/safeyolo/blob/master/docs/signals.md">Feeds and signals</a></p></div>
+      <div class="card"><h3>Run a software factory</h3><p>Three agents plan, build and independently review fixes day and night. None of them can approve its own work.</p><p><a href="https://github.com/craigbalding/safeyolo/blob/master/docs/factories.md">Factories</a></p></div>
+      <div class="card"><h3>Let agents look after agents</h3><p>A support agent inspects and repairs another agent within the target, actions and time you granted, so you babysit less.</p><p><a href="https://github.com/craigbalding/safeyolo/blob/master/docs/peer-support.md">Peer support</a></p></div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="different">
+  <div class="wrap">
+    <p class="kicker">What's different</p>
+    <h2>Techniques you won't find in a plain sandbox.</h2>
+    <div class="cards">
+      <div class="card"><h3>One key, many narrow scopes</h3><p>Keep a single powerful API key on your host. Each agent gets its own token that works only for the methods and paths of its capability, so a reader cannot create new keys, change settings or leak the real one.</p><p>SafeYOLO ships ready-to-use definitions for GitHub, Git, Slack, Gmail, Claude and Codex. For your own APIs, your agent prepares a definition with the bundled SafeYOLO skill, or you generate one from an OpenAPI specification; you adopt it.</p></div>
+      <div class="card"><h3>Agents are challenged before you are</h3><p>When an agent asks for access its capability lacks, SafeYOLO first puts your questions to it, such as where the instruction came from, and can run an independent check, including a second model. You see the request with those answers and findings attached.</p><p><a href="https://github.com/craigbalding/safeyolo/blob/master/docs/policy-checks.md">Checks and challenges</a></p></div>
+      <div class="card"><h3>Approvals that show consequences</h3><p>Service definitions can carry an effect model prepared before any request. An approval then shows what the grant adds up to, not just the endpoint.</p><p>For example: an agent that can already run a job asks to edit that job's steps. The approval shows that the two together let it run changed code, and that the change persists after access expires.</p><p><a href="https://github.com/craigbalding/safeyolo/blob/master/docs/service-authoring.md">Effect models</a></p></div>
+      <div class="card"><h3>Docker without the daemon keys</h3><p>Run Docker inside the agent's own sandbox, share another agent's Docker as a service, or delegate a Docker host you already run. On that host, choose all workloads or one project's containers, networks and volumes. Each management request through SafeYOLO is checked against the agent's capability.</p><p><a href="https://github.com/craigbalding/safeyolo/blob/master/docs/nested-docker.md">Nested Docker</a></p></div>
+      <div class="card"><h3>Feeds your agents can act on</h3><p>Maintained host lists refresh on their own. Signals can trigger an operator-adopted response: a blocklist update, a room notification or Work assigned to an agent.</p><p>For example: an advisory reports a curl zero-day. The affected agent receives the work, removes curl from use in its sandbox, adds a wrapper and carries on with wget.</p></div>
+      <div class="card"><h3>Agents managing agents</h3><p>Coord rooms give agents durable tasks, claims and reviews. Support agents can diagnose and repair other agents under scoped, expiring grants. Relay can propose factory improvements for you to decide on.</p><p><a href="https://github.com/craigbalding/safeyolo/blob/master/docs/factory-proposals.md">Factory proposals</a></p></div>
+    </div>
   </div>
 </section>
 
