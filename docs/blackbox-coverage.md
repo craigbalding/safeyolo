@@ -441,7 +441,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/proxy_contracts/test_https_contract.py](../tests/proxy_contracts/test_https_contract.py#L85) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
+- [tests/proxy_contracts/test_https_contract.py](../tests/proxy_contracts/test_https_contract.py#L86) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-https-contract-py).
 - [tests/proxy_contracts/test_https_trust_continuity.py](../tests/proxy_contracts/test_https_trust_continuity.py#L152) — Native process; Linux/macOS; host identity. Evidence: Owned HTTP origins; real native executable.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-https-trust-continuity-py).
@@ -1808,16 +1808,16 @@ Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml
 
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_https_contract.py::test_preserved_upstream_chain_variants`](../tests/proxy_contracts/test_https_contract.py#L85)
-- [`tests/proxy_contracts/test_https_contract.py::test_connect_has_no_http_path`](../tests/proxy_contracts/test_https_contract.py#L105)
+- [`tests/proxy_contracts/test_https_contract.py::test_preserved_upstream_chain_variants`](../tests/proxy_contracts/test_https_contract.py#L86)
+- [`tests/proxy_contracts/test_https_contract.py::test_connect_has_no_http_path`](../tests/proxy_contracts/test_https_contract.py#L106)
 Selection: phase `proxy` (host); phase `package-tls` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_https_contract.py::test_https_origin_verification`](../tests/proxy_contracts/test_https_contract.py#L153)
+- [`tests/proxy_contracts/test_https_contract.py::test_https_origin_verification`](../tests/proxy_contracts/test_https_contract.py#L154)
 Selection: phase `proxy` (host); [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
 
-- [`tests/proxy_contracts/test_https_contract.py::test_https_not_yet_valid_origin_certificate_is_rejected`](../tests/proxy_contracts/test_https_contract.py#L219)
-- [`tests/proxy_contracts/test_https_contract.py::test_https_origin_requires_client_certificate_before_http`](../tests/proxy_contracts/test_https_contract.py#L483)
-- [`tests/proxy_contracts/test_https_contract.py::test_https_tls12_origin_records_version_and_cipher`](../tests/proxy_contracts/test_https_contract.py#L623)
+- [`tests/proxy_contracts/test_https_contract.py::test_https_not_yet_valid_origin_certificate_is_rejected`](../tests/proxy_contracts/test_https_contract.py#L220)
+- [`tests/proxy_contracts/test_https_contract.py::test_https_origin_requires_client_certificate_before_http`](../tests/proxy_contracts/test_https_contract.py#L484)
+- [`tests/proxy_contracts/test_https_contract.py::test_https_tls12_origin_records_version_and_cipher`](../tests/proxy_contracts/test_https_contract.py#L624)
 
 <a id="witness-tests-proxy-contracts-test-https-trust-continuity-py"></a>
 ### [`tests/proxy_contracts/test_https_trust_continuity.py`](../tests/proxy_contracts/test_https_trust_continuity.py)
@@ -2219,14 +2219,15 @@ Selection: phase `proxy` (host); [focused-pr](../.github/workflows/proxy-rust.ym
 - [`tests/proxy_contracts/test_first_agent_launch.py::test_codex_login_import_errors_preserve_owned_login_and_allow_cancellation`](../tests/proxy_contracts/test_first_agent_launch.py#L628)
 - [`tests/proxy_contracts/test_first_agent_launch.py::test_codex_auth_offers_only_actions_supported_by_inspected_sources`](../tests/proxy_contracts/test_first_agent_launch.py#L673)
 - [`tests/proxy_contracts/test_first_agent_launch.py::test_codex_authorization_failure_reports_and_retains_the_completed_copy`](../tests/proxy_contracts/test_first_agent_launch.py#L721)
-- [`tests/proxy_contracts/test_first_agent_launch.py::test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic`](../tests/proxy_contracts/test_first_agent_launch.py#L751)
-- [`tests/proxy_contracts/test_first_agent_launch.py::test_unsupported_launch_harness_is_rejected_before_instance_mutation`](../tests/proxy_contracts/test_first_agent_launch.py#L922)
-- [`tests/proxy_contracts/test_first_agent_launch.py::test_codex_launch_keeps_selected_authentication_on_setup_refusal`](../tests/proxy_contracts/test_first_agent_launch.py#L940)
-- [`tests/proxy_contracts/test_first_agent_launch.py::test_pending_credential_list_does_not_derive_authority_from_retained_audit`](../tests/proxy_contracts/test_first_agent_launch.py#L995)
-- [`tests/proxy_contracts/test_first_agent_launch.py::test_credential_retry_keeps_the_inspected_action`](../tests/proxy_contracts/test_first_agent_launch.py#L1033)
-- [`tests/proxy_contracts/test_first_agent_launch.py::test_credential_selection_retains_its_authority_and_rechecks_policy`](../tests/proxy_contracts/test_first_agent_launch.py#L1081)
-- [`tests/proxy_contracts/test_first_agent_launch.py::test_direct_credential_decision_keeps_the_selected_destination`](../tests/proxy_contracts/test_first_agent_launch.py#L1154)
-- [`tests/proxy_contracts/test_first_agent_launch.py::test_credential_policy_write_cannot_bypass_canonical_approval`](../tests/proxy_contracts/test_first_agent_launch.py#L1191)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_codex_retained_login_recovery_activates_only_its_selected_provider`](../tests/proxy_contracts/test_first_agent_launch.py#L778)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic`](../tests/proxy_contracts/test_first_agent_launch.py#L875)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_unsupported_launch_harness_is_rejected_before_instance_mutation`](../tests/proxy_contracts/test_first_agent_launch.py#L1046)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_codex_launch_keeps_selected_authentication_on_setup_refusal`](../tests/proxy_contracts/test_first_agent_launch.py#L1064)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_pending_credential_list_does_not_derive_authority_from_retained_audit`](../tests/proxy_contracts/test_first_agent_launch.py#L1119)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_credential_retry_keeps_the_inspected_action`](../tests/proxy_contracts/test_first_agent_launch.py#L1157)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_credential_selection_retains_its_authority_and_rechecks_policy`](../tests/proxy_contracts/test_first_agent_launch.py#L1205)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_direct_credential_decision_keeps_the_selected_destination`](../tests/proxy_contracts/test_first_agent_launch.py#L1278)
+- [`tests/proxy_contracts/test_first_agent_launch.py::test_credential_policy_write_cannot_bypass_canonical_approval`](../tests/proxy_contracts/test_first_agent_launch.py#L1315)
 
 <a id="witness-tests-proxy-contracts-test-gateway-provider-py"></a>
 ### [`tests/proxy_contracts/test_gateway_provider.py`](../tests/proxy_contracts/test_gateway_provider.py)

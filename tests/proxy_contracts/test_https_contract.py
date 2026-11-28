@@ -52,7 +52,7 @@ def mapped_https_origin(chain, key, hosts):
 
 
 def intercepted_request(proxy, host, *, method="GET", headers=None, body=None,
-                        agent="alice", path="/preserved-chain"):
+                        agent="alice", path="/preserved-chain", ca_file=None):
     """Verify the intercepted leaf, then observe native upstream verification."""
     with socket.socket(socket.AF_UNIX) as raw:
         raw.settimeout(5)
@@ -64,7 +64,8 @@ def intercepted_request(proxy, host, *, method="GET", headers=None, body=None,
             assert byte, head
             head.extend(byte)
         assert head.startswith(b"HTTP/1.1 200"), head
-        context = ssl.create_default_context(cafile=proxy.readiness_file.parent / "ca/mitmproxy-ca-cert.pem")
+        ca_file = ca_file or proxy.readiness_file.parent / "ca/mitmproxy-ca-cert.pem"
+        context = ssl.create_default_context(cafile=ca_file)
         with context.wrap_socket(raw, server_hostname=host) as stream:
             client = http.client.HTTPConnection(host, timeout=5)
             client.sock = stream
