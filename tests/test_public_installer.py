@@ -10,6 +10,7 @@ import io
 import json
 import os
 import select
+import shlex
 import shutil
 import signal
 import subprocess
@@ -522,6 +523,49 @@ def test_downloaded_bootstrap_installs_without_checkout_and_exposes_same_termina
         assert "libc=musl\n" in (root / "package-info").read_text()
     assert f"{RELEASES}/latest" not in requests
     assert not list((Path(environment["HOME"]) / ".cache").rglob("acquire.*"))
+
+
+@pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
+@pytest.mark.parametrize("public_release", ["native"], indirect=True)
+def test_downloaded_installation_handoff_selects_the_new_instance_beside_old_state(public_release, native_cli, tmp_path):
+    _contents, requests, _faults, environment, bootstrap, default_root, base, archive = public_release
+    old = tmp_path / "old instance"
+    initialized = run(str(native_cli), "--instance-dir", str(old), "init", env=environment)
+    assert initialized.returncode == 0, initialized.stderr
+    retained = {name: (old / name).read_bytes() for name in ("config.toml", "policy.toml", "data/instance_id")}
+    selected = tmp_path / "selected 'instance"
+    environment = {**environment, "SAFEYOLO_CONFIG_DIR": str(old), "SAFEYOLO_HOME": str(old),
+                   "SAFEYOLO_NATIVE_CONFIG_PATH": str(old / "config.toml"), "NO_COLOR": "1"}
+    installed = run("bash", str(bootstrap), "--instance-dir", str(selected), "--no-guest-download", env=environment)
+    (tmp_path / "install.stdout").write_text(installed.stdout)
+    (tmp_path / "install.stderr").write_text(installed.stderr)
+    assert installed.returncode == 0, installed.stderr
+    assert installed.stdout.count("Installed SafeYolo:") == 1
+    assert f"Selected instance: {selected}" in installed.stdout
+    assert "Proxy and agent readiness are checked when you launch." in installed.stdout
+    assert "from your project directory (or append its workspace path)" in installed.stdout
+    assert '"host_ready"' not in installed.stdout and '"runtime_ready"' not in installed.stdout
+    lines = installed.stdout.splitlines()
+    launch = shlex.split(lines[lines.index("Next: launch from your project directory (or append its workspace path):") + 1])
+    status = shlex.split(lines[lines.index("To inspect this instance first:") + 1])
+    assert launch == [status[0], "--instance-dir", str(selected), "agent", "launch"]
+    assert status[1:] == ["--instance-dir", str(selected), "status"]
+    redirected = run(*status, env=environment)
+    terminal_result = run("script", "-q", "-e", "-c", shlex.join(status), "/dev/null", env=environment)
+    (tmp_path / "status.stdout").write_text(redirected.stdout)
+    (tmp_path / "status.terminal").write_text(terminal_result.stdout)
+    assert redirected.returncode == terminal_result.returncode == 0
+    assert terminal_result.stdout.replace("\r\n", "\n") == redirected.stdout
+    assert f"Instance: {selected}" in redirected.stdout and "No agents configured." in redirected.stdout
+    assert not redirected.stdout.lstrip().startswith("{")
+    structured = run(*status, "--json", env=environment)
+    assert structured.returncode == 0 and json.loads(structured.stdout)["root"] == str(selected)
+    assert all((old / name).read_bytes() == value for name, value in retained.items())
+    assert not default_root.exists() and not (selected / "data/ready.json").exists()
+    assert not (selected / "agents").exists()
+    assert not any((selected / "data" / name).exists() for name in ("credentials.key", "credentials.enc"))
+    assert requests.count(f"{base}/{archive.name}") == 1
+    assert not list(Path(environment["HOME"]).rglob("acquire.*"))
 
 
 @pytest.mark.parametrize("package_inputs", ["production"], indirect=True)
@@ -1266,13 +1310,14 @@ def test_composed_install_failure_and_launch_failure_recover_without_reinstallat
     contents, requests, _faults, environment, bootstrap, root, base, archive = public_release
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    original = contents[f"{base}/{archive.name}"]
-    contents[f"{base}/{archive.name}"] += b"bad host transfer"
+    original = contents[f"{base}/SHA256SUMS"]
+    archive_digest = hashlib.sha256(contents[f"{base}/{archive.name}"]).hexdigest().encode()
+    contents[f"{base}/SHA256SUMS"] = original.replace(archive_digest, b"0" * 64)
     arguments = ["bash", str(bootstrap), "--no-guest-download", "--yes", "--launch"]
     refused = run(*arguments, str(workspace), env=environment)
     assert refused.returncode != 0 and "checksum failed" in refused.stderr
     assert "launching the first agent" not in refused.stderr and not root.exists()
-    contents[f"{base}/{archive.name}"] = original
+    contents[f"{base}/SHA256SUMS"] = original
     # Actual first launch needs a trusted terminal. Its error must propagate
     # while retaining the successful installation for the next invocation.
     failed_launch = run(*arguments, str(workspace), env=environment)

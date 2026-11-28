@@ -33,6 +33,75 @@ fn stdout(output: Output) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+#[test]
+fn policy_capabilities_explain_definitions_without_exposing_internal_records() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().join("selected policy instance");
+    // Discovery also works before installation and must not create instance state.
+    let human = stdout(cli(&root, &["policy", "capabilities"]));
+    assert!(
+        human.contains("Policy controls\n  Scope: Local native policy controls"),
+        "{human}"
+    );
+    assert!(
+        human.contains("Effects: Configure network, credential"),
+        "{human}"
+    );
+    assert!(
+        human.contains("Coverage limits: Typed controls do not describe the entire"),
+        "{human}"
+    );
+    assert!(
+        human.contains(
+            "Host execution bindings (service access to a native target)\n  Scope: Not described"
+        ),
+        "{human}"
+    );
+    assert!(human.contains("Effects: Not described"), "{human}");
+    assert!(
+        human.contains("Instance permission and readiness: unknown"),
+        "{human}"
+    );
+    assert!(
+        human.contains("grants no access and performs no protected operation"),
+        "{human}"
+    );
+    for internal in [
+        "null",
+        "::",
+        "[\"",
+        "[null]",
+        "\"controls\"",
+        "host_execution_binding",
+    ] {
+        assert!(!human.contains(internal), "{internal}: {human}");
+    }
+    assert!(!root.exists());
+    let machine = stdout(cli(&root, &["policy", "capabilities", "--json"]));
+    let machine: Value = serde_json::from_str(&machine).unwrap();
+    // The selected CLI can be a production build while this driver is a test build.
+    let mut actual = machine.clone();
+    let mut expected = safeyolo_proxy::policy::capabilities::discover();
+    actual.as_object_mut().unwrap().remove("build_profile");
+    expected.as_object_mut().unwrap().remove("build_profile");
+    assert_eq!(actual, expected);
+    let binding = machine["definitions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|definition| definition["definition"] == "host_execution_binding")
+        .unwrap();
+    assert_eq!(
+        binding["owner"],
+        "host_execution::gateway::Binding::validate"
+    );
+    assert!(binding["scope"].is_null());
+    assert_eq!(binding["gaps"], serde_json::json!([null]));
+    assert!(binding["permission"]["granted"].is_null());
+    assert_eq!(binding["readiness"]["observation"], "unknown");
+    assert!(!root.exists());
+}
+
 #[tokio::test]
 async fn service_capabilities_without_descriptions_do_not_look_unavailable() {
     let scratch = tempfile::tempdir().unwrap();
