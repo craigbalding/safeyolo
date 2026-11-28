@@ -144,6 +144,7 @@ def runsc_inputs(tmp_path):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     for source in ("build_runsc.sh", "native_package.sh", "gvisor/nofollow.patch", "gvisor/portforward.patch",
+                   "gvisor/host-uds-paths.patch",
                    "probe_runsc_nofollow.py", "qualify_runsc_nofollow.sh"):
         target = scripts / source
         target.parent.mkdir(exist_ok=True)
@@ -197,7 +198,7 @@ def test_runsc_selection_binds_native_runner_and_compiler(
 
 @pytest.mark.parametrize("architecture", ["arm64", "amd64"])
 @pytest.mark.parametrize("damage", [
-    None, "build_runsc.sh", "native_package.sh", "nofollow.patch", "portforward.patch",
+    None, "build_runsc.sh", "native_package.sh", "nofollow.patch", "portforward.patch", "host-uds-paths.patch",
     "probe_runsc_nofollow.py", "qualify_runsc_nofollow.sh", "architecture", "checksum",
 ])
 def test_runsc_reuse_requires_architecture_complete_inputs_and_output_hashes(tmp_path, runsc_inputs, architecture, damage):

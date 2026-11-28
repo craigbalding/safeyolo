@@ -13,17 +13,19 @@ docs:
   url: https://github.com/craigbalding/safeyolo/blob/master/docs/host-operations.md
 - title: Host execution contract
   url: https://github.com/craigbalding/safeyolo/blob/master/docs/host-execution-contract.md
+claims:
+- BB-38  # host-operation authority and native execution
 ---
 <h2>A target that knows its limits</h2>
 <p><code>safeyolo-host-executor</code> runs on the target: Linux, macOS or Windows. It needs no full SafeYOLO installation. The target enrols the issuing instance's keys, sets scope ceilings and budgets, and keeps a ledger of what ran.</p>
 <h2>Signed, bound and versioned</h2>
 <p>Under the <code>safeyolo.host-execution/v1</code> contract, your SafeYOLO instance invokes adopted, versioned operations on a named target. Each request is bound to an authenticated agent run and an operator task you activated. The signing keys stay with your instance; the agent never holds them.</p>
-<h2>Contained on each platform</h2>
+<h2>Bounded on each platform</h2>
 <p>On Linux, operations run under bubblewrap, with selected writable paths and network authority. On macOS, they run under a Seatbelt profile that child processes inherit. On Windows, Job Objects bound memory, processes, output and time.</p>
 <h2>Agents can propose, owners adopt</h2>
 <p>An agent can prepare first trust and propose new task code. The target's owner and your policy qualify and adopt those changes. Discovery and proposals cannot raise a ceiling or enrol an issuer.</p>
 <p>Platform qualification of this integration is tracked in <a href="https://github.com/craigbalding/safeyolo/issues/1669">#1669</a>.</p>
 <div class="guarantees">
 <div><h3>What this gives you</h3><ul><li>Real work on real machines, without SSH keys in a sandbox</li><li>Only the operations you adopted, within ceilings the target sets</li><li>A ledger on the target of what ran and for whom</li></ul></div>
-<div class="no"><h3>What it does not do</h3><ul><li>Run arbitrary commands an agent makes up</li><li>Let a proposal widen its own authority</li></ul></div>
+<div class="no"><h3>What it does not do</h3><ul><li>Run arbitrary commands an agent makes up</li><li>Let a proposal widen its own authority</li><li>Confine files, registry or network on Windows: those come from the workload account's permissions</li></ul></div>
 </div>

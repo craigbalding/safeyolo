@@ -22,9 +22,11 @@ import pytest
 import tomlkit
 
 from safeyolo.runtime_identity import process_is_alive, process_start_token
+from safeyolo.rust_proxy import _ensure_signing_ca
 from tests.proxy_contracts import test_native_credentials_cli as credentials
-from tests.proxy_contracts.harness import request
-from tests.proxy_contracts.scenarios import origin_server
+from tests.proxy_contracts.harness import launch_proxy, request
+from tests.proxy_contracts.scenarios import OriginHandler, origin_server
+from tests.proxy_contracts.test_https_contract import intercepted_request, mapped_https_origin
 from tests.proxy_contracts.test_native_coord_operator import terminal, wait_terminal_exit
 from tests.proxy_contracts.test_native_policy_cli import native_inputs, native_instance, restarted_proxy
 
@@ -114,14 +116,14 @@ def test_launch_refusal_has_no_setup_service_or_agent_effect(tmp_path, choice, h
     root, workspace = tmp_path / "installed", tmp_path / "workspace"
     workspace.mkdir()
     # This control stops before staging. No guest or provider input is used.
-    initialized = subprocess.run([str(binary), "--instance-dir", str(root), "init"], capture_output=True, text=True, timeout=15)
+    initialized = subprocess.run([str(binary), "--dangerously-allow-root", "--instance-dir", str(root), "init"], capture_output=True, text=True, timeout=15)
     assert initialized.returncode == 0, initialized.stderr
     (root / "bin").mkdir()
     (root / "bin/safeyolo").symlink_to(binary.resolve())
     scripts = root / "assets/contrib"
     scripts.mkdir(parents=True)
     shutil.copy2(REPO / f"contrib/{harness}-host-setup.sh", scripts)
-    instance = SimpleNamespace(root=root, environment={**os.environ, "TERM": "xterm-256color"})
+    instance = SimpleNamespace(root=root, environment={**os.environ, "SAFEYOLO_DANGEROUSLY_ALLOW_ROOT": "1", "TERM": "xterm-256color"})
     policy = (root / "policy.toml").read_bytes()
     # Keep the default Claude caller as well as explicit Codex selection.
     arguments = ["agent", "launch"] + (["--harness", harness] if harness == "codex" else [])
@@ -149,7 +151,7 @@ def codex_login_launch(tmp_path, _binary_cache):
     binary = (artifacts / "safeyolo").resolve()
     root, workspace = tmp_path / "installed", tmp_path / "workspace"
     workspace.mkdir()
-    initialized = subprocess.run([str(binary), "--instance-dir", str(root), "init"],
+    initialized = subprocess.run([str(binary), "--dangerously-allow-root", "--instance-dir", str(root), "init"],
                                  capture_output=True, text=True, timeout=15)
     assert initialized.returncode == 0, initialized.stderr
     (root / "bin").mkdir()
@@ -172,7 +174,7 @@ def codex_login_launch(tmp_path, _binary_cache):
         "access_token": 'synthetic-first-launch-access.eyJleHAiOjIwMDAwMDAwMDB9.signature', "refresh_token": "synthetic-first-launch-refresh",
     }}) + "\n")
     login.chmod(0o600)
-    instance = SimpleNamespace(root=root, environment={**os.environ, "TERM": "xterm-256color",
+    instance = SimpleNamespace(root=root, environment={**os.environ, "SAFEYOLO_DANGEROUSLY_ALLOW_ROOT": "1", "TERM": "xterm-256color",
                                                      "CODEX_HOME": str(host_codex),
                                                      "SAFEYOLO_NATS_TEST_INSTANCE": str(root)})
     instance.arguments = ["agent", "launch", str(workspace), "--name", "first", "--harness", "codex"]
@@ -226,9 +228,13 @@ def _codex_choice(until, master, *, new=True, subscription=True):
 
 
 @pytest.mark.parametrize("selection", ["host", "file"])
-def test_codex_client_api_key_copy_preserves_custody_policy_and_does_not_create_a_vault(codex_login_launch, selection):
+def test_codex_client_api_key_copy_preserves_custody_policy_and_does_not_create_a_vault(
+    codex_login_launch, selection, blackbox_chain_material,
+):
     instance = codex_login_launch
-    instance.login.write_text(json.dumps({"OPENAI_API_KEY": "synthetic-client-held-api-key"}) + "\n")
+    # Valid-format fixture input exercises the real classifier, never a provider.
+    key = "sk-proj-" + "a1b2c3d4e5f6g7h8i9j0" * 4
+    instance.login.write_text(json.dumps({"OPENAI_API_KEY": key}) + "\n")
     original = instance.login.read_bytes()
     with terminal(instance, instance.arguments) as (process, master, until):
         _codex_choice(until, master, subscription=False)
@@ -237,7 +243,7 @@ def test_codex_client_api_key_copy_preserves_custody_policy_and_does_not_create_
         os.write(master, choice.encode() + b"\n")
         output = until(b"First-agent services failed")
         assert b"API-key login copied for first" in output
-        assert b"synthetic-client-held-api-key" not in output
+        assert key.encode() not in output
         assert b"Choose credential storage" not in output
         assert wait_terminal_exit(process, master, bytearray(), timeout=5) != 0
     copied = instance.root / "agents/first/home/.codex/auth.json"
@@ -246,6 +252,34 @@ def test_codex_client_api_key_copy_preserves_custody_policy_and_does_not_create_
     assert (instance.root / "policy.toml").read_bytes() == policy
     assert not (instance.root / "data/credentials.enc").exists()
     assert not (instance.root / "data/credentials.key").exists()
+    # Copying grants no authority. Use the initialized policy and copied input
+    # at the native HTTPS boundary; this controlled reply is not a model task.
+    public, private = blackbox_chain_material
+    selected_key = json.loads(copied.read_text())["OPENAI_API_KEY"]
+
+    class ApiRequest(OriginHandler):
+        def do_POST(self):
+            self.server.credential = self.headers.get("Authorization")
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            self.do_GET()
+
+    with mapped_https_origin(public / "sinkhole.crt", private / "sinkhole.key",
+                             ("api.openai.com", "attacker.com")) as (origin, parent):
+        origin.RequestHandlerClass = ApiRequest
+        directory = instance.root.parent / "controlled-provider"
+        _ensure_signing_ca(directory / "ca")
+        with launch_proxy("rust", directory, policy.decode(), native_product=True, tls=True,
+                          upstream_ca=public / "ca.crt", parent_proxy=parent, agents=("first",)) as proxy:
+            headers = {"Authorization": "Bearer " + selected_key}
+            status, _, _ = intercepted_request(proxy, "api.openai.com", agent="first",
+                                               path="/v1/responses", method="POST", headers=headers, body=b'{}')
+            assert status == 200 and len(origin.requests) == 1
+            assert origin.credential == headers["Authorization"]
+            assert proxy.events("security.credential_guard")[0]["decision"] == "allow"
+            status, _, _ = intercepted_request(proxy, "attacker.com", agent="first",
+                                               path="/v1/responses", method="POST", headers=headers, body=b'{}')
+            assert status == 428 and len(origin.requests) == 1
+    assert (instance.root / "policy.toml").read_bytes() == policy
 
 
 @pytest.mark.parametrize("custom_name", [False, True])
@@ -708,6 +742,130 @@ def test_codex_authorization_failure_reports_and_retains_the_completed_copy(code
     assert (instance.root / "data/credentials.enc").is_dir()
     assert not (instance.root / "data/proxy-process.json").exists()
 
+    # Reconcile the completed copy before repairing this fixture's failed
+    # storage operand. The supported auth command resumes that exact login.
+    inspected = instance.cli("agent", "auth", "first")
+    assert inspected["local_login"]["state"] == "found"
+    unavailable = subprocess.run(
+        [str(instance.root / "bin/safeyolo"), "--instance-dir", str(instance.root),
+         "credentials", "list", "--json"],
+        env=instance.environment, capture_output=True, text=True, timeout=15,
+    )
+    assert unavailable.returncode != 0 and not unavailable.stdout
+    assert "corrupted vault" in unavailable.stderr
+    (instance.root / "data/credentials.enc").rmdir()
+    assert instance.cli("credentials", "list") == []
+    with terminal(instance, ["agent", "auth", "first"]) as (process, master, until):
+        until(b"Authentication [client/host-vault")
+        os.write(master, b"client\n")
+        _codex_choice(until, master, new=False)
+        os.write(master, b"a\n")
+        output = until(b"Choose credential storage")
+        os.write(master, b"local\n")
+        output += until(b"Codex login authorized for first")
+        assert b"synthetic-first-launch-access" not in output
+        assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
+    imported, = instance.cli("credentials", "list")
+    agent = tomllib.loads(policy.decode())["agents"]["first"]
+    assert imported["type"] == "codex_subscription"
+    assert imported["codex"]["agent_id"] == agent["agent_id"]
+    assert imported["codex"]["run_id"] is None
+    assert auth.read_bytes() == original == instance.login.read_bytes()
+    assert instance.policy.read_bytes() == policy
+    assert not (instance.root / "data/proxy-process.json").exists()
+
+
+def test_codex_retained_login_recovery_activates_only_its_selected_provider(
+    tmp_path, blackbox_chain_material,
+):
+    """Join installed auth recovery to real proxy enforcement, without a login or model task."""
+    access = "synthetic-first-launch-access.eyJleHAiOjIwMDAwMDAwMDB9.signature"
+    policy = '''budget=12000
+[hosts]
+"*"={egress="allow",unknown_creds="prompt"}
+[credential.synthetic]
+match=["synthetic-first-launch-access[.][A-Za-z0-9._-]+", "synthetic-other-login"]
+headers=["authorization"]
+''' + AGENTS
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    configured = tomlkit.parse(policy)
+    configured["agents"]["alice"]["folder"] = str(workspace)
+    configured["agents"]["alice"]["host_script"] = str(
+        tmp_path / "installed/assets/contrib/codex-host-setup.sh"
+    )
+    public, private = blackbox_chain_material
+    with mapped_https_origin(public / "sinkhole.crt", private / "sinkhole.key",
+                             ("chatgpt.com", "attacker.com")) as (origin, parent), native_instance(
+        tmp_path, source=tomlkit.dumps(configured), parent_proxy=parent,
+        extra_config=f'upstream_ca_file={json.dumps(str(public / "ca.crt"))}\n'
+                     'tls_ca_file="certs/mitmproxy-ca.pem"\n',
+    ) as instance:
+        instance.environment["PATH"] = os.pathsep.join((str(instance.root / "bin"), "/usr/bin", "/bin"))
+        instance.environment["CODEX_HOME"] = str(tmp_path / "empty-host/.codex")
+        saved_policy = instance.policy.read_bytes()
+        auth = instance.root / "agents/alice/home/.codex/auth.json"
+        auth.parent.mkdir(parents=True, exist_ok=True)
+        auth.write_text(json.dumps({"auth_mode": "chatgpt", "tokens": {
+            "access_token": access, "refresh_token": "synthetic-first-launch-refresh",
+        }}) + "\n")
+        auth.chmod(0o600)
+        saved_login = auth.read_bytes()
+        # Complete the supported agent-local adoption step after sign-in. Its
+        # provenance marker retains client state and grants no proxy access.
+        adopted = subprocess.run(
+            [str(instance.root / "bin/safeyolo-coord"), "codex-state", "--home",
+             str(auth.parent.parent), "adopt"],
+            env=instance.environment, capture_output=True, text=True, timeout=15,
+        )
+        assert adopted.returncode == 0, adopted.stderr
+        assert json.loads(instance.cli("credentials", "list").stdout) == []
+        headers = {"Authorization": "Bearer " + access}
+        path = "/backend-api/wham/usage"
+        ca_file = instance.root / "certs/mitmproxy-ca-cert.pem"
+        # The ended request stays ended throughout inspection and setup.
+        assert intercepted_request(instance, "chatgpt.com", agent="alice", path=path,
+                                   headers=headers, ca_file=ca_file)[0] == 428
+        pending = instance.admin("GET", "/admin/approvals")["approvals"]
+        identifier = pending[0]["approval_id"]
+        assert len(pending) == 1 and not origin.requests
+        assert instance.cli("approvals", "show", identifier).returncode == 0
+        assert instance.show()["saved_matches_active"]
+        assert instance.cli("agent", "stop", "alice").returncode == 0
+        for choice in (b"q\n", b"a\n"):
+            with terminal(instance, ["agent", "auth", "alice"]) as (process, master, until):
+                until(b"Authentication [client/host-vault")
+                os.write(master, b"client\n")
+                output = until(b"q: cancel]: ")
+                assert b"Agent login: found (subscription" in output
+                assert b"does not force a new sign-in" in output
+                os.write(master, choice)
+                if choice == b"a\n":
+                    output += until(b"Choose credential storage")
+                    os.write(master, b"local\n")
+                    output += until(b"Codex login authorized for alice")
+                assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
+                assert access.encode() not in output
+            assert auth.read_bytes() == saved_login and auth.stat().st_mode & 0o777 == 0o600
+            assert instance.policy.read_bytes() == saved_policy and not origin.requests
+            assert instance.admin("GET", f"/admin/approvals/{identifier}")["status"] == "pending"
+            if choice == b"q\n":
+                assert json.loads(instance.cli("credentials", "list").stdout) == []
+        imported, = json.loads(instance.cli("credentials", "list").stdout)
+        assert imported["codex"]["agent_id"] == "ag-" + "a" * 32
+        assert imported["codex"]["run_id"] is None
+        assert instance.show()["saved_matches_active"]
+        assert intercepted_request(instance, "chatgpt.com", agent="alice", path=path,
+                                   headers=headers, ca_file=ca_file)[0] == 200
+        assert len(origin.requests) == 1
+        for agent, host, credential in [("bob", "chatgpt.com", access),
+                                        ("alice", "attacker.com", access),
+                                        ("alice", "chatgpt.com", "synthetic-other-login")]:
+            assert intercepted_request(instance, host, agent=agent, path=path,
+                                       headers={"Authorization": "Bearer " + credential}, ca_file=ca_file)[0] == 428
+            assert len(origin.requests) == 1
+        assert instance.policy.read_bytes() == saved_policy and auth.read_bytes() == saved_login
+
 
 @pytest.mark.parametrize("missing_input", (
     ["rootfs-base.ext4", "Image", "initramfs.cpio.gz", "helper"]
@@ -888,7 +1046,7 @@ def test_missing_guest_retry_keeps_agent_setup_services_and_unrelated_traffic(mi
 def test_unsupported_launch_harness_is_rejected_before_instance_mutation(tmp_path):
     artifacts, _, _ = native_inputs()
     root = tmp_path / "installed"
-    initialized = subprocess.run([str(artifacts / "safeyolo"), "--instance-dir", str(root), "init"],
+    initialized = subprocess.run([str(artifacts / "safeyolo"), "--dangerously-allow-root", "--instance-dir", str(root), "init"],
                                  capture_output=True, text=True, timeout=15)
     assert initialized.returncode == 0, initialized.stderr
     saved = {name: (root / name).read_bytes() for name in ("policy.toml", "config.toml")}
@@ -1128,10 +1286,11 @@ def test_direct_credential_decision_keeps_the_selected_destination(tmp_path, dec
         identifier = instance.admin("GET", "/admin/approvals")["approvals"][0]["request_id"]
         assert request(instance.paths["alice"], target, headers=headers)[0] == 428
         assert request(instance.paths["alice"], changed, headers=headers)[0] == 428
+        expected = "approved" if decision == "approve" else "rejected"
         if surface == "direct":
             result = instance.cli("approvals", decision, identifier, "--agent", "alice", "--json")
             assert result.returncode == 0, result.stderr
-            assert json.loads(result.stdout)["status"] == ("approved" if decision == "approve" else "rejected")
+            assert json.loads(result.stdout)["status"] == expected
         else:
             with terminal(instance, ["inspect", "--agent", "alice"]) as (process, master, until):
                 until(b"inspect> ")
@@ -1140,10 +1299,13 @@ def test_direct_credential_decision_keeps_the_selected_destination(tmp_path, dec
                 assert b"Status: pending" in output
                 os.write(master, f"{decision} {identifier}\n".encode())
                 output = until(b"inspect> ")
-                expected = b"approved" if decision == "approve" else b"rejected"
-                assert b"Status: " + expected in output
+                outcome = f"Request {identifier}: {expected}".encode()
+                assert output.count(outcome) == 1, output
+                assert b"first-launch-key" not in output
                 os.write(master, b"quit\n")
                 assert wait_terminal_exit(process, master, bytearray(), timeout=5) == 0
+        canonical = instance.admin("GET", f"/admin/approvals/{identifier}")
+        assert canonical["status"] == expected and canonical["action"]["host"] == "127.0.0.1"
         _wait_for_active_policy(instance)
         assert request(instance.paths["alice"], changed, headers=headers)[0] == 428
         assert origin.accepts == 0

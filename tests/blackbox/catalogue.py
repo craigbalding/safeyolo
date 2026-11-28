@@ -326,9 +326,9 @@ def selector_problems(root: Path = ROOT) -> list[str]:
 
 def validate_controls(controls: list[dict], root: Path) -> set[str]:
     ids = [control["id"] for control in controls]
-    expected = [f"BB-{number:02}" for number in range(1, 39)]
+    expected = [f"BB-{number:02}" for number in range(1, 44)]
     if sorted(ids) != expected:
-        raise ValueError("control IDs must contain BB-01–BB-38 exactly once")
+        raise ValueError("control IDs must contain BB-01–BB-43 exactly once")
     fields = {"id", "control", "source", "what", "existing", "conformance", "effort", "comments", "owner", "decisions"}
     decisions = {item["id"] for item in tomllib.loads((root / "docs/assurance-map.toml").read_text())["decisions"]}
     for control in controls:
@@ -468,7 +468,7 @@ def render(root: Path = ROOT) -> str:
     commands = [*workflows(root), *shell_commands(root)]
     phases = {phase: phase_functions(phase, root) for phase in PYTEST_PHASES}
     lines = ["## Complete control catalogue", "",
-             "The authored meaning and dispositions preserve [all 37 agreed controls](https://github.com/craigbalding/safeyolo/issues/1557). "
+             "The authored meaning and dispositions preserve [all 37 agreed controls](https://github.com/craigbalding/safeyolo/issues/1557); BB-38 onward were added later under their named owners. "
              "The audit baseline is 13 November 2026. Current existence and exact identities below come from source. "
              "Conformance is an authored boundary judgment, not a fresh passing result. Planned repairs remain with their named owners.", "",
              "Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). "

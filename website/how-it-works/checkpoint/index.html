@@ -20,17 +20,28 @@ journey:
   url: /journey/agent-home/
 - title: API access without the secret
   url: /journey/masked-apis/
+claims:
+- BB-04  # identity fixed at accept
+- BB-06  # destination policy, policy validated first
+- BB-07  # credential guard destinations
+- BB-12  # TLS, HTTP framing, CONNECT, no silent passthrough
+- BB-13  # no direct fallback from a required parent
+- BB-14  # rate budgets and circuit breakers
+- BB-29  # named checks
+- BB-39  # mixed-script domain checks
+- decision:interception_tls
+- decision:external_effects
 ---
 <h2>One process, operator-owned</h2>
 <p>Each SafeYOLO instance runs one checkpoint process under your own user account, not root. Every agent connects through its own socket, and the checkpoint fixes the agent's identity when the connection is accepted.</p>
 <h2>What it checks</h2>
 <p>The checkpoint terminates TLS with the instance's own certificate authority and understands HTTP/1.1, HTTP/2, CONNECT tunnels and WebSockets. Depending on the request, it applies:</p>
 <ul>
-<li><b>Network policy</b>: allowed destinations, lists and lookalike-domain checks</li>
+<li><b>Network policy</b>: allowed destinations, lists and mixed-script (homoglyph) domain checks</li>
 <li><b>Rate budgets and circuit breakers</b>: limits on runaway loops and failing upstreams</li>
-<li><b>Credential guard</b>: detects secrets and checks where they are going</li>
+<li><b>Credential guard</b>: recognises credentials in selected request headers and checks whether the destination may receive them</li>
 <li><b>Service gateway</b>: swaps the agent's scoped token for your real credential</li>
-<li><b>Content inspection</b>: pattern scanning, including prompt-injection signals on model traffic</li>
+<li><b>Content inspection</b>: patterns you configure, and prompt-injection indicators in text content that are recorded as evidence, not used to decide</li>
 <li><b>Specialised paths</b>: Docker API mediation, coding-client routing and SSH</li>
 <li><b>Your own named checks</b>: rules you write over the request's facts</li>
 </ul>
@@ -38,11 +49,11 @@ journey:
 <table>
 <tr><th>Response</th><th>Meaning</th></tr>
 <tr><td>Allowed</td><td>The request reaches its destination, and the decision is recorded</td></tr>
-<tr><td>428</td><td>Approval required: the request is outside policy, and you can approve it</td></tr>
+<tr><td>428</td><td>Approval required: policy or the credential guard sends the request to you to approve or deny</td></tr>
 <tr><td>403</td><td>Denied by policy</td></tr>
 <tr><td>429 or 503</td><td>A rate budget or circuit breaker stopped it</td></tr>
 </table>
 <div class="guarantees">
 <div><h3>What this gives you</h3><ul><li>A single place where every outbound request is decided</li><li>Policy validated before any agent can connect</li><li>No silent passthrough after a timeout or parse failure</li></ul></div>
-<div class="no"><h3>What it does not do</h3><ul><li>Inspect streamed bodies or TLS passthrough as deeply as ordinary requests</li><li>Replace a destination's own authentication</li></ul></div>
+<div class="no"><h3>What it does not do</h3><ul><li>Inspect streamed bodies or TLS passthrough as deeply as ordinary requests</li><li>Inspect non-HTTP protocols, such as SSH, inside an admitted tunnel: those are decided by destination only</li><li>Replace a destination's own authentication</li><li>Detect or prevent prompt injection, or judge whether data is sensitive</li></ul></div>
 </div>

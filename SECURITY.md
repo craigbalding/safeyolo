@@ -41,7 +41,7 @@ describes platform namespaces, UID mappings, storage, and the proxy route.
   durable identities. Guest administration includes the target's credentials,
   writable mounts and delegations. It grants no host socket or arbitrary host
   execution.
-- **External services** are reachable only if policy explicitly permits the destination.
+- **External services** are reachable only through SafeYOLO's policy. The shipped policy allows any destination until you narrow it.
 
 ## Core Security Properties
 
@@ -54,7 +54,9 @@ does not perform hostname or reverse-DNS resolution. The host-local boundary
 and proxy readiness therefore do not depend on the host resolver. Protected
 Admin API routes require a bearer token and check it with Rust's
 `subtle::ConstantTimeEq`.
-Host processes run as the operator's user ID. On Linux, `safeyolo agent start`
+Host processes run as the operator's user ID. Creating an instance, starting the
+proxy and `safeyolo-proxy` itself refuse to run as root unless the operator
+passes `--dangerously-allow-root` or sets `SAFEYOLO_DANGEROUSLY_ALLOW_ROOT=1`. On Linux, `safeyolo agent start`
 does not use host `sudo`.
 
 Prebuilt Linux guest preparation uses a delegated user namespace containing the
@@ -130,7 +132,9 @@ as an explicit decision to share the files that the selected script copies.
 Agents have no direct internet access. Each sandbox has no external network
 interface. Its only egress path is a host-owned, per-agent Unix domain socket
 that routes through SafeYOLO. No host firewall rule participates in this
-boundary.
+boundary. On Linux, SafeYOLO bundles a gVisor runtime with
+[three patches](docs/ARCHITECTURE.md#bundled-patched-gvisor); one limits host
+Unix-domain socket access to that proxy socket's directory.
 
 The host creates each managed proxy socket at
 `~/.safeyolo/agents/<agent-name>/proxy/proxy.sock`. The native listener
@@ -138,7 +142,7 @@ configuration binds that socket to the agent name and source address. When the
 listener accepts a connection, it fixes those values for the connection.
 Request headers, guest metadata and IP claims cannot select another owner.
 The proxy does not read an agent map to establish or reconcile identity.
-Linux mounts only the agent's dedicated proxy directory into the sandbox.
+Of the proxy sockets, Linux mounts only the agent's dedicated proxy directory into the sandbox.
 On Linux, a synthetic loopback address supplies attribution. It is not an
 external interface or a direct egress path. Existing explicit operator
 listeners keep their configured paths.

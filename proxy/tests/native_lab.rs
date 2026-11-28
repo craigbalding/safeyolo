@@ -9,6 +9,7 @@ use std::{
 
 fn cli(root: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
         .arg("--instance-dir")
         .arg(root)
         .arg("--json")
@@ -33,10 +34,14 @@ fn agents(root: &Path) -> toml::Value {
 #[test]
 fn help_retains_lab_factory_and_operator_coord() {
     let temp = tempfile::tempdir().unwrap();
-    let result = cli(temp.path(), &["--help"]);
-    assert!(result.status.success());
-    let help = String::from_utf8(result.stdout).unwrap();
-    for command in ["lab [--objective TEXT]", "factory check FILE", "coord send"] {
+    for (arguments, command) in [
+        (vec!["lab", "--help"], "lab [--objective TEXT]"),
+        (vec!["factory", "check", "--help"], "factory check FILE"),
+        (vec!["coord", "send", "--help"], "coord send"),
+    ] {
+        let result = cli(temp.path(), &arguments);
+        assert!(result.status.success());
+        let help = String::from_utf8(result.stdout).unwrap();
         assert!(help.contains(command), "missing {command}: {help}");
     }
     assert!(!temp.path().join("config.toml").exists());

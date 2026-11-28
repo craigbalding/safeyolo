@@ -82,9 +82,9 @@ fi
 [[ ! -e $directory ]] || { package_error "bundle directory already exists: $directory"; exit 1; }
 mkdir -p "$directory/bin" "$directory/libexec" "$directory/lib" "$directory/assets/guest" "$directory/assets/launchers" "$directory/assets/contrib/lib" "$directory/assets/docs"
 if [[ -n $hyperlight_artifacts ]]; then
-  hyperlight_files=(safeyolo-hyperlight runtime.json python.cpio core.elf checker.py service_checker.py artifact_checker.py template_probe.py
+  hyperlight_files=(safeyolo-hyperlight runtime.json python.cpio core.elf checker.py service_checker.py artifact_checker.py network_checker.py template_probe.py
     hyperlight.json hyperlight-unikraft.json hyperlight-service.json hyperlight-unikraft-service.json
-    hyperlight-artifact.json hyperlight-unikraft-artifact.json)
+    hyperlight-artifact.json hyperlight-unikraft-artifact.json hyperlight-network.json hyperlight-unikraft-network.json)
   for artifact in "${hyperlight_files[@]}"; do
     require_file "$hyperlight_artifacts/$artifact"
   done
@@ -226,7 +226,7 @@ fi
 printf 'source_commit=%s\nprofile=%s\nplatform=%s\nminimum_runtime=%s\nguest_compatibility=v1\nguest_repository=ghcr.io/craigbalding/safeyolo-guest\nguest_discovery_tag=compat-v1\n' "$revision" "$profile" "$platform" "$minimum" > "$directory/package-info"
 if [[ $libc == musl ]]; then printf 'libc=musl\n' >> "$directory/package-info"; fi
 if [[ $platform == linux-* ]]; then
-  printf 'runsc_version=release-20261005.0-safeyolo.1\nrunsc_source=https://github.com/google/gvisor/commit/97e8e896904cb364319cd9758241d3f0bd27a6f4\nrunsc_origin=bundled\n' >> "$directory/package-info"
+  printf 'runsc_version=release-20261005.0-safeyolo.2\nrunsc_source=https://github.com/google/gvisor/commit/97e8e896904cb364319cd9758241d3f0bd27a6f4\nrunsc_origin=bundled\n' >> "$directory/package-info"
 fi
 (cd "$directory"; find . -type f ! -name SHA256SUMS -print | LC_ALL=C sort | while IFS= read -r file; do printf '%s  %s\n' "$(file_sha256 "$file")" "$file"; done > SHA256SUMS)
 verify_native_package "$directory"

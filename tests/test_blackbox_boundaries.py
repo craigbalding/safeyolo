@@ -447,13 +447,13 @@ def test_installed_mounts_select_guest_holder_before_starting_services(tmp_path,
     ready = probe == "supplied" or (lane == "systrap" and probe is None)
     if ready:
         assert boundaries.run(args) == 0
-        coord = [str(base / "bin/safeyolo"), "--instance-dir", str(args.root), "coord", "start"]
+        coord = [str(base / "bin/safeyolo"), "--instance-dir", str(args.root), "--json", "coord", "start"]
         if explicit_ports:
             coord += ["--client-port", "46375", "--monitor-port", "46378"]
         elif lane == "vz":
             coord += ["--client-port", "46370", "--monitor-port", "46372"]
         assert calls[0] == ("admin", 46374 if explicit_ports else 46371 if lane == "vz" else 43123)
-        assert calls[1:] == ["nats", coord, [str(base / "bin/safeyolo"), "--instance-dir", str(args.root), "start"], "mounts"]
+        assert calls[1:] == ["nats", coord, [str(base / "bin/safeyolo"), "--instance-dir", str(args.root), "--json", "start"], "mounts"]
     else:
         with pytest.raises((ValueError, FileNotFoundError)):
             boundaries.run(args)

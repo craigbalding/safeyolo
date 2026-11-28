@@ -12,7 +12,7 @@ mkdir "$work/reports" "$work/bundle" "$work/bundle/rootfs" "$work/home"
 # permit the guest to create its controls without granting access elsewhere.
 chmod 1777 "$work/home"
 version=$("$runtime/runsc" --version)
-[[ ${version%%$'\n'*} == 'runsc version release-20261005.0-safeyolo.1' ]] || { package_error "unexpected runtime: $version"; exit 1; }
+[[ ${version%%$'\n'*} == 'runsc version release-20261005.0-safeyolo.2' ]] || { package_error "unexpected runtime: $version"; exit 1; }
 while IFS= read -r name; do native_executable "$runtime/$name" "$(host_platform)"; done < <(runsc_files)
 (cd "$runtime"; sha256sum runsc gvisor-bin/*) > "$work/reports/SHA256SUMS"
 printf '%s\n' "$version" > "$work/reports/version.txt"

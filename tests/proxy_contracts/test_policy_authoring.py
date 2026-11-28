@@ -64,7 +64,7 @@ def recipe_instance(directory, source, *, services, parent_proxy, service_source
         return
     root = directory / "source-layout"
     host = native_inputs()[0]
-    initialized = subprocess.run([str(host / "safeyolo"), "--instance-dir", str(root), "init"], capture_output=True, text=True)
+    initialized = subprocess.run([str(host / "safeyolo"), "--dangerously-allow-root", "--instance-dir", str(root), "init"], capture_output=True, text=True)
     assert initialized.returncode == 0, initialized.stderr
     (root / "bin").mkdir()
     for binary in ("safeyolo", "safeyolo-proxy", "safeyolo-coord"):

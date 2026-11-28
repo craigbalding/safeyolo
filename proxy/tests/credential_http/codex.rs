@@ -4,12 +4,15 @@ use safeyolo_proxy::credentials;
 
 const CLIENT: &str = safeyolo_proxy::credential_guard::codex::CLIENT_ID;
 const ACCOUNT: &str = "/backend-api/wham/accounts/check?workspace_id=owned";
-const NATIVE_GET_PATHS: [&str; 5] = [
+const NATIVE_GET_PATHS: [&str; 8] = [
     "/backend-api/plugins/featured",
     "/backend-api/ps/plugins/installed",
     "/backend-api/ps/plugins/suggested/codex",
     "/backend-api/ps/plugins/list",
     "/backend-api/wham/rate-limit-reset-credits",
+    "/backend-api/wham/security-setup",
+    "/backend-api/wham/settings/user",
+    "/backend-api/ps/plugins/tooling-state/turtle",
 ];
 const ACCESS: [&str; 3] = [
     "codex-owned-access-0",
@@ -41,6 +44,7 @@ impl Fixture {
     async fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let initialized = std::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
             .args(["--instance-dir", directory.path().to_str().unwrap(), "init"])
             .output()
             .unwrap();
@@ -398,14 +402,13 @@ async fn credentials_do_not_inherit_other_origins_routes_clients_or_beneficiarie
         ("POST", ACCOUNT),
         ("GET", "/unrelated"),
         ("GET", "/backend-api/codex/responses/../unrelated"),
-        ("POST", NATIVE_GET_PATHS[0]),
-        ("POST", NATIVE_GET_PATHS[1]),
-        ("POST", NATIVE_GET_PATHS[2]),
-        ("POST", NATIVE_GET_PATHS[3]),
-        ("POST", NATIVE_GET_PATHS[4]),
         ("GET", "/backend-api/plugins/featured/extra"),
         ("GET", "/backend-api/ps/plugins/suggested/other"),
-    ] {
+        ("GET", "/backend-api/ps/plugins/tooling-state/other"),
+    ]
+    .into_iter()
+    .chain(NATIVE_GET_PATHS.into_iter().map(|path| ("POST", path)))
+    {
         assert_ne!(fixture.access(ACCESS[0], method, path, true).await, 200);
     }
     for path in NATIVE_GET_PATHS {

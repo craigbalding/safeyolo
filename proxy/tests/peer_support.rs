@@ -65,7 +65,6 @@ fn guest_command_rechecks_the_target_after_waiting_for_control() {
 }
 
 async fn check_guest_command_after_control() {
-    use std::os::unix::fs::PermissionsExt;
     let original_path = std::env::var_os("PATH").unwrap();
     for change in ["rebind", "narrow", "source-run", "audit-final"] {
         let f = fixture().await;
@@ -84,10 +83,9 @@ async fn check_guest_command_after_control() {
         )
         .unwrap();
         let root = f.root.path().display();
-        let runsc = f.root.path().join("bin/runsc");
-        fs::write(
-            &runsc,
-            format!(
+        owned_run::install_runtime(
+            f.root.path(),
+            &format!(
                 r#"#!/bin/sh
 for arg in "$@"; do
     if [ "$arg" = state ]; then
@@ -106,9 +104,7 @@ printf 'effect\n' >> '{root}/command-effect'
 printf 'controlled command completed\n'
 "#
             ),
-        )
-        .unwrap();
-        fs::set_permissions(runsc, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let paths =
             std::iter::once(f.root.path().join("bin")).chain(std::env::split_paths(&original_path));
         unsafe {

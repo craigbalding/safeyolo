@@ -125,6 +125,35 @@ async fn check() {
     assert_eq!(pending["status"], "pending_approval");
     assert!(pending["result"]["url"].is_null());
     let id = pending["approval_id"].as_str().unwrap();
+    let selected_cli = std::env::var_os("SAFEYOLO_NATIVE_CLI")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_safeyolo").into());
+    let preview = tokio::process::Command::new(&selected_cli)
+        .arg("--instance-dir")
+        .arg(root.path())
+        .args(["approvals", "show", id])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    let preview = String::from_utf8(preview.stdout).unwrap();
+    assert!(preview.contains("Publish agent web port"), "{preview}");
+    assert!(
+        preview.contains("Guest port: 3000") && preview.contains("Audience: local"),
+        "{preview}"
+    );
+    assert!(
+        preview.contains("Preview lifetime: 3 seconds") && preview.contains("No desktop starts"),
+        "{preview}"
+    );
+    assert!(
+        !preview.contains("Present agent desktop")
+            && !preview.contains("Presentation: unavailable"),
+        "{preview}"
+    );
     let forged = action_request(root.path(), "POST", "/operator-actions", json!({
         "action_id":"web.publish","parameters":{"guest_port":3000,"audience":"local","agent_id":"other"}
     }), "alice").await;
@@ -166,8 +195,6 @@ async fn check() {
         ),
         401
     );
-    let selected_cli = std::env::var_os("SAFEYOLO_NATIVE_CLI")
-        .unwrap_or_else(|| env!("CARGO_BIN_EXE_safeyolo").into());
     let output = tokio::process::Command::new(selected_cli)
         .arg("--instance-dir")
         .arg(root.path())

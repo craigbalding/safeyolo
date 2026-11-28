@@ -365,7 +365,10 @@ fn unikraft(request: &Invocation, observation: &mut template::Observation) -> Re
     // values, which occur only inside the JSON loaded at runtime here.
     let argv = serde_json::to_string(&serde_json::to_string(&request.argv)?)?;
     let script = serde_json::to_string(&format!("/checker/{file}"))?;
-    let code = format!("sys.argv=json.loads({argv})\nrunpy.run_path({script},run_name='__main__')");
+    let client = serde_json::to_string(include_str!("../../proxy_client.py"))?;
+    let code = format!(
+        "import os,sys,json,runpy\nos.makedirs('/work',exist_ok=True)\nos.chdir('/work')\nwith open('/work/safeyolo_proxy.py','w') as f: f.write({client})\nsys.path.insert(0,'/work')\nsys.argv=json.loads({argv})\nrunpy.run_path({script},run_name='__main__')"
+    );
     sandbox.run(code)?;
     drop(sandbox);
     observation.payload_ms = started.elapsed().as_millis();

@@ -129,7 +129,7 @@ pub(super) async fn assert_native_split(root: &Path, bytes: &[u8], exposure: &Va
             "physical lines",
             "Prompt exposure correlation",
             "Investigation warning:",
-            "\"input\": 2",
+            "input 2 line",
             "linked",
         ] {
             assert!(text.contains(expected), "{text}");

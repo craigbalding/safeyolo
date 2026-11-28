@@ -53,7 +53,7 @@ def child_process(command, directory, env):
         process = subprocess.Popen(
             command,
             cwd=directory,
-            env=env,
+            env={**env, "SAFEYOLO_DANGEROUSLY_ALLOW_ROOT": "1"},
             stdout=log,
             stderr=subprocess.STDOUT,
         )

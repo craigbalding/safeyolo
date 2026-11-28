@@ -51,11 +51,12 @@ def mapped_https_origin(chain, key, hosts):
             assert not thread.is_alive()
 
 
-def intercepted_request(proxy, host, *, method="GET", headers=None, body=None):
+def intercepted_request(proxy, host, *, method="GET", headers=None, body=None,
+                        agent="alice", path="/preserved-chain", ca_file=None):
     """Verify the intercepted leaf, then observe native upstream verification."""
     with socket.socket(socket.AF_UNIX) as raw:
         raw.settimeout(5)
-        raw.connect(proxy.paths["alice"])
+        raw.connect(proxy.paths[agent])
         raw.sendall(f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n".encode())
         head = bytearray()
         while not head.endswith(b"\r\n\r\n"):
@@ -63,12 +64,13 @@ def intercepted_request(proxy, host, *, method="GET", headers=None, body=None):
             assert byte, head
             head.extend(byte)
         assert head.startswith(b"HTTP/1.1 200"), head
-        context = ssl.create_default_context(cafile=proxy.readiness_file.parent / "ca/mitmproxy-ca-cert.pem")
+        ca_file = ca_file or proxy.readiness_file.parent / "ca/mitmproxy-ca-cert.pem"
+        context = ssl.create_default_context(cafile=ca_file)
         with context.wrap_socket(raw, server_hostname=host) as stream:
             client = http.client.HTTPConnection(host, timeout=5)
             client.sock = stream
             try:
-                client.request(method, "/preserved-chain", headers=headers or {}, body=body)
+                client.request(method, path, headers=headers or {}, body=body)
                 response = client.getresponse()
                 return response.status, dict(response.getheaders()), response.read()
             finally:

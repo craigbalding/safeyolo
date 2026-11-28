@@ -83,6 +83,7 @@ async fn installed_native_response_header_opens_retained_owned_flow() {
     .unwrap();
     let mut process = Process(
         Command::new(env!("CARGO_BIN_EXE_safeyolo-proxy"))
+            .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
             .arg("--config")
             .arg(&config)
             .env("SAFEYOLO_DATA_DIR", &data)

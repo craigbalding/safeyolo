@@ -74,7 +74,7 @@ pub(super) fn check_prerequisites(
     root: &Path,
     settings: Option<&Settings>,
     mapping: Mapping,
-) -> Result<(), Error> {
+) -> Result<&'static str, Error> {
     namespaces_enabled()?;
     let missing: Vec<_> = REQUIRED_PACKAGES
         .iter()
@@ -95,8 +95,7 @@ pub(super) fn check_prerequisites(
         );
     }
     probe_namespace(root)?;
-    runsc_platform(mapping)?;
-    Ok(())
+    runsc_platform(mapping)
 }
 
 pub(crate) fn runsc_platform(mapping: Mapping) -> Result<&'static str, Error> {

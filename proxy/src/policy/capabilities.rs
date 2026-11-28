@@ -83,6 +83,24 @@ impl Definition {
         }
     }
 
+    fn human_name(self) -> &'static str {
+        match self {
+            Self::Controls => "Policy controls",
+            Self::SupportGrant => "Peer support grants",
+            Self::Delegation => "Delegated approvals",
+            Self::SupportOperation => "Peer support operations",
+            Self::DesktopPresent => "Guest desktop presentation",
+            Self::WebPublish => "Guest web publication",
+            Self::EvidenceReads => "Diagnostic and approval evidence reads",
+            Self::ServiceEffects => "Service effect descriptions",
+            Self::ServiceDefinition => "Service definitions",
+            Self::HostExecutionPackage => "Host execution packages (authored target operations)",
+            Self::HostExecutionBinding => {
+                "Host execution bindings (service access to a native target)"
+            }
+        }
+    }
+
     fn description(self) -> Value {
         let schema = self.schema();
         json!({"definition":self,"owner":self.owner(),"supported":true,"scope":schema["x-scope"],"lifetime":schema["x-lifetime"],
@@ -171,23 +189,51 @@ pub fn print(json_output: bool) -> Result<(), Error> {
     } else {
         println!(
             "Installed policy definitions {}\nBuild {} ({})",
-            value["definition_version"], value["build_revision"], value["build_profile"]
+            value["definition_version"]
+                .as_str()
+                .expect("definition version"),
+            value["build_revision"].as_str().expect("build revision"),
+            value["build_profile"].as_str().expect("build profile")
         );
-        for definition in value["definitions"].as_array().expect("definitions") {
-            println!(
-                "\n{} — {}\n  Scope: {}\n  Lifetime: {}\n  Effects: {}\n  Dependencies: {}\n  Coverage: {}",
-                definition["definition"],
-                definition["owner"],
-                definition["scope"],
-                definition["lifetime"],
-                definition["declared_effects"],
-                definition["dependencies"],
-                definition["gaps"]
-            );
+        for (kind, definition) in Definition::ALL
+            .into_iter()
+            .zip(value["definitions"].as_array().expect("definitions"))
+        {
+            println!("\n{}", kind.human_name());
+            for (label, field) in [
+                ("Scope", "scope"),
+                ("Lifetime", "lifetime"),
+                ("Effects", "declared_effects"),
+                ("Dependencies", "dependencies"),
+                ("Coverage limits", "gaps"),
+            ] {
+                println!("  {label}: {}", human_metadata(&definition[field]));
+            }
         }
         println!(
-            "\nInstance permission and readiness: unknown. Use the installed agent discovery tool with observe=true for authorized current observations. Use --json for the types and validator references."
+            "\nDefinitions describe accepted input, not permission or complete safety. Missing descriptions do not imply unrestricted scope or complete coverage. Reading or validating a definition grants no access and performs no protected operation.\nInstance permission and readiness: unknown. Use the installed agent discovery tool with observe=true for authorized current observations. Use --json for the types and validator references."
         );
     }
     Ok(())
+}
+
+fn human_metadata(value: &Value) -> String {
+    let text = match value {
+        Value::String(text) => text.clone(),
+        Value::Array(items) => items
+            .iter()
+            .map(human_metadata)
+            .collect::<Vec<_>>()
+            .join("; "),
+        _ => String::new(),
+    };
+    if text.is_empty() {
+        "Not described by this installed definition.".into()
+    } else {
+        text.replace("Delegation::warnings", "the delegation validator")
+            .replace(
+                "ServiceDefinition::from_value",
+                "The service definition parser",
+            )
+    }
 }

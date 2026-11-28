@@ -10,6 +10,78 @@ use std::{
 
 use serde_json::json;
 
+/// Supply controlled commands through the same complete, checked package
+/// layout as production, including a native executable for the version probe.
+#[allow(dead_code)] // Several namespace fixtures use OwnedRun without commands.
+pub fn install_runtime(root: &Path, script: &str) {
+    let directory = root.join("libexec");
+    fs::create_dir_all(directory.join("gvisor-bin")).unwrap();
+    let script_path = directory.join("fixture-runsc.sh");
+    fs::write(&script_path, script).unwrap();
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let source = directory.join("fixture-runsc.c");
+    fs::write(
+        &source,
+        format!(
+            r#"
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+int main(int argc, char **argv) {{
+  if (argc == 2 && strcmp(argv[1], "--version") == 0) {{
+    puts("runsc version release-20261005.0-safeyolo.2");
+    return 0;
+  }}
+  execv({}, argv);
+  return 127;
+}}
+"#,
+            serde_json::to_string(&script_path).unwrap()
+        ),
+    )
+    .unwrap();
+    let output = Command::new("/usr/bin/cc")
+        // Callers restrict PATH to exercise missing runtime tools. Keep the
+        // compiler's assembler and linker available only during fixture setup.
+        .env("PATH", "/usr/bin:/bin")
+        .arg(&source)
+        .arg("-o")
+        .arg(directory.join("runsc"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let files = [
+        "runsc",
+        "gvisor-bin/gvisor_sentry",
+        "gvisor-bin/gvisor-sentry-prewarmer",
+        "gvisor-bin/runsc-fd-parking",
+    ];
+    let mut sums = String::new();
+    for name in files {
+        let path = directory.join(name);
+        if name != "runsc" {
+            fs::copy(directory.join("runsc"), &path).unwrap();
+        }
+        let digest = ring::digest::digest(&ring::digest::SHA256, &fs::read(path).unwrap());
+        let hex = digest
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        sums.push_str(&format!("{hex}  ./libexec/{name}\n"));
+    }
+    fs::write(root.join("SHA256SUMS"), sums).unwrap();
+    // Existing lifecycle fixtures put this directory first on PATH. Any
+    // accidental fallback must fail instead of exercising the selected script.
+    fs::create_dir_all(root.join("bin")).unwrap();
+    fs::write(
+        root.join("bin/runsc"),
+        "#!/bin/sh\necho 'unrelated PATH runsc executed' >&2\nexit 97\n",
+    )
+    .unwrap();
+    fs::set_permissions(root.join("bin/runsc"), fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 pub struct OwnedRun {
     pub child: Child,
     directory: PathBuf,

@@ -695,7 +695,13 @@ pub(crate) async fn attach(
         ])
         .arg(&source)
         .arg(super::runtime_path()?)
-        .args(["--host-uds=open", "gofer", "--bundle"])
+        .args([
+            // This gofer serves only an extra share, rooted at /. It has no
+            // proxy mount, so no host socket belongs to its allowed paths.
+            "--host-uds=none",
+            "gofer",
+            "--bundle",
+        ])
         .arg(&bundle)
         .arg("--gofer-mount-confs=lisafs:none")
         .arg(format!("--spec-fd={}", config.as_raw_fd()))

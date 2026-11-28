@@ -353,6 +353,7 @@ pub(crate) fn proxy_live() -> bool {
 }
 
 pub(crate) async fn start_proxy() -> Result<Option<Value>, Error> {
+    crate::host_root::refuse_root("start the proxy")?;
     let mut timing = crate::startup_timings::StartupTimings::new("launcher");
     let root = host_platform::config_dir();
     let lock_path = root.join("data/proxy-start.lock");
@@ -433,6 +434,7 @@ async fn start_proxy_process(
     command
         .args(["--config"])
         .arg(config_path)
+        .args(crate::host_root::allowed().then_some(crate::host_root::FLAG))
         .env("SAFEYOLO_CONFIG_DIR", root)
         .env_remove("SAFEYOLO_HOST_SETUP_LOCK_FD")
         .stdin(std::process::Stdio::null())
@@ -907,16 +909,23 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
                             .map_err(|_| "publish and unpublish require --port PORT --audience local|tailnet")?;
                         selected.validate()?;
                     }
-                    let result = crate::native_client::admin(&host_platform::config_path(),
+                    let config = host_platform::config_path();
+                    let prefix = host_lifecycle::current_instance_command()?;
+                    let result = crate::native_client::admin(&config,
                         &format!("/admin/agents/{}/web", agent.id),
                         match operation.as_str() {"publications"=>hyper::Method::GET, "unpublish"=>hyper::Method::DELETE, _=>hyper::Method::POST},
-                        if operation == "publications" {Value::Null} else {parameters}, Duration::from_secs(40)).await?;
+                        if operation == "publications" {Value::Null} else {parameters}, Duration::from_secs(40)).await
+                        .map_err(|error| format!("Web {operation} result is unavailable for agent {} using configuration {}: {error}\nInspect this instance: {prefix} status\nWhen the proxy is available, inspect current publications before repeating a change: {prefix} agent publications {}",
+                            host_lifecycle::shell_quote(name), host_lifecycle::shell_quote(&config.to_string_lossy()), host_lifecycle::shell_quote(name)))?;
                     print(&result)?;
                 },
                 "start"|"stop"|"status"|"cleanup"=>{
                     let (operation, arguments, allow_unowned) = if operation=="start" {
                         start_arguments(extra)?
                     }else{if !extra.is_empty(){return Err("unexpected agent argument".into());} (operation.as_str(), None, false)};
+                    if matches!(operation, "start"|"start-foreground"|"sandbox-start") {
+                        crate::host_root::refuse_root("start an agent")?;
+                    }
                     let setup_lock = if matches!(operation, "start"|"start-foreground"|"sandbox-start"|"stop") {
                         inherited_setup_lock(&agent)?
                     } else { None };
@@ -1108,6 +1117,7 @@ mod tests {
             "--".into(),
             "--model".into(),
             "fixture model $(literal)".into(),
+            crate::host_root::FLAG.into(),
         ];
         let selected = start_arguments(&literal).unwrap();
         assert_eq!(selected.0, "start-foreground");

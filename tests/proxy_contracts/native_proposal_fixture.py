@@ -72,9 +72,9 @@ def proposal_instance(tmp_path, *, nats_binary):
     artifacts, _, _ = native_inputs()
     proxy = Path(os.environ.get("SAFEYOLO_TEST_PROXY", artifacts / "safeyolo-proxy"))
     root = tmp_path / "native"
-    environment = dict(os.environ, SAFEYOLO_NATS_TEST_INSTANCE=f"proposal-{tmp_path.name}",
+    environment = dict(os.environ, SAFEYOLO_DANGEROUSLY_ALLOW_ROOT="1", SAFEYOLO_NATS_TEST_INSTANCE=f"proposal-{tmp_path.name}",
                        SAFEYOLO_HOME=str(root), SAFEYOLO_CONFIG_DIR=str(root))
-    initialized = subprocess.run([str(artifacts / "safeyolo"), "--instance-dir", str(root), "init"],
+    initialized = subprocess.run([str(artifacts / "safeyolo"), "--dangerously-allow-root", "--instance-dir", str(root), "init"],
                                  cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=15)
     assert initialized.returncode == 0, initialized.stderr
     (root / "bin").mkdir()

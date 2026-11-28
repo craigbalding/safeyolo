@@ -135,7 +135,7 @@ def test_bundle_pins_both_service_checkers_without_changing_offline_examples(tmp
     spec = importlib.util.spec_from_file_location("builder", REPO / "scripts/build_hyperlight_jobs.py")
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
-    for name in ("core.elf", "checker.py", "service_checker.py", "artifact_checker.py", "task_action_checker.py", "runtime.json"):
+    for name in ("core.elf", "checker.py", "service_checker.py", "artifact_checker.py", "network_checker.py", "task_action_checker.py", "runtime.json"):
         (tmp_path / name).write_text(name)
     builder.write_job_definitions(tmp_path)
     for kind in ("hyperlight", "hyperlight-unikraft"):
@@ -529,8 +529,13 @@ def driver_command(host_driver, tmp_path):
     """Run the real driver subprocess boundary without starting a VM."""
     cli = tmp_path / "fixture-cli"
     cli.write_text(f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n"
+                   "import argparse\nparser = argparse.ArgumentParser()\n"
+                   "parser.add_argument('--instance-dir', required=True)\n"
+                   "parser.add_argument('--json', action='store_true')\n"
+                   "options, arguments = parser.parse_known_args()\n"
                    "value = json.loads(Path(__file__).with_suffix('.json').read_bytes())\n"
-                   "sys.stdout.write(value['stdout'])\nsys.stderr.write(value['stderr'])\n"
+                   "sys.stdout.write(value['stdout'] if options.json else 'Human job summary\\n')\n"
+                   "sys.stderr.write(value['stderr'])\n"
                    "sys.exit(value['returncode'])\n")
     cli.chmod(0o700)
     (tmp_path / "hyperlight-adopted.json").write_text('{"engine": {}}')
@@ -541,6 +546,20 @@ def driver_command(host_driver, tmp_path):
         return instance.run_job("hyperlight", {}, expected_outcome=expected)
 
     return run
+
+
+def test_driver_policy_preview_selects_machine_output(host_driver, tmp_path):
+    cli = tmp_path / "fixture-cli"
+    cli.write_text(f"#!{sys.executable}\nimport argparse, json\n"
+                   "parser = argparse.ArgumentParser()\n"
+                   "parser.add_argument('--instance-dir', required=True)\n"
+                   "parser.add_argument('--json', action='store_true')\n"
+                   "options, arguments = parser.parse_known_args()\n"
+                   "print(json.dumps({'status': 'preview'}) if options.json else 'Policy preview')\n")
+    cli.chmod(0o700)
+    instance = host_driver.Instance(SimpleNamespace(root=tmp_path, scratch=tmp_path, cli=cli))
+    result = instance.command("policy", "evaluate", str(tmp_path / "policy.toml"), str(tmp_path / "scenario.json"))
+    assert json.loads(result.stdout) == {"status": "preview"}
 
 
 def test_driver_accepts_only_the_explicit_retained_grant_denial(driver_command):
@@ -674,6 +693,17 @@ def test_named_evidence_binds_the_raw_adopted_definition_digest(host_driver, tmp
         "execution": {"run_id": "job-named", "gate_principal": first["gate_principal"],
                       "definition_digest": host_driver.digest(path), "service_evidence": [{}]}}}
     host_driver.check_named_evidence(first, named, path, subject)
+
+    for leak in ("retained_base64", "request_body_base64", "checked_input"):
+        changed = copy.deepcopy(named)
+        execution = changed["evidence"]["execution"]
+        if leak == "checked_input":
+            execution[leak] = {"content_base64": "private-snapshot"}
+        else:
+            # The old observer inspected only the first capture.
+            execution["service_evidence"].append({leak: "private-provider-data"})
+        with pytest.raises(AssertionError):
+            host_driver.check_named_evidence(first, changed, path, subject)
 
     rewritten = tmp_path / "rewritten.json"
     rewritten.write_text(json.dumps(json.loads(path.read_bytes()), sort_keys=True))

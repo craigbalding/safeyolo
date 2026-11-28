@@ -109,8 +109,8 @@ def validate_report(report: dict, context: dict) -> list[dict]:
         if (not isinstance(row, dict) or row.get("status") not in {"material", "mechanical", "context", "unclassified"}
                 or not isinstance(row.get("path"), str) or len(row["path"]) > 600
                 or not isinstance(row.get("reason"), str) or len(row["reason"]) > 200
-                or not isinstance(row.get("controls"), list) or len(row["controls"]) > 38
-                or any(not isinstance(control, str) or not re.fullmatch(r"BB-(?:0[1-9]|[12][0-9]|3[0-8])", control) for control in row["controls"])):
+                or not isinstance(row.get("controls"), list) or len(row["controls"]) > 43
+                or any(not isinstance(control, str) or not re.fullmatch(r"BB-(?:0[1-9]|[123][0-9]|4[0-3])", control) for control in row["controls"])):
             raise ValueError("invalid change record")
         if row["status"] == "material":
             if row["reason"] not in {"notification, catalogue or trusted analysis definition changed",

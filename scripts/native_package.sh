@@ -65,7 +65,7 @@ runsc_files() {
 }
 
 verify_runsc_payload() {
-  local directory=$1 platform=$2 expected_version=${3:-release-20261005.0-safeyolo.1} name version
+  local directory=$1 platform=$2 expected_version=${3:-release-20261005.0-safeyolo.2} name version
   while IFS= read -r name; do native_executable "$directory/$name" "$platform" || return; done < <(runsc_files)
   version=$("$directory/runsc" --version) || { package_error 'gVisor runtime cannot execute'; return 1; }
   [[ ${version%%$'\n'*} == "runsc version $expected_version" ]] || { package_error "incompatible gVisor runtime: $version; requires $expected_version"; return 1; }
@@ -144,7 +144,9 @@ verify_native_package() {
   [[ $repository == ghcr.io/craigbalding/safeyolo-guest ]] || { package_error 'untrusted guest repository'; return 1; }
   if [[ $seen == *$'\nrunsc_version\n'* || $seen == *$'\nrunsc_source\n'* || $seen == *$'\nrunsc_origin\n'* || -e $package/libexec/runsc ]]; then
     [[ $platform == linux-* && $runsc_origin == bundled && ( \
-       ( $runsc_version == release-20261005.0-safeyolo.1 && \
+       ( $runsc_version == release-20261005.0-safeyolo.2 && \
+         $runsc_source == https://github.com/google/gvisor/commit/97e8e896904cb364319cd9758241d3f0bd27a6f4 ) || \
+       ( ${2:-} == --installed && $runsc_version == release-20261005.0-safeyolo.1 && \
          $runsc_source == https://github.com/google/gvisor/commit/97e8e896904cb364319cd9758241d3f0bd27a6f4 ) || \
        ( ${2:-} == --installed && $runsc_version == release-20261005.0 && \
          $runsc_source == https://github.com/google/gvisor/releases/tag/release-20261005.0 ) ) ]] || {

@@ -20,16 +20,21 @@ async fn main() -> Result<(), Error> {
         Some("--config") => {}
         Some("--help") => {
             println!(
-                "safeyolo-proxy --config config.toml\nsafeyolo-proxy --version\n\nconfig.toml owns paths, listeners and runtime settings.\npolicy.toml owns host policy and named controls.\nRelative paths belong to the config.toml directory.\nCtrl-C stops this foreground process; SIGHUP reloads configuration.\nEmbedded development launchers may still pass their internal JSON configuration."
+                "safeyolo-proxy --config config.toml [--dangerously-allow-root]\nsafeyolo-proxy --version\n\nTo run as root, use --dangerously-allow-root or set SAFEYOLO_DANGEROUSLY_ALLOW_ROOT=1 for this invocation.\nconfig.toml owns paths, listeners and runtime settings.\npolicy.toml owns host policy and named controls.\nRelative paths belong to the config.toml directory.\nCtrl-C stops this foreground process; SIGHUP reloads configuration.\nEmbedded development launchers may still pass their internal JSON configuration."
             );
             return Ok(());
         }
-        _ => return Err("usage: safeyolo-proxy --config config.toml | --version | --help".into()),
+        _ => return Err("usage: safeyolo-proxy --config config.toml [--dangerously-allow-root] | --version | --help".into()),
     }
     let config_path = PathBuf::from(arguments.next().ok_or("--config needs a path")?);
-    if arguments.next().is_some() {
-        return Err("unexpected command argument".into());
+    match arguments.next().as_deref() {
+        None => {}
+        Some(safeyolo_proxy::host_root::FLAG) if arguments.next().is_none() => {
+            safeyolo_proxy::host_root::allow_by_flag();
+        }
+        Some(_) => return Err("unexpected command argument".into()),
     }
+    safeyolo_proxy::host_root::refuse_root("run the proxy")?;
     // Register before readiness so a launcher can signal immediately after observing it.
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
