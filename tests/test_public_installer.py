@@ -1310,13 +1310,14 @@ def test_composed_install_failure_and_launch_failure_recover_without_reinstallat
     contents, requests, _faults, environment, bootstrap, root, base, archive = public_release
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    original = contents[f"{base}/{archive.name}"]
-    contents[f"{base}/{archive.name}"] += b"bad host transfer"
+    original = contents[f"{base}/SHA256SUMS"]
+    archive_digest = hashlib.sha256(contents[f"{base}/{archive.name}"]).hexdigest().encode()
+    contents[f"{base}/SHA256SUMS"] = original.replace(archive_digest, b"0" * 64)
     arguments = ["bash", str(bootstrap), "--no-guest-download", "--yes", "--launch"]
     refused = run(*arguments, str(workspace), env=environment)
     assert refused.returncode != 0 and "checksum failed" in refused.stderr
     assert "launching the first agent" not in refused.stderr and not root.exists()
-    contents[f"{base}/{archive.name}"] = original
+    contents[f"{base}/SHA256SUMS"] = original
     # Actual first launch needs a trusted terminal. Its error must propagate
     # while retaining the successful installation for the next invocation.
     failed_launch = run(*arguments, str(workspace), env=environment)
