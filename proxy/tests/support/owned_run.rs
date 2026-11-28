@@ -41,6 +41,9 @@ int main(int argc, char **argv) {{
     )
     .unwrap();
     let output = Command::new("/usr/bin/cc")
+        // Callers restrict PATH to exercise missing runtime tools. Keep the
+        // compiler's assembler and linker available only during fixture setup.
+        .env("PATH", "/usr/bin:/bin")
         .arg(&source)
         .arg("-o")
         .arg(directory.join("runsc"))

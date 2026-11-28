@@ -162,6 +162,13 @@ that guest and keep its HTTP port, for example 3000, distinct from a port on
 your computer or on the SafeYOLO host. Discover the commands with
 `safeyolo agent --help` and `safeyolo agent publish --help`.
 
+Choose the access path for the consumer. Direct publication lets you use your
+own browser. For a browser inside the guest, including webapp security testing,
+use the guest browser and [desktop presentation](#open-an-agent-desktop) when
+you need to interact with it. For another agent calling the app, use the
+[service gateway and that consumer's permissions](../cli/src/safeyolo/agent_context/skills/safeyolo/references/web-services.md#share-with-other-agents-through-the-gateway).
+These paths can coexist; direct publication grants no service access.
+
 ```sh
 safeyolo agent publish work --port 3000 --audience tailnet
 safeyolo agent publications work
@@ -184,6 +191,15 @@ Stop, expiry or a changed guest run disconnects its viewers and removes only
 its foreground Serve mapping. Other publications and unrelated mappings remain.
 Publication grants no outbound network, credential, service or peer-support
 access. Keep unlock codes private.
+
+For host-local access, select `--audience local`. If you connect from another
+computer, forward the returned host listener through your existing Secure Shell (SSH)
+connection as described in the [publication guide](../cli/src/safeyolo/agent_context/skills/safeyolo/references/web-services.md#publish-for-the-operator).
+An agent can request its own app's publication with `web.publish`. Review that
+request in `safeyolo watch` or `safeyolo approvals show ID`. After approval,
+`approvals show ID` recovers the URL and unlock code for that same publication.
+Replace `ID` with the request's approval ID. Reading it does not publish again
+or extend its lifetime.
 
 An unavailable transport or Serve permission reports the selected target's
 missing capability. A generated URL alone does not prove app readiness or
