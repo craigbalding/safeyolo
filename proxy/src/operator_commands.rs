@@ -563,6 +563,19 @@ fn show_decision_evidence(view: &Value) {
 // Decision facts have no display-length cap. Supporting model inputs and
 // duplicate projections remain available through explain and explicit JSON.
 fn show_review_fact(label: &str, value: &Value) {
+    if value.as_object().is_some_and(|fields| fields.is_empty()) {
+        return;
+    }
+    let display_label = safe(label);
+    if value.is_object()
+        || value
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item.is_object() || item.is_array()))
+    {
+        println!("{display_label}:");
+        show_evidence_fields(value, label.len() - label.trim_start().len() + 2);
+        return;
+    }
     let rendered = match value {
         Value::Null => return,
         Value::Array(items) if items.is_empty() => return,
@@ -579,14 +592,576 @@ fn show_review_fact(label: &str, value: &Value) {
         Value::String(value) => value.clone(),
         _ => value.to_string(),
     };
-    println!("{label}: {}", safe(&rendered));
+    println!("{display_label}: {}", safe(&rendered));
+}
+
+fn review_time(value: &Value) -> String {
+    value
+        .as_f64()
+        .and_then(|seconds| {
+            time::OffsetDateTime::from_unix_timestamp_nanos((seconds * 1e9) as i128).ok()
+        })
+        .and_then(|at| {
+            at.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
+        .unwrap_or_else(|| format!("unavailable (recorded timestamp: {value})"))
+}
+
+fn show_review_time(label: &str, value: &Value) {
+    if !value.is_null() {
+        println!("{label}: {} (UTC)", safe(&review_time(value)));
+    }
+}
+
+// Native effect summaries carry concrete JSON values inside explanatory prose.
+// Render those values with the existing field renderer, preserving every fact.
+fn show_execution_authority(value: &Value) {
+    let Some(mut remaining) = value.as_str() else {
+        return;
+    };
+    println!("    Execution authority statement:");
+    while let Some(start) = remaining.find(['{', '[']) {
+        let mut values =
+            serde_json::Deserializer::from_str(&remaining[start..]).into_iter::<Value>();
+        let Some(Ok(fact)) = values.next() else { break };
+        let prefix = remaining[..start]
+            .trim()
+            .trim_start_matches(". ")
+            .trim_end_matches(':');
+        let label = format!("      {prefix}");
+        if fact.as_array().is_some_and(|items| items.is_empty()) {
+            show_review_fact(&label, &json!("none declared"));
+        } else {
+            show_review_fact(&label, &fact);
+        }
+        remaining = &remaining[start + values.byte_offset()..];
+    }
+    if !matches!(remaining.trim(), "" | ".") {
+        println!("      {}", safe(remaining.trim()));
+    }
+}
+
+fn review_certificate(value: &Value) -> String {
+    match value.as_str() {
+        Some(pem) => {
+            let digest = ring::digest::digest(&ring::digest::SHA256, pem.as_bytes());
+            let hash = digest
+                .as_ref()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            format!("pinned certificate; SHA256 of PEM: {hash} (full certificate in explicit JSON)")
+        }
+        None => "no certificate recorded".into(),
+    }
+}
+
+fn show_host_operation_bounds(scope: &Value, definition: &Value) {
+    show_review_fact("    Allowed resources", &scope["resources"]);
+    show_review_fact("    Allowed argument values", &scope["arguments"]);
+    for (label, key) in [
+        ("Call limit", "calls"),
+        ("Concurrent job limit", "concurrent"),
+        ("Timeout (seconds)", "timeout_seconds"),
+        ("Output limit (bytes)", "output_bytes"),
+    ] {
+        show_review_fact(&format!("    {label}"), &scope["budgets"][key]);
+    }
+    let updates = &scope["updates"];
+    if !updates.is_null() {
+        println!("    Standing adoption permits:");
+        for (label, key) in [
+            ("Narrower operations", "allow_narrower"),
+            (
+                "Implementation replacements",
+                "allow_implementation_updates",
+            ),
+            ("Agent-written code", "allow_agent_code"),
+            ("Dependency allowance (bytes)", "agent_dependency_bytes"),
+        ] {
+            show_review_fact(&format!("      {label}"), &updates[key]);
+        }
+    }
+    let ceiling = updates.get("ceiling").unwrap_or(definition);
+    let execution = &ceiling["execution"];
+    for (label, value) in [
+        ("Target account / UID", &execution["identity"]["principal"]),
+        ("Target groups", &execution["identity"]["groups"]),
+        ("Executable", &execution["executable"]),
+        ("Arguments", &execution["argv"]),
+        ("Environment", &execution["environment"]),
+        ("Dependencies", &execution["dependencies"]),
+        ("Working directory", &execution["working_directory"]),
+        ("Read paths", &execution["filesystem"]["read"]),
+        ("Write paths", &execution["filesystem"]["write"]),
+        (
+            "Outbound destinations",
+            &execution["network"]["destinations"],
+        ),
+        ("Listeners", &execution["network"]["listeners"]),
+        ("IPC channels", &execution["network"]["ipc"]),
+        ("Broader native exceptions", &execution["broader"]),
+        ("Process and resource ceilings", &execution["resources"]),
+        ("Delegated services", &execution["delegated_services"]),
+        (
+            "Authored enforcement declarations (not a current observation)",
+            &ceiling["enforcement"],
+        ),
+        ("Declared program effects", &ceiling["effects"]),
+        ("Required checks", &ceiling["required_checks"]),
+        ("Grant checks", &scope["checks"]),
+    ] {
+        show_review_fact(&format!("    {label}"), value);
+    }
+}
+
+// Policy fields can contain JSON-encoded native definitions. Compare their
+// values too, so changing one grant does not print the complete target twice.
+fn show_policy_value_change(
+    path: &str,
+    before: &Value,
+    after: &Value,
+    native_definitions: &std::collections::BTreeSet<String>,
+) {
+    if before == after {
+        return;
+    }
+    let decoded = |value: &Value| {
+        value.as_str().and_then(|source| {
+            serde_json::from_str::<Value>(source)
+                .ok()
+                .filter(|value| value.is_object() || value.is_array())
+        })
+    };
+    let old = decoded(before);
+    let new = decoded(after);
+    let before = old.as_ref().unwrap_or(before);
+    let after = new.as_ref().unwrap_or(after);
+    if before.is_null() && native_definitions.contains(path) {
+        let kind = if path.starts_with("/host_bindings/") {
+            "binding"
+        } else {
+            "catalogue"
+        };
+        let name = path
+            .rsplit('/')
+            .next()
+            .unwrap_or(path)
+            .replace("~1", "/")
+            .replace("~0", "~");
+        println!(
+            "  Add host {kind} {}: selected authority and bounds below; complete definition in explicit details/JSON.",
+            safe(&name)
+        );
+        return;
+    }
+    if (before.is_object() && (after.is_object() || after.is_null()))
+        || (before.is_null() && after.is_object())
+    {
+        let empty = serde_json::Map::new();
+        let old = before.as_object().unwrap_or(&empty);
+        let new = after.as_object().unwrap_or(&empty);
+        let keys = old
+            .keys()
+            .chain(new.keys())
+            .collect::<std::collections::BTreeSet<_>>();
+        if keys.is_empty() {
+            println!("  {}: {before} -> {after}", safe(path));
+        }
+        for key in keys {
+            let key_path = format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"));
+            show_policy_value_change(
+                &key_path,
+                old.get(key).unwrap_or(&Value::Null),
+                new.get(key).unwrap_or(&Value::Null),
+                native_definitions,
+            );
+        }
+    } else if (before.is_array() && (after.is_array() || after.is_null()))
+        || (before.is_null() && after.is_array())
+    {
+        let empty = Vec::new();
+        let old = before.as_array().unwrap_or(&empty);
+        let new = after.as_array().unwrap_or(&empty);
+        if old.is_empty() && new.is_empty() {
+            println!("  {}: {before} -> {after}", safe(path));
+        }
+        for index in 0..old.len().max(new.len()) {
+            show_policy_value_change(
+                &format!("{path}/{index}"),
+                old.get(index).unwrap_or(&Value::Null),
+                new.get(index).unwrap_or(&Value::Null),
+                native_definitions,
+            );
+        }
+    } else {
+        println!("  {}", safe(path));
+        let render = |value: &Value| {
+            if path.ends_with("/certificate_pem") {
+                review_certificate(value)
+            } else if [
+                "/not_before",
+                "/expires_at",
+                "/valid_until",
+                "/enrolled_at",
+                "/observed_at",
+            ]
+            .iter()
+            .any(|key| path.ends_with(key))
+                && value.is_number()
+            {
+                format!("{} (UTC)", review_time(value))
+            } else {
+                value.to_string()
+            }
+        };
+        println!(
+            "    Before: {}",
+            safe(&if before.is_null() {
+                "absent".into()
+            } else {
+                render(before)
+            })
+        );
+        println!(
+            "    After: {}",
+            safe(&if after.is_null() {
+                "absent".into()
+            } else {
+                render(after)
+            })
+        );
+    }
+}
+
+fn show_policy_decision_summary(assessment: &Value) {
+    println!("SafeYolo policy assessment:");
+    show_review_fact("  Candidate valid", &assessment["valid"]);
+    let state = &assessment["current_state"];
+    for (label, key) in [
+        (
+            "Saved policy matches running policy",
+            "saved_matches_active",
+        ),
+        (
+            "Proposal base matches running policy",
+            "base_matches_active",
+        ),
+        ("Proposal base matches saved policy", "base_matches_saved"),
+        (
+            "Assessment inputs match running policy",
+            "captured_inputs_match_active",
+        ),
+    ] {
+        show_review_fact(&format!("  {label}"), &state[key]);
+    }
+    if let Some(ms) = state["observed_at_ms"].as_f64() {
+        show_review_time("  Policy observed at", &json!(ms / 1000.0));
+    }
+    show_review_fact("  Assessment basis", &state["assessment_inputs"]);
+    show_review_fact("  Decision revalidation", &state["final_revalidation"]);
+    for consequence in assessment["consequences"].as_array().into_iter().flatten() {
+        show_review_fact("  Consequence", &consequence["consequence"]);
+    }
+    println!("configured agents:");
+    show_evidence_fields(&assessment["configured_agents"], 2);
+    println!("Exact policy changes (parsed values; paths use JSON Pointer escaping):");
+    let native_definitions = assessment["host_operations"]["after"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|binding| binding["binding"].as_str())
+        .flat_map(|name| {
+            let name = name.replace('~', "~0").replace('/', "~1");
+            [
+                format!("/host_bindings/{name}"),
+                format!("/host_catalogues/{name}"),
+            ]
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    for change in assessment["structural_changes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let path = change["path"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|part| part.replace('~', "~0").replace('/', "~1"))
+            .collect::<Vec<_>>()
+            .join("/");
+        show_policy_value_change(
+            &format!("/{path}"),
+            &change["before"],
+            &change["after"],
+            &native_definitions,
+        );
+    }
+    // These are the existing deterministic owners' changed projections, not
+    // another assessment or a copy of their full before/after snapshots.
+    for key in ["effective", "services"] {
+        let report = &assessment[key];
+        show_policy_value_change(
+            key,
+            &report["before"],
+            &report["after"],
+            &native_definitions,
+        );
+        show_review_fact("  Limits", &report["limitations"]);
+    }
+    for case in assessment["network"]["cases"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if case["before"] != case["after"] {
+            show_review_fact("  Network decision change", case);
+        }
+    }
+    show_review_fact(
+        "  Network assessment coverage",
+        &assessment["network"]["coverage"],
+    );
+    if assessment["network"]["truncated"] == true {
+        println!("  Network assessment is incomplete: its case budget was reached.");
+    }
+    println!("authority:");
+    for key in ["added", "removed", "warnings", "limitations"] {
+        show_review_fact(
+            &format!("  {}", key.replace('_', " ")),
+            &assessment["authority"][key],
+        );
+    }
+    for binding in assessment["host_operations"]["after"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let previous = assessment["host_operations"]["before"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|old| old["binding"] == binding["binding"]);
+        if previous == Some(binding) {
+            continue;
+        }
+        println!("Proposed host authority:");
+        for key in [
+            "binding",
+            "target_id",
+            "issuer_id",
+            "grant_id",
+            "credential_custody",
+            "limitations",
+        ] {
+            show_review_fact(&format!("  {}", key.replace('_', " ")), &binding[key]);
+        }
+        let principal = &binding["principal"];
+        println!(
+            "  Authority recipient: agent {} ({}), run {}, task {}",
+            safe(text(&principal["run"]["agent"])),
+            safe(text(&principal["run"]["agent_id"])),
+            safe(text(&principal["run"]["run_id"])),
+            safe(text(&principal["task_id"]))
+        );
+        let endpoint = &binding["target_transport"];
+        match endpoint["transport"].as_str() {
+            Some("https") => {
+                println!(
+                    "  Target control channel: HTTPS to {}:{}",
+                    safe(text(&endpoint["host"])),
+                    endpoint["port"]
+                );
+                println!(
+                    "  Target trust: {}",
+                    review_certificate(&endpoint["certificate_pem"])
+                );
+                println!(
+                    "  Control-channel TLS does not establish application authentication or reachable audience."
+                );
+            }
+            Some("unix") => println!(
+                "  Target control channel: Unix socket {}; checked executor UID {}",
+                safe(text(&endpoint["socket"])),
+                endpoint["executor_uid"]
+            ),
+            _ => show_review_fact("  Target control channel (unrecognised)", endpoint),
+        }
+        show_review_fact(
+            "  Agent interpretation of intent (untrusted context)",
+            &binding["agent_interpretation_of_intent"],
+        );
+        let enforcement = &binding["recorded_target_network_enforcement"];
+        show_review_time(
+            "  Target enforcement recorded at",
+            &enforcement["enrolled_at"],
+        );
+        show_review_fact("  Target enforcement source", &enforcement["source"]);
+        show_review_fact(
+            "  Recorded network enforcement by operation",
+            &enforcement["operations"],
+        );
+        println!("  Service observations:");
+        for key in ["binding", "application", "audience_reach", "authentication"] {
+            show_review_fact(
+                &format!("    {}", key.replace('_', " ")),
+                &binding["service_readiness_and_reach"][key],
+            );
+        }
+        for key in ["not_before", "expires_at"] {
+            show_review_time(
+                &format!("  {}", key.replace('_', " ")),
+                &binding["full_grant"][key],
+            );
+        }
+        show_review_fact("  Permitted actions", &binding["full_grant"]["verbs"]);
+        if let Some(refresh) = binding["full_grant"]["allow_run_refresh"].as_bool() {
+            println!(
+                "  Covered run refresh: {}",
+                if refresh {
+                    "permitted for the same eligible agent, task and target; expiry and scope still apply"
+                } else {
+                    "not granted"
+                }
+            );
+        }
+        for (operation, scope) in binding["full_grant"]["operations"]
+            .as_object()
+            .into_iter()
+            .flatten()
+        {
+            println!("  Granted operation {}:", safe(operation));
+            show_host_operation_bounds(scope, &binding["target_ceiling"][operation]);
+        }
+        for family in binding["full_grant"]["families"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            show_review_fact("  Standing operation prefix", &family["prefix"]);
+            show_review_fact("    Excluded operations", &family["excluded"]);
+            let same_operation = binding["full_grant"]["operations"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .find(|(_, scope)| *scope == &family["scope"] && scope["updates"].is_object());
+            if let Some((operation, _)) = same_operation {
+                println!(
+                    "    Same grant scope as operation {} above; authority for future operations is assessed below.",
+                    safe(operation)
+                );
+            } else {
+                show_host_operation_bounds(&family["scope"], &family["rule"]["ceiling"]);
+            }
+        }
+        let assessment = &binding["enforcement_and_effects"];
+        show_review_fact("  Native assessment", &assessment["status"]);
+        show_review_fact("  Reason", &assessment["reason"]);
+        show_review_time(
+            "  Authority valid until",
+            &assessment["authority_valid_until"],
+        );
+        let mut facts = std::collections::BTreeSet::new();
+        for kind in [
+            "effective_authority",
+            "standing_potential_authority",
+            "full_proposed_authority",
+        ] {
+            let authority = &assessment[kind];
+            if authority.is_null() {
+                continue;
+            }
+            println!("  {}:", kind.replace('_', " "));
+            for (label, model) in [
+                (
+                    "Native authority potential",
+                    &authority["native_authority"]["model"],
+                ),
+                ("Program effect annotations", &authority["model"]),
+            ] {
+                println!("    {label}:");
+                // Repeated model projections and rule inputs belong in explain;
+                // retain each distinct consequence and execution bound here.
+                let previous_facts = facts.len();
+                for direct in model["direct"].as_array().into_iter().flatten() {
+                    for key in [
+                        "execution_authority",
+                        "possible_effects",
+                        "persistent_effects",
+                        "unresolved_effects",
+                        "unresolved_conditions",
+                    ] {
+                        if let Some(value) = direct.get(key)
+                            && facts.insert((label, key.to_owned(), value.to_string()))
+                        {
+                            if key == "execution_authority" {
+                                show_execution_authority(value);
+                            } else {
+                                show_review_fact(&format!("  {}", key.replace('_', " ")), value);
+                            }
+                        }
+                    }
+                }
+                for (name, rule) in model["rules"].as_object().into_iter().flatten() {
+                    if rule["status"] != "non_match" {
+                        for key in ["status", "consequence", "unverified_prerequisites", "gaps"] {
+                            if facts.insert((label, format!("{name}/{key}"), rule[key].to_string()))
+                            {
+                                show_review_fact(
+                                    &format!(
+                                        "      {} — {}",
+                                        name.replace('_', " "),
+                                        key.replace('_', " ")
+                                    ),
+                                    &rule[key],
+                                );
+                            }
+                        }
+                    }
+                }
+                for key in ["status", "reason", "unresolved_conditions", "limitations"] {
+                    if let Some(value) = model.get(key)
+                        && facts.insert((label, key.to_owned(), value.to_string()))
+                    {
+                        show_review_fact(&format!("      {}", key.replace('_', " ")), value);
+                    }
+                }
+                if previous_facts == facts.len() {
+                    println!("      Same displayed decision facts as above.");
+                }
+            }
+            show_review_fact("  Limits", &authority["limitations"]);
+        }
+        for key in ["configuration_owner", "composed_authority", "limitation"] {
+            show_review_fact(
+                &format!("  {}", key.replace('_', " ")),
+                &binding["independent_task_action_checks"][key],
+            );
+        }
+        show_review_fact(
+            "  Limits",
+            &binding["enforcement_and_effects"]["limitations"],
+        );
+    }
+    for key in ["alternatives", "limitations"] {
+        show_review_fact(&format!("  {}", key.replace('_', " ")), &assessment[key]);
+    }
 }
 
 fn show_decision_summary(view: &Value) {
     let assessment = &view["assessment"];
+    if view["action"]["kind"] == "policy_change" {
+        show_policy_decision_summary(assessment);
+        if view["assessment_changed"] == true {
+            println!("Assessment changed since request. Review current state before deciding.");
+        }
+        return;
+    }
     if assessment.get("risk_policy").is_none() && assessment.get("availability").is_none() {
-        // Policy adoption still needs its exact source diff and consequences;
-        // other assessment owners retain their existing decision evidence.
+        // Other assessment owners retain their existing decision evidence.
         for (label, field) in [
             ("SafeYolo assessment (includes request data)", "assessment"),
             ("Policy and reviewed guidance", "guidance"),
@@ -920,7 +1495,7 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
     }
     if view["action"]["kind"] == "policy_change" {
         println!(
-            "Exact policy adoption: inspect the trusted consequences and complete redacted source diff above. Prior content remains available through approvals show; restore prepares a new decision against the current base."
+            "Exact policy adoption: inspect the trusted consequences and changed authority above. Prior content remains available through approvals explain and explicit JSON; restore prepares a new decision against the current base."
         );
     }
     if view["action"]["kind"] == "policy_snapshot" {
@@ -1066,27 +1641,25 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
 }
 
 fn show_request_history(view: &Value) -> Result<(), Error> {
-    if let Some(created) = view["created_at"].as_i64() {
-        println!("Requested at: {created} (Unix seconds)");
-    }
+    show_review_time("Requested at", &view["created_at"]);
     if let Some(expiry) = view["expires_at"]
         .as_i64()
         .or_else(|| view["authority"]["expires_at"].as_i64())
     {
-        println!("Request expires at: {expiry} (Unix seconds)");
+        show_review_time("Request expires at", &json!(expiry));
     }
     if let Some(count) = view["request_history"]["equivalent_request_count"].as_u64() {
         println!(
-            "Equivalent requests: {count} | Approvals: {} | First requested: {} | Last requested: {} (Unix seconds)",
+            "Equivalent requests: {count} | Approvals: {} | First requested: {} | Last requested: {} (UTC)",
             view["request_history"]["approval_count"],
-            view["request_history"]["first_requested_at"],
-            view["request_history"]["last_requested_at"]
+            review_time(&view["request_history"]["first_requested_at"]),
+            review_time(&view["request_history"]["last_requested_at"])
         );
         if let Some(id) = view["request_history"]["last_refusal"]["approval_id"].as_str() {
             println!(
-                "Last equivalent refusal: {} at {} (Unix seconds)",
+                "Last equivalent refusal: {} at {} (UTC)",
                 safe(id),
-                view["request_history"]["last_refusal"]["decided_at"]
+                review_time(&view["request_history"]["last_refusal"]["decided_at"])
             );
         }
     }

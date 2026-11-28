@@ -702,7 +702,9 @@ async fn normal_watch_renders_host_consequences_and_decides_exact_content() {
     assert!(changes.contains("helper") && changes.contains(HELPER_ID));
     assert!(changes.contains("memory mb: 768"));
     terminal.until(0, "Enforcement is disabled").await;
-    terminal.until(0, "exact diff:").await;
+    terminal
+        .until(0, "Exact policy changes (parsed values")
+        .await;
     let mark = terminal.mark();
     terminal.send("approve apply\n");
     terminal
@@ -763,8 +765,15 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
                 Secret::new(STANDARD.encode(pkcs8.as_ref())),
             ))
             .unwrap();
-        let package: Package =
+        let mut package: Package =
             serde_json::from_str(include_str!("fixtures/host_execution/package.json")).unwrap();
+        package
+            .operations
+            .get_mut("restart")
+            .unwrap()
+            .execution
+            .executable
+            .push_str("\rUNTRUSTED PATH LABEL");
         let scope = json!({"implementation_sha256":package.operations["restart"].implementation_sha256(),
             "resources":["service:demo"],"arguments":{"wait":[5],"mode":["normal","quiet"]},
             "budgets":{"calls":2,"concurrent":1,"timeout_seconds":15,"output_bytes":512}});
@@ -778,11 +787,14 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
             "max_authority_age_seconds":600,"issuers":{issuer:{"revision":"1","public_keys":{"key":STANDARD.encode(key.public_key().as_ref())},
                 "authority":{"revision":"1","assessment_revision":"1","observed_at":now()-1,"valid_until":now()+600,"grants":{"task":grant}}}},
             "ceiling":{"restart":ceiling},"package":package,"families":[],"catalogue":null});
-        let socket = f.root.path().join("no-dispatch.sock");
-        let target_listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let target_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         target_listener.set_nonblocking(true).unwrap();
+        let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()])
+            .unwrap()
+            .cert
+            .pem();
         let binding = json!({"target":target,"issuer_id":issuer,"grant_id":"task","key_id":"key","credential":"host-key",
-            "service":"owned-host","endpoint":{"transport":"unix","socket":socket,"executor_uid":unsafe{libc::geteuid()}},
+            "service":"owned-host","endpoint":{"transport":"https","host":"127.0.0.1","port":target_listener.local_addr().unwrap().port(),"certificate_pem":certificate},
             "task_revision":revision(&task),"timeout_ms":1000,"request_bytes":131072,"response_bytes":1048576});
         let mut document = f.source().parse::<toml_edit::DocumentMut>().unwrap();
         document["host_bindings"]["owned"] = toml_edit::value(binding.to_string());
@@ -796,7 +808,47 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
         let mut rules = toml_edit::Array::new();
         rules.push(rule.into_inline_table());
         document["hosts"]["*"]["rules"] = toml_edit::value(rules);
-        f.apply(&document.to_string()).await;
+        // Large unchanged source must remain available as evidence without
+        // burying the actual grant expansion in the ordinary decision view.
+        let unchanged = "# unrelated retained source detail\n".repeat(8192);
+        let initial = format!("{document}\n{unchanged}");
+        fs::write(f.root.path().join("config.toml"),format!("admin_port={}\nadmin_api_token_file='admin_token'\npolicy_file='policy.toml'\naudit_log_path='audit.jsonl'\n",f.admin)).unwrap();
+        if decision == "reject" {
+            let (base, _) = snapshot(&f).await;
+            let (addition, _) = submit(&f, &base, &initial).await;
+            let mut terminal =
+                operator_pty::Terminal::start(f.root.path(), &["watch", "--no-color"]);
+            terminal
+                .until(0, "PENDING APPROVALS: 1 (current state refreshed)")
+                .await;
+            terminal.send("1\n");
+            let rendered = terminal
+                .until(0, "Request #1 [choice / d / r / l / q]")
+                .await;
+            assert!(rendered.contains("Add host binding owned:"), "{rendered}");
+            assert!(rendered.contains("Authority recipient: agent worker"));
+            assert!(rendered.contains("Granted operation restart:"));
+            assert!(rendered.contains("principal: uid:1000"));
+            assert!(rendered.contains("Call limit: 2"));
+            assert!(rendered.contains("credential custody:"));
+            assert!(rendered.contains("fixed-demo-restart?UNTRUSTED PATH LABEL"));
+            assert!(!rendered.contains("/target/package/operations/"));
+            assert!(!rendered.contains("BEGIN CERTIFICATE"));
+            let mark = terminal.mark();
+            terminal.send("r\n");
+            terminal
+                .until(mark, "CANONICAL OUTCOME Request #1: rejected")
+                .await;
+            terminal.finish().await;
+            assert_eq!(
+                client(&f, "worker")
+                    .call("read_policy_change", &json!({"request_id":addition}))
+                    .await
+                    .unwrap()["status"],
+                "rejected"
+            );
+        }
+        f.apply(&initial).await;
         let native_policy = safeyolo_proxy::policy::Policy::from_native_path(
             f.config.policy_file.as_ref().unwrap(),
         )
@@ -820,7 +872,7 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
         expanded["target"]["issuers"][issuer]["authority"]["grants"]["task"]["operations"]["restart"]
             ["arguments"]["wait"] = json!([5, 6]);
         document["host_bindings"]["owned"] = toml_edit::value(expanded.to_string());
-        let changed = document.to_string();
+        let changed = format!("{document}\n{unchanged}");
         let assessment = client(&f, "worker")
             .call("assess_policy", &candidate(&id, &changed))
             .await
@@ -836,7 +888,6 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
             json!([5, 6])
         );
         let (op, _) = submit(&f, &id, &changed).await;
-        fs::write(f.root.path().join("config.toml"),format!("admin_port={}\nadmin_api_token_file='admin_token'\npolicy_file='policy.toml'\naudit_log_path='audit.jsonl'\n",f.admin)).unwrap();
         if decision == "reject" {
             let mut terminal =
                 operator_pty::Terminal::start(f.root.path(), &["watch", "--no-color"]);
@@ -847,8 +898,55 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
             let rendered = terminal
                 .until(0, "Request #1 [choice / d / r / l / q]")
                 .await;
-            assert!(rendered.contains("owned-review-target") && rendered.contains("uid:1000"));
-            assert!(rendered.contains("full grant:") && rendered.contains("target ceiling:"));
+            assert!(
+                rendered.contains("owned-review-target")
+                    && rendered.contains("principal: uid:1000")
+            );
+            assert!(rendered.contains("Authority recipient: agent worker"));
+            assert!(rendered.contains("Target control channel: HTTPS to 127.0.0.1:"));
+            assert!(rendered.contains("pinned certificate; SHA256 of PEM:"));
+            assert!(!rendered.contains("BEGIN CERTIFICATE"));
+            assert!(!rendered.contains("Unix seconds"));
+            assert!(!rendered.contains("\"saved_source_revision\":"));
+            assert!(!rendered.contains("\"run_id\":"));
+            assert!(rendered.contains("Saved policy matches running policy: true"));
+            assert!(rendered.contains("(UTC)"));
+            assert!(rendered.contains("fixed-demo-restart?UNTRUSTED PATH LABEL"));
+            assert!(rendered.contains("/host_bindings/owned/target/issuers/"));
+            assert!(rendered.contains("/arguments/wait/1"));
+            assert!(rendered.contains("Before: absent") && rendered.contains("After: 6"));
+            assert!(rendered.contains("expires at:") && rendered.contains("credential custody:"));
+            assert!(!rendered.contains("unrelated retained source detail"));
+            assert!(!rendered.contains("authorized projection:"));
+            assert!(
+                !rendered.contains("host_operations/"),
+                "duplicate model projections must stay in explicit evidence"
+            );
+            let structured = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+                .args([
+                    "--instance-dir",
+                    f.root.path().to_str().unwrap(),
+                    "--json",
+                    "approvals",
+                    "show",
+                    &op,
+                ])
+                .output()
+                .await
+                .unwrap();
+            assert!(structured.status.success());
+            let structured: Value = serde_json::from_slice(&structured.stdout).unwrap();
+            assert_eq!(structured["assessment"]["exact_diff"]["before"], source);
+            assert_eq!(structured["assessment"]["exact_diff"]["after"], changed);
+            assert_eq!(
+                structured["assessment"]["host_operations"]["after"][0]["target_transport"]["certificate_pem"],
+                certificate
+            );
+            assert_eq!(
+                structured["assessment"]["host_operations"]["after"][0]["full_grant"]["operations"]
+                    ["restart"]["arguments"]["wait"],
+                json!([5, 6])
+            );
             // A later arrival cannot replace the request already under review.
             let (other, _) = submit(&f, &id, &source.replace("budget=40", "budget=41")).await;
             let mark = terminal.mark();
