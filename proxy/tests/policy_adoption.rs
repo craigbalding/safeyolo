@@ -702,7 +702,9 @@ async fn normal_watch_renders_host_consequences_and_decides_exact_content() {
     assert!(changes.contains("helper") && changes.contains(HELPER_ID));
     assert!(changes.contains("memory mb: 768"));
     terminal.until(0, "Enforcement is disabled").await;
-    terminal.until(0, "exact diff:").await;
+    terminal
+        .until(0, "Exact policy changes (parsed values")
+        .await;
     let mark = terminal.mark();
     terminal.send("approve apply\n");
     terminal
@@ -796,7 +798,10 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
         let mut rules = toml_edit::Array::new();
         rules.push(rule.into_inline_table());
         document["hosts"]["*"]["rules"] = toml_edit::value(rules);
-        f.apply(&document.to_string()).await;
+        // Large unchanged source must remain available as evidence without
+        // burying the actual grant expansion in the ordinary decision view.
+        let unchanged = "# unrelated retained source detail\n".repeat(8192);
+        f.apply(&format!("{document}\n{unchanged}")).await;
         let native_policy = safeyolo_proxy::policy::Policy::from_native_path(
             f.config.policy_file.as_ref().unwrap(),
         )
@@ -820,7 +825,7 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
         expanded["target"]["issuers"][issuer]["authority"]["grants"]["task"]["operations"]["restart"]
             ["arguments"]["wait"] = json!([5, 6]);
         document["host_bindings"]["owned"] = toml_edit::value(expanded.to_string());
-        let changed = document.to_string();
+        let changed = format!("{document}\n{unchanged}");
         let assessment = client(&f, "worker")
             .call("assess_policy", &candidate(&id, &changed))
             .await
@@ -848,7 +853,37 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
                 .until(0, "Request #1 [choice / d / r / l / q]")
                 .await;
             assert!(rendered.contains("owned-review-target") && rendered.contains("uid:1000"));
-            assert!(rendered.contains("full grant:") && rendered.contains("target ceiling:"));
+            assert!(rendered.contains("/host_bindings/owned/target/issuers/"));
+            assert!(rendered.contains("/arguments/wait/1"));
+            assert!(rendered.contains("Before: absent") && rendered.contains("After: 6"));
+            assert!(rendered.contains("expires at:") && rendered.contains("credential custody:"));
+            assert!(!rendered.contains("unrelated retained source detail"));
+            assert!(!rendered.contains("authorized projection:"));
+            assert!(
+                !rendered.contains("host_operations/"),
+                "duplicate model projections must stay in explicit evidence"
+            );
+            let structured = tokio::process::Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+                .args([
+                    "--instance-dir",
+                    f.root.path().to_str().unwrap(),
+                    "--json",
+                    "approvals",
+                    "show",
+                    &op,
+                ])
+                .output()
+                .await
+                .unwrap();
+            assert!(structured.status.success());
+            let structured: Value = serde_json::from_slice(&structured.stdout).unwrap();
+            assert_eq!(structured["assessment"]["exact_diff"]["before"], source);
+            assert_eq!(structured["assessment"]["exact_diff"]["after"], changed);
+            assert_eq!(
+                structured["assessment"]["host_operations"]["after"][0]["full_grant"]["operations"]
+                    ["restart"]["arguments"]["wait"],
+                json!([5, 6])
+            );
             // A later arrival cannot replace the request already under review.
             let (other, _) = submit(&f, &id, &source.replace("budget=40", "budget=41")).await;
             let mark = terminal.mark();

@@ -582,11 +582,277 @@ fn show_review_fact(label: &str, value: &Value) {
     println!("{label}: {}", safe(&rendered));
 }
 
+fn show_review_time(label: &str, value: &Value) {
+    let readable = value
+        .as_i64()
+        .and_then(|seconds| time::OffsetDateTime::from_unix_timestamp(seconds).ok())
+        .and_then(|at| {
+            at.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        });
+    show_review_fact(
+        label,
+        &readable.map(Value::String).unwrap_or_else(|| value.clone()),
+    );
+}
+
+// Policy fields can contain JSON-encoded native definitions. Compare their
+// values too, so changing one grant does not print the complete target twice.
+fn show_policy_value_change(path: &str, before: &Value, after: &Value) {
+    if before == after {
+        return;
+    }
+    let decoded = |value: &Value| {
+        value.as_str().and_then(|source| {
+            serde_json::from_str::<Value>(source)
+                .ok()
+                .filter(|value| value.is_object() || value.is_array())
+        })
+    };
+    let old = decoded(before);
+    let new = decoded(after);
+    let before = old.as_ref().unwrap_or(before);
+    let after = new.as_ref().unwrap_or(after);
+    if (before.is_object() && (after.is_object() || after.is_null()))
+        || (before.is_null() && after.is_object())
+    {
+        let empty = serde_json::Map::new();
+        let old = before.as_object().unwrap_or(&empty);
+        let new = after.as_object().unwrap_or(&empty);
+        let keys = old
+            .keys()
+            .chain(new.keys())
+            .collect::<std::collections::BTreeSet<_>>();
+        if keys.is_empty() {
+            println!("  {}: {before} -> {after}", safe(path));
+        }
+        for key in keys {
+            let key_path = format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"));
+            show_policy_value_change(
+                &key_path,
+                old.get(key).unwrap_or(&Value::Null),
+                new.get(key).unwrap_or(&Value::Null),
+            );
+        }
+    } else if (before.is_array() && (after.is_array() || after.is_null()))
+        || (before.is_null() && after.is_array())
+    {
+        let empty = Vec::new();
+        let old = before.as_array().unwrap_or(&empty);
+        let new = after.as_array().unwrap_or(&empty);
+        if old.is_empty() && new.is_empty() {
+            println!("  {}: {before} -> {after}", safe(path));
+        }
+        for index in 0..old.len().max(new.len()) {
+            show_policy_value_change(
+                &format!("{path}/{index}"),
+                old.get(index).unwrap_or(&Value::Null),
+                new.get(index).unwrap_or(&Value::Null),
+            );
+        }
+    } else {
+        println!("  {}", safe(path));
+        println!(
+            "    Before: {}",
+            safe(&if before.is_null() {
+                "absent".into()
+            } else {
+                before.to_string()
+            })
+        );
+        println!(
+            "    After: {}",
+            safe(&if after.is_null() {
+                "absent".into()
+            } else {
+                after.to_string()
+            })
+        );
+    }
+}
+
+fn show_policy_decision_summary(assessment: &Value) {
+    println!("SafeYolo policy assessment:");
+    for key in ["valid", "current_state", "consequences"] {
+        show_review_fact(&format!("  {}", key.replace('_', " ")), &assessment[key]);
+    }
+    println!("configured agents:");
+    show_evidence_fields(&assessment["configured_agents"], 2);
+    println!("Exact policy changes (parsed values; paths use JSON Pointer escaping):");
+    for change in assessment["structural_changes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let path = change["path"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|part| part.replace('~', "~0").replace('/', "~1"))
+            .collect::<Vec<_>>()
+            .join("/");
+        show_policy_value_change(&format!("/{path}"), &change["before"], &change["after"]);
+    }
+    // These are the existing deterministic owners' changed projections, not
+    // another assessment or a copy of their full before/after snapshots.
+    for key in ["effective", "services"] {
+        let report = &assessment[key];
+        show_policy_value_change(key, &report["before"], &report["after"]);
+        show_review_fact("  Limits", &report["limitations"]);
+    }
+    for case in assessment["network"]["cases"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if case["before"] != case["after"] {
+            show_review_fact("  Network decision change", case);
+        }
+    }
+    show_review_fact(
+        "  Network assessment coverage",
+        &assessment["network"]["coverage"],
+    );
+    if assessment["network"]["truncated"] == true {
+        println!("  Network assessment is incomplete: its case budget was reached.");
+    }
+    println!("authority:");
+    for key in ["added", "removed", "warnings", "limitations"] {
+        show_review_fact(
+            &format!("  {}", key.replace('_', " ")),
+            &assessment["authority"][key],
+        );
+    }
+    for binding in assessment["host_operations"]["after"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let previous = assessment["host_operations"]["before"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|old| old["binding"] == binding["binding"]);
+        if previous == Some(binding) {
+            continue;
+        }
+        println!("Host authority in effect after adoption:");
+        for key in [
+            "binding",
+            "target_id",
+            "issuer_id",
+            "grant_id",
+            "principal",
+            "target_transport",
+            "credential_custody",
+            "agent_interpretation_of_intent",
+            "recorded_target_network_enforcement",
+            "service_readiness_and_reach",
+            "limitations",
+        ] {
+            show_review_fact(&format!("  {}", key.replace('_', " ")), &binding[key]);
+        }
+        for key in ["not_before", "expires_at"] {
+            show_review_time(
+                &format!("  {}", key.replace('_', " ")),
+                &binding["full_grant"][key],
+            );
+        }
+        for key in ["verbs", "allow_run_refresh"] {
+            show_review_fact(
+                &format!("  {}", key.replace('_', " ")),
+                &binding["full_grant"][key],
+            );
+        }
+        let assessment = &binding["enforcement_and_effects"];
+        show_review_fact("  Native assessment", &assessment["status"]);
+        show_review_fact("  Reason", &assessment["reason"]);
+        show_review_time(
+            "  Authority valid until",
+            &assessment["authority_valid_until"],
+        );
+        for kind in [
+            "effective_authority",
+            "standing_potential_authority",
+            "full_proposed_authority",
+        ] {
+            let authority = &assessment[kind];
+            if authority.is_null() {
+                continue;
+            }
+            println!("  {}:", kind.replace('_', " "));
+            for (label, model) in [
+                (
+                    "Native authority potential",
+                    &authority["native_authority"]["model"],
+                ),
+                ("Program effect annotations", &authority["model"]),
+            ] {
+                println!("    {label}:");
+                // Repeated model projections and rule inputs belong in explain;
+                // retain each distinct consequence and execution bound here.
+                let mut facts = std::collections::BTreeSet::new();
+                for direct in model["direct"].as_array().into_iter().flatten() {
+                    for key in [
+                        "execution_authority",
+                        "possible_effects",
+                        "persistent_effects",
+                        "unresolved_effects",
+                        "unresolved_conditions",
+                    ] {
+                        if let Some(value) = direct.get(key)
+                            && facts.insert((key, value.to_string()))
+                        {
+                            show_review_fact(&format!("  {}", key.replace('_', " ")), value);
+                        }
+                    }
+                }
+                for rule in model["rules"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(_, rule)| rule)
+                {
+                    if rule["status"] != "non_match" {
+                        for key in ["status", "consequence", "unverified_prerequisites", "gaps"] {
+                            show_review_fact(&format!("  {}", key.replace('_', " ")), &rule[key]);
+                        }
+                    }
+                }
+                for key in ["status", "reason", "unresolved_conditions", "limitations"] {
+                    show_review_fact(&format!("  {}", key.replace('_', " ")), &model[key]);
+                }
+            }
+            show_review_fact("  Limits", &authority["limitations"]);
+        }
+        for key in ["configuration_owner", "composed_authority", "limitation"] {
+            show_review_fact(
+                &format!("  {}", key.replace('_', " ")),
+                &binding["independent_task_action_checks"][key],
+            );
+        }
+        show_review_fact(
+            "  Limits",
+            &binding["enforcement_and_effects"]["limitations"],
+        );
+    }
+    for key in ["alternatives", "limitations"] {
+        show_review_fact(&format!("  {}", key.replace('_', " ")), &assessment[key]);
+    }
+}
+
 fn show_decision_summary(view: &Value) {
     let assessment = &view["assessment"];
+    if view["action"]["kind"] == "policy_change" {
+        show_policy_decision_summary(assessment);
+        if view["assessment_changed"] == true {
+            println!("Assessment changed since request. Review current state before deciding.");
+        }
+        return;
+    }
     if assessment.get("risk_policy").is_none() && assessment.get("availability").is_none() {
-        // Policy adoption still needs its exact source diff and consequences;
-        // other assessment owners retain their existing decision evidence.
+        // Other assessment owners retain their existing decision evidence.
         for (label, field) in [
             ("SafeYolo assessment (includes request data)", "assessment"),
             ("Policy and reviewed guidance", "guidance"),
@@ -920,7 +1186,7 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
     }
     if view["action"]["kind"] == "policy_change" {
         println!(
-            "Exact policy adoption: inspect the trusted consequences and complete redacted source diff above. Prior content remains available through approvals show; restore prepares a new decision against the current base."
+            "Exact policy adoption: inspect the trusted consequences and changed authority above. Prior content remains available through approvals explain and explicit JSON; restore prepares a new decision against the current base."
         );
     }
     if view["action"]["kind"] == "policy_snapshot" {
