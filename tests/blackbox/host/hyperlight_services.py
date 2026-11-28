@@ -239,10 +239,11 @@ class Instance:
         self.policy = None
         self.proxy = None
         self.index = 0
+        self.environment = dict(os.environ, SAFEYOLO_DANGEROUSLY_ALLOW_ROOT="1")
 
     def command(self, *arguments, input=None):
-        return subprocess.run([str(self.args.cli), "--dangerously-allow-root", "--instance-dir", str(self.root), "--json", *arguments],
-                              input=input, check=True, capture_output=True)
+        return subprocess.run([str(self.args.cli), "--instance-dir", str(self.root), "--json", *arguments],
+                              env=self.environment, input=input, check=True, capture_output=True)
 
     def prepare(self, port):
         self.command("init")
@@ -361,7 +362,7 @@ class Instance:
                 spec["argv"].append("--isolation-probe" if probe == "isolation" else "--probe")
         path = prefix.with_suffix(".spec.json")
         save(path, spec)
-        arguments = [str(self.args.cli), "--dangerously-allow-root", "--instance-dir", str(self.root), "--json", "job", "run", str(path),
+        arguments = [str(self.args.cli), "--instance-dir", str(self.root), "--json", "job", "run", str(path),
                      "--input", str(inputs)]
         if console:
             console_path = prefix.with_suffix(".console")
@@ -369,7 +370,7 @@ class Instance:
             arguments.extend(["--console-file", str(console_path)])
         with prefix.with_suffix(".stdout").open("wb") as stdout, prefix.with_suffix(".stderr").open("wb") as stderr:
             started = time.perf_counter_ns()
-            child = subprocess.Popen(arguments, stdout=stdout, stderr=stderr)
+            child = subprocess.Popen(arguments, env=self.environment, stdout=stdout, stderr=stderr)
             sampling = (sample_job_memory(child, self.proxy, prefix)
                         if getattr(self.args, "template_boundaries_only", False) else contextlib.nullcontext())
             with sampling:
@@ -893,8 +894,8 @@ def exercise(args):
             for engine in engines:
                 # Each engine gets a fresh proxy lifetime; grants stay standing.
                 with (args.scratch / f"{engine}-proxy.log").open("wb") as log:
-                    instance.proxy = subprocess.Popen([str(args.proxy), "--config", str(args.root / "config.toml"), "--dangerously-allow-root"],
-                                                      stdout=log, stderr=log)
+                    instance.proxy = subprocess.Popen([str(args.proxy), "--config", str(args.root / "config.toml")],
+                                                      env=instance.environment, stdout=log, stderr=log)
                     try:
                         wait_ready(instance.proxy, args.root, args.admin_port)
                         if getattr(args, "template_boundaries_only", False):

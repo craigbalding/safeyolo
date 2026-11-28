@@ -15,6 +15,7 @@ import base64
 import hashlib
 import http.client
 import json
+import os
 import signal
 import socket
 import ssl
@@ -63,7 +64,8 @@ def stage_runtime(cli: Path, proxy: Path, base: Path, root: Path):
 def prepare(cli: Path, proxy: Path, base: Path, root: Path, port: int, upstream: int):
     """Reuse installed runtime inputs without changing the original instance."""
     root.mkdir(mode=0o755)
-    subprocess.run([str(cli), "--dangerously-allow-root", "--instance-dir", str(root), "--json", "init"], check=True)
+    environment = dict(os.environ, SAFEYOLO_DANGEROUSLY_ALLOW_ROOT="1")
+    subprocess.run([str(cli), "--instance-dir", str(root), "--json", "init"], env=environment, check=True)
     stage_runtime(cli, proxy, base, root)
     config = {
         "admin_port": port,
@@ -99,8 +101,8 @@ enabled = false
 action = "warn"
 ''')
     subprocess.run(
-        [str(cli), "--dangerously-allow-root", "--instance-dir", str(root), "--json", "credentials", "add", "job-secret", "--stdin", "--storage", "local"],
-        input=b"synthetic-job-provider-secret\n", check=True,
+        [str(cli), "--instance-dir", str(root), "--json", "credentials", "add", "job-secret", "--stdin", "--storage", "local"],
+        env=environment, input=b"synthetic-job-provider-secret\n", check=True,
     )
     create_upstream_certificate(root)
 
@@ -170,7 +172,7 @@ def job(cli: Path, root: Path, scratch: Path, port: int, index: int):
     output_path = scratch / f"job-{index}.stdout"
     try:
         completed, _records, observed = interrupt_request(
-            [str(cli), "--dangerously-allow-root", "--instance-dir", str(root), "--json", "job", "run", str(spec)], root, None, umask=0o022)
+            [str(cli), "--instance-dir", str(root), "--json", "job", "run", str(spec)], root, None, umask=0o022)
     except subprocess.TimeoutExpired as error:
         output_path.write_bytes(error.stdout or b"")
         (scratch / f"job-{index}.stderr").write_bytes(error.stderr or b"")
@@ -273,10 +275,11 @@ def lifecycle_job(args, mode, observations):
                                                            program(args.upstream_port) + "\nexec sleep 300"],
                                 "network": True, "timeout_seconds": 25 if mode == "expiry" else 90,
                                 "memory_mb": 512, "max_input_bytes": 0, "max_input_entries": 1, "retain_bytes": 4096}))
-    command = [str(args.cli), "--dangerously-allow-root", "--instance-dir", str(args.root), "--json", "job", "run", str(spec)]
+    environment = dict(os.environ, SAFEYOLO_DANGEROUSLY_ALLOW_ROOT="1")
+    command = [str(args.cli), "--instance-dir", str(args.root), "--json", "job", "run", str(spec)]
     connection = None
     with (args.scratch / f"{mode}.stdout").open("wb") as stdout, (args.scratch / f"{mode}.stderr").open("wb") as stderr:
-        with subprocess.Popen(command, stdout=stdout, stderr=stderr, umask=0o022) as child:
+        with subprocess.Popen(command, stdout=stdout, stderr=stderr, umask=0o022, env=environment) as child:
             try:
                 deadline = time.monotonic() + 180
                 paths = []
@@ -294,14 +297,14 @@ def lifecycle_job(args, mode, observations):
                 # Only this fixture's scoped token enters memory. Never retain
                 # the services response or put the token in a command argument.
                 authorized = json.loads(subprocess.check_output(
-                    [str(args.cli), "--dangerously-allow-root", "--instance-dir", str(args.root), "--json", "services", "authorized", "gate:proof"], timeout=10))
+                    [str(args.cli), "--instance-dir", str(args.root), "--json", "services", "authorized", "gate:proof"], env=environment, timeout=10))
                 token = authorized["services"]["simple"]["token"]
                 connection = delegated_connection(paths[0], args.upstream_port, args.root / "certs/mitmproxy-ca-cert.pem")
                 assert scoped_request(connection, token) == (200, b"ok")
                 assert len(observations) == count + 2
                 if mode == "revocation":
-                    subprocess.run([str(args.cli), "--dangerously-allow-root", "--instance-dir", str(args.root), "services", "revoke", "gate:proof", "simple"],
-                                   check=True, capture_output=True, timeout=10)
+                    subprocess.run([str(args.cli), "--instance-dir", str(args.root), "services", "revoke", "gate:proof", "simple"],
+                                   env=environment, check=True, capture_output=True, timeout=10)
                     try:
                         status, _ = scoped_request(connection, token)
                     except (OSError, http.client.HTTPException):
@@ -342,9 +345,9 @@ def lifecycle_job(args, mode, observations):
                 if connection is not None:
                     connection.close()
                 if mode == "revocation":
-                    subprocess.run([str(args.cli), "--dangerously-allow-root", "--instance-dir", str(args.root), "services", "authorize", "gate:proof", "simple",
+                    subprocess.run([str(args.cli), "--instance-dir", str(args.root), "services", "authorize", "gate:proof", "simple",
                                     "--capability", "reader", "--credential", "job-secret"],
-                                   check=True, capture_output=True, timeout=10)
+                                   env=environment, check=True, capture_output=True, timeout=10)
 
 
 def assert_restored_gate_grant(root: Path) -> None:
@@ -393,7 +396,8 @@ def run(args, receipt=None):
         thread.start()
         try:
             with (args.scratch / "proxy.log").open("wb") as log:
-                with subprocess.Popen([str(args.proxy), "--config", str(args.root / "config.toml"), "--dangerously-allow-root"], stdout=log, stderr=log) as child:
+                with subprocess.Popen([str(args.proxy), "--config", str(args.root / "config.toml")],
+                                      env=dict(os.environ, SAFEYOLO_DANGEROUSLY_ALLOW_ROOT="1"), stdout=log, stderr=log) as child:
                     try:
                         wait_ready(child, args.root, args.admin_port)
                         first, fingerprint = job(args.cli, args.root, args.scratch, args.upstream_port, 1)
