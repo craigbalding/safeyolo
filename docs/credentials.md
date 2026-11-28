@@ -37,6 +37,14 @@ storage or `passphrase` protection. To cancel before creation, enter `q`.
 For a script or piped input, supply `--storage local` or `--storage passphrase`
 on the first write. No backend is selected automatically.
 
+When an operation creates its own secret, such as a host task's signing key,
+prepare storage on the issuing host with `safeyolo credentials init`. Keep the
+same instance or `--config` selection as that operation. The command offers the
+same storage choice without requiring a placeholder credential. For a script,
+use `credentials init --storage local` or `credentials init --storage passphrase
+--passphrase-file FILE`. Then resume the original operation. Repeating init
+preserves existing credentials and the selected storage type.
+
 Both choices create encrypted `data/credentials.enc` and `data/credentials.key`
 with mode 0600. Local storage keeps a marked random encryption key in the key
 file and needs no password stretching. Passphrase storage keeps only a format
