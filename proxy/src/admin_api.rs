@@ -1242,6 +1242,35 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             },
         );
     }
+    if *method == Method::POST && path == "/admin/credentials/refresh-host-task" {
+        let Some(state) = task_state else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"runtime is unavailable"}),
+            ));
+        };
+        let data = match read_json(request).await? {
+            ParsedBody::Value(data) => data,
+            _ => {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"host binding is required"}),
+                ));
+            }
+        };
+        let Some(binding) = data.0.get("binding").and_then(Value::as_str) else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"host binding is required"}),
+            ));
+        };
+        return Ok(
+            match crate::host_execution::setup::refresh_task_credential(state, binding).await {
+                Ok(value) => response(StatusCode::OK, value),
+                Err(error) => response(StatusCode::BAD_REQUEST, json!({"error":error.to_string()})),
+            },
+        );
+    }
     if *method == Method::GET && path == "/admin/credentials/status" {
         let Some(state) = task_state else {
             return Ok(response(

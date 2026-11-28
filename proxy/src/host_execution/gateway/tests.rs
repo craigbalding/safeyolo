@@ -196,9 +196,11 @@ impl Fixture {
             extra
         );
         std::fs::write(root.path().join("policy.toml"), &source).unwrap();
+        std::fs::write(data.join("admin-fixture-token"), "host-admin-fixture").unwrap();
         let mut config:Config=serde_json::from_value(json!({"native_product":true,"policy_file":root.path().join("policy.toml"),"data_dir":data,
             "listeners":[{"agent_id":"alice","socket_path":root.path().join("alice.sock")},{"agent_id":"bob","socket_path":root.path().join("bob.sock")}],"admin_port":0,"readiness_file":root.path().join("ready"),
-            "audit_log_path":root.path().join("audit.jsonl"),"flow_store_enabled":false,"circuit_breaker_enabled":false})).unwrap();
+            "audit_log_path":root.path().join("audit.jsonl"),"flow_store_enabled":false,"circuit_breaker_enabled":false,
+            "admin_api_token_file":data.join("admin-fixture-token")})).unwrap();
         config.native_config_dir = Some(root.path().into());
         let proxy = Proxy::start(config).await.unwrap();
         proxy
@@ -925,6 +927,261 @@ async fn covered_resume_survives_issuer_restart_and_observed_run_change_with_cur
         f.binding = eligible.clone();
     }
     assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    f.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn host_task_credential_owner_refresh_preserves_receipts_and_current_gates() {
+    let mut f = Fixture::new("").await;
+    let operation = format!("req-{}", "a".repeat(32));
+    let prepared = f
+        .api(
+            "/gateway/host-setup",
+            "POST",
+            json!({"kind":"prepare","operation_id":operation,"plan":task_plan(&f)}),
+        )
+        .await;
+    assert_eq!(prepared.status, 200, "{}", prepared.value);
+    let public = &prepared.value["enrolment_request"];
+    let mut binding = f.binding.clone();
+    binding.resume_task = true;
+    binding.target.target_id = public["target_id"].as_str().unwrap().into();
+    binding.credential = format!(
+        "host-task-{}",
+        revision(&("issuer", &f.run.agent_id, &operation))
+    );
+    binding.key_id = public["key_id"].as_str().unwrap().into();
+    binding
+        .target
+        .issuers
+        .get_mut("issuer")
+        .unwrap()
+        .public_keys = BTreeMap::from([(
+        binding.key_id.clone(),
+        public["public_key"].as_str().unwrap().into(),
+    )]);
+    binding.target.max_authority_age_seconds = 90;
+    f.install_binding(binding);
+    let eligible = f.binding.clone();
+    let vault = crate::credentials::open(&f.root.path().join("data")).unwrap();
+    let mut credential = vault
+        .snapshot(&f.binding.credential)
+        .unwrap()
+        .unwrap()
+        .credential()
+        .clone();
+    let mut saved: Value = serde_json::from_str(credential.value.expose_secret()).unwrap();
+    saved["request"]["not_before"] = json!(now() - 600);
+    saved["request"]["expires_at"] = json!(now() - 300);
+    let original = serde_json::to_string(&saved).unwrap();
+    credential.value = crate::credentials::Secret::new(original.clone());
+    credential.expires_at = Some("2000-01-01T00:00:00Z".into());
+    vault.store(credential).unwrap();
+    assert!(crate::clear_registered_task(&f.proxy.runtime, "approved-task").is_ok());
+    let resume = json!({"request_id":format!("req-{}", "b".repeat(32))});
+    let expired = f
+        .api("/gateway/host/local/resume", "POST", resume.clone())
+        .await;
+    assert_ne!(expired.status, 200);
+    assert!(
+        expired
+            .value
+            .to_string()
+            .contains("host task credential expired")
+    );
+    assert_ne!(
+        f.api(
+            "/admin/credentials/refresh-host-task",
+            "POST",
+            json!({"binding":"local"})
+        )
+        .await
+        .status,
+        200
+    );
+    let config_path = f.root.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "data_dir={:?}\nadmin_port=0\nreadiness_file={:?}\nadmin_api_token_file={:?}\n",
+            f.root.path().join("data"),
+            f.root.path().join("ready"),
+            f.root.path().join("data/admin-fixture-token")
+        ),
+    )
+    .unwrap();
+    let owner = |body| {
+        crate::native_client::admin(
+            &config_path,
+            "/admin/credentials/refresh-host-task",
+            hyper::Method::POST,
+            body,
+            std::time::Duration::from_secs(5),
+        )
+    };
+    for (gate, expected) in [
+        ("expired_grant", "host grant or authority freshness expired"),
+        (
+            "stale_authority",
+            "host grant or authority freshness expired",
+        ),
+        ("agent_identity", "trusted current run"),
+        (
+            "task_revision",
+            "retained host task, signing key or binding changed",
+        ),
+        (
+            "key_identity",
+            "retained host task, signing key or binding changed",
+        ),
+        ("revoked", "host binding unavailable for this caller"),
+    ] {
+        let mut changed = eligible.clone();
+        if gate == "expired_grant" {
+            changed
+                .target
+                .issuers
+                .get_mut("issuer")
+                .unwrap()
+                .authority
+                .grants
+                .get_mut("approved")
+                .unwrap()
+                .expires_at = now();
+            f.install_binding(changed);
+        } else if gate == "stale_authority" {
+            changed
+                .target
+                .issuers
+                .get_mut("issuer")
+                .unwrap()
+                .authority
+                .observed_at = now() - 90;
+            f.install_binding(changed);
+        } else if gate == "agent_identity" {
+            changed
+                .target
+                .issuers
+                .get_mut("issuer")
+                .unwrap()
+                .authority
+                .grants
+                .get_mut("approved")
+                .unwrap()
+                .principal
+                .run
+                .agent_id = format!("ag-{}", "c".repeat(32));
+            f.install_binding(changed);
+        } else if gate == "task_revision" {
+            changed.task_revision = "f".repeat(64);
+            f.install_binding(changed);
+        } else if gate == "key_identity" {
+            changed.key_id = "another-key".into();
+            changed
+                .target
+                .issuers
+                .get_mut("issuer")
+                .unwrap()
+                .public_keys
+                .insert(
+                    changed.key_id.clone(),
+                    public["public_key"].as_str().unwrap().into(),
+                );
+            f.install_binding(changed);
+        } else {
+            let (mut document, context) = crate::policy::parse_toml_for_edit(&f.source).unwrap();
+            document["host_bindings"]
+                .as_table_mut()
+                .unwrap()
+                .remove("local");
+            f.install(crate::policy::restore_large_toml_integers(
+                &document.to_string(),
+                &context,
+            ));
+        }
+        let error = owner(json!({"binding":"local"}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "{gate}: {error}");
+        vault.reload_if_changed().unwrap();
+        assert_eq!(
+            vault
+                .snapshot(&eligible.credential)
+                .unwrap()
+                .unwrap()
+                .credential()
+                .expires_at
+                .as_deref(),
+            Some("2000-01-01T00:00:00Z")
+        );
+        f.install_binding(eligible.clone());
+    }
+    let refreshed = owner(json!({"binding":"local"})).await.unwrap();
+    assert_eq!(refreshed["changed"], true);
+    let expiry = time::OffsetDateTime::parse(
+        refreshed["expires_at"].as_str().unwrap(),
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap()
+    .unix_timestamp();
+    assert_eq!(
+        expiry as u64,
+        eligible.target.issuers["issuer"].authority.observed_at + 90
+    );
+    vault.reload_if_changed().unwrap();
+    let after = vault.snapshot(&eligible.credential).unwrap().unwrap();
+    assert_eq!(after.credential().value.expose_secret(), original);
+    assert_eq!(
+        owner(json!({"binding":"local"})).await.unwrap()["changed"],
+        false
+    );
+    let historical = f
+        .api(
+            &format!("/gateway/host-setup/{operation}"),
+            "GET",
+            Value::Null,
+        )
+        .await;
+    assert_eq!(historical.value["status"], "expired");
+    assert_eq!(
+        f.api("/gateway/host/local/resume", "POST", resume)
+            .await
+            .status,
+        200
+    );
+    assert_eq!(f.mutations.load(Ordering::SeqCst), 0);
+    if let Some(cli) = std::env::var_os("SAFEYOLO_TEST_CLI") {
+        for json_output in [false, true] {
+            let mut command = tokio::process::Command::new(&cli);
+            command
+                .env(crate::host_root::ENVIRONMENT, "1")
+                .arg("--config")
+                .arg(&config_path);
+            if json_output {
+                command.arg("--json");
+            }
+            let output = command
+                .args(["credentials", "refresh-host-task", "local"])
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if json_output {
+                let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(value["changed"], false);
+            } else {
+                assert!(
+                    String::from_utf8_lossy(&output.stdout)
+                        .contains("Host task credential ready for local")
+                );
+            }
+        }
+    }
     f.stop().await;
 }
 
